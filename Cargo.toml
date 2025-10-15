@@ -1,0 +1,67 @@
+[package]
+name = "tmessage"
+version = "0.1.0"
+edition = "2021"
+authors = ["Nick Spiker <fractaldecoder@proton.me>"]
+license = "MIT"
+description = "Decentralized messenger with rolling-chain encryption"
+
+[dependencies]
+
+# Crypto
+blake3 = "1.5"
+chacha20poly1305 = "0.10"
+x25519-dalek = "2.0"
+rand = "0.8"
+zeroize = { version = "1.7", features = ["derive"] }
+
+# Network
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = "0.28.0"
+tokio-native-tls = "0.3"
+mainline = "6.0.0"  # DHT
+serde = { version = "1.0", features = ["derive"] }
+
+# Storage
+rusqlite = { version = "0.37.0", features = ["bundled"] }
+
+# Utilities
+thiserror = "2.0.17"
+anyhow = "1.0"
+log = "0.4"
+env_logger = "0.11"
+hex = "0.4.3"
+bincode = "2.0.1"
+winit = "0.30.12"
+bytemuck = "1.24.0"
+wgpu = "27.0.1"
+pollster = "0.4.0"
+cosmic-text = "0.14.2"
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk = "0.9.0"
+ndk-glue = "0.7"
+
+[dev-dependencies]
+criterion = "0.7.0"
+
+[[bench]]
+name = "crypto_bench"
+harness = false
+
+[profile.dev]
+opt-level = 2              # Good optimization, fast compile
+overflow-checks = false    # No panic on overflow (wrapping behavior)
+debug = false              # No debug info (faster builds)
+debug-assertions = false   # No assertions
+lto = false                # Fast linking
+codegen-units = 16         # Parallel codegen (fast builds)
+incremental = true         # Incremental compilation
+
+[profile.release]
+lto = true                 # Full LTO for final builds
+codegen-units = 1          # Single unit for max optimization
+opt-level = 3              # Maximum optimization
+strip = true               # Strip symbols
+overflow-checks = false    # Wrapping behavior in release too

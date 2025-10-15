@@ -1,0 +1,121 @@
+mod crypto;
+mod network;
+mod storage;
+mod types;
+mod ui;
+
+use winit::{
+    application::ApplicationHandler,
+    event::WindowEvent,
+    event_loop::{ActiveEventLoop, EventLoop},
+    window::{Window, WindowId},
+};
+
+struct App {
+    window: Option<Window>,
+    tmessage_app: Option<ui::TMessageApp>,
+    screen_width: u32,
+    screen_height: u32,
+}
+
+impl ApplicationHandler for App {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.window.is_none() {
+            // Get primary monitor size
+            let monitor = event_loop
+                .primary_monitor()
+                .or_else(|| event_loop.available_monitors().next())
+                .expect("No monitor found");
+
+            let screen_size = monitor.size();
+            let screen_width = screen_size.width;
+            let screen_height = screen_size.height;
+
+            // Store screen dimensions
+            self.screen_width = screen_width;
+            self.screen_height = screen_height;
+
+            // Calculate window dimensions: height = min(width, height/2), width = height/2
+            let window_height = screen_width.min(screen_height / 2);
+            let window_width = window_height / 2;
+
+            log::info!(
+                "Screen: {}x{}, Window: {}x{}",
+                screen_width,
+                screen_height,
+                window_width,
+                window_height
+            );
+
+            let window_attributes = Window::default_attributes()
+                .with_title("tmessage")
+                .with_inner_size(winit::dpi::PhysicalSize::new(window_width, window_height))
+                .with_decorations(false) // No OS title bar or decorations
+                .with_transparent(true); // Enable transparency for pill shape
+            self.window = Some(event_loop.create_window(window_attributes).unwrap());
+
+            // Initialize the app with the window we just created
+            if let Some(window) = &self.window {
+                self.tmessage_app = Some(pollster::block_on(ui::TMessageApp::new(
+                    window,
+                    self.screen_width,
+                    self.screen_height,
+                )));
+            }
+        }
+    }
+
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        match event {
+            WindowEvent::CloseRequested => {
+                event_loop.exit();
+            }
+            WindowEvent::Resized(size) => {
+                if let Some(app) = &mut self.tmessage_app {
+                    app.resize(size);
+                }
+            }
+            WindowEvent::RedrawRequested => {
+                if let Some(app) = &mut self.tmessage_app {
+                    app.render();
+                }
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
+                if let Some(app) = &mut self.tmessage_app {
+                    app.handle_keyboard(event);
+                }
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                if let (Some(app), Some(window)) = (&mut self.tmessage_app, &self.window) {
+                    app.handle_mouse_click(window, state, button);
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                if let (Some(window), Some(app)) = (&self.window, &mut self.tmessage_app) {
+                    app.handle_mouse_move(window, position);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+    }
+}
+
+fn main() {
+    env_logger::init();
+
+    let event_loop = EventLoop::new().unwrap();
+    let mut app = App {
+        window: None,
+        tmessage_app: None,
+        screen_width: 0,  // Will be set in resumed()
+        screen_height: 0, // Will be set in resumed()
+    };
+
+    event_loop.run_app(&mut app).unwrap();
+}
