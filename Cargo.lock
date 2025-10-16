@@ -3029,6 +3029,7 @@ dependencies = [
  "ndk-glue",
  "pollster",
  "rand 0.8.5",
+ "rayon",
  "rusqlite",
  "serde",
  "thiserror 2.0.17",

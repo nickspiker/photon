@@ -295,20 +295,17 @@ impl TMessageApp {
 
         // Only redraw CPU content if dimensions changed or content is dirty
         if self.needs_redraw {
-            // Render everything on CPU (efficient for static content)
             let pixels = self.renderer.get_pixel_buffer_mut();
 
-            // 1. Draw pill-shaped background (scanline algorithm - only ~1080 calculations!)
-            Self::draw_pill_background(pixels, self.window_width, self.window_height);
+            Self::draw_window_background(pixels, self.window_width, self.window_height);
 
             // 2. TODO: Draw input boxes
 
             // 3. TODO: Draw text
 
-            self.needs_redraw = false; // Content is now up-to-date
+            self.needs_redraw = false;
         }
 
-        // Upload to GPU and present (compute shader is pass-through for now)
         self.renderer.present();
     }
 
@@ -341,7 +338,7 @@ impl TMessageApp {
 
                 // Check if in corner region
                 let in_corner = min_x_dist < corner_radius && min_y_dist < corner_radius;
-                let in_pill = if in_corner {
+                let in_window = if in_corner {
                     let cx = if left_dist < corner_radius {
                         corner_radius - left_dist
                     } else {
@@ -355,11 +352,11 @@ impl TMessageApp {
                     let corner_dist = (cx * cx + cy * cy).sqrt();
                     corner_dist < corner_radius
                 } else {
-                    true // Not in corner, so inside pill
+                    true // Not in corner, so inside window
                 };
 
                 let idx = (y * width + x) * 4;
-                if in_pill {
+                if in_window {
                     pixels[idx] = bg_r;
                     pixels[idx + 1] = bg_g;
                     pixels[idx + 2] = bg_b;
@@ -431,9 +428,9 @@ impl TMessageApp {
         box_width: usize,
         box_height: usize,
     ) {
-        // Draw pill shape - fully rounded ends (radius = height/2)
+        // Draw squirtle shape - fully roundamicated
         let border_thickness = ((box_height as f32) / 30.0).max(1.0) as usize; // Scale border with box
-        let corner_radius = (box_height as f32) / 2.0; // Pill: radius = half the height
+        let corner_radius = (box_height as f32) / 2.0; // Squirtle: radius = half the height
 
         for dy in 0..box_height {
             for dx in 0..box_width {
@@ -502,119 +499,169 @@ impl TMessageApp {
         }
     }
 
-    /// 8-fold symmetry pill shape renderer with antialiasing
-    fn draw_pill_background(pixels: &mut [u8], width: u32, height: u32) {
+    /// 8-fold symmetry renderer with antialiasing
+    fn draw_window_background(pixels: &mut [u8], width: u32, height: u32) {
+        use rayon::prelude::*;
+
         let bg_colour = [9u8, 12u8, 17u8];
-        // Fill background with noisy scanline pattern (per-row seeded)
-        for y in 0..height {
-            // Reset RNG state at start of each row (consistent scanlines)
-            let rng_seed: u32 = 0xDEADBEEF ^ ((y - height / 2) * 0x9E3779B9); // Mix in y
-            let mut rng_state = rng_seed;
-            let start_colour = [
-                (rng_state % bg_colour[0] as u32) as u8,
-                ((rng_state / bg_colour[0] as u32) % bg_colour[1] as u32) as u8,
-                ((rng_state / (bg_colour[0] as u32 * bg_colour[1] as u32)) % bg_colour[2] as u32)
-                    as u8,
-            ];
-            let mut fill_colour = start_colour;
+        let width_bytes = (width * 4) as usize;
 
-            for x in width / 2..width {
-                // Fast xorshift RNG
-                rng_state ^= rng_state.rotate_left(1) + 1;
-                let mut rand = rng_state as u8;
+        // Skip first and last rows, process middle rows in parallel
+        let middle_rows = &mut pixels[width_bytes..(height as usize - 1) * width_bytes];
 
-                if rand % 3 == 2 {
-                    fill_colour[0] = fill_colour[0] + 1;
-                } else if rand % 3 == 0 {
-                    fill_colour[0] = fill_colour[0] - 1;
-                }
-                rand = rand / 3;
-                if rand % 3 == 2 {
-                    fill_colour[1] = fill_colour[1] + 1;
-                } else if rand % 3 == 0 {
-                    fill_colour[1] = fill_colour[1] - 1;
-                }
-                rand = rand / 3;
-                if rand % 3 == 2 {
-                    fill_colour[2] = fill_colour[2] + 1;
-                } else if rand % 3 == 0 {
-                    fill_colour[2] = fill_colour[2] - 1;
-                }
+        middle_rows
+            .par_chunks_mut(width_bytes)
+            .enumerate()
+            .for_each(|(row_idx, row_pixels)| {
+                let y = (row_idx + 1) as u32;
+                // Reset RNG state at start of each row (consistent scanlines)
+                let rng_seed: u32 = 0xDEADBEEF ^ ((y - height / 2) * 0x9E3779B9); // Mix in y
+                let mut rng_state = rng_seed;
+                let start_colour = [
+                    (rng_state % bg_colour[0] as u32) as u8,
+                    ((rng_state / bg_colour[0] as u32) % bg_colour[1] as u32) as u8,
+                    ((rng_state / (bg_colour[0] as u32 * bg_colour[1] as u32))
+                        % bg_colour[2] as u32) as u8,
+                ];
+                let mut fill_colour = start_colour;
 
-                if (fill_colour[0] as i8).is_negative() {
-                    fill_colour[0] = bg_colour[0];
-                } else if fill_colour[0] > bg_colour[0] {
-                    fill_colour[0] = 0;
-                }
-                if (fill_colour[1] as i8).is_negative() {
-                    fill_colour[1] = 0;
-                } else if fill_colour[1] > bg_colour[1] {
-                    fill_colour[1] = bg_colour[1]
-                }
-                if (fill_colour[2] as i8).is_negative() {
-                    fill_colour[2] = 0;
-                } else if fill_colour[2] > bg_colour[2] {
-                    fill_colour[2] = bg_colour[2]
-                }
+                for x in width / 2..width - 1 {
+                    // Fast xorshift RNG
+                    rng_state ^= rng_state.rotate_left(1) + 1;
+                    let mut rand = rng_state as u8;
 
-                let pixel_idx = ((y * width + x) * 4) as usize;
-                pixels[pixel_idx] = fill_colour[0] + 6;
-                pixels[pixel_idx + 1] = fill_colour[1] + 9;
-                pixels[pixel_idx + 2] = fill_colour[2] + 22;
-                pixels[pixel_idx + 3] = 255;
-            }
+                    if rand % 3 == 2 {
+                        fill_colour[0] = fill_colour[0] + 1;
+                    } else if rand % 3 == 0 {
+                        fill_colour[0] = fill_colour[0] - 1;
+                    }
+                    rand = rand / 3;
+                    if rand % 3 == 2 {
+                        fill_colour[1] = fill_colour[1] + 1;
+                    } else if rand % 3 == 0 {
+                        fill_colour[1] = fill_colour[1] - 1;
+                    }
+                    rand = rand / 3;
+                    if rand % 3 == 2 {
+                        fill_colour[2] = fill_colour[2] + 1;
+                    } else if rand % 3 == 0 {
+                        fill_colour[2] = fill_colour[2] - 1;
+                    }
 
-            rng_state = rng_seed;
-            fill_colour = start_colour;
+                    if (fill_colour[0] as i8).is_negative() {
+                        fill_colour[0] = bg_colour[0];
+                    } else if fill_colour[0] > bg_colour[0] {
+                        fill_colour[0] = 0;
+                    }
+                    if (fill_colour[1] as i8).is_negative() {
+                        fill_colour[1] = 0;
+                    } else if fill_colour[1] > bg_colour[1] {
+                        fill_colour[1] = bg_colour[1]
+                    }
+                    if (fill_colour[2] as i8).is_negative() {
+                        fill_colour[2] = 0;
+                    } else if fill_colour[2] > bg_colour[2] {
+                        fill_colour[2] = bg_colour[2]
+                    }
 
-            for x in (0..width / 2).rev() {
-                // Fast xorshift RNG
-                rng_state ^= rng_state.rotate_right(1) - 1;
-                let mut rand = rng_state as u8;
-
-                if rand % 3 == 2 {
-                    fill_colour[0] = fill_colour[0] + 1;
-                } else if rand % 3 == 0 {
-                    fill_colour[0] = fill_colour[0] - 1;
-                }
-                rand = rand / 3;
-                if rand % 3 == 2 {
-                    fill_colour[1] = fill_colour[1] + 1;
-                } else if rand % 3 == 0 {
-                    fill_colour[1] = fill_colour[1] - 1;
-                }
-                rand = rand / 3;
-                if rand % 3 == 2 {
-                    fill_colour[2] = fill_colour[2] + 1;
-                } else if rand % 3 == 0 {
-                    fill_colour[2] = fill_colour[2] - 1;
+                    let pixel_idx = (x * 4) as usize;
+                    row_pixels[pixel_idx] = fill_colour[0] + 6;
+                    row_pixels[pixel_idx + 1] = fill_colour[1] + 9;
+                    row_pixels[pixel_idx + 2] = fill_colour[2] + 22;
+                    row_pixels[pixel_idx + 3] = 255;
                 }
 
-                if (fill_colour[0] as i8).is_negative() {
-                    fill_colour[0] = bg_colour[0];
-                } else if fill_colour[0] > bg_colour[0] {
-                    fill_colour[0] = 0;
-                }
-                if (fill_colour[1] as i8).is_negative() {
-                    fill_colour[1] = 0;
-                } else if fill_colour[1] > bg_colour[1] {
-                    fill_colour[1] = bg_colour[1]
-                }
-                if (fill_colour[2] as i8).is_negative() {
-                    fill_colour[2] = 0;
-                } else if fill_colour[2] > bg_colour[2] {
-                    fill_colour[2] = bg_colour[2]
-                }
+                rng_state = rng_seed;
+                fill_colour = start_colour;
 
-                let pixel_idx = ((y * width + x) * 4) as usize;
-                pixels[pixel_idx] = fill_colour[0] + 6;
-                pixels[pixel_idx + 1] = fill_colour[1] + 9;
-                pixels[pixel_idx + 2] = fill_colour[2] + 22;
-                pixels[pixel_idx + 3] = 255;
-            }
+                for x in (1..width / 2).rev() {
+                    // Fast xorshift RNG
+                    rng_state ^= rng_state.rotate_right(1) - 1;
+                    let mut rand = rng_state as u8;
+
+                    if rand % 3 == 2 {
+                        fill_colour[0] = fill_colour[0] + 1;
+                    } else if rand % 3 == 0 {
+                        fill_colour[0] = fill_colour[0] - 1;
+                    }
+                    rand = rand / 3;
+                    if rand % 3 == 2 {
+                        fill_colour[1] = fill_colour[1] + 1;
+                    } else if rand % 3 == 0 {
+                        fill_colour[1] = fill_colour[1] - 1;
+                    }
+                    rand = rand / 3;
+                    if rand % 3 == 2 {
+                        fill_colour[2] = fill_colour[2] + 1;
+                    } else if rand % 3 == 0 {
+                        fill_colour[2] = fill_colour[2] - 1;
+                    }
+
+                    if (fill_colour[0] as i8).is_negative() {
+                        fill_colour[0] = bg_colour[0];
+                    } else if fill_colour[0] > bg_colour[0] {
+                        fill_colour[0] = 0;
+                    }
+                    if (fill_colour[1] as i8).is_negative() {
+                        fill_colour[1] = 0;
+                    } else if fill_colour[1] > bg_colour[1] {
+                        fill_colour[1] = bg_colour[1]
+                    }
+                    if (fill_colour[2] as i8).is_negative() {
+                        fill_colour[2] = 0;
+                    } else if fill_colour[2] > bg_colour[2] {
+                        fill_colour[2] = bg_colour[2]
+                    }
+
+                    let pixel_idx = (x * 4) as usize;
+                    row_pixels[pixel_idx] = fill_colour[0] + 6;
+                    row_pixels[pixel_idx + 1] = fill_colour[1] + 9;
+                    row_pixels[pixel_idx + 2] = fill_colour[2] + 22;
+                    row_pixels[pixel_idx + 3] = 255;
+                }
+            });
+
+        let light_colour = (75, 70, 65);
+        let shadow_colour = (52, 60, 68);
+
+        // Fill all four edges with white before squircle clipping
+        // Top edge
+        for x in 0..width {
+            let idx = (0 * width + x) * 4;
+            pixels[idx as usize] = light_colour.0;
+            pixels[idx as usize + 1] = light_colour.1;
+            pixels[idx as usize + 2] = light_colour.2;
+            pixels[idx as usize + 3] = 255;
         }
 
-        // Pill shape alpha mask: radius = smaller_dimension / 2
+        // Bottom edge
+        for x in 0..width {
+            let idx = ((height - 1) * width + x) * 4;
+            pixels[idx as usize] = shadow_colour.0;
+            pixels[idx as usize + 1] = shadow_colour.1;
+            pixels[idx as usize + 2] = shadow_colour.2;
+            pixels[idx as usize + 3] = 255;
+        }
+
+        // Left edge
+        for y in 0..height {
+            let idx = (y * width + 0) * 4;
+            pixels[idx as usize] = light_colour.0;
+            pixels[idx as usize + 1] = light_colour.1;
+            pixels[idx as usize + 2] = light_colour.2;
+            pixels[idx as usize + 3] = 255;
+        }
+
+        // Right edge
+        for y in 0..height {
+            let idx = (y * width + (width - 1)) * 4;
+            pixels[idx as usize] = shadow_colour.0;
+            pixels[idx as usize + 1] = shadow_colour.1;
+            pixels[idx as usize + 2] = shadow_colour.2;
+            pixels[idx as usize + 3] = 255;
+        }
+
+        // Squirtle shape alpha mask: radius = smaller_dimension / 2
         let smaller_dim = width.min(height);
         let radius = smaller_dim as f32 / 2f32;
 
@@ -641,7 +688,7 @@ impl TMessageApp {
         let start = (radius - y) as usize;
         let crossings: Vec<f32> = crossings.into_iter().rev().collect();
 
-        // Fill the four corner squares
+        // Fill four corner squares
         for row in 0..start {
             for col in 0..start {
                 let idx = (row * width as usize + col) * 4;
@@ -679,36 +726,62 @@ impl TMessageApp {
             }
         }
 
-        let mut y = start;
+        // Top left/right edges
+        let mut y_top = start;
         for crossing in 0..crossings.len() {
             let inset = crossings[crossing];
-
             let i = inset as usize;
-            for idx in y * width as usize..y * width as usize + i {
+
+            // Left edge fill
+            for idx in y_top * width as usize..y_top * width as usize + i {
                 pixels[idx * 4] = 0;
                 pixels[idx * 4 + 1] = 0;
                 pixels[idx * 4 + 2] = 0;
                 pixels[idx * 4 + 3] = 0;
             }
+
             let alias = ((inset - i as f32) * 256.) as u8;
-            let idx = (y * width as usize + i) * 4;
-            pixels[idx] = (pixels[idx] as u16 * (256 - alias as u16) >> 8) as u8;
-            pixels[idx + 1] = (pixels[idx + 1] as u16 * (256 - alias as u16) >> 8) as u8;
-            pixels[idx + 2] = (pixels[idx + 2] as u16 * (256 - alias as u16) >> 8) as u8;
+
+            // Outer edge pixel
+            let idx = (y_top * width as usize + i) * 4;
+            pixels[idx] = ((255 - alias as u16) * light_colour.0 as u16 >> 8) as u8;
+            pixels[idx + 1] = ((255 - alias as u16) * light_colour.1 as u16 >> 8) as u8;
+            pixels[idx + 2] = ((255 - alias as u16) * light_colour.2 as u16 >> 8) as u8;
             pixels[idx + 3] = 255 - alias;
-            let idx = (y * width as usize + width as usize - 1 - i) * 4;
-            pixels[idx] = (pixels[idx] as u16 * (256 - alias as u16) >> 8) as u8;
-            pixels[idx + 1] = (pixels[idx + 1] as u16 * (256 - alias as u16) >> 8) as u8;
-            pixels[idx + 2] = (pixels[idx + 2] as u16 * (256 - alias as u16) >> 8) as u8;
+
+            // Inner edge pixel
+            let idx = idx + 4;
+            pixels[idx] = pixels[idx] + ((light_colour.0 as u16 * alias as u16) >> 8) as u8;
+            pixels[idx + 1] = pixels[idx + 1] + ((light_colour.1 as u16 * alias as u16) >> 8) as u8;
+            pixels[idx + 2] = pixels[idx + 2] + ((light_colour.2 as u16 * alias as u16) >> 8) as u8;
+
+            // Right edge - outer pixel
+            let idx = (y_top * width as usize + width as usize - 1 - i) * 4;
+            pixels[idx] = ((255 - alias as u16) * shadow_colour.0 as u16 >> 8) as u8;
+            pixels[idx + 1] = ((255 - alias as u16) * shadow_colour.1 as u16 >> 8) as u8;
+            pixels[idx + 2] = ((255 - alias as u16) * shadow_colour.2 as u16 >> 8) as u8;
             pixels[idx + 3] = 255 - alias;
-            for idx in (y * width as usize + width as usize - i)..((y + 1) * width as usize) {
+
+            // Right edge - inner pixel
+            let idx = idx - 4;
+            pixels[idx] = pixels[idx] + ((shadow_colour.0 as u16 * alias as u16) >> 8) as u8;
+            pixels[idx + 1] =
+                pixels[idx + 1] + ((shadow_colour.1 as u16 * alias as u16) >> 8) as u8;
+            pixels[idx + 2] =
+                pixels[idx + 2] + ((shadow_colour.2 as u16 * alias as u16) >> 8) as u8;
+
+            // Right edge fill
+            for idx in (y_top * width as usize + width as usize - i)..((y_top + 1) * width as usize)
+            {
                 pixels[idx * 4] = 0;
                 pixels[idx * 4 + 1] = 0;
                 pixels[idx * 4 + 2] = 0;
                 pixels[idx * 4 + 3] = 0;
             }
-            y += 1;
+            y_top += 1;
         }
+
+        // Bottom left/right edges
         let mut y_bottom = height as usize - start - 1;
         for crossing in 0..crossings.len() {
             let inset = crossings[crossing];
@@ -722,20 +795,35 @@ impl TMessageApp {
                 pixels[idx * 4 + 3] = 0;
             }
 
-            // Left edge anti-alias
             let alias = ((inset - i as f32) * 256.) as u8;
+
+            // Left edge - outer pixel
             let idx = (y_bottom * width as usize + i) * 4;
-            pixels[idx] = (pixels[idx] as u16 * (256 - alias as u16) >> 8) as u8;
-            pixels[idx + 1] = (pixels[idx + 1] as u16 * (256 - alias as u16) >> 8) as u8;
-            pixels[idx + 2] = (pixels[idx + 2] as u16 * (256 - alias as u16) >> 8) as u8;
+            pixels[idx] = ((255 - alias as u16) * light_colour.0 as u16 >> 8) as u8;
+            pixels[idx + 1] = ((255 - alias as u16) * light_colour.1 as u16 >> 8) as u8;
+            pixels[idx + 2] = ((255 - alias as u16) * light_colour.2 as u16 >> 8) as u8;
             pixels[idx + 3] = 255 - alias;
 
-            // Right edge anti-alias
+            // Left edge - inner pixel
+            let idx = idx + 4;
+            pixels[idx] = pixels[idx] + ((light_colour.0 as u16 * alias as u16) >> 8) as u8;
+            pixels[idx + 1] = pixels[idx + 1] + ((light_colour.1 as u16 * alias as u16) >> 8) as u8;
+            pixels[idx + 2] = pixels[idx + 2] + ((light_colour.2 as u16 * alias as u16) >> 8) as u8;
+
+            // Right edge - outer pixel
             let idx = (y_bottom * width as usize + width as usize - 1 - i) * 4;
-            pixels[idx] = (pixels[idx] as u16 * (256 - alias as u16) >> 8) as u8;
-            pixels[idx + 1] = (pixels[idx + 1] as u16 * (256 - alias as u16) >> 8) as u8;
-            pixels[idx + 2] = (pixels[idx + 2] as u16 * (256 - alias as u16) >> 8) as u8;
+            pixels[idx] = ((255 - alias as u16) * shadow_colour.0 as u16 >> 8) as u8;
+            pixels[idx + 1] = ((255 - alias as u16) * shadow_colour.1 as u16 >> 8) as u8;
+            pixels[idx + 2] = ((255 - alias as u16) * shadow_colour.2 as u16 >> 8) as u8;
             pixels[idx + 3] = 255 - alias;
+
+            // Right edge - inner pixel
+            let idx = idx - 4;
+            pixels[idx] = pixels[idx] + ((shadow_colour.0 as u16 * alias as u16) >> 8) as u8;
+            pixels[idx + 1] =
+                pixels[idx + 1] + ((shadow_colour.1 as u16 * alias as u16) >> 8) as u8;
+            pixels[idx + 2] =
+                pixels[idx + 2] + ((shadow_colour.2 as u16 * alias as u16) >> 8) as u8;
 
             // Right edge fill
             for idx in
@@ -749,45 +837,62 @@ impl TMessageApp {
 
             y_bottom -= 1;
         }
-        let mut x = start;
+
+        // Left side top/bottom edges
+        let mut x_left = start;
         for crossing in 0..crossings.len() {
             let inset = crossings[crossing];
             let i = inset as usize;
 
             // Top edge fill
             for row in 0..i {
-                let idx = (row * width as usize + x) * 4;
+                let idx = (row * width as usize + x_left) * 4;
                 pixels[idx] = 0;
                 pixels[idx + 1] = 0;
                 pixels[idx + 2] = 0;
                 pixels[idx + 3] = 0;
             }
 
-            // Top edge anti-alias
             let alias = ((inset - i as f32) * 256.) as u8;
-            let idx = (i * width as usize + x) * 4;
-            pixels[idx] = (pixels[idx] as u16 * (256 - alias as u16) >> 8) as u8;
-            pixels[idx + 1] = (pixels[idx + 1] as u16 * (256 - alias as u16) >> 8) as u8;
-            pixels[idx + 2] = (pixels[idx + 2] as u16 * (256 - alias as u16) >> 8) as u8;
+
+            // Top edge - outer pixel
+            let idx = (i * width as usize + x_left) * 4;
+            pixels[idx] = ((255 - alias as u16) * light_colour.0 as u16 >> 8) as u8;
+            pixels[idx + 1] = ((255 - alias as u16) * light_colour.1 as u16 >> 8) as u8;
+            pixels[idx + 2] = ((255 - alias as u16) * light_colour.2 as u16 >> 8) as u8;
             pixels[idx + 3] = 255 - alias;
 
-            // Bottom edge anti-alias
-            let idx = ((height as usize - 1 - i) * width as usize + x) * 4;
-            pixels[idx] = (pixels[idx] as u16 * (256 - alias as u16) >> 8) as u8;
-            pixels[idx + 1] = (pixels[idx + 1] as u16 * (256 - alias as u16) >> 8) as u8;
-            pixels[idx + 2] = (pixels[idx + 2] as u16 * (256 - alias as u16) >> 8) as u8;
+            // Top edge - inner pixel
+            let idx = ((i + 1) * width as usize + x_left) * 4;
+            pixels[idx] = pixels[idx] + ((light_colour.0 as u16 * alias as u16) >> 8) as u8;
+            pixels[idx + 1] = pixels[idx + 1] + ((light_colour.1 as u16 * alias as u16) >> 8) as u8;
+            pixels[idx + 2] = pixels[idx + 2] + ((light_colour.2 as u16 * alias as u16) >> 8) as u8;
+
+            // Bottom edge - outer pixel
+            let idx = ((height as usize - 1 - i) * width as usize + x_left) * 4;
+            pixels[idx] = ((255 - alias as u16) * shadow_colour.0 as u16 >> 8) as u8;
+            pixels[idx + 1] = ((255 - alias as u16) * shadow_colour.1 as u16 >> 8) as u8;
+            pixels[idx + 2] = ((255 - alias as u16) * shadow_colour.2 as u16 >> 8) as u8;
             pixels[idx + 3] = 255 - alias;
+
+            // Bottom edge - inner pixel
+            let idx = ((height as usize - 2 - i) * width as usize + x_left) * 4;
+            pixels[idx] = pixels[idx] + ((shadow_colour.0 as u16 * alias as u16) >> 8) as u8;
+            pixels[idx + 1] =
+                pixels[idx + 1] + ((shadow_colour.1 as u16 * alias as u16) >> 8) as u8;
+            pixels[idx + 2] =
+                pixels[idx + 2] + ((shadow_colour.2 as u16 * alias as u16) >> 8) as u8;
 
             // Bottom edge fill
             for row in (height as usize - i)..height as usize {
-                let idx = (row * width as usize + x) * 4;
+                let idx = (row * width as usize + x_left) * 4;
                 pixels[idx] = 0;
                 pixels[idx + 1] = 0;
                 pixels[idx + 2] = 0;
                 pixels[idx + 3] = 0;
             }
 
-            x += 1;
+            x_left += 1;
         }
 
         // Right side top/bottom edges
@@ -805,20 +910,35 @@ impl TMessageApp {
                 pixels[idx + 3] = 0;
             }
 
-            // Top edge anti-alias
             let alias = ((inset - i as f32) * 256.) as u8;
+
+            // Top edge - outer pixel
             let idx = (i * width as usize + x_right) * 4;
-            pixels[idx] = (pixels[idx] as u16 * (256 - alias as u16) >> 8) as u8;
-            pixels[idx + 1] = (pixels[idx + 1] as u16 * (256 - alias as u16) >> 8) as u8;
-            pixels[idx + 2] = (pixels[idx + 2] as u16 * (256 - alias as u16) >> 8) as u8;
+            pixels[idx] = ((255 - alias as u16) * light_colour.0 as u16 >> 8) as u8;
+            pixels[idx + 1] = ((255 - alias as u16) * light_colour.1 as u16 >> 8) as u8;
+            pixels[idx + 2] = ((255 - alias as u16) * light_colour.2 as u16 >> 8) as u8;
             pixels[idx + 3] = 255 - alias;
 
-            // Bottom edge anti-alias
+            // Top edge - inner pixel
+            let idx = ((i + 1) * width as usize + x_right) * 4;
+            pixels[idx] = pixels[idx] + ((light_colour.0 as u16 * alias as u16) >> 8) as u8;
+            pixels[idx + 1] = pixels[idx + 1] + ((light_colour.1 as u16 * alias as u16) >> 8) as u8;
+            pixels[idx + 2] = pixels[idx + 2] + ((light_colour.2 as u16 * alias as u16) >> 8) as u8;
+
+            // Bottom edge - outer pixel
             let idx = ((height as usize - 1 - i) * width as usize + x_right) * 4;
-            pixels[idx] = (pixels[idx] as u16 * (256 - alias as u16) >> 8) as u8;
-            pixels[idx + 1] = (pixels[idx + 1] as u16 * (256 - alias as u16) >> 8) as u8;
-            pixels[idx + 2] = (pixels[idx + 2] as u16 * (256 - alias as u16) >> 8) as u8;
+            pixels[idx] = ((255 - alias as u16) * shadow_colour.0 as u16 >> 8) as u8;
+            pixels[idx + 1] = ((255 - alias as u16) * shadow_colour.1 as u16 >> 8) as u8;
+            pixels[idx + 2] = ((255 - alias as u16) * shadow_colour.2 as u16 >> 8) as u8;
             pixels[idx + 3] = 255 - alias;
+
+            // Bottom edge - inner pixel
+            let idx = ((height as usize - 2 - i) * width as usize + x_right) * 4;
+            pixels[idx] = pixels[idx] + ((shadow_colour.0 as u16 * alias as u16) >> 8) as u8;
+            pixels[idx + 1] =
+                pixels[idx + 1] + ((shadow_colour.1 as u16 * alias as u16) >> 8) as u8;
+            pixels[idx + 2] =
+                pixels[idx + 2] + ((shadow_colour.2 as u16 * alias as u16) >> 8) as u8;
 
             // Bottom edge fill
             for row in (height as usize - i)..height as usize {
