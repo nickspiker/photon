@@ -1,3 +1,6 @@
+// Hide console window on Windows
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 mod crypto;
 mod network;
 mod storage;
@@ -45,16 +48,42 @@ impl ApplicationHandler for App {
                 .with_title("tmessage")
                 .with_inner_size(winit::dpi::PhysicalSize::new(window_width, window_height))
                 .with_position(winit::dpi::PhysicalPosition::new(x, y))
-                .with_decorations(false) // No OS title bar or decorations
+                .with_decorations(false)
                 .with_transparent(true);
+
             self.window = Some(event_loop.create_window(window_attributes).unwrap());
 
             if let Some(window) = &self.window {
-                self.tmessage_app = Some(pollster::block_on(ui::TMessageApp::new(
-                    window,
-                    self.screen_width,
-                    self.screen_height,
-                )));
+                // Windows: Set up layered window for transparency
+                #[cfg(target_os = "windows")]
+                {
+                    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                    if let Ok(handle) = window.window_handle() {
+                        if let RawWindowHandle::Win32(win32_handle) = handle.as_raw() {
+                            unsafe {
+                                enable_windows_transparency(win32_handle.hwnd.get() as _);
+                            }
+                        }
+                    }
+                }
+
+                #[cfg(target_os = "windows")]
+                {
+                    self.tmessage_app = Some(ui::TMessageApp::new(
+                        window,
+                        self.screen_width,
+                        self.screen_height,
+                    ));
+                }
+
+                #[cfg(target_os = "linux")]
+                {
+                    self.tmessage_app = Some(pollster::block_on(ui::TMessageApp::new(
+                        window,
+                        self.screen_width,
+                        self.screen_height,
+                    )));
+                }
             }
         }
     }
@@ -100,8 +129,25 @@ impl ApplicationHandler for App {
     }
 }
 
+#[cfg(target_os = "windows")]
+unsafe fn enable_windows_transparency(hwnd: isize) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindowLongW, SetWindowLongW, GWL_EXSTYLE, WS_EX_LAYERED};
+
+    let hwnd = HWND(hwnd as *mut _);
+
+    // Set WS_EX_LAYERED style - REQUIRED for UpdateLayeredWindow
+    let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE);
+    let new_style = ex_style | WS_EX_LAYERED.0 as i32;
+    SetWindowLongW(hwnd, GWL_EXSTYLE, new_style);
+
+    // NOTE: Do NOT call SetLayeredWindowAttributes - it conflicts with UpdateLayeredWindow
+    // UpdateLayeredWindow handles the alpha blending directly
+}
+
 fn main() {
-    env_logger::init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .init();
 
     let event_loop = EventLoop::new().unwrap();
     let mut app = App {

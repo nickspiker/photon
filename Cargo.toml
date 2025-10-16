@@ -33,11 +33,19 @@ env_logger = "0.11"
 hex = "0.4.3"
 bincode = "2.0.1"
 winit = "0.30.12"
-bytemuck = "1.24.0"
-wgpu = "27.0.1"
 pollster = "0.4.0"
 cosmic-text = "0.14.2"
 rayon = "1.11.0"
+softbuffer = "0.4"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Graphics_Dwm",
+    "Win32_Foundation",
+    "Win32_UI_Controls",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi"
+] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21"

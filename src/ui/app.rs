@@ -1,5 +1,3 @@
-use std::ops::Shr;
-
 use super::renderer::Renderer;
 use super::text::TextRenderer;
 use winit::{
@@ -11,6 +9,7 @@ use winit::{
 
 pub struct TMessageApp {
     renderer: Renderer,
+    #[allow(dead_code)] // Will be used for drawing text/logos soon
     text_renderer: TextRenderer,
     window_width: u32,
     window_height: u32,
@@ -47,9 +46,37 @@ enum ResizeEdge {
 }
 
 impl TMessageApp {
+    #[cfg(target_os = "linux")]
     pub async fn new(window: &Window, screen_width: u32, screen_height: u32) -> Self {
         let size = window.inner_size();
         let renderer = Renderer::new(window, size.width, size.height).await;
+        let text_renderer = TextRenderer::new();
+
+        Self {
+            renderer,
+            text_renderer,
+            window_width: size.width,
+            window_height: size.height,
+            screen_width,
+            screen_height,
+            needs_redraw: true,
+            username_input: String::new(),
+            cursor_blink: 0.0,
+            username_available: None,
+            mouse_x: 0.0,
+            mouse_y: 0.0,
+            is_dragging_resize: false,
+            resize_edge: ResizeEdge::None,
+            drag_start_cursor_screen_pos: (0.0, 0.0),
+            drag_start_size: (0, 0),
+            drag_start_window_pos: (0, 0),
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    pub fn new(window: &Window, screen_width: u32, screen_height: u32) -> Self {
+        let size = window.inner_size();
+        let renderer = Renderer::new(window, size.width, size.height);
         let text_renderer = TextRenderer::new();
 
         Self {
