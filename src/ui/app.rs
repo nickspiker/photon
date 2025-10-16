@@ -26,6 +26,7 @@ pub struct TMessageApp {
     mouse_x: f32,
     mouse_y: f32,
     is_dragging_resize: bool,
+    is_dragging_move: bool,
     resize_edge: ResizeEdge,
     drag_start_cursor_screen_pos: (f64, f64), // Global screen position when drag starts
     drag_start_size: (u32, u32),
@@ -66,6 +67,7 @@ impl TMessageApp {
             mouse_x: 0.0,
             mouse_y: 0.0,
             is_dragging_resize: false,
+            is_dragging_move: false,
             resize_edge: ResizeEdge::None,
             drag_start_cursor_screen_pos: (0.0, 0.0),
             drag_start_size: (0, 0),
@@ -93,6 +95,7 @@ impl TMessageApp {
             mouse_x: 0.0,
             mouse_y: 0.0,
             is_dragging_resize: false,
+            is_dragging_move: false,
             resize_edge: ResizeEdge::None,
             drag_start_cursor_screen_pos: (0.0, 0.0),
             drag_start_size: (0, 0),
@@ -156,10 +159,24 @@ impl TMessageApp {
                         let cursor_screen_y = window_pos.y as f64 + self.mouse_y as f64;
                         self.drag_start_cursor_screen_pos = (cursor_screen_x, cursor_screen_y);
                     }
+                } else {
+                    // Not on a resize edge, start window drag
+                    self.is_dragging_move = true;
+
+                    // Store the window position and global cursor position at drag start
+                    if let Some(window_pos) = window.outer_position().ok() {
+                        self.drag_start_window_pos = (window_pos.x, window_pos.y);
+
+                        // Calculate global cursor position from window-relative position
+                        let cursor_screen_x = window_pos.x as f64 + self.mouse_x as f64;
+                        let cursor_screen_y = window_pos.y as f64 + self.mouse_y as f64;
+                        self.drag_start_cursor_screen_pos = (cursor_screen_x, cursor_screen_y);
+                    }
                 }
             }
             ElementState::Released => {
                 self.is_dragging_resize = false;
+                self.is_dragging_move = false;
                 self.resize_edge = ResizeEdge::None;
             }
         }
@@ -173,8 +190,23 @@ impl TMessageApp {
         self.mouse_x = position.x as f32;
         self.mouse_y = position.y as f32;
 
-        // Handle resize dragging
-        if self.is_dragging_resize {
+        // Handle window move dragging
+        if self.is_dragging_move {
+            // Get current global cursor position
+            if let Some(window_pos) = window.outer_position().ok() {
+                let current_cursor_screen_x = window_pos.x as f64 + self.mouse_x as f64;
+                let current_cursor_screen_y = window_pos.y as f64 + self.mouse_y as f64;
+
+                // Calculate delta in global screen space
+                let dx = (current_cursor_screen_x - self.drag_start_cursor_screen_pos.0) as i32;
+                let dy = (current_cursor_screen_y - self.drag_start_cursor_screen_pos.1) as i32;
+
+                // Move window
+                let new_x = self.drag_start_window_pos.0 + dx;
+                let new_y = self.drag_start_window_pos.1 + dy;
+                let _ = window.set_outer_position(winit::dpi::PhysicalPosition::new(new_x, new_y));
+            }
+        } else if self.is_dragging_resize {
             // Get current global cursor position
             if let Some(window_pos) = window.outer_position().ok() {
                 let current_cursor_screen_x = window_pos.x as f64 + self.mouse_x as f64;

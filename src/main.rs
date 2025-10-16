@@ -149,6 +149,27 @@ fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
         .init();
 
+    // Set cursor size for Linux/X11 to match system cursor settings
+    // Winit doesn't read the DE cursor size, so we need to set it manually
+    #[cfg(target_os = "linux")]
+    {
+        if std::env::var("XCURSOR_SIZE").is_err() {
+            // Try to read from GNOME/KDE settings, fallback to 24 (X11 default)
+            let cursor_size = std::process::Command::new("gsettings")
+                .args(&["get", "org.gnome.desktop.interface", "cursor-size"])
+                .output()
+                .ok()
+                .and_then(|output| {
+                    String::from_utf8(output.stdout)
+                        .ok()
+                        .and_then(|s| s.trim().parse::<u32>().ok())
+                })
+                .unwrap_or(24);
+
+            std::env::set_var("XCURSOR_SIZE", cursor_size.to_string());
+        }
+    }
+
     let event_loop = EventLoop::new().unwrap();
     let mut app = App {
         window: None,

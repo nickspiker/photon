@@ -24,7 +24,8 @@ impl Renderer {
             NonZeroU32::new(height).unwrap(),
         ).unwrap();
 
-        let pixel_buffer = vec![0u8; (width * height * 4) as usize];
+        let mut pixel_buffer = Vec::with_capacity((width * height * 4) as usize);
+        unsafe { pixel_buffer.set_len((width * height * 4) as usize); }
 
         Self {
             context,
@@ -39,7 +40,11 @@ impl Renderer {
         if width > 0 && height > 0 {
             self.width = width;
             self.height = height;
-            self.pixel_buffer = vec![0u8; (width * height * 4) as usize];
+            let new_size = (width * height * 4) as usize;
+            if new_size > self.pixel_buffer.capacity() {
+                self.pixel_buffer.reserve(new_size - self.pixel_buffer.len());
+            }
+            unsafe { self.pixel_buffer.set_len(new_size); }
 
             let _ = self.surface.resize(
                 NonZeroU32::new(width).unwrap(),

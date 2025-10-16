@@ -55,7 +55,8 @@ impl Renderer {
 
             SelectObject(hdc_mem, hbitmap);
 
-            let pixel_buffer = vec![0u8; (width * height * 4) as usize];
+            let mut pixel_buffer = Vec::with_capacity((width * height * 4) as usize);
+            unsafe { pixel_buffer.set_len((width * height * 4) as usize); }
 
             // Initialize bitmap to transparent black
             let bitmap_slice = std::slice::from_raw_parts_mut(
@@ -87,7 +88,11 @@ impl Renderer {
 
                 self.width = width;
                 self.height = height;
-                self.pixel_buffer = vec![0u8; (width * height * 4) as usize];
+                let new_size = (width * height * 4) as usize;
+                if new_size > self.pixel_buffer.capacity() {
+                    self.pixel_buffer.reserve(new_size - self.pixel_buffer.len());
+                }
+                self.pixel_buffer.set_len(new_size);
 
                 // Create new bitmap
                 let bmi = BITMAPINFO {
