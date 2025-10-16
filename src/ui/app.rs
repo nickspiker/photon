@@ -1,3 +1,5 @@
+use std::ops::Shr;
+
 use super::renderer::Renderer;
 use super::text::TextRenderer;
 use winit::{
@@ -502,26 +504,25 @@ impl TMessageApp {
 
     /// 8-fold symmetry pill shape renderer with antialiasing
     fn draw_pill_background(pixels: &mut [u8], width: u32, height: u32) {
-        let bg_colour = [20u8, 24u8, 30u8];
+        let bg_colour = [9u8, 12u8, 17u8];
         // Fill background with noisy scanline pattern (per-row seeded)
         for y in 0..height {
             // Reset RNG state at start of each row (consistent scanlines)
-            let mut rng_state: u32 = 0xDEADBEEF ^ (y * 0x9E3779B9); // Mix in y
-            let mut fill_colour = [
+            let rng_seed: u32 = 0xDEADBEEF ^ ((y - height / 2) * 0x9E3779B9); // Mix in y
+            let mut rng_state = rng_seed;
+            let start_colour = [
                 (rng_state % bg_colour[0] as u32) as u8,
                 ((rng_state / bg_colour[0] as u32) % bg_colour[1] as u32) as u8,
                 ((rng_state / (bg_colour[0] as u32 * bg_colour[1] as u32)) % bg_colour[2] as u32)
                     as u8,
             ];
+            let mut fill_colour = start_colour;
 
-            for x in 0..width {
+            for x in width / 2..width {
                 // Fast xorshift RNG
-                rng_state ^= rng_state << 13;
-                rng_state ^= rng_state >> 17;
-                rng_state ^= rng_state << 5;
-                let rand_byte = (rng_state & 0xFF) as u8;
+                rng_state ^= rng_state.rotate_left(1) + 1;
+                let mut rand = rng_state as u8;
 
-                let mut rand = rand_byte;
                 if rand % 3 == 2 {
                     fill_colour[0] = fill_colour[0] + 1;
                 } else if rand % 3 == 0 {
@@ -541,14 +542,14 @@ impl TMessageApp {
                 }
 
                 if (fill_colour[0] as i8).is_negative() {
-                    fill_colour[0] = 0;
+                    fill_colour[0] = bg_colour[0];
                 } else if fill_colour[0] > bg_colour[0] {
-                    fill_colour[0] = bg_colour[0]
+                    fill_colour[0] = 0;
                 }
                 if (fill_colour[1] as i8).is_negative() {
-                    fill_colour[1] = bg_colour[1]
-                } else if fill_colour[1] > bg_colour[1] {
                     fill_colour[1] = 0;
+                } else if fill_colour[1] > bg_colour[1] {
+                    fill_colour[1] = bg_colour[1]
                 }
                 if (fill_colour[2] as i8).is_negative() {
                     fill_colour[2] = 0;
@@ -558,11 +559,57 @@ impl TMessageApp {
 
                 let pixel_idx = ((y * width + x) * 4) as usize;
                 pixels[pixel_idx] = fill_colour[0] + 6;
-                pixels[pixel_idx + 1] = fill_colour[1] + 8;
+                pixels[pixel_idx + 1] = fill_colour[1] + 9;
                 pixels[pixel_idx + 2] = fill_colour[2] + 22;
-                pixels[pixel_idx] = 90;
-                pixels[pixel_idx + 1] = 90;
-                pixels[pixel_idx + 2] = 90;
+                pixels[pixel_idx + 3] = 255;
+            }
+
+            rng_state = rng_seed;
+            fill_colour = start_colour;
+
+            for x in (0..width / 2).rev() {
+                // Fast xorshift RNG
+                rng_state ^= rng_state.rotate_right(1) - 1;
+                let mut rand = rng_state as u8;
+
+                if rand % 3 == 2 {
+                    fill_colour[0] = fill_colour[0] + 1;
+                } else if rand % 3 == 0 {
+                    fill_colour[0] = fill_colour[0] - 1;
+                }
+                rand = rand / 3;
+                if rand % 3 == 2 {
+                    fill_colour[1] = fill_colour[1] + 1;
+                } else if rand % 3 == 0 {
+                    fill_colour[1] = fill_colour[1] - 1;
+                }
+                rand = rand / 3;
+                if rand % 3 == 2 {
+                    fill_colour[2] = fill_colour[2] + 1;
+                } else if rand % 3 == 0 {
+                    fill_colour[2] = fill_colour[2] - 1;
+                }
+
+                if (fill_colour[0] as i8).is_negative() {
+                    fill_colour[0] = bg_colour[0];
+                } else if fill_colour[0] > bg_colour[0] {
+                    fill_colour[0] = 0;
+                }
+                if (fill_colour[1] as i8).is_negative() {
+                    fill_colour[1] = 0;
+                } else if fill_colour[1] > bg_colour[1] {
+                    fill_colour[1] = bg_colour[1]
+                }
+                if (fill_colour[2] as i8).is_negative() {
+                    fill_colour[2] = 0;
+                } else if fill_colour[2] > bg_colour[2] {
+                    fill_colour[2] = bg_colour[2]
+                }
+
+                let pixel_idx = ((y * width + x) * 4) as usize;
+                pixels[pixel_idx] = fill_colour[0] + 6;
+                pixels[pixel_idx + 1] = fill_colour[1] + 9;
+                pixels[pixel_idx + 2] = fill_colour[2] + 22;
                 pixels[pixel_idx + 3] = 255;
             }
         }
@@ -575,10 +622,12 @@ impl TMessageApp {
         let mut crossings: Vec<f32> = Vec::new();
 
         let mut y = 1f32;
-        let squirdleyness = 12;
+        let squirdleyness = 24;
         loop {
-            let x = (radius.powi(squirdleyness) - y.powi(squirdleyness))
-                .powf(1f32 / squirdleyness as f32);
+            // Normalize to [0, 1] to prevent f32 overflow for high squirdleyness values
+            let y_norm = y / radius;
+            let x_norm = (1.0 - y_norm.powi(squirdleyness)).powf(1.0 / squirdleyness as f32);
+            let x = x_norm * radius;
             let inset = radius - x;
             if inset > 0. {
                 crossings.push(inset);
@@ -591,9 +640,49 @@ impl TMessageApp {
         }
         let start = (radius - y) as usize;
         let crossings: Vec<f32> = crossings.into_iter().rev().collect();
+
+        // Fill the four corner squares
+        for row in 0..start {
+            for col in 0..start {
+                let idx = (row * width as usize + col) * 4;
+                pixels[idx] = 0;
+                pixels[idx + 1] = 0;
+                pixels[idx + 2] = 0;
+                pixels[idx + 3] = 0;
+            }
+        }
+        for row in 0..start {
+            for col in (width as usize - start)..width as usize {
+                let idx = (row * width as usize + col) * 4;
+                pixels[idx] = 0;
+                pixels[idx + 1] = 0;
+                pixels[idx + 2] = 0;
+                pixels[idx + 3] = 0;
+            }
+        }
+        for row in (height as usize - start)..height as usize {
+            for col in 0..start {
+                let idx = (row * width as usize + col) * 4;
+                pixels[idx] = 0;
+                pixels[idx + 1] = 0;
+                pixels[idx + 2] = 0;
+                pixels[idx + 3] = 0;
+            }
+        }
+        for row in (height as usize - start)..height as usize {
+            for col in (width as usize - start)..width as usize {
+                let idx = (row * width as usize + col) * 4;
+                pixels[idx] = 0;
+                pixels[idx + 1] = 0;
+                pixels[idx + 2] = 0;
+                pixels[idx + 3] = 0;
+            }
+        }
+
         let mut y = start;
         for crossing in 0..crossings.len() {
             let inset = crossings[crossing];
+
             let i = inset as usize;
             for idx in y * width as usize..y * width as usize + i {
                 pixels[idx * 4] = 0;
