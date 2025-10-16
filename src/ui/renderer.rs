@@ -1,4 +1,3 @@
-use wgpu::util::DeviceExt;
 use winit::window::Window;
 
 pub struct Renderer {
@@ -9,10 +8,11 @@ pub struct Renderer {
     width: u32,
     height: u32,
     pixel_buffer: Vec<u8>,
-    texture: wgpu::Texture,
-    bind_group: wgpu::BindGroup,
-    render_pipeline: wgpu::RenderPipeline,
-    vertex_buffer: wgpu::Buffer,
+    input_texture: wgpu::Texture, // CPU pixel buffer uploaded here
+    intermediate_texture: wgpu::Texture, // Compute shader output
+    compute_pipeline: wgpu::ComputePipeline,
+    blit_pipeline: wgpu::RenderPipeline, // Simple copy to surface
+    workgroup_size: u32,                 // Size of compute shader workgroups (8, 16, or 32)
 }
 
 impl Renderer {
@@ -38,6 +38,20 @@ impl Renderer {
 
         let (device, queue) = adapter.request_device(&Default::default()).await.unwrap();
 
+        // Query GPU limits to pick optimal workgroup size
+        let limits = device.limits();
+        let max_invocations = limits.max_compute_invocations_per_workgroup;
+
+        // Pick largest square workgroup size that fits in hardware limits
+        // Options: 8x8 (64), 16x16 (256), 32x32 (1024)
+        let workgroup_size = if max_invocations >= 1024 {
+            32
+        } else if max_invocations >= 256 {
+            16
+        } else {
+            8
+        };
+
         let surface_caps = surface.get_capabilities(&adapter);
         let surface_format = surface_caps
             .formats
@@ -47,8 +61,6 @@ impl Renderer {
             .unwrap_or(surface_caps.formats[0]);
 
         // CRITICAL: Use PreMultiplied alpha for proper transparency
-        println!("Available alpha modes: {:?}", surface_caps.alpha_modes);
-
         let alpha_mode = surface_caps
             .alpha_modes
             .iter()
@@ -61,8 +73,6 @@ impl Renderer {
             })
             .copied()
             .unwrap_or(surface_caps.alpha_modes[0]);
-
-        println!("Selected alpha mode: {:?}", alpha_mode);
 
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -78,8 +88,9 @@ impl Renderer {
 
         let pixel_buffer = vec![0u8; (width * height * 4) as usize];
 
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Pixel Texture"),
+        // Input texture: CPU pixel buffer uploaded here
+        let input_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Input Texture"),
             size: wgpu::Extent3d {
                 width,
                 height,
@@ -93,81 +104,111 @@ impl Renderer {
             view_formats: &[],
         });
 
-        let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Nearest,
-            min_filter: wgpu::FilterMode::Nearest,
-            mipmap_filter: wgpu::FilterMode::Nearest,
-            ..Default::default()
+        // Intermediate texture: Compute shader writes here (supports storage)
+        let intermediate_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Intermediate Texture"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm, // Storage-compatible format
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
         });
 
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Shader"),
-            source: wgpu::ShaderSource::Wgsl(SHADER.into()),
+        // Generate compute shader with optimal workgroup size for this GPU
+        let compute_shader_source = generate_compute_shader(workgroup_size);
+        let compute_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Compute Shader"),
+            source: wgpu::ShaderSource::Wgsl(compute_shader_source.into()),
         });
 
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
+        let blit_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Blit Shader"),
+            source: wgpu::ShaderSource::Wgsl(BLIT_SHADER.into()),
+        });
+
+        // Compute pipeline: process pixels
+        let compute_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::StorageTexture {
+                            access: wgpu::StorageTextureAccess::WriteOnly,
+                            format: wgpu::TextureFormat::Rgba8Unorm,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                        },
+                        count: None,
+                    },
+                ],
+                label: Some("compute_bind_group_layout"),
+            });
+
+        let compute_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Compute Pipeline Layout"),
+                bind_group_layouts: &[&compute_bind_group_layout],
+                push_constant_ranges: &[],
+            });
+
+        let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Compute Pipeline"),
+            layout: Some(&compute_pipeline_layout),
+            module: &compute_shader,
+            entry_point: Some("main"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+
+        // Blit pipeline: copy intermediate to surface
+        let blit_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         multisampled: false,
                         view_dimension: wgpu::TextureViewDimension::D2,
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
                     },
                     count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-            label: Some("bind_group_layout"),
-        });
-
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
-                },
-            ],
-            label: Some("bind_group"),
-        });
-
-        let render_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[&bind_group_layout],
-                push_constant_ranges: &[],
+                }],
+                label: Some("blit_bind_group_layout"),
             });
 
-        let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Render Pipeline"),
-            layout: Some(&render_pipeline_layout),
+        let blit_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Blit Pipeline Layout"),
+            bind_group_layouts: &[&blit_bind_group_layout],
+            push_constant_ranges: &[],
+        });
+
+        let blit_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Blit Pipeline"),
+            layout: Some(&blit_pipeline_layout),
             vertex: wgpu::VertexState {
-                module: &shader,
+                module: &blit_shader,
                 entry_point: Some("vs_main"),
-                buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<[f32; 4]>() as wgpu::BufferAddress,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2],
-                }],
+                buffers: &[],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
-                module: &shader,
+                module: &blit_shader,
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: config.format,
@@ -186,22 +227,6 @@ impl Renderer {
             cache: None,
         });
 
-        #[rustfmt::skip]
-        let vertices: &[[f32; 4]] = &[
-            [-1.0, -1.0,  0.0, 1.0],
-            [ 1.0, -1.0,  1.0, 1.0],
-            [ 1.0,  1.0,  1.0, 0.0],
-            [-1.0, -1.0,  0.0, 1.0],
-            [ 1.0,  1.0,  1.0, 0.0],
-            [-1.0,  1.0,  0.0, 0.0],
-        ];
-
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Vertex Buffer"),
-            contents: bytemuck::cast_slice(vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-
         Self {
             surface,
             device,
@@ -210,10 +235,11 @@ impl Renderer {
             width,
             height,
             pixel_buffer,
-            texture,
-            bind_group,
-            render_pipeline,
-            vertex_buffer,
+            input_texture,
+            intermediate_texture,
+            compute_pipeline,
+            blit_pipeline,
+            workgroup_size,
         }
     }
 
@@ -227,8 +253,8 @@ impl Renderer {
 
             self.pixel_buffer = vec![0u8; (width * height * 4) as usize];
 
-            self.texture = self.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("Pixel Texture"),
+            self.input_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Input Texture"),
                 size: wgpu::Extent3d {
                     width,
                     height,
@@ -242,33 +268,19 @@ impl Renderer {
                 view_formats: &[],
             });
 
-            let texture_view = self
-                .texture
-                .create_view(&wgpu::TextureViewDescriptor::default());
-            let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
-                address_mode_u: wgpu::AddressMode::ClampToEdge,
-                address_mode_v: wgpu::AddressMode::ClampToEdge,
-                address_mode_w: wgpu::AddressMode::ClampToEdge,
-                mag_filter: wgpu::FilterMode::Nearest,
-                min_filter: wgpu::FilterMode::Nearest,
-                mipmap_filter: wgpu::FilterMode::Nearest,
-                ..Default::default()
-            });
-
-            let bind_group_layout = self.render_pipeline.get_bind_group_layout(0);
-            self.bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                layout: &bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&texture_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&sampler),
-                    },
-                ],
-                label: Some("bind_group"),
+            self.intermediate_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Intermediate Texture"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
             });
         }
     }
@@ -278,8 +290,9 @@ impl Renderer {
     }
 
     pub fn present(&mut self) {
+        // Upload pixel buffer to input texture
         self.queue.write_texture(
-            self.texture.as_image_copy(),
+            self.input_texture.as_image_copy(),
             &self.pixel_buffer,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
@@ -301,21 +314,76 @@ impl Renderer {
             }
         };
 
-        let view = output
+        let output_view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Render Encoder"),
+                label: Some("Frame Encoder"),
             });
 
+        // Step 1: Compute pass - process pixels
         {
+            let input_view = self
+                .input_texture
+                .create_view(&wgpu::TextureViewDescriptor::default());
+            let intermediate_view = self
+                .intermediate_texture
+                .create_view(&wgpu::TextureViewDescriptor::default());
+
+            let compute_bind_group_layout = self.compute_pipeline.get_bind_group_layout(0);
+            let compute_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                layout: &compute_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&input_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&intermediate_view),
+                    },
+                ],
+                label: Some("compute_bind_group"),
+            });
+
+            let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Compute Pass"),
+                timestamp_writes: None,
+            });
+
+            compute_pass.set_pipeline(&self.compute_pipeline);
+            compute_pass.set_bind_group(0, &compute_bind_group, &[]);
+
+            let workgroup_count_x = (self.width + self.workgroup_size - 1) / self.workgroup_size;
+            let workgroup_count_y = (self.height + self.workgroup_size - 1) / self.workgroup_size;
+            compute_pass.dispatch_workgroups(workgroup_count_x, workgroup_count_y, 1);
+        }
+
+        // Step 2: Copy intermediate to surface (NO TRIANGLES!)
+        // Unfortunately we can't copy directly due to format mismatch (Rgba8Unorm vs Bgra8UnormSrgb)
+        // So we still need the render pass, but it's just a texture copy
+        {
+            let intermediate_view = self
+                .intermediate_texture
+                .create_view(&wgpu::TextureViewDescriptor::default());
+
+            let blit_bind_group_layout = self.blit_pipeline.get_bind_group_layout(0);
+            let blit_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                layout: &blit_bind_group_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&intermediate_view),
+                }],
+                label: Some("blit_bind_group"),
+            });
+
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Render Pass"),
+                label: Some("Blit Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view: &output_view,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
@@ -328,10 +396,11 @@ impl Renderer {
                 occlusion_query_set: None,
             });
 
-            render_pass.set_pipeline(&self.render_pipeline);
-            render_pass.set_bind_group(0, &self.bind_group, &[]);
-            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            render_pass.draw(0..6, 0..1);
+            render_pass.set_pipeline(&self.blit_pipeline);
+            render_pass.set_bind_group(0, &blit_bind_group, &[]);
+            // This only runs vertex shader 3 times, then fragment shader once per pixel
+            // Fragment shader is just: read pixel from intermediate, write to surface
+            render_pass.draw(0..3, 0..1);
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
@@ -339,32 +408,70 @@ impl Renderer {
     }
 }
 
-const SHADER: &str = r#"
-struct VertexInput {
-    @location(0) position: vec2<f32>,
-    @location(1) tex_coords: vec2<f32>,
+fn generate_compute_shader(workgroup_size: u32) -> String {
+    format!(
+        r#"
+@group(0) @binding(0)
+var input_texture: texture_2d<f32>;
+
+@group(0) @binding(1)
+var output_texture: texture_storage_2d<rgba8unorm, write>;
+
+@compute @workgroup_size({}, {})
+fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {{
+    let coords = vec2<i32>(global_id.xy);
+    let dims = textureDimensions(output_texture);
+
+    if (coords.x >= i32(dims.x) || coords.y >= i32(dims.y)) {{
+        return;
+    }}
+
+    // Simple pass-through: CPU does all the rendering (pill shape, text, etc.)
+    // This shader is here for future effects: blur, glow, particles, animations
+    let colour = textureLoad(input_texture, coords, 0);
+
+    // TODO: Add effects here
+    // - Gaussian blur for message bubbles
+    // - Glow effects
+    // - Particle systems for message deletion
+    // - Animation effects
+
+    textureStore(output_texture, coords, colour);
+}}
+"#,
+        workgroup_size, workgroup_size
+    )
 }
 
+const BLIT_SHADER: &str = r#"
 struct VertexOutput {
-    @builtin(position) clip_position: vec4<f32>,
+    @builtin(position) position: vec4<f32>,
     @location(0) tex_coords: vec2<f32>,
 }
 
 @vertex
-fn vs_main(model: VertexInput) -> VertexOutput {
+fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     var out: VertexOutput;
-    out.tex_coords = model.tex_coords;
-    out.clip_position = vec4<f32>(model.position, 0.0, 1.0);
+
+    // Generate fullscreen triangle (only need 3 vertices)
+    let x = f32((vertex_index & 1u) << 2u);
+    let y = f32((vertex_index & 2u) << 1u);
+
+    out.position = vec4<f32>(x - 1.0, 1.0 - y, 0.0, 1.0);
+    out.tex_coords = vec2<f32>(x * 0.5, y * 0.5);
+
     return out;
 }
 
 @group(0) @binding(0)
-var t_diffuse: texture_2d<f32>;
-@group(0) @binding(1)
-var s_diffuse: sampler;
+var input_texture: texture_2d<f32>;
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    return textureSample(t_diffuse, s_diffuse, in.tex_coords);
+    let dims = textureDimensions(input_texture);
+    let coords = vec2<i32>(in.tex_coords * vec2<f32>(f32(dims.x), f32(dims.y)));
+
+    // Simple copy from intermediate to surface
+    return textureLoad(input_texture, coords, 0);
 }
 "#;

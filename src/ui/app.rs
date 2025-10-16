@@ -4,7 +4,7 @@ use winit::{
     dpi::PhysicalSize,
     event::{ElementState, KeyEvent, MouseButton},
     keyboard::{Key, NamedKey},
-    window::{Window, CursorIcon},
+    window::{CursorIcon, Window},
 };
 
 pub struct TMessageApp {
@@ -14,6 +14,7 @@ pub struct TMessageApp {
     window_height: u32,
     screen_width: u32,
     screen_height: u32,
+    needs_redraw: bool, // True when dimensions change or content updates
 
     // Launch screen state
     username_input: String,
@@ -56,6 +57,7 @@ impl TMessageApp {
             window_height: size.height,
             screen_width,
             screen_height,
+            needs_redraw: true, // Initial draw needed
             username_input: String::new(),
             cursor_blink: 0.0,
             username_available: None,
@@ -73,6 +75,7 @@ impl TMessageApp {
         self.window_width = size.width;
         self.window_height = size.height;
         self.renderer.resize(size.width, size.height);
+        self.needs_redraw = true; // Dimensions changed, need to redraw
     }
 
     pub fn handle_keyboard(&mut self, event: KeyEvent) {
@@ -101,7 +104,12 @@ impl TMessageApp {
         }
     }
 
-    pub fn handle_mouse_click(&mut self, window: &Window, state: ElementState, _button: MouseButton) {
+    pub fn handle_mouse_click(
+        &mut self,
+        window: &Window,
+        state: ElementState,
+        _button: MouseButton,
+    ) {
         match state {
             ElementState::Pressed => {
                 let edge = self.get_resize_edge(self.mouse_x, self.mouse_y);
@@ -147,73 +155,86 @@ impl TMessageApp {
                 let dx = (current_cursor_screen_x - self.drag_start_cursor_screen_pos.0) as f32;
                 let dy = (current_cursor_screen_y - self.drag_start_cursor_screen_pos.1) as f32;
 
-            // Minimum window dimension: 1/32 of smallest screen dimension
-            let min_screen_dim = self.screen_width.min(self.screen_height) as f32;
-            let min_size = (min_screen_dim / 32.0).ceil();
+                // Minimum window dimension: 1/32 of smallest screen dimension
+                let min_screen_dim = self.screen_width.min(self.screen_height) as f32;
+                let min_size = (min_screen_dim / 32.0).ceil();
 
-            let (new_width, new_height, should_move, new_x, new_y) = match self.resize_edge {
-                ResizeEdge::Right => {
-                    let w = ((self.drag_start_size.0 as f32 + dx).max(min_size) as u32).max(min_size as u32);
-                    let h = self.drag_start_size.1.max(min_size as u32);
-                    (w, h, false, 0, 0)
-                }
-                ResizeEdge::Left => {
-                    let w = ((self.drag_start_size.0 as f32 - dx).max(min_size) as u32).max(min_size as u32);
-                    let h = self.drag_start_size.1.max(min_size as u32);
-                    let width_change = self.drag_start_size.0 as i32 - w as i32;
-                    let new_x = self.drag_start_window_pos.0 + width_change;
-                    (w, h, true, new_x, self.drag_start_window_pos.1)
-                }
-                ResizeEdge::Bottom => {
-                    let w = self.drag_start_size.0.max(min_size as u32);
-                    let h = ((self.drag_start_size.1 as f32 + dy).max(min_size) as u32).max(min_size as u32);
-                    (w, h, false, 0, 0)
-                }
-                ResizeEdge::Top => {
-                    let w = self.drag_start_size.0.max(min_size as u32);
-                    let h = ((self.drag_start_size.1 as f32 - dy).max(min_size) as u32).max(min_size as u32);
-                    let height_change = self.drag_start_size.1 as i32 - h as i32;
-                    let new_y = self.drag_start_window_pos.1 + height_change;
-                    (w, h, true, self.drag_start_window_pos.0, new_y)
-                }
-                ResizeEdge::TopRight => {
-                    let w = ((self.drag_start_size.0 as f32 + dx).max(min_size) as u32).max(min_size as u32);
-                    let h = ((self.drag_start_size.1 as f32 - dy).max(min_size) as u32).max(min_size as u32);
-                    let height_change = self.drag_start_size.1 as i32 - h as i32;
-                    let new_y = self.drag_start_window_pos.1 + height_change;
-                    (w, h, true, self.drag_start_window_pos.0, new_y)
-                }
-                ResizeEdge::TopLeft => {
-                    let w = ((self.drag_start_size.0 as f32 - dx).max(min_size) as u32).max(min_size as u32);
-                    let h = ((self.drag_start_size.1 as f32 - dy).max(min_size) as u32).max(min_size as u32);
-                    let width_change = self.drag_start_size.0 as i32 - w as i32;
-                    let height_change = self.drag_start_size.1 as i32 - h as i32;
-                    let new_x = self.drag_start_window_pos.0 + width_change;
-                    let new_y = self.drag_start_window_pos.1 + height_change;
-                    (w, h, true, new_x, new_y)
-                }
-                ResizeEdge::BottomRight => {
-                    let w = ((self.drag_start_size.0 as f32 + dx).max(min_size) as u32).max(min_size as u32);
-                    let h = ((self.drag_start_size.1 as f32 + dy).max(min_size) as u32).max(min_size as u32);
-                    (w, h, false, 0, 0)
-                }
-                ResizeEdge::BottomLeft => {
-                    let w = ((self.drag_start_size.0 as f32 - dx).max(min_size) as u32).max(min_size as u32);
-                    let h = ((self.drag_start_size.1 as f32 + dy).max(min_size) as u32).max(min_size as u32);
-                    let width_change = self.drag_start_size.0 as i32 - w as i32;
-                    let new_x = self.drag_start_window_pos.0 + width_change;
-                    (w, h, true, new_x, self.drag_start_window_pos.1)
-                }
-                _ => (self.drag_start_size.0, self.drag_start_size.1, false, 0, 0),
-            };
+                let (new_width, new_height, should_move, new_x, new_y) = match self.resize_edge {
+                    ResizeEdge::Right => {
+                        let w = ((self.drag_start_size.0 as f32 + dx).max(min_size) as u32)
+                            .max(min_size as u32);
+                        let h = self.drag_start_size.1.max(min_size as u32);
+                        (w, h, false, 0, 0)
+                    }
+                    ResizeEdge::Left => {
+                        let w = ((self.drag_start_size.0 as f32 - dx).max(min_size) as u32)
+                            .max(min_size as u32);
+                        let h = self.drag_start_size.1.max(min_size as u32);
+                        let width_change = self.drag_start_size.0 as i32 - w as i32;
+                        let new_x = self.drag_start_window_pos.0 + width_change;
+                        (w, h, true, new_x, self.drag_start_window_pos.1)
+                    }
+                    ResizeEdge::Bottom => {
+                        let w = self.drag_start_size.0.max(min_size as u32);
+                        let h = ((self.drag_start_size.1 as f32 + dy).max(min_size) as u32)
+                            .max(min_size as u32);
+                        (w, h, false, 0, 0)
+                    }
+                    ResizeEdge::Top => {
+                        let w = self.drag_start_size.0.max(min_size as u32);
+                        let h = ((self.drag_start_size.1 as f32 - dy).max(min_size) as u32)
+                            .max(min_size as u32);
+                        let height_change = self.drag_start_size.1 as i32 - h as i32;
+                        let new_y = self.drag_start_window_pos.1 + height_change;
+                        (w, h, true, self.drag_start_window_pos.0, new_y)
+                    }
+                    ResizeEdge::TopRight => {
+                        let w = ((self.drag_start_size.0 as f32 + dx).max(min_size) as u32)
+                            .max(min_size as u32);
+                        let h = ((self.drag_start_size.1 as f32 - dy).max(min_size) as u32)
+                            .max(min_size as u32);
+                        let height_change = self.drag_start_size.1 as i32 - h as i32;
+                        let new_y = self.drag_start_window_pos.1 + height_change;
+                        (w, h, true, self.drag_start_window_pos.0, new_y)
+                    }
+                    ResizeEdge::TopLeft => {
+                        let w = ((self.drag_start_size.0 as f32 - dx).max(min_size) as u32)
+                            .max(min_size as u32);
+                        let h = ((self.drag_start_size.1 as f32 - dy).max(min_size) as u32)
+                            .max(min_size as u32);
+                        let width_change = self.drag_start_size.0 as i32 - w as i32;
+                        let height_change = self.drag_start_size.1 as i32 - h as i32;
+                        let new_x = self.drag_start_window_pos.0 + width_change;
+                        let new_y = self.drag_start_window_pos.1 + height_change;
+                        (w, h, true, new_x, new_y)
+                    }
+                    ResizeEdge::BottomRight => {
+                        let w = ((self.drag_start_size.0 as f32 + dx).max(min_size) as u32)
+                            .max(min_size as u32);
+                        let h = ((self.drag_start_size.1 as f32 + dy).max(min_size) as u32)
+                            .max(min_size as u32);
+                        (w, h, false, 0, 0)
+                    }
+                    ResizeEdge::BottomLeft => {
+                        let w = ((self.drag_start_size.0 as f32 - dx).max(min_size) as u32)
+                            .max(min_size as u32);
+                        let h = ((self.drag_start_size.1 as f32 + dy).max(min_size) as u32)
+                            .max(min_size as u32);
+                        let width_change = self.drag_start_size.0 as i32 - w as i32;
+                        let new_x = self.drag_start_window_pos.0 + width_change;
+                        (w, h, true, new_x, self.drag_start_window_pos.1)
+                    }
+                    _ => (self.drag_start_size.0, self.drag_start_size.1, false, 0, 0),
+                };
 
-            // Move window if resizing from left/top
-            if should_move {
-                let _ = window.set_outer_position(winit::dpi::PhysicalPosition::new(new_x, new_y));
-            }
+                // Move window if resizing from left/top
+                if should_move {
+                    let _ =
+                        window.set_outer_position(winit::dpi::PhysicalPosition::new(new_x, new_y));
+                }
 
-            let _ = window
-                .request_inner_size(winit::dpi::PhysicalSize::new(new_width, new_height));
+                let _ =
+                    window.request_inner_size(winit::dpi::PhysicalSize::new(new_width, new_height));
             }
         } else {
             // Update cursor icon based on hover position
@@ -270,36 +291,22 @@ impl TMessageApp {
     pub fn render(&mut self) {
         self.cursor_blink += 0.1;
 
-        // Get dimensions
-        let width = self.window_width;
-        let height = self.window_height;
+        // Only redraw CPU content if dimensions changed or content is dirty
+        if self.needs_redraw {
+            // Render everything on CPU (efficient for static content)
+            let pixels = self.renderer.get_pixel_buffer_mut();
 
-        // Get pixel buffer from renderer
-        let pixels = self.renderer.get_pixel_buffer_mut();
+            // 1. Draw pill-shaped background (scanline algorithm - only ~1080 calculations!)
+            Self::draw_pill_background(pixels, self.window_width, self.window_height);
 
-        // Clear to white (testing overflow)
-        for pixel in pixels.chunks_exact_mut(4) {
-            pixel[0] = 255; // White RGB
-            pixel[1] = 255;
-            pixel[2] = 255;
-            pixel[3] = 0; // Fully transparent
+            // 2. TODO: Draw input boxes
+
+            // 3. TODO: Draw text
+
+            self.needs_redraw = false; // Content is now up-to-date
         }
 
-        // Draw launch screen (extract data before borrowing pixels)
-        let username_input = self.username_input.clone();
-        let username_available = self.username_available;
-        let cursor_blink = self.cursor_blink;
-
-        Self::draw_launch_screen_static(
-            pixels,
-            width,
-            height,
-            &username_input,
-            username_available,
-            cursor_blink,
-        );
-
-        // Present to screen
+        // Upload to GPU and present (compute shader is pass-through for now)
         self.renderer.present();
     }
 
@@ -308,7 +315,7 @@ impl TMessageApp {
         width: u32,
         height: u32,
         username_input: &str,
-        username_available: Option<bool>,
+        _username_available: Option<bool>,
         cursor_blink: f32,
     ) {
         let width = width as usize;
@@ -490,6 +497,250 @@ impl TMessageApp {
                     pixels[idx + 3] = 255;
                 }
             }
+        }
+    }
+
+    /// 8-fold symmetry pill shape renderer with antialiasing
+    fn draw_pill_background(pixels: &mut [u8], width: u32, height: u32) {
+        let bg_colour = [20u8, 24u8, 30u8];
+        // Fill background with noisy scanline pattern (per-row seeded)
+        for y in 0..height {
+            // Reset RNG state at start of each row (consistent scanlines)
+            let mut rng_state: u32 = 0xDEADBEEF ^ (y * 0x9E3779B9); // Mix in y
+            let mut fill_colour = [
+                (rng_state % bg_colour[0] as u32) as u8,
+                ((rng_state / bg_colour[0] as u32) % bg_colour[1] as u32) as u8,
+                ((rng_state / (bg_colour[0] as u32 * bg_colour[1] as u32)) % bg_colour[2] as u32)
+                    as u8,
+            ];
+
+            for x in 0..width {
+                // Fast xorshift RNG
+                rng_state ^= rng_state << 13;
+                rng_state ^= rng_state >> 17;
+                rng_state ^= rng_state << 5;
+                let rand_byte = (rng_state & 0xFF) as u8;
+
+                let mut rand = rand_byte;
+                if rand % 3 == 2 {
+                    fill_colour[0] = fill_colour[0] + 1;
+                } else if rand % 3 == 0 {
+                    fill_colour[0] = fill_colour[0] - 1;
+                }
+                rand = rand / 3;
+                if rand % 3 == 2 {
+                    fill_colour[1] = fill_colour[1] + 1;
+                } else if rand % 3 == 0 {
+                    fill_colour[1] = fill_colour[1] - 1;
+                }
+                rand = rand / 3;
+                if rand % 3 == 2 {
+                    fill_colour[2] = fill_colour[2] + 1;
+                } else if rand % 3 == 0 {
+                    fill_colour[2] = fill_colour[2] - 1;
+                }
+
+                if (fill_colour[0] as i8).is_negative() {
+                    fill_colour[0] = 0;
+                } else if fill_colour[0] > bg_colour[0] {
+                    fill_colour[0] = bg_colour[0]
+                }
+                if (fill_colour[1] as i8).is_negative() {
+                    fill_colour[1] = bg_colour[1]
+                } else if fill_colour[1] > bg_colour[1] {
+                    fill_colour[1] = 0;
+                }
+                if (fill_colour[2] as i8).is_negative() {
+                    fill_colour[2] = 0;
+                } else if fill_colour[2] > bg_colour[2] {
+                    fill_colour[2] = bg_colour[2]
+                }
+
+                let pixel_idx = ((y * width + x) * 4) as usize;
+                pixels[pixel_idx] = fill_colour[0] + 6;
+                pixels[pixel_idx + 1] = fill_colour[1] + 8;
+                pixels[pixel_idx + 2] = fill_colour[2] + 22;
+                pixels[pixel_idx] = 90;
+                pixels[pixel_idx + 1] = 90;
+                pixels[pixel_idx + 2] = 90;
+                pixels[pixel_idx + 3] = 255;
+            }
+        }
+
+        // Pill shape alpha mask: radius = smaller_dimension / 2
+        let smaller_dim = width.min(height);
+        let radius = smaller_dim as f32 / 2f32;
+
+        // Compute horizontal crossings until slope reaches 45°
+        let mut crossings: Vec<f32> = Vec::new();
+
+        let mut y = 1f32;
+        let squirdleyness = 12;
+        loop {
+            let x = (radius.powi(squirdleyness) - y.powi(squirdleyness))
+                .powf(1f32 / squirdleyness as f32);
+            let inset = radius - x;
+            if inset > 0. {
+                crossings.push(inset);
+            }
+            if x < y {
+                // Slope exceeds 45°
+                break;
+            }
+            y += 1.;
+        }
+        let start = (radius - y) as usize;
+        let crossings: Vec<f32> = crossings.into_iter().rev().collect();
+        let mut y = start;
+        for crossing in 0..crossings.len() {
+            let inset = crossings[crossing];
+            let i = inset as usize;
+            for idx in y * width as usize..y * width as usize + i {
+                pixels[idx * 4] = 0;
+                pixels[idx * 4 + 1] = 0;
+                pixels[idx * 4 + 2] = 0;
+                pixels[idx * 4 + 3] = 0;
+            }
+            let alias = ((inset - i as f32) * 256.) as u8;
+            let idx = (y * width as usize + i) * 4;
+            pixels[idx] = (pixels[idx] as u16 * (256 - alias as u16) >> 8) as u8;
+            pixels[idx + 1] = (pixels[idx + 1] as u16 * (256 - alias as u16) >> 8) as u8;
+            pixels[idx + 2] = (pixels[idx + 2] as u16 * (256 - alias as u16) >> 8) as u8;
+            pixels[idx + 3] = 255 - alias;
+            let idx = (y * width as usize + width as usize - 1 - i) * 4;
+            pixels[idx] = (pixels[idx] as u16 * (256 - alias as u16) >> 8) as u8;
+            pixels[idx + 1] = (pixels[idx + 1] as u16 * (256 - alias as u16) >> 8) as u8;
+            pixels[idx + 2] = (pixels[idx + 2] as u16 * (256 - alias as u16) >> 8) as u8;
+            pixels[idx + 3] = 255 - alias;
+            for idx in (y * width as usize + width as usize - i)..((y + 1) * width as usize) {
+                pixels[idx * 4] = 0;
+                pixels[idx * 4 + 1] = 0;
+                pixels[idx * 4 + 2] = 0;
+                pixels[idx * 4 + 3] = 0;
+            }
+            y += 1;
+        }
+        let mut y_bottom = height as usize - start - 1;
+        for crossing in 0..crossings.len() {
+            let inset = crossings[crossing];
+            let i = inset as usize;
+
+            // Left edge fill
+            for idx in y_bottom * width as usize..y_bottom * width as usize + i {
+                pixels[idx * 4] = 0;
+                pixels[idx * 4 + 1] = 0;
+                pixels[idx * 4 + 2] = 0;
+                pixels[idx * 4 + 3] = 0;
+            }
+
+            // Left edge anti-alias
+            let alias = ((inset - i as f32) * 256.) as u8;
+            let idx = (y_bottom * width as usize + i) * 4;
+            pixels[idx] = (pixels[idx] as u16 * (256 - alias as u16) >> 8) as u8;
+            pixels[idx + 1] = (pixels[idx + 1] as u16 * (256 - alias as u16) >> 8) as u8;
+            pixels[idx + 2] = (pixels[idx + 2] as u16 * (256 - alias as u16) >> 8) as u8;
+            pixels[idx + 3] = 255 - alias;
+
+            // Right edge anti-alias
+            let idx = (y_bottom * width as usize + width as usize - 1 - i) * 4;
+            pixels[idx] = (pixels[idx] as u16 * (256 - alias as u16) >> 8) as u8;
+            pixels[idx + 1] = (pixels[idx + 1] as u16 * (256 - alias as u16) >> 8) as u8;
+            pixels[idx + 2] = (pixels[idx + 2] as u16 * (256 - alias as u16) >> 8) as u8;
+            pixels[idx + 3] = 255 - alias;
+
+            // Right edge fill
+            for idx in
+                (y_bottom * width as usize + width as usize - i)..((y_bottom + 1) * width as usize)
+            {
+                pixels[idx * 4] = 0;
+                pixels[idx * 4 + 1] = 0;
+                pixels[idx * 4 + 2] = 0;
+                pixels[idx * 4 + 3] = 0;
+            }
+
+            y_bottom -= 1;
+        }
+        let mut x = start;
+        for crossing in 0..crossings.len() {
+            let inset = crossings[crossing];
+            let i = inset as usize;
+
+            // Top edge fill
+            for row in 0..i {
+                let idx = (row * width as usize + x) * 4;
+                pixels[idx] = 0;
+                pixels[idx + 1] = 0;
+                pixels[idx + 2] = 0;
+                pixels[idx + 3] = 0;
+            }
+
+            // Top edge anti-alias
+            let alias = ((inset - i as f32) * 256.) as u8;
+            let idx = (i * width as usize + x) * 4;
+            pixels[idx] = (pixels[idx] as u16 * (256 - alias as u16) >> 8) as u8;
+            pixels[idx + 1] = (pixels[idx + 1] as u16 * (256 - alias as u16) >> 8) as u8;
+            pixels[idx + 2] = (pixels[idx + 2] as u16 * (256 - alias as u16) >> 8) as u8;
+            pixels[idx + 3] = 255 - alias;
+
+            // Bottom edge anti-alias
+            let idx = ((height as usize - 1 - i) * width as usize + x) * 4;
+            pixels[idx] = (pixels[idx] as u16 * (256 - alias as u16) >> 8) as u8;
+            pixels[idx + 1] = (pixels[idx + 1] as u16 * (256 - alias as u16) >> 8) as u8;
+            pixels[idx + 2] = (pixels[idx + 2] as u16 * (256 - alias as u16) >> 8) as u8;
+            pixels[idx + 3] = 255 - alias;
+
+            // Bottom edge fill
+            for row in (height as usize - i)..height as usize {
+                let idx = (row * width as usize + x) * 4;
+                pixels[idx] = 0;
+                pixels[idx + 1] = 0;
+                pixels[idx + 2] = 0;
+                pixels[idx + 3] = 0;
+            }
+
+            x += 1;
+        }
+
+        // Right side top/bottom edges
+        let mut x_right = width as usize - start - 1;
+        for crossing in 0..crossings.len() {
+            let inset = crossings[crossing];
+            let i = inset as usize;
+
+            // Top edge fill
+            for row in 0..i {
+                let idx = (row * width as usize + x_right) * 4;
+                pixels[idx] = 0;
+                pixels[idx + 1] = 0;
+                pixels[idx + 2] = 0;
+                pixels[idx + 3] = 0;
+            }
+
+            // Top edge anti-alias
+            let alias = ((inset - i as f32) * 256.) as u8;
+            let idx = (i * width as usize + x_right) * 4;
+            pixels[idx] = (pixels[idx] as u16 * (256 - alias as u16) >> 8) as u8;
+            pixels[idx + 1] = (pixels[idx + 1] as u16 * (256 - alias as u16) >> 8) as u8;
+            pixels[idx + 2] = (pixels[idx + 2] as u16 * (256 - alias as u16) >> 8) as u8;
+            pixels[idx + 3] = 255 - alias;
+
+            // Bottom edge anti-alias
+            let idx = ((height as usize - 1 - i) * width as usize + x_right) * 4;
+            pixels[idx] = (pixels[idx] as u16 * (256 - alias as u16) >> 8) as u8;
+            pixels[idx + 1] = (pixels[idx + 1] as u16 * (256 - alias as u16) >> 8) as u8;
+            pixels[idx + 2] = (pixels[idx + 2] as u16 * (256 - alias as u16) >> 8) as u8;
+            pixels[idx + 3] = 255 - alias;
+
+            // Bottom edge fill
+            for row in (height as usize - i)..height as usize {
+                let idx = (row * width as usize + x_right) * 4;
+                pixels[idx] = 0;
+                pixels[idx + 1] = 0;
+                pixels[idx + 2] = 0;
+                pixels[idx + 3] = 0;
+            }
+
+            x_right -= 1;
         }
     }
 }

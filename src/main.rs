@@ -36,25 +36,19 @@ impl ApplicationHandler for App {
             self.screen_height = screen_height;
 
             // Calculate window dimensions: height = min(width, height/2), width = height/2
-            let window_height = screen_width.min(screen_height / 2);
+            let window_height = screen_width.min(screen_height) / 2;
             let window_width = window_height / 2;
-
-            log::info!(
-                "Screen: {}x{}, Window: {}x{}",
-                screen_width,
-                screen_height,
-                window_width,
-                window_height
-            );
+            let x = screen_width.min(screen_height) / 2 - window_width / 2;
+            let y = screen_width.min(screen_height) / 2 - window_height / 2;
 
             let window_attributes = Window::default_attributes()
                 .with_title("tmessage")
                 .with_inner_size(winit::dpi::PhysicalSize::new(window_width, window_height))
+                .with_position(winit::dpi::PhysicalPosition::new(x, y))
                 .with_decorations(false) // No OS title bar or decorations
-                .with_transparent(true); // Enable transparency for pill shape
+                .with_transparent(true);
             self.window = Some(event_loop.create_window(window_attributes).unwrap());
 
-            // Initialize the app with the window we just created
             if let Some(window) = &self.window {
                 self.tmessage_app = Some(pollster::block_on(ui::TMessageApp::new(
                     window,
