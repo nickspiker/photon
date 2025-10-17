@@ -1,5 +1,5 @@
 [package]
-name = "tmessage"
+name = "photon"
 version = "0.1.0"
 edition = "2021"
 authors = ["Nick Spiker <fractaldecoder@proton.me>"]

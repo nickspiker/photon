@@ -7,7 +7,7 @@ use winit::{
     window::{CursorIcon, Window},
 };
 
-pub struct TMessageApp {
+pub struct PhotonApp {
     renderer: Renderer,
     #[allow(dead_code)] // Will be used for drawing text/logos soon
     text_renderer: TextRenderer,
@@ -51,7 +51,7 @@ enum ResizeEdge {
     BottomRight,
 }
 
-impl TMessageApp {
+impl PhotonApp {
     #[cfg(target_os = "linux")]
     pub async fn new(window: &Window, screen_width: u32, screen_height: u32) -> Self {
         let size = window.inner_size();
@@ -502,7 +502,7 @@ impl TMessageApp {
             }
             let py = y_start + button_height - 1 - y_offset;
 
-            // Fill grey to the right of the curve (towards center of buttons)
+            // Fill grey to the right of the curve
             let col_end = total_width.min(width - x_start);
             for col in (*inset as usize + 2)..col_end {
                 let px = x_start + col;
@@ -511,7 +511,6 @@ impl TMessageApp {
                 pixels[idx] = bg_r;
                 pixels[idx + 1] = bg_g;
                 pixels[idx + 2] = bg_b;
-                pixels[idx + 3] = 255;
             }
 
             // Outer edge pixel (blend hairline with background texture behind)
@@ -531,7 +530,6 @@ impl TMessageApp {
                 pixels[idx] = (combined >> 8) as u8;
                 pixels[idx + 1] = (combined >> 24) as u8;
                 pixels[idx + 2] = (combined >> 40) as u8;
-                pixels[idx + 3] = 255;
             }
 
             // Inner edge pixel (blend hairline with grey button background)
@@ -547,7 +545,6 @@ impl TMessageApp {
                 pixels[idx] = (combined >> 8) as u8;
                 pixels[idx + 1] = (combined >> 24) as u8;
                 pixels[idx + 2] = (combined >> 40) as u8;
-                pixels[idx + 3] = 255;
             }
 
             y_offset += 1;
@@ -556,19 +553,10 @@ impl TMessageApp {
         // Bottom edge (horizontal)
         let mut x_offset = start;
         let crossing_limit = crossings.len().min(width - (x_start + start));
+        let mut button_edge = button_height;
         for &(inset, l, h) in &crossings[..crossing_limit] {
             let i = inset as usize;
             let px = x_start + x_offset;
-
-            // Fill grey above the curve (towards center of buttons)
-            for row in (i + 2)..start {
-                let py = y_start + button_height - 1 - row;
-                let idx = (py * width + px) * 4;
-                pixels[idx] = bg_r;
-                pixels[idx + 1] = bg_g;
-                pixels[idx + 2] = bg_b;
-                pixels[idx + 3] = 255;
-            }
 
             // Outer edge pixel (blend hairline with background texture behind)
             let py = y_start + button_height - 1 - i;
@@ -584,19 +572,39 @@ impl TMessageApp {
             pixels[idx] = (combined >> 8) as u8;
             pixels[idx + 1] = (combined >> 24) as u8;
             pixels[idx + 2] = (combined >> 40) as u8;
-            pixels[idx + 3] = 255;
 
             // Inner edge pixel (blend hairline with grey button background)
-            let py = y_start + button_height - 1 - (i + 1);
-            let idx = (py * width + px) * 4;
-            let bg = bg_r as u64 | (bg_g as u64) << 16 | (bg_b as u64) << 32;
-            let light =
-                edge_colour.0 as u64 | (edge_colour.1 as u64) << 16 | (edge_colour.2 as u64) << 32;
-            let combined = bg * h as u64 + light * l as u64;
-            pixels[idx] = (combined >> 8) as u8;
-            pixels[idx + 1] = (combined >> 24) as u8;
-            pixels[idx + 2] = (combined >> 40) as u8;
-            pixels[idx + 3] = 255;
+            if x_offset > button_edge {
+                button_edge = x_offset + button_height;
+                for row in (i + 2)..start {
+                    let py = y_start + button_height - 1 - row;
+                    let idx = (py * width + px) * 4;
+                    pixels[idx] = bg_r;
+                    pixels[idx + 1] += bg_g;
+                    pixels[idx + 2] = bg_b;
+                }
+            } else {
+
+            // Fill grey above the curve (towards center of buttons)
+            for row in (i + 2)..start {
+                let py = y_start + button_height - 1 - row;
+                let idx = (py * width + px) * 4;
+                pixels[idx] = bg_r;
+                pixels[idx + 1] = bg_g;
+                pixels[idx + 2] = bg_b;
+            }
+
+                let py = y_start + button_height - 1 - (i + 1);
+                let idx = (py * width + px) * 4;
+                let bg = bg_r as u64 | (bg_g as u64) << 16 | (bg_b as u64) << 32;
+                let light = edge_colour.0 as u64
+                    | (edge_colour.1 as u64) << 16
+                    | (edge_colour.2 as u64) << 32;
+                let combined = bg * h as u64 + light * l as u64;
+                pixels[idx] = (combined >> 8) as u8;
+                pixels[idx + 1] = (combined >> 24) as u8;
+                pixels[idx + 2] = (combined >> 40) as u8;
+            }
 
             x_offset += 1;
         }
@@ -616,11 +624,9 @@ impl TMessageApp {
         Self::draw_maximize_symbol(
             pixels,
             width,
-            height,
-            x_start + button_width,
-            y_start,
-            button_width,
-            button_height,
+            x_start + button_width + button_width / 2,
+            y_start + button_width / 2,
+            button_width / 4,
         );
         Self::draw_close_symbol(
             pixels,
@@ -664,80 +670,11 @@ impl TMessageApp {
         }
     }
 
-    fn draw_maximize_symbol(
-        pixels: &mut [u8],
-        width: usize,
-        height: usize,
-        x: usize,
-        y: usize,
-        w: usize,
-        h: usize,
-    ) {
-        // Draw square outline
-        let line_thickness = (h / 10).max(1);
-        let square_size = w / 2;
-        let square_x = x + w / 4;
-        let square_y = y + h / 4;
-
-        // Top and bottom edges
-        for ly in 0..line_thickness {
-            for lx in 0..square_size {
-                // Top edge
-                let px = square_x + lx;
-                let py = square_y + ly;
-                if px < width && py < height {
-                    let idx = (py * width + px) * 4;
-                    if idx + 3 < pixels.len() {
-                        pixels[idx] = 200;
-                        pixels[idx + 1] = 200;
-                        pixels[idx + 2] = 210;
-                        pixels[idx + 3] = 255;
-                    }
-                }
-
-                // Bottom edge
-                let px = square_x + lx;
-                let py = square_y + square_size - line_thickness + ly;
-                if px < width && py < height {
-                    let idx = (py * width + px) * 4;
-                    if idx + 3 < pixels.len() {
-                        pixels[idx] = 200;
-                        pixels[idx + 1] = 200;
-                        pixels[idx + 2] = 210;
-                        pixels[idx + 3] = 255;
-                    }
-                }
-            }
-        }
-
-        // Left and right edges
-        for ly in 0..square_size {
-            for lx in 0..line_thickness {
-                // Left edge
-                let px = square_x + lx;
-                let py = square_y + ly;
-                if px < width && py < height {
-                    let idx = (py * width + px) * 4;
-                    if idx + 3 < pixels.len() {
-                        pixels[idx] = 200;
-                        pixels[idx + 1] = 200;
-                        pixels[idx + 2] = 210;
-                        pixels[idx + 3] = 255;
-                    }
-                }
-
-                // Right edge
-                let px = square_x + square_size - line_thickness + lx;
-                let py = square_y + ly;
-                if px < width && py < height {
-                    let idx = (py * width + px) * 4;
-                    if idx + 3 < pixels.len() {
-                        pixels[idx] = 200;
-                        pixels[idx + 1] = 200;
-                        pixels[idx + 2] = 210;
-                        pixels[idx + 3] = 255;
-                    }
-                }
+    fn draw_maximize_symbol(pixels: &mut [u8], width: usize, x: usize, y: usize, r: usize) {
+        for h in -(r as isize)..r as isize {
+            for w in -(r as isize)..r as isize {
+                let idx = ((y + h as usize) * width + x + w as usize) * 4;
+                pixels[idx] = 255;
             }
         }
     }

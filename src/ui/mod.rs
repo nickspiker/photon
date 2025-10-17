@@ -14,4 +14,4 @@ use renderer_linux as renderer;
 
 mod text;
 
-pub use app::TMessageApp;
+pub use app::PhotonApp;

@@ -16,7 +16,7 @@ use winit::{
 
 struct App {
     window: Option<Window>,
-    tmessage_app: Option<ui::TMessageApp>,
+    photon_app: Option<ui::PhotonApp>,
     screen_width: u32,
     screen_height: u32,
 }
@@ -45,7 +45,7 @@ impl ApplicationHandler for App {
             let y = screen_width.min(screen_height) / 2 - window_height / 2;
 
             let window_attributes = Window::default_attributes()
-                .with_title("tmessage")
+                .with_title("Photon")
                 .with_inner_size(winit::dpi::PhysicalSize::new(window_width, window_height))
                 .with_position(winit::dpi::PhysicalPosition::new(x, y))
                 .with_decorations(false)
@@ -69,7 +69,7 @@ impl ApplicationHandler for App {
 
                 #[cfg(target_os = "windows")]
                 {
-                    self.tmessage_app = Some(ui::TMessageApp::new(
+                    self.photon_app = Some(ui::PhotonApp::new(
                         window,
                         self.screen_width,
                         self.screen_height,
@@ -78,7 +78,7 @@ impl ApplicationHandler for App {
 
                 #[cfg(target_os = "linux")]
                 {
-                    self.tmessage_app = Some(pollster::block_on(ui::TMessageApp::new(
+                    self.photon_app = Some(pollster::block_on(ui::PhotonApp::new(
                         window,
                         self.screen_width,
                         self.screen_height,
@@ -94,27 +94,27 @@ impl ApplicationHandler for App {
                 event_loop.exit();
             }
             WindowEvent::Resized(size) => {
-                if let Some(app) = &mut self.tmessage_app {
+                if let Some(app) = &mut self.photon_app {
                     app.resize(size);
                 }
             }
             WindowEvent::RedrawRequested => {
-                if let Some(app) = &mut self.tmessage_app {
+                if let Some(app) = &mut self.photon_app {
                     app.render();
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                if let Some(app) = &mut self.tmessage_app {
+                if let Some(app) = &mut self.photon_app {
                     app.handle_keyboard(event);
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                if let (Some(app), Some(window)) = (&mut self.tmessage_app, &self.window) {
+                if let (Some(app), Some(window)) = (&mut self.photon_app, &self.window) {
                     app.handle_mouse_click(window, state, button);
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                if let (Some(window), Some(app)) = (&self.window, &mut self.tmessage_app) {
+                if let (Some(window), Some(app)) = (&self.window, &mut self.photon_app) {
                     app.handle_mouse_move(window, position);
                 }
             }
@@ -173,7 +173,7 @@ fn main() {
     let event_loop = EventLoop::new().unwrap();
     let mut app = App {
         window: None,
-        tmessage_app: None,
+        photon_app: None,
         screen_width: 0,  // Will be set in resumed()
         screen_height: 0, // Will be set in resumed()
     };
