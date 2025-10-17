@@ -454,12 +454,12 @@ impl TMessageApp {
 
         // Calculate button dimensions
         let smaller_dim = window_width.min(window_height) as f32;
-        let button_height = (smaller_dim / 16.0).ceil() as usize;
+        let button_height = (smaller_dim / 16.).ceil() as usize;
         let button_width = button_height;
-        let total_width = button_width * 3;
+        let total_width = button_width * 7 / 2;
 
         // Buttons extend to top-right corner of window
-        let x_start = width - total_width;
+        let mut x_start = width - total_width;
         let y_start = 0;
 
         // Build squircle crossings for bottom-left corner
@@ -489,158 +489,132 @@ impl TMessageApp {
         let start = (radius - y) as usize;
         let crossings: Vec<(u16, u8, u8)> = crossings.into_iter().rev().collect();
 
-        let light_colour = (75, 70, 65);
+        let edge_colour = (50, 50, 50);
+        let bg_r = 30u8;
+        let bg_g = 30u8;
+        let bg_b = 30u8;
 
-        if start < button_height && crossings.len() > 0 {
-            // Left edge (vertical) - draw light hairline following squircle curve
-            let mut y_offset = start;
-            for (inset, l, h) in &crossings {
-                if y_offset >= button_height {
+        // Left edge (vertical) - draw light hairline following squircle curve
+        let mut y_offset = start;
+        for (inset, l, h) in &crossings {
+            if y_offset >= button_height {
+                break;
+            }
+            let py = y_start + button_height - 1 - y_offset;
+
+            // Fill grey to the right of the curve (towards center of buttons)
+            for col in (*inset as usize + 2)..total_width {
+                let px = x_start + col;
+                if px < width {
+                    let idx = (py * width + px) * 4;
+
+                    pixels[idx] = bg_r;
+                    pixels[idx + 1] = bg_g;
+                    pixels[idx + 2] = bg_b;
+                    pixels[idx + 3] = 255;
+                } else {
                     break;
                 }
-
-                let py = y_start + button_height - 1 - y_offset;
-
-                if py >= height {
-                    y_offset += 1;
-                    continue;
-                }
-
-                // Fill grey to the right of the curve (towards center of buttons)
-                for col in (*inset as usize + 2)..total_width {
-                    let px = x_start + col;
-                    if px < width {
-                        let idx = (py * width + px) * 4;
-                        if idx + 3 < pixels.len() {
-                            pixels[idx] = 40;
-                            pixels[idx + 1] = 40;
-                            pixels[idx + 2] = 50;
-                            pixels[idx + 3] = 255;
-                        }
-                    }
-                }
-
-                let bg_r = 40u8;
-                let bg_g = 40u8;
-                let bg_b = 50u8;
-
-                // Outer edge pixel (blend hairline with background texture behind)
-                let px = x_start + *inset as usize;
-                if px < width && (*inset as usize) < total_width {
-                    let idx = (py * width + px) * 4;
-                    if idx + 3 < pixels.len() {
-                        let mut existing = pixels[idx] as u64
-                            | (pixels[idx + 1] as u64) << 16
-                            | (pixels[idx + 2] as u64) << 32;
-                        let mut light = light_colour.0 as u64
-                            | (light_colour.1 as u64) << 16
-                            | (light_colour.2 as u64) << 32;
-                        existing *= *l as u64;
-                        light *= *h as u64;
-                        let combined = existing + light;
-                        pixels[idx] = (combined >> 8) as u8;
-                        pixels[idx + 1] = (combined >> 24) as u8;
-                        pixels[idx + 2] = (combined >> 40) as u8;
-                        pixels[idx + 3] = 255;
-                    }
-                }
-
-                // Inner edge pixel (blend hairline with grey button background)
-                let px = x_start + *inset as usize + 1;
-                if px < width && *inset as usize + 1 < total_width {
-                    let idx = (py * width + px) * 4;
-                    if idx + 3 < pixels.len() {
-                        let bg = bg_r as u64 | (bg_g as u64) << 16 | (bg_b as u64) << 32;
-                        let light = light_colour.0 as u64
-                            | (light_colour.1 as u64) << 16
-                            | (light_colour.2 as u64) << 32;
-                        let combined = bg * *h as u64 + light * *l as u64;
-                        pixels[idx] = (combined >> 8) as u8;
-                        pixels[idx + 1] = (combined >> 24) as u8;
-                        pixels[idx + 2] = (combined >> 40) as u8;
-                        pixels[idx + 3] = 255;
-                    }
-                }
-
-                y_offset += 1;
             }
 
-            // Bottom edge (horizontal) - also light hairline (this is top-right of window, both edges are light)
-            let mut x_offset = start;
-            for &(inset, l, h) in &crossings {
-                if x_offset >= total_width {
-                    break;
-                }
+            // Outer edge pixel (blend hairline with background texture behind)
+            let px = x_start + *inset as usize;
+            if px < width && (*inset as usize) < total_width {
+                let idx = (py * width + px) * 4;
 
-                let i = inset as usize;
-                let px = x_start + x_offset;
+                let mut existing = pixels[idx] as u64
+                    | (pixels[idx + 1] as u64) << 16
+                    | (pixels[idx + 2] as u64) << 32;
+                let mut light = edge_colour.0 as u64
+                    | (edge_colour.1 as u64) << 16
+                    | (edge_colour.2 as u64) << 32;
+                existing *= *l as u64;
+                light *= *h as u64;
+                let combined = existing + light;
+                pixels[idx] = (combined >> 8) as u8;
+                pixels[idx + 1] = (combined >> 24) as u8;
+                pixels[idx + 2] = (combined >> 40) as u8;
+                pixels[idx + 3] = 255;
+            }
 
-                if px >= width {
-                    x_offset += 1;
-                    continue;
-                }
+            // Inner edge pixel (blend hairline with grey button background)
+            let px = x_start + *inset as usize + 1;
+            if px < width && *inset as usize + 1 < total_width {
+                let idx = (py * width + px) * 4;
 
-                // Fill grey above the curve (towards center of buttons)
+                let bg = bg_r as u64 | (bg_g as u64) << 16 | (bg_b as u64) << 32;
+                let light = edge_colour.0 as u64
+                    | (edge_colour.1 as u64) << 16
+                    | (edge_colour.2 as u64) << 32;
+                let combined = bg * *h as u64 + light * *l as u64;
+                pixels[idx] = (combined >> 8) as u8;
+                pixels[idx + 1] = (combined >> 24) as u8;
+                pixels[idx + 2] = (combined >> 40) as u8;
+                pixels[idx + 3] = 255;
+            }
+
+            y_offset += 1;
+        }
+
+        // Bottom edge (horizontal) - also light hairline (this is top-right of window, both edges are light)
+        let mut x_offset = start;
+        for &(inset, l, h) in &crossings {
+            let i = inset as usize;
+            let px = x_start + x_offset;
+
+            // Fill grey above the curve (towards center of buttons)
+            if px < width {
                 for row in (i + 2)..start {
                     let py = y_start + button_height - 1 - row;
-                    if py < height && py >= y_start {
-                        let idx = (py * width + px) * 4;
-                        if idx + 3 < pixels.len() {
-                            pixels[idx] = 40;
-                            pixels[idx + 1] = 40;
-                            pixels[idx + 2] = 50;
-                            pixels[idx + 3] = 255;
-                        }
-                    }
-                }
-
-                let bg_r = 40u8;
-                let bg_g = 40u8;
-                let bg_b = 50u8;
-
-                // Outer edge pixel (blend hairline with background texture behind)
-                let py = y_start + button_height - 1 - i;
-                if py < height && i < button_height {
                     let idx = (py * width + px) * 4;
-                    if idx + 3 < pixels.len() {
-                        let mut existing = pixels[idx] as u64
-                            | (pixels[idx + 1] as u64) << 16
-                            | (pixels[idx + 2] as u64) << 32;
-                        let mut light = light_colour.0 as u64
-                            | (light_colour.1 as u64) << 16
-                            | (light_colour.2 as u64) << 32;
-                        existing *= l as u64;
-                        light *= h as u64;
-                        let combined = existing + light;
-                        pixels[idx] = (combined >> 8) as u8;
-                        pixels[idx + 1] = (combined >> 24) as u8;
-                        pixels[idx + 2] = (combined >> 40) as u8;
-                        pixels[idx + 3] = 255;
-                    }
+                    pixels[idx] = bg_r;
+                    pixels[idx + 1] = bg_g;
+                    pixels[idx + 2] = bg_b;
+                    pixels[idx + 3] = 255;
                 }
-
-                // Inner edge pixel (blend hairline with grey button background)
-                if i + 1 < button_height {
-                    let py = y_start + button_height - 1 - (i + 1);
-                    if py < height {
-                        let idx = (py * width + px) * 4;
-                        if idx + 3 < pixels.len() {
-                            let bg = bg_r as u64 | (bg_g as u64) << 16 | (bg_b as u64) << 32;
-                            let light = light_colour.0 as u64
-                                | (light_colour.1 as u64) << 16
-                                | (light_colour.2 as u64) << 32;
-                            let combined = bg * h as u64 + light * l as u64;
-                            pixels[idx] = (combined >> 8) as u8;
-                            pixels[idx + 1] = (combined >> 24) as u8;
-                            pixels[idx + 2] = (combined >> 40) as u8;
-                            pixels[idx + 3] = 255;
-                        }
-                    }
-                }
-
-                x_offset += 1;
             }
+
+            // Outer edge pixel (blend hairline with background texture behind)
+            if px < width {
+                let py = y_start + button_height - 1 - i;
+                let idx = (py * width + px) * 4;
+                let mut existing = pixels[idx] as u64
+                    | (pixels[idx + 1] as u64) << 16
+                    | (pixels[idx + 2] as u64) << 32;
+                let mut light = edge_colour.0 as u64
+                    | (edge_colour.1 as u64) << 16
+                    | (edge_colour.2 as u64) << 32;
+                existing *= l as u64;
+                light *= h as u64;
+                let combined = existing + light;
+                pixels[idx] = (combined >> 8) as u8;
+                pixels[idx + 1] = (combined >> 24) as u8;
+                pixels[idx + 2] = (combined >> 40) as u8;
+                pixels[idx + 3] = 255;
+            }
+
+            // Inner edge pixel (blend hairline with grey button background)
+            if px < width {
+                let py = y_start + button_height - 1 - (i + 1);
+
+                let idx = (py * width + px) * 4;
+                if idx + 3 < pixels.len() {
+                    let bg = bg_r as u64 | (bg_g as u64) << 16 | (bg_b as u64) << 32;
+                    let light = edge_colour.0 as u64
+                        | (edge_colour.1 as u64) << 16
+                        | (edge_colour.2 as u64) << 32;
+                    let combined = bg * h as u64 + light * l as u64;
+                    pixels[idx] = (combined >> 8) as u8;
+                    pixels[idx + 1] = (combined >> 24) as u8;
+                    pixels[idx + 2] = (combined >> 40) as u8;
+                    pixels[idx + 3] = 255;
+                }
+            }
+
+            x_offset += 1;
         }
+
+        x_start += button_width / 4;
 
         // Draw button symbols
         Self::draw_minimize_symbol(
@@ -790,50 +764,206 @@ impl TMessageApp {
         w: usize,
         h: usize,
     ) {
-        // Draw X with proper diagonals
-        let line_thickness = (h / 10).max(1);
-        let x_size = w / 2;
-        let x_start = x + w / 4;
-        let y_start = y + h / 4;
+        // Draw X with antialiased rounded-end diagonals (capsule/pill shaped)
+        let thickness = (h / 12).max(1) as f32;
+        let radius = thickness / 2.;
+        let size = (w / 2) as f32;
+        let cxi = (x + w / 2) as i32;
+        let cyi = (y + h / 2) as i32;
+        let cxf = cxi as f32;
+        let cyf = cyi as f32;
 
-        // Draw both diagonals
-        for i in 0..x_size {
-            // Top-left to bottom-right diagonal
-            let px1 = x_start + i;
-            let py1 = y_start + i;
-            if px1 < width && py1 < height {
-                for t in 0..line_thickness {
-                    // Thicken perpendicular to diagonal (offset by (-1, 1) direction)
-                    if py1 + t < height && px1 + t < width {
-                        let idx = ((py1 + t) * width + px1) * 4;
-                        if idx + 3 < pixels.len() {
-                            pixels[idx] = 220;
-                            pixels[idx + 1] = 100;
-                            pixels[idx + 2] = 100;
-                            pixels[idx + 3] = 255;
-                        }
-                    }
-                }
-            }
+        let end = size / 3.;
 
-            // Top-right to bottom-left diagonal
-            let px2 = x_start + x_size - i - 1;
-            let py2 = y_start + i;
-            if px2 < width && py2 < height {
-                for t in 0..line_thickness {
-                    // Thicken perpendicular to diagonal (offset by (1, 1) direction)
-                    if py2 + t < height && px2 >= t {
-                        let idx = ((py2 + t) * width + px2 - t) * 4;
-                        if idx + 3 < pixels.len() {
-                            pixels[idx] = 220;
-                            pixels[idx + 1] = 100;
-                            pixels[idx + 2] = 100;
-                            pixels[idx + 3] = 255;
-                        }
+        // Define the two diagonal line segments
+        // Diagonal 1: top-left to bottom-right
+        let x1_start = cxf - end;
+        let y1_start = cyf - end;
+        let x1_end = cxf + end;
+        let y1_end = cyf + end;
+
+        // Diagonal 2: top-right to bottom-left
+        let x2_start = cxf + end;
+        let y2_start = cyf - end;
+        let x2_end = cxf - end;
+        let y2_end = cyf + end;
+
+        let color = (220u8, 100u8, 100u8);
+
+        // Scan the bounding box and render both capsules
+        let min_x = (x as i32).max(0);
+        let max_x = ((x + w) as i32).min(width as i32);
+        let min_y = (y as i32).max(0);
+        let max_y = ((y + h) as i32).min(height as i32);
+
+        for py in min_y..cyi {
+            for px in min_x..cxi {
+                let px_f = px as f32 + 0.5;
+                let py_f = py as f32 + 0.5;
+
+                let dist = Self::distance_to_capsule(
+                    px_f, py_f, x1_start, y1_start, x1_end, y1_end, radius,
+                );
+
+                let alpha = if dist < -0.5 {
+                    1.
+                } else if dist < 0.5 {
+                    0.5 - dist
+                } else {
+                    0.
+                };
+
+                if alpha > 0. {
+                    let idx = (py as usize * width + px as usize) * 4;
+                    if idx + 3 < pixels.len() {
+                        let existing_r = pixels[idx] as f32;
+                        let existing_g = pixels[idx + 1] as f32;
+                        let existing_b = pixels[idx + 2] as f32;
+
+                        pixels[idx] = (existing_r * (1.0 - alpha) + color.0 as f32 * alpha) as u8;
+                        pixels[idx + 1] =
+                            (existing_g * (1. - alpha) + color.1 as f32 * alpha) as u8;
+                        pixels[idx + 2] =
+                            (existing_b * (1. - alpha) + color.2 as f32 * alpha) as u8;
+                        pixels[idx + 3] = 255;
                     }
                 }
             }
         }
+
+        for py in min_y..cyi {
+            for px in cxi..max_x {
+                let px_f = px as f32 + 0.5;
+                let py_f = py as f32 + 0.5;
+
+                let dist = Self::distance_to_capsule(
+                    px_f, py_f, x2_start, y2_start, x2_end, y2_end, radius,
+                );
+
+                let alpha = if dist < -0.5 {
+                    1.
+                } else if dist < 0.5 {
+                    0.5 - dist
+                } else {
+                    0.
+                };
+
+                if alpha > 0. {
+                    let idx = (py as usize * width + px as usize) * 4;
+                    if idx + 3 < pixels.len() {
+                        let existing_r = pixels[idx] as f32;
+                        let existing_g = pixels[idx + 1] as f32;
+                        let existing_b = pixels[idx + 2] as f32;
+
+                        pixels[idx] = (existing_r * (1.0 - alpha) + color.0 as f32 * alpha) as u8;
+                        pixels[idx + 1] =
+                            (existing_g * (1. - alpha) + color.1 as f32 * alpha) as u8;
+                        pixels[idx + 2] =
+                            (existing_b * (1. - alpha) + color.2 as f32 * alpha) as u8;
+                        pixels[idx + 3] = 255;
+                    }
+                }
+            }
+        }
+
+        for py in cyi..max_y {
+            for px in min_x..cxi {
+                let px_f = px as f32 + 0.5;
+                let py_f = py as f32 + 0.5;
+
+                let dist = Self::distance_to_capsule(
+                    px_f, py_f, x2_start, y2_start, x2_end, y2_end, radius,
+                );
+
+                let alpha = if dist < -0.5 {
+                    1.
+                } else if dist < 0.5 {
+                    0.5 - dist
+                } else {
+                    0.
+                };
+
+                if alpha > 0. {
+                    let idx = (py as usize * width + px as usize) * 4;
+                    if idx + 3 < pixels.len() {
+                        let existing_r = pixels[idx] as f32;
+                        let existing_g = pixels[idx + 1] as f32;
+                        let existing_b = pixels[idx + 2] as f32;
+
+                        pixels[idx] = (existing_r * (1.0 - alpha) + color.0 as f32 * alpha) as u8;
+                        pixels[idx + 1] =
+                            (existing_g * (1. - alpha) + color.1 as f32 * alpha) as u8;
+                        pixels[idx + 2] =
+                            (existing_b * (1. - alpha) + color.2 as f32 * alpha) as u8;
+                        pixels[idx + 3] = 255;
+                    }
+                }
+            }
+        }
+
+        for py in cyi..max_y {
+            for px in cxi..max_x {
+                let px_f = px as f32 + 0.5;
+                let py_f = py as f32 + 0.5;
+
+                let dist = Self::distance_to_capsule(
+                    px_f, py_f, x1_start, y1_start, x1_end, y1_end, radius,
+                );
+
+                let alpha = if dist < -0.5 {
+                    1.
+                } else if dist < 0.5 {
+                    0.5 - dist
+                } else {
+                    0.
+                };
+
+                if alpha > 0. {
+                    let idx = (py as usize * width + px as usize) * 4;
+                    if idx + 3 < pixels.len() {
+                        let existing_r = pixels[idx] as f32;
+                        let existing_g = pixels[idx + 1] as f32;
+                        let existing_b = pixels[idx + 2] as f32;
+
+                        pixels[idx] = (existing_r * (1.0 - alpha) + color.0 as f32 * alpha) as u8;
+                        pixels[idx + 1] =
+                            (existing_g * (1. - alpha) + color.1 as f32 * alpha) as u8;
+                        pixels[idx + 2] =
+                            (existing_b * (1. - alpha) + color.2 as f32 * alpha) as u8;
+                        pixels[idx + 3] = 255;
+                    }
+                }
+            }
+        }
+    }
+
+    // Helper function: distance from point to capsule (line segment with rounded ends)
+    fn distance_to_capsule(
+        px: f32,
+        py: f32,
+        x1: f32,
+        y1: f32,
+        x2: f32,
+        y2: f32,
+        radius: f32,
+    ) -> f32 {
+        // Vector from start to end
+        let dx = x2 - x1;
+        let dy = y2 - y1;
+        let len_sq = dx * dx + dy * dy;
+
+        // Project point onto line segment (clamped to [0, 1])
+        let t = ((px - x1) * dx + (py - y1) * dy) / len_sq;
+        let t_clamped = t.clamp(0., 1.);
+
+        // Closest point on line segment
+        let closest_x = x1 + t_clamped * dx;
+        let closest_y = y1 + t_clamped * dy;
+
+        // Distance to closest point minus radius
+        let dist_x = px - closest_x;
+        let dist_y = py - closest_y;
+        (dist_x * dist_x + dist_y * dist_y).sqrt() - radius
     }
 
     fn draw_launch_screen_static(
