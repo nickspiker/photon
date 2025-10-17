@@ -503,23 +503,20 @@ impl TMessageApp {
             let py = y_start + button_height - 1 - y_offset;
 
             // Fill grey to the right of the curve (towards center of buttons)
-            for col in (*inset as usize + 2)..total_width {
+            let col_end = total_width.min(width - x_start);
+            for col in (*inset as usize + 2)..col_end {
                 let px = x_start + col;
-                if px < width {
-                    let idx = (py * width + px) * 4;
+                let idx = (py * width + px) * 4;
 
-                    pixels[idx] = bg_r;
-                    pixels[idx + 1] = bg_g;
-                    pixels[idx + 2] = bg_b;
-                    pixels[idx + 3] = 255;
-                } else {
-                    break;
-                }
+                pixels[idx] = bg_r;
+                pixels[idx + 1] = bg_g;
+                pixels[idx + 2] = bg_b;
+                pixels[idx + 3] = 255;
             }
 
             // Outer edge pixel (blend hairline with background texture behind)
             let px = x_start + *inset as usize;
-            if px < width && (*inset as usize) < total_width {
+            if px < width {
                 let idx = (py * width + px) * 4;
 
                 let mut existing = pixels[idx] as u64
@@ -539,7 +536,7 @@ impl TMessageApp {
 
             // Inner edge pixel (blend hairline with grey button background)
             let px = x_start + *inset as usize + 1;
-            if px < width && *inset as usize + 1 < total_width {
+            if px < width {
                 let idx = (py * width + px) * 4;
 
                 let bg = bg_r as u64 | (bg_g as u64) << 16 | (bg_b as u64) << 32;
@@ -556,60 +553,50 @@ impl TMessageApp {
             y_offset += 1;
         }
 
-        // Bottom edge (horizontal) - also light hairline (this is top-right of window, both edges are light)
+        // Bottom edge (horizontal)
         let mut x_offset = start;
-        for &(inset, l, h) in &crossings {
+        let crossing_limit = crossings.len().min(width - (x_start + start));
+        for &(inset, l, h) in &crossings[..crossing_limit] {
             let i = inset as usize;
             let px = x_start + x_offset;
 
             // Fill grey above the curve (towards center of buttons)
-            if px < width {
-                for row in (i + 2)..start {
-                    let py = y_start + button_height - 1 - row;
-                    let idx = (py * width + px) * 4;
-                    pixels[idx] = bg_r;
-                    pixels[idx + 1] = bg_g;
-                    pixels[idx + 2] = bg_b;
-                    pixels[idx + 3] = 255;
-                }
-            }
-
-            // Outer edge pixel (blend hairline with background texture behind)
-            if px < width {
-                let py = y_start + button_height - 1 - i;
+            for row in (i + 2)..start {
+                let py = y_start + button_height - 1 - row;
                 let idx = (py * width + px) * 4;
-                let mut existing = pixels[idx] as u64
-                    | (pixels[idx + 1] as u64) << 16
-                    | (pixels[idx + 2] as u64) << 32;
-                let mut light = edge_colour.0 as u64
-                    | (edge_colour.1 as u64) << 16
-                    | (edge_colour.2 as u64) << 32;
-                existing *= l as u64;
-                light *= h as u64;
-                let combined = existing + light;
-                pixels[idx] = (combined >> 8) as u8;
-                pixels[idx + 1] = (combined >> 24) as u8;
-                pixels[idx + 2] = (combined >> 40) as u8;
+                pixels[idx] = bg_r;
+                pixels[idx + 1] = bg_g;
+                pixels[idx + 2] = bg_b;
                 pixels[idx + 3] = 255;
             }
 
-            // Inner edge pixel (blend hairline with grey button background)
-            if px < width {
-                let py = y_start + button_height - 1 - (i + 1);
+            // Outer edge pixel (blend hairline with background texture behind)
+            let py = y_start + button_height - 1 - i;
+            let idx = (py * width + px) * 4;
+            let mut existing = pixels[idx] as u64
+                | (pixels[idx + 1] as u64) << 16
+                | (pixels[idx + 2] as u64) << 32;
+            let mut light =
+                edge_colour.0 as u64 | (edge_colour.1 as u64) << 16 | (edge_colour.2 as u64) << 32;
+            existing *= l as u64;
+            light *= h as u64;
+            let combined = existing + light;
+            pixels[idx] = (combined >> 8) as u8;
+            pixels[idx + 1] = (combined >> 24) as u8;
+            pixels[idx + 2] = (combined >> 40) as u8;
+            pixels[idx + 3] = 255;
 
-                let idx = (py * width + px) * 4;
-                if idx + 3 < pixels.len() {
-                    let bg = bg_r as u64 | (bg_g as u64) << 16 | (bg_b as u64) << 32;
-                    let light = edge_colour.0 as u64
-                        | (edge_colour.1 as u64) << 16
-                        | (edge_colour.2 as u64) << 32;
-                    let combined = bg * h as u64 + light * l as u64;
-                    pixels[idx] = (combined >> 8) as u8;
-                    pixels[idx + 1] = (combined >> 24) as u8;
-                    pixels[idx + 2] = (combined >> 40) as u8;
-                    pixels[idx + 3] = 255;
-                }
-            }
+            // Inner edge pixel (blend hairline with grey button background)
+            let py = y_start + button_height - 1 - (i + 1);
+            let idx = (py * width + px) * 4;
+            let bg = bg_r as u64 | (bg_g as u64) << 16 | (bg_b as u64) << 32;
+            let light =
+                edge_colour.0 as u64 | (edge_colour.1 as u64) << 16 | (edge_colour.2 as u64) << 32;
+            let combined = bg * h as u64 + light * l as u64;
+            pixels[idx] = (combined >> 8) as u8;
+            pixels[idx + 1] = (combined >> 24) as u8;
+            pixels[idx + 2] = (combined >> 40) as u8;
+            pixels[idx + 3] = 255;
 
             x_offset += 1;
         }
