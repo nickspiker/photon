@@ -31,6 +31,11 @@ pub struct TMessageApp {
     drag_start_cursor_screen_pos: (f64, f64), // Global screen position when drag starts
     drag_start_size: (u32, u32),
     drag_start_window_pos: (i32, i32),
+
+    // Window control buttons
+    close_button_bounds: (f32, f32, f32, f32), // (x, y, width, height)
+    maximize_button_bounds: (f32, f32, f32, f32),
+    minimize_button_bounds: (f32, f32, f32, f32),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -53,7 +58,7 @@ impl TMessageApp {
         let renderer = Renderer::new(window, size.width, size.height).await;
         let text_renderer = TextRenderer::new();
 
-        Self {
+        let mut app = Self {
             renderer,
             text_renderer,
             window_width: size.width,
@@ -72,7 +77,12 @@ impl TMessageApp {
             drag_start_cursor_screen_pos: (0.0, 0.0),
             drag_start_size: (0, 0),
             drag_start_window_pos: (0, 0),
-        }
+            close_button_bounds: (0.0, 0.0, 0.0, 0.0),
+            maximize_button_bounds: (0.0, 0.0, 0.0, 0.0),
+            minimize_button_bounds: (0.0, 0.0, 0.0, 0.0),
+        };
+        app.update_button_bounds();
+        app
     }
 
     #[cfg(target_os = "windows")]
@@ -81,7 +91,7 @@ impl TMessageApp {
         let renderer = Renderer::new(window, size.width, size.height);
         let text_renderer = TextRenderer::new();
 
-        Self {
+        let mut app = Self {
             renderer,
             text_renderer,
             window_width: size.width,
@@ -100,14 +110,45 @@ impl TMessageApp {
             drag_start_cursor_screen_pos: (0.0, 0.0),
             drag_start_size: (0, 0),
             drag_start_window_pos: (0, 0),
-        }
+            close_button_bounds: (0.0, 0.0, 0.0, 0.0),
+            maximize_button_bounds: (0.0, 0.0, 0.0, 0.0),
+            minimize_button_bounds: (0.0, 0.0, 0.0, 0.0),
+        };
+        app.update_button_bounds();
+        app
     }
 
     pub fn resize(&mut self, size: PhysicalSize<u32>) {
         self.window_width = size.width;
         self.window_height = size.height;
         self.renderer.resize(size.width, size.height);
+        self.update_button_bounds();
         self.needs_redraw = true; // Dimensions changed, need to redraw
+    }
+
+    fn update_button_bounds(&mut self) {
+        // Button area: 3x wider than tall, extends to top-right corner of window
+        // Height = 1/32 of smaller dimension (same as resize border)
+        let smaller_dim = self.window_width.min(self.window_height) as f32;
+        let button_height = (smaller_dim / 32.0).ceil();
+        let button_width = button_height; // Each button is square
+        let total_width = button_width * 3.0;
+
+        // Buttons extend to the very top-right corner (0,0 is top-left)
+        // Bottom-left corner at (window_width - total_width, button_height)
+        let x_start = self.window_width as f32 - total_width;
+        let y_start = 0.0;
+
+        // Three buttons: minimize, maximize, close (left to right)
+        self.minimize_button_bounds = (x_start, y_start, button_width, button_height);
+        self.maximize_button_bounds =
+            (x_start + button_width, y_start, button_width, button_height);
+        self.close_button_bounds = (
+            x_start + button_width * 2.0,
+            y_start,
+            button_width,
+            button_height,
+        );
     }
 
     pub fn handle_keyboard(&mut self, event: KeyEvent) {
@@ -144,6 +185,25 @@ impl TMessageApp {
     ) {
         match state {
             ElementState::Pressed => {
+                // Check window control buttons first
+                if self.is_point_in_button(self.mouse_x, self.mouse_y, self.close_button_bounds) {
+                    std::process::exit(0);
+                } else if self.is_point_in_button(
+                    self.mouse_x,
+                    self.mouse_y,
+                    self.minimize_button_bounds,
+                ) {
+                    window.set_minimized(true);
+                    return;
+                } else if self.is_point_in_button(
+                    self.mouse_x,
+                    self.mouse_y,
+                    self.maximize_button_bounds,
+                ) {
+                    window.set_maximized(!window.is_maximized());
+                    return;
+                }
+
                 let edge = self.get_resize_edge(self.mouse_x, self.mouse_y);
                 if edge != ResizeEdge::None {
                     self.is_dragging_resize = true;
@@ -311,6 +371,11 @@ impl TMessageApp {
         }
     }
 
+    fn is_point_in_button(&self, x: f32, y: f32, bounds: (f32, f32, f32, f32)) -> bool {
+        let (bx, by, bw, bh) = bounds;
+        x >= bx && x < bx + bw && y >= by && y < by + bh
+    }
+
     fn get_resize_edge(&self, x: f32, y: f32) -> ResizeEdge {
         let resize_border = ((self.window_width.min(self.window_height) as f32) / 32.0).ceil();
 
@@ -352,11 +417,22 @@ impl TMessageApp {
     pub fn render(&mut self) {
         self.cursor_blink += 0.1;
 
-        // Only redraw CPU content if dimensions changed or content is dirty
+        // Only redraw content if dimensions changed or content is dirty
         if self.needs_redraw {
             let pixels = self.renderer.get_pixel_buffer_mut();
 
-            Self::draw_window_background(pixels, self.window_width, self.window_height);
+            Self::draw_background_texture(pixels, self.window_width, self.window_height);
+
+            let (start, edges) =
+                Self::draw_window_controls(pixels, self.window_width, self.window_height);
+
+            Self::draw_window_edges_and_mask(
+                pixels,
+                self.window_width,
+                self.window_height,
+                start,
+                edges,
+            );
 
             // 2. TODO: Draw input boxes
 
@@ -366,6 +442,398 @@ impl TMessageApp {
         }
 
         self.renderer.present();
+    }
+
+    fn draw_window_controls(
+        pixels: &mut [u8],
+        window_width: u32,
+        window_height: u32,
+    ) -> (usize, Vec<(u16, u8, u8)>) {
+        let width = window_width as usize;
+        let height = window_height as usize;
+
+        // Calculate button dimensions
+        let smaller_dim = window_width.min(window_height) as f32;
+        let button_height = (smaller_dim / 16.0).ceil() as usize;
+        let button_width = button_height;
+        let total_width = button_width * 3;
+
+        // Buttons extend to top-right corner of window
+        let x_start = width - total_width;
+        let y_start = 0;
+
+        // Build squircle crossings for bottom-left corner
+        // Use same squirdleyness as main window (24)
+        let radius = smaller_dim / 2.0;
+        let squirdleyness = 24;
+
+        let mut crossings: Vec<(u16, u8, u8)> = Vec::new();
+        let mut y = 1f32;
+        loop {
+            let y_norm = y / radius;
+            let x_norm = (1.0 - y_norm.powi(squirdleyness)).powf(1.0 / squirdleyness as f32);
+            let x = x_norm * radius;
+            let inset = radius - x;
+            if inset > 0. {
+                crossings.push((
+                    inset as u16,
+                    (inset.fract().sqrt() * 256.) as u8,
+                    ((1. - inset.fract()).sqrt() * 256.) as u8,
+                ));
+            }
+            if x < y {
+                break;
+            }
+            y += 1.;
+        }
+        let start = (radius - y) as usize;
+        let crossings: Vec<(u16, u8, u8)> = crossings.into_iter().rev().collect();
+
+        let light_colour = (75, 70, 65);
+
+        if start < button_height && crossings.len() > 0 {
+            // Left edge (vertical) - draw light hairline following squircle curve
+            let mut y_offset = start;
+            for (inset, l, h) in &crossings {
+                if y_offset >= button_height {
+                    break;
+                }
+
+                let py = y_start + button_height - 1 - y_offset;
+
+                if py >= height {
+                    y_offset += 1;
+                    continue;
+                }
+
+                // Fill grey to the right of the curve (towards center of buttons)
+                for col in (*inset as usize + 2)..total_width {
+                    let px = x_start + col;
+                    if px < width {
+                        let idx = (py * width + px) * 4;
+                        if idx + 3 < pixels.len() {
+                            pixels[idx] = 40;
+                            pixels[idx + 1] = 40;
+                            pixels[idx + 2] = 50;
+                            pixels[idx + 3] = 255;
+                        }
+                    }
+                }
+
+                let bg_r = 40u8;
+                let bg_g = 40u8;
+                let bg_b = 50u8;
+
+                // Outer edge pixel (blend hairline with background texture behind)
+                let px = x_start + *inset as usize;
+                if px < width && (*inset as usize) < total_width {
+                    let idx = (py * width + px) * 4;
+                    if idx + 3 < pixels.len() {
+                        let mut existing = pixels[idx] as u64
+                            | (pixels[idx + 1] as u64) << 16
+                            | (pixels[idx + 2] as u64) << 32;
+                        let mut light = light_colour.0 as u64
+                            | (light_colour.1 as u64) << 16
+                            | (light_colour.2 as u64) << 32;
+                        existing *= *l as u64;
+                        light *= *h as u64;
+                        let combined = existing + light;
+                        pixels[idx] = (combined >> 8) as u8;
+                        pixels[idx + 1] = (combined >> 24) as u8;
+                        pixels[idx + 2] = (combined >> 40) as u8;
+                        pixels[idx + 3] = 255;
+                    }
+                }
+
+                // Inner edge pixel (blend hairline with grey button background)
+                let px = x_start + *inset as usize + 1;
+                if px < width && *inset as usize + 1 < total_width {
+                    let idx = (py * width + px) * 4;
+                    if idx + 3 < pixels.len() {
+                        let bg = bg_r as u64 | (bg_g as u64) << 16 | (bg_b as u64) << 32;
+                        let light = light_colour.0 as u64
+                            | (light_colour.1 as u64) << 16
+                            | (light_colour.2 as u64) << 32;
+                        let combined = bg * *h as u64 + light * *l as u64;
+                        pixels[idx] = (combined >> 8) as u8;
+                        pixels[idx + 1] = (combined >> 24) as u8;
+                        pixels[idx + 2] = (combined >> 40) as u8;
+                        pixels[idx + 3] = 255;
+                    }
+                }
+
+                y_offset += 1;
+            }
+
+            // Bottom edge (horizontal) - also light hairline (this is top-right of window, both edges are light)
+            let mut x_offset = start;
+            for &(inset, l, h) in &crossings {
+                if x_offset >= total_width {
+                    break;
+                }
+
+                let i = inset as usize;
+                let px = x_start + x_offset;
+
+                if px >= width {
+                    x_offset += 1;
+                    continue;
+                }
+
+                // Fill grey above the curve (towards center of buttons)
+                for row in (i + 2)..start {
+                    let py = y_start + button_height - 1 - row;
+                    if py < height && py >= y_start {
+                        let idx = (py * width + px) * 4;
+                        if idx + 3 < pixels.len() {
+                            pixels[idx] = 40;
+                            pixels[idx + 1] = 40;
+                            pixels[idx + 2] = 50;
+                            pixels[idx + 3] = 255;
+                        }
+                    }
+                }
+
+                let bg_r = 40u8;
+                let bg_g = 40u8;
+                let bg_b = 50u8;
+
+                // Outer edge pixel (blend hairline with background texture behind)
+                let py = y_start + button_height - 1 - i;
+                if py < height && i < button_height {
+                    let idx = (py * width + px) * 4;
+                    if idx + 3 < pixels.len() {
+                        let mut existing = pixels[idx] as u64
+                            | (pixels[idx + 1] as u64) << 16
+                            | (pixels[idx + 2] as u64) << 32;
+                        let mut light = light_colour.0 as u64
+                            | (light_colour.1 as u64) << 16
+                            | (light_colour.2 as u64) << 32;
+                        existing *= l as u64;
+                        light *= h as u64;
+                        let combined = existing + light;
+                        pixels[idx] = (combined >> 8) as u8;
+                        pixels[idx + 1] = (combined >> 24) as u8;
+                        pixels[idx + 2] = (combined >> 40) as u8;
+                        pixels[idx + 3] = 255;
+                    }
+                }
+
+                // Inner edge pixel (blend hairline with grey button background)
+                if i + 1 < button_height {
+                    let py = y_start + button_height - 1 - (i + 1);
+                    if py < height {
+                        let idx = (py * width + px) * 4;
+                        if idx + 3 < pixels.len() {
+                            let bg = bg_r as u64 | (bg_g as u64) << 16 | (bg_b as u64) << 32;
+                            let light = light_colour.0 as u64
+                                | (light_colour.1 as u64) << 16
+                                | (light_colour.2 as u64) << 32;
+                            let combined = bg * h as u64 + light * l as u64;
+                            pixels[idx] = (combined >> 8) as u8;
+                            pixels[idx + 1] = (combined >> 24) as u8;
+                            pixels[idx + 2] = (combined >> 40) as u8;
+                            pixels[idx + 3] = 255;
+                        }
+                    }
+                }
+
+                x_offset += 1;
+            }
+        }
+
+        // Draw button symbols
+        Self::draw_minimize_symbol(
+            pixels,
+            width,
+            height,
+            x_start,
+            y_start,
+            button_width,
+            button_height,
+        );
+        Self::draw_maximize_symbol(
+            pixels,
+            width,
+            height,
+            x_start + button_width,
+            y_start,
+            button_width,
+            button_height,
+        );
+        Self::draw_close_symbol(
+            pixels,
+            width,
+            height,
+            x_start + button_width * 2,
+            y_start,
+            button_width,
+            button_height,
+        );
+        (start, crossings)
+    }
+
+    fn draw_minimize_symbol(
+        pixels: &mut [u8],
+        width: usize,
+        height: usize,
+        x: usize,
+        y: usize,
+        w: usize,
+        h: usize,
+    ) {
+        // Draw horizontal line in center
+        let line_thickness = (h / 10).max(1);
+        let line_y = y + h / 2;
+        let line_x_start = x + w / 4;
+        let line_x_end = x + 3 * w / 4;
+
+        for ly in line_y..line_y + line_thickness {
+            for lx in line_x_start..line_x_end {
+                if lx < width && ly < height {
+                    let idx = (ly * width + lx) * 4;
+                    if idx + 3 < pixels.len() {
+                        pixels[idx] = 200;
+                        pixels[idx + 1] = 200;
+                        pixels[idx + 2] = 210;
+                        pixels[idx + 3] = 255;
+                    }
+                }
+            }
+        }
+    }
+
+    fn draw_maximize_symbol(
+        pixels: &mut [u8],
+        width: usize,
+        height: usize,
+        x: usize,
+        y: usize,
+        w: usize,
+        h: usize,
+    ) {
+        // Draw square outline
+        let line_thickness = (h / 10).max(1);
+        let square_size = w / 2;
+        let square_x = x + w / 4;
+        let square_y = y + h / 4;
+
+        // Top and bottom edges
+        for ly in 0..line_thickness {
+            for lx in 0..square_size {
+                // Top edge
+                let px = square_x + lx;
+                let py = square_y + ly;
+                if px < width && py < height {
+                    let idx = (py * width + px) * 4;
+                    if idx + 3 < pixels.len() {
+                        pixels[idx] = 200;
+                        pixels[idx + 1] = 200;
+                        pixels[idx + 2] = 210;
+                        pixels[idx + 3] = 255;
+                    }
+                }
+
+                // Bottom edge
+                let px = square_x + lx;
+                let py = square_y + square_size - line_thickness + ly;
+                if px < width && py < height {
+                    let idx = (py * width + px) * 4;
+                    if idx + 3 < pixels.len() {
+                        pixels[idx] = 200;
+                        pixels[idx + 1] = 200;
+                        pixels[idx + 2] = 210;
+                        pixels[idx + 3] = 255;
+                    }
+                }
+            }
+        }
+
+        // Left and right edges
+        for ly in 0..square_size {
+            for lx in 0..line_thickness {
+                // Left edge
+                let px = square_x + lx;
+                let py = square_y + ly;
+                if px < width && py < height {
+                    let idx = (py * width + px) * 4;
+                    if idx + 3 < pixels.len() {
+                        pixels[idx] = 200;
+                        pixels[idx + 1] = 200;
+                        pixels[idx + 2] = 210;
+                        pixels[idx + 3] = 255;
+                    }
+                }
+
+                // Right edge
+                let px = square_x + square_size - line_thickness + lx;
+                let py = square_y + ly;
+                if px < width && py < height {
+                    let idx = (py * width + px) * 4;
+                    if idx + 3 < pixels.len() {
+                        pixels[idx] = 200;
+                        pixels[idx + 1] = 200;
+                        pixels[idx + 2] = 210;
+                        pixels[idx + 3] = 255;
+                    }
+                }
+            }
+        }
+    }
+
+    fn draw_close_symbol(
+        pixels: &mut [u8],
+        width: usize,
+        height: usize,
+        x: usize,
+        y: usize,
+        w: usize,
+        h: usize,
+    ) {
+        // Draw X with proper diagonals
+        let line_thickness = (h / 10).max(1);
+        let x_size = w / 2;
+        let x_start = x + w / 4;
+        let y_start = y + h / 4;
+
+        // Draw both diagonals
+        for i in 0..x_size {
+            // Top-left to bottom-right diagonal
+            let px1 = x_start + i;
+            let py1 = y_start + i;
+            if px1 < width && py1 < height {
+                for t in 0..line_thickness {
+                    // Thicken perpendicular to diagonal (offset by (-1, 1) direction)
+                    if py1 + t < height && px1 + t < width {
+                        let idx = ((py1 + t) * width + px1) * 4;
+                        if idx + 3 < pixels.len() {
+                            pixels[idx] = 220;
+                            pixels[idx + 1] = 100;
+                            pixels[idx + 2] = 100;
+                            pixels[idx + 3] = 255;
+                        }
+                    }
+                }
+            }
+
+            // Top-right to bottom-left diagonal
+            let px2 = x_start + x_size - i - 1;
+            let py2 = y_start + i;
+            if px2 < width && py2 < height {
+                for t in 0..line_thickness {
+                    // Thicken perpendicular to diagonal (offset by (1, 1) direction)
+                    if py2 + t < height && px2 >= t {
+                        let idx = ((py2 + t) * width + px2 - t) * 4;
+                        if idx + 3 < pixels.len() {
+                            pixels[idx] = 220;
+                            pixels[idx + 1] = 100;
+                            pixels[idx + 2] = 100;
+                            pixels[idx + 3] = 255;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fn draw_launch_screen_static(
@@ -558,11 +1026,11 @@ impl TMessageApp {
         }
     }
 
-    /// 8-fold symmetry renderer with antialiasing
-    fn draw_window_background(pixels: &mut [u8], width: u32, height: u32) {
+    /// Draw just the background texture (noisy gradient)
+    fn draw_background_texture(pixels: &mut [u8], width: u32, height: u32) {
         use rayon::prelude::*;
 
-        let bg_colour = [9u8, 12u8, 17u8];
+        let bg_colour = [6u8, 8u8, 9u8];
         let width_bytes = (width * 4) as usize;
 
         // Skip first and last rows, process middle rows in parallel
@@ -574,39 +1042,47 @@ impl TMessageApp {
             .for_each(|(row_idx, row_pixels)| {
                 let y = (row_idx + 1) as u32;
                 // Reset RNG state at start of each row (consistent scanlines)
-                let rng_seed: u32 = 0xDEADBEEF ^ ((y - height / 2) * 0x9E3779B9); // Mix in y
+                let rng_seed: u32 =
+                    0xDEADBEEF ^ ((y.wrapping_sub(height / 2)).wrapping_mul(0x9E3779B9));
                 let mut rng_state = rng_seed;
+
                 let start_colour = [
                     (rng_state % bg_colour[0] as u32) as u8,
-                    ((rng_state / bg_colour[0] as u32) % bg_colour[1] as u32) as u8,
-                    ((rng_state / (bg_colour[0] as u32 * bg_colour[1] as u32))
-                        % bg_colour[2] as u32) as u8,
+                    ((rng_state >> 8) % bg_colour[1] as u32) as u8,
+                    ((rng_state >> 16) % bg_colour[2] as u32) as u8,
                 ];
                 let mut fill_colour = start_colour;
 
+                // Right half: left-to-right
                 for x in width / 2..width - 1 {
-                    // Fast xorshift RNG
-                    rng_state ^= rng_state.rotate_left(1) + 1;
-                    let mut rand = rng_state as u8;
+                    rng_state ^= rng_state.rotate_left(5).wrapping_add(7);
 
-                    if rand % 3 == 2 {
-                        fill_colour[0] = fill_colour[0] + 1;
-                    } else if rand % 3 == 0 {
-                        fill_colour[0] = fill_colour[0] - 1;
-                    }
-                    rand = rand / 3;
-                    if rand % 3 == 2 {
-                        fill_colour[1] = fill_colour[1] + 1;
-                    } else if rand % 3 == 0 {
-                        fill_colour[1] = fill_colour[1] - 1;
-                    }
-                    rand = rand / 3;
-                    if rand % 3 == 2 {
-                        fill_colour[2] = fill_colour[2] + 1;
-                    } else if rand % 3 == 0 {
-                        fill_colour[2] = fill_colour[2] - 1;
+                    // Extract 2 bits per channel from different parts of rng_state
+                    // Values: 0, 1, 2, 3  →  we'll map to: -1, 0, +1, 0
+                    let r0 = (rng_state & 0x03) as u8;
+                    let r1 = ((rng_state >> 5) & 0x03) as u8;
+                    let r2 = ((rng_state >> 19) & 0x03) as u8;
+
+                    // Apply deltas: 0→-1, 2→+1, 1,3→0
+                    if r0 == 0 {
+                        fill_colour[0] = fill_colour[0].wrapping_sub(1);
+                    } else if r0 == 2 {
+                        fill_colour[0] = fill_colour[0].wrapping_add(1);
                     }
 
+                    if r1 == 0 {
+                        fill_colour[1] = fill_colour[1].wrapping_sub(1);
+                    } else if r1 == 2 {
+                        fill_colour[1] = fill_colour[1].wrapping_add(1);
+                    }
+
+                    if r2 == 0 {
+                        fill_colour[2] = fill_colour[2].wrapping_sub(1);
+                    } else if r2 == 2 {
+                        fill_colour[2] = fill_colour[2].wrapping_add(1);
+                    }
+
+                    // Clamp to valid ranges
                     if (fill_colour[0] as i8).is_negative() {
                         fill_colour[0] = bg_colour[0];
                     } else if fill_colour[0] > bg_colour[0] {
@@ -615,45 +1091,48 @@ impl TMessageApp {
                     if (fill_colour[1] as i8).is_negative() {
                         fill_colour[1] = 0;
                     } else if fill_colour[1] > bg_colour[1] {
-                        fill_colour[1] = bg_colour[1]
+                        fill_colour[1] = bg_colour[1];
                     }
                     if (fill_colour[2] as i8).is_negative() {
                         fill_colour[2] = 0;
                     } else if fill_colour[2] > bg_colour[2] {
-                        fill_colour[2] = bg_colour[2]
+                        fill_colour[2] = bg_colour[2];
                     }
 
                     let pixel_idx = (x * 4) as usize;
-                    row_pixels[pixel_idx] = fill_colour[0] + 6;
-                    row_pixels[pixel_idx + 1] = fill_colour[1] + 9;
-                    row_pixels[pixel_idx + 2] = fill_colour[2] + 22;
+                    row_pixels[pixel_idx] = fill_colour[0] + 16;
+                    row_pixels[pixel_idx + 1] = fill_colour[1] + 17;
+                    row_pixels[pixel_idx + 2] = fill_colour[2] + 20;
                     row_pixels[pixel_idx + 3] = 255;
                 }
 
+                // Left half: right-to-left (mirror)
                 rng_state = rng_seed;
                 fill_colour = start_colour;
 
                 for x in (1..width / 2).rev() {
-                    // Fast xorshift RNG
-                    rng_state ^= rng_state.rotate_right(1) - 1;
-                    let mut rand = rng_state as u8;
+                    rng_state ^= rng_state.rotate_left(5).wrapping_sub(7);
 
-                    if rand % 3 == 2 {
-                        fill_colour[0] = fill_colour[0] + 1;
-                    } else if rand % 3 == 0 {
-                        fill_colour[0] = fill_colour[0] - 1;
+                    let r0 = (rng_state & 0x03) as u8;
+                    let r1 = ((rng_state >> 5) & 0x03) as u8;
+                    let r2 = ((rng_state >> 19) & 0x03) as u8;
+
+                    if r0 == 0 {
+                        fill_colour[0] = fill_colour[0].wrapping_sub(1);
+                    } else if r0 == 2 {
+                        fill_colour[0] = fill_colour[0].wrapping_add(1);
                     }
-                    rand = rand / 3;
-                    if rand % 3 == 2 {
-                        fill_colour[1] = fill_colour[1] + 1;
-                    } else if rand % 3 == 0 {
-                        fill_colour[1] = fill_colour[1] - 1;
+
+                    if r1 == 0 {
+                        fill_colour[1] = fill_colour[1].wrapping_sub(1);
+                    } else if r1 == 2 {
+                        fill_colour[1] = fill_colour[1].wrapping_add(1);
                     }
-                    rand = rand / 3;
-                    if rand % 3 == 2 {
-                        fill_colour[2] = fill_colour[2] + 1;
-                    } else if rand % 3 == 0 {
-                        fill_colour[2] = fill_colour[2] - 1;
+
+                    if r2 == 0 {
+                        fill_colour[2] = fill_colour[2].wrapping_sub(1);
+                    } else if r2 == 2 {
+                        fill_colour[2] = fill_colour[2].wrapping_add(1);
                     }
 
                     if (fill_colour[0] as i8).is_negative() {
@@ -664,22 +1143,31 @@ impl TMessageApp {
                     if (fill_colour[1] as i8).is_negative() {
                         fill_colour[1] = 0;
                     } else if fill_colour[1] > bg_colour[1] {
-                        fill_colour[1] = bg_colour[1]
+                        fill_colour[1] = bg_colour[1];
                     }
                     if (fill_colour[2] as i8).is_negative() {
                         fill_colour[2] = 0;
                     } else if fill_colour[2] > bg_colour[2] {
-                        fill_colour[2] = bg_colour[2]
+                        fill_colour[2] = bg_colour[2];
                     }
 
                     let pixel_idx = (x * 4) as usize;
-                    row_pixels[pixel_idx] = fill_colour[0] + 6;
-                    row_pixels[pixel_idx + 1] = fill_colour[1] + 9;
-                    row_pixels[pixel_idx + 2] = fill_colour[2] + 22;
+                    row_pixels[pixel_idx] = fill_colour[0] + 16;
+                    row_pixels[pixel_idx + 1] = fill_colour[1] + 17;
+                    row_pixels[pixel_idx + 2] = fill_colour[2] + 20;
                     row_pixels[pixel_idx + 3] = 255;
                 }
             });
+    }
 
+    /// Draw window edge hairlines and apply squircle alpha mask
+    fn draw_window_edges_and_mask(
+        pixels: &mut [u8],
+        width: u32,
+        height: u32,
+        start: usize,
+        crossings: Vec<(u16, u8, u8)>,
+    ) {
         let light_colour = (75, 70, 65);
         let shadow_colour = (52, 60, 68);
 
@@ -719,33 +1207,6 @@ impl TMessageApp {
             pixels[idx as usize + 2] = shadow_colour.2;
             pixels[idx as usize + 3] = 255;
         }
-
-        // Squirtle shape alpha mask: radius = smaller_dimension / 2
-        let smaller_dim = width.min(height);
-        let radius = smaller_dim as f32 / 2f32;
-
-        // Compute horizontal crossings until slope reaches 45°
-        let mut crossings: Vec<f32> = Vec::new();
-
-        let mut y = 1f32;
-        let squirdleyness = 24;
-        loop {
-            // Normalize to [0, 1] to prevent f32 overflow for high squirdleyness values
-            let y_norm = y / radius;
-            let x_norm = (1.0 - y_norm.powi(squirdleyness)).powf(1.0 / squirdleyness as f32);
-            let x = x_norm * radius;
-            let inset = radius - x;
-            if inset > 0. {
-                crossings.push(inset);
-            }
-            if x < y {
-                // Slope exceeds 45°
-                break;
-            }
-            y += 1.;
-        }
-        let start = (radius - y) as usize;
-        let crossings: Vec<f32> = crossings.into_iter().rev().collect();
 
         // Fill four corner squares
         for row in 0..start {
@@ -788,49 +1249,66 @@ impl TMessageApp {
         // Top left/right edges
         let mut y_top = start;
         for crossing in 0..crossings.len() {
-            let inset = crossings[crossing];
-            let i = inset as usize;
-
+            let (inset, l, h) = crossings[crossing];
             // Left edge fill
-            for idx in y_top * width as usize..y_top * width as usize + i {
+            for idx in y_top * width as usize..y_top * width as usize + inset as usize {
                 pixels[idx * 4] = 0;
                 pixels[idx * 4 + 1] = 0;
                 pixels[idx * 4 + 2] = 0;
                 pixels[idx * 4 + 3] = 0;
             }
 
-            let alias = ((inset - i as f32) * 256.) as u8;
+            // Left edge outer pixel
+            let idx = (y_top * width as usize + inset as usize) * 4;
+            let light = light_colour.0 as u64
+                | (light_colour.1 as u64) << 16
+                | (light_colour.2 as u64) << 32;
+            let result = light * h as u64;
+            pixels[idx] = (result >> 8) as u8;
+            pixels[idx + 1] = (result >> 24) as u8;
+            pixels[idx + 2] = (result >> 40) as u8;
+            pixels[idx + 3] = h;
 
-            // Outer edge pixel
-            let idx = (y_top * width as usize + i) * 4;
-            pixels[idx] = ((255 - alias as u16) * light_colour.0 as u16 >> 8) as u8;
-            pixels[idx + 1] = ((255 - alias as u16) * light_colour.1 as u16 >> 8) as u8;
-            pixels[idx + 2] = ((255 - alias as u16) * light_colour.2 as u16 >> 8) as u8;
-            pixels[idx + 3] = 255 - alias;
-
-            // Inner edge pixel
+            // Left edge inner pixel
             let idx = idx + 4;
-            pixels[idx] = pixels[idx] + ((light_colour.0 as u16 * alias as u16) >> 8) as u8;
-            pixels[idx + 1] = pixels[idx + 1] + ((light_colour.1 as u16 * alias as u16) >> 8) as u8;
-            pixels[idx + 2] = pixels[idx + 2] + ((light_colour.2 as u16 * alias as u16) >> 8) as u8;
+            let existing = pixels[idx] as u64
+                | (pixels[idx + 1] as u64) << 16
+                | (pixels[idx + 2] as u64) << 32;
+            let light = light_colour.0 as u64
+                | (light_colour.1 as u64) << 16
+                | (light_colour.2 as u64) << 32;
+            let combined = existing * h as u64 + light * l as u64;
+            pixels[idx] = (combined >> 8) as u8;
+            pixels[idx + 1] = (combined >> 24) as u8;
+            pixels[idx + 2] = (combined >> 40) as u8;
 
-            // Right edge - outer pixel
-            let idx = (y_top * width as usize + width as usize - 1 - i) * 4;
-            pixels[idx] = ((255 - alias as u16) * shadow_colour.0 as u16 >> 8) as u8;
-            pixels[idx + 1] = ((255 - alias as u16) * shadow_colour.1 as u16 >> 8) as u8;
-            pixels[idx + 2] = ((255 - alias as u16) * shadow_colour.2 as u16 >> 8) as u8;
-            pixels[idx + 3] = 255 - alias;
+            // Right edge inner pixel
+            let idx = (y_top * width as usize + width as usize - 2 - inset as usize) * 4;
+            let existing = pixels[idx] as u64
+                | (pixels[idx + 1] as u64) << 16
+                | (pixels[idx + 2] as u64) << 32;
+            let shadow = shadow_colour.0 as u64
+                | (shadow_colour.1 as u64) << 16
+                | (shadow_colour.2 as u64) << 32;
+            let combined = existing * h as u64 + shadow * l as u64;
+            pixels[idx] = (combined >> 8) as u8;
+            pixels[idx + 1] = (combined >> 24) as u8;
+            pixels[idx + 2] = (combined >> 40) as u8;
 
-            // Right edge - inner pixel
-            let idx = idx - 4;
-            pixels[idx] = pixels[idx] + ((shadow_colour.0 as u16 * alias as u16) >> 8) as u8;
-            pixels[idx + 1] =
-                pixels[idx + 1] + ((shadow_colour.1 as u16 * alias as u16) >> 8) as u8;
-            pixels[idx + 2] =
-                pixels[idx + 2] + ((shadow_colour.2 as u16 * alias as u16) >> 8) as u8;
+            // Right edge outer pixel
+            let idx = idx + 4;
+            let light = shadow_colour.0 as u64
+                | (shadow_colour.1 as u64) << 16
+                | (shadow_colour.2 as u64) << 32;
+            let result = light * h as u64;
+            pixels[idx] = (result >> 8) as u8;
+            pixels[idx + 1] = (result >> 24) as u8;
+            pixels[idx + 2] = (result >> 40) as u8;
+            pixels[idx + 3] = h;
 
             // Right edge fill
-            for idx in (y_top * width as usize + width as usize - i)..((y_top + 1) * width as usize)
+            for idx in (y_top * width as usize + width as usize - inset as usize)
+                ..((y_top + 1) * width as usize)
             {
                 pixels[idx * 4] = 0;
                 pixels[idx * 4 + 1] = 0;
@@ -843,50 +1321,67 @@ impl TMessageApp {
         // Bottom left/right edges
         let mut y_bottom = height as usize - start - 1;
         for crossing in 0..crossings.len() {
-            let inset = crossings[crossing];
-            let i = inset as usize;
+            let (inset, l, h) = crossings[crossing];
 
             // Left edge fill
-            for idx in y_bottom * width as usize..y_bottom * width as usize + i {
+            for idx in y_bottom * width as usize..y_bottom * width as usize + inset as usize {
                 pixels[idx * 4] = 0;
                 pixels[idx * 4 + 1] = 0;
                 pixels[idx * 4 + 2] = 0;
                 pixels[idx * 4 + 3] = 0;
             }
 
-            let alias = ((inset - i as f32) * 256.) as u8;
+            // Left outer edge pixel
+            let idx = (y_bottom * width as usize + inset as usize) * 4;
+            let light = light_colour.0 as u64
+                | (light_colour.1 as u64) << 16
+                | (light_colour.2 as u64) << 32;
+            let result = light * h as u64;
+            pixels[idx] = (result >> 8) as u8;
+            pixels[idx + 1] = (result >> 24) as u8;
+            pixels[idx + 2] = (result >> 40) as u8;
+            pixels[idx + 3] = h;
 
-            // Left edge - outer pixel
-            let idx = (y_bottom * width as usize + i) * 4;
-            pixels[idx] = ((255 - alias as u16) * light_colour.0 as u16 >> 8) as u8;
-            pixels[idx + 1] = ((255 - alias as u16) * light_colour.1 as u16 >> 8) as u8;
-            pixels[idx + 2] = ((255 - alias as u16) * light_colour.2 as u16 >> 8) as u8;
-            pixels[idx + 3] = 255 - alias;
-
-            // Left edge - inner pixel
+            // Left inner edge pixel
             let idx = idx + 4;
-            pixels[idx] = pixels[idx] + ((light_colour.0 as u16 * alias as u16) >> 8) as u8;
-            pixels[idx + 1] = pixels[idx + 1] + ((light_colour.1 as u16 * alias as u16) >> 8) as u8;
-            pixels[idx + 2] = pixels[idx + 2] + ((light_colour.2 as u16 * alias as u16) >> 8) as u8;
+            let existing = pixels[idx] as u64
+                | (pixels[idx + 1] as u64) << 16
+                | (pixels[idx + 2] as u64) << 32;
+            let light = light_colour.0 as u64
+                | (light_colour.1 as u64) << 16
+                | (light_colour.2 as u64) << 32;
+            let combined = existing * h as u64 + light * l as u64;
+            pixels[idx] = (combined >> 8) as u8;
+            pixels[idx + 1] = (combined >> 24) as u8;
+            pixels[idx + 2] = (combined >> 40) as u8;
 
-            // Right edge - outer pixel
-            let idx = (y_bottom * width as usize + width as usize - 1 - i) * 4;
-            pixels[idx] = ((255 - alias as u16) * shadow_colour.0 as u16 >> 8) as u8;
-            pixels[idx + 1] = ((255 - alias as u16) * shadow_colour.1 as u16 >> 8) as u8;
-            pixels[idx + 2] = ((255 - alias as u16) * shadow_colour.2 as u16 >> 8) as u8;
-            pixels[idx + 3] = 255 - alias;
+            // Right edge inner pixel
+            let idx = (y_bottom * width as usize + width as usize - 2 - inset as usize) * 4;
+            let existing = pixels[idx] as u64
+                | (pixels[idx + 1] as u64) << 16
+                | (pixels[idx + 2] as u64) << 32;
+            let shadow = shadow_colour.0 as u64
+                | (shadow_colour.1 as u64) << 16
+                | (shadow_colour.2 as u64) << 32;
+            let combined = existing * h as u64 + shadow * l as u64;
+            pixels[idx] = (combined >> 8) as u8;
+            pixels[idx + 1] = (combined >> 24) as u8;
+            pixels[idx + 2] = (combined >> 40) as u8;
 
-            // Right edge - inner pixel
-            let idx = idx - 4;
-            pixels[idx] = pixels[idx] + ((shadow_colour.0 as u16 * alias as u16) >> 8) as u8;
-            pixels[idx + 1] =
-                pixels[idx + 1] + ((shadow_colour.1 as u16 * alias as u16) >> 8) as u8;
-            pixels[idx + 2] =
-                pixels[idx + 2] + ((shadow_colour.2 as u16 * alias as u16) >> 8) as u8;
+            // Right edge outer pixel
+            let idx = idx + 4;
+            let light = shadow_colour.0 as u64
+                | (shadow_colour.1 as u64) << 16
+                | (shadow_colour.2 as u64) << 32;
+            let result = light * h as u64;
+            pixels[idx] = (result >> 8) as u8;
+            pixels[idx + 1] = (result >> 24) as u8;
+            pixels[idx + 2] = (result >> 40) as u8;
+            pixels[idx + 3] = h;
 
             // Right edge fill
-            for idx in
-                (y_bottom * width as usize + width as usize - i)..((y_bottom + 1) * width as usize)
+            for idx in (y_bottom * width as usize + width as usize - inset as usize)
+                ..((y_bottom + 1) * width as usize)
             {
                 pixels[idx * 4] = 0;
                 pixels[idx * 4 + 1] = 0;
@@ -900,11 +1395,10 @@ impl TMessageApp {
         // Left side top/bottom edges
         let mut x_left = start;
         for crossing in 0..crossings.len() {
-            let inset = crossings[crossing];
-            let i = inset as usize;
+            let (inset, l, h) = crossings[crossing];
 
             // Top edge fill
-            for row in 0..i {
+            for row in 0..inset as usize {
                 let idx = (row * width as usize + x_left) * 4;
                 pixels[idx] = 0;
                 pixels[idx + 1] = 0;
@@ -912,38 +1406,56 @@ impl TMessageApp {
                 pixels[idx + 3] = 0;
             }
 
-            let alias = ((inset - i as f32) * 256.) as u8;
+            // Top outer edge pixel
+            let idx = (inset as usize * width as usize + x_left) * 4;
+            let light = light_colour.0 as u64
+                | (light_colour.1 as u64) << 16
+                | (light_colour.2 as u64) << 32;
+            let result = light * h as u64;
+            pixels[idx] = (result >> 8) as u8;
+            pixels[idx + 1] = (result >> 24) as u8;
+            pixels[idx + 2] = (result >> 40) as u8;
+            pixels[idx + 3] = h;
 
-            // Top edge - outer pixel
-            let idx = (i * width as usize + x_left) * 4;
-            pixels[idx] = ((255 - alias as u16) * light_colour.0 as u16 >> 8) as u8;
-            pixels[idx + 1] = ((255 - alias as u16) * light_colour.1 as u16 >> 8) as u8;
-            pixels[idx + 2] = ((255 - alias as u16) * light_colour.2 as u16 >> 8) as u8;
-            pixels[idx + 3] = 255 - alias;
+            // Top inner edge pixel
+            let idx = ((inset as usize + 1) * width as usize + x_left) * 4;
+            let existing = pixels[idx] as u64
+                | (pixels[idx + 1] as u64) << 16
+                | (pixels[idx + 2] as u64) << 32;
+            let light = light_colour.0 as u64
+                | (light_colour.1 as u64) << 16
+                | (light_colour.2 as u64) << 32;
+            let combined = existing * h as u64 + light * l as u64;
+            pixels[idx] = (combined >> 8) as u8;
+            pixels[idx + 1] = (combined >> 24) as u8;
+            pixels[idx + 2] = (combined >> 40) as u8;
 
-            // Top edge - inner pixel
-            let idx = ((i + 1) * width as usize + x_left) * 4;
-            pixels[idx] = pixels[idx] + ((light_colour.0 as u16 * alias as u16) >> 8) as u8;
-            pixels[idx + 1] = pixels[idx + 1] + ((light_colour.1 as u16 * alias as u16) >> 8) as u8;
-            pixels[idx + 2] = pixels[idx + 2] + ((light_colour.2 as u16 * alias as u16) >> 8) as u8;
+            // Bottom outer edge pixel
+            let idx = ((height as usize - 1 - inset as usize) * width as usize + x_left) * 4;
+            let shadow = shadow_colour.0 as u64
+                | (shadow_colour.1 as u64) << 16
+                | (shadow_colour.2 as u64) << 32;
+            let result = shadow * h as u64;
+            pixels[idx] = (result >> 8) as u8;
+            pixels[idx + 1] = (result >> 24) as u8;
+            pixels[idx + 2] = (result >> 40) as u8;
+            pixels[idx + 3] = h;
 
-            // Bottom edge - outer pixel
-            let idx = ((height as usize - 1 - i) * width as usize + x_left) * 4;
-            pixels[idx] = ((255 - alias as u16) * shadow_colour.0 as u16 >> 8) as u8;
-            pixels[idx + 1] = ((255 - alias as u16) * shadow_colour.1 as u16 >> 8) as u8;
-            pixels[idx + 2] = ((255 - alias as u16) * shadow_colour.2 as u16 >> 8) as u8;
-            pixels[idx + 3] = 255 - alias;
-
-            // Bottom edge - inner pixel
-            let idx = ((height as usize - 2 - i) * width as usize + x_left) * 4;
-            pixels[idx] = pixels[idx] + ((shadow_colour.0 as u16 * alias as u16) >> 8) as u8;
-            pixels[idx + 1] =
-                pixels[idx + 1] + ((shadow_colour.1 as u16 * alias as u16) >> 8) as u8;
-            pixels[idx + 2] =
-                pixels[idx + 2] + ((shadow_colour.2 as u16 * alias as u16) >> 8) as u8;
+            // Bottom inner edge pixel
+            let idx = ((height as usize - 2 - inset as usize) * width as usize + x_left) * 4;
+            let existing = pixels[idx] as u64
+                | (pixels[idx + 1] as u64) << 16
+                | (pixels[idx + 2] as u64) << 32;
+            let shadow = shadow_colour.0 as u64
+                | (shadow_colour.1 as u64) << 16
+                | (shadow_colour.2 as u64) << 32;
+            let combined = existing * h as u64 + shadow * l as u64;
+            pixels[idx] = (combined >> 8) as u8;
+            pixels[idx + 1] = (combined >> 24) as u8;
+            pixels[idx + 2] = (combined >> 40) as u8;
 
             // Bottom edge fill
-            for row in (height as usize - i)..height as usize {
+            for row in (height as usize - inset as usize)..height as usize {
                 let idx = (row * width as usize + x_left) * 4;
                 pixels[idx] = 0;
                 pixels[idx + 1] = 0;
@@ -957,11 +1469,10 @@ impl TMessageApp {
         // Right side top/bottom edges
         let mut x_right = width as usize - start - 1;
         for crossing in 0..crossings.len() {
-            let inset = crossings[crossing];
-            let i = inset as usize;
+            let (inset, l, h) = crossings[crossing];
 
             // Top edge fill
-            for row in 0..i {
+            for row in 0..inset as usize {
                 let idx = (row * width as usize + x_right) * 4;
                 pixels[idx] = 0;
                 pixels[idx + 1] = 0;
@@ -969,38 +1480,56 @@ impl TMessageApp {
                 pixels[idx + 3] = 0;
             }
 
-            let alias = ((inset - i as f32) * 256.) as u8;
+            // Top outer edge pixel
+            let idx = (inset as usize * width as usize + x_right) * 4;
+            let light = light_colour.0 as u64
+                | (light_colour.1 as u64) << 16
+                | (light_colour.2 as u64) << 32;
+            let result = light * h as u64;
+            pixels[idx] = (result >> 8) as u8;
+            pixels[idx + 1] = (result >> 24) as u8;
+            pixels[idx + 2] = (result >> 40) as u8;
+            pixels[idx + 3] = h;
 
-            // Top edge - outer pixel
-            let idx = (i * width as usize + x_right) * 4;
-            pixels[idx] = ((255 - alias as u16) * light_colour.0 as u16 >> 8) as u8;
-            pixels[idx + 1] = ((255 - alias as u16) * light_colour.1 as u16 >> 8) as u8;
-            pixels[idx + 2] = ((255 - alias as u16) * light_colour.2 as u16 >> 8) as u8;
-            pixels[idx + 3] = 255 - alias;
+            // Top inner edge pixel
+            let idx = ((inset as usize + 1) * width as usize + x_right) * 4;
+            let existing = pixels[idx] as u64
+                | (pixels[idx + 1] as u64) << 16
+                | (pixels[idx + 2] as u64) << 32;
+            let light = light_colour.0 as u64
+                | (light_colour.1 as u64) << 16
+                | (light_colour.2 as u64) << 32;
+            let combined = existing * h as u64 + light * l as u64;
+            pixels[idx] = (combined >> 8) as u8;
+            pixels[idx + 1] = (combined >> 24) as u8;
+            pixels[idx + 2] = (combined >> 40) as u8;
 
-            // Top edge - inner pixel
-            let idx = ((i + 1) * width as usize + x_right) * 4;
-            pixels[idx] = pixels[idx] + ((light_colour.0 as u16 * alias as u16) >> 8) as u8;
-            pixels[idx + 1] = pixels[idx + 1] + ((light_colour.1 as u16 * alias as u16) >> 8) as u8;
-            pixels[idx + 2] = pixels[idx + 2] + ((light_colour.2 as u16 * alias as u16) >> 8) as u8;
+            // Bottom outer edge pixel
+            let idx = ((height as usize - 1 - inset as usize) * width as usize + x_right) * 4;
+            let shadow = shadow_colour.0 as u64
+                | (shadow_colour.1 as u64) << 16
+                | (shadow_colour.2 as u64) << 32;
+            let result = shadow * h as u64;
+            pixels[idx] = (result >> 8) as u8;
+            pixels[idx + 1] = (result >> 24) as u8;
+            pixels[idx + 2] = (result >> 40) as u8;
+            pixels[idx + 3] = h;
 
-            // Bottom edge - outer pixel
-            let idx = ((height as usize - 1 - i) * width as usize + x_right) * 4;
-            pixels[idx] = ((255 - alias as u16) * shadow_colour.0 as u16 >> 8) as u8;
-            pixels[idx + 1] = ((255 - alias as u16) * shadow_colour.1 as u16 >> 8) as u8;
-            pixels[idx + 2] = ((255 - alias as u16) * shadow_colour.2 as u16 >> 8) as u8;
-            pixels[idx + 3] = 255 - alias;
-
-            // Bottom edge - inner pixel
-            let idx = ((height as usize - 2 - i) * width as usize + x_right) * 4;
-            pixels[idx] = pixels[idx] + ((shadow_colour.0 as u16 * alias as u16) >> 8) as u8;
-            pixels[idx + 1] =
-                pixels[idx + 1] + ((shadow_colour.1 as u16 * alias as u16) >> 8) as u8;
-            pixels[idx + 2] =
-                pixels[idx + 2] + ((shadow_colour.2 as u16 * alias as u16) >> 8) as u8;
+            // Bottom inner edge pixel
+            let idx = ((height as usize - 2 - inset as usize) * width as usize + x_right) * 4;
+            let existing = pixels[idx] as u64
+                | (pixels[idx + 1] as u64) << 16
+                | (pixels[idx + 2] as u64) << 32;
+            let shadow = shadow_colour.0 as u64
+                | (shadow_colour.1 as u64) << 16
+                | (shadow_colour.2 as u64) << 32;
+            let combined = existing * h as u64 + shadow * l as u64;
+            pixels[idx] = (combined >> 8) as u8;
+            pixels[idx + 1] = (combined >> 24) as u8;
+            pixels[idx + 2] = (combined >> 40) as u8;
 
             // Bottom edge fill
-            for row in (height as usize - i)..height as usize {
+            for row in (height as usize - inset as usize)..height as usize {
                 let idx = (row * width as usize + x_right) * 4;
                 pixels[idx] = 0;
                 pixels[idx + 1] = 0;
