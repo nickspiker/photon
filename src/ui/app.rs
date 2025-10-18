@@ -44,6 +44,11 @@ pub struct PhotonApp {
     button_curve_start: usize,
     button_crossings: Vec<(u16, u8, u8)>,
 
+    // Cached button pixel coordinates for fast hover effects
+    minimize_pixels: Vec<usize>,
+    maximize_pixels: Vec<usize>,
+    close_pixels: Vec<usize>,
+
     // Hit test bitmap (one byte per pixel, element ID)
     hit_test_map: Vec<u8>,
     debug_hit_test: bool,
@@ -55,6 +60,11 @@ const HIT_MINIMIZE_BUTTON: u8 = 1;
 const HIT_MAXIMIZE_BUTTON: u8 = 2;
 const HIT_CLOSE_BUTTON: u8 = 3;
 const HIT_DEBUG_INIT: u8 = 255; // For visualizing what areas get reset
+
+// Button hover color deltas (applied on hover, negated on unhover)
+const CLOSE_HOVER: (i8, i8, i8) = (33, -3, -7); // Red
+const MAXIMIZE_HOVER: (i8, i8, i8) = (-6, 16, -6); // Green
+const MINIMIZE_HOVER: (i8, i8, i8) = (-9, -6, 37); // Blue
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum HoveredButton {
@@ -111,6 +121,9 @@ impl PhotonApp {
             button_height: 0,
             button_curve_start: 0,
             button_crossings: Vec::new(),
+            minimize_pixels: Vec::new(),
+            maximize_pixels: Vec::new(),
+            close_pixels: Vec::new(),
             hit_test_map: vec![0; (size.width * size.height) as usize],
             debug_hit_test: false,
         };
@@ -151,6 +164,9 @@ impl PhotonApp {
             button_height: 0,
             button_curve_start: 0,
             button_crossings: Vec::new(),
+            minimize_pixels: Vec::new(),
+            maximize_pixels: Vec::new(),
+            close_pixels: Vec::new(),
             hit_test_map: vec![0; (size.width * size.height) as usize],
             debug_hit_test: false,
         };
@@ -163,7 +179,8 @@ impl PhotonApp {
         self.window_height = size.height;
         self.renderer.resize(size.width, size.height);
         self.update_button_bounds();
-        self.hit_test_map.resize((size.width * size.height) as usize, 0);
+        self.hit_test_map
+            .resize((size.width * size.height) as usize, 0);
         self.needs_redraw = true; // Dimensions changed, need to redraw
     }
 
@@ -209,7 +226,8 @@ impl PhotonApp {
                     if c == "h" || c == "H" {
                         self.debug_hit_test = !self.debug_hit_test;
                         self.needs_redraw = true;
-                    } else if c.chars()
+                    } else if c
+                        .chars()
                         .all(|ch| ch.is_alphanumeric() || ch == '_' || ch == '-')
                     {
                         // Only allow alphanumeric and basic chars for username
@@ -230,23 +248,28 @@ impl PhotonApp {
     ) {
         match state {
             ElementState::Pressed => {
-                // Check window control buttons first
-                if self.is_point_in_button(self.mouse_x, self.mouse_y, self.close_button_bounds) {
-                    std::process::exit(0);
-                } else if self.is_point_in_button(
-                    self.mouse_x,
-                    self.mouse_y,
-                    self.minimize_button_bounds,
-                ) {
-                    window.set_minimized(true);
-                    return;
-                } else if self.is_point_in_button(
-                    self.mouse_x,
-                    self.mouse_y,
-                    self.maximize_button_bounds,
-                ) {
-                    window.set_maximized(!window.is_maximized());
-                    return;
+                // Check window control buttons using hitmap
+                let mouse_x = self.mouse_x as usize;
+                let mouse_y = self.mouse_y as usize;
+
+                if mouse_x < self.window_width as usize && mouse_y < self.window_height as usize {
+                    let hit_idx = mouse_y * self.window_width as usize + mouse_x;
+                    let element_id = self.hit_test_map[hit_idx];
+
+                    match element_id {
+                        HIT_CLOSE_BUTTON => {
+                            std::process::exit(0);
+                        }
+                        HIT_MINIMIZE_BUTTON => {
+                            window.set_minimized(true);
+                            return;
+                        }
+                        HIT_MAXIMIZE_BUTTON => {
+                            window.set_maximized(!window.is_maximized());
+                            return;
+                        }
+                        _ => {}
+                    }
                 }
 
                 let edge = self.get_resize_edge(self.mouse_x, self.mouse_y);
@@ -402,22 +425,22 @@ impl PhotonApp {
                     window.request_inner_size(winit::dpi::PhysicalSize::new(new_width, new_height));
             }
         } else {
-            // Check button hover state
+            // Check button hover state using hitmap
             let old_hovered = self.hovered_button;
-            if self.is_point_in_button(self.mouse_x, self.mouse_y, self.close_button_bounds) {
-                self.hovered_button = HoveredButton::Close;
-            } else if self.is_point_in_button(
-                self.mouse_x,
-                self.mouse_y,
-                self.maximize_button_bounds,
-            ) {
-                self.hovered_button = HoveredButton::Maximize;
-            } else if self.is_point_in_button(
-                self.mouse_x,
-                self.mouse_y,
-                self.minimize_button_bounds,
-            ) {
-                self.hovered_button = HoveredButton::Minimize;
+
+            // Get hit test value at mouse position
+            let mouse_x = self.mouse_x as usize;
+            let mouse_y = self.mouse_y as usize;
+            if mouse_x < self.window_width as usize && mouse_y < self.window_height as usize {
+                let hit_idx = mouse_y * self.window_width as usize + mouse_x;
+                let element_id = self.hit_test_map[hit_idx];
+
+                self.hovered_button = match element_id {
+                    HIT_CLOSE_BUTTON => HoveredButton::Close,
+                    HIT_MAXIMIZE_BUTTON => HoveredButton::Maximize,
+                    HIT_MINIMIZE_BUTTON => HoveredButton::Minimize,
+                    _ => HoveredButton::None,
+                };
             } else {
                 self.hovered_button = HoveredButton::None;
             }
@@ -427,40 +450,77 @@ impl PhotonApp {
                 let pixels = self.renderer.get_pixel_buffer_mut();
 
                 // Unhover old button
-                if old_hovered == HoveredButton::Close {
-                    Self::draw_close_button_hover(
-                        pixels,
-                        self.window_width as usize,
-                        self.button_x_start,
-                        self.button_height,
-                        self.button_curve_start,
-                        &self.button_crossings,
-                        false,
-                    );
+                match old_hovered {
+                    HoveredButton::Close => {
+                        Self::draw_button_hover_by_pixels(
+                            pixels,
+                            &self.close_pixels,
+                            false,
+                            HoveredButton::Close,
+                        );
+                    }
+                    HoveredButton::Maximize => {
+                        Self::draw_button_hover_by_pixels(
+                            pixels,
+                            &self.maximize_pixels,
+                            false,
+                            HoveredButton::Maximize,
+                        );
+                    }
+                    HoveredButton::Minimize => {
+                        Self::draw_button_hover_by_pixels(
+                            pixels,
+                            &self.minimize_pixels,
+                            false,
+                            HoveredButton::Minimize,
+                        );
+                    }
+                    HoveredButton::None => {}
                 }
 
                 // Hover new button
-                if self.hovered_button == HoveredButton::Close {
-                    Self::draw_close_button_hover(
-                        pixels,
-                        self.window_width as usize,
-                        self.button_x_start,
-                        self.button_height,
-                        self.button_curve_start,
-                        &self.button_crossings,
-                        true,
-                    );
+                match self.hovered_button {
+                    HoveredButton::Close => {
+                        Self::draw_button_hover_by_pixels(
+                            pixels,
+                            &self.close_pixels,
+                            true,
+                            HoveredButton::Close,
+                        );
+                    }
+                    HoveredButton::Maximize => {
+                        Self::draw_button_hover_by_pixels(
+                            pixels,
+                            &self.maximize_pixels,
+                            true,
+                            HoveredButton::Maximize,
+                        );
+                    }
+                    HoveredButton::Minimize => {
+                        Self::draw_button_hover_by_pixels(
+                            pixels,
+                            &self.minimize_pixels,
+                            true,
+                            HoveredButton::Minimize,
+                        );
+                    }
+                    HoveredButton::None => {}
                 }
             }
 
             // Update cursor icon based on hover position
-            let edge = self.get_resize_edge(self.mouse_x, self.mouse_y);
-            let cursor = match edge {
-                ResizeEdge::None => CursorIcon::Default,
-                ResizeEdge::Top | ResizeEdge::Bottom => CursorIcon::NsResize,
-                ResizeEdge::Left | ResizeEdge::Right => CursorIcon::EwResize,
-                ResizeEdge::TopLeft | ResizeEdge::BottomRight => CursorIcon::NwseResize,
-                ResizeEdge::TopRight | ResizeEdge::BottomLeft => CursorIcon::NeswResize,
+            // If hovering over a button, show pointer cursor, otherwise check for resize edges
+            let cursor = if self.hovered_button != HoveredButton::None {
+                CursorIcon::Pointer
+            } else {
+                let edge = self.get_resize_edge(self.mouse_x, self.mouse_y);
+                match edge {
+                    ResizeEdge::None => CursorIcon::Default,
+                    ResizeEdge::Top | ResizeEdge::Bottom => CursorIcon::NsResize,
+                    ResizeEdge::Left | ResizeEdge::Right => CursorIcon::EwResize,
+                    ResizeEdge::TopLeft | ResizeEdge::BottomRight => CursorIcon::NwseResize,
+                    ResizeEdge::TopRight | ResizeEdge::BottomLeft => CursorIcon::NeswResize,
+                }
             };
             window.set_cursor(cursor);
         }
@@ -521,8 +581,12 @@ impl PhotonApp {
 
             Self::draw_background_texture(pixels, self.window_width, self.window_height);
 
-            let (start, edges, button_x_start, button_height) =
-                Self::draw_window_controls(pixels, &mut self.hit_test_map, self.window_width, self.window_height);
+            let (start, edges, button_x_start, button_height) = Self::draw_window_controls(
+                pixels,
+                &mut self.hit_test_map,
+                self.window_width,
+                self.window_height,
+            );
 
             // Cache button rendering data for hover effects
             self.button_x_start = button_x_start;
@@ -539,8 +603,24 @@ impl PhotonApp {
                 &edges,
             );
 
+            // Build button pixel lists from hitmap AFTER masking for fast hover effects
+            // This ensures we only capture pixels inside the squircle curves
+            self.minimize_pixels.clear();
+            self.maximize_pixels.clear();
+            self.close_pixels.clear();
+
+            for idx in 0..self.hit_test_map.len() {
+                match self.hit_test_map[idx] {
+                    HIT_MINIMIZE_BUTTON => self.minimize_pixels.push(idx),
+                    HIT_MAXIMIZE_BUTTON => self.maximize_pixels.push(idx),
+                    HIT_CLOSE_BUTTON => self.close_pixels.push(idx),
+                    _ => {}
+                }
+            }
+
             Self::draw_button_hairlines(
                 pixels,
+                &mut self.hit_test_map,
                 self.window_width,
                 self.window_height,
                 button_x_start,
@@ -567,9 +647,9 @@ impl PhotonApp {
 
                     if element_id != HIT_NONE {
                         // Map element ID to color (R and B channels)
-                        pixels[pixel_idx] = (element_id * 80) % 255;      // Red
+                        pixels[pixel_idx] = (element_id * 80) % 255; // Red
                         pixels[pixel_idx + 2] = (element_id * 120) % 255; // Blue
-                        // Keep green channel as-is so we can still see the UI
+                                                                          // Keep green channel as-is so we can still see the UI
                     }
                 }
             }
@@ -870,10 +950,52 @@ impl PhotonApp {
     }
 
     fn draw_maximize_symbol(pixels: &mut [u8], width: usize, x: usize, y: usize, r: usize) {
-        for h in -(r as isize)..r as isize {
-            for w in -(r as isize)..r as isize {
-                let idx = ((y + h as usize) * width + x + w as usize) * 4;
-                pixels[idx] = 255;
+        let mut r_4 = r * r;
+        r_4 *= r_4;
+        let r_3 = r * r * r;
+
+        // Inner radius (inset by r/6)
+        let r_inner = r * 5 / 6;
+        let mut r_inner_4 = r_inner * r_inner;
+        r_inner_4 *= r_inner_4;
+        let r_inner_3 = r_inner * r_inner * r_inner;
+
+        for h in -(r as isize)..=r as isize {
+            for w in -(r as isize)..=r as isize {
+                let dist_4 = (h * h * h * h + w * w * w * w) as usize;
+
+                // Draw white outer squircle
+                if dist_4 <= r_4 {
+                    let px = (x as isize + w) as usize;
+                    let py = (y as isize + h) as usize;
+                    let idx = (py * width + px) * 4;
+                    let gradient = ((r_4 - dist_4) << 8) / (r_3 << 2);
+                    let new_r = pixels[idx] as usize + gradient;
+                    let new_g = pixels[idx + 1] as usize + gradient;
+                    let new_b = pixels[idx + 2] as usize + gradient;
+
+                    if new_r > 255 || new_g > 255 || new_b > 255 {
+                        pixels[idx] = 255;
+                        pixels[idx + 1] = 255;
+                        pixels[idx + 2] = 255;
+                    } else {
+                        pixels[idx] = new_r as u8;
+                        pixels[idx + 1] = new_g as u8;
+                        pixels[idx + 2] = new_b as u8;
+                    }
+
+                    // Draw black inner squircle (subtract gradient)
+                    if dist_4 <= r_inner_4 {
+                        let gradient_inner = ((r_inner_4 - dist_4) << 8) / (r_inner_3 << 2);
+                        let new_r_inner = pixels[idx] as isize - gradient_inner as isize;
+                        let new_g_inner = pixels[idx + 1] as isize - gradient_inner as isize;
+                        let new_b_inner = pixels[idx + 2] as isize - gradient_inner as isize;
+
+                        pixels[idx] = new_r_inner.max(0) as u8;
+                        pixels[idx + 1] = new_g_inner.max(0) as u8;
+                        pixels[idx + 2] = new_b_inner.max(0) as u8;
+                    }
+                }
             }
         }
     }
@@ -1847,63 +1969,34 @@ impl PhotonApp {
         }
     }
 
-    /// Draw or undraw hover fill for close button
-    fn draw_close_button_hover(
+    /// Apply hover effect to button using cached pixel list
+    fn draw_button_hover_by_pixels(
         pixels: &mut [u8],
-        window_width: usize,
-        button_x_start: usize,
-        button_height: usize,
-        start: usize,
-        crossings: &[(u16, u8, u8)],
+        pixel_list: &[usize],
         hover: bool,
+        button_type: HoveredButton,
     ) {
-        let (r_delta, g_delta, b_delta): (i16, i16, i16) = if hover {
-            (50, -10, -10)
-        } else {
-            (-50, 10, 10)
+        // Get the hover deltas for this button type
+        let (r, g, b) = match button_type {
+            HoveredButton::Close => CLOSE_HOVER,
+            HoveredButton::Maximize => MAXIMIZE_HOVER,
+            HoveredButton::Minimize => MINIMIZE_HOVER,
+            HoveredButton::None => (0, 0, 0),
         };
 
-        // Apply color deltas to the close button area
-        // Close button is the rightmost button (third button)
-        let button_width = button_height; // Buttons are square
-        let close_button_x_start = button_x_start + button_width * 2;
+        // Apply deltas (positive for hover, negative for unhover)
+        let sign = if hover { 1 } else { -1 };
+        let r_delta = r * sign;
+        let g_delta = g * sign;
+        let b_delta = b * sign;
 
-        // Iterate through the button area, respecting the squircle curve
-        let y_start = 0;
-
-        for y in 0..button_height {
-            // Determine x bounds for this row based on squircle curve
-            let y_from_bottom = button_height - 1 - y;
-            let x_min_offset = if y < start {
-                // Top curve region
-                if y < crossings.len() {
-                    crossings[y].0 as usize + 2
-                } else {
-                    0
-                }
-            } else if y_from_bottom < start {
-                // Bottom curve region
-                if y_from_bottom < crossings.len() {
-                    crossings[y_from_bottom].0 as usize + 2
-                } else {
-                    0
-                }
-            } else {
-                0
-            };
-
-            for dx in x_min_offset..(button_width + button_width / 4) {
-                let x = close_button_x_start + dx;
-                if x >= window_width {
-                    break;
-                }
-
-                let idx = ((y_start + y) * window_width + x) * 4;
-                if idx + 3 < pixels.len() {
-                    pixels[idx] = (pixels[idx] as i16 + r_delta).clamp(0, 255) as u8;
-                    pixels[idx + 1] = (pixels[idx + 1] as i16 + g_delta).clamp(0, 255) as u8;
-                    pixels[idx + 2] = (pixels[idx + 2] as i16 + b_delta).clamp(0, 255) as u8;
-                }
+        // Iterate only over the cached pixels for this button
+        for &hit_idx in pixel_list {
+            let pixel_idx = hit_idx * 4;
+            if pixel_idx + 3 < pixels.len() {
+                pixels[pixel_idx] += r_delta as u8;
+                pixels[pixel_idx + 1] += g_delta as u8;
+                pixels[pixel_idx + 2] += b_delta as u8;
             }
         }
     }
@@ -1911,12 +2004,13 @@ impl PhotonApp {
     /// Draw vertical hairlines between buttons
     fn draw_button_hairlines(
         pixels: &mut [u8],
+        hit_test_map: &mut [u8],
         window_width: u32,
         window_height: u32,
         button_x_start: usize,
         button_height: usize,
-        start: usize,
-        crossings: &[(u16, u8, u8)],
+        _start: usize,
+        _crossings: &[(u16, u8, u8)],
     ) {
         let width = window_width as usize;
         let y_start = 0;
@@ -1926,49 +2020,82 @@ impl PhotonApp {
         let button_width = (smaller_dim / 16.).ceil() as usize;
 
         // Two hairlines: at 1.0 and 2.0 button widths from button area start
-        let left_hairline_offset = button_width - start;
-        let right_hairline_offset = button_width * 2 - start;
+        // Left hairline between minimize and maximize
+        let left_px = button_x_start + button_width;
+        // Right hairline between maximize and close
+        let right_px = button_x_start + button_width * 2;
 
-        // Get the inset for each hairline position from the crossings data
-        if left_hairline_offset < crossings.len() {
-            let (bottom_inset, _l, _h) = crossings[left_hairline_offset];
-            // Top curve uses the same index
-            let (top_inset, _l2, _h2) = crossings[left_hairline_offset];
-            let bottom_i = bottom_inset as usize;
-            let top_i = top_inset as usize;
-            let px = button_x_start + start + left_hairline_offset;
+        // Start from vertical center and draw upward until we hit transparency
+        let center_y = y_start + button_height / 2;
 
-            // Draw from bottom curve upward to top curve
-            // Bottom is at: y_start + button_height - 1 - bottom_i
-            // Top is at: y_start + top_i
-            let py_bottom = y_start + button_height - 1 - bottom_i;
-            let py_top = y_start + top_i;
+        // Edge/hairline color
+        let edge_r = 50u8;
+        let edge_g = 50u8;
+        let edge_b = 50u8;
 
-            for py in (py_top + 1)..py_bottom {
-                let idx = (py * width + px) * 4;
-                pixels[idx] = 255;
-                pixels[idx + 1] = 0;
-                pixels[idx + 2] = 255;
+        // Draw left hairline
+        // Draw upward from center (inclusive) until we hit transparency
+        for py in (y_start..=center_y).rev() {
+            let idx = (py * width + left_px) * 4;
+            let hit_idx = py * width + left_px;
+            // Check if pixel has any transparency (alpha < 255)
+            if pixels[idx + 3] < 255 {
+                break;
+            }
+            pixels[idx] = edge_r;
+            pixels[idx + 1] = edge_g;
+            pixels[idx + 2] = edge_b;
+            hit_test_map[hit_idx] = HIT_NONE;
+        }
+
+        // Draw downward from center until we hit a pixel that differs from button grey
+        for py in (center_y + 1)..(y_start + button_height) {
+            let idx = (py * width + left_px) * 4;
+            let hit_idx = py * width + left_px;
+            let r = pixels[idx];
+
+            // Always draw the hairline pixel
+            pixels[idx] = edge_r;
+            pixels[idx + 1] = edge_g;
+            pixels[idx + 2] = edge_b;
+            hit_test_map[hit_idx] = HIT_NONE;
+
+            // Check if pixel differed from button grey (30) - if so, stop after drawing it
+            if r != 30 {
+                break;
             }
         }
 
-        if right_hairline_offset < crossings.len() {
-            let (bottom_inset, _l, _h) = crossings[right_hairline_offset];
-            // Top curve uses the same index
-            let (top_inset, _l2, _h2) = crossings[right_hairline_offset];
-            let bottom_i = bottom_inset as usize;
-            let top_i = top_inset as usize;
-            let px = button_x_start + start + right_hairline_offset;
+        // Draw right hairline
+        // Draw upward from center (inclusive) until we hit transparency
+        for py in (y_start..=center_y).rev() {
+            let idx = (py * width + right_px) * 4;
+            let hit_idx = py * width + right_px;
+            // Check if pixel has any transparency (alpha < 255)
+            if pixels[idx + 3] < 255 {
+                break;
+            }
+            pixels[idx] = edge_r;
+            pixels[idx + 1] = edge_g;
+            pixels[idx + 2] = edge_b;
+            hit_test_map[hit_idx] = HIT_NONE;
+        }
 
-            // Draw from bottom curve upward to top curve
-            let py_bottom = y_start + button_height - 1 - bottom_i;
-            let py_top = y_start + top_i;
+        // Draw downward from center until we hit a pixel that differs from button grey
+        for py in (center_y + 1)..(y_start + button_height) {
+            let idx = (py * width + right_px) * 4;
+            let hit_idx = py * width + right_px;
+            let r = pixels[idx];
 
-            for py in (py_top + 1)..py_bottom {
-                let idx = (py * width + px) * 4;
-                pixels[idx] = 255;
-                pixels[idx + 1] = 0;
-                pixels[idx + 2] = 255;
+            // Always draw the hairline pixel
+            pixels[idx] = edge_r;
+            pixels[idx + 1] = edge_g;
+            pixels[idx + 2] = edge_b;
+            hit_test_map[hit_idx] = HIT_NONE;
+
+            // Check if pixel differed from button grey (30) - if so, stop after drawing it
+            if r != 30 {
+                break;
             }
         }
     }
