@@ -181,6 +181,10 @@ impl PhotonApp {
         self.update_button_bounds();
         self.hit_test_map
             .resize((size.width * size.height) as usize, 0);
+
+        // Clear hover state on resize since button positions/sizes change
+        self.hovered_button = HoveredButton::None;
+
         self.needs_redraw = true; // Dimensions changed, need to redraw
     }
 
