@@ -1,12 +1,12 @@
-use winit::window::Window;
-use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use windows::Win32::Foundation::{HWND, POINT};
 use windows::Win32::Graphics::Gdi::{
-    CreateCompatibleDC, CreateDIBSection, SelectObject, DeleteDC, DeleteObject,
-    GetDC, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
-    HDC, HBITMAP, BLENDFUNCTION, AC_SRC_OVER, AC_SRC_ALPHA,
+    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, SelectObject,
+    AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS,
+    HBITMAP, HDC,
 };
 use windows::Win32::UI::WindowsAndMessaging::{UpdateLayeredWindow, ULW_ALPHA};
+use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use winit::window::Window;
 
 pub struct Renderer {
     hwnd: HWND,
@@ -44,25 +44,19 @@ impl Renderer {
             };
 
             let mut bitmap_bits: *mut std::ffi::c_void = std::ptr::null_mut();
-            let hbitmap = CreateDIBSection(
-                hdc_mem,
-                &bmi,
-                DIB_RGB_COLORS,
-                &mut bitmap_bits,
-                None,
-                0,
-            ).unwrap();
+            let hbitmap =
+                CreateDIBSection(hdc_mem, &bmi, DIB_RGB_COLORS, &mut bitmap_bits, None, 0).unwrap();
 
             SelectObject(hdc_mem, hbitmap);
 
             let mut pixel_buffer = Vec::with_capacity((width * height * 4) as usize);
-            unsafe { pixel_buffer.set_len((width * height * 4) as usize); }
+            unsafe {
+                pixel_buffer.set_len((width * height * 4) as usize);
+            }
 
             // Initialize bitmap to transparent black
-            let bitmap_slice = std::slice::from_raw_parts_mut(
-                bitmap_bits as *mut u32,
-                (width * height) as usize,
-            );
+            let bitmap_slice =
+                std::slice::from_raw_parts_mut(bitmap_bits as *mut u32, (width * height) as usize);
             for pixel in bitmap_slice.iter_mut() {
                 *pixel = 0x00000000; // Transparent black
             }
@@ -90,7 +84,8 @@ impl Renderer {
                 self.height = height;
                 let new_size = (width * height * 4) as usize;
                 if new_size > self.pixel_buffer.capacity() {
-                    self.pixel_buffer.reserve(new_size - self.pixel_buffer.len());
+                    self.pixel_buffer
+                        .reserve(new_size - self.pixel_buffer.len());
                 }
                 self.pixel_buffer.set_len(new_size);
 
@@ -116,7 +111,8 @@ impl Renderer {
                     &mut bitmap_bits,
                     None,
                     0,
-                ).unwrap();
+                )
+                .unwrap();
 
                 SelectObject(self.hdc_mem, self.hbitmap);
                 self.bitmap_bits = bitmap_bits as *mut u32;
@@ -147,7 +143,8 @@ impl Renderer {
                     bitmap_slice[i] = 0;
                 } else if a == 255 {
                     // Opaque: ARGB format, no pre-multiply needed
-                    bitmap_slice[i] = 0xFF000000 | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32);
+                    bitmap_slice[i] =
+                        0xFF000000 | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32);
                 } else {
                     // Semi-transparent: Pre-multiply RGB by alpha
                     let alpha_f = a as f32 / 255.0;

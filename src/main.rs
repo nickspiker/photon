@@ -132,7 +132,9 @@ impl ApplicationHandler for App {
 #[cfg(target_os = "windows")]
 unsafe fn enable_windows_transparency(hwnd: isize) {
     use windows::Win32::Foundation::HWND;
-    use windows::Win32::UI::WindowsAndMessaging::{GetWindowLongW, SetWindowLongW, GWL_EXSTYLE, WS_EX_LAYERED};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongW, SetWindowLongW, GWL_EXSTYLE, WS_EX_LAYERED,
+    };
 
     let hwnd = HWND(hwnd as *mut _);
 
@@ -146,8 +148,7 @@ unsafe fn enable_windows_transparency(hwnd: isize) {
 }
 
 fn main() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
-        .init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     // Set cursor size for Linux/X11 to match system cursor settings
     // Winit doesn't read the DE cursor size, so we need to set it manually

@@ -25,7 +25,6 @@ impl TextRenderer {
         }
     }
 
-
     pub fn draw_text_center(
         &mut self,
         pixels: &mut [u8],
@@ -50,12 +49,7 @@ impl TextRenderer {
         let mut buffer = Buffer::new(&mut self.font_system, metrics);
 
         buffer.set_size(&mut self.font_system, None, None);
-        buffer.set_text(
-            &mut self.font_system,
-            text,
-            &attrs,
-            Shaping::Advanced,
-        );
+        buffer.set_text(&mut self.font_system, text, &attrs, Shaping::Advanced);
         buffer.shape_until_scroll(&mut self.font_system, false);
 
         if let Some(run) = buffer.layout_runs().next() {
@@ -117,12 +111,7 @@ impl TextRenderer {
         let mut buffer = Buffer::new(&mut self.font_system, metrics);
 
         buffer.set_size(&mut self.font_system, None, None);
-        buffer.set_text(
-            &mut self.font_system,
-            text,
-            &attrs,
-            Shaping::Advanced,
-        );
+        buffer.set_text(&mut self.font_system, text, &attrs, Shaping::Advanced);
         buffer.shape_until_scroll(&mut self.font_system, false);
 
         if let Some(run) = buffer.layout_runs().next() {
@@ -178,12 +167,7 @@ impl TextRenderer {
         let mut buffer = Buffer::new(&mut self.font_system, metrics);
 
         buffer.set_size(&mut self.font_system, None, None);
-        buffer.set_text(
-            &mut self.font_system,
-            text,
-            &attrs,
-            Shaping::Advanced,
-        );
+        buffer.set_text(&mut self.font_system, text, &attrs, Shaping::Advanced);
         buffer.shape_until_scroll(&mut self.font_system, false);
 
         if let Some(run) = buffer.layout_runs().next() {

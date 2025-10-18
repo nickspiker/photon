@@ -898,7 +898,6 @@ impl PhotonApp {
             y_start + button_width / 2,
             button_width / 4,
             (200, 200, 165), // stroke_color (warm white, clearance for blue +90)
-            (60, 60, 60),    // fill_color (dark grey)
         );
         Self::draw_maximize_symbol(
             pixels,
@@ -928,46 +927,46 @@ impl PhotonApp {
         y: usize,
         r: usize,
         stroke_color: (u8, u8, u8),
-        fill_color: (u8, u8, u8),
     ) {
-        let r_2 = r * r;
+        let r_render = r / 4 + 1;
+        let r_2 = r_render * r_render;
         let r_4 = r_2 * r_2;
-        let r_3 = r * r * r;
+        let r_3 = r_render * r_render * r_render;
 
-        // Horizontal bar half-length
-        let half_length = r / 2;
-
-        for h in -(r as isize)..=r as isize {
-            for w in -(r as isize * 3)..=(r as isize * 3) {
-                let h_scaled = h * 2;
-                let h2 = h_scaled * h_scaled;
+        for h in -(r_render as isize)..=(r_render as isize) {
+            for w in -(r as isize)..=(r as isize) {
+                // Regular squircle: h^4 + w^4
+                let h2 = h * h;
                 let h4 = h2 * h2;
-                let w_overhang = (w.abs() - half_length as isize).max(0);
-                let w2 = w_overhang * w_overhang;
+                let a = (w.abs() - (r * 3 / 4) as isize).max(0);
+                let w2 = a * a;
                 let w4 = w2 * w2;
                 let dist_4 = (h4 + w4) as usize;
 
                 if dist_4 <= r_4 {
                     let px = (x as isize + w) as usize;
-                    let py = (y as isize + h) as usize;
+                    let py = (y as isize + h + (r / 2) as isize) as usize;
                     let idx = (py * width + px) * 4;
-
-                    // Apply gradient everywhere inside (rings!)
                     let gradient = ((r_4 - dist_4) << 8) / (r_3 << 2);
+                    if gradient > 255 {
+                        pixels[idx] = stroke_color.0;
+                        pixels[idx + 1] = stroke_color.1;
+                        pixels[idx + 2] = stroke_color.2;
+                    } else {
+                        // Blend background towards stroke_color
+                        let bg_r = pixels[idx] as u64;
+                        let bg_g = pixels[idx + 1] as u64;
+                        let bg_b = pixels[idx + 2] as u64;
+                        let stroke_r = stroke_color.0 as u64;
+                        let stroke_g = stroke_color.1 as u64;
+                        let stroke_b = stroke_color.2 as u64;
+                        let alpha = gradient as u64;
+                        let inv_alpha = 256 - alpha;
 
-                    // Blend background towards stroke_color
-                    let bg_r = pixels[idx] as u64;
-                    let bg_g = pixels[idx + 1] as u64;
-                    let bg_b = pixels[idx + 2] as u64;
-                    let stroke_r = stroke_color.0 as u64;
-                    let stroke_g = stroke_color.1 as u64;
-                    let stroke_b = stroke_color.2 as u64;
-                    let alpha = gradient as u64;
-                    let inv_alpha = 256 - alpha;
-
-                    pixels[idx] = ((bg_r * inv_alpha + stroke_r * alpha) >> 8) as u8;
-                    pixels[idx + 1] = ((bg_g * inv_alpha + stroke_g * alpha) >> 8) as u8;
-                    pixels[idx + 2] = ((bg_b * inv_alpha + stroke_b * alpha) >> 8) as u8;
+                        pixels[idx] = ((bg_r * inv_alpha + stroke_r * alpha) >> 8) as u8;
+                        pixels[idx + 1] = ((bg_g * inv_alpha + stroke_g * alpha) >> 8) as u8;
+                        pixels[idx + 2] = ((bg_b * inv_alpha + stroke_b * alpha) >> 8) as u8;
+                    }
                 }
             }
         }
