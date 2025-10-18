@@ -894,11 +894,11 @@ impl PhotonApp {
         Self::draw_minimize_symbol(
             pixels,
             window_width,
-            window_height,
-            x_start,
-            y_start,
-            button_width,
-            button_height,
+            x_start + button_width / 2,
+            y_start + button_width / 2,
+            button_width / 4,
+            (200, 200, 165), // stroke_color (warm white, clearance for blue +90)
+            (60, 60, 60),    // fill_color (dark grey)
         );
         Self::draw_maximize_symbol(
             pixels,
@@ -906,6 +906,8 @@ impl PhotonApp {
             x_start + button_width + button_width / 2,
             y_start + button_width / 2,
             button_width / 4,
+            (200, 200, 165), // stroke_color (warm white, clearance for blue +90)
+            (60, 60, 60),    // fill_color (dark grey)
         );
         Self::draw_close_symbol(
             pixels,
@@ -922,78 +924,143 @@ impl PhotonApp {
     fn draw_minimize_symbol(
         pixels: &mut [u8],
         width: usize,
-        height: usize,
         x: usize,
         y: usize,
-        w: usize,
-        h: usize,
+        r: usize,
+        stroke_color: (u8, u8, u8),
+        fill_color: (u8, u8, u8),
     ) {
-        // Draw horizontal line in center
-        let line_thickness = (h / 10).max(1);
-        let line_y = y + h / 2;
-        let line_x_start = x + w / 4;
-        let line_x_end = x + 3 * w / 4;
+        let r_2 = r * r;
+        let r_4 = r_2 * r_2;
+        let r_3 = r * r * r;
 
-        for ly in line_y..line_y + line_thickness {
-            for lx in line_x_start..line_x_end {
-                if lx < width && ly < height {
-                    let idx = (ly * width + lx) * 4;
-                    if idx + 3 < pixels.len() {
-                        pixels[idx] = 200;
-                        pixels[idx + 1] = 200;
-                        pixels[idx + 2] = 210;
-                        pixels[idx + 3] = 255;
-                    }
+        // Horizontal bar half-length
+        let half_length = r / 2;
+
+        for h in -(r as isize)..=r as isize {
+            for w in -(r as isize * 3)..=(r as isize * 3) {
+                let h_scaled = h * 2;
+                let h2 = h_scaled * h_scaled;
+                let h4 = h2 * h2;
+                let w_overhang = (w.abs() - half_length as isize).max(0);
+                let w2 = w_overhang * w_overhang;
+                let w4 = w2 * w2;
+                let dist_4 = (h4 + w4) as usize;
+
+                if dist_4 <= r_4 {
+                    let px = (x as isize + w) as usize;
+                    let py = (y as isize + h) as usize;
+                    let idx = (py * width + px) * 4;
+
+                    // Apply gradient everywhere inside (rings!)
+                    let gradient = ((r_4 - dist_4) << 8) / (r_3 << 2);
+
+                    // Blend background towards stroke_color
+                    let bg_r = pixels[idx] as u64;
+                    let bg_g = pixels[idx + 1] as u64;
+                    let bg_b = pixels[idx + 2] as u64;
+                    let stroke_r = stroke_color.0 as u64;
+                    let stroke_g = stroke_color.1 as u64;
+                    let stroke_b = stroke_color.2 as u64;
+                    let alpha = gradient as u64;
+                    let inv_alpha = 256 - alpha;
+
+                    pixels[idx] = ((bg_r * inv_alpha + stroke_r * alpha) >> 8) as u8;
+                    pixels[idx + 1] = ((bg_g * inv_alpha + stroke_g * alpha) >> 8) as u8;
+                    pixels[idx + 2] = ((bg_b * inv_alpha + stroke_b * alpha) >> 8) as u8;
                 }
             }
         }
     }
 
-    fn draw_maximize_symbol(pixels: &mut [u8], width: usize, x: usize, y: usize, r: usize) {
+    fn draw_maximize_symbol(
+        pixels: &mut [u8],
+        width: usize,
+        x: usize,
+        y: usize,
+        r: usize,
+        stroke_color: (u8, u8, u8),
+        fill_color: (u8, u8, u8),
+    ) {
         let mut r_4 = r * r;
         r_4 *= r_4;
         let r_3 = r * r * r;
 
         // Inner radius (inset by r/6)
-        let r_inner = r * 5 / 6;
+        let r_inner = r * 4 / 5;
         let mut r_inner_4 = r_inner * r_inner;
         r_inner_4 *= r_inner_4;
         let r_inner_3 = r_inner * r_inner * r_inner;
 
+        // Edge threshold: gradient spans approximately 4r^3 worth of dist_4 change
+        let outer_edge_threshold = r_3 << 2;
+        let inner_edge_threshold = r_inner_3 << 2;
+
         for h in -(r as isize)..=r as isize {
             for w in -(r as isize)..=r as isize {
-                let dist_4 = (h * h * h * h + w * w * w * w) as usize;
+                let h2 = h * h;
+                let h4 = h2 * h2;
+                let w2 = w * w;
+                let w4 = w2 * w2;
+                let dist_4 = (h4 + w4) as usize;
 
-                // Draw white outer squircle
                 if dist_4 <= r_4 {
                     let px = (x as isize + w) as usize;
                     let py = (y as isize + h) as usize;
                     let idx = (py * width + px) * 4;
-                    let gradient = ((r_4 - dist_4) << 8) / (r_3 << 2);
-                    let new_r = pixels[idx] as usize + gradient;
-                    let new_g = pixels[idx + 1] as usize + gradient;
-                    let new_b = pixels[idx + 2] as usize + gradient;
 
-                    if new_r > 255 || new_g > 255 || new_b > 255 {
-                        pixels[idx] = 255;
-                        pixels[idx + 1] = 255;
-                        pixels[idx + 2] = 255;
-                    } else {
-                        pixels[idx] = new_r as u8;
-                        pixels[idx + 1] = new_g as u8;
-                        pixels[idx + 2] = new_b as u8;
-                    }
+                    // Determine which zone we're in
+                    let dist_from_outer = r_4 - dist_4;
 
-                    // Draw black inner squircle (subtract gradient)
                     if dist_4 <= r_inner_4 {
-                        let gradient_inner = ((r_inner_4 - dist_4) << 8) / (r_inner_3 << 2);
-                        let new_r_inner = pixels[idx] as isize - gradient_inner as isize;
-                        let new_g_inner = pixels[idx + 1] as isize - gradient_inner as isize;
-                        let new_b_inner = pixels[idx + 2] as isize - gradient_inner as isize;
+                        let dist_from_inner = r_inner_4 - dist_4;
 
-                        pixels[idx] = new_r_inner.max(0) as u8;
-                        pixels[idx + 1] = new_g_inner.max(0) as u8;
-                        pixels[idx + 2] = new_b_inner.max(0) as u8;
+                        // Inside inner squircle
+                        if dist_from_inner <= inner_edge_threshold {
+                            // Inner edge: blend from stroke to fill
+                            let gradient = ((dist_from_inner) << 8) / inner_edge_threshold;
+                            let alpha = gradient as u64;
+                            let inv_alpha = 256 - alpha;
+
+                            let stroke_r = stroke_color.0 as u64;
+                            let stroke_g = stroke_color.1 as u64;
+                            let stroke_b = stroke_color.2 as u64;
+                            let fill_r = fill_color.0 as u64;
+                            let fill_g = fill_color.1 as u64;
+                            let fill_b = fill_color.2 as u64;
+
+                            pixels[idx] = ((stroke_r * inv_alpha + fill_r * alpha) >> 8) as u8;
+                            pixels[idx + 1] = ((stroke_g * inv_alpha + fill_g * alpha) >> 8) as u8;
+                            pixels[idx + 2] = ((stroke_b * inv_alpha + fill_b * alpha) >> 8) as u8;
+                        } else {
+                            // Solid fill center
+                            pixels[idx] = fill_color.0;
+                            pixels[idx + 1] = fill_color.1;
+                            pixels[idx + 2] = fill_color.2;
+                        }
+                    } else {
+                        // Between inner and outer: stroke ring
+                        if dist_from_outer <= outer_edge_threshold {
+                            // Outer edge: blend from background to stroke
+                            let gradient = ((dist_from_outer) << 8) / outer_edge_threshold;
+                            let bg_r = pixels[idx] as u64;
+                            let bg_g = pixels[idx + 1] as u64;
+                            let bg_b = pixels[idx + 2] as u64;
+                            let stroke_r = stroke_color.0 as u64;
+                            let stroke_g = stroke_color.1 as u64;
+                            let stroke_b = stroke_color.2 as u64;
+                            let alpha = gradient as u64;
+                            let inv_alpha = 256 - alpha;
+
+                            pixels[idx] = ((bg_r * inv_alpha + stroke_r * alpha) >> 8) as u8;
+                            pixels[idx + 1] = ((bg_g * inv_alpha + stroke_g * alpha) >> 8) as u8;
+                            pixels[idx + 2] = ((bg_b * inv_alpha + stroke_b * alpha) >> 8) as u8;
+                        } else {
+                            // Solid stroke ring
+                            pixels[idx] = stroke_color.0;
+                            pixels[idx + 1] = stroke_color.1;
+                            pixels[idx + 2] = stroke_color.2;
+                        }
                     }
                 }
             }
