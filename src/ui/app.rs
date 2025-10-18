@@ -61,7 +61,7 @@ const HIT_MAXIMIZE_BUTTON: u8 = 2;
 const HIT_CLOSE_BUTTON: u8 = 3;
 const HIT_DEBUG_INIT: u8 = 255; // For visualizing what areas get reset
 
-// Button hover color deltas (applied on hover, negated on unhover)
+// Button hover colour deltas (applied on hover, negated on unhover)
 const CLOSE_HOVER: (i8, i8, i8) = (33, -3, -7); // Red
 const MAXIMIZE_HOVER: (i8, i8, i8) = (-6, 16, -6); // Green
 const MINIMIZE_HOVER: (i8, i8, i8) = (-9, -6, 37); // Blue
@@ -633,7 +633,12 @@ impl PhotonApp {
                 &edges,
             );
 
-            Self::draw_logo(pixels, self.window_width, self.window_height);
+            Self::draw_logo(
+                pixels,
+                &mut self.text_renderer,
+                self.window_width,
+                self.window_height,
+            );
 
             // 2. TODO: Draw input boxes
 
@@ -652,7 +657,7 @@ impl PhotonApp {
                     let element_id = self.hit_test_map[hit_idx];
 
                     if element_id != HIT_NONE {
-                        // Map element ID to color (R and B channels)
+                        // Map element ID to colour (R and B channels)
                         pixels[pixel_idx] = (element_id * 80) % 255; // Red
                         pixels[pixel_idx + 2] = (element_id * 120) % 255; // Blue
                                                                           // Keep green channel as-is so we can still see the UI
@@ -903,7 +908,7 @@ impl PhotonApp {
             x_start + button_width / 2,
             y_start + button_width / 2,
             button_width / 4,
-            (200, 200, 165), // stroke_color (warm white, clearance for blue +90)
+            (64, 90, 208),
         );
         Self::draw_maximize_symbol(
             pixels,
@@ -911,17 +916,16 @@ impl PhotonApp {
             x_start + button_width + button_width / 2,
             y_start + button_width / 2,
             button_width / 4,
-            (200, 200, 165), // stroke_color (warm white, clearance for blue +90)
-            (60, 60, 60),    // fill_color (dark grey)
+            (62, 140, 48),
+            (60, 62, 66), // fill_colour (dark grey)
         );
         Self::draw_close_symbol(
             pixels,
             window_width,
-            window_height,
-            x_start + button_width * 2,
-            y_start,
-            button_width,
-            button_height,
+            x_start + button_width * 2 + button_width / 2,
+            y_start + button_width / 2,
+            button_width / 4,
+            (222, 100, 100), // stroke_colour (red +33 clearance)
         );
         (start, crossings, x_start, button_height)
     }
@@ -932,7 +936,7 @@ impl PhotonApp {
         x: usize,
         y: usize,
         r: usize,
-        stroke_color: (u8, u8, u8),
+        stroke_colour: (u8, u8, u8),
     ) {
         let r_render = r / 4 + 1;
         let r_2 = r_render * r_render;
@@ -955,17 +959,17 @@ impl PhotonApp {
                     let idx = (py * width + px) * 4;
                     let gradient = ((r_4 - dist_4) << 8) / (r_3 << 2);
                     if gradient > 255 {
-                        pixels[idx] = stroke_color.0;
-                        pixels[idx + 1] = stroke_color.1;
-                        pixels[idx + 2] = stroke_color.2;
+                        pixels[idx] = stroke_colour.0;
+                        pixels[idx + 1] = stroke_colour.1;
+                        pixels[idx + 2] = stroke_colour.2;
                     } else {
-                        // Blend background towards stroke_color
+                        // Blend background towards stroke_colour
                         let bg_r = pixels[idx] as u64;
                         let bg_g = pixels[idx + 1] as u64;
                         let bg_b = pixels[idx + 2] as u64;
-                        let stroke_r = stroke_color.0 as u64;
-                        let stroke_g = stroke_color.1 as u64;
-                        let stroke_b = stroke_color.2 as u64;
+                        let stroke_r = stroke_colour.0 as u64;
+                        let stroke_g = stroke_colour.1 as u64;
+                        let stroke_b = stroke_colour.2 as u64;
                         let alpha = gradient as u64;
                         let inv_alpha = 256 - alpha;
 
@@ -984,8 +988,8 @@ impl PhotonApp {
         x: usize,
         y: usize,
         r: usize,
-        stroke_color: (u8, u8, u8),
-        fill_color: (u8, u8, u8),
+        stroke_colour: (u8, u8, u8),
+        fill_colour: (u8, u8, u8),
     ) {
         let mut r_4 = r * r;
         r_4 *= r_4;
@@ -1027,21 +1031,21 @@ impl PhotonApp {
                             let alpha = gradient as u64;
                             let inv_alpha = 256 - alpha;
 
-                            let stroke_r = stroke_color.0 as u64;
-                            let stroke_g = stroke_color.1 as u64;
-                            let stroke_b = stroke_color.2 as u64;
-                            let fill_r = fill_color.0 as u64;
-                            let fill_g = fill_color.1 as u64;
-                            let fill_b = fill_color.2 as u64;
+                            let stroke_r = stroke_colour.0 as u64;
+                            let stroke_g = stroke_colour.1 as u64;
+                            let stroke_b = stroke_colour.2 as u64;
+                            let fill_r = fill_colour.0 as u64;
+                            let fill_g = fill_colour.1 as u64;
+                            let fill_b = fill_colour.2 as u64;
 
                             pixels[idx] = ((stroke_r * inv_alpha + fill_r * alpha) >> 8) as u8;
                             pixels[idx + 1] = ((stroke_g * inv_alpha + fill_g * alpha) >> 8) as u8;
                             pixels[idx + 2] = ((stroke_b * inv_alpha + fill_b * alpha) >> 8) as u8;
                         } else {
                             // Solid fill center
-                            pixels[idx] = fill_color.0;
-                            pixels[idx + 1] = fill_color.1;
-                            pixels[idx + 2] = fill_color.2;
+                            pixels[idx] = fill_colour.0;
+                            pixels[idx + 1] = fill_colour.1;
+                            pixels[idx + 2] = fill_colour.2;
                         }
                     } else {
                         // Between inner and outer: stroke ring
@@ -1051,9 +1055,9 @@ impl PhotonApp {
                             let bg_r = pixels[idx] as u64;
                             let bg_g = pixels[idx + 1] as u64;
                             let bg_b = pixels[idx + 2] as u64;
-                            let stroke_r = stroke_color.0 as u64;
-                            let stroke_g = stroke_color.1 as u64;
-                            let stroke_b = stroke_color.2 as u64;
+                            let stroke_r = stroke_colour.0 as u64;
+                            let stroke_g = stroke_colour.1 as u64;
+                            let stroke_b = stroke_colour.2 as u64;
                             let alpha = gradient as u64;
                             let inv_alpha = 256 - alpha;
 
@@ -1062,9 +1066,9 @@ impl PhotonApp {
                             pixels[idx + 2] = ((bg_b * inv_alpha + stroke_b * alpha) >> 8) as u8;
                         } else {
                             // Solid stroke ring
-                            pixels[idx] = stroke_color.0;
-                            pixels[idx + 1] = stroke_color.1;
-                            pixels[idx + 2] = stroke_color.2;
+                            pixels[idx] = stroke_colour.0;
+                            pixels[idx + 1] = stroke_colour.1;
+                            pixels[idx + 2] = stroke_colour.2;
                         }
                     }
                 }
@@ -1075,20 +1079,17 @@ impl PhotonApp {
     fn draw_close_symbol(
         pixels: &mut [u8],
         width: usize,
-        height: usize,
         x: usize,
         y: usize,
-        w: usize,
-        h: usize,
+        r: usize,
+        stroke_colour: (u8, u8, u8),
     ) {
         // Draw X with antialiased rounded-end diagonals (capsule/pill shaped)
-        let thickness = (h / 12).max(1) as f32;
+        let thickness = (r / 3).max(1) as f32;
         let radius = thickness / 2.;
-        let size = (w / 2) as f32;
-        let cxi = (x + w / 2) as i32;
-        let cyi = (y + h / 2) as i32;
-        let cxf = cxi as f32;
-        let cyf = cyi as f32;
+        let size = (r * 2) as f32; // X spans diameter, not radius
+        let cxf = x as f32;
+        let cyf = y as f32;
 
         let end = size / 3.;
 
@@ -1105,13 +1106,14 @@ impl PhotonApp {
         let x2_end = cxf - end;
         let y2_end = cyf + end;
 
-        let color = (220u8, 100u8, 100u8);
-
         // Scan the bounding box and render both capsules
-        let min_x = (x as i32).max(0);
-        let max_x = ((x + w) as i32).min(width as i32);
-        let min_y = (y as i32).max(0);
-        let max_y = ((y + h) as i32).min(height as i32);
+        let min_x = ((x as i32) - (r as i32)).max(0);
+        let max_x = ((x as i32) + (r as i32)).min(width as i32);
+        let min_y = ((y as i32) - (r as i32)).max(0);
+        let max_y = ((y as i32) + (r as i32)).min(width as i32);
+
+        let cxi = x as i32;
+        let cyi = y as i32;
 
         for py in min_y..cyi {
             for px in min_x..cxi {
@@ -1137,11 +1139,12 @@ impl PhotonApp {
                         let existing_g = pixels[idx + 1] as f32;
                         let existing_b = pixels[idx + 2] as f32;
 
-                        pixels[idx] = (existing_r * (1.0 - alpha) + color.0 as f32 * alpha) as u8;
+                        pixels[idx] =
+                            (existing_r * (1.0 - alpha) + stroke_colour.0 as f32 * alpha) as u8;
                         pixels[idx + 1] =
-                            (existing_g * (1. - alpha) + color.1 as f32 * alpha) as u8;
+                            (existing_g * (1. - alpha) + stroke_colour.1 as f32 * alpha) as u8;
                         pixels[idx + 2] =
-                            (existing_b * (1. - alpha) + color.2 as f32 * alpha) as u8;
+                            (existing_b * (1. - alpha) + stroke_colour.2 as f32 * alpha) as u8;
                         pixels[idx + 3] = 255;
                     }
                 }
@@ -1172,11 +1175,12 @@ impl PhotonApp {
                         let existing_g = pixels[idx + 1] as f32;
                         let existing_b = pixels[idx + 2] as f32;
 
-                        pixels[idx] = (existing_r * (1.0 - alpha) + color.0 as f32 * alpha) as u8;
+                        pixels[idx] =
+                            (existing_r * (1.0 - alpha) + stroke_colour.0 as f32 * alpha) as u8;
                         pixels[idx + 1] =
-                            (existing_g * (1. - alpha) + color.1 as f32 * alpha) as u8;
+                            (existing_g * (1. - alpha) + stroke_colour.1 as f32 * alpha) as u8;
                         pixels[idx + 2] =
-                            (existing_b * (1. - alpha) + color.2 as f32 * alpha) as u8;
+                            (existing_b * (1. - alpha) + stroke_colour.2 as f32 * alpha) as u8;
                         pixels[idx + 3] = 255;
                     }
                 }
@@ -1207,11 +1211,12 @@ impl PhotonApp {
                         let existing_g = pixels[idx + 1] as f32;
                         let existing_b = pixels[idx + 2] as f32;
 
-                        pixels[idx] = (existing_r * (1.0 - alpha) + color.0 as f32 * alpha) as u8;
+                        pixels[idx] =
+                            (existing_r * (1.0 - alpha) + stroke_colour.0 as f32 * alpha) as u8;
                         pixels[idx + 1] =
-                            (existing_g * (1. - alpha) + color.1 as f32 * alpha) as u8;
+                            (existing_g * (1. - alpha) + stroke_colour.1 as f32 * alpha) as u8;
                         pixels[idx + 2] =
-                            (existing_b * (1. - alpha) + color.2 as f32 * alpha) as u8;
+                            (existing_b * (1. - alpha) + stroke_colour.2 as f32 * alpha) as u8;
                         pixels[idx + 3] = 255;
                     }
                 }
@@ -1242,11 +1247,12 @@ impl PhotonApp {
                         let existing_g = pixels[idx + 1] as f32;
                         let existing_b = pixels[idx + 2] as f32;
 
-                        pixels[idx] = (existing_r * (1.0 - alpha) + color.0 as f32 * alpha) as u8;
+                        pixels[idx] =
+                            (existing_r * (1.0 - alpha) + stroke_colour.0 as f32 * alpha) as u8;
                         pixels[idx + 1] =
-                            (existing_g * (1. - alpha) + color.1 as f32 * alpha) as u8;
+                            (existing_g * (1. - alpha) + stroke_colour.1 as f32 * alpha) as u8;
                         pixels[idx + 2] =
-                            (existing_b * (1. - alpha) + color.2 as f32 * alpha) as u8;
+                            (existing_b * (1. - alpha) + stroke_colour.2 as f32 * alpha) as u8;
                         pixels[idx + 3] = 255;
                     }
                 }
@@ -2100,7 +2106,7 @@ impl PhotonApp {
         // Start from vertical center and draw upward until we hit transparency
         let center_y = y_start + button_height / 2;
 
-        // Edge/hairline color
+        // Edge/hairline colour
         let edge_r = 50u8;
         let edge_g = 50u8;
         let edge_b = 50u8;
@@ -2172,13 +2178,18 @@ impl PhotonApp {
         }
     }
 
-    fn draw_logo(pixels: &mut [u8], window_width: u32, window_height: u32) {
+    fn draw_logo(
+        pixels: &mut [u8],
+        text_renderer: &mut TextRenderer,
+        window_width: u32,
+        window_height: u32,
+    ) {
         let window_width = window_width as usize;
         let window_height = window_height as usize;
         let smaller_dim = window_width.min(window_height) as f32;
 
         // Size the logo relative to window dimensions
-        let logo_width = (smaller_dim / 2.) as usize;
+        let logo_width = (smaller_dim / 1.5) as usize;
         let logo_height = (smaller_dim / 5.) as usize;
 
         // Position at top center
@@ -2187,19 +2198,21 @@ impl PhotonApp {
         // Draw horizontal spectrum rainbow
         for y in 0..logo_height * 2 {
             for x in 0..logo_width {
-                let x_norm = x as f32 / logo_width as f32;
+                // Flip x for wave calculations to match flipped spectrum
+                let x_flipped = logo_width - 1 - x;
+                let x_norm = x_flipped as f32 / logo_width as f32;
                 let amplitude = logo_height as f32 / (1. + 12. * x_norm);
 
-                let wave_phase = (logo_width as f32 / (x + logo_width / 2) as f32) * 55.;
+                let wave_phase = (logo_width as f32 / (x_flipped + logo_width / 2) as f32) * 55.;
                 let wave_offset = wave_phase.sin() * amplitude;
 
                 let mut scale = (y as f32 + wave_offset - logo_height as f32) / logo_height as f32;
-                scale = ((logo_height * 2 - y) as f32 / logo_height as f32) * 12000.
+                scale = ((logo_height * 2 - y) as f32 / logo_height as f32) * 16000.
                     / (scale.abs() + amplitude / smaller_dim * 0.25);
                 let px = x_start + x;
 
-                // Map x position to wavelength index (0-480)
-                let wavelength_idx = (x * 480) / logo_width;
+                // Map x position to wavelength index (0-480), flipped left-right
+                let wavelength_idx = ((logo_width - 1 - x) * 480) / logo_width;
                 let lms_idx = wavelength_idx * 3;
 
                 // Extract L, M, S from LMS2006SO array
@@ -2221,7 +2234,7 @@ impl PhotonApp {
                     0.003891529873740330 * l + -0.020567680031394800 * m + 0.945832607950864000 * s;
 
                 // Write pixel
-                let idx = (y * window_width + px) * 4;
+                let idx = (y * window_width + px - logo_width / 16) * 4;
                 let r_b = pixels[idx] as f32 * pixels[idx] as f32;
                 let g_b = pixels[idx + 1] as f32 * pixels[idx + 1] as f32;
                 let b_b = pixels[idx + 2] as f32 * pixels[idx + 2] as f32;
@@ -2230,10 +2243,180 @@ impl PhotonApp {
                 pixels[idx + 2] = (b * scale + b_b).sqrt() as u8;
             }
         }
+
+        // Draw "Photon" text with glow effect
+        let text_x = window_width as f32 / 2.;
+        let text_y = logo_height as f32 * 2.;
+        let text_size = smaller_dim / 8. * 1.18;
+
+        // Virtual buffer region (only process where text lives with glow padding)
+        // Express as fractions of smaller_dim using integer math
+        let smaller_dim_int = smaller_dim as usize;
+        let start = smaller_dim_int / 4; // ~10% down from top
+        let stop = smaller_dim_int / 2; // ~50% down from top
+        let virtual_height = stop - start;
+        let buffer_size = window_width * virtual_height;
+
+        let mut glow_buffer = vec![0; buffer_size];
+        text_renderer.draw_text_center(
+            &mut glow_buffer,
+            window_width as u32,
+            virtual_height as u32,
+            "Photon",
+            text_x,
+            text_y - start as f32, // Adjust y for virtual buffer
+            text_size,
+            800, // weight
+            vec![192],
+            0, // rotation
+        );
+
+        let mut highlight_buffer = vec![0; buffer_size];
+        text_renderer.draw_text_center(
+            &mut highlight_buffer,
+            window_width as u32,
+            virtual_height as u32,
+            "Photon",
+            text_x,
+            text_y - start as f32,
+            text_size,
+            800, // weight
+            vec![128],
+            0, // rotation
+        );
+        text_renderer.draw_text_center(
+            &mut highlight_buffer,
+            window_width as u32,
+            virtual_height as u32,
+            "Photon",
+            text_x + 1.,
+            text_y - start as f32,
+            text_size,
+            800, // weight
+            vec![0],
+            0, // rotation
+        );
+        text_renderer.draw_text_center(
+            &mut highlight_buffer,
+            window_width as u32,
+            virtual_height as u32,
+            "Photon",
+            text_x,
+            text_y - start as f32 + 1.,
+            text_size,
+            800, // weight
+            vec![0],
+            0, // rotation
+        );
+
+        let mut prev = highlight_buffer[0];
+        for glow_idx in 1..highlight_buffer.len() {
+            prev = (((highlight_buffer[glow_idx] as u16 + prev as u16 * 15) >> 4) as u8)
+                .max(highlight_buffer[glow_idx]);
+            highlight_buffer[glow_idx] = prev;
+        }
+        let mut prev = highlight_buffer[highlight_buffer.len() - 1];
+        for glow_idx in (0..highlight_buffer.len()).rev() {
+            prev = (((highlight_buffer[glow_idx] as u16 + prev as u16 * 15) >> 4) as u8)
+                .max(highlight_buffer[glow_idx]);
+            highlight_buffer[glow_idx] = prev;
+        }
+
+        // // Vertical pass: top to bottom
+        // for x in 0..window_width as usize {
+        //     let mut prev = highlight_buffer[x]; // y=0, x=x
+        //     for y in 1..window_height as usize {
+        //         let glow_idx = y * window_width as usize + x;
+        //         prev = (((highlight_buffer[glow_idx] as u16 + prev as u16 * 3) >> 2) as u8)
+        //             .max(highlight_buffer[glow_idx]);
+        //         highlight_buffer[glow_idx] = prev;
+        //     }
+        // }
+
+        // // Vertical pass: bottom to top
+        // for x in 0..window_width as usize {
+        //     let mut prev =
+        //         highlight_buffer[(window_height as usize - 1) * window_width as usize + x];
+        //     for y in (0..window_height as usize - 1).rev() {
+        //         let glow_idx = y * window_width as usize + x;
+        //         prev = (((highlight_buffer[glow_idx] as u16 + prev as u16 * 3) >> 2) as u8)
+        //             .max(highlight_buffer[glow_idx]);
+        //         highlight_buffer[glow_idx] = prev;
+        //     }
+        // }
+
+        let mut prev = glow_buffer[0];
+        for glow_idx in 1..glow_buffer.len() {
+            prev = (((glow_buffer[glow_idx] as u16 + prev as u16) >> 1) as u8)
+                .max(glow_buffer[glow_idx]);
+            glow_buffer[glow_idx] = prev;
+        }
+        let mut prev = glow_buffer[glow_buffer.len() - 1];
+        for glow_idx in (0..glow_buffer.len()).rev() {
+            prev = (((glow_buffer[glow_idx] as u16 + prev as u16) >> 1) as u8)
+                .max(glow_buffer[glow_idx]);
+            glow_buffer[glow_idx] = prev;
+        }
+
+        // Vertical pass: top to bottom
+        for x in 0..window_width as usize {
+            let mut prev = glow_buffer[x]; // y=0, x=x
+            for y in 1..virtual_height as usize {
+                let glow_idx = y * window_width as usize + x;
+                prev = (((glow_buffer[glow_idx] as u16 + prev as u16) >> 1) as u8)
+                    .max(glow_buffer[glow_idx]);
+                glow_buffer[glow_idx] = prev;
+            }
+        }
+
+        // Vertical pass: bottom to top
+        for x in 0..window_width as usize {
+            let mut prev = glow_buffer[(virtual_height as usize - 1) * window_width as usize + x];
+            for y in (0..virtual_height as usize - 1).rev() {
+                let glow_idx = y * window_width as usize + x;
+                prev = (((glow_buffer[glow_idx] as u16 + prev as u16) >> 1) as u8)
+                    .max(glow_buffer[glow_idx]);
+                glow_buffer[glow_idx] = prev;
+            }
+        }
+
+        // Composite glow buffer to screen with offset
+        for glow_idx in 0..glow_buffer.len() {
+            let pixel_idx = (glow_idx + start * window_width) * 4;
+
+            let grey = glow_buffer[glow_idx];
+
+            pixels[pixel_idx] = pixels[pixel_idx].wrapping_add(grey);
+            pixels[pixel_idx + 1] = pixels[pixel_idx + 1].wrapping_add(grey);
+            pixels[pixel_idx + 2] = pixels[pixel_idx + 2].wrapping_add(grey);
+        }
+        text_renderer.draw_text_center(
+            pixels,
+            window_width as u32,
+            window_height as u32,
+            "Photon",
+            text_x,
+            text_y,
+            text_size,
+            800, // weight
+            vec![0, 0, 0, 255],
+            0, // rotation
+        );
+
+        // Composite highlight buffer to screen with offset
+        for glow_idx in 0..highlight_buffer.len() {
+            let pixel_idx = (glow_idx + start * window_width) * 4;
+
+            let grey = highlight_buffer[glow_idx];
+
+            pixels[pixel_idx] = pixels[pixel_idx].wrapping_add(grey);
+            pixels[pixel_idx + 1] = pixels[pixel_idx + 1].wrapping_add(grey);
+            pixels[pixel_idx + 2] = pixels[pixel_idx + 2].wrapping_add(grey);
+        }
     }
 }
 
-// Color conversion matrices (commented out - using inline calculations instead)
+// Colour conversion matrices (commented out - using inline calculations instead)
 // static LMS2XYZ: Matrix3<f32> = Matrix3::new(
 //     1.82320417830601000000000E+00,
 //     -1.08438051449034000000000E+00,
