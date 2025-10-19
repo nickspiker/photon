@@ -709,7 +709,7 @@ impl PhotonApp {
             // 2. Draw textbox (full width with min_dim/8 margins)
             let margin = self.min_dim / 8;
             let box_width = self.window_width as usize - margin * 2;
-            let box_height = self.min_dim / 10;
+            let box_height = self.min_dim / 8;
             let center_x = self.window_width as usize / 2;
             let center_y = self.window_height as usize * 4 / 7;
 
@@ -724,7 +724,38 @@ impl PhotonApp {
                 box_height,
             );
 
-            // 3. TODO: Draw text
+            // 3. Draw text
+            // Placeholder inside the box (only if username is empty)
+            if self.username_input.is_empty() {
+                self.text_renderer.draw_text_center(
+                    pixels,
+                    self.window_width,
+                    self.window_height,
+                    "∞",
+                    center_x as f32,
+                    center_y as f32,
+                    box_height as f32 * 0.5,
+                    500, // Thin weight
+                    vec![64, 64, 64, 255],
+                    0,
+                    "Open Sans", // User content
+                );
+            }
+
+            // Label below the box (always visible)
+            self.text_renderer.draw_text_center(
+                pixels,
+                self.window_width,
+                self.window_height,
+                "handle",
+                center_x as f32,
+                (center_y + box_height) as f32,
+                box_height as f32 * 0.5,
+                300, // Thin weight
+                vec![128, 128, 128, 255],
+                0,
+                "Josefin Slab", // UI element
+            );
 
             self.needs_redraw = false;
         }
@@ -2280,7 +2311,7 @@ impl PhotonApp {
         let shadow_colour = (52, 60, 68);
         let fill_colour = (8, 12, 16);
         let radius = (box_width.min(box_height) / 2) as f32;
-        let squirdleyness = 4;
+        let squirdleyness = 3;
 
         // Generate crossings from edge (radius/12 o'clock) toward diagonal (1:30)
         let mut crossings: Vec<(u16, u8, u8)> = Vec::new();
@@ -2811,7 +2842,8 @@ impl PhotonApp {
             text_size,
             800, // weight
             vec![192],
-            0, // rotation
+            0,         // rotation
+            "Oxanium", // Logo font
         );
 
         let mut highlight_buffer = vec![0; buffer_size];
@@ -2825,7 +2857,8 @@ impl PhotonApp {
             text_size,
             800, // weight
             vec![128],
-            0, // rotation
+            0,         // rotation
+            "Oxanium", // Logo font
         );
         text_renderer.draw_text_center(
             &mut highlight_buffer,
@@ -2837,7 +2870,8 @@ impl PhotonApp {
             text_size,
             800, // weight
             vec![0],
-            0, // rotation
+            0,         // rotation
+            "Oxanium", // Logo font
         );
         text_renderer.draw_text_center(
             &mut highlight_buffer,
@@ -2849,7 +2883,8 @@ impl PhotonApp {
             text_size,
             800, // weight
             vec![0],
-            0, // rotation
+            0,         // rotation
+            "Oxanium", // Logo font
         );
 
         let mut prev = highlight_buffer[0];
@@ -2943,7 +2978,8 @@ impl PhotonApp {
             text_size,
             800, // weight
             vec![0, 0, 0, 255],
-            0, // rotation
+            0,         // rotation
+            "Oxanium", // Logo font
         );
 
         // Composite highlight buffer to screen with offset
