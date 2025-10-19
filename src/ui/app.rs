@@ -17,6 +17,11 @@ pub struct PhotonApp {
     screen_height: u32,
     needs_redraw: bool, // True when dimensions change or content updates
 
+    // Universal scaling units (cached for performance)
+    min_dim: usize,     // min(width, height) - universal scaling unit
+    perimeter: usize,   // width + height
+    diagonal_sq: usize, // width² + height² (diagonal squared, for distance calculations)
+
     // Launch screen state
     username_input: String,
     cursor_blink: f32,
@@ -97,6 +102,8 @@ impl PhotonApp {
         let renderer = Renderer::new(window, size.width, size.height).await;
         let text_renderer = TextRenderer::new();
 
+        let w = size.width as usize;
+        let h = size.height as usize;
         let mut app = Self {
             renderer,
             text_renderer,
@@ -105,6 +112,9 @@ impl PhotonApp {
             screen_width,
             screen_height,
             needs_redraw: true,
+            min_dim: w.min(h),
+            perimeter: w + h,
+            diagonal_sq: w * w + h * h,
             username_input: String::new(),
             cursor_blink: 0.0,
             username_available: None,
@@ -142,6 +152,8 @@ impl PhotonApp {
         let renderer = Renderer::new(window, size.width, size.height);
         let text_renderer = TextRenderer::new();
 
+        let w = size.width as usize;
+        let h = size.height as usize;
         let mut app = Self {
             renderer,
             text_renderer,
@@ -150,6 +162,9 @@ impl PhotonApp {
             screen_width,
             screen_height,
             needs_redraw: true, // Initial draw needed
+            min_dim: w.min(h),
+            perimeter: w + h,
+            diagonal_sq: w * w + h * h,
             username_input: String::new(),
             cursor_blink: 0.0,
             username_available: None,
@@ -182,8 +197,17 @@ impl PhotonApp {
     }
 
     pub fn resize(&mut self, size: PhysicalSize<u32>) {
+        let w = size.width as usize;
+        let h = size.height as usize;
+
         self.window_width = size.width;
         self.window_height = size.height;
+
+        // Update cached scaling units
+        self.min_dim = w.min(h);
+        self.perimeter = w + h;
+        self.diagonal_sq = w * w + h * h;
+
         self.renderer.resize(size.width, size.height);
         self.update_button_bounds();
         self.hit_test_map
@@ -666,20 +690,28 @@ impl PhotonApp {
                 &edges,
             );
 
-            Self::draw_logo(
+            // Draw spectrum and logo text
+            let logo_center_y = self.window_height as usize / 4; // Centered in top half
+            Self::draw_spectrum(
+                pixels,
+                self.window_width,
+                self.window_height,
+                logo_center_y - self.window_height.min(self.window_width) as usize / 8,
+            );
+            Self::draw_logo_text(
                 pixels,
                 &mut self.text_renderer,
                 self.window_width,
                 self.window_height,
+                logo_center_y + self.window_height.min(self.window_width) as usize / 8,
             );
 
             // 2. Draw textbox (full width with min_dim/8 margins)
-            let min_dim = self.window_width.min(self.window_height) as usize;
-            let margin = min_dim / 8;
+            let margin = self.min_dim / 8;
             let box_width = self.window_width as usize - margin * 2;
-            let box_height = min_dim / 10;
+            let box_height = self.min_dim / 10;
             let center_x = self.window_width as usize / 2;
-            let center_y = self.window_height as usize / 3 + min_dim / 4;
+            let center_y = self.window_height as usize * 4 / 7;
 
             Self::draw_textbox(
                 pixels,
@@ -2674,22 +2706,23 @@ impl PhotonApp {
         }
     }
 
-    fn draw_logo(
+    fn draw_spectrum(
         pixels: &mut [u8],
-        text_renderer: &mut TextRenderer,
         window_width: u32,
         window_height: u32,
+        vertical_center_px: usize, // Vertical center position in pixels
     ) {
         let window_width = window_width as usize;
-        let window_height = window_height as usize;
-        let smaller_dim = window_width.min(window_height) as f32;
+        let _window_height = window_height as usize;
+        let smaller_dim = window_width.min(window_height as usize) as f32;
 
-        // Size the logo relative to window dimensions
+        // Size the spectrum relative to window dimensions
         let logo_width = (smaller_dim / 1.5) as usize;
         let logo_height = (smaller_dim / 5.) as usize;
 
-        // Position at top center
+        // Position horizontally centered, vertically at specified position
         let x_start: usize = (window_width - logo_width) / 2;
+        let y_offset = vertical_center_px.saturating_sub(logo_height);
 
         // Draw horizontal spectrum rainbow
         for y in 0..logo_height * 2 {
@@ -2731,8 +2764,8 @@ impl PhotonApp {
                 let b =
                     0.003891529873740330 * l + -0.020567680031394800 * m + 0.945832607950864000 * s;
 
-                // Write pixel
-                let idx = (y * window_width + px - logo_width / 16) * 4;
+                // Write pixel (with y_offset for vertical positioning)
+                let idx = ((y + y_offset) * window_width + px - logo_width / 16) * 4;
                 let r_b = pixels[idx] as f32 * pixels[idx] as f32;
                 let g_b = pixels[idx + 1] as f32 * pixels[idx + 1] as f32;
                 let b_b = pixels[idx + 2] as f32 * pixels[idx + 2] as f32;
@@ -2741,17 +2774,29 @@ impl PhotonApp {
                 pixels[idx + 2] = (b * scale + b_b).sqrt() as u8;
             }
         }
+    }
 
-        // Draw "Photon" text with glow effect
+    fn draw_logo_text(
+        pixels: &mut [u8],
+        text_renderer: &mut TextRenderer,
+        window_width: u32,
+        window_height: u32,
+        vertical_center_px: usize, // Vertical center position in pixels
+    ) {
+        let window_width = window_width as usize;
+        let window_height = window_height as usize;
+        let smaller_dim = window_width.min(window_height) as f32;
+
+        // Calculate text position
         let text_x = window_width as f32 / 2.;
-        let text_y = logo_height as f32 * 2.;
+        let text_y = vertical_center_px as f32;
         let text_size = smaller_dim / 8. * 1.18;
 
         // Virtual buffer region (only process where text lives with glow padding)
-        // Express as fractions of smaller_dim using integer math
         let smaller_dim_int = smaller_dim as usize;
-        let start = smaller_dim_int / 4; // ~10% down from top
-        let stop = smaller_dim_int / 2; // ~50% down from top
+        let text_height_estimate = (text_size * 1.5) as usize; // Text + glow padding
+        let start = (text_y as usize).saturating_sub(text_height_estimate);
+        let stop = (text_y as usize + text_height_estimate).min(window_height);
         let virtual_height = stop - start;
         let buffer_size = window_width * virtual_height;
 
