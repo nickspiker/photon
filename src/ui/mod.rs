@@ -13,5 +13,6 @@ use renderer_windows as renderer;
 use renderer_linux as renderer;
 
 mod text;
+pub mod theme;
 
 pub use app::PhotonApp;

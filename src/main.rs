@@ -124,6 +124,11 @@ impl ApplicationHandler for App {
                     app.handle_mouse_move(window, position);
                 }
             }
+            WindowEvent::CursorLeft { .. } => {
+                if let Some(app) = &mut self.photon_app {
+                    app.handle_cursor_left();
+                }
+            }
             _ => {}
         }
     }

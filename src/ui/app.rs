@@ -1,5 +1,6 @@
 use super::renderer::Renderer;
 use super::text::TextRenderer;
+use super::theme;
 use winit::{
     dpi::PhysicalSize,
     event::{ElementState, KeyEvent, MouseButton},
@@ -11,10 +12,8 @@ pub struct PhotonApp {
     renderer: Renderer,
     #[allow(dead_code)] // Will be used for drawing text/logos soon
     text_renderer: TextRenderer,
-    window_width: u32,
-    window_height: u32,
-    screen_width: u32,
-    screen_height: u32,
+    width: u32,
+    height: u32,
     needs_redraw: bool, // True when dimensions change or content updates
 
     // Universal scaling units (cached for performance)
@@ -58,7 +57,7 @@ pub struct PhotonApp {
     // Hit test bitmap (one byte per pixel, element ID)
     hit_test_map: Vec<u8>,
     debug_hit_test: bool,
-    debug_hit_colors: Vec<(u8, u8, u8)>, // Random colors for each hit area ID
+    debug_hit_colours: Vec<(u8, u8, u8)>, // Random colours for each hit area ID
 }
 
 // Hit test element IDs
@@ -69,10 +68,7 @@ const HIT_CLOSE_BUTTON: u8 = 3;
 const HIT_HANDLE_TEXTBOX: u8 = 4;
 const HIT_DEBUG_INIT: u8 = 255; // For visualizing what areas get reset
 
-// Button hover colour deltas (applied on hover, negated on unhover)
-const CLOSE_HOVER: (i8, i8, i8) = (33, -3, -7); // Red
-const MAXIMIZE_HOVER: (i8, i8, i8) = (-6, 16, -6); // Green
-const MINIMIZE_HOVER: (i8, i8, i8) = (-9, -6, 37); // Blue
+// Button hover colour deltas are now in theme module
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum HoveredButton {
@@ -107,10 +103,8 @@ impl PhotonApp {
         let mut app = Self {
             renderer,
             text_renderer,
-            window_width: size.width,
-            window_height: size.height,
-            screen_width,
-            screen_height,
+            width: size.width,
+            height: size.height,
             needs_redraw: true,
             min_dim: w.min(h),
             perimeter: w + h,
@@ -140,7 +134,7 @@ impl PhotonApp {
             close_pixels: Vec::new(),
             hit_test_map: vec![0; (size.width * size.height) as usize],
             debug_hit_test: false,
-            debug_hit_colors: Vec::new(),
+            debug_hit_colours: Vec::new(),
         };
         app.update_button_bounds();
         app
@@ -190,7 +184,7 @@ impl PhotonApp {
             close_pixels: Vec::new(),
             hit_test_map: vec![0; (size.width * size.height) as usize],
             debug_hit_test: false,
-            debug_hit_colors: Vec::new(),
+            debug_hit_colours: Vec::new(),
         };
         app.update_button_bounds();
         app
@@ -200,8 +194,8 @@ impl PhotonApp {
         let w = size.width as usize;
         let h = size.height as usize;
 
-        self.window_width = size.width;
-        self.window_height = size.height;
+        self.width = size.width;
+        self.height = size.height;
 
         // Update cached scaling units
         self.min_dim = w.min(h);
@@ -222,14 +216,14 @@ impl PhotonApp {
     fn update_button_bounds(&mut self) {
         // Button area: 3x wider than tall, extends to top-right corner of window
         // Height = 1/32 of smaller dimension (same as resize border)
-        let smaller_dim = self.window_width.min(self.window_height) as f32;
+        let smaller_dim = self.width.min(self.height) as f32;
         let button_height = (smaller_dim / 32.0).ceil();
         let button_width = button_height; // Each button is square
         let total_width = button_width * 3.0;
 
         // Buttons extend to the very top-right corner (0,0 is top-left)
         // Bottom-left corner at (window_width - total_width, button_height)
-        let x_start = self.window_width as f32 - total_width;
+        let x_start = self.width as f32 - total_width;
         let y_start = 0.0;
 
         // Three buttons: minimize, maximize, close (left to right)
@@ -256,11 +250,11 @@ impl PhotonApp {
                     // Check if Ctrl is pressed
                     if self.modifiers.control_key() {
                         self.debug_hit_test = !self.debug_hit_test;
-                        // Generate new random colors for each hit area
+                        // Generate new random colours for each hit area
                         use std::collections::hash_map::RandomState;
                         use std::hash::{BuildHasher, Hash, Hasher};
                         let random_state = RandomState::new();
-                        self.debug_hit_colors.clear();
+                        self.debug_hit_colours.clear();
                         for id in 0..=255u8 {
                             let mut hasher = random_state.build_hasher();
                             id.hash(&mut hasher);
@@ -269,7 +263,7 @@ impl PhotonApp {
                             let r = ((hash >> 0) & 0xFF) as u8;
                             let g = ((hash >> 8) & 0xFF) as u8;
                             let b = ((hash >> 16) & 0xFF) as u8;
-                            self.debug_hit_colors.push((r, g, b));
+                            self.debug_hit_colours.push((r, g, b));
                         }
                         self.needs_redraw = true;
                         return; // Don't process as regular input
@@ -313,8 +307,8 @@ impl PhotonApp {
                 let mouse_x = self.mouse_x as usize;
                 let mouse_y = self.mouse_y as usize;
 
-                if mouse_x < self.window_width as usize && mouse_y < self.window_height as usize {
-                    let hit_idx = mouse_y * self.window_width as usize + mouse_x;
+                if mouse_x < self.width as usize && mouse_y < self.height as usize {
+                    let hit_idx = mouse_y * self.width as usize + mouse_x;
                     let element_id = self.hit_test_map[hit_idx];
 
                     match element_id {
@@ -337,7 +331,7 @@ impl PhotonApp {
                 if edge != ResizeEdge::None {
                     self.is_dragging_resize = true;
                     self.resize_edge = edge;
-                    self.drag_start_size = (self.window_width, self.window_height);
+                    self.drag_start_size = (self.width, self.height);
 
                     // Store the window position and global cursor position at drag start
                     if let Some(window_pos) = window.outer_position().ok() {
@@ -368,6 +362,44 @@ impl PhotonApp {
                 self.is_dragging_move = false;
                 self.resize_edge = ResizeEdge::None;
             }
+        }
+    }
+
+    pub fn handle_cursor_left(&mut self) {
+        // Clear hover state when cursor leaves window
+        if self.hovered_button != HoveredButton::None {
+            let pixels = self.renderer.get_pixel_buffer_mut();
+
+            // Unhover the current button
+            match self.hovered_button {
+                HoveredButton::Close => {
+                    Self::draw_button_hover_by_pixels(
+                        pixels,
+                        &self.close_pixels,
+                        false,
+                        HoveredButton::Close,
+                    );
+                }
+                HoveredButton::Maximize => {
+                    Self::draw_button_hover_by_pixels(
+                        pixels,
+                        &self.maximize_pixels,
+                        false,
+                        HoveredButton::Maximize,
+                    );
+                }
+                HoveredButton::Minimize => {
+                    Self::draw_button_hover_by_pixels(
+                        pixels,
+                        &self.minimize_pixels,
+                        false,
+                        HoveredButton::Minimize,
+                    );
+                }
+                HoveredButton::None => {}
+            }
+
+            self.hovered_button = HoveredButton::None;
         }
     }
 
@@ -492,8 +524,8 @@ impl PhotonApp {
             // Get hit test value at mouse position
             let mouse_x = self.mouse_x as usize;
             let mouse_y = self.mouse_y as usize;
-            if mouse_x < self.window_width as usize && mouse_y < self.window_height as usize {
-                let hit_idx = mouse_y * self.window_width as usize + mouse_x;
+            if mouse_x < self.width as usize && mouse_y < self.height as usize {
+                let hit_idx = mouse_y * self.width as usize + mouse_x;
                 let element_id = self.hit_test_map[hit_idx];
 
                 self.hovered_button = match element_id {
@@ -587,18 +619,13 @@ impl PhotonApp {
         }
     }
 
-    fn is_point_in_button(&self, x: f32, y: f32, bounds: (f32, f32, f32, f32)) -> bool {
-        let (bx, by, bw, bh) = bounds;
-        x >= bx && x < bx + bw && y >= by && y < by + bh
-    }
-
     fn get_resize_edge(&self, x: f32, y: f32) -> ResizeEdge {
-        let resize_border = ((self.window_width.min(self.window_height) as f32) / 32.0).ceil();
+        let resize_border = ((self.width.min(self.height) as f32) / 32.0).ceil();
 
         let at_left = x < resize_border;
-        let at_right = x > (self.window_width as f32 - resize_border);
+        let at_right = x > (self.width as f32 - resize_border);
         let at_top = y < resize_border;
-        let at_bottom = y > (self.window_height as f32 - resize_border);
+        let at_bottom = y > (self.height as f32 - resize_border);
 
         // Corners have priority
         if at_top && at_left {
@@ -640,14 +667,10 @@ impl PhotonApp {
 
             let pixels = self.renderer.get_pixel_buffer_mut();
 
-            Self::draw_background_texture(pixels, self.window_width, self.window_height);
+            Self::draw_background_texture(pixels, self.width, self.height);
 
-            let (start, edges, button_x_start, button_height) = Self::draw_window_controls(
-                pixels,
-                &mut self.hit_test_map,
-                self.window_width,
-                self.window_height,
-            );
+            let (start, edges, button_x_start, button_height) =
+                Self::draw_window_controls(pixels, &mut self.hit_test_map, self.width, self.height);
 
             // Cache button rendering data for hover effects
             self.button_x_start = button_x_start;
@@ -658,8 +681,8 @@ impl PhotonApp {
             Self::draw_window_edges_and_mask(
                 pixels,
                 &mut self.hit_test_map,
-                self.window_width,
-                self.window_height,
+                self.width,
+                self.height,
                 start,
                 &edges,
             );
@@ -682,8 +705,8 @@ impl PhotonApp {
             Self::draw_button_hairlines(
                 pixels,
                 &mut self.hit_test_map,
-                self.window_width,
-                self.window_height,
+                self.width,
+                self.height,
                 button_x_start,
                 button_height,
                 start,
@@ -691,33 +714,33 @@ impl PhotonApp {
             );
 
             // Draw spectrum and logo text
-            let logo_center_y = self.window_height as usize / 4; // Centered in top half
+            let logo_center_y = self.height as usize / 4; // Centered in top half
             Self::draw_spectrum(
                 pixels,
-                self.window_width,
-                self.window_height,
-                logo_center_y - self.window_height.min(self.window_width) as usize / 8,
+                self.width,
+                self.height,
+                logo_center_y - self.height.min(self.width) as usize / 8,
             );
             Self::draw_logo_text(
                 pixels,
                 &mut self.text_renderer,
-                self.window_width,
-                self.window_height,
-                logo_center_y + self.window_height.min(self.window_width) as usize / 8,
+                self.width,
+                self.height,
+                logo_center_y + self.height.min(self.width) as usize / 8,
             );
 
             // 2. Draw textbox (full width with min_dim/8 margins)
             let margin = self.min_dim / 8;
-            let box_width = self.window_width as usize - margin * 2;
+            let box_width = self.width as usize - margin * 2;
             let box_height = self.min_dim / 8;
-            let center_x = self.window_width as usize / 2;
-            let center_y = self.window_height as usize * 4 / 7;
+            let center_x = self.width as usize / 2;
+            let center_y = self.height as usize * 4 / 7;
 
             Self::draw_textbox(
                 pixels,
                 &mut self.hit_test_map,
-                self.window_width as usize,
-                self.window_height as usize,
+                self.width as usize,
+                self.height as usize,
                 center_x,
                 center_y,
                 box_width,
@@ -729,50 +752,51 @@ impl PhotonApp {
             if self.username_input.is_empty() {
                 self.text_renderer.draw_text_center(
                     pixels,
-                    self.window_width,
-                    self.window_height,
+                    self.width,
+                    self.height,
                     "∞",
                     center_x as f32,
                     center_y as f32,
                     box_height as f32 * 0.5,
                     500, // Thin weight
-                    vec![64, 64, 64, 255],
+                    theme::FONT_HINT.to_vec(),
                     0,
-                    "Open Sans", // User content
+                    theme::FONT_USER_CONTENT,
                 );
             }
 
             // Label below the box (always visible)
             self.text_renderer.draw_text_center(
                 pixels,
-                self.window_width,
-                self.window_height,
+                self.width,
+                self.height,
                 "handle",
                 center_x as f32,
                 (center_y + box_height) as f32,
                 box_height as f32 * 0.5,
                 300, // Thin weight
-                vec![128, 128, 128, 255],
+                theme::FONT_LABEL.to_vec(),
                 0,
-                "Josefin Slab", // UI element
+                theme::FONT_UI,
             );
 
             self.needs_redraw = false;
         }
 
-        // Debug: visualize hit test map with random colors
+        // Debug: visualize hit test map with random colours
         if self.debug_hit_test {
             let pixels = self.renderer.get_pixel_buffer_mut();
-            for y in 0..self.window_height as usize {
-                for x in 0..self.window_width as usize {
-                    let hit_idx = y * self.window_width as usize + x;
+            for y in 0..self.height as usize {
+                for x in 0..self.width as usize {
+                    let hit_idx = y * self.width as usize + x;
                     let pixel_idx = hit_idx * 4;
                     let element_id = self.hit_test_map[hit_idx];
 
-                    if element_id != HIT_NONE && (element_id as usize) < self.debug_hit_colors.len()
+                    if element_id != HIT_NONE
+                        && (element_id as usize) < self.debug_hit_colours.len()
                     {
-                        // Use random color for this element ID
-                        let (r, g, b) = self.debug_hit_colors[element_id as usize];
+                        // Use random colour for this element ID
+                        let (r, g, b) = self.debug_hit_colours[element_id as usize];
                         pixels[pixel_idx] = r;
                         pixels[pixel_idx + 1] = g;
                         pixels[pixel_idx + 2] = b;
@@ -830,10 +854,8 @@ impl PhotonApp {
         let start = (radius - y) as usize;
         let crossings: Vec<(u16, u8, u8)> = crossings.into_iter().rev().collect();
 
-        let edge_colour = (50, 50, 50);
-        let bg_r = 30u8;
-        let bg_g = 30u8;
-        let bg_b = 30u8;
+        let edge_colour = theme::WINDOW_LIGHT_EDGE;
+        let bg_colour = theme::WINDOW_CONTROLS_BG;
 
         // Left edge (vertical) - draw light hairline following squircle curve
         let mut y_offset = start;
@@ -850,9 +872,9 @@ impl PhotonApp {
                 let idx = (py * window_width + px) * 4;
                 let hit_idx = py * window_width + px;
 
-                pixels[idx] = bg_r;
-                pixels[idx + 1] = bg_g;
-                pixels[idx + 2] = bg_b;
+                for c in 0..3 {
+                    pixels[idx + c] = bg_colour[c];
+                }
 
                 // Determine which button this pixel belongs to
                 // Button widths: minimize (0-1), maximize (1-2), close (2-3.5)
@@ -884,9 +906,9 @@ impl PhotonApp {
                 let mut existing = pixels[idx] as u64
                     | (pixels[idx + 1] as u64) << 16
                     | (pixels[idx + 2] as u64) << 32;
-                let mut light = edge_colour.0 as u64
-                    | (edge_colour.1 as u64) << 16
-                    | (edge_colour.2 as u64) << 32;
+                let mut light = edge_colour[0] as u64
+                    | (edge_colour[1] as u64) << 16
+                    | (edge_colour[2] as u64) << 32;
                 existing *= *l as u64;
                 light *= *h as u64;
                 let combined = existing + light;
@@ -901,10 +923,11 @@ impl PhotonApp {
                 let idx = (py * window_width + px) * 4;
                 let hit_idx = py * window_width + px;
 
-                let bg = bg_r as u64 | (bg_g as u64) << 16 | (bg_b as u64) << 32;
-                let light = edge_colour.0 as u64
-                    | (edge_colour.1 as u64) << 16
-                    | (edge_colour.2 as u64) << 32;
+                let bg =
+                    bg_colour[0] as u64 | (bg_colour[1] as u64) << 16 | (bg_colour[2] as u64) << 32;
+                let light = edge_colour[0] as u64
+                    | (edge_colour[1] as u64) << 16
+                    | (edge_colour[2] as u64) << 32;
                 let combined = bg * *h as u64 + light * *l as u64;
                 pixels[idx] = (combined >> 8) as u8;
                 pixels[idx + 1] = (combined >> 24) as u8;
@@ -944,8 +967,9 @@ impl PhotonApp {
             let mut existing = pixels[idx] as u64
                 | (pixels[idx + 1] as u64) << 16
                 | (pixels[idx + 2] as u64) << 32;
-            let mut light =
-                edge_colour.0 as u64 | (edge_colour.1 as u64) << 16 | (edge_colour.2 as u64) << 32;
+            let mut light = edge_colour[0] as u64
+                | (edge_colour[1] as u64) << 16
+                | (edge_colour[2] as u64) << 32;
             existing *= l as u64;
             light *= h as u64;
             let combined = existing + light;
@@ -959,9 +983,9 @@ impl PhotonApp {
                 let idx = (py * window_width + px) * 4;
                 let hit_idx = py * window_width + px;
 
-                pixels[idx] = bg_r;
-                pixels[idx + 1] = bg_g;
-                pixels[idx + 2] = bg_b;
+                for c in 0..3 {
+                    pixels[idx + c] = bg_colour[c];
+                }
 
                 // Determine which button this pixel belongs to
                 // Buttons are drawn with a button_width / 4 offset
@@ -986,9 +1010,11 @@ impl PhotonApp {
             let py = y_start + button_height - 1 - (i + 1);
             let idx = (py * window_width + px) * 4;
             let hit_idx = py * window_width + px;
-            let bg = bg_r as u64 | (bg_g as u64) << 16 | (bg_b as u64) << 32;
-            let light =
-                edge_colour.0 as u64 | (edge_colour.1 as u64) << 16 | (edge_colour.2 as u64) << 32;
+            let bg =
+                bg_colour[0] as u64 | (bg_colour[1] as u64) << 16 | (bg_colour[2] as u64) << 32;
+            let light = edge_colour[0] as u64
+                | (edge_colour[1] as u64) << 16
+                | (edge_colour[2] as u64) << 32;
             let combined = bg * h as u64 + light * l as u64;
             pixels[idx] = (combined >> 8) as u8;
             pixels[idx + 1] = (combined >> 24) as u8;
@@ -1016,14 +1042,30 @@ impl PhotonApp {
 
         x_start += button_width / 4;
 
-        // Draw button symbols
+        // Draw button symbols using glyph colours
+        let minimize_colour = (
+            theme::MINIMIZE_GLYPH[0] as u8,
+            theme::MINIMIZE_GLYPH[1] as u8,
+            theme::MINIMIZE_GLYPH[2] as u8,
+        );
         Self::draw_minimize_symbol(
             pixels,
             window_width,
             x_start + button_width / 2,
             y_start + button_width / 2,
             button_width / 4,
-            (64, 90, 208),
+            minimize_colour,
+        );
+
+        let maximize_colour = (
+            theme::MAXIMIZE_GLYPH[0] as u8,
+            theme::MAXIMIZE_GLYPH[1] as u8,
+            theme::MAXIMIZE_GLYPH[2] as u8,
+        );
+        let maximize_interior = (
+            theme::MAXIMIZE_GLYPH_INTERIOR[0] as u8,
+            theme::MAXIMIZE_GLYPH_INTERIOR[1] as u8,
+            theme::MAXIMIZE_GLYPH_INTERIOR[2] as u8,
         );
         Self::draw_maximize_symbol(
             pixels,
@@ -1031,8 +1073,14 @@ impl PhotonApp {
             x_start + button_width + button_width / 2,
             y_start + button_width / 2,
             button_width / 4,
-            (62, 140, 48),
-            (60, 62, 66), // fill_colour (dark grey)
+            maximize_colour,
+            maximize_interior,
+        );
+
+        let close_colour = (
+            theme::CLOSE_GLYPH[0] as u8,
+            theme::CLOSE_GLYPH[1] as u8,
+            theme::CLOSE_GLYPH[2] as u8,
         );
         Self::draw_close_symbol(
             pixels,
@@ -1040,7 +1088,7 @@ impl PhotonApp {
             x_start + button_width * 2 + button_width / 2,
             y_start + button_width / 2,
             button_width / 4,
-            (222, 100, 100), // stroke_colour (red +33 clearance)
+            close_colour,
         );
         (start, crossings, x_start, button_height)
     }
@@ -1404,201 +1452,11 @@ impl PhotonApp {
         (dist_x * dist_x + dist_y * dist_y).sqrt() - radius
     }
 
-    fn draw_launch_screen_static(
-        pixels: &mut [u8],
-        width: u32,
-        height: u32,
-        username_input: &str,
-        _username_available: Option<bool>,
-        cursor_blink: f32,
-    ) {
-        let width = width as usize;
-        let height = height as usize;
-        // Draw rounded corners - scale with smaller dimension to keep proportional
-        let smaller_dim = width.min(height) as f32;
-        let corner_radius = (smaller_dim / 2.0).min(width as f32 / 2.0);
-        let bg_r = 18;
-        let bg_g = 18;
-        let bg_b = 24;
-
-        for y in 0..height {
-            for x in 0..width {
-                let left_dist = x as f32;
-                let right_dist = (width - x - 1) as f32;
-                let top_dist = y as f32;
-                let bottom_dist = (height - y - 1) as f32;
-
-                let min_x_dist = left_dist.min(right_dist);
-                let min_y_dist = top_dist.min(bottom_dist);
-
-                // Check if in corner region
-                let in_corner = min_x_dist < corner_radius && min_y_dist < corner_radius;
-                let in_window = if in_corner {
-                    let cx = if left_dist < corner_radius {
-                        corner_radius - left_dist
-                    } else {
-                        corner_radius - right_dist
-                    };
-                    let cy = if top_dist < corner_radius {
-                        corner_radius - top_dist
-                    } else {
-                        corner_radius - bottom_dist
-                    };
-                    let corner_dist = (cx * cx + cy * cy).sqrt();
-                    corner_dist < corner_radius
-                } else {
-                    true // Not in corner, so inside window
-                };
-
-                let idx = (y * width + x) * 4;
-                if in_window {
-                    pixels[idx] = bg_r;
-                    pixels[idx + 1] = bg_g;
-                    pixels[idx + 2] = bg_b;
-                    pixels[idx + 3] = 255;
-                } // else stays transparent
-            }
-        }
-
-        // Draw "tmessage" title at top (commented out - no text rendering for now)
-        // let title_y = height / 8;
-        // self.text_renderer.draw_text_center(...);
-
-        // Draw username input box
-        let input_y = height / 2;
-        let input_width = (width as f32 * 0.6) as usize;
-        let input_x = (width - input_width) / 2;
-        let input_height = ((height as f32) / 8.0).max(40.0) as usize; // Scale with window, min 40px
-
-        Self::draw_input_box_static(
-            pixels,
-            width,
-            height,
-            input_x,
-            input_y,
-            input_width,
-            input_height,
-        );
-
-        // Draw username text inside box (commented out - no text rendering for now)
-        // if !username_input.is_empty() {
-        //     self.text_renderer.draw_text_left(...);
-        // } else {
-        //     self.text_renderer.draw_text_left(...);
-        // }
-
-        // Draw blinking cursor
-        if !username_input.is_empty() && (cursor_blink % 1.0) < 0.5 {
-            let char_width = (width as f32 / 30.0).max(10.0) as usize; // Scale character width
-            let cursor_padding = (input_height as f32 / 4.0).max(5.0) as usize; // Scale padding
-            let cursor_x = input_x + cursor_padding + username_input.len() * char_width;
-            let cursor_y_start = input_y + cursor_padding;
-            let cursor_y_end = input_y + input_height - cursor_padding;
-
-            for y in cursor_y_start..cursor_y_end {
-                let idx = (y * width + cursor_x) * 4;
-                if idx + 3 < pixels.len() {
-                    pixels[idx] = 255;
-                    pixels[idx + 1] = 255;
-                    pixels[idx + 2] = 255;
-                    pixels[idx + 3] = 255;
-                }
-            }
-        }
-
-        // Draw availability indicator (commented out - no text rendering for now)
-        // if let Some(available) = username_available {
-        //     self.text_renderer.draw_text_center(...);
-        // } else if !username_input.is_empty() {
-        //     self.text_renderer.draw_text_center(...);
-        // }
-    }
-
-    fn draw_input_box_static(
-        pixels: &mut [u8],
-        width: usize,
-        height: usize,
-        x: usize,
-        y: usize,
-        box_width: usize,
-        box_height: usize,
-    ) {
-        // Draw squirtle shape - fully roundamicated
-        let border_thickness = ((box_height as f32) / 30.0).max(1.0) as usize; // Scale border with box
-        let corner_radius = (box_height as f32) / 2.0; // Squirtle: radius = half the height
-
-        for dy in 0..box_height {
-            for dx in 0..box_width {
-                let px = x + dx;
-                let py = y + dy;
-
-                if px >= width || py >= height {
-                    continue;
-                }
-
-                // Calculate distance from edges for rounded corners
-                let left_dist = dx as f32;
-                let right_dist = (box_width - dx - 1) as f32;
-                let top_dist = dy as f32;
-                let bottom_dist = (box_height - dy - 1) as f32;
-
-                let min_x_dist = left_dist.min(right_dist);
-                let min_y_dist = top_dist.min(bottom_dist);
-
-                // Rounded corner check
-                let in_corner = min_x_dist < corner_radius && min_y_dist < corner_radius;
-                let corner_dist = if in_corner {
-                    let cx = if left_dist < corner_radius {
-                        corner_radius - left_dist
-                    } else {
-                        corner_radius - right_dist
-                    };
-                    let cy = if top_dist < corner_radius {
-                        corner_radius - top_dist
-                    } else {
-                        corner_radius - bottom_dist
-                    };
-                    (cx * cx + cy * cy).sqrt()
-                } else {
-                    0.0
-                };
-
-                let is_border =
-                    min_x_dist < border_thickness as f32 || min_y_dist < border_thickness as f32;
-                let in_corner_radius = !in_corner || corner_dist < corner_radius;
-
-                if !in_corner_radius {
-                    continue; // Outside rounded corner
-                }
-
-                let idx = (py * width + px) * 4;
-                if idx + 3 >= pixels.len() {
-                    continue;
-                }
-
-                if is_border {
-                    // Border - gradient blue
-                    let gradient = (dx as f32 / box_width as f32) * 0.5 + 0.5;
-                    pixels[idx] = (60.0 * gradient) as u8;
-                    pixels[idx + 1] = (100.0 * gradient) as u8;
-                    pixels[idx + 2] = (200.0 * gradient) as u8;
-                    pixels[idx + 3] = 255;
-                } else {
-                    // Interior - dark
-                    pixels[idx] = 30;
-                    pixels[idx + 1] = 30;
-                    pixels[idx + 2] = 40;
-                    pixels[idx + 3] = 255;
-                }
-            }
-        }
-    }
-
     /// Draw just the background texture (noisy gradient)
     fn draw_background_texture(pixels: &mut [u8], width: u32, height: u32) {
         use rayon::prelude::*;
 
-        let bg_colour = [6u8, 8u8, 9u8];
+        let bg_colour = theme::BACKGROUND;
         let width_bytes = (width * 4) as usize;
 
         // Skip first and last rows, process middle rows in parallel
@@ -1668,9 +1526,9 @@ impl PhotonApp {
                     }
 
                     let pixel_idx = (x * 4) as usize;
-                    row_pixels[pixel_idx] = fill_colour[0] + 16;
-                    row_pixels[pixel_idx + 1] = fill_colour[1] + 17;
-                    row_pixels[pixel_idx + 2] = fill_colour[2] + 20;
+                    for c in 0..3 {
+                        row_pixels[pixel_idx + c] = fill_colour[c] + theme::BACKGROUND_ADDER[c];
+                    }
                     row_pixels[pixel_idx + 3] = 255;
                 }
 
@@ -1720,9 +1578,9 @@ impl PhotonApp {
                     }
 
                     let pixel_idx = (x * 4) as usize;
-                    row_pixels[pixel_idx] = fill_colour[0] + 16;
-                    row_pixels[pixel_idx + 1] = fill_colour[1] + 17;
-                    row_pixels[pixel_idx + 2] = fill_colour[2] + 20;
+                    for c in 0..3 {
+                        row_pixels[pixel_idx + c] = fill_colour[c] + theme::BACKGROUND_ADDER[c];
+                    }
                     row_pixels[pixel_idx + 3] = 255;
                 }
             });
@@ -1737,43 +1595,43 @@ impl PhotonApp {
         start: usize,
         crossings: &[(u16, u8, u8)],
     ) {
-        let light_colour = (75, 70, 65);
-        let shadow_colour = (52, 60, 68);
+        let light_colour = theme::WINDOW_LIGHT_EDGE;
+        let shadow_colour = theme::WINDOW_SHADOW_EDGE;
 
         // Fill all four edges with white before squircle clipping
         // Top edge
         for x in 0..width {
             let idx = (0 * width + x) * 4;
-            pixels[idx as usize] = light_colour.0;
-            pixels[idx as usize + 1] = light_colour.1;
-            pixels[idx as usize + 2] = light_colour.2;
+            pixels[idx as usize] = light_colour[0];
+            pixels[idx as usize + 1] = light_colour[1];
+            pixels[idx as usize + 2] = light_colour[2];
             pixels[idx as usize + 3] = 255;
         }
 
         // Bottom edge
         for x in 0..width {
             let idx = ((height - 1) * width + x) * 4;
-            pixels[idx as usize] = shadow_colour.0;
-            pixels[idx as usize + 1] = shadow_colour.1;
-            pixels[idx as usize + 2] = shadow_colour.2;
+            pixels[idx as usize] = shadow_colour[0];
+            pixels[idx as usize + 1] = shadow_colour[1];
+            pixels[idx as usize + 2] = shadow_colour[2];
             pixels[idx as usize + 3] = 255;
         }
 
         // Left edge
         for y in 0..height {
             let idx = (y * width + 0) * 4;
-            pixels[idx as usize] = light_colour.0;
-            pixels[idx as usize + 1] = light_colour.1;
-            pixels[idx as usize + 2] = light_colour.2;
+            pixels[idx as usize] = light_colour[0];
+            pixels[idx as usize + 1] = light_colour[1];
+            pixels[idx as usize + 2] = light_colour[2];
             pixels[idx as usize + 3] = 255;
         }
 
         // Right edge
         for y in 0..height {
             let idx = (y * width + (width - 1)) * 4;
-            pixels[idx as usize] = shadow_colour.0;
-            pixels[idx as usize + 1] = shadow_colour.1;
-            pixels[idx as usize + 2] = shadow_colour.2;
+            pixels[idx as usize] = shadow_colour[0];
+            pixels[idx as usize + 1] = shadow_colour[1];
+            pixels[idx as usize + 2] = shadow_colour[2];
             pixels[idx as usize + 3] = 255;
         }
 
@@ -1839,16 +1697,16 @@ impl PhotonApp {
             // Left edge outer pixel
             let idx = (y_top * width as usize + inset as usize) * 4;
             let hit_idx = y_top * width as usize + inset as usize;
-            let light = light_colour.0 as u64
-                | (light_colour.1 as u64) << 16
-                | (light_colour.2 as u64) << 32;
+            let light = light_colour[0] as u64
+                | (light_colour[1] as u64) << 16
+                | (light_colour[2] as u64) << 32;
             let result = light * h as u64;
             pixels[idx] = (result >> 8) as u8;
             pixels[idx + 1] = (result >> 24) as u8;
             pixels[idx + 2] = (result >> 40) as u8;
             pixels[idx + 3] = h;
             if h < 255 {
-                hit_test_map[hit_idx] = HIT_NONE;
+                hit_test_map[hit_idx] = HIT_NONE; // NEEDS FIXED!!!
             }
 
             // Left edge inner pixel
@@ -1856,9 +1714,9 @@ impl PhotonApp {
             let existing = pixels[idx] as u64
                 | (pixels[idx + 1] as u64) << 16
                 | (pixels[idx + 2] as u64) << 32;
-            let light = light_colour.0 as u64
-                | (light_colour.1 as u64) << 16
-                | (light_colour.2 as u64) << 32;
+            let light = light_colour[0] as u64
+                | (light_colour[1] as u64) << 16
+                | (light_colour[2] as u64) << 32;
             let combined = existing * h as u64 + light * l as u64;
             pixels[idx] = (combined >> 8) as u8;
             pixels[idx + 1] = (combined >> 24) as u8;
@@ -1869,9 +1727,9 @@ impl PhotonApp {
             let existing = pixels[idx] as u64
                 | (pixels[idx + 1] as u64) << 16
                 | (pixels[idx + 2] as u64) << 32;
-            let shadow = shadow_colour.0 as u64
-                | (shadow_colour.1 as u64) << 16
-                | (shadow_colour.2 as u64) << 32;
+            let shadow = shadow_colour[0] as u64
+                | (shadow_colour[1] as u64) << 16
+                | (shadow_colour[2] as u64) << 32;
             let combined = existing * h as u64 + shadow * l as u64;
             pixels[idx] = (combined >> 8) as u8;
             pixels[idx + 1] = (combined >> 24) as u8;
@@ -1880,9 +1738,9 @@ impl PhotonApp {
             // Right edge outer pixel
             let idx = idx + 4;
             let hit_idx = y_top * width as usize + width as usize - 1 - inset as usize;
-            let light = shadow_colour.0 as u64
-                | (shadow_colour.1 as u64) << 16
-                | (shadow_colour.2 as u64) << 32;
+            let light = shadow_colour[0] as u64
+                | (shadow_colour[1] as u64) << 16
+                | (shadow_colour[2] as u64) << 32;
             let result = light * h as u64;
             pixels[idx] = (result >> 8) as u8;
             pixels[idx + 1] = (result >> 24) as u8;
@@ -1922,9 +1780,9 @@ impl PhotonApp {
             // Left outer edge pixel
             let idx = (y_bottom * width as usize + inset as usize) * 4;
             let hit_idx = y_bottom * width as usize + inset as usize;
-            let light = light_colour.0 as u64
-                | (light_colour.1 as u64) << 16
-                | (light_colour.2 as u64) << 32;
+            let light = light_colour[0] as u64
+                | (light_colour[1] as u64) << 16
+                | (light_colour[2] as u64) << 32;
             let result = light * h as u64;
             pixels[idx] = (result >> 8) as u8;
             pixels[idx + 1] = (result >> 24) as u8;
@@ -1939,9 +1797,9 @@ impl PhotonApp {
             let existing = pixels[idx] as u64
                 | (pixels[idx + 1] as u64) << 16
                 | (pixels[idx + 2] as u64) << 32;
-            let light = light_colour.0 as u64
-                | (light_colour.1 as u64) << 16
-                | (light_colour.2 as u64) << 32;
+            let light = light_colour[0] as u64
+                | (light_colour[1] as u64) << 16
+                | (light_colour[2] as u64) << 32;
             let combined = existing * h as u64 + light * l as u64;
             pixels[idx] = (combined >> 8) as u8;
             pixels[idx + 1] = (combined >> 24) as u8;
@@ -1952,9 +1810,9 @@ impl PhotonApp {
             let existing = pixels[idx] as u64
                 | (pixels[idx + 1] as u64) << 16
                 | (pixels[idx + 2] as u64) << 32;
-            let shadow = shadow_colour.0 as u64
-                | (shadow_colour.1 as u64) << 16
-                | (shadow_colour.2 as u64) << 32;
+            let shadow = shadow_colour[0] as u64
+                | (shadow_colour[1] as u64) << 16
+                | (shadow_colour[2] as u64) << 32;
             let combined = existing * h as u64 + shadow * l as u64;
             pixels[idx] = (combined >> 8) as u8;
             pixels[idx + 1] = (combined >> 24) as u8;
@@ -1963,9 +1821,9 @@ impl PhotonApp {
             // Right edge outer pixel
             let idx = idx + 4;
             let hit_idx = y_bottom * width as usize + width as usize - 1 - inset as usize;
-            let light = shadow_colour.0 as u64
-                | (shadow_colour.1 as u64) << 16
-                | (shadow_colour.2 as u64) << 32;
+            let light = shadow_colour[0] as u64
+                | (shadow_colour[1] as u64) << 16
+                | (shadow_colour[2] as u64) << 32;
             let result = light * h as u64;
             pixels[idx] = (result >> 8) as u8;
             pixels[idx + 1] = (result >> 24) as u8;
@@ -2008,9 +1866,9 @@ impl PhotonApp {
             // Top outer edge pixel
             let idx = (inset as usize * width as usize + x_left) * 4;
             let hit_idx = inset as usize * width as usize + x_left;
-            let light = light_colour.0 as u64
-                | (light_colour.1 as u64) << 16
-                | (light_colour.2 as u64) << 32;
+            let light = light_colour[0] as u64
+                | (light_colour[1] as u64) << 16
+                | (light_colour[2] as u64) << 32;
             let result = light * h as u64;
             pixels[idx] = (result >> 8) as u8;
             pixels[idx + 1] = (result >> 24) as u8;
@@ -2025,9 +1883,9 @@ impl PhotonApp {
             let existing = pixels[idx] as u64
                 | (pixels[idx + 1] as u64) << 16
                 | (pixels[idx + 2] as u64) << 32;
-            let light = light_colour.0 as u64
-                | (light_colour.1 as u64) << 16
-                | (light_colour.2 as u64) << 32;
+            let light = light_colour[0] as u64
+                | (light_colour[1] as u64) << 16
+                | (light_colour[2] as u64) << 32;
             let combined = existing * h as u64 + light * l as u64;
             pixels[idx] = (combined >> 8) as u8;
             pixels[idx + 1] = (combined >> 24) as u8;
@@ -2036,9 +1894,9 @@ impl PhotonApp {
             // Bottom outer edge pixel
             let idx = ((height as usize - 1 - inset as usize) * width as usize + x_left) * 4;
             let hit_idx = (height as usize - 1 - inset as usize) * width as usize + x_left;
-            let shadow = shadow_colour.0 as u64
-                | (shadow_colour.1 as u64) << 16
-                | (shadow_colour.2 as u64) << 32;
+            let shadow = shadow_colour[0] as u64
+                | (shadow_colour[1] as u64) << 16
+                | (shadow_colour[2] as u64) << 32;
             let result = shadow * h as u64;
             pixels[idx] = (result >> 8) as u8;
             pixels[idx + 1] = (result >> 24) as u8;
@@ -2053,9 +1911,9 @@ impl PhotonApp {
             let existing = pixels[idx] as u64
                 | (pixels[idx + 1] as u64) << 16
                 | (pixels[idx + 2] as u64) << 32;
-            let shadow = shadow_colour.0 as u64
-                | (shadow_colour.1 as u64) << 16
-                | (shadow_colour.2 as u64) << 32;
+            let shadow = shadow_colour[0] as u64
+                | (shadow_colour[1] as u64) << 16
+                | (shadow_colour[2] as u64) << 32;
             let combined = existing * h as u64 + shadow * l as u64;
             pixels[idx] = (combined >> 8) as u8;
             pixels[idx + 1] = (combined >> 24) as u8;
@@ -2094,9 +1952,9 @@ impl PhotonApp {
             // Top outer edge pixel
             let idx = (inset as usize * width as usize + x_right) * 4;
             let hit_idx = inset as usize * width as usize + x_right;
-            let light = light_colour.0 as u64
-                | (light_colour.1 as u64) << 16
-                | (light_colour.2 as u64) << 32;
+            let light = light_colour[0] as u64
+                | (light_colour[1] as u64) << 16
+                | (light_colour[2] as u64) << 32;
             let result = light * h as u64;
             pixels[idx] = (result >> 8) as u8;
             pixels[idx + 1] = (result >> 24) as u8;
@@ -2111,9 +1969,9 @@ impl PhotonApp {
             let existing = pixels[idx] as u64
                 | (pixels[idx + 1] as u64) << 16
                 | (pixels[idx + 2] as u64) << 32;
-            let light = light_colour.0 as u64
-                | (light_colour.1 as u64) << 16
-                | (light_colour.2 as u64) << 32;
+            let light = light_colour[0] as u64
+                | (light_colour[1] as u64) << 16
+                | (light_colour[2] as u64) << 32;
             let combined = existing * h as u64 + light * l as u64;
             pixels[idx] = (combined >> 8) as u8;
             pixels[idx + 1] = (combined >> 24) as u8;
@@ -2122,9 +1980,9 @@ impl PhotonApp {
             // Bottom outer edge pixel
             let idx = ((height as usize - 1 - inset as usize) * width as usize + x_right) * 4;
             let hit_idx = (height as usize - 1 - inset as usize) * width as usize + x_right;
-            let shadow = shadow_colour.0 as u64
-                | (shadow_colour.1 as u64) << 16
-                | (shadow_colour.2 as u64) << 32;
+            let shadow = shadow_colour[0] as u64
+                | (shadow_colour[1] as u64) << 16
+                | (shadow_colour[2] as u64) << 32;
             let result = shadow * h as u64;
             pixels[idx] = (result >> 8) as u8;
             pixels[idx + 1] = (result >> 24) as u8;
@@ -2139,9 +1997,9 @@ impl PhotonApp {
             let existing = pixels[idx] as u64
                 | (pixels[idx + 1] as u64) << 16
                 | (pixels[idx + 2] as u64) << 32;
-            let shadow = shadow_colour.0 as u64
-                | (shadow_colour.1 as u64) << 16
-                | (shadow_colour.2 as u64) << 32;
+            let shadow = shadow_colour[0] as u64
+                | (shadow_colour[1] as u64) << 16
+                | (shadow_colour[2] as u64) << 32;
             let combined = existing * h as u64 + shadow * l as u64;
             pixels[idx] = (combined >> 8) as u8;
             pixels[idx + 1] = (combined >> 24) as u8;
@@ -2170,26 +2028,26 @@ impl PhotonApp {
         button_type: HoveredButton,
     ) {
         // Get the hover deltas for this button type
-        let (r, g, b) = match button_type {
-            HoveredButton::Close => CLOSE_HOVER,
-            HoveredButton::Maximize => MAXIMIZE_HOVER,
-            HoveredButton::Minimize => MINIMIZE_HOVER,
-            HoveredButton::None => (0, 0, 0),
+        let hover_delta = match button_type {
+            HoveredButton::Close => theme::CLOSE_HOVER,
+            HoveredButton::Maximize => theme::MAXIMIZE_HOVER,
+            HoveredButton::Minimize => theme::MINIMIZE_HOVER,
+            HoveredButton::None => [0, 0, 0, 0],
         };
 
         // Apply deltas (positive for hover, negative for unhover)
         let sign = if hover { 1 } else { -1 };
-        let r_delta = r * sign;
-        let g_delta = g * sign;
-        let b_delta = b * sign;
+        let r_delta = hover_delta[0] * sign;
+        let g_delta = hover_delta[1] * sign;
+        let b_delta = hover_delta[2] * sign;
 
         // Iterate only over the cached pixels for this button
         for &hit_idx in pixel_list {
             let pixel_idx = hit_idx * 4;
             if pixel_idx + 3 < pixels.len() {
-                pixels[pixel_idx] += r_delta as u8;
-                pixels[pixel_idx + 1] += g_delta as u8;
-                pixels[pixel_idx + 2] += b_delta as u8;
+                pixels[pixel_idx] = pixels[pixel_idx].wrapping_add(r_delta as u8);
+                pixels[pixel_idx + 1] = pixels[pixel_idx + 1].wrapping_add(g_delta as u8);
+                pixels[pixel_idx + 2] = pixels[pixel_idx + 2].wrapping_add(b_delta as u8);
             }
         }
     }
@@ -2222,72 +2080,64 @@ impl PhotonApp {
         let center_y = y_start + button_height / 2;
 
         // Edge/hairline colour
-        let edge_r = 50u8;
-        let edge_g = 50u8;
-        let edge_b = 50u8;
+        let edge_colour = theme::WINDOW_CONTROLS_HAIRLINE;
 
         // Draw left hairline
-        // Draw upward from center (inclusive) until we hit transparency
+        // Draw upward from center until color changes
+        let center_color = pixels[(center_y * width + left_px) * 4];
         for py in (y_start..=center_y).rev() {
             let idx = (py * width + left_px) * 4;
             let hit_idx = py * width + left_px;
-            // Check if pixel has any transparency (alpha < 255)
-            if pixels[idx + 3] < 255 {
+            let diff = pixels[idx] != center_color;
+            for c in 0..3 {
+                pixels[idx + c] = edge_colour[c];
+            }
+            hit_test_map[hit_idx] = HIT_NONE;
+            if diff {
                 break;
             }
-            pixels[idx] = edge_r;
-            pixels[idx + 1] = edge_g;
-            pixels[idx + 2] = edge_b;
-            hit_test_map[hit_idx] = HIT_NONE;
         }
 
-        // Draw downward from center until we hit a pixel that differs from button grey
+        // Draw downward from center+1 until color changes
         for py in (center_y + 1)..(y_start + button_height) {
             let idx = (py * width + left_px) * 4;
             let hit_idx = py * width + left_px;
-            let r = pixels[idx];
-
-            // Always draw the hairline pixel
-            pixels[idx] = edge_r;
-            pixels[idx + 1] = edge_g;
-            pixels[idx + 2] = edge_b;
+            let diff = pixels[idx] != center_color;
+            for c in 0..3 {
+                pixels[idx + c] = edge_colour[c];
+            }
             hit_test_map[hit_idx] = HIT_NONE;
-
-            // Check if pixel differed from button grey (30) - if so, stop after drawing it
-            if r != 30 {
+            if diff {
                 break;
             }
         }
 
         // Draw right hairline
-        // Draw upward from center (inclusive) until we hit transparency
+        // Draw upward from center until color changes
+        let center_color_right = pixels[(center_y * width + right_px) * 4];
         for py in (y_start..=center_y).rev() {
             let idx = (py * width + right_px) * 4;
             let hit_idx = py * width + right_px;
-            // Check if pixel has any transparency (alpha < 255)
-            if pixels[idx + 3] < 255 {
+            let diff = pixels[idx] != center_color_right;
+            for c in 0..3 {
+                pixels[idx + c] = edge_colour[c];
+            }
+            hit_test_map[hit_idx] = HIT_NONE;
+            if diff {
                 break;
             }
-            pixels[idx] = edge_r;
-            pixels[idx + 1] = edge_g;
-            pixels[idx + 2] = edge_b;
-            hit_test_map[hit_idx] = HIT_NONE;
         }
 
-        // Draw downward from center until we hit a pixel that differs from button grey
+        // Draw downward from center+1 until color changes
         for py in (center_y + 1)..(y_start + button_height) {
             let idx = (py * width + right_px) * 4;
             let hit_idx = py * width + right_px;
-            let r = pixels[idx];
-
-            // Always draw the hairline pixel
-            pixels[idx] = edge_r;
-            pixels[idx + 1] = edge_g;
-            pixels[idx + 2] = edge_b;
+            let diff = pixels[idx] != center_color_right;
+            for c in 0..3 {
+                pixels[idx + c] = edge_colour[c];
+            }
             hit_test_map[hit_idx] = HIT_NONE;
-
-            // Check if pixel differed from button grey (30) - if so, stop after drawing it
-            if r != 30 {
+            if diff {
                 break;
             }
         }
@@ -2307,9 +2157,9 @@ impl PhotonApp {
         let x = center_x - box_width / 2;
         let y = center_y - box_height / 2;
 
-        let light_colour = (75, 70, 65);
-        let shadow_colour = (52, 60, 68);
-        let fill_colour = (8, 12, 16);
+        let light_colour = theme::TEXTBOX_LIGHT_EDGE;
+        let shadow_colour = theme::TEXTBOX_SHADOW_EDGE;
+        let fill_colour = theme::TEXTBOX_FILL;
         let radius = (box_width.min(box_height) / 2) as f32;
         let squirdleyness = 3;
 
@@ -2352,9 +2202,9 @@ impl PhotonApp {
             let existing = pixels[idx] as u64
                 | (pixels[idx + 1] as u64) << 16
                 | (pixels[idx + 2] as u64) << 32;
-            let light = light_colour.0 as u64
-                | (light_colour.1 as u64) << 16
-                | (light_colour.2 as u64) << 32;
+            let light = light_colour[0] as u64
+                | (light_colour[1] as u64) << 16
+                | (light_colour[2] as u64) << 32;
             let combined = existing * l as u64 + light * h as u64;
             pixels[idx] = (combined >> 8) as u8;
             pixels[idx + 1] = (combined >> 24) as u8;
@@ -2362,11 +2212,12 @@ impl PhotonApp {
 
             // Inner antialiased pixel
             let idx = idx + 4;
-            let light = light_colour.0 as u64
-                | (light_colour.1 as u64) << 16
-                | (light_colour.2 as u64) << 32;
-            let fill =
-                fill_colour.0 as u64 | (fill_colour.1 as u64) << 16 | (fill_colour.2 as u64) << 32;
+            let light = light_colour[0] as u64
+                | (light_colour[1] as u64) << 16
+                | (light_colour[2] as u64) << 32;
+            let fill = fill_colour[0] as u64
+                | (fill_colour[1] as u64) << 16
+                | (fill_colour[2] as u64) << 32;
             let combined = light * l as u64 + fill * h as u64;
             pixels[idx] = (combined >> 8) as u8;
             pixels[idx + 1] = (combined >> 24) as u8;
@@ -2377,9 +2228,9 @@ impl PhotonApp {
             let diag_x = (x + radius as usize - i).min(window_width);
             for fill_x in (px + 2)..=diag_x {
                 let idx = (py * window_width + fill_x) * 4;
-                pixels[idx] = fill_colour.0;
-                pixels[idx + 1] = fill_colour.1;
-                pixels[idx + 2] = fill_colour.2;
+                pixels[idx] = fill_colour[0];
+                pixels[idx + 1] = fill_colour[1];
+                pixels[idx + 2] = fill_colour[2];
                 hit_test_map[py * window_width + fill_x] = HIT_HANDLE_TEXTBOX;
             }
 
@@ -2391,9 +2242,9 @@ impl PhotonApp {
             let existing = pixels[idx] as u64
                 | (pixels[idx + 1] as u64) << 16
                 | (pixels[idx + 2] as u64) << 32;
-            let light = light_colour.0 as u64
-                | (light_colour.1 as u64) << 16
-                | (light_colour.2 as u64) << 32;
+            let light = light_colour[0] as u64
+                | (light_colour[1] as u64) << 16
+                | (light_colour[2] as u64) << 32;
             let combined = existing * l as u64 + light * h as u64;
             pixels[idx] = (combined >> 8) as u8;
             pixels[idx + 1] = (combined >> 24) as u8;
@@ -2401,8 +2252,9 @@ impl PhotonApp {
 
             // Horizontal edge - Inner antialiased pixel (below the outer)
             let idx = ((hy + 1) * window_width + hx) * 4;
-            let fill =
-                fill_colour.0 as u64 | (fill_colour.1 as u64) << 16 | (fill_colour.2 as u64) << 32;
+            let fill = fill_colour[0] as u64
+                | (fill_colour[1] as u64) << 16
+                | (fill_colour[2] as u64) << 32;
             let combined = light * l as u64 + fill * h as u64;
             pixels[idx] = (combined >> 8) as u8;
             pixels[idx + 1] = (combined >> 24) as u8;
@@ -2414,9 +2266,9 @@ impl PhotonApp {
             let diag_y = y + radius as usize - i;
             for fill_y in (hy + 2)..diag_y {
                 let idx = (fill_y * window_width + hx) * 4;
-                pixels[idx] = fill_colour.0;
-                pixels[idx + 1] = fill_colour.1;
-                pixels[idx + 2] = fill_colour.2;
+                pixels[idx] = fill_colour[0];
+                pixels[idx + 1] = fill_colour[1];
+                pixels[idx + 2] = fill_colour[2];
                 hit_test_map[fill_y * window_width + hx] = HIT_HANDLE_TEXTBOX;
             }
         }
@@ -2435,9 +2287,9 @@ impl PhotonApp {
             let existing = pixels[idx] as u64
                 | (pixels[idx + 1] as u64) << 16
                 | (pixels[idx + 2] as u64) << 32;
-            let shadow = shadow_colour.0 as u64
-                | (shadow_colour.1 as u64) << 16
-                | (shadow_colour.2 as u64) << 32;
+            let shadow = shadow_colour[0] as u64
+                | (shadow_colour[1] as u64) << 16
+                | (shadow_colour[2] as u64) << 32;
             let combined = existing * l as u64 + shadow * h as u64;
             pixels[idx] = (combined >> 8) as u8;
             pixels[idx + 1] = (combined >> 24) as u8;
@@ -2445,11 +2297,12 @@ impl PhotonApp {
 
             // Vertical edge - Inner antialiased pixel
             let idx = idx - 4;
-            let shadow = shadow_colour.0 as u64
-                | (shadow_colour.1 as u64) << 16
-                | (shadow_colour.2 as u64) << 32;
-            let fill =
-                fill_colour.0 as u64 | (fill_colour.1 as u64) << 16 | (fill_colour.2 as u64) << 32;
+            let shadow = shadow_colour[0] as u64
+                | (shadow_colour[1] as u64) << 16
+                | (shadow_colour[2] as u64) << 32;
+            let fill = fill_colour[0] as u64
+                | (fill_colour[1] as u64) << 16
+                | (fill_colour[2] as u64) << 32;
             let combined = shadow * l as u64 + fill * h as u64;
             pixels[idx] = (combined >> 8) as u8;
             pixels[idx + 1] = (combined >> 24) as u8;
@@ -2460,9 +2313,9 @@ impl PhotonApp {
             let diag_x = x + box_width - 1 - radius as usize + i;
             for fill_x in diag_x..(px - 1) {
                 let idx = (py * window_width + fill_x) * 4;
-                pixels[idx] = fill_colour.0;
-                pixels[idx + 1] = fill_colour.1;
-                pixels[idx + 2] = fill_colour.2;
+                pixels[idx] = fill_colour[0];
+                pixels[idx + 1] = fill_colour[1];
+                pixels[idx + 2] = fill_colour[2];
                 hit_test_map[py * window_width + fill_x] = HIT_HANDLE_TEXTBOX;
             }
 
@@ -2474,9 +2327,9 @@ impl PhotonApp {
             let existing = pixels[idx] as u64
                 | (pixels[idx + 1] as u64) << 16
                 | (pixels[idx + 2] as u64) << 32;
-            let light = light_colour.0 as u64
-                | (light_colour.1 as u64) << 16
-                | (light_colour.2 as u64) << 32;
+            let light = light_colour[0] as u64
+                | (light_colour[1] as u64) << 16
+                | (light_colour[2] as u64) << 32;
             let combined = existing * l as u64 + light * h as u64;
             pixels[idx] = (combined >> 8) as u8;
             pixels[idx + 1] = (combined >> 24) as u8;
@@ -2484,8 +2337,9 @@ impl PhotonApp {
 
             // Horizontal edge - Inner antialiased pixel
             let idx = ((hy + 1) * window_width + hx) * 4;
-            let fill =
-                fill_colour.0 as u64 | (fill_colour.1 as u64) << 16 | (fill_colour.2 as u64) << 32;
+            let fill = fill_colour[0] as u64
+                | (fill_colour[1] as u64) << 16
+                | (fill_colour[2] as u64) << 32;
             let combined = light * l as u64 + fill * h as u64;
             pixels[idx] = (combined >> 8) as u8;
             pixels[idx + 1] = (combined >> 24) as u8;
@@ -2496,9 +2350,9 @@ impl PhotonApp {
             let diag_y = y + radius as usize - i;
             for fill_y in (hy + 2)..diag_y {
                 let idx = (fill_y * window_width + hx) * 4;
-                pixels[idx] = fill_colour.0;
-                pixels[idx + 1] = fill_colour.1;
-                pixels[idx + 2] = fill_colour.2;
+                pixels[idx] = fill_colour[0];
+                pixels[idx + 1] = fill_colour[1];
+                pixels[idx + 2] = fill_colour[2];
                 hit_test_map[fill_y * window_width + hx] = HIT_HANDLE_TEXTBOX;
             }
         }
@@ -2517,9 +2371,9 @@ impl PhotonApp {
             let existing = pixels[idx] as u64
                 | (pixels[idx + 1] as u64) << 16
                 | (pixels[idx + 2] as u64) << 32;
-            let light = light_colour.0 as u64
-                | (light_colour.1 as u64) << 16
-                | (light_colour.2 as u64) << 32;
+            let light = light_colour[0] as u64
+                | (light_colour[1] as u64) << 16
+                | (light_colour[2] as u64) << 32;
             let combined = existing * l as u64 + light * h as u64;
             pixels[idx] = (combined >> 8) as u8;
             pixels[idx + 1] = (combined >> 24) as u8;
@@ -2527,11 +2381,12 @@ impl PhotonApp {
 
             // Vertical edge - Inner antialiased pixel
             let idx = idx + 4;
-            let light = light_colour.0 as u64
-                | (light_colour.1 as u64) << 16
-                | (light_colour.2 as u64) << 32;
-            let fill =
-                fill_colour.0 as u64 | (fill_colour.1 as u64) << 16 | (fill_colour.2 as u64) << 32;
+            let light = light_colour[0] as u64
+                | (light_colour[1] as u64) << 16
+                | (light_colour[2] as u64) << 32;
+            let fill = fill_colour[0] as u64
+                | (fill_colour[1] as u64) << 16
+                | (fill_colour[2] as u64) << 32;
             let combined = light * l as u64 + fill * h as u64;
             pixels[idx] = (combined >> 8) as u8;
             pixels[idx + 1] = (combined >> 24) as u8;
@@ -2542,9 +2397,9 @@ impl PhotonApp {
             let diag_x = (x + radius as usize - i).min(window_width);
             for fill_x in (px + 2)..=diag_x {
                 let idx = (py * window_width + fill_x) * 4;
-                pixels[idx] = fill_colour.0;
-                pixels[idx + 1] = fill_colour.1;
-                pixels[idx + 2] = fill_colour.2;
+                pixels[idx] = fill_colour[0];
+                pixels[idx + 1] = fill_colour[1];
+                pixels[idx + 2] = fill_colour[2];
                 hit_test_map[py * window_width + fill_x] = HIT_HANDLE_TEXTBOX;
             }
 
@@ -2556,9 +2411,9 @@ impl PhotonApp {
             let existing = pixels[idx] as u64
                 | (pixels[idx + 1] as u64) << 16
                 | (pixels[idx + 2] as u64) << 32;
-            let shadow = shadow_colour.0 as u64
-                | (shadow_colour.1 as u64) << 16
-                | (shadow_colour.2 as u64) << 32;
+            let shadow = shadow_colour[0] as u64
+                | (shadow_colour[1] as u64) << 16
+                | (shadow_colour[2] as u64) << 32;
             let combined = existing * l as u64 + shadow * h as u64;
             pixels[idx] = (combined >> 8) as u8;
             pixels[idx + 1] = (combined >> 24) as u8;
@@ -2566,8 +2421,9 @@ impl PhotonApp {
 
             // Horizontal edge - Inner antialiased pixel
             let idx = ((hy - 1) * window_width + hx) * 4;
-            let fill =
-                fill_colour.0 as u64 | (fill_colour.1 as u64) << 16 | (fill_colour.2 as u64) << 32;
+            let fill = fill_colour[0] as u64
+                | (fill_colour[1] as u64) << 16
+                | (fill_colour[2] as u64) << 32;
             let combined = shadow * l as u64 + fill * h as u64;
             pixels[idx] = (combined >> 8) as u8;
             pixels[idx + 1] = (combined >> 24) as u8;
@@ -2578,9 +2434,9 @@ impl PhotonApp {
             let diag_y = y + box_height - radius as usize + i;
             for fill_y in (diag_y + 1)..(hy - 1) {
                 let idx = (fill_y * window_width + hx) * 4;
-                pixels[idx] = fill_colour.0;
-                pixels[idx + 1] = fill_colour.1;
-                pixels[idx + 2] = fill_colour.2;
+                pixels[idx] = fill_colour[0];
+                pixels[idx + 1] = fill_colour[1];
+                pixels[idx + 2] = fill_colour[2];
                 hit_test_map[fill_y * window_width + hx] = HIT_HANDLE_TEXTBOX;
             }
         }
@@ -2599,9 +2455,9 @@ impl PhotonApp {
             let existing = pixels[idx] as u64
                 | (pixels[idx + 1] as u64) << 16
                 | (pixels[idx + 2] as u64) << 32;
-            let shadow = shadow_colour.0 as u64
-                | (shadow_colour.1 as u64) << 16
-                | (shadow_colour.2 as u64) << 32;
+            let shadow = shadow_colour[0] as u64
+                | (shadow_colour[1] as u64) << 16
+                | (shadow_colour[2] as u64) << 32;
             let combined = existing * l as u64 + shadow * h as u64;
             pixels[idx] = (combined >> 8) as u8;
             pixels[idx + 1] = (combined >> 24) as u8;
@@ -2609,11 +2465,12 @@ impl PhotonApp {
 
             // Vertical edge - Inner antialiased pixel
             let idx = idx - 4;
-            let shadow = shadow_colour.0 as u64
-                | (shadow_colour.1 as u64) << 16
-                | (shadow_colour.2 as u64) << 32;
-            let fill =
-                fill_colour.0 as u64 | (fill_colour.1 as u64) << 16 | (fill_colour.2 as u64) << 32;
+            let shadow = shadow_colour[0] as u64
+                | (shadow_colour[1] as u64) << 16
+                | (shadow_colour[2] as u64) << 32;
+            let fill = fill_colour[0] as u64
+                | (fill_colour[1] as u64) << 16
+                | (fill_colour[2] as u64) << 32;
             let combined = shadow * l as u64 + fill * h as u64;
             pixels[idx] = (combined >> 8) as u8;
             pixels[idx + 1] = (combined >> 24) as u8;
@@ -2624,9 +2481,9 @@ impl PhotonApp {
             let diag_x = x + box_width - 1 - radius as usize + i;
             for fill_x in diag_x..(px - 1) {
                 let idx = (py * window_width + fill_x) * 4;
-                pixels[idx] = fill_colour.0;
-                pixels[idx + 1] = fill_colour.1;
-                pixels[idx + 2] = fill_colour.2;
+                pixels[idx] = fill_colour[0];
+                pixels[idx + 1] = fill_colour[1];
+                pixels[idx + 2] = fill_colour[2];
                 hit_test_map[py * window_width + fill_x] = HIT_HANDLE_TEXTBOX;
             }
 
@@ -2638,9 +2495,9 @@ impl PhotonApp {
             let existing = pixels[idx] as u64
                 | (pixels[idx + 1] as u64) << 16
                 | (pixels[idx + 2] as u64) << 32;
-            let shadow = shadow_colour.0 as u64
-                | (shadow_colour.1 as u64) << 16
-                | (shadow_colour.2 as u64) << 32;
+            let shadow = shadow_colour[0] as u64
+                | (shadow_colour[1] as u64) << 16
+                | (shadow_colour[2] as u64) << 32;
             let combined = existing * l as u64 + shadow * h as u64;
             pixels[idx] = (combined >> 8) as u8;
             pixels[idx + 1] = (combined >> 24) as u8;
@@ -2648,8 +2505,9 @@ impl PhotonApp {
 
             // Horizontal edge - Inner antialiased pixel
             let idx = ((hy - 1) * window_width + hx) * 4;
-            let fill =
-                fill_colour.0 as u64 | (fill_colour.1 as u64) << 16 | (fill_colour.2 as u64) << 32;
+            let fill = fill_colour[0] as u64
+                | (fill_colour[1] as u64) << 16
+                | (fill_colour[2] as u64) << 32;
             let combined = shadow * l as u64 + fill * h as u64;
             pixels[idx] = (combined >> 8) as u8;
             pixels[idx + 1] = (combined >> 24) as u8;
@@ -2660,9 +2518,9 @@ impl PhotonApp {
             let diag_y = y + box_height - radius as usize + i;
             for fill_y in (diag_y + 1)..(hy - 1) {
                 let idx = (fill_y * window_width + hx) * 4;
-                pixels[idx] = fill_colour.0;
-                pixels[idx + 1] = fill_colour.1;
-                pixels[idx + 2] = fill_colour.2;
+                pixels[idx] = fill_colour[0];
+                pixels[idx + 1] = fill_colour[1];
+                pixels[idx + 2] = fill_colour[2];
                 hit_test_map[fill_y * window_width + hx] = HIT_HANDLE_TEXTBOX;
             }
         }
@@ -2678,27 +2536,27 @@ impl PhotonApp {
             // Top edge (horizontal hairline) - just outer pixel
             for px in left_edge..right_edge {
                 let idx = (y * window_width + px) * 4;
-                pixels[idx] = light_colour.0;
-                pixels[idx + 1] = light_colour.1;
-                pixels[idx + 2] = light_colour.2;
+                pixels[idx] = light_colour[0];
+                pixels[idx + 1] = light_colour[1];
+                pixels[idx + 2] = light_colour[2];
             }
 
             // Bottom edge (horizontal hairline) - just outer pixel, shifted down 1
             let bottom_y = y + box_height;
             for px in left_edge..right_edge {
                 let idx = (bottom_y * window_width + px) * 4;
-                pixels[idx] = shadow_colour.0;
-                pixels[idx + 1] = shadow_colour.1;
-                pixels[idx + 2] = shadow_colour.2;
+                pixels[idx] = shadow_colour[0];
+                pixels[idx + 1] = shadow_colour[1];
+                pixels[idx + 2] = shadow_colour[2];
             }
 
             // Fill center rectangle
             for py in (y + 1)..(y + box_height) {
                 for px in left_edge..right_edge {
                     let idx = (py * window_width + px) * 4;
-                    pixels[idx] = fill_colour.0;
-                    pixels[idx + 1] = fill_colour.1;
-                    pixels[idx + 2] = fill_colour.2;
+                    pixels[idx] = fill_colour[0];
+                    pixels[idx + 1] = fill_colour[1];
+                    pixels[idx + 2] = fill_colour[2];
                     hit_test_map[py * window_width + px] = HIT_HANDLE_TEXTBOX;
                 }
             }
@@ -2710,27 +2568,27 @@ impl PhotonApp {
             // Left edge (vertical hairline) - just outer pixel
             for py in top_edge..bottom_edge {
                 let idx = (py * window_width + x) * 4;
-                pixels[idx] = light_colour.0;
-                pixels[idx + 1] = light_colour.1;
-                pixels[idx + 2] = light_colour.2;
+                pixels[idx] = light_colour[0];
+                pixels[idx + 1] = light_colour[1];
+                pixels[idx + 2] = light_colour[2];
             }
 
             // Right edge (vertical hairline) - just outer pixel
             let right_x = x + box_width - 1;
             for py in top_edge..bottom_edge {
                 let idx = (py * window_width + right_x) * 4;
-                pixels[idx] = shadow_colour.0;
-                pixels[idx + 1] = shadow_colour.1;
-                pixels[idx + 2] = shadow_colour.2;
+                pixels[idx] = shadow_colour[0];
+                pixels[idx + 1] = shadow_colour[1];
+                pixels[idx + 2] = shadow_colour[2];
             }
 
             // Fill center rectangle
             for py in top_edge..bottom_edge {
                 for px in (x + 1)..(x + box_width - 1) {
                     let idx = (py * window_width + px) * 4;
-                    pixels[idx] = fill_colour.0;
-                    pixels[idx + 1] = fill_colour.1;
-                    pixels[idx + 2] = fill_colour.2;
+                    pixels[idx] = fill_colour[0];
+                    pixels[idx + 1] = fill_colour[1];
+                    pixels[idx + 2] = fill_colour[2];
                     hit_test_map[py * window_width + px] = HIT_HANDLE_TEXTBOX;
                 }
             }
@@ -2824,7 +2682,6 @@ impl PhotonApp {
         let text_size = smaller_dim / 8. * 1.18;
 
         // Virtual buffer region (only process where text lives with glow padding)
-        let smaller_dim_int = smaller_dim as usize;
         let text_height_estimate = (text_size * 1.5) as usize; // Text + glow padding
         let start = (text_y as usize).saturating_sub(text_height_estimate);
         let stop = (text_y as usize + text_height_estimate).min(window_height);
@@ -2841,9 +2698,9 @@ impl PhotonApp {
             text_y - start as f32, // Adjust y for virtual buffer
             text_size,
             800, // weight
-            vec![192],
-            0,         // rotation
-            "Oxanium", // Logo font
+            vec![theme::LOGO_GLOW_GRAY],
+            0, // rotation
+            theme::FONT_LOGO,
         );
 
         let mut highlight_buffer = vec![0; buffer_size];
@@ -2856,9 +2713,9 @@ impl PhotonApp {
             text_y - start as f32,
             text_size,
             800, // weight
-            vec![128],
-            0,         // rotation
-            "Oxanium", // Logo font
+            vec![theme::LOGO_HIGHLIGHT_GRAY],
+            0, // rotation
+            theme::FONT_LOGO,
         );
         text_renderer.draw_text_center(
             &mut highlight_buffer,
@@ -2870,8 +2727,8 @@ impl PhotonApp {
             text_size,
             800, // weight
             vec![0],
-            0,         // rotation
-            "Oxanium", // Logo font
+            0, // rotation
+            theme::FONT_LOGO,
         );
         text_renderer.draw_text_center(
             &mut highlight_buffer,
@@ -2883,8 +2740,8 @@ impl PhotonApp {
             text_size,
             800, // weight
             vec![0],
-            0,         // rotation
-            "Oxanium", // Logo font
+            0, // rotation
+            theme::FONT_LOGO,
         );
 
         let mut prev = highlight_buffer[0];
@@ -2977,9 +2834,9 @@ impl PhotonApp {
             text_y,
             text_size,
             800, // weight
-            vec![0, 0, 0, 255],
-            0,         // rotation
-            "Oxanium", // Logo font
+            theme::LOGO_TEXT.to_vec(),
+            0, // rotation
+            theme::FONT_LOGO,
         );
 
         // Composite highlight buffer to screen with offset
