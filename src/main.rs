@@ -11,6 +11,7 @@ use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
     event_loop::{ActiveEventLoop, EventLoop},
+    keyboard::ModifiersState,
     window::{Window, WindowId},
 };
 
@@ -101,6 +102,11 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => {
                 if let Some(app) = &mut self.photon_app {
                     app.render();
+                }
+            }
+            WindowEvent::ModifiersChanged(modifiers) => {
+                if let Some(app) = &mut self.photon_app {
+                    app.update_modifiers(modifiers.state());
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {

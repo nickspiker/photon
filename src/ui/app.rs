@@ -3,7 +3,7 @@ use super::text::TextRenderer;
 use winit::{
     dpi::PhysicalSize,
     event::{ElementState, KeyEvent, MouseButton},
-    keyboard::{Key, NamedKey},
+    keyboard::{Key, ModifiersState, NamedKey},
     window::{CursorIcon, Window},
 };
 
@@ -31,6 +31,7 @@ pub struct PhotonApp {
     drag_start_cursor_screen_pos: (f64, f64), // Global screen position when drag starts
     drag_start_size: (u32, u32),
     drag_start_window_pos: (i32, i32),
+    modifiers: ModifiersState,
 
     // Window control buttons
     close_button_bounds: (f32, f32, f32, f32), // (x, y, width, height)
@@ -52,6 +53,7 @@ pub struct PhotonApp {
     // Hit test bitmap (one byte per pixel, element ID)
     hit_test_map: Vec<u8>,
     debug_hit_test: bool,
+    debug_hit_colors: Vec<(u8, u8, u8)>, // Random colors for each hit area ID
 }
 
 // Hit test element IDs
@@ -59,6 +61,7 @@ const HIT_NONE: u8 = 0;
 const HIT_MINIMIZE_BUTTON: u8 = 1;
 const HIT_MAXIMIZE_BUTTON: u8 = 2;
 const HIT_CLOSE_BUTTON: u8 = 3;
+const HIT_HANDLE_TEXTBOX: u8 = 4;
 const HIT_DEBUG_INIT: u8 = 255; // For visualizing what areas get reset
 
 // Button hover colour deltas (applied on hover, negated on unhover)
@@ -113,6 +116,7 @@ impl PhotonApp {
             drag_start_cursor_screen_pos: (0.0, 0.0),
             drag_start_size: (0, 0),
             drag_start_window_pos: (0, 0),
+            modifiers: ModifiersState::empty(),
             close_button_bounds: (0.0, 0.0, 0.0, 0.0),
             maximize_button_bounds: (0.0, 0.0, 0.0, 0.0),
             minimize_button_bounds: (0.0, 0.0, 0.0, 0.0),
@@ -126,6 +130,7 @@ impl PhotonApp {
             close_pixels: Vec::new(),
             hit_test_map: vec![0; (size.width * size.height) as usize],
             debug_hit_test: false,
+            debug_hit_colors: Vec::new(),
         };
         app.update_button_bounds();
         app
@@ -156,6 +161,7 @@ impl PhotonApp {
             drag_start_cursor_screen_pos: (0.0, 0.0),
             drag_start_size: (0, 0),
             drag_start_window_pos: (0, 0),
+            modifiers: ModifiersState::empty(),
             close_button_bounds: (0.0, 0.0, 0.0, 0.0),
             maximize_button_bounds: (0.0, 0.0, 0.0, 0.0),
             minimize_button_bounds: (0.0, 0.0, 0.0, 0.0),
@@ -169,6 +175,7 @@ impl PhotonApp {
             close_pixels: Vec::new(),
             hit_test_map: vec![0; (size.width * size.height) as usize],
             debug_hit_test: false,
+            debug_hit_colors: Vec::new(),
         };
         app.update_button_bounds();
         app
@@ -213,8 +220,39 @@ impl PhotonApp {
         );
     }
 
+    pub fn update_modifiers(&mut self, modifiers: ModifiersState) {
+        self.modifiers = modifiers;
+    }
+
     pub fn handle_keyboard(&mut self, event: KeyEvent) {
         if event.state == ElementState::Pressed {
+            // Toggle hit test debug visualization with Ctrl+h
+            if let Key::Character(ref c) = event.logical_key {
+                if c.eq_ignore_ascii_case("h") {
+                    // Check if Ctrl is pressed
+                    if self.modifiers.control_key() {
+                        self.debug_hit_test = !self.debug_hit_test;
+                        // Generate new random colors for each hit area
+                        use std::collections::hash_map::RandomState;
+                        use std::hash::{BuildHasher, Hash, Hasher};
+                        let random_state = RandomState::new();
+                        self.debug_hit_colors.clear();
+                        for id in 0..=255u8 {
+                            let mut hasher = random_state.build_hasher();
+                            id.hash(&mut hasher);
+                            std::time::SystemTime::now().hash(&mut hasher);
+                            let hash = hasher.finish();
+                            let r = ((hash >> 0) & 0xFF) as u8;
+                            let g = ((hash >> 8) & 0xFF) as u8;
+                            let b = ((hash >> 16) & 0xFF) as u8;
+                            self.debug_hit_colors.push((r, g, b));
+                        }
+                        self.needs_redraw = true;
+                        return; // Don't process as regular input
+                    }
+                }
+            }
+
             match event.logical_key {
                 Key::Named(NamedKey::Backspace) => {
                     self.username_input.pop();
@@ -226,12 +264,7 @@ impl PhotonApp {
                     }
                 }
                 Key::Character(ref c) => {
-                    // Toggle hit test debug visualization with 'h' key
-                    if c == "h" || c == "H" {
-                        self.debug_hit_test = !self.debug_hit_test;
-                        self.needs_redraw = true;
-                    } else if c
-                        .chars()
+                    if c.chars()
                         .all(|ch| ch.is_alphanumeric() || ch == '_' || ch == '-')
                     {
                         // Only allow alphanumeric and basic chars for username
@@ -640,14 +673,31 @@ impl PhotonApp {
                 self.window_height,
             );
 
-            // 2. TODO: Draw input boxes
+            // 2. Draw textbox (full width with min_dim/8 margins)
+            let min_dim = self.window_width.min(self.window_height) as usize;
+            let margin = min_dim / 8;
+            let box_width = self.window_width as usize - margin * 2;
+            let box_height = min_dim / 10;
+            let center_x = self.window_width as usize / 2;
+            let center_y = self.window_height as usize / 3 + min_dim / 4;
+
+            Self::draw_textbox(
+                pixels,
+                &mut self.hit_test_map,
+                self.window_width as usize,
+                self.window_height as usize,
+                center_x,
+                center_y,
+                box_width,
+                box_height,
+            );
 
             // 3. TODO: Draw text
 
             self.needs_redraw = false;
         }
 
-        // Debug: visualize hit test map on R/B channels
+        // Debug: visualize hit test map with random colors
         if self.debug_hit_test {
             let pixels = self.renderer.get_pixel_buffer_mut();
             for y in 0..self.window_height as usize {
@@ -656,11 +706,13 @@ impl PhotonApp {
                     let pixel_idx = hit_idx * 4;
                     let element_id = self.hit_test_map[hit_idx];
 
-                    if element_id != HIT_NONE {
-                        // Map element ID to colour (R and B channels)
-                        pixels[pixel_idx] = (element_id * 80) % 255; // Red
-                        pixels[pixel_idx + 2] = (element_id * 120) % 255; // Blue
-                                                                          // Keep green channel as-is so we can still see the UI
+                    if element_id != HIT_NONE && (element_id as usize) < self.debug_hit_colors.len()
+                    {
+                        // Use random color for this element ID
+                        let (r, g, b) = self.debug_hit_colors[element_id as usize];
+                        pixels[pixel_idx] = r;
+                        pixels[pixel_idx + 1] = g;
+                        pixels[pixel_idx + 2] = b;
                     }
                 }
             }
@@ -2178,6 +2230,450 @@ impl PhotonApp {
         }
     }
 
+    fn draw_textbox(
+        pixels: &mut [u8],
+        hit_test_map: &mut [u8],
+        window_width: usize,
+        _window_height: usize,
+        center_x: usize,
+        center_y: usize,
+        box_width: usize,
+        box_height: usize,
+    ) {
+        // Convert from center coordinates to top-left
+        let x = center_x - box_width / 2;
+        let y = center_y - box_height / 2;
+
+        let light_colour = (75, 70, 65);
+        let shadow_colour = (52, 60, 68);
+        let fill_colour = (8, 12, 16);
+        let radius = (box_width.min(box_height) / 2) as f32;
+        let squirdleyness = 4;
+
+        // Generate crossings from edge (radius/12 o'clock) toward diagonal (1:30)
+        let mut crossings: Vec<(u16, u8, u8)> = Vec::new();
+        let mut offset = 0f32;
+
+        loop {
+            let y_norm = offset / radius;
+            let x_norm = (1. - y_norm.powi(squirdleyness)).powf(1. / squirdleyness as f32);
+            let x = x_norm * radius;
+            let inset = radius - x;
+
+            if inset >= 0. {
+                let l = (inset.fract().sqrt() * 256.) as u8;
+                let h = ((1. - inset.fract()).sqrt() * 256.) as u8;
+                crossings.push((inset as u16, l, h));
+            }
+
+            // Stop at 45-degree diagonal (when x < offset)
+            if x < offset {
+                break;
+            }
+
+            offset += 1.;
+        }
+
+        // Top-left corner - vertical edge with diagonal fill
+        for (i, &(inset, l, h)) in crossings.iter().enumerate() {
+            // Stop at diagonal - when inset exceeds i, we've gone past the 45-degree point
+            if inset as usize > i {
+                break;
+            }
+
+            let py = y + radius as usize - i; // Start at horizontal center, go up
+            let px = x + inset as usize;
+
+            // Outer antialiased pixel
+            let idx = (py * window_width + px) * 4;
+            let existing = pixels[idx] as u64
+                | (pixels[idx + 1] as u64) << 16
+                | (pixels[idx + 2] as u64) << 32;
+            let light = light_colour.0 as u64
+                | (light_colour.1 as u64) << 16
+                | (light_colour.2 as u64) << 32;
+            let combined = existing * l as u64 + light * h as u64;
+            pixels[idx] = (combined >> 8) as u8;
+            pixels[idx + 1] = (combined >> 24) as u8;
+            pixels[idx + 2] = (combined >> 40) as u8;
+
+            // Inner antialiased pixel
+            let idx = idx + 4;
+            let light = light_colour.0 as u64
+                | (light_colour.1 as u64) << 16
+                | (light_colour.2 as u64) << 32;
+            let fill =
+                fill_colour.0 as u64 | (fill_colour.1 as u64) << 16 | (fill_colour.2 as u64) << 32;
+            let combined = light * l as u64 + fill * h as u64;
+            pixels[idx] = (combined >> 8) as u8;
+            pixels[idx + 1] = (combined >> 24) as u8;
+            pixels[idx + 2] = (combined >> 40) as u8;
+            hit_test_map[py * window_width + px + 1] = HIT_HANDLE_TEXTBOX;
+
+            // Fill horizontally to the diagonal (where horizontal edge would be)
+            let diag_x = (x + radius as usize - i).min(window_width);
+            for fill_x in (px + 2)..=diag_x {
+                let idx = (py * window_width + fill_x) * 4;
+                pixels[idx] = fill_colour.0;
+                pixels[idx + 1] = fill_colour.1;
+                pixels[idx + 2] = fill_colour.2;
+                hit_test_map[py * window_width + fill_x] = HIT_HANDLE_TEXTBOX;
+            }
+
+            // Horizontal edge - Outer antialiased pixel
+            let hx = x + radius as usize - i; // Start at vertical center, go left
+            let hy = y + inset as usize; // Distance from top edge
+
+            let idx = (hy * window_width + hx) * 4;
+            let existing = pixels[idx] as u64
+                | (pixels[idx + 1] as u64) << 16
+                | (pixels[idx + 2] as u64) << 32;
+            let light = light_colour.0 as u64
+                | (light_colour.1 as u64) << 16
+                | (light_colour.2 as u64) << 32;
+            let combined = existing * l as u64 + light * h as u64;
+            pixels[idx] = (combined >> 8) as u8;
+            pixels[idx + 1] = (combined >> 24) as u8;
+            pixels[idx + 2] = (combined >> 40) as u8;
+
+            // Horizontal edge - Inner antialiased pixel (below the outer)
+            let idx = ((hy + 1) * window_width + hx) * 4;
+            let fill =
+                fill_colour.0 as u64 | (fill_colour.1 as u64) << 16 | (fill_colour.2 as u64) << 32;
+            let combined = light * l as u64 + fill * h as u64;
+            pixels[idx] = (combined >> 8) as u8;
+            pixels[idx + 1] = (combined >> 24) as u8;
+            pixels[idx + 2] = (combined >> 40) as u8;
+            hit_test_map[(hy + 1) * window_width + hx] = HIT_HANDLE_TEXTBOX;
+
+            // Fill vertically down from horizontal edge to diagonal
+            // Diagonal is where the vertical edge is at this same iteration
+            let diag_y = y + radius as usize - i;
+            for fill_y in (hy + 2)..diag_y {
+                let idx = (fill_y * window_width + hx) * 4;
+                pixels[idx] = fill_colour.0;
+                pixels[idx + 1] = fill_colour.1;
+                pixels[idx + 2] = fill_colour.2;
+                hit_test_map[fill_y * window_width + hx] = HIT_HANDLE_TEXTBOX;
+            }
+        }
+
+        // Top-right corner - mirror of top-left (flip x)
+        for (i, &(inset, l, h)) in crossings.iter().enumerate() {
+            if inset as usize > i {
+                break;
+            }
+
+            let py = y + radius as usize - i;
+            let px = x + box_width - 1 - inset as usize;
+
+            // Vertical edge - Outer antialiased pixel
+            let idx = (py * window_width + px) * 4;
+            let existing = pixels[idx] as u64
+                | (pixels[idx + 1] as u64) << 16
+                | (pixels[idx + 2] as u64) << 32;
+            let shadow = shadow_colour.0 as u64
+                | (shadow_colour.1 as u64) << 16
+                | (shadow_colour.2 as u64) << 32;
+            let combined = existing * l as u64 + shadow * h as u64;
+            pixels[idx] = (combined >> 8) as u8;
+            pixels[idx + 1] = (combined >> 24) as u8;
+            pixels[idx + 2] = (combined >> 40) as u8;
+
+            // Vertical edge - Inner antialiased pixel
+            let idx = idx - 4;
+            let shadow = shadow_colour.0 as u64
+                | (shadow_colour.1 as u64) << 16
+                | (shadow_colour.2 as u64) << 32;
+            let fill =
+                fill_colour.0 as u64 | (fill_colour.1 as u64) << 16 | (fill_colour.2 as u64) << 32;
+            let combined = shadow * l as u64 + fill * h as u64;
+            pixels[idx] = (combined >> 8) as u8;
+            pixels[idx + 1] = (combined >> 24) as u8;
+            pixels[idx + 2] = (combined >> 40) as u8;
+            hit_test_map[py * window_width + px - 1] = HIT_HANDLE_TEXTBOX;
+
+            // Fill horizontally to the diagonal
+            let diag_x = x + box_width - 1 - radius as usize + i;
+            for fill_x in diag_x..(px - 1) {
+                let idx = (py * window_width + fill_x) * 4;
+                pixels[idx] = fill_colour.0;
+                pixels[idx + 1] = fill_colour.1;
+                pixels[idx + 2] = fill_colour.2;
+                hit_test_map[py * window_width + fill_x] = HIT_HANDLE_TEXTBOX;
+            }
+
+            // Horizontal edge - Outer antialiased pixel
+            let hx = x + box_width - 1 - radius as usize + i;
+            let hy = y + inset as usize;
+
+            let idx = (hy * window_width + hx) * 4;
+            let existing = pixels[idx] as u64
+                | (pixels[idx + 1] as u64) << 16
+                | (pixels[idx + 2] as u64) << 32;
+            let light = light_colour.0 as u64
+                | (light_colour.1 as u64) << 16
+                | (light_colour.2 as u64) << 32;
+            let combined = existing * l as u64 + light * h as u64;
+            pixels[idx] = (combined >> 8) as u8;
+            pixels[idx + 1] = (combined >> 24) as u8;
+            pixels[idx + 2] = (combined >> 40) as u8;
+
+            // Horizontal edge - Inner antialiased pixel
+            let idx = ((hy + 1) * window_width + hx) * 4;
+            let fill =
+                fill_colour.0 as u64 | (fill_colour.1 as u64) << 16 | (fill_colour.2 as u64) << 32;
+            let combined = light * l as u64 + fill * h as u64;
+            pixels[idx] = (combined >> 8) as u8;
+            pixels[idx + 1] = (combined >> 24) as u8;
+            pixels[idx + 2] = (combined >> 40) as u8;
+            hit_test_map[(hy + 1) * window_width + hx] = HIT_HANDLE_TEXTBOX;
+
+            // Fill vertically down from horizontal edge to diagonal
+            let diag_y = y + radius as usize - i;
+            for fill_y in (hy + 2)..diag_y {
+                let idx = (fill_y * window_width + hx) * 4;
+                pixels[idx] = fill_colour.0;
+                pixels[idx + 1] = fill_colour.1;
+                pixels[idx + 2] = fill_colour.2;
+                hit_test_map[fill_y * window_width + hx] = HIT_HANDLE_TEXTBOX;
+            }
+        }
+
+        // Bottom-left corner - mirror of top-left (flip y), shifted down 1 to avoid overlap
+        for (i, &(inset, l, h)) in crossings.iter().enumerate() {
+            if inset as usize > i {
+                break;
+            }
+
+            let py = y + box_height - radius as usize + i;
+            let px = x + inset as usize;
+
+            // Vertical edge - Outer antialiased pixel
+            let idx = (py * window_width + px) * 4;
+            let existing = pixels[idx] as u64
+                | (pixels[idx + 1] as u64) << 16
+                | (pixels[idx + 2] as u64) << 32;
+            let light = light_colour.0 as u64
+                | (light_colour.1 as u64) << 16
+                | (light_colour.2 as u64) << 32;
+            let combined = existing * l as u64 + light * h as u64;
+            pixels[idx] = (combined >> 8) as u8;
+            pixels[idx + 1] = (combined >> 24) as u8;
+            pixels[idx + 2] = (combined >> 40) as u8;
+
+            // Vertical edge - Inner antialiased pixel
+            let idx = idx + 4;
+            let light = light_colour.0 as u64
+                | (light_colour.1 as u64) << 16
+                | (light_colour.2 as u64) << 32;
+            let fill =
+                fill_colour.0 as u64 | (fill_colour.1 as u64) << 16 | (fill_colour.2 as u64) << 32;
+            let combined = light * l as u64 + fill * h as u64;
+            pixels[idx] = (combined >> 8) as u8;
+            pixels[idx + 1] = (combined >> 24) as u8;
+            pixels[idx + 2] = (combined >> 40) as u8;
+            hit_test_map[py * window_width + px + 1] = HIT_HANDLE_TEXTBOX;
+
+            // Fill horizontally to the diagonal
+            let diag_x = (x + radius as usize - i).min(window_width);
+            for fill_x in (px + 2)..=diag_x {
+                let idx = (py * window_width + fill_x) * 4;
+                pixels[idx] = fill_colour.0;
+                pixels[idx + 1] = fill_colour.1;
+                pixels[idx + 2] = fill_colour.2;
+                hit_test_map[py * window_width + fill_x] = HIT_HANDLE_TEXTBOX;
+            }
+
+            // Horizontal edge - Outer antialiased pixel
+            let hx = x + radius as usize - i;
+            let hy = y + box_height - inset as usize;
+
+            let idx = (hy * window_width + hx) * 4;
+            let existing = pixels[idx] as u64
+                | (pixels[idx + 1] as u64) << 16
+                | (pixels[idx + 2] as u64) << 32;
+            let shadow = shadow_colour.0 as u64
+                | (shadow_colour.1 as u64) << 16
+                | (shadow_colour.2 as u64) << 32;
+            let combined = existing * l as u64 + shadow * h as u64;
+            pixels[idx] = (combined >> 8) as u8;
+            pixels[idx + 1] = (combined >> 24) as u8;
+            pixels[idx + 2] = (combined >> 40) as u8;
+
+            // Horizontal edge - Inner antialiased pixel
+            let idx = ((hy - 1) * window_width + hx) * 4;
+            let fill =
+                fill_colour.0 as u64 | (fill_colour.1 as u64) << 16 | (fill_colour.2 as u64) << 32;
+            let combined = shadow * l as u64 + fill * h as u64;
+            pixels[idx] = (combined >> 8) as u8;
+            pixels[idx + 1] = (combined >> 24) as u8;
+            pixels[idx + 2] = (combined >> 40) as u8;
+            hit_test_map[(hy - 1) * window_width + hx] = HIT_HANDLE_TEXTBOX;
+
+            // Fill vertically up from horizontal edge to diagonal
+            let diag_y = y + box_height - radius as usize + i;
+            for fill_y in (diag_y + 1)..(hy - 1) {
+                let idx = (fill_y * window_width + hx) * 4;
+                pixels[idx] = fill_colour.0;
+                pixels[idx + 1] = fill_colour.1;
+                pixels[idx + 2] = fill_colour.2;
+                hit_test_map[fill_y * window_width + hx] = HIT_HANDLE_TEXTBOX;
+            }
+        }
+
+        // Bottom-right corner - mirror of top-left (flip both x and y), shifted down 1 to avoid overlap
+        for (i, &(inset, l, h)) in crossings.iter().enumerate() {
+            if inset as usize > i {
+                break;
+            }
+
+            let py = y + box_height - radius as usize + i;
+            let px = x + box_width - 1 - inset as usize;
+
+            // Vertical edge - Outer antialiased pixel
+            let idx = (py * window_width + px) * 4;
+            let existing = pixels[idx] as u64
+                | (pixels[idx + 1] as u64) << 16
+                | (pixels[idx + 2] as u64) << 32;
+            let shadow = shadow_colour.0 as u64
+                | (shadow_colour.1 as u64) << 16
+                | (shadow_colour.2 as u64) << 32;
+            let combined = existing * l as u64 + shadow * h as u64;
+            pixels[idx] = (combined >> 8) as u8;
+            pixels[idx + 1] = (combined >> 24) as u8;
+            pixels[idx + 2] = (combined >> 40) as u8;
+
+            // Vertical edge - Inner antialiased pixel
+            let idx = idx - 4;
+            let shadow = shadow_colour.0 as u64
+                | (shadow_colour.1 as u64) << 16
+                | (shadow_colour.2 as u64) << 32;
+            let fill =
+                fill_colour.0 as u64 | (fill_colour.1 as u64) << 16 | (fill_colour.2 as u64) << 32;
+            let combined = shadow * l as u64 + fill * h as u64;
+            pixels[idx] = (combined >> 8) as u8;
+            pixels[idx + 1] = (combined >> 24) as u8;
+            pixels[idx + 2] = (combined >> 40) as u8;
+            hit_test_map[py * window_width + px - 1] = HIT_HANDLE_TEXTBOX;
+
+            // Fill horizontally to the diagonal
+            let diag_x = x + box_width - 1 - radius as usize + i;
+            for fill_x in diag_x..(px - 1) {
+                let idx = (py * window_width + fill_x) * 4;
+                pixels[idx] = fill_colour.0;
+                pixels[idx + 1] = fill_colour.1;
+                pixels[idx + 2] = fill_colour.2;
+                hit_test_map[py * window_width + fill_x] = HIT_HANDLE_TEXTBOX;
+            }
+
+            // Horizontal edge - Outer antialiased pixel
+            let hx = x + box_width - 1 - radius as usize + i;
+            let hy = y + box_height - inset as usize;
+
+            let idx = (hy * window_width + hx) * 4;
+            let existing = pixels[idx] as u64
+                | (pixels[idx + 1] as u64) << 16
+                | (pixels[idx + 2] as u64) << 32;
+            let shadow = shadow_colour.0 as u64
+                | (shadow_colour.1 as u64) << 16
+                | (shadow_colour.2 as u64) << 32;
+            let combined = existing * l as u64 + shadow * h as u64;
+            pixels[idx] = (combined >> 8) as u8;
+            pixels[idx + 1] = (combined >> 24) as u8;
+            pixels[idx + 2] = (combined >> 40) as u8;
+
+            // Horizontal edge - Inner antialiased pixel
+            let idx = ((hy - 1) * window_width + hx) * 4;
+            let fill =
+                fill_colour.0 as u64 | (fill_colour.1 as u64) << 16 | (fill_colour.2 as u64) << 32;
+            let combined = shadow * l as u64 + fill * h as u64;
+            pixels[idx] = (combined >> 8) as u8;
+            pixels[idx + 1] = (combined >> 24) as u8;
+            pixels[idx + 2] = (combined >> 40) as u8;
+            hit_test_map[(hy - 1) * window_width + hx] = HIT_HANDLE_TEXTBOX;
+
+            // Fill vertically up from horizontal edge to diagonal
+            let diag_y = y + box_height - radius as usize + i;
+            for fill_y in (diag_y + 1)..(hy - 1) {
+                let idx = (fill_y * window_width + hx) * 4;
+                pixels[idx] = fill_colour.0;
+                pixels[idx + 1] = fill_colour.1;
+                pixels[idx + 2] = fill_colour.2;
+                hit_test_map[fill_y * window_width + hx] = HIT_HANDLE_TEXTBOX;
+            }
+        }
+
+        // Fill center and straight edges
+        let radius_int = radius as usize;
+
+        if box_width > box_height {
+            // Fat box: draw top and bottom straight edges
+            let left_edge = x + radius_int;
+            let right_edge = x + box_width - radius_int;
+
+            // Top edge (horizontal hairline) - just outer pixel
+            for px in left_edge..right_edge {
+                let idx = (y * window_width + px) * 4;
+                pixels[idx] = light_colour.0;
+                pixels[idx + 1] = light_colour.1;
+                pixels[idx + 2] = light_colour.2;
+            }
+
+            // Bottom edge (horizontal hairline) - just outer pixel, shifted down 1
+            let bottom_y = y + box_height;
+            for px in left_edge..right_edge {
+                let idx = (bottom_y * window_width + px) * 4;
+                pixels[idx] = shadow_colour.0;
+                pixels[idx + 1] = shadow_colour.1;
+                pixels[idx + 2] = shadow_colour.2;
+            }
+
+            // Fill center rectangle
+            for py in (y + 1)..(y + box_height) {
+                for px in left_edge..right_edge {
+                    let idx = (py * window_width + px) * 4;
+                    pixels[idx] = fill_colour.0;
+                    pixels[idx + 1] = fill_colour.1;
+                    pixels[idx + 2] = fill_colour.2;
+                    hit_test_map[py * window_width + px] = HIT_HANDLE_TEXTBOX;
+                }
+            }
+        } else {
+            // Skinny box: draw left and right straight edges
+            let top_edge = y + radius_int;
+            let bottom_edge = y + box_height - radius_int;
+
+            // Left edge (vertical hairline) - just outer pixel
+            for py in top_edge..bottom_edge {
+                let idx = (py * window_width + x) * 4;
+                pixels[idx] = light_colour.0;
+                pixels[idx + 1] = light_colour.1;
+                pixels[idx + 2] = light_colour.2;
+            }
+
+            // Right edge (vertical hairline) - just outer pixel
+            let right_x = x + box_width - 1;
+            for py in top_edge..bottom_edge {
+                let idx = (py * window_width + right_x) * 4;
+                pixels[idx] = shadow_colour.0;
+                pixels[idx + 1] = shadow_colour.1;
+                pixels[idx + 2] = shadow_colour.2;
+            }
+
+            // Fill center rectangle
+            for py in top_edge..bottom_edge {
+                for px in (x + 1)..(x + box_width - 1) {
+                    let idx = (py * window_width + px) * 4;
+                    pixels[idx] = fill_colour.0;
+                    pixels[idx + 1] = fill_colour.1;
+                    pixels[idx + 2] = fill_colour.2;
+                    hit_test_map[py * window_width + px] = HIT_HANDLE_TEXTBOX;
+                }
+            }
+        }
+    }
+
     fn draw_logo(
         pixels: &mut [u8],
         text_renderer: &mut TextRenderer,
@@ -2193,7 +2689,7 @@ impl PhotonApp {
         let logo_height = (smaller_dim / 5.) as usize;
 
         // Position at top center
-        let x_start = (window_width - logo_width) / 2;
+        let x_start: usize = (window_width - logo_width) / 2;
 
         // Draw horizontal spectrum rainbow
         for y in 0..logo_height * 2 {
@@ -2207,7 +2703,9 @@ impl PhotonApp {
                 let wave_offset = wave_phase.sin() * amplitude;
 
                 let mut scale = (y as f32 + wave_offset - logo_height as f32) / logo_height as f32;
-                scale = ((logo_height * 2 - y) as f32 / logo_height as f32) * 16000.
+                scale = ((logo_height * 2 - y) as f32 / logo_height as f32)
+                    * (y as f32 / logo_height as f32)
+                    * 32000.
                     / (scale.abs() + amplitude / smaller_dim * 0.25);
                 let px = x_start + x;
 
@@ -2347,13 +2845,13 @@ impl PhotonApp {
 
         let mut prev = glow_buffer[0];
         for glow_idx in 1..glow_buffer.len() {
-            prev = (((glow_buffer[glow_idx] as u16 + prev as u16) >> 1) as u8)
+            prev = (((glow_buffer[glow_idx] as u16 + prev as u16 * 3) >> 2) as u8)
                 .max(glow_buffer[glow_idx]);
             glow_buffer[glow_idx] = prev;
         }
         let mut prev = glow_buffer[glow_buffer.len() - 1];
         for glow_idx in (0..glow_buffer.len()).rev() {
-            prev = (((glow_buffer[glow_idx] as u16 + prev as u16) >> 1) as u8)
+            prev = (((glow_buffer[glow_idx] as u16 + prev as u16 * 3) >> 2) as u8)
                 .max(glow_buffer[glow_idx]);
             glow_buffer[glow_idx] = prev;
         }
