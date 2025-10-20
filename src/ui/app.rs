@@ -1,6 +1,7 @@
 use super::renderer::Renderer;
 use super::text::TextRenderer;
 use super::theme;
+use rand::Rng;
 use winit::{
     dpi::PhysicalSize,
     event::{ElementState, KeyEvent, MouseButton},
@@ -23,12 +24,12 @@ fn unpack_argb(pixel: u32) -> (u8, u8, u8, u8) {
     (r, g, b, a)
 }
 
-/// Blend two packed ARGB colors with alpha transparency.
+/// Blend two packed ARGB colours with alpha transparency.
 /// Used for outer edge pixels with variable alpha.
-/// Formula: (bg_color * (255 - alpha) + fg_color * alpha) >> 8
+/// Formula: (bg_colour * (255 - alpha) + fg_colour * alpha) >> 8
 #[inline]
-fn blend_alpha(fg_color: u32, alpha: u8) -> u32 {
-    let mut fg = fg_color as u64;
+fn blend_alpha(fg_colour: u32, alpha: u8) -> u32 {
+    let mut fg = fg_colour as u64;
     fg = (fg | (fg << 16)) & 0x0000FFFF0000FFFF;
     fg = (fg | (fg << 8)) & 0x00FF00FF00FF00FF;
 
@@ -41,12 +42,12 @@ fn blend_alpha(fg_color: u32, alpha: u8) -> u32 {
 }
 
 #[inline]
-fn blend_rgb_only(bg_color: u32, fg_color: u32, weight_bg: u8, weight_fg: u8) -> u32 {
-    let mut bg = bg_color as u64;
+fn blend_rgb_only(bg_colour: u32, fg_colour: u32, weight_bg: u8, weight_fg: u8) -> u32 {
+    let mut bg = bg_colour as u64;
     bg = (bg | (bg << 16)) & 0x0000FFFF0000FFFF;
     bg = (bg | (bg << 8)) & 0x00FF00FF00FF00FF;
 
-    let mut fg = fg_color as u64;
+    let mut fg = fg_colour as u64;
     fg = (fg | (fg << 16)) & 0x0000FFFF0000FFFF;
     fg = (fg | (fg << 8)) & 0x00FF00FF00FF00FF;
 
@@ -76,16 +77,20 @@ pub struct PhotonApp {
     username_input: String,
     rendered_username: String,    // What's currently rendered on screen
     character_widths: Vec<usize>, // Width in pixels of each rendered character
-    cursor_blink: f32,
-    cursor_visible: bool,             // Current cursor visibility state
-    cursor_pixel_x: usize,            // Cursor x position in pixels
-    cursor_pixel_y: usize,            // Cursor y position in pixels
+    cursor_blink_rate_ms: u64,    // System cursor blink rate in milliseconds (max for random range)
+    cursor_wave_top_bright: bool, // True=top is bright, False=top is dark
+    cursor_needs_init: bool,      // True when textbox just got focus, apply initial wave
+    cursor_needs_undo: bool,      // True when textbox just lost focus, undo wave by inverting ops
+    cursor_pixel_x: usize,        // Cursor x position in pixels
+    cursor_pixel_y: usize,        // Cursor y position in pixels
+    cursor_height: f32,           // Cursor height in pixels
     username_available: Option<bool>, // None = checking, Some(true) = available, Some(false) = taken
     textbox_focused: bool,            // True when textbox is clicked and accepting input
     textbox_mask: Vec<u8>, // Single-channel alpha mask for textbox (0=outside, 255=inside, faded at edges)
     textbox_bounds: (usize, usize, usize, usize), // (x, y, width, height) of textbox
     show_textbox_mask: bool, // Debug: show textbox mask visualization (Ctrl+T)
     redraw_counter: usize, // Count of full redraws for debugging
+    render_counter: usize, // Count of render() calls
 
     // Input state
     mouse_x: f32,
@@ -97,12 +102,14 @@ pub struct PhotonApp {
     drag_start_size: (u32, u32),
     drag_start_window_pos: (i32, i32),
     modifiers: ModifiersState,
+    is_fullscreen: bool, // True when window is fullscreen
 
     // Window control buttons
     close_button_bounds: (f32, f32, f32, f32), // (x, y, width, height)
     maximize_button_bounds: (f32, f32, f32, f32),
     minimize_button_bounds: (f32, f32, f32, f32),
     hovered_button: HoveredButton,
+    prev_hovered_button: HoveredButton, // Previous hover state to detect changes
 
     // Button rendering data (cached from last render)
     button_x_start: usize,
@@ -153,10 +160,13 @@ enum ResizeEdge {
 
 impl PhotonApp {
     #[cfg(target_os = "linux")]
-    pub async fn new(window: &Window) -> Self {
+    pub async fn new(window: &Window, cursor_blink_rate_ms: u64) -> Self {
         let size = window.inner_size();
         let renderer = Renderer::new(window, size.width, size.height).await;
         let text_renderer = TextRenderer::new();
+
+        // Check initial fullscreen/maximized state
+        let is_fullscreen = window.fullscreen().is_some() || window.is_maximized();
 
         let w = size.width as usize;
         let h = size.height as usize;
@@ -172,16 +182,20 @@ impl PhotonApp {
             username_input: String::new(),
             rendered_username: String::new(),
             character_widths: Vec::new(),
-            cursor_blink: 0.0,
-            cursor_visible: false,
+            cursor_blink_rate_ms,
+            cursor_wave_top_bright: false,
+            cursor_needs_init: false,
+            cursor_needs_undo: false,
             cursor_pixel_x: 0,
             cursor_pixel_y: 0,
+            cursor_height: 0.0,
             username_available: None,
             textbox_focused: false,
             textbox_mask: Vec::new(),
             textbox_bounds: (0, 0, 0, 0),
             show_textbox_mask: false,
             redraw_counter: 0,
+            render_counter: 0,
             mouse_x: 0.0,
             mouse_y: 0.0,
             is_dragging_resize: false,
@@ -195,6 +209,7 @@ impl PhotonApp {
             maximize_button_bounds: (0.0, 0.0, 0.0, 0.0),
             minimize_button_bounds: (0.0, 0.0, 0.0, 0.0),
             hovered_button: HoveredButton::None,
+            prev_hovered_button: HoveredButton::None,
             button_x_start: 0,
             button_height: 0,
             button_curve_start: 0,
@@ -205,15 +220,24 @@ impl PhotonApp {
             hit_test_map: vec![0; (size.width * size.height) as usize],
             debug_hit_test: false,
             debug_hit_colours: Vec::new(),
+            is_fullscreen,
         };
         app
     }
 
     #[cfg(target_os = "windows")]
-    pub fn new(window: &Window) -> Self {
+    pub fn new(
+        window: &Window,
+        screen_width: u32,
+        screen_height: u32,
+        cursor_blink_rate_ms: u64,
+    ) -> Self {
         let size = window.inner_size();
         let renderer = Renderer::new(window, size.width, size.height);
         let text_renderer = TextRenderer::new();
+
+        // Check initial fullscreen/maximized state
+        let is_fullscreen = window.fullscreen().is_some() || window.is_maximized();
 
         let w = size.width as usize;
         let h = size.height as usize;
@@ -231,16 +255,20 @@ impl PhotonApp {
             username_input: String::new(),
             rendered_username: String::new(),
             character_widths: Vec::new(),
-            cursor_blink: 0.0,
-            cursor_visible: false,
+            cursor_blink_rate_ms,
+            cursor_wave_top_bright: false,
+            cursor_needs_init: false,
+            cursor_needs_undo: false,
             cursor_pixel_x: 0,
             cursor_pixel_y: 0,
+            cursor_height: 0.0,
             username_available: None,
             textbox_focused: false,
             textbox_mask: Vec::new(),
             textbox_bounds: (0, 0, 0, 0),
             show_textbox_mask: false,
             redraw_counter: 0,
+            render_counter: 0,
             mouse_x: 0.0,
             mouse_y: 0.0,
             is_dragging_resize: false,
@@ -254,6 +282,7 @@ impl PhotonApp {
             maximize_button_bounds: (0.0, 0.0, 0.0, 0.0),
             minimize_button_bounds: (0.0, 0.0, 0.0, 0.0),
             hovered_button: HoveredButton::None,
+            prev_hovered_button: HoveredButton::None,
             button_x_start: 0,
             button_height: 0,
             button_curve_start: 0,
@@ -264,9 +293,30 @@ impl PhotonApp {
             hit_test_map: vec![0; (size.width * size.height) as usize],
             debug_hit_test: false,
             debug_hit_colours: Vec::new(),
+            is_fullscreen,
         };
         app.update_button_bounds();
         app
+    }
+
+    /// Update the fullscreen/maximized state
+    /// When true, window edges are not drawn
+    pub fn set_fullscreen(&mut self, is_fullscreen: bool) {
+        if self.is_fullscreen != is_fullscreen {
+            self.is_fullscreen = is_fullscreen;
+        }
+    }
+
+    /// Check if textbox is focused (for event loop control flow)
+    pub fn textbox_is_focused(&self) -> bool {
+        self.textbox_focused
+    }
+
+    /// Get next cursor blink wake time (random interval 0..=125ms)
+    pub fn next_blink_wake_time(&self) -> std::time::Instant {
+        use rand::Rng;
+        let interval_ms = rand::thread_rng().gen_range(0..=125);
+        std::time::Instant::now() + std::time::Duration::from_millis(interval_ms)
     }
 
     pub fn resize(&mut self, size: PhysicalSize<u32>) {
@@ -298,35 +348,41 @@ impl PhotonApp {
     pub fn handle_keyboard(&mut self, event: KeyEvent) {
         if event.state == ElementState::Pressed {
             // Toggle debug visualizations with Ctrl shortcuts
-            if let Key::Character(ref c) = event.logical_key {
-                // Ctrl+H: Toggle hit test map
-                if c.eq_ignore_ascii_case("h") && self.modifiers.control_key() {
-                    self.debug_hit_test = !self.debug_hit_test;
-                    self.show_textbox_mask = false; // Clear other debug state
-                                                    // Generate new random colours for each hit area
-                    use std::collections::hash_map::RandomState;
-                    use std::hash::{BuildHasher, Hash, Hasher};
-                    let random_state = RandomState::new();
-                    self.debug_hit_colours.clear();
-                    for id in 0..=255u8 {
-                        let mut hasher = random_state.build_hasher();
-                        id.hash(&mut hasher);
-                        std::time::SystemTime::now().hash(&mut hasher);
-                        let hash = hasher.finish();
-                        let r = ((hash >> 0) & 0xFF) as u8;
-                        let g = ((hash >> 8) & 0xFF) as u8;
-                        let b = ((hash >> 16) & 0xFF) as u8;
-                        self.debug_hit_colours.push((r, g, b));
+            if self.modifiers.control_key() {
+                if let Key::Character(ref c) = event.logical_key {
+                    // Ctrl+H: Toggle hit test map
+                    if c.eq_ignore_ascii_case("h") {
+                        self.debug_hit_test = !self.debug_hit_test;
+                        self.show_textbox_mask = false; // Clear other debug state
+                        self.needs_redraw = true; // Force redraw to show visualization
+                                                  // Generate new random colours for each hit area
+                        use std::collections::hash_map::RandomState;
+                        use std::hash::{BuildHasher, Hash, Hasher};
+                        let random_state = RandomState::new();
+                        self.debug_hit_colours.clear();
+                        for id in 0..=255u8 {
+                            let mut hasher = random_state.build_hasher();
+                            id.hash(&mut hasher);
+                            std::time::SystemTime::now().hash(&mut hasher);
+                            let hash = hasher.finish();
+                            let r = ((hash >> 0) & 0xFF) as u8;
+                            let g = ((hash >> 8) & 0xFF) as u8;
+                            let b = ((hash >> 16) & 0xFF) as u8;
+                            self.debug_hit_colours.push((r, g, b));
+                        }
+                        return; // Don't process as regular input
                     }
-                    return; // Don't process as regular input
-                }
 
-                // Ctrl+T: Toggle textbox mask visualization
-                if c.eq_ignore_ascii_case("t") && self.modifiers.control_key() {
-                    self.show_textbox_mask = !self.show_textbox_mask;
-                    self.debug_hit_test = false; // Clear other debug state
-                    return; // Don't process as regular input
+                    // Ctrl+T: Toggle textbox mask visualization
+                    if c.eq_ignore_ascii_case("t") {
+                        self.show_textbox_mask = !self.show_textbox_mask;
+                        self.debug_hit_test = false; // Clear other debug state
+                        self.needs_redraw = true; // Force redraw to show visualization
+                        return; // Don't process as regular input
+                    }
                 }
+                // If Ctrl is held, don't process any other input
+                return;
             }
 
             match event.logical_key {
@@ -384,6 +440,7 @@ impl PhotonApp {
                         HIT_HANDLE_TEXTBOX => {
                             // Focus the textbox
                             self.textbox_focused = true;
+                            self.cursor_needs_init = true;
                             // Don't need full redraw, just present when cursor changes
                             return;
                         }
@@ -391,6 +448,7 @@ impl PhotonApp {
                             // Clicked outside textbox, unfocus it
                             if self.textbox_focused {
                                 self.textbox_focused = false;
+                                self.cursor_needs_undo = true;
                                 // Don't need full redraw, just present when cursor changes
                             }
                         }
@@ -437,50 +495,15 @@ impl PhotonApp {
 
     pub fn handle_cursor_left(&mut self) {
         // Clear hover state when cursor leaves window
-        if self.hovered_button != HoveredButton::None {
-            let mut buffer = self.renderer.lock_buffer();
-            let pixels = buffer.as_mut();
-
-            // Unhover the current button
-            match self.hovered_button {
-                HoveredButton::Close => {
-                    Self::draw_button_hover_by_pixels(
-                        pixels,
-                        &self.close_pixels,
-                        false,
-                        HoveredButton::Close,
-                    );
-                }
-                HoveredButton::Maximize => {
-                    Self::draw_button_hover_by_pixels(
-                        pixels,
-                        &self.maximize_pixels,
-                        false,
-                        HoveredButton::Maximize,
-                    );
-                }
-                HoveredButton::Minimize => {
-                    Self::draw_button_hover_by_pixels(
-                        pixels,
-                        &self.minimize_pixels,
-                        false,
-                        HoveredButton::Minimize,
-                    );
-                }
-                HoveredButton::None => {}
-            }
-
-            self.hovered_button = HoveredButton::None;
-
-            buffer.present().unwrap();
-        }
+        // Hover change will be handled in render()
+        self.hovered_button = HoveredButton::None;
     }
 
     pub fn handle_mouse_move(
         &mut self,
         window: &Window,
         position: winit::dpi::PhysicalPosition<f64>,
-    ) {
+    ) -> bool {
         self.mouse_x = position.x as f32;
         self.mouse_y = position.y as f32;
 
@@ -500,6 +523,7 @@ impl PhotonApp {
                 let new_y = self.drag_start_window_pos.1 + dy;
                 let _ = window.set_outer_position(winit::dpi::PhysicalPosition::new(new_x, new_y));
             }
+            false // No redraw needed for window move
         } else if self.is_dragging_resize {
             // Get current global cursor position
             if let Some(window_pos) = window.outer_position().ok() {
@@ -590,6 +614,7 @@ impl PhotonApp {
                 let _ =
                     window.request_inner_size(winit::dpi::PhysicalSize::new(new_width, new_height));
             }
+            false // No redraw needed for window resize (resize event handles it)
         } else {
             // Check button hover state using hitmap
             let old_hovered = self.hovered_button;
@@ -597,7 +622,7 @@ impl PhotonApp {
             // Get hit test value at mouse position
             let mouse_x = self.mouse_x as usize;
             let mouse_y = self.mouse_y as usize;
-            if mouse_x < self.width as usize && mouse_y < self.height as usize {
+            let element_id = if mouse_x < self.width as usize && mouse_y < self.height as usize {
                 let hit_idx = mouse_y * self.width as usize + mouse_x;
                 let element_id = self.hit_test_map[hit_idx];
 
@@ -607,80 +632,18 @@ impl PhotonApp {
                     HIT_MINIMIZE_BUTTON => HoveredButton::Minimize,
                     _ => HoveredButton::None,
                 };
+                element_id
             } else {
                 self.hovered_button = HoveredButton::None;
-            }
-
-            // Apply or remove hover effect when state changes
-            if old_hovered != self.hovered_button {
-                let mut buffer = self.renderer.lock_buffer();
-                let pixels = buffer.as_mut();
-
-                // Unhover old button
-                match old_hovered {
-                    HoveredButton::Close => {
-                        Self::draw_button_hover_by_pixels(
-                            pixels,
-                            &self.close_pixels,
-                            false,
-                            HoveredButton::Close,
-                        );
-                    }
-                    HoveredButton::Maximize => {
-                        Self::draw_button_hover_by_pixels(
-                            pixels,
-                            &self.maximize_pixels,
-                            false,
-                            HoveredButton::Maximize,
-                        );
-                    }
-                    HoveredButton::Minimize => {
-                        Self::draw_button_hover_by_pixels(
-                            pixels,
-                            &self.minimize_pixels,
-                            false,
-                            HoveredButton::Minimize,
-                        );
-                    }
-                    HoveredButton::None => {}
-                }
-
-                // Hover new button
-                match self.hovered_button {
-                    HoveredButton::Close => {
-                        Self::draw_button_hover_by_pixels(
-                            pixels,
-                            &self.close_pixels,
-                            true,
-                            HoveredButton::Close,
-                        );
-                    }
-                    HoveredButton::Maximize => {
-                        Self::draw_button_hover_by_pixels(
-                            pixels,
-                            &self.maximize_pixels,
-                            true,
-                            HoveredButton::Maximize,
-                        );
-                    }
-                    HoveredButton::Minimize => {
-                        Self::draw_button_hover_by_pixels(
-                            pixels,
-                            &self.minimize_pixels,
-                            true,
-                            HoveredButton::Minimize,
-                        );
-                    }
-                    HoveredButton::None => {}
-                }
-
-                buffer.present().unwrap();
-            }
+                HIT_NONE
+            };
 
             // Update cursor icon based on hover position
-            // If hovering over a button, show pointer cursor, otherwise check for resize edges
+            // Check what we're hovering over
             let cursor = if self.hovered_button != HoveredButton::None {
                 CursorIcon::Pointer
+            } else if element_id == HIT_HANDLE_TEXTBOX {
+                CursorIcon::Text
             } else {
                 let edge = self.get_resize_edge(self.mouse_x, self.mouse_y);
                 match edge {
@@ -692,6 +655,9 @@ impl PhotonApp {
                 }
             };
             window.set_cursor(cursor);
+
+            // Return true if hover state changed
+            old_hovered != self.hovered_button
         }
     }
 
@@ -734,12 +700,16 @@ impl PhotonApp {
     }
 
     pub fn render(&mut self) {
-        // Only redraw content if dimensions changed or content is dirty
+        // Increment render counter
+        self.render_counter += 1;
+
+        // Always lock buffer once per frame
+        let mut buffer = self.renderer.lock_buffer();
+        let pixels = buffer.as_mut();
+
+        // Only redraw full content if dimensions changed or content is dirty
         if self.needs_redraw {
             self.redraw_counter += 1;
-
-            let mut buffer = self.renderer.lock_buffer();
-            let pixels = buffer.as_mut();
 
             // Clear hitmap to HIT_NONE before drawing
             self.hit_test_map.fill(HIT_NONE);
@@ -755,14 +725,17 @@ impl PhotonApp {
             self.button_curve_start = start;
             self.button_crossings = edges.clone();
 
-            Self::draw_window_edges_and_mask(
-                pixels,
-                &mut self.hit_test_map,
-                self.width,
-                self.height,
-                start,
-                &edges,
-            );
+            // Skip drawing window edges when fullscreen or maximized
+            if !self.is_fullscreen {
+                Self::draw_window_edges_and_mask(
+                    pixels,
+                    &mut self.hit_test_map,
+                    self.width,
+                    self.height,
+                    start,
+                    &edges,
+                );
+            }
 
             // Build button pixel lists from hitmap AFTER masking for fast hover effects
             // This ensures we only capture pixels inside the squircle curves
@@ -790,21 +763,21 @@ impl PhotonApp {
                 &edges,
             );
 
-            // // Draw spectrum and logo text
-            // let logo_center_y = self.height as usize / 4; // Centered in top half
-            // Self::draw_spectrum(
-            //     pixels,
-            //     self.width,
-            //     self.height,
-            //     logo_center_y - self.height.min(self.width) as usize / 8,
-            // );
-            // Self::draw_logo_text(
-            //     pixels,
-            //     &mut self.text_renderer,
-            //     self.width,
-            //     self.height,
-            //     logo_center_y + self.height.min(self.width) as usize / 8,
-            // );
+            // Draw spectrum and logo text
+            let logo_center_y = self.height as usize / 4; // Centered in top half
+            Self::draw_spectrum(
+                pixels,
+                self.width,
+                self.height,
+                logo_center_y - self.height.min(self.width) as usize / 8,
+            );
+            Self::draw_logo_text(
+                pixels,
+                &mut self.text_renderer,
+                self.width,
+                self.height,
+                logo_center_y + self.height.min(self.width) as usize / 8,
+            );
 
             // Initialize textbox_mask buffer to screen dimensions
             let buffer_size = self.width as usize * self.height as usize;
@@ -819,6 +792,17 @@ impl PhotonApp {
             let center_x = self.width as usize / 2;
             let center_y = self.height as usize * 4 / 7;
 
+            // Fill mask with anti-aliased squircle (255=inside, 0=outside)
+            Self::fill_textbox_mask(
+                &mut self.textbox_mask,
+                self.width as usize,
+                self.height as usize,
+                center_x,
+                center_y,
+                box_width,
+                box_height,
+            );
+
             Self::draw_textbox(
                 pixels,
                 &mut self.hit_test_map,
@@ -830,76 +814,52 @@ impl PhotonApp {
                 box_height,
             );
 
-            // // 3. Draw text
-            // // Placeholder inside the box (only if username is empty)
-            // if self.username_input.is_empty() {
-            //     self.text_renderer.draw_text_center(
-            //         pixels,
-            //         self.width,
-            //         self.height,
-            //         "∞",
-            //         center_x as f32,
-            //         center_y as f32,
-            //         box_height as f32 * 0.5,
-            //         500, // Thin weight
-            //         theme::FONT_HINT.to_vec(),
-            //         0,
-            //         theme::FONT_USER_CONTENT,
-            //     );
-            // } else {
-            //     // Draw the user's typed text
-            //     self.text_renderer.draw_text_center(
-            //         pixels,
-            //         self.width,
-            //         self.height,
-            //         &self.username_input,
-            //         center_x as f32,
-            //         center_y as f32,
-            //         box_height as f32 * 0.5,
-            //         500,                      // Thin weight
-            //         vec![255, 255, 255, 255], // White text
-            //         0,
-            //         theme::FONT_USER_CONTENT,
-            //     );
-            // }
+            // 3. Draw text
+            // Infinity placeholder inside the box (only if username is empty)
+            if self.username_input.is_empty() {
+                self.text_renderer.draw_text_center_u32(
+                    pixels,
+                    self.width as usize,
+                    self.height as usize,
+                    "∞",
+                    center_x as f32,
+                    center_y as f32,
+                    box_height as f32 * 0.5,
+                    500, // Thin weight
+                    theme::FONT_HINT,
+                    theme::FONT_USER_CONTENT,
+                );
+            } else {
+                // Draw the user's typed text
+                self.text_renderer.draw_text_center_u32(
+                    pixels,
+                    self.width as usize,
+                    self.height as usize,
+                    &self.username_input, // It gets... complicated?
+                    center_x as f32,
+                    center_y as f32,
+                    box_height as f32 * 0.5,
+                    500,        // Thin weight
+                    0xFFFFFFFF, // White text (ARGB)
+                    theme::FONT_USER_CONTENT,
+                );
+            }
 
-            // // Draw blinking cursor if textbox is focused
-            // if self.textbox_focused {
-            //     // Blink cursor every ~10 frames (cursor_blink increments by 0.1 each frame)
-            //     if (self.cursor_blink % 2.0) < 1.0 {
-            //         // Calculate cursor position based on text width
-            //         let text_to_measure = if self.username_input.is_empty() {
-            //             ""
-            //         } else {
-            //             &self.username_input
-            //         };
-
-            //         // Measure text width to position cursor
-            //         let text_width = self.text_renderer.measure_text_width(
-            //             text_to_measure,
-            //             box_height as f32 * 0.5,
-            //             500,
-            //             theme::FONT_USER_CONTENT,
-            //         );
-
-            //         // Cursor position: center + half text width
-            //         let cursor_x = center_x as f32 + text_width / 2.0;
-            //         let cursor_height = box_height as f32 * 0.6;
-            //         let cursor_top = center_y as f32 - cursor_height / 2.0;
-
-            //         // Draw vertical cursor line (2px wide)
-            //         for y_offset in 0..(cursor_height as usize) {
-            //             let py = (cursor_top as usize + y_offset).min((self.height - 1) as usize);
-            //             for x_offset in 0..2 {
-            //                 let px = (cursor_x as usize + x_offset).min((self.width - 1) as usize);
-            //                 let idx = (py * self.width as usize + px) * 4;
-            //                 pixels[idx] = theme::CURSOR_COLOUR[0];
-            //                 pixels[idx + 1] = theme::CURSOR_COLOUR[1];
-            //                 pixels[idx + 2] = theme::CURSOR_COLOUR[2];
-            //             }
-            //         }
-            //     }
-            // }
+            // Update cursor position for blinking (after text)
+            let text_to_measure = if self.username_input.is_empty() {
+                ""
+            } else {
+                &self.username_input
+            };
+            let text_width = self.text_renderer.measure_text_width(
+                text_to_measure,
+                box_height as f32 * 0.5,
+                500,
+                theme::FONT_USER_CONTENT,
+            );
+            self.cursor_pixel_x = (center_x as f32 + text_width / 2.0) as usize;
+            self.cursor_pixel_y = (center_y as f32 - box_height as f32 * 0.25) as usize;
+            self.cursor_height = box_height as f32 * 0.5;
 
             // Label below the box
             self.text_renderer.draw_text_center_u32(
@@ -943,8 +903,278 @@ impl PhotonApp {
                 }
             }
 
-            // Present the buffer with UI and optional debug overlays
-            buffer.present().unwrap();
+            self.needs_redraw = false;
+
+            // After full redraw, pixel lists are rebuilt - reset prev_hovered to force hover reapply
+            self.prev_hovered_button = HoveredButton::None;
+        }
+
+        // Handle hover state changes
+        if self.prev_hovered_button != self.hovered_button {
+            // Unhover old button
+            match self.prev_hovered_button {
+                HoveredButton::Close => {
+                    Self::draw_button_hover_by_pixels(
+                        pixels,
+                        &self.close_pixels,
+                        false,
+                        HoveredButton::Close,
+                    );
+                }
+                HoveredButton::Maximize => {
+                    Self::draw_button_hover_by_pixels(
+                        pixels,
+                        &self.maximize_pixels,
+                        false,
+                        HoveredButton::Maximize,
+                    );
+                }
+                HoveredButton::Minimize => {
+                    Self::draw_button_hover_by_pixels(
+                        pixels,
+                        &self.minimize_pixels,
+                        false,
+                        HoveredButton::Minimize,
+                    );
+                }
+                HoveredButton::None => {}
+            }
+
+            // Hover new button
+            match self.hovered_button {
+                HoveredButton::Close => {
+                    Self::draw_button_hover_by_pixels(
+                        pixels,
+                        &self.close_pixels,
+                        true,
+                        HoveredButton::Close,
+                    );
+                }
+                HoveredButton::Maximize => {
+                    Self::draw_button_hover_by_pixels(
+                        pixels,
+                        &self.maximize_pixels,
+                        true,
+                        HoveredButton::Maximize,
+                    );
+                }
+                HoveredButton::Minimize => {
+                    Self::draw_button_hover_by_pixels(
+                        pixels,
+                        &self.minimize_pixels,
+                        true,
+                        HoveredButton::Minimize,
+                    );
+                }
+                HoveredButton::None => {}
+            }
+
+            // Update prev state
+            self.prev_hovered_button = self.hovered_button;
+        }
+
+        // Handle cursor initialization (when textbox gains focus)
+        if self.cursor_needs_init {
+            self.cursor_needs_init = false;
+            self.cursor_wave_top_bright = true;
+            // First blink: Dark/Dark → Bright/Dark
+            Self::add_cursor_top(
+                pixels,
+                self.width as usize,
+                self.cursor_pixel_x as f32,
+                self.cursor_pixel_y as f32,
+                self.cursor_height,
+            );
+        }
+
+        // Handle cursor undo (when textbox loses focus - return to Dark/Dark)
+        let did_undo = self.cursor_needs_undo;
+        if self.cursor_needs_undo {
+            self.cursor_needs_undo = false;
+            // The flag indicates which half is currently bright after the last blink
+            // We need to undo whichever one is bright
+            if self.cursor_wave_top_bright {
+                // Top is bright, subtract it
+                Self::sub_cursor_top(
+                    pixels,
+                    self.width as usize,
+                    self.cursor_pixel_x as f32,
+                    self.cursor_pixel_y as f32,
+                    self.cursor_height,
+                );
+            } else {
+                // Bottom is bright, subtract it
+                Self::sub_cursor_bottom(
+                    pixels,
+                    self.width as usize,
+                    self.cursor_pixel_x as f32,
+                    self.cursor_pixel_y as f32,
+                    self.cursor_height,
+                );
+            }
+        }
+
+        // Handle cursor blinking - wake timer already fired, just blink
+        // Don't blink on the same frame we undo to avoid re-dirtying the screen
+        if !did_undo && self.textbox_focused {
+            if self.cursor_wave_top_bright {
+                // Currently Bright/Dark → swap to Dark/Bright
+                Self::sub_cursor_top(
+                    pixels,
+                    self.width as usize,
+                    self.cursor_pixel_x as f32,
+                    self.cursor_pixel_y as f32,
+                    self.cursor_height,
+                );
+                Self::add_cursor_bottom(
+                    pixels,
+                    self.width as usize,
+                    self.cursor_pixel_x as f32,
+                    self.cursor_pixel_y as f32,
+                    self.cursor_height,
+                );
+                self.cursor_wave_top_bright = false;
+            } else {
+                // Currently Dark/Bright → swap to Bright/Dark
+                Self::add_cursor_top(
+                    pixels,
+                    self.width as usize,
+                    self.cursor_pixel_x as f32,
+                    self.cursor_pixel_y as f32,
+                    self.cursor_height,
+                );
+                Self::sub_cursor_bottom(
+                    pixels,
+                    self.width as usize,
+                    self.cursor_pixel_x as f32,
+                    self.cursor_pixel_y as f32,
+                    self.cursor_height,
+                );
+                self.cursor_wave_top_bright = true;
+            }
+        }
+
+        // Draw debug counters (bottom left = redraw, bottom right = render)
+        let redraw_text = format!("R:{}", self.redraw_counter);
+        let render_text = format!("F:{}", self.render_counter);
+        let counter_size = (self.min_dim / 16) as f32;
+
+        // Bottom left - redraw counter
+        self.text_renderer.draw_text_left_u32(
+            pixels,
+            self.width as usize,
+            self.height as usize,
+            &redraw_text,
+            counter_size,
+            self.height as f32 - counter_size*2.,
+            counter_size,
+            400,
+            0xFFFFFFFF,
+            "Josefin Slab",
+        );
+
+        // Bottom right - render counter
+        self.text_renderer.draw_text_right_u32(
+            pixels,
+            self.width as usize,
+            self.height as usize,
+            &render_text,
+            self.width as f32 - counter_size,
+            self.height as f32 - counter_size*2.,
+            counter_size,
+            400,
+            0xFFFFFFFF,
+            "Josefin Slab",
+        );
+
+        // Always present buffer once per frame
+        buffer.present().unwrap();
+    }
+
+    fn add_cursor_top(
+        pixels: &mut [u32],
+        window_width: usize,
+        cursor_x: f32,
+        cursor_top: f32,
+        cursor_height: f32,
+    ) {
+        let x = cursor_x as usize;
+        let y_start = cursor_top as usize;
+        let y_center = (cursor_top + cursor_height / 2.) as usize;
+        let half_height = cursor_height / 2.;
+
+        // Top half: wave_phase=true means add, false means subtract
+        for y in y_start..y_center {
+            let idx = y * window_width + x;
+
+            // Map to [-1, 0] range for top half
+            let t = (y as f32 - cursor_top - half_height) / half_height;
+
+            let wave = (t * t * t - t) * 612.;
+            pixels[idx] += 0x00010101 * wave as u32;
+        }
+    }
+
+    fn add_cursor_bottom(
+        pixels: &mut [u32],
+        window_width: usize,
+        cursor_x: f32,
+        cursor_top: f32,
+        cursor_height: f32,
+    ) {
+        let x = cursor_x as usize;
+        let y_center = (cursor_top + cursor_height / 2.) as usize;
+        let y_end = (cursor_top + cursor_height) as usize;
+        let half_height = cursor_height / 2.;
+
+        for y in y_center..y_end {
+            let idx = y * window_width + x;
+
+            // Map to [0, 1] range for bottom half
+            let t = (y as f32 - cursor_top - half_height) / half_height;
+
+            let wave = (t * t * t - t) * -612.;
+            pixels[idx] += 0x00010101 * wave as u32;
+        }
+    }
+
+    fn sub_cursor_top(
+        pixels: &mut [u32],
+        window_width: usize,
+        cursor_x: f32,
+        cursor_top: f32,
+        cursor_height: f32,
+    ) {
+        let x = cursor_x as usize;
+        let y_start = cursor_top as usize;
+        let y_center = (cursor_top + cursor_height / 2.) as usize;
+        let half_height = cursor_height / 2.;
+
+        for y in y_start..y_center {
+            let idx = y * window_width + x;
+            let t = (y as f32 - cursor_top - half_height) / half_height;
+            let wave = (t * t * t - t) * 612.;
+            pixels[idx] -= 0x00010101 * wave as u32;
+        }
+    }
+
+    fn sub_cursor_bottom(
+        pixels: &mut [u32],
+        window_width: usize,
+        cursor_x: f32,
+        cursor_top: f32,
+        cursor_height: f32,
+    ) {
+        let x = cursor_x as usize;
+        let y_center = (cursor_top + cursor_height / 2.) as usize;
+        let y_end = (cursor_top + cursor_height) as usize;
+        let half_height = cursor_height / 2.;
+
+        for y in y_center..y_end {
+            let idx = y * window_width + x;
+            let t = (y as f32 - cursor_top - half_height) / half_height;
+            let wave = (t * t * t - t) * -612.;
+            pixels[idx] -= 0x00010101 * wave as u32;
         }
     }
 
@@ -1011,7 +1241,7 @@ impl PhotonApp {
                 let px = x_start + col;
                 let pixel_idx = (py * window_width + px) as usize;
 
-                // Write packed ARGB color directly
+                // Write packed ARGB colour directly
                 pixels[pixel_idx] = bg_colour;
 
                 // Determine which button this pixel belongs to
@@ -1210,7 +1440,7 @@ impl PhotonApp {
                         bg = (bg | (bg << 16)) & 0x0000FFFF0000FFFF;
                         bg = (bg | (bg << 8)) & 0x00FF00FF00FF00FF;
 
-                        // Widen stroke color to packed channels
+                        // Widen stroke colour to packed channels
                         let mut stroke = stroke_packed as u64;
                         stroke = (stroke | (stroke << 16)) & 0x0000FFFF0000FFFF;
                         stroke = (stroke | (stroke << 8)) & 0x00FF00FF00FF00FF;
@@ -1359,7 +1589,7 @@ impl PhotonApp {
         let x2_end = cxf - end;
         let y2_end = cyf + end;
 
-        // Pack stroke color once
+        // Pack stroke colour once
         let stroke_packed = pack_argb(stroke_colour.0, stroke_colour.1, stroke_colour.2, 255);
 
         // Scan the bounding box and render both capsules
@@ -2255,8 +2485,144 @@ impl PhotonApp {
         }
     }
 
+    /// Fill textbox_mask with anti-aliased squircle (255=inside, 0=outside)
+    fn fill_textbox_mask(
+        mask: &mut [u8],
+        window_width: usize,
+        _window_height: usize,
+        center_x: usize,
+        center_y: usize,
+        box_width: usize,
+        box_height: usize,
+    ) {
+        // Clear mask first
+        mask.fill(0);
+
+        let x = center_x - box_width / 2;
+        let y = center_y - box_height / 2;
+        let radius = (box_width.min(box_height) / 2) as f32;
+        let squirdleyness = 3;
+
+        // Generate crossings (same as draw_textbox)
+        let mut crossings: Vec<(u16, u8, u8)> = Vec::new();
+        let mut offset = 0f32;
+
+        loop {
+            let y_norm = offset / radius;
+            let x_norm = (1. - y_norm.powi(squirdleyness)).powf(1. / squirdleyness as f32);
+            let x = x_norm * radius;
+            let inset = radius - x;
+
+            if inset >= 0. {
+                let l = (inset.fract().sqrt() * 256.) as u8;
+                let h = ((1. - inset.fract()).sqrt() * 256.) as u8;
+                crossings.push((inset as u16, l, h));
+            }
+
+            if x < offset {
+                break;
+            }
+
+            offset += 1.;
+        }
+
+        // Fill corners with anti-aliasing
+        for (i, &(inset, _l, h)) in crossings.iter().enumerate() {
+            if inset as usize > i {
+                break;
+            }
+
+            // Top-left corner
+            let py = y + radius as usize - i;
+            let px = x + inset as usize;
+            mask[py * window_width + px] = h;
+            let diag_x = (x + radius as usize - i).min(window_width);
+            for fill_x in (px + 1)..=diag_x {
+                mask[py * window_width + fill_x] = 255;
+            }
+
+            let hx = x + radius as usize - i;
+            let hy = y + inset as usize;
+            mask[hy * window_width + hx] = h;
+            let diag_y = y + radius as usize - i;
+            for fill_y in (hy + 1)..diag_y {
+                mask[fill_y * window_width + hx] = 255;
+            }
+
+            // Top-right corner
+            let px = x + box_width - 1 - inset as usize;
+            mask[py * window_width + px] = h;
+            let diag_x = x + box_width - 1 - radius as usize + i;
+            for fill_x in diag_x..px {
+                mask[py * window_width + fill_x] = 255;
+            }
+
+            let hx = x + box_width - 1 - radius as usize + i;
+            mask[hy * window_width + hx] = h;
+            for fill_y in (hy + 1)..diag_y {
+                mask[fill_y * window_width + hx] = 255;
+            }
+
+            // Bottom-left corner
+            let py = y + box_height - radius as usize + i;
+            let px = x + inset as usize;
+            mask[py * window_width + px] = h;
+            let diag_x = (x + radius as usize - i).min(window_width);
+            for fill_x in (px + 1)..=diag_x {
+                mask[py * window_width + fill_x] = 255;
+            }
+
+            let hx = x + radius as usize - i;
+            let hy = y + box_height - inset as usize;
+            mask[hy * window_width + hx] = h;
+            let diag_y = y + box_height - radius as usize + i;
+            for fill_y in (diag_y + 1)..hy {
+                mask[fill_y * window_width + hx] = 255;
+            }
+
+            // Bottom-right corner
+            let px = x + box_width - 1 - inset as usize;
+            mask[py * window_width + px] = h;
+            let diag_x = x + box_width - 1 - radius as usize + i;
+            for fill_x in diag_x..px {
+                mask[py * window_width + fill_x] = 255;
+            }
+
+            let hx = x + box_width - 1 - radius as usize + i;
+            mask[hy * window_width + hx] = h;
+            for fill_y in (diag_y + 1)..hy {
+                mask[fill_y * window_width + hx] = 255;
+            }
+        }
+
+        // Fill center and straight edges
+        let radius_int = radius as usize;
+
+        if box_width > box_height {
+            // Fat box - include top/bottom edges
+            let left_edge = x + radius_int;
+            let right_edge = x + box_width - radius_int;
+
+            for py in y..=(y + box_height) {
+                for px in left_edge..right_edge {
+                    mask[py * window_width + px] = 255;
+                }
+            }
+        } else {
+            // Skinny box - include left/right edges
+            let top_edge = y + radius_int;
+            let bottom_edge = y + box_height - radius_int;
+
+            for py in top_edge..bottom_edge {
+                for px in x..=(x + box_width - 1) {
+                    mask[py * window_width + px] = 255;
+                }
+            }
+        }
+    }
+
     fn draw_spectrum(
-        pixels: &mut [u8],
+        pixels: &mut [u32],
         window_width: u32,
         window_height: u32,
         vertical_center_px: usize, // Vertical center position in pixels
@@ -2300,11 +2666,7 @@ impl PhotonApp {
                 let m = LMS2006SO[lms_idx + 1];
                 let s = LMS2006SO[lms_idx + 2];
 
-                // Convert LMS to REC2020 RGB using matrix multiplication
-                // LMS2REC2020 matrix (row-major):
-                // [ 3.168241,  -2.156883,   0.096457]
-                // [-0.266363,   1.404946,  -0.175555]
-                // [ 0.003892,  -0.020568,   0.945833]
+                // Convert LMS to REC2020 magic 9
                 let r =
                     3.168241098811690000 * l + -2.156882856491830000 * m + 0.096456879211209600 * s;
                 let g = -0.266362510245695000 * l
@@ -2314,202 +2676,207 @@ impl PhotonApp {
                     0.003891529873740330 * l + -0.020567680031394800 * m + 0.945832607950864000 * s;
 
                 // Write pixel (with y_offset for vertical positioning)
-                let idx = ((y + y_offset) * window_width + px - logo_width / 16) * 4;
-                let r_b = pixels[idx] as f32 * pixels[idx] as f32;
-                let g_b = pixels[idx + 1] as f32 * pixels[idx + 1] as f32;
-                let b_b = pixels[idx + 2] as f32 * pixels[idx + 2] as f32;
-                pixels[idx] = (r * scale + r_b).sqrt() as u8;
-                pixels[idx + 1] = (g * scale + g_b).sqrt() as u8;
-                pixels[idx + 2] = (b * scale + b_b).sqrt() as u8;
+                let idx = (y + y_offset) * window_width + px - logo_width / 16;
+                let (r_bg, g_bg, b_bg, a) = unpack_argb(pixels[idx]);
+                let r_b = r_bg as f32 * r_bg as f32;
+                let g_b = g_bg as f32 * g_bg as f32;
+                let b_b = b_bg as f32 * b_bg as f32;
+                let r_new = (r * scale + r_b).sqrt() as u8;
+                let g_new = (g * scale + g_b).sqrt() as u8;
+                let b_new = (b * scale + b_b).sqrt() as u8;
+                pixels[idx] = pack_argb(r_new, g_new, b_new, a);
             }
         }
     }
 
-    // fn draw_logo_text(
-    //     pixels: &mut [u8],
-    //     text_renderer: &mut TextRenderer,
-    //     window_width: u32,
-    //     window_height: u32,
-    //     vertical_center_px: usize, // Vertical center position in pixels
-    // ) {
-    //     let window_width = window_width as usize;
-    //     let window_height = window_height as usize;
-    //     let smaller_dim = window_width.min(window_height) as f32;
+    fn draw_logo_text(
+        pixels: &mut [u32],
+        text_renderer: &mut TextRenderer,
+        window_width: u32,
+        window_height: u32,
+        vertical_center_px: usize, // Vertical center position in pixels
+    ) {
+        let window_width = window_width as usize;
+        let window_height = window_height as usize;
+        let smaller_dim = window_width.min(window_height) as f32;
 
-    //     // Calculate text position
-    //     let text_x = window_width as f32 / 2.;
-    //     let text_y = vertical_center_px as f32;
-    //     let text_size = smaller_dim / 8. * 1.18;
+        // Calculate text position
+        let text_x = window_width as f32 / 2.;
+        let text_y = vertical_center_px as f32;
+        let text_size = smaller_dim / 8. * 1.18;
 
-    //     // Virtual buffer region (only process where text lives with glow padding)
-    //     let text_height_estimate = (text_size * 1.5) as usize; // Text + glow padding
-    //     let start = (text_y as usize).saturating_sub(text_height_estimate);
-    //     let stop = (text_y as usize + text_height_estimate).min(window_height);
-    //     let virtual_height = stop - start;
-    //     let buffer_size = window_width * virtual_height;
+        // Virtual buffer region (only process where text lives with glow padding)
+        let text_height_estimate = (text_size * 1.5) as usize; // Text + glow padding
+        let start = (text_y as usize).saturating_sub(text_height_estimate);
+        let stop = (text_y as usize + text_height_estimate).min(window_height);
+        let virtual_height = stop - start;
+        let buffer_size = window_width * virtual_height;
 
-    //     let mut glow_buffer = vec![0; buffer_size];
-    //     text_renderer.draw_text_center(
-    //         &mut glow_buffer,
-    //         window_width as u32,
-    //         virtual_height as u32,
-    //         "Photon",
-    //         text_x,
-    //         text_y - start as f32, // Adjust y for virtual buffer
-    //         text_size,
-    //         800, // weight
-    //         vec![theme::LOGO_GLOW_GRAY],
-    //         0, // rotation
-    //         theme::FONT_LOGO,
-    //     );
+        let mut glow_buffer = vec![0; buffer_size];
+        text_renderer.draw_text_center(
+            &mut glow_buffer,
+            window_width as u32,
+            virtual_height as u32,
+            "Photon",
+            text_x,
+            text_y - start as f32, // Adjust y for virtual buffer
+            text_size,
+            800, // weight
+            vec![theme::LOGO_GLOW_GRAY],
+            0, // rotation
+            theme::FONT_LOGO,
+        );
 
-    //     let mut highlight_buffer = vec![0; buffer_size];
-    //     text_renderer.draw_text_center(
-    //         &mut highlight_buffer,
-    //         window_width as u32,
-    //         virtual_height as u32,
-    //         "Photon",
-    //         text_x,
-    //         text_y - start as f32,
-    //         text_size,
-    //         800, // weight
-    //         vec![theme::LOGO_HIGHLIGHT_GRAY],
-    //         0, // rotation
-    //         theme::FONT_LOGO,
-    //     );
-    //     text_renderer.draw_text_center(
-    //         &mut highlight_buffer,
-    //         window_width as u32,
-    //         virtual_height as u32,
-    //         "Photon",
-    //         text_x + 1.,
-    //         text_y - start as f32,
-    //         text_size,
-    //         800, // weight
-    //         vec![0],
-    //         0, // rotation
-    //         theme::FONT_LOGO,
-    //     );
-    //     text_renderer.draw_text_center(
-    //         &mut highlight_buffer,
-    //         window_width as u32,
-    //         virtual_height as u32,
-    //         "Photon",
-    //         text_x,
-    //         text_y - start as f32 + 1.,
-    //         text_size,
-    //         800, // weight
-    //         vec![0],
-    //         0, // rotation
-    //         theme::FONT_LOGO,
-    //     );
+        let mut highlight_buffer = vec![0; buffer_size];
+        text_renderer.draw_text_center(
+            &mut highlight_buffer,
+            window_width as u32,
+            virtual_height as u32,
+            "Photon",
+            text_x,
+            text_y - start as f32,
+            text_size,
+            800, // weight
+            vec![theme::LOGO_HIGHLIGHT_GRAY],
+            0, // rotation
+            theme::FONT_LOGO,
+        );
+        text_renderer.draw_text_center(
+            &mut highlight_buffer,
+            window_width as u32,
+            virtual_height as u32,
+            "Photon",
+            text_x + 1.,
+            text_y - start as f32,
+            text_size,
+            800, // weight
+            vec![0],
+            0, // rotation
+            theme::FONT_LOGO,
+        );
+        text_renderer.draw_text_center(
+            &mut highlight_buffer,
+            window_width as u32,
+            virtual_height as u32,
+            "Photon",
+            text_x,
+            text_y - start as f32 + 1.,
+            text_size,
+            800, // weight
+            vec![0],
+            0, // rotation
+            theme::FONT_LOGO,
+        );
 
-    //     let mut prev = highlight_buffer[0];
-    //     for glow_idx in 1..highlight_buffer.len() {
-    //         prev = (((highlight_buffer[glow_idx] as u16 + prev as u16 * 15) >> 4) as u8)
-    //             .max(highlight_buffer[glow_idx]);
-    //         highlight_buffer[glow_idx] = prev;
-    //     }
-    //     let mut prev = highlight_buffer[highlight_buffer.len() - 1];
-    //     for glow_idx in (0..highlight_buffer.len()).rev() {
-    //         prev = (((highlight_buffer[glow_idx] as u16 + prev as u16 * 15) >> 4) as u8)
-    //             .max(highlight_buffer[glow_idx]);
-    //         highlight_buffer[glow_idx] = prev;
-    //     }
+        let mut prev = highlight_buffer[0];
+        for glow_idx in 1..highlight_buffer.len() {
+            prev = (((highlight_buffer[glow_idx] as u16 + prev as u16 * 15) >> 4) as u8)
+                .max(highlight_buffer[glow_idx]);
+            highlight_buffer[glow_idx] = prev;
+        }
+        let mut prev = highlight_buffer[highlight_buffer.len() - 1];
+        for glow_idx in (0..highlight_buffer.len()).rev() {
+            prev = (((highlight_buffer[glow_idx] as u16 + prev as u16 * 15) >> 4) as u8)
+                .max(highlight_buffer[glow_idx]);
+            highlight_buffer[glow_idx] = prev;
+        }
 
-    //     // // Vertical pass: top to bottom
-    //     // for x in 0..window_width as usize {
-    //     //     let mut prev = highlight_buffer[x]; // y=0, x=x
-    //     //     for y in 1..window_height as usize {
-    //     //         let glow_idx = y * window_width as usize + x;
-    //     //         prev = (((highlight_buffer[glow_idx] as u16 + prev as u16 * 3) >> 2) as u8)
-    //     //             .max(highlight_buffer[glow_idx]);
-    //     //         highlight_buffer[glow_idx] = prev;
-    //     //     }
-    //     // }
+        // // Vertical pass: top to bottom
+        // for x in 0..window_width as usize {
+        //     let mut prev = highlight_buffer[x]; // y=0, x=x
+        //     for y in 1..window_height as usize {
+        //         let glow_idx = y * window_width as usize + x;
+        //         prev = (((highlight_buffer[glow_idx] as u16 + prev as u16 * 3) >> 2) as u8)
+        //             .max(highlight_buffer[glow_idx]);
+        //         highlight_buffer[glow_idx] = prev;
+        //     }
+        // }
 
-    //     // // Vertical pass: bottom to top
-    //     // for x in 0..window_width as usize {
-    //     //     let mut prev =
-    //     //         highlight_buffer[(window_height as usize - 1) * window_width as usize + x];
-    //     //     for y in (0..window_height as usize - 1).rev() {
-    //     //         let glow_idx = y * window_width as usize + x;
-    //     //         prev = (((highlight_buffer[glow_idx] as u16 + prev as u16 * 3) >> 2) as u8)
-    //     //             .max(highlight_buffer[glow_idx]);
-    //     //         highlight_buffer[glow_idx] = prev;
-    //     //     }
-    //     // }
+        // // Vertical pass: bottom to top
+        // for x in 0..window_width as usize {
+        //     let mut prev =
+        //         highlight_buffer[(window_height as usize - 1) * window_width as usize + x];
+        //     for y in (0..window_height as usize - 1).rev() {
+        //         let glow_idx = y * window_width as usize + x;
+        //         prev = (((highlight_buffer[glow_idx] as u16 + prev as u16 * 3) >> 2) as u8)
+        //             .max(highlight_buffer[glow_idx]);
+        //         highlight_buffer[glow_idx] = prev;
+        //     }
+        // }
 
-    //     let mut prev = glow_buffer[0];
-    //     for glow_idx in 1..glow_buffer.len() {
-    //         prev = (((glow_buffer[glow_idx] as u16 + prev as u16 * 3) >> 2) as u8)
-    //             .max(glow_buffer[glow_idx]);
-    //         glow_buffer[glow_idx] = prev;
-    //     }
-    //     let mut prev = glow_buffer[glow_buffer.len() - 1];
-    //     for glow_idx in (0..glow_buffer.len()).rev() {
-    //         prev = (((glow_buffer[glow_idx] as u16 + prev as u16 * 3) >> 2) as u8)
-    //             .max(glow_buffer[glow_idx]);
-    //         glow_buffer[glow_idx] = prev;
-    //     }
+        let mut prev = glow_buffer[0];
+        for glow_idx in 1..glow_buffer.len() {
+            prev = (((glow_buffer[glow_idx] as u16 + prev as u16 * 3) >> 2) as u8)
+                .max(glow_buffer[glow_idx]);
+            glow_buffer[glow_idx] = prev;
+        }
+        let mut prev = glow_buffer[glow_buffer.len() - 1];
+        for glow_idx in (0..glow_buffer.len()).rev() {
+            prev = (((glow_buffer[glow_idx] as u16 + prev as u16 * 3) >> 2) as u8)
+                .max(glow_buffer[glow_idx]);
+            glow_buffer[glow_idx] = prev;
+        }
 
-    //     // Vertical pass: top to bottom
-    //     for x in 0..window_width as usize {
-    //         let mut prev = glow_buffer[x]; // y=0, x=x
-    //         for y in 1..virtual_height as usize {
-    //             let glow_idx = y * window_width as usize + x;
-    //             prev = (((glow_buffer[glow_idx] as u16 + prev as u16) >> 1) as u8)
-    //                 .max(glow_buffer[glow_idx]);
-    //             glow_buffer[glow_idx] = prev;
-    //         }
-    //     }
+        // Vertical pass: top to bottom
+        for x in 0..window_width as usize {
+            let mut prev = glow_buffer[x]; // y=0, x=x
+            for y in 1..virtual_height as usize {
+                let glow_idx = y * window_width as usize + x;
+                prev = (((glow_buffer[glow_idx] as u16 + prev as u16) >> 1) as u8)
+                    .max(glow_buffer[glow_idx]);
+                glow_buffer[glow_idx] = prev;
+            }
+        }
 
-    //     // Vertical pass: bottom to top
-    //     for x in 0..window_width as usize {
-    //         let mut prev = glow_buffer[(virtual_height as usize - 1) * window_width as usize + x];
-    //         for y in (0..virtual_height as usize - 1).rev() {
-    //             let glow_idx = y * window_width as usize + x;
-    //             prev = (((glow_buffer[glow_idx] as u16 + prev as u16) >> 1) as u8)
-    //                 .max(glow_buffer[glow_idx]);
-    //             glow_buffer[glow_idx] = prev;
-    //         }
-    //     }
+        // Vertical pass: bottom to top
+        for x in 0..window_width as usize {
+            let mut prev = glow_buffer[(virtual_height as usize - 1) * window_width as usize + x];
+            for y in (0..virtual_height as usize - 1).rev() {
+                let glow_idx = y * window_width as usize + x;
+                prev = (((glow_buffer[glow_idx] as u16 + prev as u16) >> 1) as u8)
+                    .max(glow_buffer[glow_idx]);
+                glow_buffer[glow_idx] = prev;
+            }
+        }
 
-    //     // Composite glow buffer to screen with offset
-    //     for glow_idx in 0..glow_buffer.len() {
-    //         let pixel_idx = (glow_idx + start * window_width) * 4;
+        // Composite glow buffer to screen with offset
+        for glow_idx in 0..glow_buffer.len() {
+            let pixel_idx = glow_idx + start * window_width;
+            let grey = glow_buffer[glow_idx];
+            let (r, g, b, a) = unpack_argb(pixels[pixel_idx]);
+            pixels[pixel_idx] = pack_argb(
+                r.wrapping_add(grey),
+                g.wrapping_add(grey),
+                b.wrapping_add(grey),
+                a,
+            );
+        }
+        text_renderer.draw_text_center_u32(
+            pixels,
+            window_width,
+            window_height,
+            "Photon",
+            text_x,
+            text_y,
+            text_size,
+            800, // weight
+            theme::LOGO_TEXT,
+            theme::FONT_LOGO,
+        );
 
-    //         let grey = glow_buffer[glow_idx];
-
-    //         pixels[pixel_idx] = pixels[pixel_idx].wrapping_add(grey);
-    //         pixels[pixel_idx + 1] = pixels[pixel_idx + 1].wrapping_add(grey);
-    //         pixels[pixel_idx + 2] = pixels[pixel_idx + 2].wrapping_add(grey);
-    //     }
-    //     text_renderer.draw_text_center(
-    //         pixels,
-    //         window_width as u32,
-    //         window_height as u32,
-    //         "Photon",
-    //         text_x,
-    //         text_y,
-    //         text_size,
-    //         800, // weight
-    //         theme::LOGO_TEXT.to_vec(),
-    //         0, // rotation
-    //         theme::FONT_LOGO,
-    //     );
-
-    //     // Composite highlight buffer to screen with offset
-    //     for glow_idx in 0..highlight_buffer.len() {
-    //         let pixel_idx = (glow_idx + start * window_width) * 4;
-
-    //         let grey = highlight_buffer[glow_idx];
-
-    //         pixels[pixel_idx] = pixels[pixel_idx].wrapping_add(grey);
-    //         pixels[pixel_idx + 1] = pixels[pixel_idx + 1].wrapping_add(grey);
-    //         pixels[pixel_idx + 2] = pixels[pixel_idx + 2].wrapping_add(grey);
-    //     }
-    // }
+        // Composite highlight buffer to screen with offset
+        for glow_idx in 0..highlight_buffer.len() {
+            let pixel_idx = glow_idx + start * window_width;
+            let grey = highlight_buffer[glow_idx];
+            let (r, g, b, a) = unpack_argb(pixels[pixel_idx]);
+            pixels[pixel_idx] = pack_argb(
+                r.wrapping_add(grey),
+                g.wrapping_add(grey),
+                b.wrapping_add(grey),
+                a,
+            );
+        }
+    }
 }
 
 // Colour conversion matrices (commented out - using inline calculations instead)

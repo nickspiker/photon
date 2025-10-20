@@ -11,7 +11,6 @@ use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
     event_loop::{ActiveEventLoop, EventLoop},
-    keyboard::ModifiersState,
     window::{Window, WindowId},
 };
 
@@ -21,9 +20,23 @@ struct App {
     screen_width: u32,
     screen_height: u32,
     maximized_size: Option<(u32, u32)>, // Maximized dimensions (learned on first maximize)
+    cursor_blink_rate_ms: u64, // System cursor blink rate in milliseconds
 }
 
 impl ApplicationHandler for App {
+    fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: winit::event::StartCause) {
+        // When wake timer fires, request redraw for cursor blink
+        if let winit::event::StartCause::ResumeTimeReached { .. } = cause {
+            if let Some(window) = &self.window {
+                if let Some(app) = &self.photon_app {
+                    if app.textbox_is_focused() {
+                        window.request_redraw();
+                    }
+                }
+            }
+        }
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_none() {
             // Get primary monitor size
@@ -75,6 +88,7 @@ impl ApplicationHandler for App {
                         window,
                         self.screen_width,
                         self.screen_height,
+                        self.cursor_blink_rate_ms,
                     );
                     self.photon_app = Some(app);
                     // Trigger redraw with correct fullscreen state
@@ -85,6 +99,7 @@ impl ApplicationHandler for App {
                 {
                     let mut app = pollster::block_on(ui::PhotonApp::new(
                         window,
+                        self.cursor_blink_rate_ms,
                     ));
                     self.photon_app = Some(app);
                     // Trigger redraw with correct fullscreen state
@@ -137,6 +152,7 @@ impl ApplicationHandler for App {
             WindowEvent::MouseInput { state, button, .. } => {
                 if let (Some(app), Some(window)) = (&mut self.photon_app, &self.window) {
                     app.handle_mouse_click(window, state, button);
+                    window.request_redraw();
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -157,8 +173,18 @@ impl ApplicationHandler for App {
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        // Don't request redraw unconditionally - only redraw when state changes
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if let (Some(app), Some(_window)) = (&self.photon_app, &self.window) {
+            // Set next wake time for cursor blink (random interval)
+            if app.textbox_is_focused() {
+                use winit::event_loop::ControlFlow;
+                let wake_time = app.next_blink_wake_time();
+                event_loop.set_control_flow(ControlFlow::WaitUntil(wake_time));
+            } else {
+                use winit::event_loop::ControlFlow;
+                event_loop.set_control_flow(ControlFlow::Wait);
+            }
+        }
     }
 }
 
@@ -178,6 +204,46 @@ unsafe fn enable_windows_transparency(hwnd: isize) {
 
     // NOTE: Do NOT call SetLayeredWindowAttributes - it conflicts with UpdateLayeredWindow
     // UpdateLayeredWindow handles the alpha blending directly
+}
+
+/// Get the system cursor blink rate in milliseconds
+fn get_system_cursor_blink_rate() -> u64 {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::UI::WindowsAndMessaging::GetCaretBlinkTime;
+        unsafe {
+            let rate = GetCaretBlinkTime();
+            if rate == 0 {
+                // 0 means blinking is disabled, use default
+                500
+            } else {
+                rate as u64
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        // Try to read from GNOME settings
+        let blink_rate = std::process::Command::new("gsettings")
+            .args(&["get", "org.gnome.desktop.interface", "cursor-blink-time"])
+            .output()
+            .ok()
+            .and_then(|output| {
+                String::from_utf8(output.stdout)
+                    .ok()
+                    .and_then(|s| s.trim().parse::<u64>().ok())
+            })
+            .unwrap_or(1200); // GNOME default is 1200ms for full cycle
+
+        // Divide by 2 to get half-cycle (blink interval)
+        blink_rate / 2
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    {
+        500 // Default fallback
+    }
 }
 
 fn main() {
@@ -205,12 +271,14 @@ fn main() {
     }
 
     let event_loop = EventLoop::new().unwrap();
+    let cursor_blink_rate = get_system_cursor_blink_rate();
     let mut app = App {
         window: None,
         photon_app: None,
         screen_width: 0,
         screen_height: 0,
         maximized_size: None,
+        cursor_blink_rate_ms: cursor_blink_rate,
     };
 
     event_loop.run_app(&mut app).unwrap();
