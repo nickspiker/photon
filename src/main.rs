@@ -20,6 +20,7 @@ struct App {
     photon_app: Option<ui::PhotonApp>,
     screen_width: u32,
     screen_height: u32,
+    maximized_size: Option<(u32, u32)>, // Maximized dimensions (learned on first maximize)
 }
 
 impl ApplicationHandler for App {
@@ -70,18 +71,24 @@ impl ApplicationHandler for App {
 
                 #[cfg(target_os = "windows")]
                 {
-                    self.photon_app = Some(ui::PhotonApp::new(
+                    let mut app = ui::PhotonApp::new(
                         window,
                         self.screen_width,
                         self.screen_height,
-                    ));
+                    );
+                    self.photon_app = Some(app);
+                    // Trigger redraw with correct fullscreen state
+                    window.request_redraw();
                 }
 
                 #[cfg(target_os = "linux")]
                 {
-                    self.photon_app = Some(pollster::block_on(ui::PhotonApp::new(
+                    let mut app = pollster::block_on(ui::PhotonApp::new(
                         window,
-                    )));
+                    ));
+                    self.photon_app = Some(app);
+                    // Trigger redraw with correct fullscreen state
+                    window.request_redraw();
                 }
             }
         }
@@ -93,8 +100,22 @@ impl ApplicationHandler for App {
                 event_loop.exit();
             }
             WindowEvent::Resized(size) => {
-                if let Some(app) = &mut self.photon_app {
+                if let (Some(app), Some(window)) = (&mut self.photon_app, &self.window) {
+                    // Learn maximized dimensions the first time is_maximized=true (reliable)
+                    if window.is_maximized() && self.maximized_size.is_none() {
+                        self.maximized_size = Some((size.width, size.height));
+                    }
+
+                    // Determine fullscreen state: match against known maximized size or query
+                    let is_fullscreen = if let Some((max_w, max_h)) = self.maximized_size {
+                        size.width == max_w && size.height == max_h
+                    } else {
+                        window.fullscreen().is_some()
+                    };
+
+                    app.set_fullscreen(is_fullscreen);
                     app.resize(size);
+                    window.request_redraw();
                 }
             }
             WindowEvent::RedrawRequested => {
@@ -108,8 +129,9 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                if let Some(app) = &mut self.photon_app {
+                if let (Some(window), Some(app)) = (&self.window, &mut self.photon_app) {
                     app.handle_keyboard(event);
+                    window.request_redraw();
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
@@ -119,12 +141,16 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 if let (Some(window), Some(app)) = (&self.window, &mut self.photon_app) {
-                    app.handle_mouse_move(window, position);
+                    let needs_redraw = app.handle_mouse_move(window, position);
+                    if needs_redraw {
+                        window.request_redraw();
+                    }
                 }
             }
             WindowEvent::CursorLeft { .. } => {
-                if let Some(app) = &mut self.photon_app {
+                if let (Some(window), Some(app)) = (&self.window, &mut self.photon_app) {
                     app.handle_cursor_left();
+                    window.request_redraw();
                 }
             }
             _ => {}
@@ -132,9 +158,7 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        if let Some(window) = &self.window {
-            window.request_redraw();
-        }
+        // Don't request redraw unconditionally - only redraw when state changes
     }
 }
 
@@ -184,8 +208,9 @@ fn main() {
     let mut app = App {
         window: None,
         photon_app: None,
-        screen_width: 0,  // Will be set in resumed()
-        screen_height: 0, // Will be set in resumed()
+        screen_width: 0,
+        screen_height: 0,
+        maximized_size: None,
     };
 
     event_loop.run_app(&mut app).unwrap();
