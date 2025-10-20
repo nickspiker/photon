@@ -1,6 +1,4 @@
-use cosmic_text::{
-    Attrs, Buffer, Family, FontSystem, Metrics, Shaping, SwashCache, Weight,
-};
+use cosmic_text::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, SwashCache, Weight};
 
 pub struct TextRenderer {
     font_system: FontSystem,
@@ -117,6 +115,107 @@ impl TextRenderer {
                 text_width,
                 text_height,
                 colour,
+                0, // center alignment
+            );
+
+            text_width
+        } else {
+            0.
+        }
+    }
+
+    pub fn draw_text_left_u32(
+        &mut self,
+        pixels: &mut [u32],
+        width: usize,
+        height: usize,
+        text: &str,
+        x: f32,
+        y: f32,
+        size: f32,
+        weight: u16,
+        colour: u32,
+        font: &str,
+    ) -> f32 {
+        let attrs = Attrs::new()
+            .family(Family::Name(font))
+            .weight(Weight(weight));
+
+        let metrics = Metrics::relative(size, 1.2);
+        let mut buffer = Buffer::new(&mut self.font_system, metrics);
+
+        buffer.set_size(&mut self.font_system, None, None);
+        buffer.set_text(&mut self.font_system, text, &attrs, Shaping::Advanced);
+        buffer.shape_until_scroll(&mut self.font_system, false);
+
+        if let Some(run) = buffer.layout_runs().next() {
+            let mut text_width = 0.0f32;
+            for glyph in run.glyphs {
+                text_width = text_width.max(glyph.x + glyph.w);
+            }
+            let text_height = run.line_height;
+
+            self.render_buffer_u32(
+                &mut buffer,
+                pixels,
+                width,
+                height,
+                x,
+                y,
+                text_width,
+                text_height,
+                colour,
+                1, // left alignment
+            );
+
+            text_width
+        } else {
+            0.
+        }
+    }
+
+    pub fn draw_text_right_u32(
+        &mut self,
+        pixels: &mut [u32],
+        width: usize,
+        height: usize,
+        text: &str,
+        x: f32,
+        y: f32,
+        size: f32,
+        weight: u16,
+        colour: u32,
+        font: &str,
+    ) -> f32 {
+        let attrs = Attrs::new()
+            .family(Family::Name(font))
+            .weight(Weight(weight));
+
+        let metrics = Metrics::relative(size, 1.2);
+        let mut buffer = Buffer::new(&mut self.font_system, metrics);
+
+        buffer.set_size(&mut self.font_system, None, None);
+        buffer.set_text(&mut self.font_system, text, &attrs, Shaping::Advanced);
+        buffer.shape_until_scroll(&mut self.font_system, false);
+
+        if let Some(run) = buffer.layout_runs().next() {
+            let mut text_width = 0.0f32;
+            for glyph in run.glyphs {
+                text_width = text_width.max(glyph.x + glyph.w);
+            }
+            let text_height = run.line_height;
+
+            self.render_buffer_u32(
+                &mut buffer,
+                pixels,
+                width,
+                height,
+                x,
+                y,
+                text_width,
+                text_height,
+                colour,
+                2, // right alignment
             );
 
             text_width
@@ -298,11 +397,16 @@ impl TextRenderer {
         anchor_y: f32,
         text_width: f32,
         text_height: f32,
-        colour: u32, // [ARGB]
+        colour: u32,   // [ARGB]
+        alignment: u8, // 0=center, 1=left, 2=right
     ) {
-        // Center alignment
-        let offset_x = anchor_x - text_width / 2.;
-        let offset_y = anchor_y - text_height / 2.;
+        // Calculate offset based on alignment
+        let (offset_x, offset_y) = match alignment {
+            0 => (anchor_x - text_width / 2., anchor_y - text_height / 2.), // center
+            1 => (anchor_x, anchor_y - text_height / 2.),                   // left
+            2 => (anchor_x - text_width, anchor_y - text_height / 2.),      // right
+            _ => (anchor_x, anchor_y),
+        };
 
         let mut colour = colour as u64;
         colour = (colour | (colour << 16)) & 0x0000FFFF0000FFFF;
@@ -330,24 +434,21 @@ impl TextRenderer {
                             if alpha > 0 {
                                 let final_x = glyph_x as isize + cx as isize;
                                 let final_y = glyph_y as isize + cy as isize;
+                                let idx = final_y as usize * width as usize + final_x as usize;
 
-                                if (final_x as usize) < width && (final_y as usize) < height { // Note the cast to usize to make -'s go to fucking space so they'll fail bigger than shit and not execute?
-                                    let idx = final_y as usize * width as usize + final_x as usize;
+                                let mut bg = pixels[idx] as u64;
+                                let alpha = alpha as u64;
+                                let inv_alpha = (255 - alpha) as u64;
 
-                                    let mut bg = pixels[idx] as u64;
-                                    let alpha = alpha as u64;
-                                    let inv_alpha = (255 - alpha) as u64;
+                                bg = (bg | (bg << 16)) & 0x0000FFFF0000FFFF;
+                                bg = (bg | (bg << 8)) & 0x00FF00FF00FF00FF;
 
-                                    bg = (bg | (bg << 16)) & 0x0000FFFF0000FFFF;
-                                    bg = (bg | (bg << 8)) & 0x00FF00FF00FF00FF;
+                                let mut blended = bg * inv_alpha + colour * alpha;
 
-                                    let mut blended = bg * inv_alpha + colour * alpha;
-
-                                    blended = (blended >> 8) & 0x00FF00FF00FF00FF;
-                                    blended = (blended | (blended >> 8)) & 0x0000FFFF0000FFFF;
-                                    blended = blended | (blended >> 16);
-                                    pixels[idx] = blended as u32;
-                                }
+                                blended = (blended >> 8) & 0x00FF00FF00FF00FF;
+                                blended = (blended | (blended >> 8)) & 0x0000FFFF0000FFFF;
+                                blended = blended | (blended >> 16);
+                                pixels[idx] = blended as u32;
                             }
                         }
                     }
@@ -419,23 +520,17 @@ impl TextRenderer {
                                 // Convert back to absolute coordinates
                                 let final_x = (anchor_x + rot_x) as i32;
                                 let final_y = (anchor_y + rot_y) as i32;
+                                let offset = (final_y as usize * width as usize + final_x as usize)
+                                    * channels;
 
-                                // Check bounds and render
-                                if (final_x as u32) < width && (final_y as u32) < height {
-                                    let offset = (final_y as usize * width as usize
-                                        + final_x as usize)
-                                        * channels;
+                                let alpha_u16 = alpha as u16;
+                                let inv_alpha = 256 - alpha_u16;
 
-                                    let alpha_u16 = alpha as u16;
-                                    let inv_alpha = 256 - alpha_u16;
-
-                                    for c in 0..channels {
-                                        pixels[offset + c] = ((pixels[offset + c] as u16
-                                            * inv_alpha
-                                            + colour[c] as u16 * alpha_u16)
-                                            >> 8)
-                                            as u8;
-                                    }
+                                for c in 0..channels {
+                                    pixels[offset + c] = ((pixels[offset + c] as u16 * inv_alpha
+                                        + colour[c] as u16 * alpha_u16)
+                                        >> 8)
+                                        as u8;
                                 }
                             }
                         }
@@ -459,9 +554,12 @@ impl TextRenderer {
         buffer.set_size(&mut self.font_system, Some(10000.0), Some(size * 2.0));
         buffer.set_text(&mut self.font_system, text, &attrs, Shaping::Advanced);
 
-        // Calculate total width from layout
+        // Calculate width using glyph advances (includes spacing for spaces!)
         buffer.layout_runs().fold(0.0, |max_width, run| {
-            let run_width = run.line_w;
+            let run_width = run
+                .glyphs
+                .iter()
+                .fold(0.0, |w, glyph| (glyph.x + glyph.w).max(w));
             max_width.max(run_width)
         })
     }
@@ -569,6 +667,134 @@ impl TextRenderer {
                                         }
                                     }
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        char_width
+    }
+
+    /// Draw text range with horizontal scrolling, using additive/subtractive compositing
+    /// Automatically clips using textbox_mask (same as cursor blinking)
+    pub fn draw_text_scrollable_additive(
+        &mut self,
+        pixels: &mut [u8],
+        width: u32,
+        height: u32,
+        text: &str,
+        char_widths: &[usize],
+        start_char_index: usize,
+        end_char_index: usize,
+        x_start: f32,
+        y_center: f32,
+        size: f32,
+        weight: u16,
+        font: &str,
+        colour: [u8; 4],
+        textbox_mask: &[u8],
+        textbox_x: usize,
+        textbox_y: usize,
+        textbox_width: usize,
+        add_mode: bool,
+    ) {
+        let mut x_offset = x_start;
+        let chars: Vec<char> = text.chars().collect();
+
+        for i in start_char_index..end_char_index.min(chars.len()) {
+            let ch = chars[i];
+            self.render_char_additive(
+                pixels,
+                width,
+                height,
+                ch,
+                x_offset,
+                y_center,
+                size,
+                weight,
+                font,
+                colour,
+                textbox_mask,
+                textbox_x,
+                textbox_y,
+                textbox_width,
+                add_mode,
+            );
+            x_offset += char_widths[i] as f32;
+        }
+    }
+
+    /// Render single character with additive/subtractive compositing (u32 ARGB version)
+    /// pixel += char_alpha * mask_alpha * brightness (or -= for subtract)
+    pub fn render_char_additive_u32(
+        &mut self,
+        pixels: &mut [u32],
+        width: usize,
+        ch: char,
+        x_offset: f32,
+        y_center: f32,
+        size: f32,
+        weight: u16,
+        font: &str,
+        brightness: u8,
+        textbox_mask: &[u8],
+        add_mode: bool,
+    ) -> f32 {
+        let attrs = Attrs::new()
+            .family(Family::Name(font))
+            .weight(Weight(weight));
+
+        let mut buffer = Buffer::new(&mut self.font_system, Metrics::new(size, size));
+        buffer.set_size(&mut self.font_system, Some(size * 2.0), Some(size * 2.0));
+
+        let text = ch.to_string();
+        buffer.set_text(&mut self.font_system, &text, &attrs, Shaping::Advanced);
+
+        let mut char_width: f32 = 0.0;
+
+        for run in buffer.layout_runs() {
+            let baseline_offset = run.line_y;
+
+            if run.glyphs.is_empty() {
+                char_width = run.line_w;
+            }
+
+            for glyph in run.glyphs {
+                char_width = char_width.max(glyph.x + glyph.w);
+
+                let offset_y = y_center - size / 2.0;
+                let physical_glyph = glyph.physical((x_offset, offset_y), 1.);
+
+                if let Some(image) = self
+                    .swash_cache
+                    .get_image(&mut self.font_system, physical_glyph.cache_key)
+                {
+                    let glyph_x = physical_glyph.x + image.placement.left;
+                    let glyph_y = physical_glyph.y + baseline_offset as i32 - image.placement.top;
+
+                    let glyph_width = image.placement.width as usize;
+                    let glyph_height = image.placement.height as usize;
+
+                    for cy in 0..glyph_height {
+                        for cx in 0..glyph_width {
+                            let char_alpha = image.data[cy * glyph_width + cx];
+
+                            let final_x = glyph_x + cx as i32;
+                            let final_y = glyph_y + cy as i32;
+
+                            let idx = final_y as usize * width + final_x as usize;
+
+                            let mask_alpha = textbox_mask[idx];
+                            let contribution =
+                                ((char_alpha as u32 * mask_alpha as u32 * brightness as u32) >> 16)
+                                    * 0x00_01_01_01;
+
+                            if add_mode {
+                                pixels[idx] += contribution;
+                            } else {
+                                pixels[idx] -= contribution;
                             }
                         }
                     }

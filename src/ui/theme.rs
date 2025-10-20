@@ -21,6 +21,8 @@ pub const FILL: u32 = 0xFF_40_40_40;
 pub const FONT_HINT: u32 = 0xFF_32_3C_40;
 pub const FONT_LABEL: u32 = 0xFF_80_80_80;
 pub const CURSOR_COLOUR: u32 = 0xFF_C8_C8_C8; // Blinking text cursor
+pub const CURSOR_BRIGHTNESS: f32 = 100.; // Cursor wave brightness multiplier
+pub const TEXT_BRIGHTNESS: u8 = 0xD0;
 
 // Button colours
 pub const BUTTON_BASE: u32 = 0xFF_40_40_40;

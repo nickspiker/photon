@@ -119,6 +119,28 @@ if let Some(pixel) = pixels.get_mut(idx) {
 2. **External input should be validated** - user input, file data, network packets get bounds checks
 3. **Internal invariants should be maintained** - if your loop guarantees safety, assert it in debug builds if needed, but don't check in release
 
+## Dimensional Units
+
+**NEVER use fixed pixel values.** 20px on an 8K TV ≠ 20px on a watch. Use relative scaling:
+
+```rust
+// WRONG - fixed pixels break across displays
+let margin_pixels = 20;
+
+// CORRECT - scale to display dimensions
+let margin = box_width / 40;  // 2.5% of textbox width
+let margin = self.min_dim / 64;  // Fraction of minimum dimension
+```
+
+**Physics scales, pixels don't.** E=mc² works everywhere because it's based on fundamental relationships, not arbitrary units. Your code should too.
+
+### Universal Scaling Units (Already Available):
+- `self.min_dim` - min(width, height), universal scaling base
+- `self.perimeter` - width + height, for edge-aware calculations
+- `self.diagonal_sq` - width² + height², for distance calculations
+
+Use these. Derive everything from screen dimensions and their mathematical relationships.
+
 ## When Unsure
 
 **ASK.** Don't add "defensive" checks. If you're not sure whether a bounds check is needed:

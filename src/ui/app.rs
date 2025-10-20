@@ -1,7 +1,6 @@
 use super::renderer::Renderer;
 use super::text::TextRenderer;
 use super::theme;
-use rand::Rng;
 use winit::{
     dpi::PhysicalSize,
     event::{ElementState, KeyEvent, MouseButton},
@@ -75,8 +74,9 @@ pub struct PhotonApp {
 
     // Launch screen state
     username_input: String,
-    rendered_username: String,    // What's currently rendered on screen
     character_widths: Vec<usize>, // Width in pixels of each rendered character
+    cursor_char_index: usize,     // Cursor position in characters (0 = before first char)
+    text_scroll_char_index: usize, // First visible character index (for horizontal scrolling)
     cursor_blink_rate_ms: u64,    // System cursor blink rate in milliseconds (max for random range)
     cursor_wave_top_bright: bool, // True=top is bright, False=top is dark
     cursor_needs_init: bool,      // True when textbox just got focus, apply initial wave
@@ -180,8 +180,9 @@ impl PhotonApp {
             perimeter: w + h,
             diagonal_sq: w * w + h * h,
             username_input: String::new(),
-            rendered_username: String::new(),
             character_widths: Vec::new(),
+            cursor_char_index: 0,
+            text_scroll_char_index: 0,
             cursor_blink_rate_ms,
             cursor_wave_top_bright: false,
             cursor_needs_init: false,
@@ -253,8 +254,9 @@ impl PhotonApp {
             perimeter: w + h,
             diagonal_sq: w * w + h * h,
             username_input: String::new(),
-            rendered_username: String::new(),
             character_widths: Vec::new(),
+            cursor_char_index: 0,
+            text_scroll_char_index: 0,
             cursor_blink_rate_ms,
             cursor_wave_top_bright: false,
             cursor_needs_init: false,
@@ -385,26 +387,311 @@ impl PhotonApp {
                 return;
             }
 
+            // All text editing requires textbox focus
+            if !self.textbox_focused {
+                return;
+            }
+
+            // Track whether text content changes (not just cursor position)
+            let mut text_changed = false;
+            let mut cursor_moved = false;
+            let old_text = self.username_input.clone();
+            let old_cursor_index = self.cursor_char_index;
+
             match event.logical_key {
+                Key::Named(NamedKey::ArrowLeft) => {
+                    if self.cursor_char_index > 0 {
+                        self.cursor_char_index -= 1;
+                        cursor_moved = true;
+                    }
+                }
+                Key::Named(NamedKey::ArrowRight) => {
+                    if self.cursor_char_index < self.username_input.len() {
+                        self.cursor_char_index += 1;
+                        cursor_moved = true;
+                    }
+                }
+                Key::Named(NamedKey::Home) => {
+                    if self.cursor_char_index != 0 {
+                        self.cursor_char_index = 0;
+                        cursor_moved = true;
+                    }
+                }
+                Key::Named(NamedKey::End) => {
+                    let end_pos = self.username_input.len();
+                    if self.cursor_char_index != end_pos {
+                        self.cursor_char_index = end_pos;
+                        cursor_moved = true;
+                    }
+                }
                 Key::Named(NamedKey::Backspace) => {
-                    self.username_input.pop();
-                    self.username_available = None; // Reset availability check
+                    if self.cursor_char_index > 0 {
+                        self.username_input.remove(self.cursor_char_index - 1);
+                        self.cursor_char_index -= 1;
+                        text_changed = true;
+                        self.username_available = None;
+                    }
+                }
+                Key::Named(NamedKey::Delete) => {
+                    if self.cursor_char_index < self.username_input.len() {
+                        self.username_input.remove(self.cursor_char_index);
+                        text_changed = true;
+                        self.username_available = None;
+                    }
                 }
                 Key::Named(NamedKey::Enter) => {
                     if !self.username_input.is_empty() {
                         self.submit_username();
                     }
                 }
-                Key::Character(ref c) => {
-                    if c.chars()
-                        .all(|ch| ch.is_alphanumeric() || ch == '_' || ch == '-')
-                    {
-                        // Only allow alphanumeric and basic chars for username
-                        self.username_input.push_str(c);
-                        self.username_available = None; // Reset availability check
-                    }
-                }
                 _ => {}
+            }
+
+            // Handle text input using event.text field (includes space and all printable chars)
+            if let Some(text) = &event.text {
+                for ch in text.chars() {
+                    self.username_input.insert(self.cursor_char_index, ch);
+                    self.cursor_char_index += 1;
+                }
+                text_changed = true;
+                self.username_available = None;
+            }
+
+            // If text changed, do differential rendering
+            if text_changed {
+                eprintln!("TEXT CHANGED: '{}' -> '{}'", old_text, self.username_input);
+
+                // Calculate OLD cursor position before changing anything
+                let margin = self.min_dim / 8;
+                let box_width = self.width as usize - margin * 2;
+                let box_height = self.min_dim / 8;
+                let center_x = self.width as usize / 2;
+                let center_y = self.height as usize * 4 / 7;
+
+                // Old cursor position (using old character_widths which still matches old_text)
+                let old_cursor_pixel_x =
+                    if !old_text.is_empty() && old_cursor_index <= self.character_widths.len() {
+                        let old_cursor_pixel_offset: usize =
+                            self.character_widths[..old_cursor_index].iter().sum();
+                        let old_scroll_pixel_offset: usize = self.character_widths
+                            [..self.text_scroll_char_index]
+                            .iter()
+                            .sum();
+                        let textbox_left = center_x - box_width / 2;
+                        textbox_left + old_cursor_pixel_offset - old_scroll_pixel_offset
+                    } else {
+                        center_x
+                    };
+                let old_cursor_pixel_y = (center_y as f32 - box_height as f32 * 0.25) as usize;
+                let old_cursor_height = box_height as f32 * 0.5;
+
+                // Recalculate char widths for new text
+                self.recalculate_char_widths();
+
+                // Update scroll if needed
+                self.update_text_scroll(box_width);
+
+                // Update cursor pixel position
+                self.update_cursor_position();
+
+                // Prepare data needed for rendering (before locking buffer)
+                let center_x = self.width as usize / 2;
+                let center_y = self.height as usize * 4 / 7;
+                let font_size = box_height as f32 * 0.5;
+                let text_scroll_index = self.text_scroll_char_index;
+                let char_widths = self.character_widths.clone();
+                let textbox_mask = self.textbox_mask.clone();
+                let new_text = self.username_input.clone();
+                let width = self.width as usize;
+                let height = self.height as usize;
+
+                // Helper closure to render text (captures prepared data)
+                let render_text =
+                    |pixels: &mut [u32],
+                     text: &str,
+                     add_mode: bool,
+                     text_renderer: &mut TextRenderer| {
+                        if text.is_empty() {
+                            return;
+                        }
+
+                        let chars: Vec<char> = text.chars().collect();
+                        let char_widths: Vec<usize> = chars
+                            .iter()
+                            .map(|&ch| {
+                                text_renderer.measure_text_width(
+                                    &ch.to_string(),
+                                    font_size,
+                                    500,
+                                    theme::FONT_USER_CONTENT,
+                                ) as usize
+                            })
+                            .collect();
+
+                        let total_width: usize = char_widths.iter().sum();
+                        let text_start_x = if total_width <= box_width {
+                            center_x as f32 - (total_width as f32 / 2.0)
+                        } else {
+                            let scroll_pixel_offset: usize = char_widths
+                                [..text_scroll_index.min(char_widths.len())]
+                                .iter()
+                                .sum();
+                            let textbox_left = center_x - box_width / 2;
+                            textbox_left as f32 - scroll_pixel_offset as f32
+                        };
+
+                        let mut x_offset = text_start_x;
+
+                        for &ch in &chars {
+                            let actual_width = text_renderer.render_char_additive_u32(
+                                pixels,
+                                width,
+                                ch,
+                                x_offset,
+                                center_y as f32,
+                                font_size,
+                                500,
+                                theme::FONT_USER_CONTENT,
+                                theme::TEXT_BRIGHTNESS,
+                                &textbox_mask,
+                                add_mode,
+                            );
+                            x_offset += actual_width;
+                        }
+                    };
+
+                // Now lock buffer and do rendering
+                let mut buffer = self.renderer.lock_buffer();
+                let pixels = buffer.as_mut();
+
+                // Subtract old cursor first (if it exists)
+                if self.cursor_wave_top_bright {
+                    Self::sub_cursor_top(
+                        pixels,
+                        self.width as usize,
+                        old_cursor_pixel_x as f32,
+                        old_cursor_pixel_y as f32,
+                        old_cursor_height,
+                    );
+                } else {
+                    Self::sub_cursor_bottom(
+                        pixels,
+                        self.width as usize,
+                        old_cursor_pixel_x as f32,
+                        old_cursor_pixel_y as f32,
+                        old_cursor_height,
+                    );
+                }
+
+                // Subtract old text
+                render_text(pixels, &old_text, false, &mut self.text_renderer);
+
+                // Add new text
+                render_text(pixels, &new_text, true, &mut self.text_renderer);
+
+                // Add new cursor at new position (same blink state)
+                if self.cursor_wave_top_bright {
+                    Self::add_cursor_top(
+                        pixels,
+                        self.width as usize,
+                        self.cursor_pixel_x as f32,
+                        self.cursor_pixel_y as f32,
+                        self.cursor_height,
+                    );
+                } else {
+                    Self::add_cursor_bottom(
+                        pixels,
+                        self.width as usize,
+                        self.cursor_pixel_x as f32,
+                        self.cursor_pixel_y as f32,
+                        self.cursor_height,
+                    );
+                }
+
+                // Present buffer
+                buffer.present().unwrap();
+            } else if cursor_moved && !text_changed {
+                // Cursor moved but text didn't change
+                eprintln!(
+                    "CURSOR MOVED: {} -> {}",
+                    old_cursor_index, self.cursor_char_index
+                );
+
+                // Calculate old cursor position
+                let margin = self.min_dim / 8;
+                let box_width = self.width as usize - margin * 2;
+                let box_height = self.min_dim / 8;
+                let center_x = self.width as usize / 2;
+                let center_y = self.height as usize * 4 / 7;
+
+                let old_cursor_pixel_offset: usize = if !self.username_input.is_empty()
+                    && old_cursor_index <= self.character_widths.len()
+                {
+                    self.character_widths[..old_cursor_index].iter().sum()
+                } else {
+                    0
+                };
+                let scroll_pixel_offset: usize = self.character_widths
+                    [..self.text_scroll_char_index]
+                    .iter()
+                    .sum();
+                let textbox_left = center_x - box_width / 2;
+                let old_cursor_pixel_x = if !self.username_input.is_empty() {
+                    textbox_left + old_cursor_pixel_offset - scroll_pixel_offset
+                } else {
+                    center_x
+                };
+                let cursor_pixel_y = (center_y as f32 - box_height as f32 * 0.25) as usize;
+                let cursor_height = box_height as f32 * 0.5;
+
+                // Update text scroll and cursor position for new location
+                self.update_text_scroll(box_width);
+                self.update_cursor_position();
+
+                // Lock buffer and move cursor
+                let mut buffer = self.renderer.lock_buffer();
+                let pixels = buffer.as_mut();
+
+                // Subtract cursor at old position (maintaining blink state)
+                if self.cursor_wave_top_bright {
+                    Self::sub_cursor_top(
+                        pixels,
+                        self.width as usize,
+                        old_cursor_pixel_x as f32,
+                        cursor_pixel_y as f32,
+                        cursor_height,
+                    );
+                } else {
+                    Self::sub_cursor_bottom(
+                        pixels,
+                        self.width as usize,
+                        old_cursor_pixel_x as f32,
+                        cursor_pixel_y as f32,
+                        cursor_height,
+                    );
+                }
+
+                // Add cursor at new position (same blink state)
+                if self.cursor_wave_top_bright {
+                    Self::add_cursor_top(
+                        pixels,
+                        self.width as usize,
+                        self.cursor_pixel_x as f32,
+                        self.cursor_pixel_y as f32,
+                        self.cursor_height,
+                    );
+                } else {
+                    Self::add_cursor_bottom(
+                        pixels,
+                        self.width as usize,
+                        self.cursor_pixel_x as f32,
+                        self.cursor_pixel_y as f32,
+                        self.cursor_height,
+                    );
+                }
+
+                // Present buffer
+                buffer.present().unwrap();
             }
         }
     }
@@ -441,7 +728,11 @@ impl PhotonApp {
                             // Focus the textbox
                             self.textbox_focused = true;
                             self.cursor_needs_init = true;
-                            // Don't need full redraw, just present when cursor changes
+                            self.cursor_char_index = self.username_input.len();
+                            self.text_scroll_char_index = 0;
+                            if !self.username_input.is_empty() {
+                                self.recalculate_char_widths();
+                            }
                             return;
                         }
                         _ => {
@@ -497,6 +788,87 @@ impl PhotonApp {
         // Clear hover state when cursor leaves window
         // Hover change will be handled in render()
         self.hovered_button = HoveredButton::None;
+    }
+
+    fn recalculate_char_widths(&mut self) {
+        self.character_widths.clear();
+
+        let box_height = self.min_dim as f32 / 12.0;
+        let font_size = box_height * 0.5;
+
+        for ch in self.username_input.chars() {
+            let width = self.text_renderer.measure_text_width(
+                &ch.to_string(),
+                font_size,
+                500,
+                theme::FONT_USER_CONTENT,
+            );
+            self.character_widths.push(width as usize);
+        }
+    }
+
+    fn update_text_scroll(&mut self, textbox_width: usize) {
+        if self.username_input.is_empty() {
+            self.text_scroll_char_index = 0;
+            return;
+        }
+
+        let cursor_pixel_offset: usize =
+            self.character_widths[..self.cursor_char_index].iter().sum();
+        let scroll_pixel_offset: usize = self.character_widths[..self.text_scroll_char_index]
+            .iter()
+            .sum();
+
+        let margin = textbox_width / 40;
+        let visible_width = textbox_width.saturating_sub(margin * 2);
+
+        let cursor_in_view = cursor_pixel_offset - scroll_pixel_offset;
+
+        if cursor_in_view < margin {
+            while self.text_scroll_char_index > 0 {
+                let scroll_offset: usize = self.character_widths[..self.text_scroll_char_index - 1]
+                    .iter()
+                    .sum();
+                let new_cursor_in_view = cursor_pixel_offset - scroll_offset;
+                if new_cursor_in_view >= margin {
+                    break;
+                }
+                self.text_scroll_char_index -= 1;
+            }
+        } else if cursor_in_view > visible_width {
+            while self.text_scroll_char_index < self.username_input.len() {
+                self.text_scroll_char_index += 1;
+                let scroll_offset: usize = self.character_widths[..self.text_scroll_char_index]
+                    .iter()
+                    .sum();
+                let new_cursor_in_view = cursor_pixel_offset - scroll_offset;
+                if new_cursor_in_view <= visible_width {
+                    break;
+                }
+            }
+        }
+    }
+
+    fn update_cursor_position(&mut self) {
+        let margin = self.min_dim / 8;
+        let box_width = self.width as usize - margin * 2;
+        let box_height = self.min_dim / 8;
+        let center_x = self.width as usize / 2;
+        let center_y = self.height as usize * 4 / 7;
+
+        if !self.username_input.is_empty() {
+            let cursor_pixel_offset: usize =
+                self.character_widths[..self.cursor_char_index].iter().sum();
+            let scroll_pixel_offset: usize = self.character_widths[..self.text_scroll_char_index]
+                .iter()
+                .sum();
+            let textbox_left = center_x - box_width / 2;
+            self.cursor_pixel_x = textbox_left + cursor_pixel_offset - scroll_pixel_offset;
+        } else {
+            self.cursor_pixel_x = center_x;
+        }
+        self.cursor_pixel_y = (center_y as f32 - box_height as f32 * 0.25) as usize;
+        self.cursor_height = box_height as f32 * 0.5;
     }
 
     pub fn handle_mouse_move(
@@ -692,6 +1064,15 @@ impl PhotonApp {
     }
 
     fn submit_username(&mut self) {
+        // TODO: Implement semantic embedding for discovery
+        // Username -> Hash (identity/keys) + Embedding vector (semantic search, opt-in)
+        // Embedding platform: SentenceTransformers (all-MiniLM-L6-v2, ~80MB, 384-dim)
+        // Store on DHT: hash=identity, embedding=public discovery vector
+        log::warn!(
+            "⚠️  SEMANTIC EMBEDDING NOT IMPLEMENTED - Username discovery will be hash-only!"
+        );
+        log::warn!("⚠️  TODO: Add semantic embedding for fuzzy username search");
+
         // TODO: Query DHT for username availability
         log::info!("Submitting username: {}", self.username_input);
 
@@ -702,6 +1083,13 @@ impl PhotonApp {
     pub fn render(&mut self) {
         // Increment render counter
         self.render_counter += 1;
+
+        // Update text scroll before locking buffer (needs mutable self)
+        if self.needs_redraw && !self.username_input.is_empty() {
+            let margin = self.min_dim / 8;
+            let box_width = self.width as usize - margin * 2;
+            self.update_text_scroll(box_width);
+        }
 
         // Always lock buffer once per frame
         let mut buffer = self.renderer.lock_buffer();
@@ -792,8 +1180,10 @@ impl PhotonApp {
             let center_x = self.width as usize / 2;
             let center_y = self.height as usize * 4 / 7;
 
-            // Fill mask with anti-aliased squircle (255=inside, 0=outside)
-            Self::fill_textbox_mask(
+            // Draw textbox (fills pixels, hit_test_map, and textbox_mask in one pass)
+            Self::draw_textbox(
+                pixels,
+                &mut self.hit_test_map,
                 &mut self.textbox_mask,
                 self.width as usize,
                 self.height as usize,
@@ -803,20 +1193,9 @@ impl PhotonApp {
                 box_height,
             );
 
-            Self::draw_textbox(
-                pixels,
-                &mut self.hit_test_map,
-                self.width as usize,
-                self.height as usize,
-                center_x,
-                center_y,
-                box_width,
-                box_height,
-            );
-
             // 3. Draw text
-            // Infinity placeholder inside the box (only if username is empty)
-            if self.username_input.is_empty() {
+            // Infinity placeholder inside the box (only if username is empty AND not focused)
+            if self.username_input.is_empty() && !self.textbox_focused {
                 self.text_renderer.draw_text_center_u32(
                     pixels,
                     self.width as usize,
@@ -829,35 +1208,60 @@ impl PhotonApp {
                     theme::FONT_HINT,
                     theme::FONT_USER_CONTENT,
                 );
-            } else {
-                // Draw the user's typed text
-                self.text_renderer.draw_text_center_u32(
-                    pixels,
-                    self.width as usize,
-                    self.height as usize,
-                    &self.username_input, // It gets... complicated?
-                    center_x as f32,
-                    center_y as f32,
-                    box_height as f32 * 0.5,
-                    500,        // Thin weight
-                    0xFFFFFFFF, // White text (ARGB)
-                    theme::FONT_USER_CONTENT,
-                );
+            } else if !self.username_input.is_empty() {
+                // Calculate total text width for centering
+                let total_text_width: usize = self.character_widths.iter().sum();
+
+                // Keep text centered until it exceeds textbox width
+                let text_start_x = if total_text_width <= box_width {
+                    // Center text
+                    center_x as f32 - (total_text_width as f32 / 2.0)
+                } else {
+                    // Text overflow - use scroll offset
+                    let scroll_pixel_offset: usize = self.character_widths
+                        [..self.text_scroll_char_index]
+                        .iter()
+                        .sum();
+                    let textbox_left = center_x - box_width / 2;
+                    textbox_left as f32 - scroll_pixel_offset as f32
+                };
+
+                // Draw all characters using additive compositing
+                let chars: Vec<char> = self.username_input.chars().collect();
+                let mut x_offset = text_start_x;
+                let font_size = box_height as f32 * 0.5;
+
+                for i in 0..chars.len() {
+                    let actual_width = self.text_renderer.render_char_additive_u32(
+                        pixels,
+                        self.width as usize,
+                        chars[i],
+                        x_offset,
+                        center_y as f32,
+                        font_size,
+                        500,
+                        theme::FONT_USER_CONTENT,
+                        theme::TEXT_BRIGHTNESS,
+                        &self.textbox_mask,
+                        true,
+                    );
+                    x_offset += actual_width;
+                }
             }
 
-            // Update cursor position for blinking (after text)
-            let text_to_measure = if self.username_input.is_empty() {
-                ""
+            // Update cursor position for blinking
+            if !self.username_input.is_empty() {
+                let cursor_pixel_offset: usize =
+                    self.character_widths[..self.cursor_char_index].iter().sum();
+                let scroll_pixel_offset: usize = self.character_widths
+                    [..self.text_scroll_char_index]
+                    .iter()
+                    .sum();
+                let textbox_left = center_x - box_width / 2;
+                self.cursor_pixel_x = textbox_left + cursor_pixel_offset - scroll_pixel_offset;
             } else {
-                &self.username_input
-            };
-            let text_width = self.text_renderer.measure_text_width(
-                text_to_measure,
-                box_height as f32 * 0.5,
-                500,
-                theme::FONT_USER_CONTENT,
-            );
-            self.cursor_pixel_x = (center_x as f32 + text_width / 2.0) as usize;
+                self.cursor_pixel_x = center_x;
+            }
             self.cursor_pixel_y = (center_y as f32 - box_height as f32 * 0.25) as usize;
             self.cursor_height = box_height as f32 * 0.5;
 
@@ -904,6 +1308,7 @@ impl PhotonApp {
             }
 
             self.needs_redraw = false;
+            self.render_counter = 0; // Reset frame counter after full redraw
 
             // After full redraw, pixel lists are rebuilt - reset prev_hovered to force hover reapply
             self.prev_hovered_button = HoveredButton::None;
@@ -1066,7 +1471,7 @@ impl PhotonApp {
             self.height as usize,
             &redraw_text,
             counter_size,
-            self.height as f32 - counter_size*2.,
+            self.height as f32 - counter_size * 2.,
             counter_size,
             400,
             0xFFFFFFFF,
@@ -1080,7 +1485,7 @@ impl PhotonApp {
             self.height as usize,
             &render_text,
             self.width as f32 - counter_size,
-            self.height as f32 - counter_size*2.,
+            self.height as f32 - counter_size * 2.,
             counter_size,
             400,
             0xFFFFFFFF,
@@ -1100,17 +1505,16 @@ impl PhotonApp {
     ) {
         let x = cursor_x as usize;
         let y_start = cursor_top as usize;
-        let y_center = (cursor_top + cursor_height / 2.) as usize;
+        let y_end = (cursor_top + cursor_height) as usize;
         let half_height = cursor_height / 2.;
 
-        // Top half: wave_phase=true means add, false means subtract
-        for y in y_start..y_center {
+        for y in y_start..y_end {
             let idx = y * window_width + x;
 
-            // Map to [-1, 0] range for top half
+            // Map to [-1, 1] range for full cursor
             let t = (y as f32 - cursor_top - half_height) / half_height;
 
-            let wave = (t * t * t - t) * 612.;
+            let wave = (1. - t * t) * (1. + t) * (1. + t) * theme::CURSOR_BRIGHTNESS;
             pixels[idx] += 0x00010101 * wave as u32;
         }
     }
@@ -1123,17 +1527,17 @@ impl PhotonApp {
         cursor_height: f32,
     ) {
         let x = cursor_x as usize;
-        let y_center = (cursor_top + cursor_height / 2.) as usize;
+        let y_start = cursor_top as usize;
         let y_end = (cursor_top + cursor_height) as usize;
         let half_height = cursor_height / 2.;
 
-        for y in y_center..y_end {
+        for y in y_start..y_end {
             let idx = y * window_width + x;
 
-            // Map to [0, 1] range for bottom half
+            // Map to [-1, 1] range for full cursor
             let t = (y as f32 - cursor_top - half_height) / half_height;
 
-            let wave = (t * t * t - t) * -612.;
+            let wave = (1. - t * t) * (1. - t) * (1. - t) * theme::CURSOR_BRIGHTNESS;
             pixels[idx] += 0x00010101 * wave as u32;
         }
     }
@@ -1147,13 +1551,13 @@ impl PhotonApp {
     ) {
         let x = cursor_x as usize;
         let y_start = cursor_top as usize;
-        let y_center = (cursor_top + cursor_height / 2.) as usize;
+        let y_end = (cursor_top + cursor_height) as usize;
         let half_height = cursor_height / 2.;
 
-        for y in y_start..y_center {
+        for y in y_start..y_end {
             let idx = y * window_width + x;
             let t = (y as f32 - cursor_top - half_height) / half_height;
-            let wave = (t * t * t - t) * 612.;
+            let wave = (1. - t * t) * (1. + t) * (1. + t) * theme::CURSOR_BRIGHTNESS;
             pixels[idx] -= 0x00010101 * wave as u32;
         }
     }
@@ -1166,15 +1570,71 @@ impl PhotonApp {
         cursor_height: f32,
     ) {
         let x = cursor_x as usize;
-        let y_center = (cursor_top + cursor_height / 2.) as usize;
+        let y_start = cursor_top as usize;
         let y_end = (cursor_top + cursor_height) as usize;
         let half_height = cursor_height / 2.;
 
-        for y in y_center..y_end {
+        for y in y_start..y_end {
             let idx = y * window_width + x;
             let t = (y as f32 - cursor_top - half_height) / half_height;
-            let wave = (t * t * t - t) * -612.;
+            let wave = (1. - t * t) * (1. - t) * (1. - t) * theme::CURSOR_BRIGHTNESS;
             pixels[idx] -= 0x00010101 * wave as u32;
+        }
+    }
+
+    /// Render text string at textbox position using additive/subtractive rendering
+    fn render_text_differential(&mut self, pixels: &mut [u32], text: &str, add_mode: bool) {
+        if text.is_empty() {
+            return;
+        }
+
+        let margin = self.min_dim / 8;
+        let box_width = self.width as usize - margin * 2;
+        let box_height = self.min_dim / 8;
+        let center_x = self.width as usize / 2;
+        let center_y = self.height as usize * 4 / 7;
+
+        let chars: Vec<char> = text.chars().collect();
+        let char_widths: Vec<usize> = chars
+            .iter()
+            .map(|&ch| {
+                self.text_renderer.measure_text_width(
+                    &ch.to_string(),
+                    box_height as f32 * 0.5,
+                    500,
+                    theme::FONT_USER_CONTENT,
+                ) as usize
+            })
+            .collect();
+
+        let total_width: usize = char_widths.iter().sum();
+        let text_start_x = if total_width <= box_width {
+            center_x as f32 - (total_width as f32 / 2.0)
+        } else {
+            let scroll_pixel_offset: usize =
+                char_widths[..self.text_scroll_char_index].iter().sum();
+            let textbox_left = center_x - box_width / 2;
+            textbox_left as f32 - scroll_pixel_offset as f32
+        };
+
+        let mut x_offset = text_start_x;
+        let font_size = box_height as f32 * 0.5;
+
+        for &ch in &chars {
+            let actual_width = self.text_renderer.render_char_additive_u32(
+                pixels,
+                self.width as usize,
+                ch,
+                x_offset,
+                center_y as f32,
+                font_size,
+                500,
+                theme::FONT_USER_CONTENT,
+                theme::TEXT_BRIGHTNESS,
+                &self.textbox_mask,
+                add_mode,
+            );
+            x_offset += actual_width;
         }
     }
 
@@ -2196,6 +2656,7 @@ impl PhotonApp {
     fn draw_textbox(
         pixels: &mut [u32],
         hit_test_map: &mut [u8],
+        textbox_mask: &mut [u8],
         window_width: usize,
         _window_height: usize,
         center_x: usize,
@@ -2203,6 +2664,9 @@ impl PhotonApp {
         box_width: usize,
         box_height: usize,
     ) {
+        // Clear mask first
+        textbox_mask.fill(0);
+
         // Convert from center coordinates to top-left
         let x = center_x - box_width / 2;
         let y = center_y - box_height / 2;
@@ -2255,6 +2719,7 @@ impl PhotonApp {
             let idx = idx + 1;
             pixels[idx] = blend_rgb_only(light_colour, fill_colour, l, h);
             hit_test_map[idx] = HIT_HANDLE_TEXTBOX;
+            textbox_mask[idx] = h;
 
             // Fill horizontally to the diagonal (where horizontal edge would be)
             let diag_x = (x + radius as usize - i).min(window_width);
@@ -2262,6 +2727,7 @@ impl PhotonApp {
                 let idx = py * window_width + fill_x;
                 pixels[idx] = fill_colour;
                 hit_test_map[idx] = HIT_HANDLE_TEXTBOX;
+                textbox_mask[idx] = 255;
             }
 
             // Horizontal edge - Outer antialiased pixel
@@ -2275,6 +2741,7 @@ impl PhotonApp {
             let idx = (hy + 1) * window_width + hx;
             pixels[idx] = blend_rgb_only(light_colour, fill_colour, l, h);
             hit_test_map[idx] = HIT_HANDLE_TEXTBOX;
+            textbox_mask[idx] = h;
 
             // Fill vertically down from horizontal edge to diagonal
             // Diagonal is where the vertical edge is at this same iteration
@@ -2283,6 +2750,7 @@ impl PhotonApp {
                 let idx = fill_y * window_width + hx;
                 pixels[idx] = fill_colour;
                 hit_test_map[idx] = HIT_HANDLE_TEXTBOX;
+                textbox_mask[idx] = 255;
             }
         }
 
@@ -2303,6 +2771,7 @@ impl PhotonApp {
             let idx = idx - 1;
             pixels[idx] = blend_rgb_only(shadow_colour, fill_colour, l, h);
             hit_test_map[idx] = HIT_HANDLE_TEXTBOX;
+            textbox_mask[idx] = h;
 
             // Fill horizontally to the diagonal
             let diag_x = x + box_width - 1 - radius as usize + i;
@@ -2310,6 +2779,7 @@ impl PhotonApp {
                 let idx = py * window_width + fill_x;
                 pixels[idx] = fill_colour;
                 hit_test_map[idx] = HIT_HANDLE_TEXTBOX;
+                textbox_mask[idx] = 255;
             }
 
             // Horizontal edge - Outer antialiased pixel
@@ -2323,6 +2793,7 @@ impl PhotonApp {
             let idx = (hy + 1) * window_width + hx;
             pixels[idx] = blend_rgb_only(light_colour, fill_colour, l, h);
             hit_test_map[idx] = HIT_HANDLE_TEXTBOX;
+            textbox_mask[idx] = h;
 
             // Fill vertically down from horizontal edge to diagonal
             let diag_y = y + radius as usize - i;
@@ -2330,6 +2801,7 @@ impl PhotonApp {
                 let idx = fill_y * window_width + hx;
                 pixels[idx] = fill_colour;
                 hit_test_map[idx] = HIT_HANDLE_TEXTBOX;
+                textbox_mask[idx] = 255;
             }
         }
 
@@ -2350,6 +2822,7 @@ impl PhotonApp {
             let idx = idx + 1;
             pixels[idx] = blend_rgb_only(light_colour, fill_colour, l, h);
             hit_test_map[idx] = HIT_HANDLE_TEXTBOX;
+            textbox_mask[idx] = h;
 
             // Fill horizontally to the diagonal
             let diag_x = (x + radius as usize - i).min(window_width);
@@ -2357,6 +2830,7 @@ impl PhotonApp {
                 let idx = py * window_width + fill_x;
                 pixels[idx] = fill_colour;
                 hit_test_map[idx] = HIT_HANDLE_TEXTBOX;
+                textbox_mask[idx] = 255;
             }
 
             // Horizontal edge - Outer antialiased pixel
@@ -2370,6 +2844,7 @@ impl PhotonApp {
             let idx = (hy - 1) * window_width + hx;
             pixels[idx] = blend_rgb_only(shadow_colour, fill_colour, l, h);
             hit_test_map[idx] = HIT_HANDLE_TEXTBOX;
+            textbox_mask[idx] = h;
 
             // Fill vertically up from horizontal edge to diagonal
             let diag_y = y + box_height - radius as usize + i;
@@ -2377,6 +2852,7 @@ impl PhotonApp {
                 let idx = fill_y * window_width + hx;
                 pixels[idx] = fill_colour;
                 hit_test_map[idx] = HIT_HANDLE_TEXTBOX;
+                textbox_mask[idx] = 255;
             }
         }
 
@@ -2397,6 +2873,7 @@ impl PhotonApp {
             let idx = idx - 1;
             pixels[idx] = blend_rgb_only(shadow_colour, fill_colour, l, h);
             hit_test_map[idx] = HIT_HANDLE_TEXTBOX;
+            textbox_mask[idx] = h;
 
             // Fill horizontally to the diagonal
             let diag_x = x + box_width - 1 - radius as usize + i;
@@ -2404,6 +2881,7 @@ impl PhotonApp {
                 let idx = py * window_width + fill_x;
                 pixels[idx] = fill_colour;
                 hit_test_map[idx] = HIT_HANDLE_TEXTBOX;
+                textbox_mask[idx] = 255;
             }
 
             // Horizontal edge - Outer antialiased pixel
@@ -2417,6 +2895,7 @@ impl PhotonApp {
             let idx = (hy - 1) * window_width + hx;
             pixels[idx] = blend_rgb_only(shadow_colour, fill_colour, l, h);
             hit_test_map[idx] = HIT_HANDLE_TEXTBOX;
+            textbox_mask[idx] = h;
 
             // Fill vertically up from horizontal edge to diagonal
             let diag_y = y + box_height - radius as usize + i;
@@ -2424,6 +2903,7 @@ impl PhotonApp {
                 let idx = fill_y * window_width + hx;
                 pixels[idx] = fill_colour;
                 hit_test_map[idx] = HIT_HANDLE_TEXTBOX;
+                textbox_mask[idx] = 255;
             }
         }
 
@@ -2454,6 +2934,7 @@ impl PhotonApp {
                     let idx = py * window_width + px;
                     pixels[idx] = fill_colour;
                     hit_test_map[idx] = HIT_HANDLE_TEXTBOX;
+                    textbox_mask[idx] = 255;
                 }
             }
         } else {
@@ -2480,142 +2961,7 @@ impl PhotonApp {
                     let idx = py * window_width + px;
                     pixels[idx] = fill_colour;
                     hit_test_map[idx] = HIT_HANDLE_TEXTBOX;
-                }
-            }
-        }
-    }
-
-    /// Fill textbox_mask with anti-aliased squircle (255=inside, 0=outside)
-    fn fill_textbox_mask(
-        mask: &mut [u8],
-        window_width: usize,
-        _window_height: usize,
-        center_x: usize,
-        center_y: usize,
-        box_width: usize,
-        box_height: usize,
-    ) {
-        // Clear mask first
-        mask.fill(0);
-
-        let x = center_x - box_width / 2;
-        let y = center_y - box_height / 2;
-        let radius = (box_width.min(box_height) / 2) as f32;
-        let squirdleyness = 3;
-
-        // Generate crossings (same as draw_textbox)
-        let mut crossings: Vec<(u16, u8, u8)> = Vec::new();
-        let mut offset = 0f32;
-
-        loop {
-            let y_norm = offset / radius;
-            let x_norm = (1. - y_norm.powi(squirdleyness)).powf(1. / squirdleyness as f32);
-            let x = x_norm * radius;
-            let inset = radius - x;
-
-            if inset >= 0. {
-                let l = (inset.fract().sqrt() * 256.) as u8;
-                let h = ((1. - inset.fract()).sqrt() * 256.) as u8;
-                crossings.push((inset as u16, l, h));
-            }
-
-            if x < offset {
-                break;
-            }
-
-            offset += 1.;
-        }
-
-        // Fill corners with anti-aliasing
-        for (i, &(inset, _l, h)) in crossings.iter().enumerate() {
-            if inset as usize > i {
-                break;
-            }
-
-            // Top-left corner
-            let py = y + radius as usize - i;
-            let px = x + inset as usize;
-            mask[py * window_width + px] = h;
-            let diag_x = (x + radius as usize - i).min(window_width);
-            for fill_x in (px + 1)..=diag_x {
-                mask[py * window_width + fill_x] = 255;
-            }
-
-            let hx = x + radius as usize - i;
-            let hy = y + inset as usize;
-            mask[hy * window_width + hx] = h;
-            let diag_y = y + radius as usize - i;
-            for fill_y in (hy + 1)..diag_y {
-                mask[fill_y * window_width + hx] = 255;
-            }
-
-            // Top-right corner
-            let px = x + box_width - 1 - inset as usize;
-            mask[py * window_width + px] = h;
-            let diag_x = x + box_width - 1 - radius as usize + i;
-            for fill_x in diag_x..px {
-                mask[py * window_width + fill_x] = 255;
-            }
-
-            let hx = x + box_width - 1 - radius as usize + i;
-            mask[hy * window_width + hx] = h;
-            for fill_y in (hy + 1)..diag_y {
-                mask[fill_y * window_width + hx] = 255;
-            }
-
-            // Bottom-left corner
-            let py = y + box_height - radius as usize + i;
-            let px = x + inset as usize;
-            mask[py * window_width + px] = h;
-            let diag_x = (x + radius as usize - i).min(window_width);
-            for fill_x in (px + 1)..=diag_x {
-                mask[py * window_width + fill_x] = 255;
-            }
-
-            let hx = x + radius as usize - i;
-            let hy = y + box_height - inset as usize;
-            mask[hy * window_width + hx] = h;
-            let diag_y = y + box_height - radius as usize + i;
-            for fill_y in (diag_y + 1)..hy {
-                mask[fill_y * window_width + hx] = 255;
-            }
-
-            // Bottom-right corner
-            let px = x + box_width - 1 - inset as usize;
-            mask[py * window_width + px] = h;
-            let diag_x = x + box_width - 1 - radius as usize + i;
-            for fill_x in diag_x..px {
-                mask[py * window_width + fill_x] = 255;
-            }
-
-            let hx = x + box_width - 1 - radius as usize + i;
-            mask[hy * window_width + hx] = h;
-            for fill_y in (diag_y + 1)..hy {
-                mask[fill_y * window_width + hx] = 255;
-            }
-        }
-
-        // Fill center and straight edges
-        let radius_int = radius as usize;
-
-        if box_width > box_height {
-            // Fat box - include top/bottom edges
-            let left_edge = x + radius_int;
-            let right_edge = x + box_width - radius_int;
-
-            for py in y..=(y + box_height) {
-                for px in left_edge..right_edge {
-                    mask[py * window_width + px] = 255;
-                }
-            }
-        } else {
-            // Skinny box - include left/right edges
-            let top_edge = y + radius_int;
-            let bottom_edge = y + box_height - radius_int;
-
-            for py in top_edge..bottom_edge {
-                for px in x..=(x + box_width - 1) {
-                    mask[py * window_width + px] = 255;
+                    textbox_mask[idx] = 255;
                 }
             }
         }
