@@ -1,4 +1,6 @@
-use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, SwashCache, Weight};
+use cosmic_text::{
+    Attrs, Buffer, Family, FontSystem, Metrics, Shaping, SwashCache, Weight,
+};
 
 pub struct TextRenderer {
     font_system: FontSystem,
@@ -21,25 +23,105 @@ impl TextRenderer {
         db.load_font_data(include_bytes!("../../assets/Oxanium/Oxanium-ExtraBold.ttf").to_vec());
 
         // Load Josefin Slab (for OS/UI elements)
-        db.load_font_data(include_bytes!("../../assets/Josefin_Slab/static/JosefinSlab-Thin.ttf").to_vec());
-        db.load_font_data(include_bytes!("../../assets/Josefin_Slab/static/JosefinSlab-ExtraLight.ttf").to_vec());
-        db.load_font_data(include_bytes!("../../assets/Josefin_Slab/static/JosefinSlab-Light.ttf").to_vec());
-        db.load_font_data(include_bytes!("../../assets/Josefin_Slab/static/JosefinSlab-Regular.ttf").to_vec());
-        db.load_font_data(include_bytes!("../../assets/Josefin_Slab/static/JosefinSlab-Medium.ttf").to_vec());
-        db.load_font_data(include_bytes!("../../assets/Josefin_Slab/static/JosefinSlab-SemiBold.ttf").to_vec());
-        db.load_font_data(include_bytes!("../../assets/Josefin_Slab/static/JosefinSlab-Bold.ttf").to_vec());
+        db.load_font_data(
+            include_bytes!("../../assets/Josefin_Slab/static/JosefinSlab-Thin.ttf").to_vec(),
+        );
+        db.load_font_data(
+            include_bytes!("../../assets/Josefin_Slab/static/JosefinSlab-ExtraLight.ttf").to_vec(),
+        );
+        db.load_font_data(
+            include_bytes!("../../assets/Josefin_Slab/static/JosefinSlab-Light.ttf").to_vec(),
+        );
+        db.load_font_data(
+            include_bytes!("../../assets/Josefin_Slab/static/JosefinSlab-Regular.ttf").to_vec(),
+        );
+        db.load_font_data(
+            include_bytes!("../../assets/Josefin_Slab/static/JosefinSlab-Medium.ttf").to_vec(),
+        );
+        db.load_font_data(
+            include_bytes!("../../assets/Josefin_Slab/static/JosefinSlab-SemiBold.ttf").to_vec(),
+        );
+        db.load_font_data(
+            include_bytes!("../../assets/Josefin_Slab/static/JosefinSlab-Bold.ttf").to_vec(),
+        );
 
         // Load Open Sans (for user-generated content)
-        db.load_font_data(include_bytes!("../../assets/Open_Sans/static/OpenSans-Light.ttf").to_vec());
-        db.load_font_data(include_bytes!("../../assets/Open_Sans/static/OpenSans-Regular.ttf").to_vec());
-        db.load_font_data(include_bytes!("../../assets/Open_Sans/static/OpenSans-Medium.ttf").to_vec());
-        db.load_font_data(include_bytes!("../../assets/Open_Sans/static/OpenSans-SemiBold.ttf").to_vec());
-        db.load_font_data(include_bytes!("../../assets/Open_Sans/static/OpenSans-Bold.ttf").to_vec());
-        db.load_font_data(include_bytes!("../../assets/Open_Sans/static/OpenSans-ExtraBold.ttf").to_vec());
+        db.load_font_data(
+            include_bytes!("../../assets/Open_Sans/static/OpenSans-Light.ttf").to_vec(),
+        );
+        db.load_font_data(
+            include_bytes!("../../assets/Open_Sans/static/OpenSans-Regular.ttf").to_vec(),
+        );
+        db.load_font_data(
+            include_bytes!("../../assets/Open_Sans/static/OpenSans-Medium.ttf").to_vec(),
+        );
+        db.load_font_data(
+            include_bytes!("../../assets/Open_Sans/static/OpenSans-SemiBold.ttf").to_vec(),
+        );
+        db.load_font_data(
+            include_bytes!("../../assets/Open_Sans/static/OpenSans-Bold.ttf").to_vec(),
+        );
+        db.load_font_data(
+            include_bytes!("../../assets/Open_Sans/static/OpenSans-ExtraBold.ttf").to_vec(),
+        );
 
         Self {
             font_system,
             swash_cache: SwashCache::new(),
+        }
+    }
+
+    pub fn draw_text_center_u32(
+        &mut self,
+        pixels: &mut [u32],
+        width: usize,
+        height: usize,
+        text: &str,
+        x: f32,
+        y: f32,
+        size: f32,
+        weight: u16,
+        colour: u32, // [RGBA]
+        font: &str,
+    ) -> f32 {
+        let attrs = Attrs::new()
+            .family(Family::Name(font))
+            .weight(Weight(weight));
+
+        let metrics = Metrics::relative(size, 1.2);
+        let mut buffer = Buffer::new(&mut self.font_system, metrics);
+
+        buffer.set_size(&mut self.font_system, None, None);
+        buffer.set_text(&mut self.font_system, text, &attrs, Shaping::Advanced);
+        buffer.shape_until_scroll(&mut self.font_system, false);
+
+        if let Some(run) = buffer.layout_runs().next() {
+            let mut min_x = f32::MAX;
+            let mut max_x = f32::MIN;
+
+            for glyph in run.glyphs {
+                min_x = min_x.min(glyph.x);
+                max_x = max_x.max(glyph.x + glyph.w);
+            }
+
+            let text_width = max_x - min_x;
+            let text_height = run.line_height;
+
+            self.render_buffer_u32(
+                &mut buffer,
+                pixels,
+                width,
+                height,
+                x,
+                y,
+                text_width,
+                text_height,
+                colour,
+            );
+
+            text_width
+        } else {
+            0.
         }
     }
 
@@ -205,7 +287,75 @@ impl TextRenderer {
         }
     }
 
-    /// Render buffer to pixel array
+    /// Render buffer to u32 packed pixel array
+    fn render_buffer_u32(
+        &mut self,
+        buffer: &mut Buffer,
+        pixels: &mut [u32], // [ARGB]
+        width: usize,
+        height: usize,
+        anchor_x: f32,
+        anchor_y: f32,
+        text_width: f32,
+        text_height: f32,
+        colour: u32, // [ARGB]
+    ) {
+        // Center alignment
+        let offset_x = anchor_x - text_width / 2.;
+        let offset_y = anchor_y - text_height / 2.;
+
+        let mut colour = colour as u64;
+        colour = (colour | (colour << 16)) & 0x0000FFFF0000FFFF;
+        colour = (colour | (colour << 8)) & 0x00FF00FF00FF00FF;
+
+        for run in buffer.layout_runs() {
+            let baseline_offset = run.line_y;
+
+            for glyph in run.glyphs {
+                let physical_glyph = glyph.physical((offset_x, offset_y), 1.);
+
+                if let Some(image) = self
+                    .swash_cache
+                    .get_image(&mut self.font_system, physical_glyph.cache_key)
+                {
+                    let glyph_x = physical_glyph.x + image.placement.left;
+                    let glyph_y = physical_glyph.y + baseline_offset as i32 - image.placement.top;
+
+                    let glyph_width = image.placement.width as usize;
+                    let glyph_height = image.placement.height as usize;
+
+                    for cy in 0..glyph_height {
+                        for cx in 0..glyph_width {
+                            let alpha = image.data[cy * glyph_width + cx];
+                            if alpha > 0 {
+                                let final_x = glyph_x as isize + cx as isize;
+                                let final_y = glyph_y as isize + cy as isize;
+
+                                if (final_x as usize) < width && (final_y as usize) < height { // Note the cast to usize to make -'s go to fucking space so they'll fail bigger than shit and not execute?
+                                    let idx = final_y as usize * width as usize + final_x as usize;
+
+                                    let mut bg = pixels[idx] as u64;
+                                    let alpha = alpha as u64;
+                                    let inv_alpha = (255 - alpha) as u64;
+
+                                    bg = (bg | (bg << 16)) & 0x0000FFFF0000FFFF;
+                                    bg = (bg | (bg << 8)) & 0x00FF00FF00FF00FF;
+
+                                    let mut blended = bg * inv_alpha + colour * alpha;
+
+                                    blended = (blended >> 8) & 0x00FF00FF00FF00FF;
+                                    blended = (blended | (blended >> 8)) & 0x0000FFFF0000FFFF;
+                                    blended = blended | (blended >> 16);
+                                    pixels[idx] = blended as u32;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     fn render_buffer(
         &mut self,
         buffer: &mut Buffer,
@@ -293,5 +443,139 @@ impl TextRenderer {
                 }
             }
         }
+    }
+
+    /// Measure the width of text without rendering it
+    pub fn measure_text_width(&mut self, text: &str, size: f32, weight: u16, font: &str) -> f32 {
+        if text.is_empty() {
+            return 0.0;
+        }
+
+        let attrs = Attrs::new()
+            .family(Family::Name(font))
+            .weight(Weight(weight));
+
+        let mut buffer = Buffer::new(&mut self.font_system, Metrics::new(size, size));
+        buffer.set_size(&mut self.font_system, Some(10000.0), Some(size * 2.0));
+        buffer.set_text(&mut self.font_system, text, &attrs, Shaping::Advanced);
+
+        // Calculate total width from layout
+        buffer.layout_runs().fold(0.0, |max_width, run| {
+            let run_width = run.line_w;
+            max_width.max(run_width)
+        })
+    }
+
+    /// Render a single character with additive blending (reversible with wrapping_add/sub)
+    /// Returns the width of the rendered character in pixels
+    pub fn render_char_additive(
+        &mut self,
+        pixels: &mut [u8],
+        width: u32,
+        height: u32,
+        ch: char,
+        x_offset: f32, // Absolute x position
+        y_center: f32, // Vertical center position
+        size: f32,
+        weight: u16,
+        font: &str,
+        colour: [u8; 4],
+        textbox_mask: &[u8], // Single-channel mask for textbox boundaries
+        textbox_x: usize,    // Textbox top-left x
+        textbox_y: usize,    // Textbox top-left y
+        textbox_width: usize,
+        add_mode: bool, // true = add, false = subtract
+    ) -> f32 {
+        let attrs = Attrs::new()
+            .family(Family::Name(font))
+            .weight(Weight(weight));
+
+        let mut buffer = Buffer::new(&mut self.font_system, Metrics::new(size, size));
+        buffer.set_size(&mut self.font_system, Some(size * 2.0), Some(size * 2.0));
+
+        let text = ch.to_string();
+        buffer.set_text(&mut self.font_system, &text, &attrs, Shaping::Advanced);
+
+        let mut char_width: f32 = 0.0;
+
+        // Render the character glyph
+        for run in buffer.layout_runs() {
+            char_width = char_width.max(run.line_w);
+            let baseline_offset = run.line_y;
+
+            for glyph in run.glyphs {
+                let offset_y = y_center - size / 2.0;
+                let physical_glyph = glyph.physical((x_offset, offset_y), 1.);
+
+                if let Some(image) = self
+                    .swash_cache
+                    .get_image(&mut self.font_system, physical_glyph.cache_key)
+                {
+                    let glyph_x = physical_glyph.x + image.placement.left;
+                    let glyph_y = physical_glyph.y + baseline_offset as i32 - image.placement.top;
+
+                    let glyph_width = image.placement.width as usize;
+                    let glyph_height = image.placement.height as usize;
+
+                    for cy in 0..glyph_height {
+                        for cx in 0..glyph_width {
+                            let glyph_alpha = image.data[cy * glyph_width + cx];
+                            if glyph_alpha > 0 {
+                                let final_x = glyph_x + cx as i32;
+                                let final_y = glyph_y + cy as i32;
+
+                                // Check bounds
+                                if final_x >= 0
+                                    && (final_x as u32) < width
+                                    && final_y >= 0
+                                    && (final_y as u32) < height
+                                {
+                                    // Get textbox mask value for this pixel
+                                    let rel_x = final_x as isize - textbox_x as isize;
+                                    let rel_y = final_y as isize - textbox_y as isize;
+
+                                    let mask_alpha = if rel_x >= 0
+                                        && rel_x < textbox_width as isize
+                                        && rel_y >= 0
+                                        && rel_y
+                                            < textbox_mask.len() as isize / textbox_width as isize
+                                    {
+                                        textbox_mask
+                                            [rel_y as usize * textbox_width + rel_x as usize]
+                                    } else {
+                                        0 // Outside textbox
+                                    };
+
+                                    if mask_alpha > 0 {
+                                        // Apply both glyph alpha and textbox mask
+                                        let combined_alpha =
+                                            (glyph_alpha as u16 * mask_alpha as u16) >> 8;
+
+                                        let pixel_idx = (final_y as usize * width as usize
+                                            + final_x as usize)
+                                            * 4;
+
+                                        // Apply colour with combined alpha to RGB channels (skip alpha channel)
+                                        for c in 0..3 {
+                                            let value =
+                                                ((colour[c] as u16 * combined_alpha) >> 8) as u8;
+                                            if add_mode {
+                                                pixels[pixel_idx + c] =
+                                                    pixels[pixel_idx + c].wrapping_add(value);
+                                            } else {
+                                                pixels[pixel_idx + c] =
+                                                    pixels[pixel_idx + c].wrapping_sub(value);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        char_width
     }
 }

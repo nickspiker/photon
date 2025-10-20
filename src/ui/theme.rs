@@ -1,52 +1,53 @@
-// Global theme colors and constants
-// All colors are vectors with last channel as alpha for future multichannel support
+// Global theme colours and constants
+// All colours are u32 in packed ARGB format: 0xAARRGGBB
 
-// Window edge colors
-pub const WINDOW_LIGHT_EDGE: [u8; 4] = [68, 65, 55, 255];
-pub const WINDOW_SHADOW_EDGE: [u8; 4] = [43, 52, 55, 255];
-pub const WINDOW_CONTROLS_BG: [u8; 4] = [30, 30, 30, 255]; // Background behind window control buttons
-pub const WINDOW_CONTROLS_HAIRLINE: [u8; 4] = [68, 65, 55, 255]; // Hairline separators between buttons
+// Window edge colours
+pub const WINDOW_LIGHT_EDGE: u32 = 0xFF_44_41_37;
+pub const WINDOW_SHADOW_EDGE: u32 = 0xFF_2B_34_37;
+pub const WINDOW_CONTROLS_BG: u32 = 0xFF_1E_1E_1E; // Background behind window control buttons
+pub const WINDOW_CONTROLS_HAIRLINE: u32 = 0xFF_44_41_37; // Hairline separators between buttons
 
-// Background colors
-pub const BACKGROUND: [u8; 4] = [6, 8, 9, 255];
-pub const BACKGROUND_ADDER: [u8; 3] = [16, 17, 20]; // Added to background texture variation
-pub const LAUNCH_SCREEN_BG: [u8; 4] = [18, 18, 24, 255]; // Launch screen background
+// Background colours
+pub const BACKGROUND: u32 = 0xFF_06_08_09;
+pub const BACKGROUND_ADDER: [u8; 3] = [16, 17, 20]; // Added to background texture variation (RGB only)
+pub const LAUNCH_SCREEN_BG: u32 = 0xFF_12_12_18; // Launch screen background
 
-// UI element colors
-pub const LIGHT_EDGE: [u8; 4] = [96, 96, 96, 255];
-pub const SHADOW_EDGE: [u8; 4] = [32, 32, 32, 255];
-pub const FILL: [u8; 4] = [64, 64, 64, 255];
+// UI element colours
+pub const LIGHT_EDGE: u32 = 0xFF_60_60_60;
+pub const SHADOW_EDGE: u32 = 0xFF_20_20_20;
+pub const FILL: u32 = 0xFF_40_40_40;
 
-// Text colors
-pub const FONT_HINT: [u8; 4] = [50, 60, 64, 255];
-pub const FONT_LABEL: [u8; 4] = [128, 128, 128, 255];
+// Text colours
+pub const FONT_HINT: u32 = 0xFF_32_3C_40;
+pub const FONT_LABEL: u32 = 0xFF_80_80_80;
+pub const CURSOR_COLOUR: u32 = 0xFF_C8_C8_C8; // Blinking text cursor
 
-// Button colors
-pub const BUTTON_BASE: [u8; 4] = [64, 64, 64, 255];
-pub const BUTTON_LIGHT_EDGE: [u8; 4] = [96, 96, 96, 255];
-pub const BUTTON_SHADOW_EDGE: [u8; 4] = [32, 32, 32, 255];
-pub const BUTTON_HAIRLINE: [u8; 4] = [50, 50, 50, 255]; // Hairline separators between buttons
+// Button colours
+pub const BUTTON_BASE: u32 = 0xFF_40_40_40;
+pub const BUTTON_LIGHT_EDGE: u32 = 0xFF_60_60_60;
+pub const BUTTON_SHADOW_EDGE: u32 = 0xFF_20_20_20;
+pub const BUTTON_HAIRLINE: u32 = 0xFF_32_32_32; // Hairline separators between buttons
 
-// Button glyphs (base colors, not deltas)
-pub const CLOSE_GLYPH: [u8; 4] = [128, 32, 32, 255];
-pub const MAXIMIZE_GLYPH: [u8; 4] = [72, 107, 58, 255];
-pub const MAXIMIZE_GLYPH_INTERIOR: [u8; 4] = [40, 45, 46, 255];
-pub const MINIMIZE_GLYPH: [u8; 4] = [51, 48, 199, 255];
+// Button glyphs (base colours, not deltas)
+pub const CLOSE_GLYPH: u32 = 0xFF_80_20_20;
+pub const MAXIMIZE_GLYPH: u32 = 0xFF_48_6B_3A;
+pub const MAXIMIZE_GLYPH_INTERIOR: u32 = 0xFF_28_2D_2E;
+pub const MINIMIZE_GLYPH: u32 = 0xFF_33_30_C7;
 
 // Button hover deltas (applied on hover, negated on unhover)
-pub const CLOSE_HOVER: [i8; 4] = [33, -3, -7, 0]; // Red
-pub const MAXIMIZE_HOVER: [i8; 4] = [-6, 16, -6, 0]; // Green
-pub const MINIMIZE_HOVER: [i8; 4] = [-9, -6, 37, 0]; // Blue
+pub const CLOSE_HOVER: [i8; 4] = [33, -3, -7, 0]; // Red (A, R, G, B)
+pub const MAXIMIZE_HOVER: [i8; 4] = [-6, 16, -6, 0]; // Green (A, R, G, B)
+pub const MINIMIZE_HOVER: [i8; 4] = [-9, -6, 37, 0]; // Blue (A, R, G, B)
 
-// Textbox colors
-pub const TEXTBOX_LIGHT_EDGE: [u8; 4] = [68, 65, 55, 255];
-pub const TEXTBOX_SHADOW_EDGE: [u8; 4] = [43, 52, 55, 255];
-pub const TEXTBOX_FILL: [u8; 4] = [6, 8, 9, 255];
+// Textbox colours
+pub const TEXTBOX_LIGHT_EDGE: u32 = 0xFF_44_41_37;
+pub const TEXTBOX_SHADOW_EDGE: u32 = 0xFF_2B_34_37;
+pub const TEXTBOX_FILL: u32 = 0xFF_06_08_09;
 
-// Logo colors (grayscale for glow/highlight, RGBA for final text)
+// Logo colours (grayscale for glow/highlight)
 pub const LOGO_GLOW_GRAY: u8 = 192; // Logo glow effect (grayscale)
 pub const LOGO_HIGHLIGHT_GRAY: u8 = 128; // Logo highlight (grayscale)
-pub const LOGO_TEXT: [u8; 4] = [0, 0, 0, 255]; // Logo text color
+pub const LOGO_TEXT: u32 = 0xFF_00_00_00; // Logo text colour
 
 // Font families
 pub const FONT_LOGO: &str = "Oxanium";

@@ -2,12 +2,38 @@ use softbuffer::{Context, Surface};
 use std::num::NonZeroU32;
 use winit::window::Window;
 
+/// A pre-rendered screen page with associated metadata
+pub struct ScreenPage {
+    pub pixels: Vec<u32>,    // Pre-rendered screen in u32 ARGB format
+    pub hit_map: Vec<u8>,    // Hit testing map (button IDs, etc.)
+    pub text_mask: Vec<u8>,  // Text rendering alpha mask (0-255)
+}
+
+impl ScreenPage {
+    pub fn new(width: usize, height: usize) -> Self {
+        Self {
+            pixels: vec![0; width * height],
+            hit_map: vec![0; width * height],
+            text_mask: vec![0; width * height],
+        }
+    }
+
+    pub fn resize(&mut self, width: usize, height: usize) {
+        self.pixels.resize(width * height, 0);
+        self.hit_map.resize(width * height, 0);
+        self.text_mask.resize(width * height, 0);
+    }
+}
+
 pub struct Renderer {
     context: Context<&'static Window>,
     surface: Surface<&'static Window, &'static Window>,
     width: u32,
     height: u32,
-    pixel_buffer: Vec<u8>,
+
+    // Screen pages for different screens
+    pub login_page: ScreenPage,
+    // Could add more pages: main_page, settings_page, etc.
 }
 
 impl Renderer {
@@ -26,17 +52,12 @@ impl Renderer {
             )
             .unwrap();
 
-        let mut pixel_buffer = Vec::with_capacity((width * height * 4) as usize);
-        unsafe {
-            pixel_buffer.set_len((width * height * 4) as usize);
-        }
-
         Self {
             context,
             surface,
             width,
             height,
-            pixel_buffer,
+            login_page: ScreenPage::new(width as usize, height as usize),
         }
     }
 
@@ -44,14 +65,9 @@ impl Renderer {
         if width > 0 && height > 0 {
             self.width = width;
             self.height = height;
-            let new_size = (width * height * 4) as usize;
-            if new_size > self.pixel_buffer.capacity() {
-                self.pixel_buffer
-                    .reserve(new_size - self.pixel_buffer.len());
-            }
-            unsafe {
-                self.pixel_buffer.set_len(new_size);
-            }
+
+            // Resize all pages
+            self.login_page.resize(width as usize, height as usize);
 
             let _ = self.surface.resize(
                 NonZeroU32::new(width).unwrap(),
@@ -60,26 +76,26 @@ impl Renderer {
         }
     }
 
-    pub fn get_pixel_buffer_mut(&mut self) -> &mut [u8] {
-        &mut self.pixel_buffer
+    /// Get mutable access to softbuffer's internal buffer for direct drawing
+    /// Important: Call .present() on the returned buffer when done, don't drop it early!
+    pub fn lock_buffer(&mut self) -> softbuffer::Buffer<'_, &'static Window, &'static Window> {
+        self.surface.buffer_mut().unwrap()
     }
 
-    pub fn present(&mut self) {
+    /// Lock buffer, draw with callback, and present atomically
+    pub fn draw_and_present<F>(&mut self, draw_fn: F)
+    where
+        F: FnOnce(&mut [u32]),
+    {
         let mut buffer = self.surface.buffer_mut().unwrap();
+        draw_fn(&mut buffer);
+        buffer.present().unwrap();
+    }
 
-        // Convert RGBA to u32 pixel format
-        for i in 0..(self.width * self.height) as usize {
-            let idx = i * 4;
-            let r = self.pixel_buffer[idx] as u32;
-            let g = self.pixel_buffer[idx + 1] as u32;
-            let b = self.pixel_buffer[idx + 2] as u32;
-            let a = self.pixel_buffer[idx + 3] as u32;
-
-            // Pack as ARGB or BGRA depending on platform
-            // softbuffer handles endianness for us
-            buffer[i] = (a << 24) | (r << 16) | (g << 8) | b;
-        }
-
+    /// Copy a pre-rendered page to the live buffer and present
+    pub fn swap_to_page(&mut self, page_pixels: &[u32]) {
+        let mut buffer = self.lock_buffer();
+        buffer.copy_from_slice(page_pixels);
         buffer.present().unwrap();
     }
 }

@@ -81,8 +81,6 @@ impl ApplicationHandler for App {
                 {
                     self.photon_app = Some(pollster::block_on(ui::PhotonApp::new(
                         window,
-                        self.screen_width,
-                        self.screen_height,
                     )));
                 }
             }

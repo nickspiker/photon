@@ -8,6 +8,57 @@ use winit::{
     window::{CursorIcon, Window},
 };
 
+// Helper functions for u32 packed pixel manipulation (ARGB format: 0xAARRGGBB)
+#[inline]
+fn pack_argb(r: u8, g: u8, b: u8, a: u8) -> u32 {
+    ((a as u32) << 24) | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
+}
+
+#[inline]
+fn unpack_argb(pixel: u32) -> (u8, u8, u8, u8) {
+    let a = (pixel >> 24) as u8;
+    let r = (pixel >> 16) as u8;
+    let g = (pixel >> 8) as u8;
+    let b = pixel as u8;
+    (r, g, b, a)
+}
+
+/// Blend two packed ARGB colors with alpha transparency.
+/// Used for outer edge pixels with variable alpha.
+/// Formula: (bg_color * (255 - alpha) + fg_color * alpha) >> 8
+#[inline]
+fn blend_alpha(fg_color: u32, alpha: u8) -> u32 {
+    let mut fg = fg_color as u64;
+    fg = (fg | (fg << 16)) & 0x0000FFFF0000FFFF;
+    fg = (fg | (fg << 8)) & 0x00FF00FF00FF00FF;
+
+    let mut blended = fg * alpha as u64;
+    blended = (blended >> 8) & 0x00FF00FF00FF00FF;
+    blended = (blended | (blended >> 8)) & 0x0000FFFF0000FFFF;
+    blended = blended | (blended >> 16);
+
+    blended as u32
+}
+
+#[inline]
+fn blend_rgb_only(bg_color: u32, fg_color: u32, weight_bg: u8, weight_fg: u8) -> u32 {
+    let mut bg = bg_color as u64;
+    bg = (bg | (bg << 16)) & 0x0000FFFF0000FFFF;
+    bg = (bg | (bg << 8)) & 0x00FF00FF00FF00FF;
+
+    let mut fg = fg_color as u64;
+    fg = (fg | (fg << 16)) & 0x0000FFFF0000FFFF;
+    fg = (fg | (fg << 8)) & 0x00FF00FF00FF00FF;
+
+    // Blend all 4 channels (including alpha)
+    let mut blended = bg * weight_bg as u64 + fg * weight_fg as u64;
+    blended = (blended >> 8) & 0x00FF00FF00FF00FF;
+    blended = (blended | (blended >> 8)) & 0x0000FFFF0000FFFF;
+    blended = blended | (blended >> 16) | 0xFF000000;
+
+    blended as u32
+}
+
 pub struct PhotonApp {
     renderer: Renderer,
     #[allow(dead_code)] // Will be used for drawing text/logos soon
@@ -23,8 +74,18 @@ pub struct PhotonApp {
 
     // Launch screen state
     username_input: String,
+    rendered_username: String,    // What's currently rendered on screen
+    character_widths: Vec<usize>, // Width in pixels of each rendered character
     cursor_blink: f32,
+    cursor_visible: bool,             // Current cursor visibility state
+    cursor_pixel_x: usize,            // Cursor x position in pixels
+    cursor_pixel_y: usize,            // Cursor y position in pixels
     username_available: Option<bool>, // None = checking, Some(true) = available, Some(false) = taken
+    textbox_focused: bool,            // True when textbox is clicked and accepting input
+    textbox_mask: Vec<u8>, // Single-channel alpha mask for textbox (0=outside, 255=inside, faded at edges)
+    textbox_bounds: (usize, usize, usize, usize), // (x, y, width, height) of textbox
+    show_textbox_mask: bool, // Debug: show textbox mask visualization (Ctrl+T)
+    redraw_counter: usize, // Count of full redraws for debugging
 
     // Input state
     mouse_x: f32,
@@ -66,7 +127,6 @@ const HIT_MINIMIZE_BUTTON: u8 = 1;
 const HIT_MAXIMIZE_BUTTON: u8 = 2;
 const HIT_CLOSE_BUTTON: u8 = 3;
 const HIT_HANDLE_TEXTBOX: u8 = 4;
-const HIT_DEBUG_INIT: u8 = 255; // For visualizing what areas get reset
 
 // Button hover colour deltas are now in theme module
 
@@ -93,14 +153,14 @@ enum ResizeEdge {
 
 impl PhotonApp {
     #[cfg(target_os = "linux")]
-    pub async fn new(window: &Window, screen_width: u32, screen_height: u32) -> Self {
+    pub async fn new(window: &Window) -> Self {
         let size = window.inner_size();
         let renderer = Renderer::new(window, size.width, size.height).await;
         let text_renderer = TextRenderer::new();
 
         let w = size.width as usize;
         let h = size.height as usize;
-        let mut app = Self {
+        let app = Self {
             renderer,
             text_renderer,
             width: size.width,
@@ -110,8 +170,18 @@ impl PhotonApp {
             perimeter: w + h,
             diagonal_sq: w * w + h * h,
             username_input: String::new(),
+            rendered_username: String::new(),
+            character_widths: Vec::new(),
             cursor_blink: 0.0,
+            cursor_visible: false,
+            cursor_pixel_x: 0,
+            cursor_pixel_y: 0,
             username_available: None,
+            textbox_focused: false,
+            textbox_mask: Vec::new(),
+            textbox_bounds: (0, 0, 0, 0),
+            show_textbox_mask: false,
+            redraw_counter: 0,
             mouse_x: 0.0,
             mouse_y: 0.0,
             is_dragging_resize: false,
@@ -136,12 +206,11 @@ impl PhotonApp {
             debug_hit_test: false,
             debug_hit_colours: Vec::new(),
         };
-        app.update_button_bounds();
         app
     }
 
     #[cfg(target_os = "windows")]
-    pub fn new(window: &Window, screen_width: u32, screen_height: u32) -> Self {
+    pub fn new(window: &Window) -> Self {
         let size = window.inner_size();
         let renderer = Renderer::new(window, size.width, size.height);
         let text_renderer = TextRenderer::new();
@@ -160,8 +229,18 @@ impl PhotonApp {
             perimeter: w + h,
             diagonal_sq: w * w + h * h,
             username_input: String::new(),
+            rendered_username: String::new(),
+            character_widths: Vec::new(),
             cursor_blink: 0.0,
+            cursor_visible: false,
+            cursor_pixel_x: 0,
+            cursor_pixel_y: 0,
             username_available: None,
+            textbox_focused: false,
+            textbox_mask: Vec::new(),
+            textbox_bounds: (0, 0, 0, 0),
+            show_textbox_mask: false,
+            redraw_counter: 0,
             mouse_x: 0.0,
             mouse_y: 0.0,
             is_dragging_resize: false,
@@ -203,7 +282,6 @@ impl PhotonApp {
         self.diagonal_sq = w * w + h * h;
 
         self.renderer.resize(size.width, size.height);
-        self.update_button_bounds();
         self.hit_test_map
             .resize((size.width * size.height) as usize, 0);
 
@@ -213,61 +291,41 @@ impl PhotonApp {
         self.needs_redraw = true; // Dimensions changed, need to redraw
     }
 
-    fn update_button_bounds(&mut self) {
-        // Button area: 3x wider than tall, extends to top-right corner of window
-        // Height = 1/32 of smaller dimension (same as resize border)
-        let smaller_dim = self.width.min(self.height) as f32;
-        let button_height = (smaller_dim / 32.0).ceil();
-        let button_width = button_height; // Each button is square
-        let total_width = button_width * 3.0;
-
-        // Buttons extend to the very top-right corner (0,0 is top-left)
-        // Bottom-left corner at (window_width - total_width, button_height)
-        let x_start = self.width as f32 - total_width;
-        let y_start = 0.0;
-
-        // Three buttons: minimize, maximize, close (left to right)
-        self.minimize_button_bounds = (x_start, y_start, button_width, button_height);
-        self.maximize_button_bounds =
-            (x_start + button_width, y_start, button_width, button_height);
-        self.close_button_bounds = (
-            x_start + button_width * 2.0,
-            y_start,
-            button_width,
-            button_height,
-        );
-    }
-
     pub fn update_modifiers(&mut self, modifiers: ModifiersState) {
         self.modifiers = modifiers;
     }
 
     pub fn handle_keyboard(&mut self, event: KeyEvent) {
         if event.state == ElementState::Pressed {
-            // Toggle hit test debug visualization with Ctrl+h
+            // Toggle debug visualizations with Ctrl shortcuts
             if let Key::Character(ref c) = event.logical_key {
-                if c.eq_ignore_ascii_case("h") {
-                    // Check if Ctrl is pressed
-                    if self.modifiers.control_key() {
-                        self.debug_hit_test = !self.debug_hit_test;
-                        // Generate new random colours for each hit area
-                        use std::collections::hash_map::RandomState;
-                        use std::hash::{BuildHasher, Hash, Hasher};
-                        let random_state = RandomState::new();
-                        self.debug_hit_colours.clear();
-                        for id in 0..=255u8 {
-                            let mut hasher = random_state.build_hasher();
-                            id.hash(&mut hasher);
-                            std::time::SystemTime::now().hash(&mut hasher);
-                            let hash = hasher.finish();
-                            let r = ((hash >> 0) & 0xFF) as u8;
-                            let g = ((hash >> 8) & 0xFF) as u8;
-                            let b = ((hash >> 16) & 0xFF) as u8;
-                            self.debug_hit_colours.push((r, g, b));
-                        }
-                        self.needs_redraw = true;
-                        return; // Don't process as regular input
+                // Ctrl+H: Toggle hit test map
+                if c.eq_ignore_ascii_case("h") && self.modifiers.control_key() {
+                    self.debug_hit_test = !self.debug_hit_test;
+                    self.show_textbox_mask = false; // Clear other debug state
+                                                    // Generate new random colours for each hit area
+                    use std::collections::hash_map::RandomState;
+                    use std::hash::{BuildHasher, Hash, Hasher};
+                    let random_state = RandomState::new();
+                    self.debug_hit_colours.clear();
+                    for id in 0..=255u8 {
+                        let mut hasher = random_state.build_hasher();
+                        id.hash(&mut hasher);
+                        std::time::SystemTime::now().hash(&mut hasher);
+                        let hash = hasher.finish();
+                        let r = ((hash >> 0) & 0xFF) as u8;
+                        let g = ((hash >> 8) & 0xFF) as u8;
+                        let b = ((hash >> 16) & 0xFF) as u8;
+                        self.debug_hit_colours.push((r, g, b));
                     }
+                    return; // Don't process as regular input
+                }
+
+                // Ctrl+T: Toggle textbox mask visualization
+                if c.eq_ignore_ascii_case("t") && self.modifiers.control_key() {
+                    self.show_textbox_mask = !self.show_textbox_mask;
+                    self.debug_hit_test = false; // Clear other debug state
+                    return; // Don't process as regular input
                 }
             }
 
@@ -323,7 +381,19 @@ impl PhotonApp {
                             window.set_maximized(!window.is_maximized());
                             return;
                         }
-                        _ => {}
+                        HIT_HANDLE_TEXTBOX => {
+                            // Focus the textbox
+                            self.textbox_focused = true;
+                            // Don't need full redraw, just present when cursor changes
+                            return;
+                        }
+                        _ => {
+                            // Clicked outside textbox, unfocus it
+                            if self.textbox_focused {
+                                self.textbox_focused = false;
+                                // Don't need full redraw, just present when cursor changes
+                            }
+                        }
                     }
                 }
 
@@ -368,7 +438,8 @@ impl PhotonApp {
     pub fn handle_cursor_left(&mut self) {
         // Clear hover state when cursor leaves window
         if self.hovered_button != HoveredButton::None {
-            let pixels = self.renderer.get_pixel_buffer_mut();
+            let mut buffer = self.renderer.lock_buffer();
+            let pixels = buffer.as_mut();
 
             // Unhover the current button
             match self.hovered_button {
@@ -400,6 +471,8 @@ impl PhotonApp {
             }
 
             self.hovered_button = HoveredButton::None;
+
+            buffer.present().unwrap();
         }
     }
 
@@ -540,7 +613,8 @@ impl PhotonApp {
 
             // Apply or remove hover effect when state changes
             if old_hovered != self.hovered_button {
-                let pixels = self.renderer.get_pixel_buffer_mut();
+                let mut buffer = self.renderer.lock_buffer();
+                let pixels = buffer.as_mut();
 
                 // Unhover old button
                 match old_hovered {
@@ -599,6 +673,8 @@ impl PhotonApp {
                     }
                     HoveredButton::None => {}
                 }
+
+                buffer.present().unwrap();
             }
 
             // Update cursor icon based on hover position
@@ -658,16 +734,17 @@ impl PhotonApp {
     }
 
     pub fn render(&mut self) {
-        self.cursor_blink += 0.1;
-
         // Only redraw content if dimensions changed or content is dirty
         if self.needs_redraw {
-            // Initialize hit test map with debug value to visualize what gets reset
-            self.hit_test_map.fill(HIT_DEBUG_INIT);
+            self.redraw_counter += 1;
 
-            let pixels = self.renderer.get_pixel_buffer_mut();
+            let mut buffer = self.renderer.lock_buffer();
+            let pixels = buffer.as_mut();
 
-            Self::draw_background_texture(pixels, self.width, self.height);
+            // Clear hitmap to HIT_NONE before drawing
+            self.hit_test_map.fill(HIT_NONE);
+
+            Self::draw_background_texture(pixels, self.width as usize, self.height as usize);
 
             let (start, edges, button_x_start, button_height) =
                 Self::draw_window_controls(pixels, &mut self.hit_test_map, self.width, self.height);
@@ -713,21 +790,27 @@ impl PhotonApp {
                 &edges,
             );
 
-            // Draw spectrum and logo text
-            let logo_center_y = self.height as usize / 4; // Centered in top half
-            Self::draw_spectrum(
-                pixels,
-                self.width,
-                self.height,
-                logo_center_y - self.height.min(self.width) as usize / 8,
-            );
-            Self::draw_logo_text(
-                pixels,
-                &mut self.text_renderer,
-                self.width,
-                self.height,
-                logo_center_y + self.height.min(self.width) as usize / 8,
-            );
+            // // Draw spectrum and logo text
+            // let logo_center_y = self.height as usize / 4; // Centered in top half
+            // Self::draw_spectrum(
+            //     pixels,
+            //     self.width,
+            //     self.height,
+            //     logo_center_y - self.height.min(self.width) as usize / 8,
+            // );
+            // Self::draw_logo_text(
+            //     pixels,
+            //     &mut self.text_renderer,
+            //     self.width,
+            //     self.height,
+            //     logo_center_y + self.height.min(self.width) as usize / 8,
+            // );
+
+            // Initialize textbox_mask buffer to screen dimensions
+            let buffer_size = self.width as usize * self.height as usize;
+            if self.textbox_mask.len() != buffer_size {
+                self.textbox_mask.resize(buffer_size, 0);
+            }
 
             // 2. Draw textbox (full width with min_dim/8 margins)
             let margin = self.min_dim / 8;
@@ -747,69 +830,126 @@ impl PhotonApp {
                 box_height,
             );
 
-            // 3. Draw text
-            // Placeholder inside the box (only if username is empty)
-            if self.username_input.is_empty() {
-                self.text_renderer.draw_text_center(
-                    pixels,
-                    self.width,
-                    self.height,
-                    "∞",
-                    center_x as f32,
-                    center_y as f32,
-                    box_height as f32 * 0.5,
-                    500, // Thin weight
-                    theme::FONT_HINT.to_vec(),
-                    0,
-                    theme::FONT_USER_CONTENT,
-                );
-            }
+            // // 3. Draw text
+            // // Placeholder inside the box (only if username is empty)
+            // if self.username_input.is_empty() {
+            //     self.text_renderer.draw_text_center(
+            //         pixels,
+            //         self.width,
+            //         self.height,
+            //         "∞",
+            //         center_x as f32,
+            //         center_y as f32,
+            //         box_height as f32 * 0.5,
+            //         500, // Thin weight
+            //         theme::FONT_HINT.to_vec(),
+            //         0,
+            //         theme::FONT_USER_CONTENT,
+            //     );
+            // } else {
+            //     // Draw the user's typed text
+            //     self.text_renderer.draw_text_center(
+            //         pixels,
+            //         self.width,
+            //         self.height,
+            //         &self.username_input,
+            //         center_x as f32,
+            //         center_y as f32,
+            //         box_height as f32 * 0.5,
+            //         500,                      // Thin weight
+            //         vec![255, 255, 255, 255], // White text
+            //         0,
+            //         theme::FONT_USER_CONTENT,
+            //     );
+            // }
 
-            // Label below the box (always visible)
-            self.text_renderer.draw_text_center(
+            // // Draw blinking cursor if textbox is focused
+            // if self.textbox_focused {
+            //     // Blink cursor every ~10 frames (cursor_blink increments by 0.1 each frame)
+            //     if (self.cursor_blink % 2.0) < 1.0 {
+            //         // Calculate cursor position based on text width
+            //         let text_to_measure = if self.username_input.is_empty() {
+            //             ""
+            //         } else {
+            //             &self.username_input
+            //         };
+
+            //         // Measure text width to position cursor
+            //         let text_width = self.text_renderer.measure_text_width(
+            //             text_to_measure,
+            //             box_height as f32 * 0.5,
+            //             500,
+            //             theme::FONT_USER_CONTENT,
+            //         );
+
+            //         // Cursor position: center + half text width
+            //         let cursor_x = center_x as f32 + text_width / 2.0;
+            //         let cursor_height = box_height as f32 * 0.6;
+            //         let cursor_top = center_y as f32 - cursor_height / 2.0;
+
+            //         // Draw vertical cursor line (2px wide)
+            //         for y_offset in 0..(cursor_height as usize) {
+            //             let py = (cursor_top as usize + y_offset).min((self.height - 1) as usize);
+            //             for x_offset in 0..2 {
+            //                 let px = (cursor_x as usize + x_offset).min((self.width - 1) as usize);
+            //                 let idx = (py * self.width as usize + px) * 4;
+            //                 pixels[idx] = theme::CURSOR_COLOUR[0];
+            //                 pixels[idx + 1] = theme::CURSOR_COLOUR[1];
+            //                 pixels[idx + 2] = theme::CURSOR_COLOUR[2];
+            //             }
+            //         }
+            //     }
+            // }
+
+            // Label below the box
+            self.text_renderer.draw_text_center_u32(
                 pixels,
-                self.width,
-                self.height,
+                self.width as usize,
+                self.height as usize,
                 "handle",
                 center_x as f32,
                 (center_y + box_height) as f32,
                 box_height as f32 * 0.5,
                 300, // Thin weight
-                theme::FONT_LABEL.to_vec(),
-                0,
+                theme::FONT_LABEL,
                 theme::FONT_UI,
             );
 
-            self.needs_redraw = false;
-        }
+            // Debug: overlay hit test map visualization with random colours
+            if self.debug_hit_test {
+                for y in 0..self.height as usize {
+                    for x in 0..self.width as usize {
+                        let hit_idx = y * self.width as usize + x;
+                        let element_id = self.hit_test_map[hit_idx];
 
-        // Debug: visualize hit test map with random colours
-        if self.debug_hit_test {
-            let pixels = self.renderer.get_pixel_buffer_mut();
-            for y in 0..self.height as usize {
-                for x in 0..self.width as usize {
-                    let hit_idx = y * self.width as usize + x;
-                    let pixel_idx = hit_idx * 4;
-                    let element_id = self.hit_test_map[hit_idx];
-
-                    if element_id != HIT_NONE
-                        && (element_id as usize) < self.debug_hit_colours.len()
-                    {
-                        // Use random colour for this element ID
-                        let (r, g, b) = self.debug_hit_colours[element_id as usize];
-                        pixels[pixel_idx] = r;
-                        pixels[pixel_idx + 1] = g;
-                        pixels[pixel_idx + 2] = b;
+                        // Show all areas including HIT_NONE (0)
+                        if (element_id as usize) < self.debug_hit_colours.len() {
+                            let (r, g, b) = self.debug_hit_colours[element_id as usize];
+                            pixels[hit_idx] = pack_argb(r, g, b, 255);
+                        }
                     }
                 }
             }
-        }
 
-        self.renderer.present();
+            // Debug: overlay textbox mask visualization (grayscale alpha)
+            if self.show_textbox_mask {
+                for y in 0..self.height as usize {
+                    for x in 0..self.width as usize {
+                        let idx = y * self.width as usize + x;
+                        let alpha = self.textbox_mask[idx];
+                        // Show mask as white with varying alpha (0=black, 255=white)
+                        pixels[idx] = pack_argb(alpha, alpha, alpha, 255);
+                    }
+                }
+            }
+
+            // Present the buffer with UI and optional debug overlays
+            buffer.present().unwrap();
+        }
     }
 
     fn draw_window_controls(
-        pixels: &mut [u8],
+        pixels: &mut [u32],
         hit_test_map: &mut [u8],
         window_width: u32,
         window_height: u32,
@@ -867,14 +1007,12 @@ impl PhotonApp {
 
             // Fill grey to the right of the curve and populate hit test map
             let col_end = total_width.min(window_width - x_start);
-            for col in (*inset as usize + 2)..col_end {
+            for col in (*inset as usize + 2)..col_end - 1 {
                 let px = x_start + col;
-                let idx = (py * window_width + px) * 4;
-                let hit_idx = py * window_width + px;
+                let pixel_idx = (py * window_width + px) as usize;
 
-                for c in 0..3 {
-                    pixels[idx + c] = bg_colour[c];
-                }
+                // Write packed ARGB color directly
+                pixels[pixel_idx] = bg_colour;
 
                 // Determine which button this pixel belongs to
                 // Button widths: minimize (0-1), maximize (1-2), close (2-3.5)
@@ -895,61 +1033,33 @@ impl PhotonApp {
                         HIT_CLOSE_BUTTON
                     }
                 };
-                hit_test_map[hit_idx] = button_id;
+                hit_test_map[pixel_idx] = button_id;
             }
 
-            // Outer edge pixel (blend hairline with background texture behind)
             let px = x_start + *inset as usize;
-            if px < window_width {
-                let idx = (py * window_width + px) * 4;
+            let pixel_idx = (py * window_width + px) as usize;
+            pixels[pixel_idx] = blend_rgb_only(pixels[pixel_idx], edge_colour, *l, *h);
 
-                let mut existing = pixels[idx] as u64
-                    | (pixels[idx + 1] as u64) << 16
-                    | (pixels[idx + 2] as u64) << 32;
-                let mut light = edge_colour[0] as u64
-                    | (edge_colour[1] as u64) << 16
-                    | (edge_colour[2] as u64) << 32;
-                existing *= *l as u64;
-                light *= *h as u64;
-                let combined = existing + light;
-                pixels[idx] = (combined >> 8) as u8;
-                pixels[idx + 1] = (combined >> 24) as u8;
-                pixels[idx + 2] = (combined >> 40) as u8;
-            }
-
-            // Inner edge pixel (blend hairline with grey button background)
             let px = x_start + *inset as usize + 1;
-            if px < window_width {
-                let idx = (py * window_width + px) * 4;
-                let hit_idx = py * window_width + px;
+            let pixel_idx = (py * window_width + px) as usize;
+            pixels[pixel_idx] = blend_rgb_only(bg_colour, edge_colour, *h, *l);
 
-                let bg =
-                    bg_colour[0] as u64 | (bg_colour[1] as u64) << 16 | (bg_colour[2] as u64) << 32;
-                let light = edge_colour[0] as u64
-                    | (edge_colour[1] as u64) << 16
-                    | (edge_colour[2] as u64) << 32;
-                let combined = bg * *h as u64 + light * *l as u64;
-                pixels[idx] = (combined >> 8) as u8;
-                pixels[idx + 1] = (combined >> 24) as u8;
-                pixels[idx + 2] = (combined >> 40) as u8;
+            // Populate hit test map for inner edge pixel
+            let button_area_x_start = x_start + button_width / 4;
 
-                // Populate hit test map for inner edge pixel
-                let button_area_x_start = x_start + button_width / 4;
-
-                let button_id = if px < button_area_x_start {
+            let button_id = if px < button_area_x_start {
+                HIT_MINIMIZE_BUTTON
+            } else {
+                let x_in_button_area = px - button_area_x_start;
+                if x_in_button_area < button_width {
                     HIT_MINIMIZE_BUTTON
+                } else if x_in_button_area < button_width * 2 {
+                    HIT_MAXIMIZE_BUTTON
                 } else {
-                    let x_in_button_area = px - button_area_x_start;
-                    if x_in_button_area < button_width {
-                        HIT_MINIMIZE_BUTTON
-                    } else if x_in_button_area < button_width * 2 {
-                        HIT_MAXIMIZE_BUTTON
-                    } else {
-                        HIT_CLOSE_BUTTON
-                    }
-                };
-                hit_test_map[hit_idx] = button_id;
-            }
+                    HIT_CLOSE_BUTTON
+                }
+            };
+            hit_test_map[pixel_idx] = button_id;
 
             y_offset += 1;
         }
@@ -963,29 +1073,15 @@ impl PhotonApp {
 
             // Outer edge pixel (blend hairline with background texture behind)
             let py = y_start + button_height - 1 - i;
-            let idx = (py * window_width + px) * 4;
-            let mut existing = pixels[idx] as u64
-                | (pixels[idx + 1] as u64) << 16
-                | (pixels[idx + 2] as u64) << 32;
-            let mut light = edge_colour[0] as u64
-                | (edge_colour[1] as u64) << 16
-                | (edge_colour[2] as u64) << 32;
-            existing *= l as u64;
-            light *= h as u64;
-            let combined = existing + light;
-            pixels[idx] = (combined >> 8) as u8;
-            pixels[idx + 1] = (combined >> 24) as u8;
-            pixels[idx + 2] = (combined >> 40) as u8;
+            let pixel_idx = py * window_width + px;
+            pixels[pixel_idx] = blend_rgb_only(pixels[pixel_idx], edge_colour, l, h);
 
             // Fill grey above the curve (towards center of buttons) and populate hit test
             for row in (i + 2)..start {
                 let py = y_start + button_height - 1 - row;
-                let idx = (py * window_width + px) * 4;
-                let hit_idx = py * window_width + px;
+                let pixel_idx = py * window_width + px;
 
-                for c in 0..3 {
-                    pixels[idx + c] = bg_colour[c];
-                }
+                pixels[pixel_idx] = bg_colour;
 
                 // Determine which button this pixel belongs to
                 // Buttons are drawn with a button_width / 4 offset
@@ -1004,21 +1100,12 @@ impl PhotonApp {
                         HIT_CLOSE_BUTTON
                     }
                 };
-                hit_test_map[hit_idx] = button_id;
+                hit_test_map[pixel_idx] = button_id;
             }
 
             let py = y_start + button_height - 1 - (i + 1);
-            let idx = (py * window_width + px) * 4;
-            let hit_idx = py * window_width + px;
-            let bg =
-                bg_colour[0] as u64 | (bg_colour[1] as u64) << 16 | (bg_colour[2] as u64) << 32;
-            let light = edge_colour[0] as u64
-                | (edge_colour[1] as u64) << 16
-                | (edge_colour[2] as u64) << 32;
-            let combined = bg * h as u64 + light * l as u64;
-            pixels[idx] = (combined >> 8) as u8;
-            pixels[idx + 1] = (combined >> 24) as u8;
-            pixels[idx + 2] = (combined >> 40) as u8;
+            let pixel_idx = py * window_width + px;
+            pixels[pixel_idx] = blend_rgb_only(bg_colour, edge_colour, h, l);
 
             // Populate hit test map for inner edge pixel
             let button_area_x_start = x_start + button_width / 4;
@@ -1035,7 +1122,7 @@ impl PhotonApp {
                     HIT_CLOSE_BUTTON
                 }
             };
-            hit_test_map[hit_idx] = button_id;
+            hit_test_map[pixel_idx] = button_id;
 
             x_offset += 1;
         }
@@ -1043,11 +1130,8 @@ impl PhotonApp {
         x_start += button_width / 4;
 
         // Draw button symbols using glyph colours
-        let minimize_colour = (
-            theme::MINIMIZE_GLYPH[0] as u8,
-            theme::MINIMIZE_GLYPH[1] as u8,
-            theme::MINIMIZE_GLYPH[2] as u8,
-        );
+        let (r, g, b, _a) = unpack_argb(theme::MINIMIZE_GLYPH);
+        let minimize_colour = (r, g, b);
         Self::draw_minimize_symbol(
             pixels,
             window_width,
@@ -1057,16 +1141,10 @@ impl PhotonApp {
             minimize_colour,
         );
 
-        let maximize_colour = (
-            theme::MAXIMIZE_GLYPH[0] as u8,
-            theme::MAXIMIZE_GLYPH[1] as u8,
-            theme::MAXIMIZE_GLYPH[2] as u8,
-        );
-        let maximize_interior = (
-            theme::MAXIMIZE_GLYPH_INTERIOR[0] as u8,
-            theme::MAXIMIZE_GLYPH_INTERIOR[1] as u8,
-            theme::MAXIMIZE_GLYPH_INTERIOR[2] as u8,
-        );
+        let (r, g, b, _a) = unpack_argb(theme::MAXIMIZE_GLYPH);
+        let maximize_colour = (r, g, b);
+        let (r, g, b, _a) = unpack_argb(theme::MAXIMIZE_GLYPH_INTERIOR);
+        let maximize_interior = (r, g, b);
         Self::draw_maximize_symbol(
             pixels,
             window_width,
@@ -1077,11 +1155,8 @@ impl PhotonApp {
             maximize_interior,
         );
 
-        let close_colour = (
-            theme::CLOSE_GLYPH[0] as u8,
-            theme::CLOSE_GLYPH[1] as u8,
-            theme::CLOSE_GLYPH[2] as u8,
-        );
+        let (r, g, b, _a) = unpack_argb(theme::CLOSE_GLYPH);
+        let close_colour = (r, g, b);
         Self::draw_close_symbol(
             pixels,
             window_width,
@@ -1094,7 +1169,7 @@ impl PhotonApp {
     }
 
     fn draw_minimize_symbol(
-        pixels: &mut [u8],
+        pixels: &mut [u32],
         width: usize,
         x: usize,
         y: usize,
@@ -1105,6 +1180,8 @@ impl PhotonApp {
         let r_2 = r_render * r_render;
         let r_4 = r_2 * r_2;
         let r_3 = r_render * r_render * r_render;
+
+        let stroke_packed = pack_argb(stroke_colour.0, stroke_colour.1, stroke_colour.2, 255);
 
         for h in -(r_render as isize)..=(r_render as isize) {
             for w in -(r as isize)..=(r as isize) {
@@ -1119,26 +1196,33 @@ impl PhotonApp {
                 if dist_4 <= r_4 {
                     let px = (x as isize + w) as usize;
                     let py = (y as isize + h + (r / 2) as isize) as usize;
-                    let idx = (py * width + px) * 4;
+                    let idx = py * width + px;
                     let gradient = ((r_4 - dist_4) << 8) / (r_3 << 2);
                     if gradient > 255 {
-                        pixels[idx] = stroke_colour.0;
-                        pixels[idx + 1] = stroke_colour.1;
-                        pixels[idx + 2] = stroke_colour.2;
+                        pixels[idx] = stroke_packed;
                     } else {
-                        // Blend background towards stroke_colour
-                        let bg_r = pixels[idx] as u64;
-                        let bg_g = pixels[idx + 1] as u64;
-                        let bg_b = pixels[idx + 2] as u64;
-                        let stroke_r = stroke_colour.0 as u64;
-                        let stroke_g = stroke_colour.1 as u64;
-                        let stroke_b = stroke_colour.2 as u64;
+                        // Blend background towards stroke_colour using packed SIMD
                         let alpha = gradient as u64;
                         let inv_alpha = 256 - alpha;
 
-                        pixels[idx] = ((bg_r * inv_alpha + stroke_r * alpha) >> 8) as u8;
-                        pixels[idx + 1] = ((bg_g * inv_alpha + stroke_g * alpha) >> 8) as u8;
-                        pixels[idx + 2] = ((bg_b * inv_alpha + stroke_b * alpha) >> 8) as u8;
+                        // Widen bg pixel to packed channels
+                        let mut bg = pixels[idx] as u64;
+                        bg = (bg | (bg << 16)) & 0x0000FFFF0000FFFF;
+                        bg = (bg | (bg << 8)) & 0x00FF00FF00FF00FF;
+
+                        // Widen stroke color to packed channels
+                        let mut stroke = stroke_packed as u64;
+                        stroke = (stroke | (stroke << 16)) & 0x0000FFFF0000FFFF;
+                        stroke = (stroke | (stroke << 8)) & 0x00FF00FF00FF00FF;
+
+                        // Blend: bg * inv_alpha + stroke * alpha
+                        let mut blended = bg * inv_alpha + stroke * alpha;
+
+                        // Contract back to u32
+                        blended = (blended >> 8) & 0x00FF00FF00FF00FF;
+                        blended = (blended | (blended >> 8)) & 0x0000FFFF0000FFFF;
+                        blended = blended | (blended >> 16);
+                        pixels[idx] = blended as u32;
                     }
                 }
             }
@@ -1146,7 +1230,7 @@ impl PhotonApp {
     }
 
     fn draw_maximize_symbol(
-        pixels: &mut [u8],
+        pixels: &mut [u32],
         width: usize,
         x: usize,
         y: usize,
@@ -1168,6 +1252,9 @@ impl PhotonApp {
         let outer_edge_threshold = r_3 << 2;
         let inner_edge_threshold = r_inner_3 << 2;
 
+        let stroke_packed = pack_argb(stroke_colour.0, stroke_colour.1, stroke_colour.2, 255);
+        let fill_packed = pack_argb(fill_colour.0, fill_colour.1, fill_colour.2, 255);
+
         for h in -(r as isize)..=r as isize {
             for w in -(r as isize)..=r as isize {
                 let h2 = h * h;
@@ -1179,7 +1266,7 @@ impl PhotonApp {
                 if dist_4 <= r_4 {
                     let px = (x as isize + w) as usize;
                     let py = (y as isize + h) as usize;
-                    let idx = (py * width + px) * 4;
+                    let idx = py * width + px;
 
                     // Determine which zone we're in
                     let dist_from_outer = r_4 - dist_4;
@@ -1189,49 +1276,52 @@ impl PhotonApp {
 
                         // Inside inner squircle
                         if dist_from_inner <= inner_edge_threshold {
-                            // Inner edge: blend from stroke to fill
+                            // Inner edge: blend from stroke to fill using packed SIMD
                             let gradient = ((dist_from_inner) << 8) / inner_edge_threshold;
                             let alpha = gradient as u64;
                             let inv_alpha = 256 - alpha;
 
-                            let stroke_r = stroke_colour.0 as u64;
-                            let stroke_g = stroke_colour.1 as u64;
-                            let stroke_b = stroke_colour.2 as u64;
-                            let fill_r = fill_colour.0 as u64;
-                            let fill_g = fill_colour.1 as u64;
-                            let fill_b = fill_colour.2 as u64;
+                            let mut stroke = stroke_packed as u64;
+                            stroke = (stroke | (stroke << 16)) & 0x0000FFFF0000FFFF;
+                            stroke = (stroke | (stroke << 8)) & 0x00FF00FF00FF00FF;
 
-                            pixels[idx] = ((stroke_r * inv_alpha + fill_r * alpha) >> 8) as u8;
-                            pixels[idx + 1] = ((stroke_g * inv_alpha + fill_g * alpha) >> 8) as u8;
-                            pixels[idx + 2] = ((stroke_b * inv_alpha + fill_b * alpha) >> 8) as u8;
+                            let mut fill = fill_packed as u64;
+                            fill = (fill | (fill << 16)) & 0x0000FFFF0000FFFF;
+                            fill = (fill | (fill << 8)) & 0x00FF00FF00FF00FF;
+
+                            let mut blended = stroke * inv_alpha + fill * alpha;
+                            blended = (blended >> 8) & 0x00FF00FF00FF00FF;
+                            blended = (blended | (blended >> 8)) & 0x0000FFFF0000FFFF;
+                            blended = blended | (blended >> 16);
+                            pixels[idx] = blended as u32;
                         } else {
                             // Solid fill center
-                            pixels[idx] = fill_colour.0;
-                            pixels[idx + 1] = fill_colour.1;
-                            pixels[idx + 2] = fill_colour.2;
+                            pixels[idx] = fill_packed;
                         }
                     } else {
                         // Between inner and outer: stroke ring
                         if dist_from_outer <= outer_edge_threshold {
-                            // Outer edge: blend from background to stroke
+                            // Outer edge: blend from background to stroke using packed SIMD
                             let gradient = ((dist_from_outer) << 8) / outer_edge_threshold;
-                            let bg_r = pixels[idx] as u64;
-                            let bg_g = pixels[idx + 1] as u64;
-                            let bg_b = pixels[idx + 2] as u64;
-                            let stroke_r = stroke_colour.0 as u64;
-                            let stroke_g = stroke_colour.1 as u64;
-                            let stroke_b = stroke_colour.2 as u64;
                             let alpha = gradient as u64;
                             let inv_alpha = 256 - alpha;
 
-                            pixels[idx] = ((bg_r * inv_alpha + stroke_r * alpha) >> 8) as u8;
-                            pixels[idx + 1] = ((bg_g * inv_alpha + stroke_g * alpha) >> 8) as u8;
-                            pixels[idx + 2] = ((bg_b * inv_alpha + stroke_b * alpha) >> 8) as u8;
+                            let mut bg = pixels[idx] as u64;
+                            bg = (bg | (bg << 16)) & 0x0000FFFF0000FFFF;
+                            bg = (bg | (bg << 8)) & 0x00FF00FF00FF00FF;
+
+                            let mut stroke = stroke_packed as u64;
+                            stroke = (stroke | (stroke << 16)) & 0x0000FFFF0000FFFF;
+                            stroke = (stroke | (stroke << 8)) & 0x00FF00FF00FF00FF;
+
+                            let mut blended = bg * inv_alpha + stroke * alpha;
+                            blended = (blended >> 8) & 0x00FF00FF00FF00FF;
+                            blended = (blended | (blended >> 8)) & 0x0000FFFF0000FFFF;
+                            blended = blended | (blended >> 16);
+                            pixels[idx] = blended as u32;
                         } else {
                             // Solid stroke ring
-                            pixels[idx] = stroke_colour.0;
-                            pixels[idx + 1] = stroke_colour.1;
-                            pixels[idx + 2] = stroke_colour.2;
+                            pixels[idx] = stroke_packed;
                         }
                     }
                 }
@@ -1240,7 +1330,7 @@ impl PhotonApp {
     }
 
     fn draw_close_symbol(
-        pixels: &mut [u8],
+        pixels: &mut [u32],
         width: usize,
         x: usize,
         y: usize,
@@ -1269,6 +1359,9 @@ impl PhotonApp {
         let x2_end = cxf - end;
         let y2_end = cyf + end;
 
+        // Pack stroke color once
+        let stroke_packed = pack_argb(stroke_colour.0, stroke_colour.1, stroke_colour.2, 255);
+
         // Scan the bounding box and render both capsules
         let min_x = ((x as i32) - (r as i32)).max(0);
         let max_x = ((x as i32) + (r as i32)).min(width as i32);
@@ -1278,6 +1371,7 @@ impl PhotonApp {
         let cxi = x as i32;
         let cyi = y as i32;
 
+        // Quadrant 1: top-left (diagonal 1)
         for py in min_y..cyi {
             for px in min_x..cxi {
                 let px_f = px as f32 + 0.5;
@@ -1287,7 +1381,7 @@ impl PhotonApp {
                     px_f, py_f, x1_start, y1_start, x1_end, y1_end, radius,
                 );
 
-                let alpha = if dist < -0.5 {
+                let alpha_f = if dist < -0.5 {
                     1.
                 } else if dist < 0.5 {
                     0.5 - dist
@@ -1295,25 +1389,29 @@ impl PhotonApp {
                     0.
                 };
 
-                if alpha > 0. {
-                    let idx = (py as usize * width + px as usize) * 4;
-                    if idx + 3 < pixels.len() {
-                        let existing_r = pixels[idx] as f32;
-                        let existing_g = pixels[idx + 1] as f32;
-                        let existing_b = pixels[idx + 2] as f32;
+                if alpha_f > 0. {
+                    let idx = py as usize * width + px as usize;
+                    let alpha = (alpha_f * 256.0) as u64;
+                    let inv_alpha = 256 - alpha;
 
-                        pixels[idx] =
-                            (existing_r * (1.0 - alpha) + stroke_colour.0 as f32 * alpha) as u8;
-                        pixels[idx + 1] =
-                            (existing_g * (1. - alpha) + stroke_colour.1 as f32 * alpha) as u8;
-                        pixels[idx + 2] =
-                            (existing_b * (1. - alpha) + stroke_colour.2 as f32 * alpha) as u8;
-                        pixels[idx + 3] = 255;
-                    }
+                    let mut bg = pixels[idx] as u64;
+                    bg = (bg | (bg << 16)) & 0x0000FFFF0000FFFF;
+                    bg = (bg | (bg << 8)) & 0x00FF00FF00FF00FF;
+
+                    let mut stroke = stroke_packed as u64;
+                    stroke = (stroke | (stroke << 16)) & 0x0000FFFF0000FFFF;
+                    stroke = (stroke | (stroke << 8)) & 0x00FF00FF00FF00FF;
+
+                    let mut blended = bg * inv_alpha + stroke * alpha;
+                    blended = (blended >> 8) & 0x00FF00FF00FF00FF;
+                    blended = (blended | (blended >> 8)) & 0x0000FFFF0000FFFF;
+                    blended = blended | (blended >> 16);
+                    pixels[idx] = blended as u32;
                 }
             }
         }
 
+        // Quadrant 2: top-right (diagonal 2)
         for py in min_y..cyi {
             for px in cxi..max_x {
                 let px_f = px as f32 + 0.5;
@@ -1323,7 +1421,7 @@ impl PhotonApp {
                     px_f, py_f, x2_start, y2_start, x2_end, y2_end, radius,
                 );
 
-                let alpha = if dist < -0.5 {
+                let alpha_f = if dist < -0.5 {
                     1.
                 } else if dist < 0.5 {
                     0.5 - dist
@@ -1331,25 +1429,29 @@ impl PhotonApp {
                     0.
                 };
 
-                if alpha > 0. {
-                    let idx = (py as usize * width + px as usize) * 4;
-                    if idx + 3 < pixels.len() {
-                        let existing_r = pixels[idx] as f32;
-                        let existing_g = pixels[idx + 1] as f32;
-                        let existing_b = pixels[idx + 2] as f32;
+                if alpha_f > 0. {
+                    let idx = py as usize * width + px as usize;
+                    let alpha = (alpha_f * 256.0) as u64;
+                    let inv_alpha = 256 - alpha;
 
-                        pixels[idx] =
-                            (existing_r * (1.0 - alpha) + stroke_colour.0 as f32 * alpha) as u8;
-                        pixels[idx + 1] =
-                            (existing_g * (1. - alpha) + stroke_colour.1 as f32 * alpha) as u8;
-                        pixels[idx + 2] =
-                            (existing_b * (1. - alpha) + stroke_colour.2 as f32 * alpha) as u8;
-                        pixels[idx + 3] = 255;
-                    }
+                    let mut bg = pixels[idx] as u64;
+                    bg = (bg | (bg << 16)) & 0x0000FFFF0000FFFF;
+                    bg = (bg | (bg << 8)) & 0x00FF00FF00FF00FF;
+
+                    let mut stroke = stroke_packed as u64;
+                    stroke = (stroke | (stroke << 16)) & 0x0000FFFF0000FFFF;
+                    stroke = (stroke | (stroke << 8)) & 0x00FF00FF00FF00FF;
+
+                    let mut blended = bg * inv_alpha + stroke * alpha;
+                    blended = (blended >> 8) & 0x00FF00FF00FF00FF;
+                    blended = (blended | (blended >> 8)) & 0x0000FFFF0000FFFF;
+                    blended = blended | (blended >> 16);
+                    pixels[idx] = blended as u32;
                 }
             }
         }
 
+        // Quadrant 3: bottom-left (diagonal 2)
         for py in cyi..max_y {
             for px in min_x..cxi {
                 let px_f = px as f32 + 0.5;
@@ -1359,7 +1461,7 @@ impl PhotonApp {
                     px_f, py_f, x2_start, y2_start, x2_end, y2_end, radius,
                 );
 
-                let alpha = if dist < -0.5 {
+                let alpha_f = if dist < -0.5 {
                     1.
                 } else if dist < 0.5 {
                     0.5 - dist
@@ -1367,25 +1469,29 @@ impl PhotonApp {
                     0.
                 };
 
-                if alpha > 0. {
-                    let idx = (py as usize * width + px as usize) * 4;
-                    if idx + 3 < pixels.len() {
-                        let existing_r = pixels[idx] as f32;
-                        let existing_g = pixels[idx + 1] as f32;
-                        let existing_b = pixels[idx + 2] as f32;
+                if alpha_f > 0. {
+                    let idx = py as usize * width + px as usize;
+                    let alpha = (alpha_f * 256.0) as u64;
+                    let inv_alpha = 256 - alpha;
 
-                        pixels[idx] =
-                            (existing_r * (1.0 - alpha) + stroke_colour.0 as f32 * alpha) as u8;
-                        pixels[idx + 1] =
-                            (existing_g * (1. - alpha) + stroke_colour.1 as f32 * alpha) as u8;
-                        pixels[idx + 2] =
-                            (existing_b * (1. - alpha) + stroke_colour.2 as f32 * alpha) as u8;
-                        pixels[idx + 3] = 255;
-                    }
+                    let mut bg = pixels[idx] as u64;
+                    bg = (bg | (bg << 16)) & 0x0000FFFF0000FFFF;
+                    bg = (bg | (bg << 8)) & 0x00FF00FF00FF00FF;
+
+                    let mut stroke = stroke_packed as u64;
+                    stroke = (stroke | (stroke << 16)) & 0x0000FFFF0000FFFF;
+                    stroke = (stroke | (stroke << 8)) & 0x00FF00FF00FF00FF;
+
+                    let mut blended = bg * inv_alpha + stroke * alpha;
+                    blended = (blended >> 8) & 0x00FF00FF00FF00FF;
+                    blended = (blended | (blended >> 8)) & 0x0000FFFF0000FFFF;
+                    blended = blended | (blended >> 16);
+                    pixels[idx] = blended as u32;
                 }
             }
         }
 
+        // Quadrant 4: bottom-right (diagonal 1)
         for py in cyi..max_y {
             for px in cxi..max_x {
                 let px_f = px as f32 + 0.5;
@@ -1395,7 +1501,7 @@ impl PhotonApp {
                     px_f, py_f, x1_start, y1_start, x1_end, y1_end, radius,
                 );
 
-                let alpha = if dist < -0.5 {
+                let alpha_f = if dist < -0.5 {
                     1.
                 } else if dist < 0.5 {
                     0.5 - dist
@@ -1403,21 +1509,24 @@ impl PhotonApp {
                     0.
                 };
 
-                if alpha > 0. {
-                    let idx = (py as usize * width + px as usize) * 4;
-                    if idx + 3 < pixels.len() {
-                        let existing_r = pixels[idx] as f32;
-                        let existing_g = pixels[idx + 1] as f32;
-                        let existing_b = pixels[idx + 2] as f32;
+                if alpha_f > 0. {
+                    let idx = py as usize * width + px as usize;
+                    let alpha = (alpha_f * 256.0) as u64;
+                    let inv_alpha = 256 - alpha;
 
-                        pixels[idx] =
-                            (existing_r * (1.0 - alpha) + stroke_colour.0 as f32 * alpha) as u8;
-                        pixels[idx + 1] =
-                            (existing_g * (1. - alpha) + stroke_colour.1 as f32 * alpha) as u8;
-                        pixels[idx + 2] =
-                            (existing_b * (1. - alpha) + stroke_colour.2 as f32 * alpha) as u8;
-                        pixels[idx + 3] = 255;
-                    }
+                    let mut bg = pixels[idx] as u64;
+                    bg = (bg | (bg << 16)) & 0x0000FFFF0000FFFF;
+                    bg = (bg | (bg << 8)) & 0x00FF00FF00FF00FF;
+
+                    let mut stroke = stroke_packed as u64;
+                    stroke = (stroke | (stroke << 16)) & 0x0000FFFF0000FFFF;
+                    stroke = (stroke | (stroke << 8)) & 0x00FF00FF00FF00FF;
+
+                    let mut blended = bg * inv_alpha + stroke * alpha;
+                    blended = (blended >> 8) & 0x00FF00FF00FF00FF;
+                    blended = (blended | (blended >> 8)) & 0x0000FFFF0000FFFF;
+                    blended = blended | (blended >> 16);
+                    pixels[idx] = blended as u32;
                 }
             }
         }
@@ -1452,143 +1561,52 @@ impl PhotonApp {
         (dist_x * dist_x + dist_y * dist_y).sqrt() - radius
     }
 
-    /// Draw just the background texture (noisy gradient)
-    fn draw_background_texture(pixels: &mut [u8], width: u32, height: u32) {
+    fn draw_background_texture(pixels: &mut [u32], width: usize, height: usize) {
         use rayon::prelude::*;
 
-        let bg_colour = theme::BACKGROUND;
-        let width_bytes = (width * 4) as usize;
-
-        // Skip first and last rows, process middle rows in parallel
-        let middle_rows = &mut pixels[width_bytes..(height as usize - 1) * width_bytes];
+        let middle_rows = &mut pixels[width..(height - 1) * width];
 
         middle_rows
-            .par_chunks_mut(width_bytes)
+            .par_chunks_mut(width)
             .enumerate()
             .for_each(|(row_idx, row_pixels)| {
-                let y = (row_idx + 1) as u32;
-                // Reset RNG state at start of each row (consistent scanlines)
-                let rng_seed: u32 =
-                    0xDEADBEEF ^ ((y.wrapping_sub(height / 2)).wrapping_mul(0x9E3779B9));
-                let mut rng_state = rng_seed;
-
-                let start_colour = [
-                    (rng_state % bg_colour[0] as u32) as u8,
-                    ((rng_state >> 8) % bg_colour[1] as u32) as u8,
-                    ((rng_state >> 16) % bg_colour[2] as u32) as u8,
-                ];
-                let mut fill_colour = start_colour;
+                let mut rng: usize = 0xDEADBEEF01234567
+                    ^ ((row_idx.wrapping_sub(height / 2)).wrapping_mul(0x9E3779B94517B397));
+                let mask = 0xFF0F071F; // ARGB
+                let alpha = 0xFF000000;
+                let ones = 0x00010101;
+                let base = 0xFF0C140E;
+                let mut colour = rng as u32 & mask | alpha;
 
                 // Right half: left-to-right
                 for x in width / 2..width - 1 {
-                    rng_state ^= rng_state.rotate_left(5).wrapping_add(7);
-
-                    // Extract 2 bits per channel from different parts of rng_state
-                    // Values: 0, 1, 2, 3  →  we'll map to: -1, 0, +1, 0
-                    let r0 = (rng_state & 0x03) as u8;
-                    let r1 = ((rng_state >> 5) & 0x03) as u8;
-                    let r2 = ((rng_state >> 19) & 0x03) as u8;
-
-                    // Apply deltas: 0→-1, 2→+1, 1,3→0
-                    if r0 == 0 {
-                        fill_colour[0] = fill_colour[0].wrapping_sub(1);
-                    } else if r0 == 2 {
-                        fill_colour[0] = fill_colour[0].wrapping_add(1);
-                    }
-
-                    if r1 == 0 {
-                        fill_colour[1] = fill_colour[1].wrapping_sub(1);
-                    } else if r1 == 2 {
-                        fill_colour[1] = fill_colour[1].wrapping_add(1);
-                    }
-
-                    if r2 == 0 {
-                        fill_colour[2] = fill_colour[2].wrapping_sub(1);
-                    } else if r2 == 2 {
-                        fill_colour[2] = fill_colour[2].wrapping_add(1);
-                    }
-
-                    // Clamp to valid ranges
-                    if (fill_colour[0] as i8).is_negative() {
-                        fill_colour[0] = bg_colour[0];
-                    } else if fill_colour[0] > bg_colour[0] {
-                        fill_colour[0] = 0;
-                    }
-                    if (fill_colour[1] as i8).is_negative() {
-                        fill_colour[1] = 0;
-                    } else if fill_colour[1] > bg_colour[1] {
-                        fill_colour[1] = bg_colour[1];
-                    }
-                    if (fill_colour[2] as i8).is_negative() {
-                        fill_colour[2] = 0;
-                    } else if fill_colour[2] > bg_colour[2] {
-                        fill_colour[2] = bg_colour[2];
-                    }
-
-                    let pixel_idx = (x * 4) as usize;
-                    for c in 0..3 {
-                        row_pixels[pixel_idx + c] = fill_colour[c] + theme::BACKGROUND_ADDER[c];
-                    }
-                    row_pixels[pixel_idx + 3] = 255;
+                    rng ^= rng.rotate_left(13).wrapping_add(12345678901);
+                    let adder = rng as u32 & ones;
+                    colour = colour + adder & mask;
+                    let subtractor = (rng >> 5) as u32 & ones;
+                    colour = colour - subtractor & mask;
+                    row_pixels[x] = colour + base | alpha;
                 }
 
                 // Left half: right-to-left (mirror)
-                rng_state = rng_seed;
-                fill_colour = start_colour;
+                rng = 0xDEADBEEF01234567
+                    ^ ((row_idx.wrapping_sub(height / 2)).wrapping_mul(0x9E3779B94517B397));
+                colour = rng as u32 & mask | alpha;
 
                 for x in (1..width / 2).rev() {
-                    rng_state ^= rng_state.rotate_left(5).wrapping_sub(7);
-
-                    let r0 = (rng_state & 0x03) as u8;
-                    let r1 = ((rng_state >> 5) & 0x03) as u8;
-                    let r2 = ((rng_state >> 19) & 0x03) as u8;
-
-                    if r0 == 0 {
-                        fill_colour[0] = fill_colour[0].wrapping_sub(1);
-                    } else if r0 == 2 {
-                        fill_colour[0] = fill_colour[0].wrapping_add(1);
-                    }
-
-                    if r1 == 0 {
-                        fill_colour[1] = fill_colour[1].wrapping_sub(1);
-                    } else if r1 == 2 {
-                        fill_colour[1] = fill_colour[1].wrapping_add(1);
-                    }
-
-                    if r2 == 0 {
-                        fill_colour[2] = fill_colour[2].wrapping_sub(1);
-                    } else if r2 == 2 {
-                        fill_colour[2] = fill_colour[2].wrapping_add(1);
-                    }
-
-                    if (fill_colour[0] as i8).is_negative() {
-                        fill_colour[0] = bg_colour[0];
-                    } else if fill_colour[0] > bg_colour[0] {
-                        fill_colour[0] = 0;
-                    }
-                    if (fill_colour[1] as i8).is_negative() {
-                        fill_colour[1] = 0;
-                    } else if fill_colour[1] > bg_colour[1] {
-                        fill_colour[1] = bg_colour[1];
-                    }
-                    if (fill_colour[2] as i8).is_negative() {
-                        fill_colour[2] = 0;
-                    } else if fill_colour[2] > bg_colour[2] {
-                        fill_colour[2] = bg_colour[2];
-                    }
-
-                    let pixel_idx = (x * 4) as usize;
-                    for c in 0..3 {
-                        row_pixels[pixel_idx + c] = fill_colour[c] + theme::BACKGROUND_ADDER[c];
-                    }
-                    row_pixels[pixel_idx + 3] = 255;
+                    rng ^= rng.rotate_left(13).wrapping_sub(12345678901);
+                    let adder = rng as u32 & ones;
+                    colour = colour + adder & mask;
+                    let subtractor = (rng >> 5) as u32 & ones;
+                    colour = colour - subtractor & mask;
+                    row_pixels[x] = colour + base | alpha;
                 }
             });
     }
 
     /// Draw window edge hairlines and apply squircle alpha mask
     fn draw_window_edges_and_mask(
-        pixels: &mut [u8],
+        pixels: &mut [u32],
         hit_test_map: &mut [u8],
         width: u32,
         height: u32,
@@ -1601,83 +1619,55 @@ impl PhotonApp {
         // Fill all four edges with white before squircle clipping
         // Top edge
         for x in 0..width {
-            let idx = (0 * width + x) * 4;
-            pixels[idx as usize] = light_colour[0];
-            pixels[idx as usize + 1] = light_colour[1];
-            pixels[idx as usize + 2] = light_colour[2];
-            pixels[idx as usize + 3] = 255;
+            let idx = 0 * width + x;
+            pixels[idx as usize] = light_colour;
         }
 
         // Bottom edge
         for x in 0..width {
-            let idx = ((height - 1) * width + x) * 4;
-            pixels[idx as usize] = shadow_colour[0];
-            pixels[idx as usize + 1] = shadow_colour[1];
-            pixels[idx as usize + 2] = shadow_colour[2];
-            pixels[idx as usize + 3] = 255;
+            let idx = (height - 1) * width + x;
+            pixels[idx as usize] = shadow_colour;
         }
 
         // Left edge
         for y in 0..height {
-            let idx = (y * width + 0) * 4;
-            pixels[idx as usize] = light_colour[0];
-            pixels[idx as usize + 1] = light_colour[1];
-            pixels[idx as usize + 2] = light_colour[2];
-            pixels[idx as usize + 3] = 255;
+            let idx = y * width + 0;
+            pixels[idx as usize] = light_colour;
         }
 
         // Right edge
         for y in 0..height {
-            let idx = (y * width + (width - 1)) * 4;
-            pixels[idx as usize] = shadow_colour[0];
-            pixels[idx as usize + 1] = shadow_colour[1];
-            pixels[idx as usize + 2] = shadow_colour[2];
-            pixels[idx as usize + 3] = 255;
+            let idx = y * width + (width - 1);
+            pixels[idx as usize] = shadow_colour;
         }
 
         // Fill four corner squares and clear hitmap
         for row in 0..start {
             for col in 0..start {
-                let idx = (row * width as usize + col) * 4;
-                let hit_idx = row * width as usize + col;
+                let idx = row * width as usize + col;
                 pixels[idx] = 0;
-                pixels[idx + 1] = 0;
-                pixels[idx + 2] = 0;
-                pixels[idx + 3] = 0;
-                hit_test_map[hit_idx] = HIT_NONE;
+                hit_test_map[idx] = HIT_NONE;
             }
         }
         for row in 0..start {
             for col in (width as usize - start)..width as usize {
-                let idx = (row * width as usize + col) * 4;
-                let hit_idx = row * width as usize + col;
+                let idx = row * width as usize + col;
                 pixels[idx] = 0;
-                pixels[idx + 1] = 0;
-                pixels[idx + 2] = 0;
-                pixels[idx + 3] = 0;
-                hit_test_map[hit_idx] = HIT_NONE;
+                hit_test_map[idx] = HIT_NONE;
             }
         }
         for row in (height as usize - start)..height as usize {
             for col in 0..start {
-                let idx = (row * width as usize + col) * 4;
-                let hit_idx = row * width as usize + col;
+                let idx = row * width as usize + col;
                 pixels[idx] = 0;
-                pixels[idx + 1] = 0;
-                pixels[idx + 2] = 0;
-                pixels[idx + 3] = 0;
-                hit_test_map[hit_idx] = HIT_NONE;
+                hit_test_map[idx] = HIT_NONE;
             }
         }
         for row in (height as usize - start)..height as usize {
             for col in (width as usize - start)..width as usize {
-                let idx = (row * width as usize + col) * 4;
-                let hit_idx = row * width as usize + col;
+                let idx = row * width as usize + col;
                 pixels[idx] = 0;
-                pixels[idx + 1] = 0;
-                pixels[idx + 2] = 0;
-                pixels[idx + 3] = 0;
-                hit_test_map[hit_idx] = HIT_NONE;
+                hit_test_map[idx] = HIT_NONE;
             }
         }
 
@@ -1687,77 +1677,37 @@ impl PhotonApp {
             let (inset, l, h) = crossings[crossing];
             // Left edge fill
             for idx in y_top * width as usize..y_top * width as usize + inset as usize {
-                pixels[idx * 4] = 0;
-                pixels[idx * 4 + 1] = 0;
-                pixels[idx * 4 + 2] = 0;
-                pixels[idx * 4 + 3] = 0;
+                pixels[idx] = 0;
                 hit_test_map[idx] = HIT_NONE;
             }
 
             // Left edge outer pixel
-            let idx = (y_top * width as usize + inset as usize) * 4;
-            let hit_idx = y_top * width as usize + inset as usize;
-            let light = light_colour[0] as u64
-                | (light_colour[1] as u64) << 16
-                | (light_colour[2] as u64) << 32;
-            let result = light * h as u64;
-            pixels[idx] = (result >> 8) as u8;
-            pixels[idx + 1] = (result >> 24) as u8;
-            pixels[idx + 2] = (result >> 40) as u8;
-            pixels[idx + 3] = h;
+            let pixel_idx = y_top * width as usize + inset as usize;
+            pixels[pixel_idx] = blend_alpha(light_colour, h);
             if h < 255 {
-                hit_test_map[hit_idx] = HIT_NONE; // NEEDS FIXED!!!
+                hit_test_map[pixel_idx] = HIT_NONE; // NEEDS FIXED!!!
             }
 
             // Left edge inner pixel
-            let idx = idx + 4;
-            let existing = pixels[idx] as u64
-                | (pixels[idx + 1] as u64) << 16
-                | (pixels[idx + 2] as u64) << 32;
-            let light = light_colour[0] as u64
-                | (light_colour[1] as u64) << 16
-                | (light_colour[2] as u64) << 32;
-            let combined = existing * h as u64 + light * l as u64;
-            pixels[idx] = (combined >> 8) as u8;
-            pixels[idx + 1] = (combined >> 24) as u8;
-            pixels[idx + 2] = (combined >> 40) as u8;
+            let pixel_idx = pixel_idx + 1;
+            pixels[pixel_idx] = blend_rgb_only(pixels[pixel_idx], light_colour, h, l);
 
             // Right edge inner pixel
-            let idx = (y_top * width as usize + width as usize - 2 - inset as usize) * 4;
-            let existing = pixels[idx] as u64
-                | (pixels[idx + 1] as u64) << 16
-                | (pixels[idx + 2] as u64) << 32;
-            let shadow = shadow_colour[0] as u64
-                | (shadow_colour[1] as u64) << 16
-                | (shadow_colour[2] as u64) << 32;
-            let combined = existing * h as u64 + shadow * l as u64;
-            pixels[idx] = (combined >> 8) as u8;
-            pixels[idx + 1] = (combined >> 24) as u8;
-            pixels[idx + 2] = (combined >> 40) as u8;
+            let pixel_idx = y_top * width as usize + width as usize - 2 - inset as usize;
+            pixels[pixel_idx] = blend_rgb_only(pixels[pixel_idx], shadow_colour, h, l);
 
             // Right edge outer pixel
-            let idx = idx + 4;
-            let hit_idx = y_top * width as usize + width as usize - 1 - inset as usize;
-            let light = shadow_colour[0] as u64
-                | (shadow_colour[1] as u64) << 16
-                | (shadow_colour[2] as u64) << 32;
-            let result = light * h as u64;
-            pixels[idx] = (result >> 8) as u8;
-            pixels[idx + 1] = (result >> 24) as u8;
-            pixels[idx + 2] = (result >> 40) as u8;
-            pixels[idx + 3] = h;
+            let pixel_idx = pixel_idx + 1;
+            pixels[pixel_idx] = blend_alpha(shadow_colour, h);
             if h < 255 {
-                hit_test_map[hit_idx] = HIT_NONE;
+                hit_test_map[pixel_idx] = HIT_NONE;
             }
 
             // Right edge fill
             for idx in (y_top * width as usize + width as usize - inset as usize)
                 ..((y_top + 1) * width as usize)
             {
-                pixels[idx * 4] = 0;
-                pixels[idx * 4 + 1] = 0;
-                pixels[idx * 4 + 2] = 0;
-                pixels[idx * 4 + 3] = 0;
+                pixels[idx] = 0;
                 hit_test_map[idx] = HIT_NONE;
             }
             y_top += 1;
@@ -1770,77 +1720,37 @@ impl PhotonApp {
 
             // Left edge fill
             for idx in y_bottom * width as usize..y_bottom * width as usize + inset as usize {
-                pixels[idx * 4] = 0;
-                pixels[idx * 4 + 1] = 0;
-                pixels[idx * 4 + 2] = 0;
-                pixels[idx * 4 + 3] = 0;
+                pixels[idx] = 0;
                 hit_test_map[idx] = HIT_NONE;
             }
 
             // Left outer edge pixel
-            let idx = (y_bottom * width as usize + inset as usize) * 4;
-            let hit_idx = y_bottom * width as usize + inset as usize;
-            let light = light_colour[0] as u64
-                | (light_colour[1] as u64) << 16
-                | (light_colour[2] as u64) << 32;
-            let result = light * h as u64;
-            pixels[idx] = (result >> 8) as u8;
-            pixels[idx + 1] = (result >> 24) as u8;
-            pixels[idx + 2] = (result >> 40) as u8;
-            pixels[idx + 3] = h;
+            let pixel_idx = y_bottom * width as usize + inset as usize;
+            pixels[pixel_idx] = blend_alpha(light_colour, h);
             if h < 255 {
-                hit_test_map[hit_idx] = HIT_NONE;
+                hit_test_map[pixel_idx] = HIT_NONE;
             }
 
             // Left inner edge pixel
-            let idx = idx + 4;
-            let existing = pixels[idx] as u64
-                | (pixels[idx + 1] as u64) << 16
-                | (pixels[idx + 2] as u64) << 32;
-            let light = light_colour[0] as u64
-                | (light_colour[1] as u64) << 16
-                | (light_colour[2] as u64) << 32;
-            let combined = existing * h as u64 + light * l as u64;
-            pixels[idx] = (combined >> 8) as u8;
-            pixels[idx + 1] = (combined >> 24) as u8;
-            pixels[idx + 2] = (combined >> 40) as u8;
+            let pixel_idx = pixel_idx + 1;
+            pixels[pixel_idx] = blend_rgb_only(pixels[pixel_idx], light_colour, h, l);
 
             // Right edge inner pixel
-            let idx = (y_bottom * width as usize + width as usize - 2 - inset as usize) * 4;
-            let existing = pixels[idx] as u64
-                | (pixels[idx + 1] as u64) << 16
-                | (pixels[idx + 2] as u64) << 32;
-            let shadow = shadow_colour[0] as u64
-                | (shadow_colour[1] as u64) << 16
-                | (shadow_colour[2] as u64) << 32;
-            let combined = existing * h as u64 + shadow * l as u64;
-            pixels[idx] = (combined >> 8) as u8;
-            pixels[idx + 1] = (combined >> 24) as u8;
-            pixels[idx + 2] = (combined >> 40) as u8;
+            let pixel_idx = y_bottom * width as usize + width as usize - 2 - inset as usize;
+            pixels[pixel_idx] = blend_rgb_only(pixels[pixel_idx], shadow_colour, h, l);
 
             // Right edge outer pixel
-            let idx = idx + 4;
-            let hit_idx = y_bottom * width as usize + width as usize - 1 - inset as usize;
-            let light = shadow_colour[0] as u64
-                | (shadow_colour[1] as u64) << 16
-                | (shadow_colour[2] as u64) << 32;
-            let result = light * h as u64;
-            pixels[idx] = (result >> 8) as u8;
-            pixels[idx + 1] = (result >> 24) as u8;
-            pixels[idx + 2] = (result >> 40) as u8;
-            pixels[idx + 3] = h;
+            let pixel_idx = pixel_idx + 1;
+            pixels[pixel_idx] = blend_alpha(shadow_colour, h);
             if h < 255 {
-                hit_test_map[hit_idx] = HIT_NONE;
+                hit_test_map[pixel_idx] = HIT_NONE;
             }
 
             // Right edge fill
             for idx in (y_bottom * width as usize + width as usize - inset as usize)
                 ..((y_bottom + 1) * width as usize)
             {
-                pixels[idx * 4] = 0;
-                pixels[idx * 4 + 1] = 0;
-                pixels[idx * 4 + 2] = 0;
-                pixels[idx * 4 + 3] = 0;
+                pixels[idx] = 0;
                 hit_test_map[idx] = HIT_NONE;
             }
 
@@ -1854,80 +1764,38 @@ impl PhotonApp {
 
             // Top edge fill
             for row in 0..inset as usize {
-                let idx = (row * width as usize + x_left) * 4;
-                let hit_idx = row * width as usize + x_left;
+                let idx = row * width as usize + x_left;
                 pixels[idx] = 0;
-                pixels[idx + 1] = 0;
-                pixels[idx + 2] = 0;
-                pixels[idx + 3] = 0;
-                hit_test_map[hit_idx] = HIT_NONE;
+                hit_test_map[idx] = HIT_NONE;
             }
 
             // Top outer edge pixel
-            let idx = (inset as usize * width as usize + x_left) * 4;
-            let hit_idx = inset as usize * width as usize + x_left;
-            let light = light_colour[0] as u64
-                | (light_colour[1] as u64) << 16
-                | (light_colour[2] as u64) << 32;
-            let result = light * h as u64;
-            pixels[idx] = (result >> 8) as u8;
-            pixels[idx + 1] = (result >> 24) as u8;
-            pixels[idx + 2] = (result >> 40) as u8;
-            pixels[idx + 3] = h;
+            let pixel_idx = inset as usize * width as usize + x_left;
+            pixels[pixel_idx] = blend_alpha(light_colour, h);
             if h < 255 {
-                hit_test_map[hit_idx] = HIT_NONE;
+                hit_test_map[pixel_idx] = HIT_NONE;
             }
 
             // Top inner edge pixel
-            let idx = ((inset as usize + 1) * width as usize + x_left) * 4;
-            let existing = pixels[idx] as u64
-                | (pixels[idx + 1] as u64) << 16
-                | (pixels[idx + 2] as u64) << 32;
-            let light = light_colour[0] as u64
-                | (light_colour[1] as u64) << 16
-                | (light_colour[2] as u64) << 32;
-            let combined = existing * h as u64 + light * l as u64;
-            pixels[idx] = (combined >> 8) as u8;
-            pixels[idx + 1] = (combined >> 24) as u8;
-            pixels[idx + 2] = (combined >> 40) as u8;
+            let pixel_idx = (inset as usize + 1) * width as usize + x_left;
+            pixels[pixel_idx] = blend_rgb_only(pixels[pixel_idx], light_colour, h, l);
 
             // Bottom outer edge pixel
-            let idx = ((height as usize - 1 - inset as usize) * width as usize + x_left) * 4;
-            let hit_idx = (height as usize - 1 - inset as usize) * width as usize + x_left;
-            let shadow = shadow_colour[0] as u64
-                | (shadow_colour[1] as u64) << 16
-                | (shadow_colour[2] as u64) << 32;
-            let result = shadow * h as u64;
-            pixels[idx] = (result >> 8) as u8;
-            pixels[idx + 1] = (result >> 24) as u8;
-            pixels[idx + 2] = (result >> 40) as u8;
-            pixels[idx + 3] = h;
+            let pixel_idx = (height as usize - 1 - inset as usize) * width as usize + x_left;
+            pixels[pixel_idx] = blend_alpha(shadow_colour, h);
             if h < 255 {
-                hit_test_map[hit_idx] = HIT_NONE;
+                hit_test_map[pixel_idx] = HIT_NONE;
             }
 
             // Bottom inner edge pixel
-            let idx = ((height as usize - 2 - inset as usize) * width as usize + x_left) * 4;
-            let existing = pixels[idx] as u64
-                | (pixels[idx + 1] as u64) << 16
-                | (pixels[idx + 2] as u64) << 32;
-            let shadow = shadow_colour[0] as u64
-                | (shadow_colour[1] as u64) << 16
-                | (shadow_colour[2] as u64) << 32;
-            let combined = existing * h as u64 + shadow * l as u64;
-            pixels[idx] = (combined >> 8) as u8;
-            pixels[idx + 1] = (combined >> 24) as u8;
-            pixels[idx + 2] = (combined >> 40) as u8;
+            let pixel_idx = (height as usize - 2 - inset as usize) * width as usize + x_left;
+            pixels[pixel_idx] = blend_rgb_only(pixels[pixel_idx], shadow_colour, h, l);
 
             // Bottom edge fill
             for row in (height as usize - inset as usize)..height as usize {
-                let idx = (row * width as usize + x_left) * 4;
-                let hit_idx = row * width as usize + x_left;
+                let idx = row * width as usize + x_left;
                 pixels[idx] = 0;
-                pixels[idx + 1] = 0;
-                pixels[idx + 2] = 0;
-                pixels[idx + 3] = 0;
-                hit_test_map[hit_idx] = HIT_NONE;
+                hit_test_map[idx] = HIT_NONE;
             }
 
             x_left += 1;
@@ -1940,80 +1808,38 @@ impl PhotonApp {
 
             // Top edge fill
             for row in 0..inset as usize {
-                let idx = (row * width as usize + x_right) * 4;
-                let hit_idx = row * width as usize + x_right;
+                let idx = row * width as usize + x_right;
                 pixels[idx] = 0;
-                pixels[idx + 1] = 0;
-                pixels[idx + 2] = 0;
-                pixels[idx + 3] = 0;
-                hit_test_map[hit_idx] = HIT_NONE;
+                hit_test_map[idx] = HIT_NONE;
             }
 
             // Top outer edge pixel
-            let idx = (inset as usize * width as usize + x_right) * 4;
-            let hit_idx = inset as usize * width as usize + x_right;
-            let light = light_colour[0] as u64
-                | (light_colour[1] as u64) << 16
-                | (light_colour[2] as u64) << 32;
-            let result = light * h as u64;
-            pixels[idx] = (result >> 8) as u8;
-            pixels[idx + 1] = (result >> 24) as u8;
-            pixels[idx + 2] = (result >> 40) as u8;
-            pixels[idx + 3] = h;
+            let pixel_idx = inset as usize * width as usize + x_right;
+            pixels[pixel_idx] = blend_alpha(light_colour, h);
             if h < 255 {
-                hit_test_map[hit_idx] = HIT_NONE;
+                hit_test_map[pixel_idx] = HIT_NONE;
             }
 
             // Top inner edge pixel
-            let idx = ((inset as usize + 1) * width as usize + x_right) * 4;
-            let existing = pixels[idx] as u64
-                | (pixels[idx + 1] as u64) << 16
-                | (pixels[idx + 2] as u64) << 32;
-            let light = light_colour[0] as u64
-                | (light_colour[1] as u64) << 16
-                | (light_colour[2] as u64) << 32;
-            let combined = existing * h as u64 + light * l as u64;
-            pixels[idx] = (combined >> 8) as u8;
-            pixels[idx + 1] = (combined >> 24) as u8;
-            pixels[idx + 2] = (combined >> 40) as u8;
+            let pixel_idx = (inset as usize + 1) * width as usize + x_right;
+            pixels[pixel_idx] = blend_rgb_only(pixels[pixel_idx], light_colour, h, l);
 
             // Bottom outer edge pixel
-            let idx = ((height as usize - 1 - inset as usize) * width as usize + x_right) * 4;
-            let hit_idx = (height as usize - 1 - inset as usize) * width as usize + x_right;
-            let shadow = shadow_colour[0] as u64
-                | (shadow_colour[1] as u64) << 16
-                | (shadow_colour[2] as u64) << 32;
-            let result = shadow * h as u64;
-            pixels[idx] = (result >> 8) as u8;
-            pixels[idx + 1] = (result >> 24) as u8;
-            pixels[idx + 2] = (result >> 40) as u8;
-            pixels[idx + 3] = h;
+            let pixel_idx = (height as usize - 1 - inset as usize) * width as usize + x_right;
+            pixels[pixel_idx] = blend_alpha(shadow_colour, h);
             if h < 255 {
-                hit_test_map[hit_idx] = HIT_NONE;
+                hit_test_map[pixel_idx] = HIT_NONE;
             }
 
             // Bottom inner edge pixel
-            let idx = ((height as usize - 2 - inset as usize) * width as usize + x_right) * 4;
-            let existing = pixels[idx] as u64
-                | (pixels[idx + 1] as u64) << 16
-                | (pixels[idx + 2] as u64) << 32;
-            let shadow = shadow_colour[0] as u64
-                | (shadow_colour[1] as u64) << 16
-                | (shadow_colour[2] as u64) << 32;
-            let combined = existing * h as u64 + shadow * l as u64;
-            pixels[idx] = (combined >> 8) as u8;
-            pixels[idx + 1] = (combined >> 24) as u8;
-            pixels[idx + 2] = (combined >> 40) as u8;
+            let pixel_idx = (height as usize - 2 - inset as usize) * width as usize + x_right;
+            pixels[pixel_idx] = blend_rgb_only(pixels[pixel_idx], shadow_colour, h, l);
 
             // Bottom edge fill
             for row in (height as usize - inset as usize)..height as usize {
-                let idx = (row * width as usize + x_right) * 4;
-                let hit_idx = row * width as usize + x_right;
+                let idx = row * width as usize + x_right;
                 pixels[idx] = 0;
-                pixels[idx + 1] = 0;
-                pixels[idx + 2] = 0;
-                pixels[idx + 3] = 0;
-                hit_test_map[hit_idx] = HIT_NONE;
+                hit_test_map[idx] = HIT_NONE;
             }
 
             x_right -= 1;
@@ -2022,7 +1848,7 @@ impl PhotonApp {
 
     /// Apply hover effect to button using cached pixel list
     fn draw_button_hover_by_pixels(
-        pixels: &mut [u8],
+        pixels: &mut [u32],
         pixel_list: &[usize],
         hover: bool,
         button_type: HoveredButton,
@@ -2043,18 +1869,24 @@ impl PhotonApp {
 
         // Iterate only over the cached pixels for this button
         for &hit_idx in pixel_list {
-            let pixel_idx = hit_idx * 4;
-            if pixel_idx + 3 < pixels.len() {
-                pixels[pixel_idx] = pixels[pixel_idx].wrapping_add(r_delta as u8);
-                pixels[pixel_idx + 1] = pixels[pixel_idx + 1].wrapping_add(g_delta as u8);
-                pixels[pixel_idx + 2] = pixels[pixel_idx + 2].wrapping_add(b_delta as u8);
+            if hit_idx < pixels.len() {
+                // Unpack u32 pixel (ARGB format)
+                let (r, g, b, a) = unpack_argb(pixels[hit_idx]);
+
+                // Apply deltas with wrapping
+                let new_r = r.wrapping_add(r_delta as u8);
+                let new_g = g.wrapping_add(g_delta as u8);
+                let new_b = b.wrapping_add(b_delta as u8);
+
+                // Pack back to u32
+                pixels[hit_idx] = pack_argb(new_r, new_g, new_b, a);
             }
         }
     }
 
     /// Draw vertical hairlines between buttons
     fn draw_button_hairlines(
-        pixels: &mut [u8],
+        pixels: &mut [u32],
         hit_test_map: &mut [u8],
         window_width: u32,
         window_height: u32,
@@ -2083,60 +1915,48 @@ impl PhotonApp {
         let edge_colour = theme::WINDOW_CONTROLS_HAIRLINE;
 
         // Draw left hairline
-        // Draw upward from center until color changes
-        let center_color = pixels[(center_y * width + left_px) * 4];
+        // Draw upward from center until colour changes
+        let center_colour = pixels[center_y * width + left_px];
         for py in (y_start..=center_y).rev() {
-            let idx = (py * width + left_px) * 4;
-            let hit_idx = py * width + left_px;
-            let diff = pixels[idx] != center_color;
-            for c in 0..3 {
-                pixels[idx + c] = edge_colour[c];
-            }
-            hit_test_map[hit_idx] = HIT_NONE;
+            let idx = py * width + left_px;
+            let diff = pixels[idx] != center_colour;
+            pixels[idx] = edge_colour;
+            hit_test_map[idx] = HIT_NONE;
             if diff {
                 break;
             }
         }
 
-        // Draw downward from center+1 until color changes
+        // Draw downward from center+1 until colour changes
         for py in (center_y + 1)..(y_start + button_height) {
-            let idx = (py * width + left_px) * 4;
-            let hit_idx = py * width + left_px;
-            let diff = pixels[idx] != center_color;
-            for c in 0..3 {
-                pixels[idx + c] = edge_colour[c];
-            }
-            hit_test_map[hit_idx] = HIT_NONE;
+            let idx = py * width + left_px;
+            let diff = pixels[idx] != center_colour;
+            pixels[idx] = edge_colour;
+            hit_test_map[idx] = HIT_NONE;
             if diff {
                 break;
             }
         }
 
         // Draw right hairline
-        // Draw upward from center until color changes
-        let center_color_right = pixels[(center_y * width + right_px) * 4];
+        // Draw upward from center until colour changes
+        let center_colour_right = pixels[center_y * width + right_px];
         for py in (y_start..=center_y).rev() {
-            let idx = (py * width + right_px) * 4;
-            let hit_idx = py * width + right_px;
-            let diff = pixels[idx] != center_color_right;
-            for c in 0..3 {
-                pixels[idx + c] = edge_colour[c];
-            }
-            hit_test_map[hit_idx] = HIT_NONE;
+            let idx = py * width + right_px;
+            let diff = pixels[idx] != center_colour_right;
+            pixels[idx] = edge_colour;
+            hit_test_map[idx] = HIT_NONE;
             if diff {
                 break;
             }
         }
 
-        // Draw downward from center+1 until color changes
+        // Draw downward from center+1 until colour changes
         for py in (center_y + 1)..(y_start + button_height) {
-            let idx = (py * width + right_px) * 4;
-            let hit_idx = py * width + right_px;
-            let diff = pixels[idx] != center_color_right;
-            for c in 0..3 {
-                pixels[idx + c] = edge_colour[c];
-            }
-            hit_test_map[hit_idx] = HIT_NONE;
+            let idx = py * width + right_px;
+            let diff = pixels[idx] != center_colour_right;
+            pixels[idx] = edge_colour;
+            hit_test_map[idx] = HIT_NONE;
             if diff {
                 break;
             }
@@ -2144,7 +1964,7 @@ impl PhotonApp {
     }
 
     fn draw_textbox(
-        pixels: &mut [u8],
+        pixels: &mut [u32],
         hit_test_map: &mut [u8],
         window_width: usize,
         _window_height: usize,
@@ -2198,78 +2018,41 @@ impl PhotonApp {
             let px = x + inset as usize;
 
             // Outer antialiased pixel
-            let idx = (py * window_width + px) * 4;
-            let existing = pixels[idx] as u64
-                | (pixels[idx + 1] as u64) << 16
-                | (pixels[idx + 2] as u64) << 32;
-            let light = light_colour[0] as u64
-                | (light_colour[1] as u64) << 16
-                | (light_colour[2] as u64) << 32;
-            let combined = existing * l as u64 + light * h as u64;
-            pixels[idx] = (combined >> 8) as u8;
-            pixels[idx + 1] = (combined >> 24) as u8;
-            pixels[idx + 2] = (combined >> 40) as u8;
+            let idx = py * window_width + px;
+            pixels[idx] = blend_rgb_only(pixels[idx], light_colour, l, h);
 
             // Inner antialiased pixel
-            let idx = idx + 4;
-            let light = light_colour[0] as u64
-                | (light_colour[1] as u64) << 16
-                | (light_colour[2] as u64) << 32;
-            let fill = fill_colour[0] as u64
-                | (fill_colour[1] as u64) << 16
-                | (fill_colour[2] as u64) << 32;
-            let combined = light * l as u64 + fill * h as u64;
-            pixels[idx] = (combined >> 8) as u8;
-            pixels[idx + 1] = (combined >> 24) as u8;
-            pixels[idx + 2] = (combined >> 40) as u8;
-            hit_test_map[py * window_width + px + 1] = HIT_HANDLE_TEXTBOX;
+            let idx = idx + 1;
+            pixels[idx] = blend_rgb_only(light_colour, fill_colour, l, h);
+            hit_test_map[idx] = HIT_HANDLE_TEXTBOX;
 
             // Fill horizontally to the diagonal (where horizontal edge would be)
             let diag_x = (x + radius as usize - i).min(window_width);
             for fill_x in (px + 2)..=diag_x {
-                let idx = (py * window_width + fill_x) * 4;
-                pixels[idx] = fill_colour[0];
-                pixels[idx + 1] = fill_colour[1];
-                pixels[idx + 2] = fill_colour[2];
-                hit_test_map[py * window_width + fill_x] = HIT_HANDLE_TEXTBOX;
+                let idx = py * window_width + fill_x;
+                pixels[idx] = fill_colour;
+                hit_test_map[idx] = HIT_HANDLE_TEXTBOX;
             }
 
             // Horizontal edge - Outer antialiased pixel
             let hx = x + radius as usize - i; // Start at vertical center, go left
             let hy = y + inset as usize; // Distance from top edge
 
-            let idx = (hy * window_width + hx) * 4;
-            let existing = pixels[idx] as u64
-                | (pixels[idx + 1] as u64) << 16
-                | (pixels[idx + 2] as u64) << 32;
-            let light = light_colour[0] as u64
-                | (light_colour[1] as u64) << 16
-                | (light_colour[2] as u64) << 32;
-            let combined = existing * l as u64 + light * h as u64;
-            pixels[idx] = (combined >> 8) as u8;
-            pixels[idx + 1] = (combined >> 24) as u8;
-            pixels[idx + 2] = (combined >> 40) as u8;
+            let idx = hy * window_width + hx;
+            pixels[idx] = blend_rgb_only(pixels[idx], light_colour, l, h);
 
             // Horizontal edge - Inner antialiased pixel (below the outer)
-            let idx = ((hy + 1) * window_width + hx) * 4;
-            let fill = fill_colour[0] as u64
-                | (fill_colour[1] as u64) << 16
-                | (fill_colour[2] as u64) << 32;
-            let combined = light * l as u64 + fill * h as u64;
-            pixels[idx] = (combined >> 8) as u8;
-            pixels[idx + 1] = (combined >> 24) as u8;
-            pixels[idx + 2] = (combined >> 40) as u8;
-            hit_test_map[(hy + 1) * window_width + hx] = HIT_HANDLE_TEXTBOX;
+            let idx = (hy + 1) * window_width + hx;
+            pixels[idx] = blend_rgb_only(light_colour, fill_colour, l, h);
+            hit_test_map[idx] = HIT_HANDLE_TEXTBOX;
 
             // Fill vertically down from horizontal edge to diagonal
             // Diagonal is where the vertical edge is at this same iteration
             let diag_y = y + radius as usize - i;
             for fill_y in (hy + 2)..diag_y {
-                let idx = (fill_y * window_width + hx) * 4;
-                pixels[idx] = fill_colour[0];
-                pixels[idx + 1] = fill_colour[1];
-                pixels[idx + 2] = fill_colour[2];
-                hit_test_map[fill_y * window_width + hx] = HIT_HANDLE_TEXTBOX;
+                let idx = fill_y * window_width + hx;
+                pixels[idx] = fill_colour;
+                hit_test_map[idx] = HIT_HANDLE_TEXTBOX;
             }
         }
 
@@ -2283,77 +2066,40 @@ impl PhotonApp {
             let px = x + box_width - 1 - inset as usize;
 
             // Vertical edge - Outer antialiased pixel
-            let idx = (py * window_width + px) * 4;
-            let existing = pixels[idx] as u64
-                | (pixels[idx + 1] as u64) << 16
-                | (pixels[idx + 2] as u64) << 32;
-            let shadow = shadow_colour[0] as u64
-                | (shadow_colour[1] as u64) << 16
-                | (shadow_colour[2] as u64) << 32;
-            let combined = existing * l as u64 + shadow * h as u64;
-            pixels[idx] = (combined >> 8) as u8;
-            pixels[idx + 1] = (combined >> 24) as u8;
-            pixels[idx + 2] = (combined >> 40) as u8;
+            let idx = py * window_width + px;
+            pixels[idx] = blend_rgb_only(pixels[idx], shadow_colour, l, h);
 
             // Vertical edge - Inner antialiased pixel
-            let idx = idx - 4;
-            let shadow = shadow_colour[0] as u64
-                | (shadow_colour[1] as u64) << 16
-                | (shadow_colour[2] as u64) << 32;
-            let fill = fill_colour[0] as u64
-                | (fill_colour[1] as u64) << 16
-                | (fill_colour[2] as u64) << 32;
-            let combined = shadow * l as u64 + fill * h as u64;
-            pixels[idx] = (combined >> 8) as u8;
-            pixels[idx + 1] = (combined >> 24) as u8;
-            pixels[idx + 2] = (combined >> 40) as u8;
-            hit_test_map[py * window_width + px - 1] = HIT_HANDLE_TEXTBOX;
+            let idx = idx - 1;
+            pixels[idx] = blend_rgb_only(shadow_colour, fill_colour, l, h);
+            hit_test_map[idx] = HIT_HANDLE_TEXTBOX;
 
             // Fill horizontally to the diagonal
             let diag_x = x + box_width - 1 - radius as usize + i;
             for fill_x in diag_x..(px - 1) {
-                let idx = (py * window_width + fill_x) * 4;
-                pixels[idx] = fill_colour[0];
-                pixels[idx + 1] = fill_colour[1];
-                pixels[idx + 2] = fill_colour[2];
-                hit_test_map[py * window_width + fill_x] = HIT_HANDLE_TEXTBOX;
+                let idx = py * window_width + fill_x;
+                pixels[idx] = fill_colour;
+                hit_test_map[idx] = HIT_HANDLE_TEXTBOX;
             }
 
             // Horizontal edge - Outer antialiased pixel
             let hx = x + box_width - 1 - radius as usize + i;
             let hy = y + inset as usize;
 
-            let idx = (hy * window_width + hx) * 4;
-            let existing = pixels[idx] as u64
-                | (pixels[idx + 1] as u64) << 16
-                | (pixels[idx + 2] as u64) << 32;
-            let light = light_colour[0] as u64
-                | (light_colour[1] as u64) << 16
-                | (light_colour[2] as u64) << 32;
-            let combined = existing * l as u64 + light * h as u64;
-            pixels[idx] = (combined >> 8) as u8;
-            pixels[idx + 1] = (combined >> 24) as u8;
-            pixels[idx + 2] = (combined >> 40) as u8;
+            let idx = hy * window_width + hx;
+            pixels[idx] = blend_rgb_only(pixels[idx], light_colour, l, h);
 
             // Horizontal edge - Inner antialiased pixel
-            let idx = ((hy + 1) * window_width + hx) * 4;
-            let fill = fill_colour[0] as u64
-                | (fill_colour[1] as u64) << 16
-                | (fill_colour[2] as u64) << 32;
-            let combined = light * l as u64 + fill * h as u64;
-            pixels[idx] = (combined >> 8) as u8;
-            pixels[idx + 1] = (combined >> 24) as u8;
-            pixels[idx + 2] = (combined >> 40) as u8;
-            hit_test_map[(hy + 1) * window_width + hx] = HIT_HANDLE_TEXTBOX;
+            let idx = (hy + 1) * window_width + hx;
+            pixels[idx] = blend_rgb_only(light_colour, fill_colour, l, h);
+            hit_test_map[idx] = HIT_HANDLE_TEXTBOX;
 
             // Fill vertically down from horizontal edge to diagonal
             let diag_y = y + radius as usize - i;
             for fill_y in (hy + 2)..diag_y {
-                let idx = (fill_y * window_width + hx) * 4;
-                pixels[idx] = fill_colour[0];
-                pixels[idx + 1] = fill_colour[1];
-                pixels[idx + 2] = fill_colour[2];
-                hit_test_map[fill_y * window_width + hx] = HIT_HANDLE_TEXTBOX;
+                let idx = fill_y * window_width + hx;
+                pixels[idx] = fill_colour;
+                hit_test_map[idx] = HIT_HANDLE_TEXTBOX;
             }
         }
 
@@ -2367,77 +2113,40 @@ impl PhotonApp {
             let px = x + inset as usize;
 
             // Vertical edge - Outer antialiased pixel
-            let idx = (py * window_width + px) * 4;
-            let existing = pixels[idx] as u64
-                | (pixels[idx + 1] as u64) << 16
-                | (pixels[idx + 2] as u64) << 32;
-            let light = light_colour[0] as u64
-                | (light_colour[1] as u64) << 16
-                | (light_colour[2] as u64) << 32;
-            let combined = existing * l as u64 + light * h as u64;
-            pixels[idx] = (combined >> 8) as u8;
-            pixels[idx + 1] = (combined >> 24) as u8;
-            pixels[idx + 2] = (combined >> 40) as u8;
+            let idx = py * window_width + px;
+            pixels[idx] = blend_rgb_only(pixels[idx], light_colour, l, h);
 
             // Vertical edge - Inner antialiased pixel
-            let idx = idx + 4;
-            let light = light_colour[0] as u64
-                | (light_colour[1] as u64) << 16
-                | (light_colour[2] as u64) << 32;
-            let fill = fill_colour[0] as u64
-                | (fill_colour[1] as u64) << 16
-                | (fill_colour[2] as u64) << 32;
-            let combined = light * l as u64 + fill * h as u64;
-            pixels[idx] = (combined >> 8) as u8;
-            pixels[idx + 1] = (combined >> 24) as u8;
-            pixels[idx + 2] = (combined >> 40) as u8;
-            hit_test_map[py * window_width + px + 1] = HIT_HANDLE_TEXTBOX;
+            let idx = idx + 1;
+            pixels[idx] = blend_rgb_only(light_colour, fill_colour, l, h);
+            hit_test_map[idx] = HIT_HANDLE_TEXTBOX;
 
             // Fill horizontally to the diagonal
             let diag_x = (x + radius as usize - i).min(window_width);
             for fill_x in (px + 2)..=diag_x {
-                let idx = (py * window_width + fill_x) * 4;
-                pixels[idx] = fill_colour[0];
-                pixels[idx + 1] = fill_colour[1];
-                pixels[idx + 2] = fill_colour[2];
-                hit_test_map[py * window_width + fill_x] = HIT_HANDLE_TEXTBOX;
+                let idx = py * window_width + fill_x;
+                pixels[idx] = fill_colour;
+                hit_test_map[idx] = HIT_HANDLE_TEXTBOX;
             }
 
             // Horizontal edge - Outer antialiased pixel
             let hx = x + radius as usize - i;
             let hy = y + box_height - inset as usize;
 
-            let idx = (hy * window_width + hx) * 4;
-            let existing = pixels[idx] as u64
-                | (pixels[idx + 1] as u64) << 16
-                | (pixels[idx + 2] as u64) << 32;
-            let shadow = shadow_colour[0] as u64
-                | (shadow_colour[1] as u64) << 16
-                | (shadow_colour[2] as u64) << 32;
-            let combined = existing * l as u64 + shadow * h as u64;
-            pixels[idx] = (combined >> 8) as u8;
-            pixels[idx + 1] = (combined >> 24) as u8;
-            pixels[idx + 2] = (combined >> 40) as u8;
+            let idx = hy * window_width + hx;
+            pixels[idx] = blend_rgb_only(pixels[idx], shadow_colour, l, h);
 
             // Horizontal edge - Inner antialiased pixel
-            let idx = ((hy - 1) * window_width + hx) * 4;
-            let fill = fill_colour[0] as u64
-                | (fill_colour[1] as u64) << 16
-                | (fill_colour[2] as u64) << 32;
-            let combined = shadow * l as u64 + fill * h as u64;
-            pixels[idx] = (combined >> 8) as u8;
-            pixels[idx + 1] = (combined >> 24) as u8;
-            pixels[idx + 2] = (combined >> 40) as u8;
-            hit_test_map[(hy - 1) * window_width + hx] = HIT_HANDLE_TEXTBOX;
+            let idx = (hy - 1) * window_width + hx;
+            pixels[idx] = blend_rgb_only(shadow_colour, fill_colour, l, h);
+            hit_test_map[idx] = HIT_HANDLE_TEXTBOX;
 
             // Fill vertically up from horizontal edge to diagonal
             let diag_y = y + box_height - radius as usize + i;
             for fill_y in (diag_y + 1)..(hy - 1) {
-                let idx = (fill_y * window_width + hx) * 4;
-                pixels[idx] = fill_colour[0];
-                pixels[idx + 1] = fill_colour[1];
-                pixels[idx + 2] = fill_colour[2];
-                hit_test_map[fill_y * window_width + hx] = HIT_HANDLE_TEXTBOX;
+                let idx = fill_y * window_width + hx;
+                pixels[idx] = fill_colour;
+                hit_test_map[idx] = HIT_HANDLE_TEXTBOX;
             }
         }
 
@@ -2451,77 +2160,40 @@ impl PhotonApp {
             let px = x + box_width - 1 - inset as usize;
 
             // Vertical edge - Outer antialiased pixel
-            let idx = (py * window_width + px) * 4;
-            let existing = pixels[idx] as u64
-                | (pixels[idx + 1] as u64) << 16
-                | (pixels[idx + 2] as u64) << 32;
-            let shadow = shadow_colour[0] as u64
-                | (shadow_colour[1] as u64) << 16
-                | (shadow_colour[2] as u64) << 32;
-            let combined = existing * l as u64 + shadow * h as u64;
-            pixels[idx] = (combined >> 8) as u8;
-            pixels[idx + 1] = (combined >> 24) as u8;
-            pixels[idx + 2] = (combined >> 40) as u8;
+            let idx = py * window_width + px;
+            pixels[idx] = blend_rgb_only(pixels[idx], shadow_colour, l, h);
 
             // Vertical edge - Inner antialiased pixel
-            let idx = idx - 4;
-            let shadow = shadow_colour[0] as u64
-                | (shadow_colour[1] as u64) << 16
-                | (shadow_colour[2] as u64) << 32;
-            let fill = fill_colour[0] as u64
-                | (fill_colour[1] as u64) << 16
-                | (fill_colour[2] as u64) << 32;
-            let combined = shadow * l as u64 + fill * h as u64;
-            pixels[idx] = (combined >> 8) as u8;
-            pixels[idx + 1] = (combined >> 24) as u8;
-            pixels[idx + 2] = (combined >> 40) as u8;
-            hit_test_map[py * window_width + px - 1] = HIT_HANDLE_TEXTBOX;
+            let idx = idx - 1;
+            pixels[idx] = blend_rgb_only(shadow_colour, fill_colour, l, h);
+            hit_test_map[idx] = HIT_HANDLE_TEXTBOX;
 
             // Fill horizontally to the diagonal
             let diag_x = x + box_width - 1 - radius as usize + i;
             for fill_x in diag_x..(px - 1) {
-                let idx = (py * window_width + fill_x) * 4;
-                pixels[idx] = fill_colour[0];
-                pixels[idx + 1] = fill_colour[1];
-                pixels[idx + 2] = fill_colour[2];
-                hit_test_map[py * window_width + fill_x] = HIT_HANDLE_TEXTBOX;
+                let idx = py * window_width + fill_x;
+                pixels[idx] = fill_colour;
+                hit_test_map[idx] = HIT_HANDLE_TEXTBOX;
             }
 
             // Horizontal edge - Outer antialiased pixel
             let hx = x + box_width - 1 - radius as usize + i;
             let hy = y + box_height - inset as usize;
 
-            let idx = (hy * window_width + hx) * 4;
-            let existing = pixels[idx] as u64
-                | (pixels[idx + 1] as u64) << 16
-                | (pixels[idx + 2] as u64) << 32;
-            let shadow = shadow_colour[0] as u64
-                | (shadow_colour[1] as u64) << 16
-                | (shadow_colour[2] as u64) << 32;
-            let combined = existing * l as u64 + shadow * h as u64;
-            pixels[idx] = (combined >> 8) as u8;
-            pixels[idx + 1] = (combined >> 24) as u8;
-            pixels[idx + 2] = (combined >> 40) as u8;
+            let idx = hy * window_width + hx;
+            pixels[idx] = blend_rgb_only(pixels[idx], shadow_colour, l, h);
 
             // Horizontal edge - Inner antialiased pixel
-            let idx = ((hy - 1) * window_width + hx) * 4;
-            let fill = fill_colour[0] as u64
-                | (fill_colour[1] as u64) << 16
-                | (fill_colour[2] as u64) << 32;
-            let combined = shadow * l as u64 + fill * h as u64;
-            pixels[idx] = (combined >> 8) as u8;
-            pixels[idx + 1] = (combined >> 24) as u8;
-            pixels[idx + 2] = (combined >> 40) as u8;
-            hit_test_map[(hy - 1) * window_width + hx] = HIT_HANDLE_TEXTBOX;
+            let idx = (hy - 1) * window_width + hx;
+            pixels[idx] = blend_rgb_only(shadow_colour, fill_colour, l, h);
+            hit_test_map[idx] = HIT_HANDLE_TEXTBOX;
 
             // Fill vertically up from horizontal edge to diagonal
             let diag_y = y + box_height - radius as usize + i;
             for fill_y in (diag_y + 1)..(hy - 1) {
-                let idx = (fill_y * window_width + hx) * 4;
-                pixels[idx] = fill_colour[0];
-                pixels[idx + 1] = fill_colour[1];
-                pixels[idx + 2] = fill_colour[2];
-                hit_test_map[fill_y * window_width + hx] = HIT_HANDLE_TEXTBOX;
+                let idx = fill_y * window_width + hx;
+                pixels[idx] = fill_colour;
+                hit_test_map[idx] = HIT_HANDLE_TEXTBOX;
             }
         }
 
@@ -2535,29 +2207,23 @@ impl PhotonApp {
 
             // Top edge (horizontal hairline) - just outer pixel
             for px in left_edge..right_edge {
-                let idx = (y * window_width + px) * 4;
-                pixels[idx] = light_colour[0];
-                pixels[idx + 1] = light_colour[1];
-                pixels[idx + 2] = light_colour[2];
+                let idx = y * window_width + px;
+                pixels[idx] = light_colour;
             }
 
             // Bottom edge (horizontal hairline) - just outer pixel, shifted down 1
             let bottom_y = y + box_height;
             for px in left_edge..right_edge {
-                let idx = (bottom_y * window_width + px) * 4;
-                pixels[idx] = shadow_colour[0];
-                pixels[idx + 1] = shadow_colour[1];
-                pixels[idx + 2] = shadow_colour[2];
+                let idx = bottom_y * window_width + px;
+                pixels[idx] = shadow_colour;
             }
 
             // Fill center rectangle
             for py in (y + 1)..(y + box_height) {
                 for px in left_edge..right_edge {
-                    let idx = (py * window_width + px) * 4;
-                    pixels[idx] = fill_colour[0];
-                    pixels[idx + 1] = fill_colour[1];
-                    pixels[idx + 2] = fill_colour[2];
-                    hit_test_map[py * window_width + px] = HIT_HANDLE_TEXTBOX;
+                    let idx = py * window_width + px;
+                    pixels[idx] = fill_colour;
+                    hit_test_map[idx] = HIT_HANDLE_TEXTBOX;
                 }
             }
         } else {
@@ -2567,29 +2233,23 @@ impl PhotonApp {
 
             // Left edge (vertical hairline) - just outer pixel
             for py in top_edge..bottom_edge {
-                let idx = (py * window_width + x) * 4;
-                pixels[idx] = light_colour[0];
-                pixels[idx + 1] = light_colour[1];
-                pixels[idx + 2] = light_colour[2];
+                let idx = py * window_width + x;
+                pixels[idx] = light_colour;
             }
 
             // Right edge (vertical hairline) - just outer pixel
             let right_x = x + box_width - 1;
             for py in top_edge..bottom_edge {
-                let idx = (py * window_width + right_x) * 4;
-                pixels[idx] = shadow_colour[0];
-                pixels[idx + 1] = shadow_colour[1];
-                pixels[idx + 2] = shadow_colour[2];
+                let idx = py * window_width + right_x;
+                pixels[idx] = shadow_colour;
             }
 
             // Fill center rectangle
             for py in top_edge..bottom_edge {
                 for px in (x + 1)..(x + box_width - 1) {
-                    let idx = (py * window_width + px) * 4;
-                    pixels[idx] = fill_colour[0];
-                    pixels[idx + 1] = fill_colour[1];
-                    pixels[idx + 2] = fill_colour[2];
-                    hit_test_map[py * window_width + px] = HIT_HANDLE_TEXTBOX;
+                    let idx = py * window_width + px;
+                    pixels[idx] = fill_colour;
+                    hit_test_map[idx] = HIT_HANDLE_TEXTBOX;
                 }
             }
         }
@@ -2665,191 +2325,191 @@ impl PhotonApp {
         }
     }
 
-    fn draw_logo_text(
-        pixels: &mut [u8],
-        text_renderer: &mut TextRenderer,
-        window_width: u32,
-        window_height: u32,
-        vertical_center_px: usize, // Vertical center position in pixels
-    ) {
-        let window_width = window_width as usize;
-        let window_height = window_height as usize;
-        let smaller_dim = window_width.min(window_height) as f32;
+    // fn draw_logo_text(
+    //     pixels: &mut [u8],
+    //     text_renderer: &mut TextRenderer,
+    //     window_width: u32,
+    //     window_height: u32,
+    //     vertical_center_px: usize, // Vertical center position in pixels
+    // ) {
+    //     let window_width = window_width as usize;
+    //     let window_height = window_height as usize;
+    //     let smaller_dim = window_width.min(window_height) as f32;
 
-        // Calculate text position
-        let text_x = window_width as f32 / 2.;
-        let text_y = vertical_center_px as f32;
-        let text_size = smaller_dim / 8. * 1.18;
+    //     // Calculate text position
+    //     let text_x = window_width as f32 / 2.;
+    //     let text_y = vertical_center_px as f32;
+    //     let text_size = smaller_dim / 8. * 1.18;
 
-        // Virtual buffer region (only process where text lives with glow padding)
-        let text_height_estimate = (text_size * 1.5) as usize; // Text + glow padding
-        let start = (text_y as usize).saturating_sub(text_height_estimate);
-        let stop = (text_y as usize + text_height_estimate).min(window_height);
-        let virtual_height = stop - start;
-        let buffer_size = window_width * virtual_height;
+    //     // Virtual buffer region (only process where text lives with glow padding)
+    //     let text_height_estimate = (text_size * 1.5) as usize; // Text + glow padding
+    //     let start = (text_y as usize).saturating_sub(text_height_estimate);
+    //     let stop = (text_y as usize + text_height_estimate).min(window_height);
+    //     let virtual_height = stop - start;
+    //     let buffer_size = window_width * virtual_height;
 
-        let mut glow_buffer = vec![0; buffer_size];
-        text_renderer.draw_text_center(
-            &mut glow_buffer,
-            window_width as u32,
-            virtual_height as u32,
-            "Photon",
-            text_x,
-            text_y - start as f32, // Adjust y for virtual buffer
-            text_size,
-            800, // weight
-            vec![theme::LOGO_GLOW_GRAY],
-            0, // rotation
-            theme::FONT_LOGO,
-        );
+    //     let mut glow_buffer = vec![0; buffer_size];
+    //     text_renderer.draw_text_center(
+    //         &mut glow_buffer,
+    //         window_width as u32,
+    //         virtual_height as u32,
+    //         "Photon",
+    //         text_x,
+    //         text_y - start as f32, // Adjust y for virtual buffer
+    //         text_size,
+    //         800, // weight
+    //         vec![theme::LOGO_GLOW_GRAY],
+    //         0, // rotation
+    //         theme::FONT_LOGO,
+    //     );
 
-        let mut highlight_buffer = vec![0; buffer_size];
-        text_renderer.draw_text_center(
-            &mut highlight_buffer,
-            window_width as u32,
-            virtual_height as u32,
-            "Photon",
-            text_x,
-            text_y - start as f32,
-            text_size,
-            800, // weight
-            vec![theme::LOGO_HIGHLIGHT_GRAY],
-            0, // rotation
-            theme::FONT_LOGO,
-        );
-        text_renderer.draw_text_center(
-            &mut highlight_buffer,
-            window_width as u32,
-            virtual_height as u32,
-            "Photon",
-            text_x + 1.,
-            text_y - start as f32,
-            text_size,
-            800, // weight
-            vec![0],
-            0, // rotation
-            theme::FONT_LOGO,
-        );
-        text_renderer.draw_text_center(
-            &mut highlight_buffer,
-            window_width as u32,
-            virtual_height as u32,
-            "Photon",
-            text_x,
-            text_y - start as f32 + 1.,
-            text_size,
-            800, // weight
-            vec![0],
-            0, // rotation
-            theme::FONT_LOGO,
-        );
+    //     let mut highlight_buffer = vec![0; buffer_size];
+    //     text_renderer.draw_text_center(
+    //         &mut highlight_buffer,
+    //         window_width as u32,
+    //         virtual_height as u32,
+    //         "Photon",
+    //         text_x,
+    //         text_y - start as f32,
+    //         text_size,
+    //         800, // weight
+    //         vec![theme::LOGO_HIGHLIGHT_GRAY],
+    //         0, // rotation
+    //         theme::FONT_LOGO,
+    //     );
+    //     text_renderer.draw_text_center(
+    //         &mut highlight_buffer,
+    //         window_width as u32,
+    //         virtual_height as u32,
+    //         "Photon",
+    //         text_x + 1.,
+    //         text_y - start as f32,
+    //         text_size,
+    //         800, // weight
+    //         vec![0],
+    //         0, // rotation
+    //         theme::FONT_LOGO,
+    //     );
+    //     text_renderer.draw_text_center(
+    //         &mut highlight_buffer,
+    //         window_width as u32,
+    //         virtual_height as u32,
+    //         "Photon",
+    //         text_x,
+    //         text_y - start as f32 + 1.,
+    //         text_size,
+    //         800, // weight
+    //         vec![0],
+    //         0, // rotation
+    //         theme::FONT_LOGO,
+    //     );
 
-        let mut prev = highlight_buffer[0];
-        for glow_idx in 1..highlight_buffer.len() {
-            prev = (((highlight_buffer[glow_idx] as u16 + prev as u16 * 15) >> 4) as u8)
-                .max(highlight_buffer[glow_idx]);
-            highlight_buffer[glow_idx] = prev;
-        }
-        let mut prev = highlight_buffer[highlight_buffer.len() - 1];
-        for glow_idx in (0..highlight_buffer.len()).rev() {
-            prev = (((highlight_buffer[glow_idx] as u16 + prev as u16 * 15) >> 4) as u8)
-                .max(highlight_buffer[glow_idx]);
-            highlight_buffer[glow_idx] = prev;
-        }
+    //     let mut prev = highlight_buffer[0];
+    //     for glow_idx in 1..highlight_buffer.len() {
+    //         prev = (((highlight_buffer[glow_idx] as u16 + prev as u16 * 15) >> 4) as u8)
+    //             .max(highlight_buffer[glow_idx]);
+    //         highlight_buffer[glow_idx] = prev;
+    //     }
+    //     let mut prev = highlight_buffer[highlight_buffer.len() - 1];
+    //     for glow_idx in (0..highlight_buffer.len()).rev() {
+    //         prev = (((highlight_buffer[glow_idx] as u16 + prev as u16 * 15) >> 4) as u8)
+    //             .max(highlight_buffer[glow_idx]);
+    //         highlight_buffer[glow_idx] = prev;
+    //     }
 
-        // // Vertical pass: top to bottom
-        // for x in 0..window_width as usize {
-        //     let mut prev = highlight_buffer[x]; // y=0, x=x
-        //     for y in 1..window_height as usize {
-        //         let glow_idx = y * window_width as usize + x;
-        //         prev = (((highlight_buffer[glow_idx] as u16 + prev as u16 * 3) >> 2) as u8)
-        //             .max(highlight_buffer[glow_idx]);
-        //         highlight_buffer[glow_idx] = prev;
-        //     }
-        // }
+    //     // // Vertical pass: top to bottom
+    //     // for x in 0..window_width as usize {
+    //     //     let mut prev = highlight_buffer[x]; // y=0, x=x
+    //     //     for y in 1..window_height as usize {
+    //     //         let glow_idx = y * window_width as usize + x;
+    //     //         prev = (((highlight_buffer[glow_idx] as u16 + prev as u16 * 3) >> 2) as u8)
+    //     //             .max(highlight_buffer[glow_idx]);
+    //     //         highlight_buffer[glow_idx] = prev;
+    //     //     }
+    //     // }
 
-        // // Vertical pass: bottom to top
-        // for x in 0..window_width as usize {
-        //     let mut prev =
-        //         highlight_buffer[(window_height as usize - 1) * window_width as usize + x];
-        //     for y in (0..window_height as usize - 1).rev() {
-        //         let glow_idx = y * window_width as usize + x;
-        //         prev = (((highlight_buffer[glow_idx] as u16 + prev as u16 * 3) >> 2) as u8)
-        //             .max(highlight_buffer[glow_idx]);
-        //         highlight_buffer[glow_idx] = prev;
-        //     }
-        // }
+    //     // // Vertical pass: bottom to top
+    //     // for x in 0..window_width as usize {
+    //     //     let mut prev =
+    //     //         highlight_buffer[(window_height as usize - 1) * window_width as usize + x];
+    //     //     for y in (0..window_height as usize - 1).rev() {
+    //     //         let glow_idx = y * window_width as usize + x;
+    //     //         prev = (((highlight_buffer[glow_idx] as u16 + prev as u16 * 3) >> 2) as u8)
+    //     //             .max(highlight_buffer[glow_idx]);
+    //     //         highlight_buffer[glow_idx] = prev;
+    //     //     }
+    //     // }
 
-        let mut prev = glow_buffer[0];
-        for glow_idx in 1..glow_buffer.len() {
-            prev = (((glow_buffer[glow_idx] as u16 + prev as u16 * 3) >> 2) as u8)
-                .max(glow_buffer[glow_idx]);
-            glow_buffer[glow_idx] = prev;
-        }
-        let mut prev = glow_buffer[glow_buffer.len() - 1];
-        for glow_idx in (0..glow_buffer.len()).rev() {
-            prev = (((glow_buffer[glow_idx] as u16 + prev as u16 * 3) >> 2) as u8)
-                .max(glow_buffer[glow_idx]);
-            glow_buffer[glow_idx] = prev;
-        }
+    //     let mut prev = glow_buffer[0];
+    //     for glow_idx in 1..glow_buffer.len() {
+    //         prev = (((glow_buffer[glow_idx] as u16 + prev as u16 * 3) >> 2) as u8)
+    //             .max(glow_buffer[glow_idx]);
+    //         glow_buffer[glow_idx] = prev;
+    //     }
+    //     let mut prev = glow_buffer[glow_buffer.len() - 1];
+    //     for glow_idx in (0..glow_buffer.len()).rev() {
+    //         prev = (((glow_buffer[glow_idx] as u16 + prev as u16 * 3) >> 2) as u8)
+    //             .max(glow_buffer[glow_idx]);
+    //         glow_buffer[glow_idx] = prev;
+    //     }
 
-        // Vertical pass: top to bottom
-        for x in 0..window_width as usize {
-            let mut prev = glow_buffer[x]; // y=0, x=x
-            for y in 1..virtual_height as usize {
-                let glow_idx = y * window_width as usize + x;
-                prev = (((glow_buffer[glow_idx] as u16 + prev as u16) >> 1) as u8)
-                    .max(glow_buffer[glow_idx]);
-                glow_buffer[glow_idx] = prev;
-            }
-        }
+    //     // Vertical pass: top to bottom
+    //     for x in 0..window_width as usize {
+    //         let mut prev = glow_buffer[x]; // y=0, x=x
+    //         for y in 1..virtual_height as usize {
+    //             let glow_idx = y * window_width as usize + x;
+    //             prev = (((glow_buffer[glow_idx] as u16 + prev as u16) >> 1) as u8)
+    //                 .max(glow_buffer[glow_idx]);
+    //             glow_buffer[glow_idx] = prev;
+    //         }
+    //     }
 
-        // Vertical pass: bottom to top
-        for x in 0..window_width as usize {
-            let mut prev = glow_buffer[(virtual_height as usize - 1) * window_width as usize + x];
-            for y in (0..virtual_height as usize - 1).rev() {
-                let glow_idx = y * window_width as usize + x;
-                prev = (((glow_buffer[glow_idx] as u16 + prev as u16) >> 1) as u8)
-                    .max(glow_buffer[glow_idx]);
-                glow_buffer[glow_idx] = prev;
-            }
-        }
+    //     // Vertical pass: bottom to top
+    //     for x in 0..window_width as usize {
+    //         let mut prev = glow_buffer[(virtual_height as usize - 1) * window_width as usize + x];
+    //         for y in (0..virtual_height as usize - 1).rev() {
+    //             let glow_idx = y * window_width as usize + x;
+    //             prev = (((glow_buffer[glow_idx] as u16 + prev as u16) >> 1) as u8)
+    //                 .max(glow_buffer[glow_idx]);
+    //             glow_buffer[glow_idx] = prev;
+    //         }
+    //     }
 
-        // Composite glow buffer to screen with offset
-        for glow_idx in 0..glow_buffer.len() {
-            let pixel_idx = (glow_idx + start * window_width) * 4;
+    //     // Composite glow buffer to screen with offset
+    //     for glow_idx in 0..glow_buffer.len() {
+    //         let pixel_idx = (glow_idx + start * window_width) * 4;
 
-            let grey = glow_buffer[glow_idx];
+    //         let grey = glow_buffer[glow_idx];
 
-            pixels[pixel_idx] = pixels[pixel_idx].wrapping_add(grey);
-            pixels[pixel_idx + 1] = pixels[pixel_idx + 1].wrapping_add(grey);
-            pixels[pixel_idx + 2] = pixels[pixel_idx + 2].wrapping_add(grey);
-        }
-        text_renderer.draw_text_center(
-            pixels,
-            window_width as u32,
-            window_height as u32,
-            "Photon",
-            text_x,
-            text_y,
-            text_size,
-            800, // weight
-            theme::LOGO_TEXT.to_vec(),
-            0, // rotation
-            theme::FONT_LOGO,
-        );
+    //         pixels[pixel_idx] = pixels[pixel_idx].wrapping_add(grey);
+    //         pixels[pixel_idx + 1] = pixels[pixel_idx + 1].wrapping_add(grey);
+    //         pixels[pixel_idx + 2] = pixels[pixel_idx + 2].wrapping_add(grey);
+    //     }
+    //     text_renderer.draw_text_center(
+    //         pixels,
+    //         window_width as u32,
+    //         window_height as u32,
+    //         "Photon",
+    //         text_x,
+    //         text_y,
+    //         text_size,
+    //         800, // weight
+    //         theme::LOGO_TEXT.to_vec(),
+    //         0, // rotation
+    //         theme::FONT_LOGO,
+    //     );
 
-        // Composite highlight buffer to screen with offset
-        for glow_idx in 0..highlight_buffer.len() {
-            let pixel_idx = (glow_idx + start * window_width) * 4;
+    //     // Composite highlight buffer to screen with offset
+    //     for glow_idx in 0..highlight_buffer.len() {
+    //         let pixel_idx = (glow_idx + start * window_width) * 4;
 
-            let grey = highlight_buffer[glow_idx];
+    //         let grey = highlight_buffer[glow_idx];
 
-            pixels[pixel_idx] = pixels[pixel_idx].wrapping_add(grey);
-            pixels[pixel_idx + 1] = pixels[pixel_idx + 1].wrapping_add(grey);
-            pixels[pixel_idx + 2] = pixels[pixel_idx + 2].wrapping_add(grey);
-        }
-    }
+    //         pixels[pixel_idx] = pixels[pixel_idx].wrapping_add(grey);
+    //         pixels[pixel_idx + 1] = pixels[pixel_idx + 1].wrapping_add(grey);
+    //         pixels[pixel_idx + 2] = pixels[pixel_idx + 2].wrapping_add(grey);
+    //     }
+    // }
 }
 
 // Colour conversion matrices (commented out - using inline calculations instead)
