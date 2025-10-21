@@ -18,9 +18,7 @@ pub const SHADOW_EDGE: u32 = 0xFF_20_20_20;
 pub const FILL: u32 = 0xFF_40_40_40;
 
 // Text colours
-pub const FONT_HINT: u32 = 0xFF_32_3C_40;
 pub const FONT_LABEL: u32 = 0xFF_80_80_80;
-pub const CURSOR_COLOUR: u32 = 0xFF_C8_C8_C8; // Blinking text cursor
 pub const CURSOR_BRIGHTNESS: f32 = 100.; // Cursor wave brightness multiplier
 pub const TEXT_BRIGHTNESS: u8 = 0xD0;
 
@@ -51,7 +49,8 @@ pub const LOGO_GLOW_GRAY: u8 = 192; // Logo glow effect (grayscale)
 pub const LOGO_HIGHLIGHT_GRAY: u8 = 128; // Logo highlight (grayscale)
 pub const LOGO_TEXT: u32 = 0xFF_00_00_00; // Logo text colour
 
-// Font families
+// Font families and weights
 pub const FONT_LOGO: &str = "Oxanium";
 pub const FONT_UI: &str = "Josefin Slab";
 pub const FONT_USER_CONTENT: &str = "Open Sans";
+pub const FONT_WEIGHT_USER_CONTENT: u16 = 400; // Font weight for user-entered text

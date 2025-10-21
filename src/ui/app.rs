@@ -87,7 +87,6 @@ pub struct PhotonApp {
     username_available: Option<bool>, // None = checking, Some(true) = available, Some(false) = taken
     textbox_focused: bool,            // True when textbox is clicked and accepting input
     textbox_mask: Vec<u8>, // Single-channel alpha mask for textbox (0=outside, 255=inside, faded at edges)
-    textbox_bounds: (usize, usize, usize, usize), // (x, y, width, height) of textbox
     show_textbox_mask: bool, // Debug: show textbox mask visualization (Ctrl+T)
     redraw_counter: usize, // Count of full redraws for debugging
     render_counter: usize, // Count of render() calls
@@ -106,9 +105,6 @@ pub struct PhotonApp {
     is_fullscreen: bool, // True when window is fullscreen
 
     // Window control buttons
-    close_button_bounds: (f32, f32, f32, f32), // (x, y, width, height)
-    maximize_button_bounds: (f32, f32, f32, f32),
-    minimize_button_bounds: (f32, f32, f32, f32),
     hovered_button: HoveredButton,
     prev_hovered_button: HoveredButton, // Previous hover state to detect changes
 
@@ -194,7 +190,6 @@ impl PhotonApp {
             username_available: None,
             textbox_focused: false,
             textbox_mask: Vec::new(),
-            textbox_bounds: (0, 0, 0, 0),
             show_textbox_mask: false,
             redraw_counter: 0,
             render_counter: 0,
@@ -208,9 +203,6 @@ impl PhotonApp {
             drag_start_size: (0, 0),
             drag_start_window_pos: (0, 0),
             modifiers: ModifiersState::empty(),
-            close_button_bounds: (0.0, 0.0, 0.0, 0.0),
-            maximize_button_bounds: (0.0, 0.0, 0.0, 0.0),
-            minimize_button_bounds: (0.0, 0.0, 0.0, 0.0),
             hovered_button: HoveredButton::None,
             prev_hovered_button: HoveredButton::None,
             button_x_start: 0,
@@ -344,12 +336,10 @@ impl PhotonApp {
         self.hovered_button = HoveredButton::None;
 
         // Clear textbox focus on resize - user must click to refocus
-        // Also invalidate cursor position to prevent differential rendering with stale coordinates
         self.textbox_focused = false;
-        self.cursor_pixel_x = 0;
-        self.cursor_pixel_y = 0;
 
-        self.needs_redraw = true; // Dimensions changed, need to redraw
+        // Trigger full redraw - differential rendering will be skipped automatically
+        self.needs_redraw = true;
     }
 
     pub fn update_modifiers(&mut self, modifiers: ModifiersState) {
@@ -493,7 +483,8 @@ impl PhotonApp {
                     };
                 let old_text_width: usize = self.character_widths.iter().sum();
                 let old_text_half = old_text_width as f32 / 2.0;
-                let old_cursor_pixel_x = (center_x as f32 - old_text_half + self.text_scroll_pixel_offset
+                let old_cursor_pixel_x = (center_x as f32 - old_text_half
+                    + self.text_scroll_pixel_offset
                     + old_cursor_pixel_offset as f32)
                     as usize;
                 let old_cursor_pixel_y = (center_y as f32 - box_height as f32 * 0.25) as usize;
@@ -513,9 +504,6 @@ impl PhotonApp {
                 self.update_cursor_position();
 
                 // Prepare data needed for rendering (before locking buffer)
-                let center_x = self.width as usize / 2;
-                let center_y = self.height as usize * 4 / 7;
-                let font_size = box_height as f32 * 0.5;
                 let new_scroll_offset = self.text_scroll_pixel_offset;
                 let textbox_mask = self.textbox_mask.clone();
                 let new_text = self.username_input.clone();
@@ -545,13 +533,33 @@ impl PhotonApp {
                 }
 
                 // Subtract old text
-                Self::render_text_clipped(pixels, &old_text, &old_char_widths, old_scroll_offset, false,
-                    &mut self.text_renderer, &textbox_mask, self.width as usize, self.height as usize, self.min_dim);
+                Self::render_text_clipped(
+                    pixels,
+                    &old_text,
+                    &old_char_widths,
+                    old_scroll_offset,
+                    false,
+                    &mut self.text_renderer,
+                    &textbox_mask,
+                    self.width as usize,
+                    self.height as usize,
+                    self.min_dim,
+                );
                 self.text_redraw_counter += 1;
 
                 // Add new text
-                Self::render_text_clipped(pixels, &new_text, &new_char_widths, new_scroll_offset, true,
-                    &mut self.text_renderer, &textbox_mask, self.width as usize, self.height as usize, self.min_dim);
+                Self::render_text_clipped(
+                    pixels,
+                    &new_text,
+                    &new_char_widths,
+                    new_scroll_offset,
+                    true,
+                    &mut self.text_renderer,
+                    &textbox_mask,
+                    self.width as usize,
+                    self.height as usize,
+                    self.min_dim,
+                );
                 self.text_redraw_counter += 1;
 
                 // Add new cursor at new position (same blink state)
@@ -598,7 +606,8 @@ impl PhotonApp {
                 let old_text_width: usize = self.character_widths.iter().sum();
                 let old_text_half = old_text_width as f32 / 2.0;
                 let old_scroll_offset = self.text_scroll_pixel_offset;
-                let old_cursor_pixel_x = (center_x as f32 - old_text_half + old_scroll_offset
+                let old_cursor_pixel_x = (center_x as f32 - old_text_half
+                    + old_scroll_offset
                     + old_cursor_pixel_offset as f32)
                     as usize;
                 let cursor_pixel_y = (center_y as f32 - box_height as f32 * 0.25) as usize;
@@ -620,13 +629,33 @@ impl PhotonApp {
                     let current_char_widths = self.character_widths.clone();
 
                     // Subtract old text at old scroll position
-                    Self::render_text_clipped(pixels, &current_text, &current_char_widths, old_scroll_offset, false,
-                        &mut self.text_renderer, &self.textbox_mask, self.width as usize, self.height as usize, self.min_dim);
+                    Self::render_text_clipped(
+                        pixels,
+                        &current_text,
+                        &current_char_widths,
+                        old_scroll_offset,
+                        false,
+                        &mut self.text_renderer,
+                        &self.textbox_mask,
+                        self.width as usize,
+                        self.height as usize,
+                        self.min_dim,
+                    );
                     self.text_redraw_counter += 1;
 
                     // Add text at new scroll position
-                    Self::render_text_clipped(pixels, &current_text, &current_char_widths, self.text_scroll_pixel_offset, true,
-                        &mut self.text_renderer, &self.textbox_mask, self.width as usize, self.height as usize, self.min_dim);
+                    Self::render_text_clipped(
+                        pixels,
+                        &current_text,
+                        &current_char_widths,
+                        self.text_scroll_pixel_offset,
+                        true,
+                        &mut self.text_renderer,
+                        &self.textbox_mask,
+                        self.width as usize,
+                        self.height as usize,
+                        self.min_dim,
+                    );
                     self.text_redraw_counter += 1;
                 }
 
@@ -716,7 +745,8 @@ impl PhotonApp {
                                 let center_x = self.width as usize / 2;
                                 let total_text_width: usize = self.character_widths.iter().sum();
                                 let text_half = total_text_width as f32 / 2.0;
-                                let text_start_x = center_x as f32 - text_half + self.text_scroll_pixel_offset;
+                                let text_start_x =
+                                    center_x as f32 - text_half + self.text_scroll_pixel_offset;
 
                                 // Find which character was clicked
                                 let click_x = mouse_x as f32;
@@ -776,24 +806,26 @@ impl PhotonApp {
                                 buffer.present().unwrap();
                             } else if !was_unfocused && old_cursor_index != self.cursor_char_index {
                                 // Already focused but cursor position changed - update cursor
-                                let margin = self.min_dim / 8;
-                                let box_width = self.width as usize - margin * 2;
                                 let box_height = self.min_dim / 8;
                                 let center_x = self.width as usize / 2;
                                 let center_y = self.height as usize * 4 / 7;
 
                                 // Calculate old cursor position
-                                let old_cursor_pixel_offset: usize =
-                                    if old_cursor_index > 0 && old_cursor_index <= self.character_widths.len() {
-                                        self.character_widths[..old_cursor_index].iter().sum()
-                                    } else {
-                                        0
-                                    };
+                                let old_cursor_pixel_offset: usize = if old_cursor_index > 0
+                                    && old_cursor_index <= self.character_widths.len()
+                                {
+                                    self.character_widths[..old_cursor_index].iter().sum()
+                                } else {
+                                    0
+                                };
                                 let total_text_width: usize = self.character_widths.iter().sum();
                                 let text_half = total_text_width as f32 / 2.0;
-                                let old_cursor_pixel_x = (center_x as f32 - text_half + self.text_scroll_pixel_offset
-                                    + old_cursor_pixel_offset as f32) as usize;
-                                let cursor_pixel_y = (center_y as f32 - box_height as f32 * 0.25) as usize;
+                                let old_cursor_pixel_x = (center_x as f32 - text_half
+                                    + self.text_scroll_pixel_offset
+                                    + old_cursor_pixel_offset as f32)
+                                    as usize;
+                                let cursor_pixel_y =
+                                    (center_y as f32 - box_height as f32 * 0.25) as usize;
                                 let cursor_height = box_height as f32 * 0.5;
 
                                 // Update cursor position
@@ -952,7 +984,7 @@ impl PhotonApp {
             let width = self.text_renderer.measure_text_width(
                 &ch.to_string(),
                 font_size,
-                500,
+                theme::FONT_WEIGHT_USER_CONTENT,
                 theme::FONT_USER_CONTENT,
             );
             self.character_widths.push(width as usize);
@@ -1028,8 +1060,12 @@ impl PhotonApp {
     }
 
     fn update_text_scroll(&mut self, textbox_width: usize) -> bool {
-        eprintln!("update_text_scroll called: cursor_idx={}, text_len={}, textbox_width={}",
-            self.cursor_char_index, self.username_input.len(), textbox_width);
+        eprintln!(
+            "update_text_scroll called: cursor_idx={}, text_len={}, textbox_width={}",
+            self.cursor_char_index,
+            self.username_input.len(),
+            textbox_width
+        );
 
         if self.username_input.is_empty() {
             eprintln!("  EARLY EXIT: empty text");
@@ -1040,7 +1076,10 @@ impl PhotonApp {
         let total_text_width: usize = self.character_widths.iter().sum();
 
         if total_text_width <= textbox_width {
-            eprintln!("  EARLY EXIT: text_width {} <= textbox_width {}", total_text_width, textbox_width);
+            eprintln!(
+                "  EARLY EXIT: text_width {} <= textbox_width {}",
+                total_text_width, textbox_width
+            );
             self.text_scroll_pixel_offset = 0.0;
             return false;
         }
@@ -1057,26 +1096,34 @@ impl PhotonApp {
 
         eprintln!("SCROLL: cursor_idx={}, cursor_px_offset={}, text_half={:.1}, textbox_half={:.1}, margin={}",
             self.cursor_char_index, cursor_pixel_offset, text_half, textbox_half, margin);
-        eprintln!("  cursor_in_centered={:.1}, cursor_in_view={:.1}, scroll_offset={:.1}",
-            cursor_pos_in_centered_text, cursor_pos_in_view, self.text_scroll_pixel_offset);
+        eprintln!(
+            "  cursor_in_centered={:.1}, cursor_in_view={:.1}, scroll_offset={:.1}",
+            cursor_pos_in_centered_text, cursor_pos_in_view, self.text_scroll_pixel_offset
+        );
 
         if cursor_pos_in_view < -textbox_half + margin as f32 {
             let old_scroll = self.text_scroll_pixel_offset;
-            self.text_scroll_pixel_offset = -textbox_half + margin as f32 - cursor_pos_in_centered_text;
-            eprintln!("  LEFT EDGE: scroll {:.1} -> {:.1}", old_scroll, self.text_scroll_pixel_offset);
+            self.text_scroll_pixel_offset =
+                -textbox_half + margin as f32 - cursor_pos_in_centered_text;
+            eprintln!(
+                "  LEFT EDGE: scroll {:.1} -> {:.1}",
+                old_scroll, self.text_scroll_pixel_offset
+            );
             return true;
         } else if cursor_pos_in_view > textbox_half - margin as f32 {
             let old_scroll = self.text_scroll_pixel_offset;
-            self.text_scroll_pixel_offset = textbox_half - margin as f32 - cursor_pos_in_centered_text;
-            eprintln!("  RIGHT EDGE: scroll {:.1} -> {:.1}", old_scroll, self.text_scroll_pixel_offset);
+            self.text_scroll_pixel_offset =
+                textbox_half - margin as f32 - cursor_pos_in_centered_text;
+            eprintln!(
+                "  RIGHT EDGE: scroll {:.1} -> {:.1}",
+                old_scroll, self.text_scroll_pixel_offset
+            );
             return true;
         }
         false
     }
 
     fn update_cursor_position(&mut self) {
-        let margin = self.min_dim / 8;
-        let box_width = self.width as usize - margin * 2;
         let box_height = self.min_dim / 8;
         let center_x = self.width as usize / 2;
         let center_y = self.height as usize * 4 / 7;
@@ -1090,8 +1137,9 @@ impl PhotonApp {
         let total_text_width: usize = self.character_widths.iter().sum();
         let text_half = total_text_width as f32 / 2.0;
 
-        self.cursor_pixel_x =
-            (center_x as f32 - text_half + self.text_scroll_pixel_offset + cursor_pixel_offset as f32) as usize;
+        self.cursor_pixel_x = (center_x as f32 - text_half
+            + self.text_scroll_pixel_offset
+            + cursor_pixel_offset as f32) as usize;
         self.cursor_pixel_y = (center_y as f32 - box_height as f32 * 0.25) as usize;
         self.cursor_height = box_height as f32 * 0.5;
     }
@@ -1451,7 +1499,7 @@ impl PhotonApp {
                     let char_width = self.text_renderer.measure_text_width(
                         &ch.to_string(),
                         font_size,
-                        400,
+                        theme::FONT_WEIGHT_USER_CONTENT,
                         theme::FONT_USER_CONTENT,
                     );
                     self.character_widths.push(char_width as usize);
@@ -1466,24 +1514,33 @@ impl PhotonApp {
                     let textbox_half = box_width as f32 / 2.0;
                     let text_half = total_text_width as f32 / 2.0;
                     let cursor_pos_in_centered_text = cursor_pixel_offset as f32 - text_half;
-                    let cursor_pos_in_view = cursor_pos_in_centered_text + self.text_scroll_pixel_offset;
+                    let cursor_pos_in_view =
+                        cursor_pos_in_centered_text + self.text_scroll_pixel_offset;
 
                     if cursor_pos_in_view < -textbox_half + margin as f32 {
-                        self.text_scroll_pixel_offset = -textbox_half + margin as f32 - cursor_pos_in_centered_text;
+                        self.text_scroll_pixel_offset =
+                            -textbox_half + margin as f32 - cursor_pos_in_centered_text;
                     } else if cursor_pos_in_view > textbox_half - margin as f32 {
-                        self.text_scroll_pixel_offset = textbox_half - margin as f32 - cursor_pos_in_centered_text;
+                        self.text_scroll_pixel_offset =
+                            textbox_half - margin as f32 - cursor_pos_in_centered_text;
                     }
                 } else {
                     self.text_scroll_pixel_offset = 0.0;
                 }
 
-                // Calculate total text width for centering
-                let text_half = total_text_width as f32 / 2.0;
-                let text_start_x = center_x as f32 - text_half + self.text_scroll_pixel_offset;
-
                 // Draw all characters using additive compositing with clipping
-                Self::render_text_clipped(pixels, &self.username_input, &self.character_widths, self.text_scroll_pixel_offset, true,
-                    &mut self.text_renderer, &self.textbox_mask, self.width as usize, self.height as usize, self.min_dim);
+                Self::render_text_clipped(
+                    pixels,
+                    &self.username_input,
+                    &self.character_widths,
+                    self.text_scroll_pixel_offset,
+                    true,
+                    &mut self.text_renderer,
+                    &self.textbox_mask,
+                    self.width as usize,
+                    self.height as usize,
+                    self.min_dim,
+                );
                 self.text_redraw_counter += 1;
             }
 
@@ -1495,7 +1552,8 @@ impl PhotonApp {
             };
             let total_text_width: usize = self.character_widths.iter().sum();
             let text_half = total_text_width as f32 / 2.0;
-            self.cursor_pixel_x = (center_x as f32 - text_half + self.text_scroll_pixel_offset
+            self.cursor_pixel_x = (center_x as f32 - text_half
+                + self.text_scroll_pixel_offset
                 + cursor_pixel_offset as f32) as usize;
             self.cursor_pixel_y = (center_y as f32 - box_height as f32 * 0.25) as usize;
             self.cursor_height = box_height as f32 * 0.5;
@@ -1715,7 +1773,12 @@ impl PhotonApp {
         );
 
         // Bottom center - text redraw counter
-        let text_width = self.text_renderer.measure_text_width(&text_redraw_text, counter_size, 400, "Josefin Slab");
+        let text_width = self.text_renderer.measure_text_width(
+            &text_redraw_text,
+            counter_size,
+            400,
+            "Josefin Slab",
+        );
         self.text_renderer.draw_text_left_u32(
             pixels,
             self.width as usize,
@@ -1766,7 +1829,9 @@ impl PhotonApp {
             let t = (y as f32 - cursor_top - half_height) / half_height;
 
             let wave = (1. - t * t) * (1. + t) * (1. + t) * theme::CURSOR_BRIGHTNESS;
-            pixels[idx] += 0x00010101 * wave as u32;
+            for x in -7..=7isize {
+                pixels[idx + x as usize] += 0x00010101 * (wave as u32 >> x.abs());
+            }
         }
     }
 
@@ -1789,7 +1854,9 @@ impl PhotonApp {
             let t = (y as f32 - cursor_top - half_height) / half_height;
 
             let wave = (1. - t * t) * (1. - t) * (1. - t) * theme::CURSOR_BRIGHTNESS;
-            pixels[idx] += 0x00010101 * wave as u32;
+            for x in -7..=7isize {
+                pixels[idx + x as usize] += 0x00010101 * (wave as u32 >> x.abs());
+            }
         }
     }
 
@@ -1809,7 +1876,9 @@ impl PhotonApp {
             let idx = y * window_width + x;
             let t = (y as f32 - cursor_top - half_height) / half_height;
             let wave = (1. - t * t) * (1. + t) * (1. + t) * theme::CURSOR_BRIGHTNESS;
-            pixels[idx] -= 0x00010101 * wave as u32;
+            for x in -7..=7isize {
+                pixels[idx + x as usize] -= 0x00010101 * (wave as u32 >> x.abs());
+            }
         }
     }
 
@@ -1829,57 +1898,9 @@ impl PhotonApp {
             let idx = y * window_width + x;
             let t = (y as f32 - cursor_top - half_height) / half_height;
             let wave = (1. - t * t) * (1. - t) * (1. - t) * theme::CURSOR_BRIGHTNESS;
-            pixels[idx] -= 0x00010101 * wave as u32;
-        }
-    }
-
-    /// Render text string at textbox position using additive/subtractive rendering
-    fn render_text_differential(&mut self, pixels: &mut [u32], text: &str, add_mode: bool) {
-        if text.is_empty() {
-            return;
-        }
-
-        let margin = self.min_dim / 8;
-        let box_width = self.width as usize - margin * 2;
-        let box_height = self.min_dim / 8;
-        let center_x = self.width as usize / 2;
-        let center_y = self.height as usize * 4 / 7;
-
-        let chars: Vec<char> = text.chars().collect();
-        let char_widths: Vec<usize> = chars
-            .iter()
-            .map(|&ch| {
-                self.text_renderer.measure_text_width(
-                    &ch.to_string(),
-                    box_height as f32 * 0.5,
-                    500,
-                    theme::FONT_USER_CONTENT,
-                ) as usize
-            })
-            .collect();
-
-        let text_width: usize = char_widths.iter().sum();
-        let text_half = text_width as f32 / 2.0;
-        let text_start_x = center_x as f32 - text_half + self.text_scroll_pixel_offset;
-
-        let mut x_offset = text_start_x;
-        let font_size = box_height as f32 * 0.5;
-
-        for &ch in &chars {
-            let actual_width = self.text_renderer.render_char_additive_u32(
-                pixels,
-                self.width as usize,
-                ch,
-                x_offset,
-                center_y as f32,
-                font_size,
-                500,
-                theme::FONT_USER_CONTENT,
-                theme::TEXT_BRIGHTNESS,
-                &self.textbox_mask,
-                add_mode,
-            );
-            x_offset += actual_width;
+            for x in -7..=7isize {
+                pixels[idx + x as usize] -= 0x00010101 * (wave as u32 >> x.abs());
+            }
         }
     }
 
