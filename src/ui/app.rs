@@ -465,8 +465,6 @@ impl PhotonApp {
 
             // If text changed, do differential rendering (unless full redraw is scheduled)
             if text_changed && !self.needs_redraw {
-                eprintln!("TEXT CHANGED: '{}' -> '{}'", old_text, self.username_input);
-
                 // Calculate OLD cursor position before changing anything
                 let margin = self.min_dim / 8;
                 let box_width = self.width as usize - margin * 2;
@@ -585,11 +583,6 @@ impl PhotonApp {
                 buffer.present().unwrap();
             } else if cursor_moved && !text_changed && !self.needs_redraw {
                 // Cursor moved but text didn't change (skip if full redraw scheduled)
-                eprintln!(
-                    "CURSOR MOVED: {} -> {}",
-                    old_cursor_index, self.cursor_char_index
-                );
-
                 // Calculate old cursor position
                 let margin = self.min_dim / 8;
                 let box_width = self.width as usize - margin * 2;
@@ -623,8 +616,6 @@ impl PhotonApp {
 
                 // If scroll changed, re-render text at new position
                 if scroll_changed {
-                    eprintln!("SCROLL CHANGED: re-rendering text");
-
                     let current_text = self.username_input.clone();
                     let current_char_widths = self.character_widths.clone();
 
@@ -1060,15 +1051,7 @@ impl PhotonApp {
     }
 
     fn update_text_scroll(&mut self, textbox_width: usize) -> bool {
-        eprintln!(
-            "update_text_scroll called: cursor_idx={}, text_len={}, textbox_width={}",
-            self.cursor_char_index,
-            self.username_input.len(),
-            textbox_width
-        );
-
         if self.username_input.is_empty() {
-            eprintln!("  EARLY EXIT: empty text");
             self.text_scroll_pixel_offset = 0.0;
             return false;
         }
@@ -1076,10 +1059,6 @@ impl PhotonApp {
         let total_text_width: usize = self.character_widths.iter().sum();
 
         if total_text_width <= textbox_width {
-            eprintln!(
-                "  EARLY EXIT: text_width {} <= textbox_width {}",
-                total_text_width, textbox_width
-            );
             self.text_scroll_pixel_offset = 0.0;
             return false;
         }
@@ -1094,30 +1073,13 @@ impl PhotonApp {
         let cursor_pos_in_centered_text = cursor_pixel_offset as f32 - text_half;
         let cursor_pos_in_view = cursor_pos_in_centered_text + self.text_scroll_pixel_offset;
 
-        eprintln!("SCROLL: cursor_idx={}, cursor_px_offset={}, text_half={:.1}, textbox_half={:.1}, margin={}",
-            self.cursor_char_index, cursor_pixel_offset, text_half, textbox_half, margin);
-        eprintln!(
-            "  cursor_in_centered={:.1}, cursor_in_view={:.1}, scroll_offset={:.1}",
-            cursor_pos_in_centered_text, cursor_pos_in_view, self.text_scroll_pixel_offset
-        );
-
         if cursor_pos_in_view < -textbox_half + margin as f32 {
-            let old_scroll = self.text_scroll_pixel_offset;
             self.text_scroll_pixel_offset =
                 -textbox_half + margin as f32 - cursor_pos_in_centered_text;
-            eprintln!(
-                "  LEFT EDGE: scroll {:.1} -> {:.1}",
-                old_scroll, self.text_scroll_pixel_offset
-            );
             return true;
         } else if cursor_pos_in_view > textbox_half - margin as f32 {
-            let old_scroll = self.text_scroll_pixel_offset;
             self.text_scroll_pixel_offset =
                 textbox_half - margin as f32 - cursor_pos_in_centered_text;
-            eprintln!(
-                "  RIGHT EDGE: scroll {:.1} -> {:.1}",
-                old_scroll, self.text_scroll_pixel_offset
-            );
             return true;
         }
         false
