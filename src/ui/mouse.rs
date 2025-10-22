@@ -44,6 +44,11 @@ impl PhotonApp {
                             self.current_text_state.textbox_focused = true;
                             self.controls_dirty = true; // Focus changed - need to show cursor
 
+                            // If textbox is empty, need to redraw to remove infinity placeholder
+                            if self.current_text_state.chars.is_empty() {
+                                self.text_dirty = true;
+                            }
+
                             // Clear selection when clicking
                             self.current_text_state.selection_anchor = None;
 
@@ -123,6 +128,11 @@ impl PhotonApp {
                             if self.current_text_state.textbox_focused {
                                 self.current_text_state.textbox_focused = false;
                                 self.controls_dirty = true; // Focus changed - need to hide cursor
+
+                                // If textbox is empty, need to redraw to show infinity placeholder
+                                if self.current_text_state.chars.is_empty() {
+                                    self.text_dirty = true;
+                                }
                             }
                         }
                     }

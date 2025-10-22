@@ -469,6 +469,29 @@ impl PhotonApp {
                             self.min_dim,
                             theme::TEXT_COLOUR,
                         );
+                    } else {
+                        if !self.old_text_state.textbox_focused {
+                            let char_width = self.text_renderer.measure_text_width(
+                                "∞",
+                                font_size,
+                                500,
+                                theme::FONT_USER_CONTENT,
+                            );
+
+                            self.text_renderer.render_char_additive_u32(
+                                pixels,
+                                self.width as usize,
+                                '∞',
+                                center_x as f32 - char_width / 2.0,
+                                center_y as f32,
+                                font_size,
+                                500,
+                                theme::FONT_USER_CONTENT,
+                                0xFF808080,
+                                &self.textbox_mask,
+                                false,
+                            );
+                        }
                     }
                 }
             }
@@ -488,6 +511,29 @@ impl PhotonApp {
                         theme::TEXT_COLOUR,
                     );
                     self.text_redraw_counter += 1;
+                } else {
+                    if !self.current_text_state.textbox_focused {
+                        let char_width = self.text_renderer.measure_text_width(
+                            "∞",
+                            font_size,
+                            500,
+                            theme::FONT_USER_CONTENT,
+                        );
+
+                        self.text_renderer.render_char_additive_u32(
+                            pixels,
+                            self.width as usize,
+                            '∞',
+                            center_x as f32 - char_width / 2.0,
+                            center_y as f32,
+                            font_size,
+                            500,
+                            theme::FONT_USER_CONTENT,
+                            0xFF808080,
+                            &self.textbox_mask,
+                            true,
+                        );
+                    }
                 }
             }
 

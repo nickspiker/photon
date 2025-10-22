@@ -187,28 +187,6 @@ impl PhotonApp {
         false
     }
 
-    pub fn update_cursor_position(&mut self) {
-        let box_height = self.min_dim / 8;
-        let center_x = self.width as usize / 2;
-        let center_y = self.height as usize * 4 / 7;
-
-        let cursor_pixel_offset: usize = if self.current_text_state.cursor_index > 0 {
-            self.current_text_state.widths[..self.current_text_state.cursor_index]
-                .iter()
-                .sum()
-        } else {
-            0
-        };
-
-        let total_text_width: usize = self.current_text_state.width;
-        let text_half = total_text_width / 2;
-
-        self.cursor_pixel_x = (center_x as isize - text_half as isize
-            + self.current_text_state.scroll_offset
-            + cursor_pixel_offset as isize) as usize;
-        self.cursor_pixel_y = (center_y as f32 - box_height as f32 * 0.25) as usize;
-    }
-
     /// Get the selection range as (start, end) where start < end, or None if no selection
     pub fn get_selection_range(&self) -> Option<(usize, usize)> {
         self.current_text_state.selection_anchor.and_then(|anchor| {
@@ -229,6 +207,11 @@ impl PhotonApp {
             self.current_text_state.delete_range(start..end);
             self.current_text_state.cursor_index = start;
             self.current_text_state.selection_anchor = None;
+
+            // Reset scroll offset if text is now empty
+            if self.current_text_state.chars.is_empty() {
+                self.current_text_state.scroll_offset = 0;
+            }
         }
     }
 

@@ -77,6 +77,7 @@ impl PhotonApp {
                                     self.delete_selection();
                                     self.text_dirty = true;
                                     self.selection_dirty = true;
+                                    self.controls_dirty = true; // Cursor position changed
                                 } else {
                                     // Optional: show error to user that clipboard failed
                                     log::warn!("Failed to copy to clipboard, not cutting");
