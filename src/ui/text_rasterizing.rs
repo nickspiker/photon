@@ -73,7 +73,6 @@ impl TextRenderer {
         &mut self,
         pixels: &mut [u32],
         width: usize,
-        height: usize,
         text: &str,
         x: f32,
         y: f32,
@@ -109,7 +108,6 @@ impl TextRenderer {
                 &mut buffer,
                 pixels,
                 width,
-                height,
                 x,
                 y,
                 text_width,
@@ -128,7 +126,6 @@ impl TextRenderer {
         &mut self,
         pixels: &mut [u32],
         width: usize,
-        height: usize,
         text: &str,
         x: f32,
         y: f32,
@@ -159,7 +156,6 @@ impl TextRenderer {
                 &mut buffer,
                 pixels,
                 width,
-                height,
                 x,
                 y,
                 text_width,
@@ -178,7 +174,6 @@ impl TextRenderer {
         &mut self,
         pixels: &mut [u32],
         width: usize,
-        height: usize,
         text: &str,
         x: f32,
         y: f32,
@@ -209,7 +204,6 @@ impl TextRenderer {
                 &mut buffer,
                 pixels,
                 width,
-                height,
                 x,
                 y,
                 text_width,
@@ -392,7 +386,6 @@ impl TextRenderer {
         buffer: &mut Buffer,
         pixels: &mut [u32], // [ARGB]
         width: usize,
-        height: usize,
         anchor_x: f32,
         anchor_y: f32,
         text_width: f32,
@@ -462,7 +455,7 @@ impl TextRenderer {
         buffer: &mut Buffer,
         pixels: &mut [u8],
         width: u32,
-        height: u32,
+        _height: u32,
         anchor_x: f32,
         anchor_y: f32,
         text_width: f32,
@@ -738,7 +731,7 @@ impl TextRenderer {
         size: f32,
         weight: u16,
         font: &str,
-        brightness: u8,
+        colour: u32,
         textbox_mask: &[u8],
         add_mode: bool,
     ) -> f32 {
@@ -780,16 +773,19 @@ impl TextRenderer {
                     for cy in 0..glyph_height {
                         for cx in 0..glyph_width {
                             let char_alpha = image.data[cy * glyph_width + cx];
-
                             let final_x = glyph_x + cx as i32;
                             let final_y = glyph_y + cy as i32;
-
                             let idx = final_y as usize * width + final_x as usize;
-
                             let mask_alpha = textbox_mask[idx];
+
+                            let combined_alpha = (char_alpha as u32 * mask_alpha as u32) >> 8;
+
+                            // Mask out alpha, multiply each channel by combined_alpha in one SIMD-style op
+                            let rb = (colour & 0x00_FF_00_FF) * combined_alpha;
+                            let g = (colour & 0x00_00_FF_00) * combined_alpha;
+
                             let contribution =
-                                ((char_alpha as u32 * mask_alpha as u32 * brightness as u32) >> 16)
-                                    * 0x00_01_01_01;
+                                ((rb >> 8) & 0x00_FF_00_FF) | ((g >> 8) & 0x00_00_FF_00);
 
                             if add_mode {
                                 pixels[idx] += contribution;

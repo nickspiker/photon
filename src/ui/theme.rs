@@ -7,11 +7,6 @@ pub const WINDOW_SHADOW_EDGE: u32 = 0xFF_2B_34_37;
 pub const WINDOW_CONTROLS_BG: u32 = 0xFF_1E_1E_1E; // Background behind window control buttons
 pub const WINDOW_CONTROLS_HAIRLINE: u32 = 0xFF_44_41_37; // Hairline separators between buttons
 
-// Background colours
-pub const BACKGROUND: u32 = 0xFF_06_08_09;
-pub const BACKGROUND_ADDER: [u8; 3] = [16, 17, 20]; // Added to background texture variation (RGB only)
-pub const LAUNCH_SCREEN_BG: u32 = 0xFF_12_12_18; // Launch screen background
-
 // UI element colours
 pub const LIGHT_EDGE: u32 = 0xFF_60_60_60;
 pub const SHADOW_EDGE: u32 = 0xFF_20_20_20;
@@ -20,13 +15,15 @@ pub const FILL: u32 = 0xFF_40_40_40;
 // Text colours
 pub const FONT_LABEL: u32 = 0xFF_80_80_80;
 pub const CURSOR_BRIGHTNESS: f32 = 100.; // Cursor wave brightness multiplier
-pub const TEXT_BRIGHTNESS: u8 = 0xD0;
+pub const TEXT_COLOUR: u32 = 0xFFD0D0D0;
 
 // Button colours
 pub const BUTTON_BASE: u32 = 0xFF_40_40_40;
 pub const BUTTON_LIGHT_EDGE: u32 = 0xFF_60_60_60;
 pub const BUTTON_SHADOW_EDGE: u32 = 0xFF_20_20_20;
 pub const BUTTON_HAIRLINE: u32 = 0xFF_32_32_32; // Hairline separators between buttons
+pub const BUTTON_GREEN: u32 = 0xFF_20_45_25;
+pub const BUTTON_YELLOW: u32 = 0xFF_50_45_20;
 
 // Button glyphs (base colours, not deltas)
 pub const CLOSE_GLYPH: u32 = 0xFF_80_20_20;

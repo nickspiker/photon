@@ -20,23 +20,10 @@ struct App {
     screen_width: u32,
     screen_height: u32,
     maximized_size: Option<(u32, u32)>, // Maximized dimensions (learned on first maximize)
-    cursor_blink_rate_ms: u64, // System cursor blink rate in milliseconds
+    cursor_blink_rate_ms: u64,          // System cursor blink rate in milliseconds
 }
 
 impl ApplicationHandler for App {
-    fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: winit::event::StartCause) {
-        // When wake timer fires, request redraw for cursor blink
-        if let winit::event::StartCause::ResumeTimeReached { .. } = cause {
-            if let Some(window) = &self.window {
-                if let Some(app) = &self.photon_app {
-                    if app.textbox_is_focused() {
-                        window.request_redraw();
-                    }
-                }
-            }
-        }
-    }
-
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_none() {
             // Get primary monitor size
@@ -97,10 +84,8 @@ impl ApplicationHandler for App {
 
                 #[cfg(target_os = "linux")]
                 {
-                    let mut app = pollster::block_on(ui::PhotonApp::new(
-                        window,
-                        self.cursor_blink_rate_ms,
-                    ));
+                    let app =
+                        pollster::block_on(ui::PhotonApp::new(window, self.cursor_blink_rate_ms));
                     self.photon_app = Some(app);
                     // Trigger redraw with correct fullscreen state
                     window.request_redraw();
@@ -144,7 +129,7 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                if let (Some(window), Some(app)) = (&self.window, &mut self.photon_app) {
+                if let (Some(app), Some(window)) = (&mut self.photon_app, &self.window) {
                     app.handle_keyboard(event);
                     window.request_redraw();
                 }
@@ -174,12 +159,21 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        if let (Some(app), Some(_window)) = (&self.photon_app, &self.window) {
-            // Set next wake time for cursor blink (random interval)
+        if let Some(app) = &mut self.photon_app {
             if app.textbox_is_focused() {
                 use winit::event_loop::ControlFlow;
-                let wake_time = app.next_blink_wake_time();
-                event_loop.set_control_flow(ControlFlow::WaitUntil(wake_time));
+
+                // Check if it's time to blink
+                let now = std::time::Instant::now();
+
+                if now >= app.next_cursor_blink_time {
+                    // Time to blink! Toggle cursor and set next timer
+                    app.toggle_cursor_blink();
+                    app.next_cursor_blink_time = app.next_blink_wake_time();
+                }
+
+                // Always set control flow (either new or same timer)
+                event_loop.set_control_flow(ControlFlow::WaitUntil(app.next_cursor_blink_time));
             } else {
                 use winit::event_loop::ControlFlow;
                 event_loop.set_control_flow(ControlFlow::Wait);
