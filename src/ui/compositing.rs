@@ -435,6 +435,7 @@ impl PhotonApp {
                             }
                         }
                     }
+
                 }
 
                 // Debug: overlay textbox mask visualization (grayscale alpha)
@@ -623,30 +624,67 @@ impl PhotonApp {
             if self.controls_dirty {
                 // Handle hover state changes
                 if self.prev_hovered_button != self.hovered_button {
+                    // Calculate button centers for centerpoint fill
+                    let smaller_dim = self.width.min(self.height) as f32;
+                    let button_height = (smaller_dim / 16.).ceil() as usize;
+                    let button_width = button_height;
+                    let total_width = button_width * 7 / 2;
+                    let x_start = self.width as usize - total_width;
+                    let y_start = 0;
+                    let button_center_y = y_start + button_height / 2;
+
+                    // Buttons are offset by button_width / 4 from x_start
+                    let button_area_x_start = x_start + button_width / 4;
+
+                    // Minimize: 1px left of left hairline (hairline at button_width from button_area_x_start)
+                    let minimize_center_x = button_area_x_start + button_width - 1;
+                    // Maximize: center between the two hairlines
+                    let maximize_center_x = button_area_x_start + button_width + button_width / 2;
+                    // Close: 1px right of right hairline (hairline at button_width * 2 from button_area_x_start)
+                    let close_center_x = button_area_x_start + button_width * 2 + 1;
+
                     // Unhover old button
                     match self.prev_hovered_button {
                         HoveredButton::Close => {
-                            Self::draw_button_hover_by_pixels(
+                            Self::draw_hover_centerpoint(
                                 pixels,
-                                &self.close_pixels,
+                                &self.hit_test_map,
+                                self.width as usize,
+                                self.height as usize,
+                                close_center_x,
+                                button_center_y,
+                                HIT_CLOSE_BUTTON,
                                 false,
-                                HoveredButton::Close,
+                                theme::CLOSE_HOVER,
+                                self.debug_hit_test,
                             );
                         }
                         HoveredButton::Maximize => {
-                            Self::draw_button_hover_by_pixels(
+                            Self::draw_hover_centerpoint(
                                 pixels,
-                                &self.maximize_pixels,
+                                &self.hit_test_map,
+                                self.width as usize,
+                                self.height as usize,
+                                maximize_center_x,
+                                button_center_y,
+                                HIT_MAXIMIZE_BUTTON,
                                 false,
-                                HoveredButton::Maximize,
+                                theme::MAXIMIZE_HOVER,
+                                self.debug_hit_test,
                             );
                         }
                         HoveredButton::Minimize => {
-                            Self::draw_button_hover_by_pixels(
+                            Self::draw_hover_centerpoint(
                                 pixels,
-                                &self.minimize_pixels,
+                                &self.hit_test_map,
+                                self.width as usize,
+                                self.height as usize,
+                                minimize_center_x,
+                                button_center_y,
+                                HIT_MINIMIZE_BUTTON,
                                 false,
-                                HoveredButton::Minimize,
+                                theme::MINIMIZE_HOVER,
+                                self.debug_hit_test,
                             );
                         }
                         HoveredButton::None => {}
@@ -655,27 +693,45 @@ impl PhotonApp {
                     // Hover new button
                     match self.hovered_button {
                         HoveredButton::Close => {
-                            Self::draw_button_hover_by_pixels(
+                            Self::draw_hover_centerpoint(
                                 pixels,
-                                &self.close_pixels,
+                                &self.hit_test_map,
+                                self.width as usize,
+                                self.height as usize,
+                                close_center_x,
+                                button_center_y,
+                                HIT_CLOSE_BUTTON,
                                 true,
-                                HoveredButton::Close,
+                                theme::CLOSE_HOVER,
+                                self.debug_hit_test,
                             );
                         }
                         HoveredButton::Maximize => {
-                            Self::draw_button_hover_by_pixels(
+                            Self::draw_hover_centerpoint(
                                 pixels,
-                                &self.maximize_pixels,
+                                &self.hit_test_map,
+                                self.width as usize,
+                                self.height as usize,
+                                maximize_center_x,
+                                button_center_y,
+                                HIT_MAXIMIZE_BUTTON,
                                 true,
-                                HoveredButton::Maximize,
+                                theme::MAXIMIZE_HOVER,
+                                self.debug_hit_test,
                             );
                         }
                         HoveredButton::Minimize => {
-                            Self::draw_button_hover_by_pixels(
+                            Self::draw_hover_centerpoint(
                                 pixels,
-                                &self.minimize_pixels,
+                                &self.hit_test_map,
+                                self.width as usize,
+                                self.height as usize,
+                                minimize_center_x,
+                                button_center_y,
+                                HIT_MINIMIZE_BUTTON,
                                 true,
-                                HoveredButton::Minimize,
+                                theme::MINIMIZE_HOVER,
+                                self.debug_hit_test,
                             );
                         }
                         HoveredButton::None => {}
@@ -1993,6 +2049,109 @@ impl PhotonApp {
 
                 // Pack back to u32
                 pixels[hit_idx] = pack_argb(new_r, new_g, new_b, a);
+            }
+        }
+    }
+
+    /// Apply hover effect using centerpoint fill algorithm
+    /// Starts from element center, scans vertically then horizontally based on hit test map
+    pub fn draw_hover_centerpoint(
+        pixels: &mut [u32],
+        hit_test_map: &[u8],
+        window_width: usize,
+        window_height: usize,
+        center_x: usize,
+        center_y: usize,
+        hit_id: u8,
+        hover: bool,
+        hover_delta: [i8; 4],
+        debug_hit_test: bool,
+    ) {
+        // Debug: draw magenta pixel at centerpoint when hit test map is visible
+        // Use alpha=254 so we can skip it in the hover effect loop
+        if debug_hit_test {
+            let debug_idx = center_y * window_width + center_x;
+            if debug_idx < pixels.len() {
+                pixels[debug_idx] = 0xFE_FF_00_FF; // Magenta with alpha=254
+            }
+        }
+
+        // Apply deltas (positive for hover, negative for unhover)
+        let sign = if hover { 1 } else { -1 };
+        let r_delta = hover_delta[0] * sign;
+        let g_delta = hover_delta[1] * sign;
+        let b_delta = hover_delta[2] * sign;
+
+        // 1. Find vertical extent by scanning up/down from center
+        let mut top_y = center_y;
+        let mut bottom_y = center_y;
+
+        // Scan upward
+        while top_y > 0 {
+            let idx = top_y * window_width + center_x;
+            if hit_test_map[idx] != hit_id {
+                top_y += 1; // Back up one
+                break;
+            }
+            top_y -= 1;
+        }
+
+        // Scan downward
+        while bottom_y < window_height - 1 {
+            let idx = bottom_y * window_width + center_x;
+            if hit_test_map[idx] != hit_id {
+                bottom_y -= 1; // Back up one
+                break;
+            }
+            bottom_y += 1;
+        }
+
+        // 2. For each row in vertical range, scan left/right and apply hover effect
+        for y in top_y..=bottom_y {
+            let row_start = y * window_width;
+
+            // Find left extent
+            let mut left_x = center_x;
+            while left_x > 0 {
+                let idx = row_start + left_x;
+                if hit_test_map[idx] != hit_id {
+                    left_x += 1; // Back up one
+                    break;
+                }
+                left_x -= 1;
+            }
+
+            // Find right extent
+            let mut right_x = center_x;
+            while right_x < window_width - 1 {
+                let idx = row_start + right_x;
+                if hit_test_map[idx] != hit_id {
+                    right_x -= 1; // Back up one
+                    break;
+                }
+                right_x += 1;
+            }
+
+            // Apply hover effect to this row
+            for x in left_x..=right_x {
+                let idx = row_start + x;
+                if idx < pixels.len() && hit_test_map[idx] == hit_id {
+                    // Skip debug pixels (magenta with alpha=254)
+                    if pixels[idx] == 0xFE_FF_00_FF {
+                        continue;
+                    }
+
+                    // Unpack u32 pixel (ARGB format)
+                    let (r, g, b, a) = unpack_argb(pixels[idx]);
+
+                    // Apply deltas with wrapping
+                    let new_r = r.wrapping_add(r_delta as u8);
+                    let new_g = g.wrapping_add(g_delta as u8);
+                    let new_b = b.wrapping_add(b_delta as u8);
+
+                    // Pack back to u32
+                    pixels[idx] = pack_argb(new_r, new_g, new_b, a);
+                }
             }
         }
     }
