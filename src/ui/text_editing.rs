@@ -1,66 +1,9 @@
-use crate::ui::{app::*, text_rasterizing::TextRenderer, theme};
-
+use crate::ui::{app::*, renderer_linux::Renderer, text_rasterizing::TextRenderer, theme};
+use rand::Rng;
 impl PhotonApp {
     /// Check if textbox is focused (for event loop control flow)
     pub fn textbox_is_focused(&self) -> bool {
         self.current_text_state.textbox_focused
-    }
-
-    /// Get next cursor blink wake time (random interval 0..=125ms)
-    pub fn next_blink_wake_time(&self) -> std::time::Instant {
-        use rand::Rng;
-        let interval_ms = rand::thread_rng().gen_range(0..=300);
-        std::time::Instant::now() + std::time::Duration::from_millis(interval_ms)
-    }
-
-    /// Toggle cursor blink state and render only the cursor change
-    pub fn toggle_cursor_blink(&mut self) {
-        if !self.current_text_state.textbox_focused {
-            return; // Cursor not visible, nothing to blink
-        }
-
-        let font_size = self.font_size();
-        let mut buffer = self.renderer.lock_buffer();
-        let pixels = buffer.as_mut();
-
-        if self.cursor_wave_top_bright {
-            // Currently Bright/Dark → swap to Dark/Bright
-            Self::sub_cursor_top(
-                pixels,
-                self.width as usize,
-                self.cursor_pixel_x as f32,
-                self.cursor_pixel_y as f32,
-                font_size,
-            );
-            Self::add_cursor_bottom(
-                pixels,
-                self.width as usize,
-                self.cursor_pixel_x as f32,
-                self.cursor_pixel_y as f32,
-                font_size,
-            );
-            self.cursor_wave_top_bright = false;
-        } else {
-            // Currently Dark/Bright → swap to Bright/Dark
-            Self::add_cursor_top(
-                pixels,
-                self.width as usize,
-                self.cursor_pixel_x as f32,
-                self.cursor_pixel_y as f32,
-                font_size,
-            );
-            Self::sub_cursor_bottom(
-                pixels,
-                self.width as usize,
-                self.cursor_pixel_x as f32,
-                self.cursor_pixel_y as f32,
-                font_size,
-            );
-            self.cursor_wave_top_bright = true;
-        }
-
-        // Present the buffer to show the cursor change
-        buffer.present().unwrap();
     }
 
     /// Returns the font size for text rendering (min_dim / 16)
@@ -68,10 +11,6 @@ impl PhotonApp {
         self.min_dim as f32 / 16.0
     }
 
-    pub fn handle_cursor_left(&mut self) {
-        self.hovered_button = HoveredButton::None;
-        self.render();
-    }
     /// Recalculate all character widths (e.g., after font size change on resize)
     pub fn recalculate_char_widths(&mut self) {
         let font_size = self.font_size();
@@ -117,7 +56,7 @@ impl PhotonApp {
         let center_y = window_height * 4 / 7;
 
         let text_half = (text.width / 2) as isize;
-        let text_start_x = (center_x as isize - text_half + text.scroll_offset) as f32;
+        let text_start_x = (center_x as f32 - text_half as f32 + text.scroll_offset) as f32;
         let textbox_left = (center_x - box_width / 2) as f32;
         let textbox_right = (center_x + box_width / 2) as f32;
 
@@ -151,14 +90,14 @@ impl PhotonApp {
 
     pub fn update_text_scroll(&mut self, textbox_width: usize) -> bool {
         if self.current_text_state.chars.is_empty() {
-            self.current_text_state.scroll_offset = 0;
+            self.current_text_state.scroll_offset = 0.0;
             return false;
         }
 
         let total_text_width: usize = self.current_text_state.width;
 
         if total_text_width <= textbox_width {
-            self.current_text_state.scroll_offset = 0;
+            self.current_text_state.scroll_offset = 0.0;
             return false;
         }
 
@@ -168,21 +107,102 @@ impl PhotonApp {
             .sum();
 
         let margin = textbox_width / 40;
-        let textbox_half = (textbox_width / 2) as isize;
-        let text_half = (total_text_width / 2) as isize;
+        let textbox_half = (textbox_width / 2) as f32;
+        let text_half = (total_text_width / 2) as f32;
 
-        let cursor_pos_in_centered_text = cursor_pixel_offset as isize - text_half;
+        let cursor_pos_in_centered_text = cursor_pixel_offset as f32 - text_half;
         let cursor_pos_in_view =
             cursor_pos_in_centered_text + self.current_text_state.scroll_offset;
 
-        if cursor_pos_in_view < -textbox_half + margin as isize {
+        if cursor_pos_in_view < -textbox_half + margin as f32 {
             self.current_text_state.scroll_offset =
-                -textbox_half + margin as isize - cursor_pos_in_centered_text;
+                -textbox_half + margin as f32 - cursor_pos_in_centered_text;
             return true;
-        } else if cursor_pos_in_view > textbox_half - margin as isize {
+        } else if cursor_pos_in_view > textbox_half - margin as f32 {
             self.current_text_state.scroll_offset =
-                textbox_half - margin as isize - cursor_pos_in_centered_text;
+                textbox_half - margin as f32 - cursor_pos_in_centered_text;
             return true;
+        }
+        false
+    }
+
+    /// Update scroll offset during selection drag (called every frame)
+    /// Returns true if scroll was modified and a redraw is needed
+    pub fn update_selection_scroll(&mut self) -> bool {
+        if !self.current_text_state.textbox_focused || self.current_text_state.chars.is_empty() {
+            return false;
+        }
+
+        let now = std::time::Instant::now();
+        let margin = self.min_dim / 8;
+        let box_width = self.width as usize - margin * 2;
+        let box_left = margin;
+        let box_right = self.width as usize - margin;
+        let mouse_x = self.mouse_x as f32;
+
+        // Calculate time delta
+        let time_delta = if let Some(last_time) = self.selection_last_update_time {
+            now.duration_since(last_time).as_secs_f32()
+        } else {
+            0.0
+        };
+        self.selection_last_update_time = Some(now);
+
+        // Calculate signed distance outside textbox (negative = left, positive = right)
+        let distance_outside = if mouse_x < box_left as f32 {
+            box_left as f32 - mouse_x // Positive when outside left
+        } else if mouse_x > box_right as f32 {
+            mouse_x - box_right as f32 // Positive when outside right
+        } else {
+            0.0
+        };
+
+        // If outside, apply time-based scroll with bounds checking
+        if distance_outside > 0. {
+            println!("SCROLL: mouse outside by {:.1}px, box_left={}, box_right={}, mouse_x={:.1}",
+                     distance_outside, box_left, box_right, mouse_x);
+            let base_speed = 1000.; // scroll offset units per second
+            let speed_ratio = distance_outside / box_width as f32;
+            let scroll_speed = base_speed * speed_ratio;
+            let scroll_delta = scroll_speed * time_delta;
+            println!("  speed_ratio={:.2}, scroll_delta={:.2}", speed_ratio, scroll_delta);
+
+            let total_text_width = self.current_text_state.width as f32;
+            let textbox_half = (box_width / 2) as f32;
+
+            // Calculate scroll limits:
+            // Stop at 3/4 width from center instead of at the edge (leaves padding for selection)
+            let scroll_limit_distance = (textbox_half * 3.0) / 4.0;
+
+            // Max scroll LEFT (positive): first char at 3/4 from left edge
+            let max_scroll_left = (total_text_width / 2.0) - scroll_limit_distance;
+
+            // Max scroll RIGHT (negative): last char at 3/4 from right edge
+            let max_scroll_right = scroll_limit_distance - (total_text_width / 2.0);
+
+            println!("  current_offset={:.1}, max_left={:.1}, max_right={:.1}, text_width={:.0}",
+                     self.current_text_state.scroll_offset, max_scroll_left, max_scroll_right, total_text_width);
+
+            // Apply scroll with bounds
+            let old_offset = self.current_text_state.scroll_offset;
+            if mouse_x < box_left as f32 {
+                // Scrolling to show BEGINNING (offset increases, text moves right)
+                let new_offset = self.current_text_state.scroll_offset + scroll_delta;
+                self.current_text_state.scroll_offset = new_offset.min(max_scroll_left);
+            } else {
+                // Scrolling to show END (offset decreases, text moves left)
+                let new_offset = self.current_text_state.scroll_offset - scroll_delta;
+                self.current_text_state.scroll_offset = new_offset.max(max_scroll_right);
+            }
+
+            // Only mark dirty and request redraw if offset actually changed
+            if self.current_text_state.scroll_offset != old_offset {
+                println!("  Scroll offset changed: {} -> {}", old_offset, self.current_text_state.scroll_offset);
+                self.text_dirty = true;
+                return true;
+            } else {
+                println!("  Scroll offset unchanged (hit limit)");
+            }
         }
         false
     }
@@ -210,7 +230,7 @@ impl PhotonApp {
 
             // Reset scroll offset if text is now empty
             if self.current_text_state.chars.is_empty() {
-                self.current_text_state.scroll_offset = 0;
+                self.current_text_state.scroll_offset = 0.0;
             }
         }
     }
@@ -221,25 +241,165 @@ impl PhotonApp {
             .map(|(start, end)| self.current_text_state.chars[start..end].iter().collect())
     }
 
+    pub fn handle_cursor_left(&mut self) {
+        self.hovered_button = HoveredButton::None;
+        self.render();
+    }
+
+    /// Get next cursor blink wake time (random interval 0..=125ms)
+    pub fn next_blink_wake_time(&self) -> std::time::Instant {
+        let interval_ms = rand::thread_rng().gen_range(0..=300);
+        std::time::Instant::now() + std::time::Duration::from_millis(interval_ms)
+    }
+
+    pub fn start_cursor(
+        pixels: &mut [u32],
+        width: usize,
+        cursor_pixel_x: usize,
+        cursor_pixel_y: usize,
+        cursor_visible: &mut bool,
+        cursor_wave_top_bright: &mut bool,
+        font_size: usize,
+    ) {
+        if *cursor_visible {
+            panic!("Cursor already visible when starting cursor!");
+        }
+        *cursor_wave_top_bright = rand::thread_rng().gen();
+        if *cursor_wave_top_bright {
+            Self::add_cursor_top(pixels, width, cursor_pixel_x, cursor_pixel_y, font_size);
+        } else {
+            Self::add_cursor_bottom(pixels, width, cursor_pixel_x, cursor_pixel_y, font_size);
+        }
+        *cursor_visible = true;
+    }
+
+    pub fn stop_cursor(
+        pixels: &mut [u32],
+        width: usize,
+        cursor_pixel_x: usize,
+        cursor_pixel_y: usize,
+        cursor_visible: &mut bool,
+        cursor_wave_top_bright: &mut bool,
+        font_size: usize,
+    ) {
+        if !*cursor_visible {
+            panic!("Cursor not visible when stopping cursor!");
+        }
+        if *cursor_wave_top_bright {
+            Self::subtract_cursor_top(pixels, width, cursor_pixel_x, cursor_pixel_y, font_size);
+        } else {
+            Self::subtract_cursor_bottom(pixels, width, cursor_pixel_x, cursor_pixel_y, font_size);
+        }
+        *cursor_visible = false;
+    }
+
+    pub fn undraw_cursor(
+        pixels: &mut [u32],
+        width: usize,
+        cursor_pixel_x: usize,
+        cursor_pixel_y: usize,
+        cursor_visible: &mut bool,
+        cursor_wave_top_bright: &mut bool,
+        font_size: usize,
+    ) {
+        if !*cursor_visible {
+            panic!("Cursor not visible when redrawing cursor!");
+        }
+        if *cursor_wave_top_bright {
+            Self::subtract_cursor_top(pixels, width, cursor_pixel_x, cursor_pixel_y, font_size);
+        } else {
+            Self::subtract_cursor_bottom(pixels, width, cursor_pixel_x, cursor_pixel_y, font_size);
+        }
+    }
+
+    pub fn draw_cursor(
+        pixels: &mut [u32],
+        width: usize,
+        cursor_pixel_x: usize,
+        cursor_pixel_y: usize,
+        cursor_visible: &mut bool,
+        cursor_wave_top_bright: &mut bool,
+        font_size: usize,
+    ) {
+        if !*cursor_visible {
+            panic!("Cursor not visible when redrawing cursor!");
+        }
+        if *cursor_wave_top_bright {
+            Self::add_cursor_top(pixels, width, cursor_pixel_x, cursor_pixel_y, font_size);
+        } else {
+            Self::add_cursor_bottom(pixels, width, cursor_pixel_x, cursor_pixel_y, font_size);
+        }
+    }
+
+    pub fn flip_cursor(
+        renderer: &mut Renderer,
+        width: usize,
+        cursor_pixel_x: usize,
+        cursor_pixel_y: usize,
+        cursor_visible: &mut bool,
+        cursor_wave_top_bright: &mut bool,
+        font_size: usize,
+        is_mouse_selecting: bool,
+    ) {
+        if *cursor_visible && !is_mouse_selecting {
+            let font_size = font_size as usize;
+            let mut buffer = renderer.lock_buffer();
+            let pixels = buffer.as_mut();
+            if *cursor_wave_top_bright {
+                Self::subtract_cursor_top(
+                    pixels,
+                    width as usize,
+                    cursor_pixel_x,
+                    cursor_pixel_y,
+                    font_size,
+                );
+                Self::add_cursor_bottom(
+                    pixels,
+                    width as usize,
+                    cursor_pixel_x,
+                    cursor_pixel_y,
+                    font_size,
+                );
+                *cursor_wave_top_bright = false;
+            } else {
+                Self::add_cursor_top(
+                    pixels,
+                    width as usize,
+                    cursor_pixel_x,
+                    cursor_pixel_y,
+                    font_size,
+                );
+                Self::subtract_cursor_bottom(
+                    pixels,
+                    width as usize,
+                    cursor_pixel_x,
+                    cursor_pixel_y,
+                    font_size,
+                );
+                *cursor_wave_top_bright = true;
+            }
+            buffer.present().unwrap();
+        }
+    }
+
     pub fn add_cursor_top(
         pixels: &mut [u32],
         window_width: usize,
-        cursor_x: f32,
-        cursor_top: f32,
-        cursor_height: f32,
+        cursor_x: usize,
+        cursor_top: usize,
+        cursor_height: usize,
     ) {
-        let x = cursor_x as usize;
-        let y_start = cursor_top as usize;
-        let y_end = (cursor_top + cursor_height) as usize;
-        let half_height = cursor_height / 2.;
+        let y_end = cursor_top + cursor_height;
+        let half_height = cursor_height / 2;
 
-        for y in y_start..y_end {
-            let idx = y * window_width + x;
+        for y in cursor_top..y_end {
+            let idx = y * window_width + cursor_x;
 
             // Map to [-1, 1] range for full cursor
-            let t = (y as f32 - cursor_top - half_height) / half_height;
+            let t = (y - cursor_top - half_height) as isize as f32 / half_height as f32;
 
-            let wave = (1. - t * t) * (1. + t) * (1. + t) * theme::CURSOR_BRIGHTNESS;
+            let wave = (1. - t * t) * (1. - t) * (1. - t) * theme::CURSOR_BRIGHTNESS;
+
             for x in -7..=7isize {
                 pixels[idx + x as usize] += 0x00010101 * (wave as u32 >> x.abs());
             }
@@ -249,66 +409,67 @@ impl PhotonApp {
     pub fn add_cursor_bottom(
         pixels: &mut [u32],
         window_width: usize,
-        cursor_x: f32,
-        cursor_top: f32,
-        cursor_height: f32,
+        cursor_x: usize,
+        cursor_top: usize,
+        cursor_height: usize,
     ) {
-        let x = cursor_x as usize;
-        let y_start = cursor_top as usize;
-        let y_end = (cursor_top + cursor_height) as usize;
-        let half_height = cursor_height / 2.;
+        let y_end = cursor_top + cursor_height;
+        let half_height = cursor_height / 2;
 
-        for y in y_start..y_end {
-            let idx = y * window_width + x;
+        for y in cursor_top..y_end {
+            let idx = y * window_width + cursor_x;
 
             // Map to [-1, 1] range for full cursor
-            let t = (y as f32 - cursor_top - half_height) / half_height;
+            let t = (y - cursor_top - half_height) as isize as f32 / half_height as f32;
 
-            let wave = (1. - t * t) * (1. - t) * (1. - t) * theme::CURSOR_BRIGHTNESS;
+            let wave = (1. - t * t) * (1. + t) * (1. + t) * theme::CURSOR_BRIGHTNESS;
+
             for x in -7..=7isize {
                 pixels[idx + x as usize] += 0x00010101 * (wave as u32 >> x.abs());
             }
         }
     }
 
-    pub fn sub_cursor_top(
+    pub fn subtract_cursor_top(
         pixels: &mut [u32],
         window_width: usize,
-        cursor_x: f32,
-        cursor_top: f32,
-        cursor_height: f32,
+        cursor_x: usize,
+        cursor_top: usize,
+        cursor_height: usize,
     ) {
-        let x = cursor_x as usize;
-        let y_start = cursor_top as usize;
-        let y_end = (cursor_top + cursor_height) as usize;
-        let half_height = cursor_height / 2.;
+        let y_end = cursor_top + cursor_height;
+        let half_height = cursor_height / 2;
 
-        for y in y_start..y_end {
-            let idx = y * window_width + x;
-            let t = (y as f32 - cursor_top - half_height) / half_height;
-            let wave = (1. - t * t) * (1. + t) * (1. + t) * theme::CURSOR_BRIGHTNESS;
+        for y in cursor_top..y_end {
+            let idx = y * window_width + cursor_x;
+
+            // Map to [-1, 1] range for full cursor
+            let t = (y - cursor_top - half_height) as isize as f32 / half_height as f32;
+
+            let wave = (1. - t * t) * (1. - t) * (1. - t) * theme::CURSOR_BRIGHTNESS;
             for x in -7..=7isize {
                 pixels[idx + x as usize] -= 0x00010101 * (wave as u32 >> x.abs());
             }
         }
     }
 
-    pub fn sub_cursor_bottom(
+    pub fn subtract_cursor_bottom(
         pixels: &mut [u32],
         window_width: usize,
-        cursor_x: f32,
-        cursor_top: f32,
-        cursor_height: f32,
+        cursor_x: usize,
+        cursor_top: usize,
+        cursor_height: usize,
     ) {
-        let x = cursor_x as usize;
-        let y_start = cursor_top as usize;
-        let y_end = (cursor_top + cursor_height) as usize;
-        let half_height = cursor_height / 2.;
+        let y_end = cursor_top + cursor_height;
+        let half_height = cursor_height / 2;
 
-        for y in y_start..y_end {
-            let idx = y * window_width + x;
-            let t = (y as f32 - cursor_top - half_height) / half_height;
-            let wave = (1. - t * t) * (1. - t) * (1. - t) * theme::CURSOR_BRIGHTNESS;
+        for y in cursor_top..y_end {
+            let idx = y * window_width + cursor_x;
+
+            // Map to [-1, 1] range for full cursor
+            let t = (y - cursor_top - half_height) as isize as f32 / half_height as f32;
+
+            let wave = (1. - t * t) * (1. + t) * (1. + t) * theme::CURSOR_BRIGHTNESS;
             for x in -7..=7isize {
                 pixels[idx + x as usize] -= 0x00010101 * (wave as u32 >> x.abs());
             }
@@ -319,7 +480,7 @@ impl PhotonApp {
     pub fn invert_selection(
         pixels: &mut [u32],
         char_widths: &[usize],
-        scroll_offset: isize,
+        scroll_offset: f32,
         window_width: usize,
         window_height: usize,
         sel_start: usize,
@@ -338,13 +499,13 @@ impl PhotonApp {
         let sel_end_px: usize = char_widths[..sel_end.min(char_widths.len())].iter().sum();
 
         let total_text_width: usize = char_widths.iter().sum();
-        let text_half = (total_text_width / 2) as isize;
-        let text_start_x = center_x as isize - text_half + scroll_offset;
-        let sel_x_start = text_start_x + sel_start_px as isize;
-        let sel_x_end = text_start_x + sel_end_px as isize;
+        let text_half = (total_text_width / 2) as f32;
+        let text_start_x = center_x as f32 - text_half + scroll_offset;
+        let sel_x_start = (text_start_x + sel_start_px as f32) as isize;
+        let sel_x_end = (text_start_x + sel_end_px as f32) as isize;
 
-        let sel_y_top = center_y as isize - (font_size / 2.0) as isize;
-        let sel_y_bottom = center_y as isize + (font_size / 2.0) as isize;
+        let sel_y_top = (center_y as f32 - font_size / 2.0) as isize;
+        let sel_y_bottom = (center_y as f32 + font_size / 2.0) as isize;
 
         let textbox_left = (center_x - box_width / 2) as isize;
         let textbox_right = (center_x + box_width / 2) as isize;

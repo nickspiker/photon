@@ -4,10 +4,26 @@ use crate::ui::theme;
 
 use super::app::{HandleStatus, PhotonApp};
 use rand::Rng;
+use unicode_normalization::UnicodeNormalization;
 use winit::{
     event::{ElementState, KeyEvent},
     keyboard::{Key, NamedKey},
 };
+
+/// Check if a character passes the NFC round-trip test
+/// Only rule: must round-trip cleanly through NFC normalization as a single char
+fn is_char_valid(ch: char) -> bool {
+    let normalized: String = ch.to_string().nfc().collect();
+
+    // Must produce exactly 1 char after normalization
+    if normalized.chars().count() != 1 {
+        return false;
+    }
+
+    // Must round-trip (input == normalized output)
+    let round_trip_char = normalized.chars().next().unwrap();
+    round_trip_char == ch
+}
 
 impl PhotonApp {
     pub fn handle_keyboard(&mut self, event: KeyEvent) {
@@ -111,8 +127,9 @@ impl PhotonApp {
 
                                     // Insert pasted text at cursor
                                     let insert_idx = self.current_text_state.cursor_index;
-                                    self.current_text_state.insert_str(insert_idx, &text, &widths);
-                                    self.current_text_state.cursor_index += text.len();
+                                    self.current_text_state
+                                        .insert_str(insert_idx, &text, &widths);
+                                    self.current_text_state.cursor_index += widths.len();
                                     self.text_dirty = true;
                                     self.controls_dirty = true;
                                 }
@@ -213,14 +230,20 @@ impl PhotonApp {
                 Key::Named(NamedKey::Backspace) => {
                     // If selection exists, delete it; otherwise delete char before cursor
                     if self.current_text_state.selection_anchor.is_some() {
+                        println!("BACKSPACE: deleting selection");
                         self.delete_selection();
                         self.handle_status = HandleStatus::Checking;
                         self.text_dirty = true;
                         self.selection_dirty = true;
                     } else if self.current_text_state.cursor_index > 0 {
                         let idx = self.current_text_state.cursor_index - 1;
+                        let deleted_char = self.current_text_state.chars[idx];
+                        println!("BACKSPACE: deleting '{}' at index {}, cursor: {} -> {}",
+                                 deleted_char, idx, self.current_text_state.cursor_index, self.current_text_state.cursor_index - 1);
                         self.current_text_state.remove(idx);
                         self.current_text_state.cursor_index -= 1;
+                        let text: String = self.current_text_state.chars.iter().collect();
+                        println!("  Text now: \"{}\" (len={})", text, text.len());
                         self.handle_status = HandleStatus::Checking;
                         self.text_dirty = true;
                         self.controls_dirty = true;
@@ -237,7 +260,8 @@ impl PhotonApp {
                     } else if self.current_text_state.cursor_index
                         < self.current_text_state.chars.len()
                     {
-                        self.current_text_state.remove(self.current_text_state.cursor_index);
+                        self.current_text_state
+                            .remove(self.current_text_state.cursor_index);
                         self.handle_status = HandleStatus::Checking;
                         self.text_dirty = true;
                         self.controls_dirty = true;
@@ -271,6 +295,12 @@ impl PhotonApp {
 
                 let font_size = self.font_size();
                 for ch in text.chars() {
+                    // Validate character: must round-trip cleanly through NFC
+                    if !is_char_valid(ch) {
+                        // Silently reject invalid characters
+                        continue;
+                    }
+
                     // Measure character width
                     let width = self.text_renderer.measure_text_width(
                         &ch.to_string(),
@@ -281,8 +311,12 @@ impl PhotonApp {
 
                     // Insert character with its width
                     let cursor_idx = self.current_text_state.cursor_index;
+                    println!("INSERT: adding '{}' at index {}, width={}, cursor: {} -> {}",
+                             ch, cursor_idx, width, cursor_idx, cursor_idx + 1);
                     self.current_text_state.insert(cursor_idx, ch, width);
                     self.current_text_state.cursor_index += 1;
+                    let text: String = self.current_text_state.chars.iter().collect();
+                    println!("  Text now: \"{}\" (len={})", text, text.len());
                 }
                 self.handle_status = HandleStatus::Checking;
                 self.text_dirty = true;

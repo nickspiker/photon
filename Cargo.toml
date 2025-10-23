@@ -38,6 +38,7 @@ cosmic-text = "0.14.2"
 rayon = "1.11.0"
 softbuffer = "0.4"
 arboard = "3.4"  # Cross-platform clipboard access
+unicode-normalization = "0.1"  # NFC normalization for handle validation
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.58", features = [

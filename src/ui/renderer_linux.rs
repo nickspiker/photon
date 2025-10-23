@@ -4,9 +4,9 @@ use winit::window::Window;
 
 /// A pre-rendered screen page with associated metadata
 pub struct ScreenPage {
-    pub pixels: Vec<u32>,    // Pre-rendered screen in u32 ARGB format
-    pub hit_map: Vec<u8>,    // Hit testing map (button IDs, etc.)
-    pub text_mask: Vec<u8>,  // Text rendering alpha mask (0-255)
+    pub pixels: Vec<u32>,   // Pre-rendered screen in u32 ARGB format
+    pub hit_map: Vec<u8>,   // Hit testing map (button IDs, etc.)
+    pub text_mask: Vec<u8>, // Text rendering alpha mask (0-255)
 }
 
 impl ScreenPage {

@@ -7,6 +7,7 @@ use super::app::{
     HIT_HANDLE_TEXTBOX, HIT_MAXIMIZE_BUTTON, HIT_MINIMIZE_BUTTON, HIT_NONE, HIT_PRIMARY_BUTTON,
     HIT_RECOVER_BUTTON,
 };
+use rand::Rng;
 use winit::event::{ElementState, MouseButton};
 use winit::window::{CursorIcon, Window};
 
@@ -19,6 +20,8 @@ impl PhotonApp {
     ) {
         match state {
             ElementState::Pressed => {
+                self.mouse_button_pressed = true;
+
                 // Check window control buttons using hitmap
                 let mouse_x = self.mouse_x as usize;
                 let mouse_y = self.mouse_y as usize;
@@ -40,41 +43,45 @@ impl PhotonApp {
                             return;
                         }
                         HIT_HANDLE_TEXTBOX => {
+                            let was_focused = self.current_text_state.textbox_focused;
+
                             // Focus the textbox and set cursor position based on click location
                             self.current_text_state.textbox_focused = true;
-                            self.controls_dirty = true; // Focus changed - need to show cursor
+
+                            // Reset blink timer on focus gain to prevent rapid catch-up blinks
+                            let next_blink = self.next_blink_wake_time();
+                            self.next_cursor_blink_time = next_blink;
+                            println!("  Reset blink timer");
 
                             // If textbox is empty, need to redraw to remove infinity placeholder
                             if self.current_text_state.chars.is_empty() {
                                 self.text_dirty = true;
                             }
 
-                            // Clear selection when clicking
-                            self.current_text_state.selection_anchor = None;
-
-                            // Calculate click position relative to text
+                            // Calculate click position relative to text (sets cursor_index)
+                            let old_cursor_index = self.current_text_state.cursor_index;
                             if !self.current_text_state.chars.is_empty() {
                                 let center_x = self.width as usize / 2;
                                 let total_text_width: usize = self.current_text_state.width;
                                 let text_half = total_text_width / 2;
-                                let text_start_x = center_x as isize - text_half as isize
+                                let text_start_x = center_x as f32 - text_half as f32
                                     + self.current_text_state.scroll_offset;
 
                                 // Find which character was clicked
-                                let click_x = mouse_x as isize;
+                                let click_x = mouse_x as f32;
                                 let mut x_offset = text_start_x;
                                 let mut found_position = false;
 
                                 for (i, &char_width) in
                                     self.current_text_state.widths.iter().enumerate()
                                 {
-                                    let char_center = x_offset + char_width as isize / 2;
+                                    let char_center = x_offset + char_width as f32 / 2.0;
                                     if click_x < char_center {
                                         self.current_text_state.cursor_index = i;
                                         found_position = true;
                                         break;
                                     }
-                                    x_offset += char_width as isize;
+                                    x_offset += char_width as f32;
                                 }
 
                                 if !found_position {
@@ -83,8 +90,86 @@ impl PhotonApp {
                                 }
                             } else {
                                 self.current_text_state.cursor_index = 0;
-                                self.current_text_state.scroll_offset = 0;
+                                self.current_text_state.scroll_offset = 0.0;
                             }
+
+                            let text: String = self.current_text_state.chars.iter().collect();
+                            println!("CLICK: textbox @ mouse=({}, {}), was_focused={}, cursor: {} -> {}, text=\"{}\" (len={})",
+                                     mouse_x, mouse_y, was_focused, old_cursor_index,
+                                     self.current_text_state.cursor_index, text, text.len());
+
+                            // Calculate cursor pixel position (needed before drawing)
+                            let margin = self.min_dim / 8;
+                            let box_height = self.min_dim / 8;
+                            let center_x = self.width as usize / 2;
+                            let center_y = self.height as usize * 4 / 7;
+                            let font_size = self.font_size();
+
+                            // Lock buffer for cursor update (immediate-mode)
+                            let mut buffer = self.renderer.lock_buffer();
+                            let pixels = buffer.as_mut();
+
+                            // If cursor already visible, undraw at OLD position first
+                            if was_focused && self.cursor_visible {
+                                Self::undraw_cursor(
+                                    pixels,
+                                    self.width as usize,
+                                    self.cursor_pixel_x,
+                                    self.cursor_pixel_y,
+                                    &mut self.cursor_visible,
+                                    &mut self.cursor_wave_top_bright,
+                                    font_size as usize,
+                                );
+                            }
+
+                            // Calculate NEW cursor position
+                            let cursor_pixel_offset: usize =
+                                if self.current_text_state.cursor_index > 0 {
+                                    self.current_text_state.widths
+                                        [..self.current_text_state.cursor_index]
+                                        .iter()
+                                        .sum()
+                                } else {
+                                    0
+                                };
+                            let total_text_width: usize = self.current_text_state.width;
+                            let text_half = total_text_width / 2;
+                            self.cursor_pixel_x = (center_x as f32 - text_half as f32
+                                + self.current_text_state.scroll_offset
+                                + cursor_pixel_offset as f32)
+                                as usize;
+                            self.cursor_pixel_y =
+                                (center_y as f32 - box_height as f32 * 0.25) as usize;
+
+                            // Draw cursor at NEW position (or start if first focus)
+                            if !was_focused {
+                                Self::start_cursor(
+                                    pixels,
+                                    self.width as usize,
+                                    self.cursor_pixel_x,
+                                    self.cursor_pixel_y,
+                                    &mut self.cursor_visible,
+                                    &mut self.cursor_wave_top_bright,
+                                    font_size as usize,
+                                );
+                            } else {
+                                Self::draw_cursor(
+                                    pixels,
+                                    self.width as usize,
+                                    self.cursor_pixel_x,
+                                    self.cursor_pixel_y,
+                                    &mut self.cursor_visible,
+                                    &mut self.cursor_wave_top_bright,
+                                    font_size as usize,
+                                );
+                            }
+                            buffer.present().unwrap();
+
+                            // Prepare for potential drag selection - set anchor to click position
+                            // is_mouse_selecting will be set to true when mouse actually moves (in handle_mouse_move)
+                            self.current_text_state.selection_anchor =
+                                Some(self.current_text_state.cursor_index);
+                            self.selection_dirty = true;
 
                             return;
                         }
@@ -127,7 +212,23 @@ impl PhotonApp {
                             // Clicked outside textbox, unfocus it
                             if self.current_text_state.textbox_focused {
                                 self.current_text_state.textbox_focused = false;
-                                self.controls_dirty = true; // Focus changed - need to hide cursor
+
+                                // State transition: cursor ON -> OFF (immediate-mode)
+                                if self.cursor_visible {
+                                    let font_size = self.font_size();
+                                    let mut buffer = self.renderer.lock_buffer();
+                                    let pixels = buffer.as_mut();
+                                    Self::stop_cursor(
+                                        pixels,
+                                        self.width as usize,
+                                        self.cursor_pixel_x,
+                                        self.cursor_pixel_y,
+                                        &mut self.cursor_visible,
+                                        &mut self.cursor_wave_top_bright,
+                                        font_size as usize,
+                                    );
+                                    buffer.present().unwrap();
+                                }
 
                                 // If textbox is empty, need to redraw to show infinity placeholder
                                 if self.current_text_state.chars.is_empty() {
@@ -169,6 +270,71 @@ impl PhotonApp {
                 }
             }
             ElementState::Released => {
+                self.mouse_button_pressed = false;
+
+                // End selection
+                if self.is_mouse_selecting {
+                    self.is_mouse_selecting = false;
+                    self.selection_last_update_time = None;
+
+                    // State transition: cursor OFF -> ON (immediate-mode)
+                    if !self.cursor_visible && self.current_text_state.textbox_focused {
+                        // Recalculate cursor position first
+                        let margin = self.min_dim / 8;
+                        let box_height = self.min_dim / 8;
+                        let center_x = self.width as usize / 2;
+                        let center_y = self.height as usize * 4 / 7;
+                        let font_size = self.font_size();
+
+                        let cursor_pixel_offset: usize = if self.current_text_state.cursor_index > 0 {
+                            self.current_text_state.widths[..self.current_text_state.cursor_index]
+                                .iter()
+                                .sum()
+                        } else {
+                            0
+                        };
+                        let total_text_width: usize = self.current_text_state.width;
+                        let text_half = total_text_width / 2;
+                        self.cursor_pixel_x = (center_x as f32 - text_half as f32
+                            + self.current_text_state.scroll_offset
+                            + cursor_pixel_offset as f32)
+                            as usize;
+                        self.cursor_pixel_y = (center_y as f32 - box_height as f32 * 0.25) as usize;
+
+                        let mut buffer = self.renderer.lock_buffer();
+                        let pixels = buffer.as_mut();
+                        Self::start_cursor(
+                            pixels,
+                            self.width as usize,
+                            self.cursor_pixel_x,
+                            self.cursor_pixel_y,
+                            &mut self.cursor_visible,
+                            &mut self.cursor_wave_top_bright,
+                            font_size as usize,
+                        );
+                        buffer.present().unwrap();
+                    }
+
+                    // Reset blink timer to prevent immediate blink after selection ends
+                    self.next_cursor_blink_time = self.next_blink_wake_time();
+
+                    // If anchor == cursor, it was just a click (not a drag), clear selection
+                    if self.current_text_state.selection_anchor
+                        == Some(self.current_text_state.cursor_index)
+                    {
+                        self.current_text_state.selection_anchor = None;
+                        self.selection_dirty = true;
+                    }
+                } else {
+                    // Mouse released without dragging - clear anchor if it's just a click
+                    if self.current_text_state.selection_anchor
+                        == Some(self.current_text_state.cursor_index)
+                    {
+                        self.current_text_state.selection_anchor = None;
+                        self.selection_dirty = true;
+                    }
+                }
+
                 self.is_dragging_resize = false;
                 self.is_dragging_move = false;
                 self.resize_edge = ResizeEdge::None;
@@ -293,6 +459,72 @@ impl PhotonApp {
             }
             false // No redraw needed for window resize (resize event handles it)
         } else {
+            // Start mouse selection if we have an anchor, button is pressed, and mouse moved
+            if !self.is_mouse_selecting
+                && self.mouse_button_pressed
+                && self.current_text_state.selection_anchor.is_some()
+            {
+                self.is_mouse_selecting = true;
+
+                // State transition: cursor ON -> OFF (immediate-mode)
+                if self.cursor_visible {
+                    let font_size = self.font_size();
+                    let mut buffer = self.renderer.lock_buffer();
+                    let pixels = buffer.as_mut();
+                    Self::stop_cursor(
+                        pixels,
+                        self.width as usize,
+                        self.cursor_pixel_x,
+                        self.cursor_pixel_y,
+                        &mut self.cursor_visible,
+                        &mut self.cursor_wave_top_bright,
+                        font_size as usize,
+                    );
+                    buffer.present().unwrap();
+                }
+            }
+
+            // Handle drag selection
+            if self.is_mouse_selecting && !self.current_text_state.chars.is_empty() {
+                let margin = self.min_dim / 8;
+                let box_left = margin;
+                let box_right = self.width as usize - margin;
+                let mouse_x = self.mouse_x as f32;
+
+                // Clamp mouse position to textbox bounds for cursor calculation
+                let clamped_mouse_x = mouse_x.clamp(box_left as f32, box_right as f32) as usize;
+
+                // Find which character is at (clamped) mouse position
+                let center_x = self.width as usize / 2;
+                let total_text_width: usize = self.current_text_state.width;
+                let text_half = total_text_width / 2;
+                let text_start_x =
+                    center_x as f32 - text_half as f32 + self.current_text_state.scroll_offset;
+
+                let click_x = clamped_mouse_x as f32;
+                let mut x_offset = text_start_x;
+                let mut found_position = false;
+
+                for (i, &char_width) in self.current_text_state.widths.iter().enumerate() {
+                    let char_center = x_offset + char_width as f32 / 2.0;
+                    if click_x < char_center {
+                        self.current_text_state.cursor_index = i;
+                        found_position = true;
+                        break;
+                    }
+                    x_offset += char_width as f32;
+                }
+
+                if !found_position {
+                    self.current_text_state.cursor_index = self.current_text_state.chars.len();
+                }
+
+                self.selection_dirty = true;
+                self.controls_dirty = true;
+
+                return true; // Request redraw
+            }
+
             // Check button hover state using hitmap
             let old_hovered = self.hovered_button;
 

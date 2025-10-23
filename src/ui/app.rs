@@ -9,7 +9,7 @@ impl TextState {
             widths: Vec::new(),
             width: 0,
             cursor_index: 0,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             selection_anchor: None,
             textbox_focused: false,
         }
@@ -69,7 +69,7 @@ pub struct TextState {
     pub chars: Vec<char>,
     pub widths: Vec<usize>,
     pub width: usize,
-    pub scroll_offset: isize,
+    pub scroll_offset: f32,
     pub cursor_index: usize,
     pub selection_anchor: Option<usize>,
     pub textbox_focused: bool,
@@ -93,6 +93,8 @@ pub struct PhotonApp {
     // Launch screen state
     pub cursor_blink_rate_ms: u64, // System cursor blink rate in milliseconds (max for random range)
     pub cursor_wave_top_bright: bool, // True=top is bright, False=top is dark
+    pub cursor_visible: bool,      // Whether cursor is currently visible (for blinking)
+    pub is_mouse_selecting: bool,  // True when actively dragging mouse to select text
     pub cursor_pixel_x: usize,     // Cursor x position in pixels
     pub cursor_pixel_y: usize,     // Cursor y position in pixels
     pub next_cursor_blink_time: std::time::Instant, // When next cursor blink should happen
@@ -105,13 +107,14 @@ pub struct PhotonApp {
 
     pub textbox_mask: Vec<u8>, // Single-channel alpha mask for textbox (0=outside, 255=inside, faded at edges)
     pub show_textbox_mask: bool, // Debug: show textbox mask visualization (Ctrl+T)
-    pub redraw_counter: usize, // Count of full redraws for debugging
-    pub render_counter: usize, // Count of render() calls
-    pub text_redraw_counter: usize, // Count of additive text render events
+    pub frame_counter: usize,  // Every render() call (from RedrawRequested)
+    pub update_counter: usize, // Any actual drawing (partial or full)
+    pub full_redraw_counter: usize, // Complete scene redraws only
 
     // Input state
     pub mouse_x: f32,
     pub mouse_y: f32,
+    pub mouse_button_pressed: bool, // True when left mouse button is held down
     pub is_dragging_resize: bool,
     pub is_dragging_move: bool,
     pub resize_edge: ResizeEdge,
@@ -124,6 +127,9 @@ pub struct PhotonApp {
     // Window control buttons
     pub hovered_button: HoveredButton,
     pub prev_hovered_button: HoveredButton, // Previous hover state to detect changes
+
+    // Mouse selection state
+    pub selection_last_update_time: Option<std::time::Instant>, // Last time selection scroll was updated
 
     // Cached button pixel coordinates for fast hover effects
     pub minimize_pixels: Vec<usize>,
@@ -194,6 +200,8 @@ impl PhotonApp {
             perimeter: w + h,
             diagonal_sq: w * w + h * h,
             cursor_blink_rate_ms,
+            cursor_visible: false,
+            is_mouse_selecting: false,
             cursor_wave_top_bright: false,
             cursor_pixel_x: 0,
             cursor_pixel_y: 0,
@@ -204,11 +212,12 @@ impl PhotonApp {
             old_text_state: TextState::new(),
             textbox_mask: vec![0; (size.width * size.height) as usize],
             show_textbox_mask: false,
-            redraw_counter: 0,
-            render_counter: 0,
-            text_redraw_counter: 0,
+            frame_counter: 0,
+            update_counter: 0,
+            full_redraw_counter: 0,
             mouse_x: 0.,
             mouse_y: 0.,
+            mouse_button_pressed: false,
             is_dragging_resize: false,
             is_dragging_move: false,
             resize_edge: ResizeEdge::None,
@@ -218,6 +227,7 @@ impl PhotonApp {
             modifiers: ModifiersState::empty(),
             hovered_button: HoveredButton::None,
             prev_hovered_button: HoveredButton::None,
+            selection_last_update_time: None,
             minimize_pixels: Vec::new(), // Needs nuked in favor of centerpoint fill
             maximize_pixels: Vec::new(),
             close_pixels: Vec::new(),
@@ -267,14 +277,14 @@ impl PhotonApp {
             textbox_focused: false,
             current_text_state: TextState {
                 text: EditableText::new(),
-                scroll_offset: 0,
+                scroll_offset: 0.0,
                 cursor_index: 0,
                 selection_anchor: None,
                 textbox_focused: false,
             },
             old_text_state: TextState {
                 text: EditableText::new(),
-                scroll_offset: 0,
+                scroll_offset: 0.0,
                 cursor_index: 0,
                 selection_anchor: None,
                 textbox_focused: false,

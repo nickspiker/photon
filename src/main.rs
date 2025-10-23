@@ -14,6 +14,8 @@ use winit::{
     window::{Window, WindowId},
 };
 
+use crate::ui::PhotonApp;
+
 struct App {
     window: Option<Window>,
     photon_app: Option<ui::PhotonApp>,
@@ -130,6 +132,11 @@ impl ApplicationHandler for App {
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if let (Some(app), Some(window)) = (&mut self.photon_app, &self.window) {
+                    if event.state.is_pressed() {
+                        if let Some(text) = &event.text {
+                            println!("⌨️  KEYBOARD EVENT: key pressed, text={:?}", text);
+                        }
+                    }
                     app.handle_keyboard(event);
                     window.request_redraw();
                 }
@@ -143,6 +150,7 @@ impl ApplicationHandler for App {
             WindowEvent::CursorMoved { position, .. } => {
                 if let (Some(window), Some(app)) = (&self.window, &mut self.photon_app) {
                     let needs_redraw = app.handle_mouse_move(window, position);
+                    // Request redraw if mouse move handler says we need it (selection or hover changes)
                     if needs_redraw {
                         window.request_redraw();
                     }
@@ -160,22 +168,54 @@ impl ApplicationHandler for App {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(app) = &mut self.photon_app {
-            if app.textbox_is_focused() {
-                use winit::event_loop::ControlFlow;
+            use winit::event_loop::ControlFlow;
 
+            // If selecting, use Poll mode and update scroll continuously
+            if app.is_mouse_selecting {
+                event_loop.set_control_flow(ControlFlow::Poll);
+                // Only request redraw if scroll actually changed
+                if app.update_selection_scroll() {
+                    if let Some(window) = &self.window {
+                        window.request_redraw();
+                    }
+                }
+            } else if app.textbox_is_focused() {
                 // Check if it's time to blink
                 let now = std::time::Instant::now();
 
                 if now >= app.next_cursor_blink_time {
+                    let timestamp = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis();
                     // Time to blink! Toggle cursor and set next timer
-                    app.toggle_cursor_blink();
+                    let font_size = app.font_size() as usize;
+                    PhotonApp::flip_cursor(
+                        &mut app.renderer,
+                        app.width as usize,
+                        app.cursor_pixel_x,
+                        app.cursor_pixel_y,
+                        &mut app.cursor_visible,
+                        &mut app.cursor_wave_top_bright,
+                        font_size,
+                        app.is_mouse_selecting,
+                    );
                     app.next_cursor_blink_time = app.next_blink_wake_time();
+                    let delay_ms = app.next_cursor_blink_time.duration_since(now).as_millis();
+                    let side = if app.cursor_wave_top_bright {
+                        "Top"
+                    } else {
+                        "Bottom"
+                    };
+                    println!(
+                        "[{}] ⏰ {} Blink timer fired! Next blink in {}ms",
+                        side, timestamp, delay_ms
+                    );
                 }
 
                 // Always set control flow (either new or same timer)
                 event_loop.set_control_flow(ControlFlow::WaitUntil(app.next_cursor_blink_time));
             } else {
-                use winit::event_loop::ControlFlow;
                 event_loop.set_control_flow(ControlFlow::Wait);
             }
         }

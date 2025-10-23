@@ -2,8 +2,10 @@ use crate::ui::{app::*, colour::*, text_rasterizing::*, theme};
 
 impl PhotonApp {
     pub fn render(&mut self) {
-        // Increment render counter
-        self.render_counter += 1;
+        // Increment frame counter (every render() call)
+        self.frame_counter += 1;
+
+        println!("FRAME #{}", self.frame_counter);
 
         // Calculate layout constants (needed by all rendering paths)
         let font_size = self.font_size();
@@ -13,8 +15,11 @@ impl PhotonApp {
         let center_x = self.width as usize / 2;
         let center_y = self.height as usize * 4 / 7;
 
-        // Always update scroll when cursor is visible
-        if self.current_text_state.textbox_focused && !self.current_text_state.chars.is_empty() {
+        // Always update scroll to keep cursor in view (but not during selection drag)
+        if self.current_text_state.textbox_focused
+            && !self.current_text_state.chars.is_empty()
+            && !self.is_mouse_selecting
+        {
             self.text_dirty |= self.update_text_scroll(box_width);
         }
         if !self.text_dirty {
@@ -29,15 +34,19 @@ impl PhotonApp {
         if !self.selection_dirty {
             self.selection_dirty = self.current_text_state.selection_anchor
                 != self.old_text_state.selection_anchor
-                || self.current_text_state.cursor_index != self.old_text_state.cursor_index;
+                || self.current_text_state.cursor_index != self.old_text_state.cursor_index
+                || self.current_text_state.scroll_offset != self.old_text_state.scroll_offset;
         }
 
         if self.text_dirty || self.selection_dirty || self.window_dirty || self.controls_dirty {
+            self.update_counter += 1;
+            println!("UPDATE #{}", self.update_counter);
             let mut buffer = self.renderer.lock_buffer();
             let pixels = buffer.as_mut();
 
             if self.window_dirty {
-                self.redraw_counter += 1;
+                self.full_redraw_counter += 1;
+                println!("FULL REDRAW #{}", self.full_redraw_counter);
                 self.selection_dirty = false;
                 self.text_dirty = false;
                 self.hit_test_map.fill(HIT_NONE);
@@ -392,105 +401,94 @@ impl PhotonApp {
                     }
                 }
 
-                self.render_counter = 0;
+                // Frame counter continues incrementing (not reset)
                 // After full redraw, pixel lists are rebuilt - reset prev_hovered to force hover reapply
                 self.prev_hovered_button = HoveredButton::None;
-            }
-
-            // Differential rendering blocks (only if window wasn't fully redrawn)
-            if !self.window_dirty {
-                if self.text_dirty || self.controls_dirty {
-                    // Mirrored pair rendering: remove old state, add new state
-
-                    // 1. Remove old cursor (if it was visible before)
-                    if self.old_text_state.textbox_focused {
-                        // Subtract whichever half is currently bright
-                        if self.cursor_wave_top_bright {
-                            Self::sub_cursor_top(
-                                pixels,
-                                self.width as usize,
-                                self.cursor_pixel_x as f32,
-                                self.cursor_pixel_y as f32,
-                                font_size,
-                            );
-                        } else {
-                            Self::sub_cursor_bottom(
-                                pixels,
-                                self.width as usize,
-                                self.cursor_pixel_x as f32,
-                                self.cursor_pixel_y as f32,
-                                font_size,
-                            );
-                        }
-                    }
-                }
-
-                if self.selection_dirty {
-                    // 2. Invert old selection (if present)
-                    if let Some(anchor) = self.old_text_state.selection_anchor {
-                        let (sel_start, sel_end) = if anchor < self.old_text_state.cursor_index {
-                            (anchor, self.old_text_state.cursor_index)
-                        } else if anchor > self.old_text_state.cursor_index {
-                            (self.old_text_state.cursor_index, anchor)
-                        } else {
-                            (0, 0)
-                        };
-
-                        if sel_start != sel_end {
-                            Self::invert_selection(
-                                pixels,
-                                &self.old_text_state.widths,
-                                self.old_text_state.scroll_offset,
-                                self.width as usize,
-                                self.height as usize,
-                                sel_start,
-                                sel_end,
-                                box_width,
-                                font_size,
-                                center_x,
-                                center_y,
-                                &self.hit_test_map,
-                            );
-                        }
-                    }
-                }
-
-                if self.text_dirty {
-                    // 3. Remove old text
-                    if !self.old_text_state.chars.is_empty() {
-                        Self::render_text_clipped(
+            } else {
+                // Differential rendering blocks (only if window wasn't fully redrawn)
+                if self.selection_dirty || self.text_dirty {
+                    // 1. Invert old cursor (if visible)
+                    if self.cursor_visible {
+                        println!("  DIFF: undraw cursor at ({}, {})", self.cursor_pixel_x, self.cursor_pixel_y);
+                        Self::undraw_cursor(
                             pixels,
-                            &self.old_text_state,
-                            false, // Subtract!
-                            &mut self.text_renderer,
-                            &self.textbox_mask,
                             self.width as usize,
-                            self.height as usize,
-                            self.min_dim,
-                            theme::TEXT_COLOUR,
+                            self.cursor_pixel_x,
+                            self.cursor_pixel_y,
+                            &mut self.cursor_visible,
+                            &mut self.cursor_wave_top_bright,
+                            font_size as usize,
                         );
-                    } else {
-                        if !self.old_text_state.textbox_focused {
-                            let char_width = self.text_renderer.measure_text_width(
-                                "∞",
-                                font_size,
-                                500,
-                                theme::FONT_USER_CONTENT,
-                            );
+                    }
 
-                            self.text_renderer.render_char_additive_u32(
-                                pixels,
-                                self.width as usize,
-                                '∞',
-                                center_x as f32 - char_width / 2.0,
-                                center_y as f32,
-                                font_size,
-                                500,
-                                theme::FONT_USER_CONTENT,
-                                0xFF808080,
-                                &self.textbox_mask,
-                                false,
-                            );
+                    if self.selection_dirty {
+                        // 2. Invert old selection (if present)
+                        if let Some(anchor) = self.old_text_state.selection_anchor {
+                            let (sel_start, sel_end) = if anchor < self.old_text_state.cursor_index
+                            {
+                                (anchor, self.old_text_state.cursor_index)
+                            } else if anchor > self.old_text_state.cursor_index {
+                                (self.old_text_state.cursor_index, anchor)
+                            } else {
+                                (0, 0)
+                            };
+
+                            if sel_start != sel_end {
+                                Self::invert_selection(
+                                    pixels,
+                                    &self.old_text_state.widths,
+                                    self.old_text_state.scroll_offset,
+                                    self.width as usize,
+                                    self.height as usize,
+                                    sel_start,
+                                    sel_end,
+                                    box_width,
+                                    font_size,
+                                    center_x,
+                                    center_y,
+                                    &self.hit_test_map,
+                                );
+                            }
+                        }
+
+                        if self.text_dirty {
+                            // 3. Remove old text
+                            if !self.old_text_state.chars.is_empty() {
+                                Self::render_text_clipped(
+                                    pixels,
+                                    &self.old_text_state,
+                                    false, // Subtract!
+                                    &mut self.text_renderer,
+                                    &self.textbox_mask,
+                                    self.width as usize,
+                                    self.height as usize,
+                                    self.min_dim,
+                                    theme::TEXT_COLOUR,
+                                );
+                            } else {
+                                if !self.old_text_state.textbox_focused {
+                                    let char_width = self.text_renderer.measure_text_width(
+                                        "∞",
+                                        font_size,
+                                        500,
+                                        theme::FONT_USER_CONTENT,
+                                    );
+
+                                    self.text_renderer.render_char_additive_u32(
+                                        pixels,
+                                        self.width as usize,
+                                        '∞',
+                                        center_x as f32 - char_width / 2.0,
+                                        center_y as f32,
+                                        font_size,
+                                        500,
+                                        theme::FONT_USER_CONTENT,
+                                        0xFF808080,
+                                        &self.textbox_mask,
+                                        false,
+                                    );
+                                }
+                            }
                         }
                     }
                 }
@@ -510,7 +508,6 @@ impl PhotonApp {
                         self.min_dim,
                         theme::TEXT_COLOUR,
                     );
-                    self.text_redraw_counter += 1;
                 } else {
                     if !self.current_text_state.textbox_focused {
                         let char_width = self.text_renderer.measure_text_width(
@@ -567,9 +564,8 @@ impl PhotonApp {
                 }
             }
 
-            // 6. Add new cursor (if visible)
-            if self.current_text_state.textbox_focused {
-                // Calculate new cursor position
+            // 6. Add new cursor (if visible and text/selection changed - not just controls)
+            if self.cursor_visible && (self.text_dirty || self.selection_dirty) {
                 let cursor_pixel_offset: usize = if self.current_text_state.cursor_index > 0 {
                     self.current_text_state.widths[..self.current_text_state.cursor_index]
                         .iter()
@@ -579,29 +575,23 @@ impl PhotonApp {
                 };
                 let total_text_width: usize = self.current_text_state.width;
                 let text_half = total_text_width / 2;
-                self.cursor_pixel_x = (center_x as isize - text_half as isize
+                let new_cursor_pixel_x = (center_x as f32 - text_half as f32
                     + self.current_text_state.scroll_offset
-                    + cursor_pixel_offset as isize) as usize;
-                self.cursor_pixel_y = (center_y as f32 - box_height as f32 * 0.25) as usize;
+                    + cursor_pixel_offset as f32) as usize;
+                let new_cursor_pixel_y = (center_y as f32 - box_height as f32 * 0.25) as usize;
 
-                // Add whichever half should be bright
-                if self.cursor_wave_top_bright {
-                    Self::add_cursor_top(
-                        pixels,
-                        self.width as usize,
-                        self.cursor_pixel_x as f32,
-                        self.cursor_pixel_y as f32,
-                        font_size,
-                    );
-                } else {
-                    Self::add_cursor_bottom(
-                        pixels,
-                        self.width as usize,
-                        self.cursor_pixel_x as f32,
-                        self.cursor_pixel_y as f32,
-                        font_size,
-                    );
-                }
+                println!("  DIFF: draw cursor at ({}, {})", new_cursor_pixel_x, new_cursor_pixel_y);
+                self.cursor_pixel_x = new_cursor_pixel_x;
+                self.cursor_pixel_y = new_cursor_pixel_y;
+                Self::draw_cursor(
+                    pixels,
+                    self.width as usize,
+                    self.cursor_pixel_x,
+                    self.cursor_pixel_y,
+                    &mut self.cursor_visible,
+                    &mut self.cursor_wave_top_bright,
+                    font_size as usize,
+                );
             }
 
             // Controls dirty - handle hover and focus transitions
@@ -682,16 +672,16 @@ impl PhotonApp {
                 }
             }
 
-            // Draw debug counters (bottom left = redraw, bottom center = text redraw, bottom right = render)
-            let redraw_text = format!("R:{}", self.redraw_counter);
-            let text_redraw_text = format!("T:{}", self.text_redraw_counter);
-            let render_text = format!("F:{}", self.render_counter);
+            // Draw debug counters (bottom left = full redraws, bottom center = updates, bottom right = frames)
+            let full_redraw_text = format!("FR:{}", self.full_redraw_counter);
+            let update_text = format!("U:{}", self.update_counter);
+            let frame_text = format!("F:{}", self.frame_counter);
 
-            // Bottom left - redraw counter
+            // Bottom left - full redraw counter
             self.text_renderer.draw_text_left_u32(
                 pixels,
                 self.width as usize,
-                &redraw_text,
+                &full_redraw_text,
                 counter_size,
                 self.height as f32 - counter_size * 2.,
                 counter_size,
@@ -700,9 +690,9 @@ impl PhotonApp {
                 "Josefin Slab",
             );
 
-            // Bottom center - text redraw counter
+            // Bottom center - update counter
             let text_width = self.text_renderer.measure_text_width(
-                &text_redraw_text,
+                &update_text,
                 counter_size,
                 400,
                 "Josefin Slab",
@@ -710,7 +700,7 @@ impl PhotonApp {
             self.text_renderer.draw_text_left_u32(
                 pixels,
                 self.width as usize,
-                &text_redraw_text,
+                &update_text,
                 self.width as f32 / 2.0 - text_width / 2.0,
                 self.height as f32 - counter_size * 2.,
                 counter_size,
@@ -719,11 +709,11 @@ impl PhotonApp {
                 "Josefin Slab",
             );
 
-            // Bottom right - render counter
+            // Bottom right - frame counter
             self.text_renderer.draw_text_right_u32(
                 pixels,
                 self.width as usize,
-                &render_text,
+                &frame_text,
                 self.width as f32 - counter_size,
                 self.height as f32 - counter_size * 2.,
                 counter_size,
