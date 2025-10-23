@@ -22,6 +22,7 @@ pub const BUTTON_BASE: u32 = 0xFF_40_40_40;
 pub const BUTTON_LIGHT_EDGE: u32 = 0xFF_60_60_60;
 pub const BUTTON_SHADOW_EDGE: u32 = 0xFF_20_20_20;
 pub const BUTTON_HAIRLINE: u32 = 0xFF_32_32_32; // Hairline separators between buttons
+pub const BUTTON_BLUE: u32 = 0xFF_20_30_50;
 pub const BUTTON_GREEN: u32 = 0xFF_20_45_25;
 pub const BUTTON_YELLOW: u32 = 0xFF_50_45_20;
 

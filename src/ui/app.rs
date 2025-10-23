@@ -1,5 +1,6 @@
 use super::renderer::Renderer;
 use super::text_rasterizing::TextRenderer;
+use crate::network::{HandleQuery, QueryResult};
 use winit::{dpi::PhysicalSize, keyboard::ModifiersState, window::Window};
 
 impl TextState {
@@ -12,6 +13,7 @@ impl TextState {
             scroll_offset: 0.0,
             selection_anchor: None,
             textbox_focused: false,
+            is_empty: true,
         }
     }
 
@@ -57,7 +59,8 @@ impl TextState {
 /// Handle attestation status for launch screen flow
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HandleStatus {
-    Checking,           // Still checking if handle is attested (initial state)
+    Empty,              // No query sent yet, show "Query" button (when textbox non-empty)
+    Checking,           // Query in flight, show "Querying..." button (disabled)
     Unattested,         // Handle is available, show "Attest" button
     AlreadyAttested,    // Handle is taken, show "Recover / Challenge" button
     RecoverOrChallenge, // User clicked "Recover / Challenge", show both buttons + explanation
@@ -73,6 +76,7 @@ pub struct TextState {
     pub cursor_index: usize,
     pub selection_anchor: Option<usize>,
     pub textbox_focused: bool,
+    pub is_empty: bool, // True if chars is empty (cached for previous frame comparison)
 }
 
 pub struct PhotonApp {
@@ -100,10 +104,11 @@ pub struct PhotonApp {
     pub next_cursor_blink_time: std::time::Instant, // When next cursor blink should happen
     pub handle_status: HandleStatus, // Handle attestation status for button flow
     pub query_start_time: Option<std::time::Instant>, // When handle query started (for 1s simulation)
+    pub handle_query: HandleQuery,   // Network query system for handle attestation
 
     // Text state for differential rendering
     pub current_text_state: TextState,
-    pub old_text_state: TextState,
+    pub previous_text_state: TextState,
 
     pub textbox_mask: Vec<u8>, // Single-channel alpha mask for textbox (0=outside, 255=inside, faded at edges)
     pub show_textbox_mask: bool, // Debug: show textbox mask visualization (Ctrl+T)
@@ -206,10 +211,11 @@ impl PhotonApp {
             cursor_pixel_x: 0,
             cursor_pixel_y: 0,
             next_cursor_blink_time: std::time::Instant::now(),
-            handle_status: HandleStatus::Checking,
+            handle_status: HandleStatus::Empty,
             query_start_time: None,
+            handle_query: HandleQuery::new(),
             current_text_state: TextState::new(),
-            old_text_state: TextState::new(),
+            previous_text_state: TextState::new(),
             textbox_mask: vec![0; (size.width * size.height) as usize],
             show_textbox_mask: false,
             frame_counter: 0,
@@ -354,9 +360,22 @@ impl PhotonApp {
         // Clear hover state on resize since button positions/sizes change
         self.hovered_button = HoveredButton::None;
 
+        // Recalculate character widths for new font size
+        self.recalculate_char_widths();
+
+        // Recalculate scroll to keep cursor in view with new dimensions
+        if !self.current_text_state.chars.is_empty() {
+            let margin = self.min_dim / 8;
+            let box_width = self.width as usize - margin * 2;
+            self.update_text_scroll(box_width);
+        } else {
+            // No text - center it
+            self.current_text_state.scroll_offset = 0.0;
+        }
+
         // Clear textbox focus on resize - user must click to refocus
         self.current_text_state.textbox_focused = false;
-        self.recalculate_char_widths();
+
         // Trigger full redraw - differential rendering will be skipped automatically
         self.window_dirty = true;
     }
@@ -410,8 +429,32 @@ impl PhotonApp {
         log::info!("Querying handle availability: {}", username);
 
         // Start simulated 1-second DHT query
-        self.handle_status = HandleStatus::Checking;
+        self.handle_status = HandleStatus::Empty;
         self.query_start_time = Some(std::time::Instant::now());
         self.window_dirty = true;
+    }
+
+    /// Start a network query for handle attestation status
+    pub fn query_handle(&mut self) {
+        let handle: String = self.current_text_state.chars.iter().collect();
+
+        // Set status to Checking and trigger query
+        self.handle_status = HandleStatus::Checking;
+        self.handle_query.query(handle);
+        self.query_start_time = Some(std::time::Instant::now());
+    }
+
+    /// Check if query response is ready and update handle_status
+    pub fn check_query_response(&mut self) -> bool {
+        if let Some(result) = self.handle_query.try_recv() {
+            self.handle_status = match result {
+                QueryResult::Unattested => HandleStatus::Unattested,
+                QueryResult::AlreadyAttested => HandleStatus::AlreadyAttested,
+            };
+            self.query_start_time = None;
+            self.window_dirty = true; // Trigger redraw to update button
+            return true;
+        }
+        false
     }
 }

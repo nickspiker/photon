@@ -1,5 +1,6 @@
 // Keyboard input handling for PhotonApp
 
+use crate::debug_println;
 use crate::ui::theme;
 
 use super::app::{HandleStatus, PhotonApp};
@@ -91,6 +92,7 @@ impl PhotonApp {
                                 // Only delete if clipboard succeeded (or you don't care about failures)
                                 if clipboard_ok {
                                     self.delete_selection();
+                                    self.handle_status = HandleStatus::Empty;
                                     self.text_dirty = true;
                                     self.selection_dirty = true;
                                     self.controls_dirty = true; // Cursor position changed
@@ -130,6 +132,7 @@ impl PhotonApp {
                                     self.current_text_state
                                         .insert_str(insert_idx, &text, &widths);
                                     self.current_text_state.cursor_index += widths.len();
+                                    self.handle_status = HandleStatus::Empty;
                                     self.text_dirty = true;
                                     self.controls_dirty = true;
                                 }
@@ -230,22 +233,23 @@ impl PhotonApp {
                 Key::Named(NamedKey::Backspace) => {
                     // If selection exists, delete it; otherwise delete char before cursor
                     if self.current_text_state.selection_anchor.is_some() {
-                        println!("BACKSPACE: deleting selection");
+                        debug_println!("BACKSPACE: deleting selection");
                         self.delete_selection();
-                        self.handle_status = HandleStatus::Checking;
+                        self.handle_status = HandleStatus::Empty;
                         self.text_dirty = true;
                         self.selection_dirty = true;
                     } else if self.current_text_state.cursor_index > 0 {
                         let idx = self.current_text_state.cursor_index - 1;
                         let deleted_char = self.current_text_state.chars[idx];
-                        println!("BACKSPACE: deleting '{}' at index {}, cursor: {} -> {}",
+                        debug_println!("BACKSPACE: deleting '{}' at index {}, cursor: {} -> {}",
                                  deleted_char, idx, self.current_text_state.cursor_index, self.current_text_state.cursor_index - 1);
                         self.current_text_state.remove(idx);
                         self.current_text_state.cursor_index -= 1;
                         let text: String = self.current_text_state.chars.iter().collect();
-                        println!("  Text now: \"{}\" (len={})", text, text.len());
-                        self.handle_status = HandleStatus::Checking;
+                        debug_println!("  Text now: \"{}\" (len={})", text, text.len());
+                        self.handle_status = HandleStatus::Empty;
                         self.text_dirty = true;
+                        self.selection_dirty = true;
                         self.controls_dirty = true;
                     }
                     return;
@@ -254,7 +258,7 @@ impl PhotonApp {
                     // If selection exists, delete it; otherwise delete char at cursor
                     if self.current_text_state.selection_anchor.is_some() {
                         self.delete_selection();
-                        self.handle_status = HandleStatus::Checking;
+                        self.handle_status = HandleStatus::Empty;
                         self.text_dirty = true;
                         self.selection_dirty = true;
                     } else if self.current_text_state.cursor_index
@@ -262,8 +266,9 @@ impl PhotonApp {
                     {
                         self.current_text_state
                             .remove(self.current_text_state.cursor_index);
-                        self.handle_status = HandleStatus::Checking;
+                        self.handle_status = HandleStatus::Empty;
                         self.text_dirty = true;
+                        self.selection_dirty = true;
                         self.controls_dirty = true;
                     }
                     return;
@@ -311,14 +316,14 @@ impl PhotonApp {
 
                     // Insert character with its width
                     let cursor_idx = self.current_text_state.cursor_index;
-                    println!("INSERT: adding '{}' at index {}, width={}, cursor: {} -> {}",
+                    debug_println!("INSERT: adding '{}' at index {}, width={}, cursor: {} -> {}",
                              ch, cursor_idx, width, cursor_idx, cursor_idx + 1);
                     self.current_text_state.insert(cursor_idx, ch, width);
                     self.current_text_state.cursor_index += 1;
                     let text: String = self.current_text_state.chars.iter().collect();
-                    println!("  Text now: \"{}\" (len={})", text, text.len());
+                    debug_println!("  Text now: \"{}\" (len={})", text, text.len());
                 }
-                self.handle_status = HandleStatus::Checking;
+                self.handle_status = HandleStatus::Empty;
                 self.text_dirty = true;
                 self.controls_dirty = true;
             }

@@ -1,5 +1,6 @@
 // Mouse input handling for PhotonApp
 
+use crate::debug_println;
 use crate::ui::app::HoveredButton;
 
 use super::app::{
@@ -51,7 +52,7 @@ impl PhotonApp {
                             // Reset blink timer on focus gain to prevent rapid catch-up blinks
                             let next_blink = self.next_blink_wake_time();
                             self.next_cursor_blink_time = next_blink;
-                            println!("  Reset blink timer");
+                            debug_println!("  Reset blink timer");
 
                             // If textbox is empty, need to redraw to remove infinity placeholder
                             if self.current_text_state.chars.is_empty() {
@@ -94,7 +95,7 @@ impl PhotonApp {
                             }
 
                             let text: String = self.current_text_state.chars.iter().collect();
-                            println!("CLICK: textbox @ mouse=({}, {}), was_focused={}, cursor: {} -> {}, text=\"{}\" (len={})",
+                            debug_println!("CLICK: textbox @ mouse=({}, {}), was_focused={}, cursor: {} -> {}, text=\"{}\" (len={})",
                                      mouse_x, mouse_y, was_focused, old_cursor_index,
                                      self.current_text_state.cursor_index, text, text.len());
 
@@ -174,12 +175,22 @@ impl PhotonApp {
                             return;
                         }
                         HIT_PRIMARY_BUTTON => {
-                            // Primary button click: "Attest" or "Recover / Challenge"
+                            // Primary button click: "Query", "Attest", or "Recover / Challenge"
                             let handle: String = self.current_text_state.chars.iter().collect();
                             match self.handle_status {
+                                HandleStatus::Empty => {
+                                    // "Query" button clicked - start network query
+                                    debug_println!("Querying handle: {}", handle);
+                                    self.query_handle();
+                                    self.window_dirty = true;
+                                }
+                                HandleStatus::Checking => {
+                                    // Query already in progress - ignore clicks
+                                    debug_println!("Query already in progress, ignoring click");
+                                }
                                 HandleStatus::Unattested => {
                                     // "Attest" button clicked
-                                    println!("Attesting handle: {}", handle);
+                                    debug_println!("Attesting handle: {}", handle);
                                     // TODO: Implement attestation logic (create new identity)
                                 }
                                 HandleStatus::AlreadyAttested => {
@@ -189,7 +200,7 @@ impl PhotonApp {
                                 }
                                 _ => {
                                     // Shouldn't happen (Checking or RecoverOrChallenge states don't show primary button)
-                                    println!("Primary button clicked in unexpected state");
+                                    debug_println!("Primary button clicked in unexpected state");
                                 }
                             }
                             return;
@@ -197,14 +208,14 @@ impl PhotonApp {
                         HIT_RECOVER_BUTTON => {
                             // "Recover" button clicked (I'm recovering my own identity)
                             let handle: String = self.current_text_state.chars.iter().collect();
-                            println!("Recovering handle: {}", handle);
+                            debug_println!("Recovering handle: {}", handle);
                             // TODO: Implement recovery flow (reconstruct from trust circle)
                             return;
                         }
                         HIT_CHALLENGE_BUTTON => {
                             // "Challenge" button clicked (proving earlier attestation)
                             let handle: String = self.current_text_state.chars.iter().collect();
-                            println!("Challenging attestation for handle: {}", handle);
+                            debug_println!("Challenging attestation for handle: {}", handle);
                             // TODO: Implement challenge flow (prove earlier attestation)
                             return;
                         }
@@ -550,6 +561,8 @@ impl PhotonApp {
             // Update cursor icon based on hover position
             // Check what we're hovering over
             let cursor = if self.hovered_button != HoveredButton::None {
+                CursorIcon::Pointer
+            } else if element_id == HIT_PRIMARY_BUTTON || element_id == HIT_RECOVER_BUTTON || element_id == HIT_CHALLENGE_BUTTON {
                 CursorIcon::Pointer
             } else if element_id == HIT_HANDLE_TEXTBOX {
                 CursorIcon::Text

@@ -1,3 +1,4 @@
+use crate::debug_println;
 use crate::ui::{app::*, renderer_linux::Renderer, text_rasterizing::TextRenderer, theme};
 use rand::Rng;
 impl PhotonApp {
@@ -133,9 +134,17 @@ impl PhotonApp {
             return false;
         }
 
-        let now = std::time::Instant::now();
         let margin = self.min_dim / 8;
         let box_width = self.width as usize - margin * 2;
+        let total_text_width = self.current_text_state.width;
+
+        // If text fits in textbox, no need to scroll during selection
+        if total_text_width <= box_width {
+            self.current_text_state.scroll_offset = 0.0;
+            return false;
+        }
+
+        let now = std::time::Instant::now();
         let box_left = margin;
         let box_right = self.width as usize - margin;
         let mouse_x = self.mouse_x as f32;
@@ -159,13 +168,18 @@ impl PhotonApp {
 
         // If outside, apply time-based scroll with bounds checking
         if distance_outside > 0. {
-            println!("SCROLL: mouse outside by {:.1}px, box_left={}, box_right={}, mouse_x={:.1}",
-                     distance_outside, box_left, box_right, mouse_x);
+            debug_println!(
+                "SCROLL: mouse outside by {:.1}px, box_left={}, box_right={}, mouse_x={:.1}",
+                distance_outside, box_left, box_right, mouse_x
+            );
             let base_speed = 1000.; // scroll offset units per second
             let speed_ratio = distance_outside / box_width as f32;
             let scroll_speed = base_speed * speed_ratio;
             let scroll_delta = scroll_speed * time_delta;
-            println!("  speed_ratio={:.2}, scroll_delta={:.2}", speed_ratio, scroll_delta);
+            debug_println!(
+                "  speed_ratio={:.2}, scroll_delta={:.2}",
+                speed_ratio, scroll_delta
+            );
 
             let total_text_width = self.current_text_state.width as f32;
             let textbox_half = (box_width / 2) as f32;
@@ -180,8 +194,13 @@ impl PhotonApp {
             // Max scroll RIGHT (negative): last char at 3/4 from right edge
             let max_scroll_right = scroll_limit_distance - (total_text_width / 2.0);
 
-            println!("  current_offset={:.1}, max_left={:.1}, max_right={:.1}, text_width={:.0}",
-                     self.current_text_state.scroll_offset, max_scroll_left, max_scroll_right, total_text_width);
+            debug_println!(
+                "  current_offset={:.1}, max_left={:.1}, max_right={:.1}, text_width={:.0}",
+                self.current_text_state.scroll_offset,
+                max_scroll_left,
+                max_scroll_right,
+                total_text_width
+            );
 
             // Apply scroll with bounds
             let old_offset = self.current_text_state.scroll_offset;
@@ -197,11 +216,14 @@ impl PhotonApp {
 
             // Only mark dirty and request redraw if offset actually changed
             if self.current_text_state.scroll_offset != old_offset {
-                println!("  Scroll offset changed: {} -> {}", old_offset, self.current_text_state.scroll_offset);
+                debug_println!(
+                    "  Scroll offset changed: {} -> {}",
+                    old_offset, self.current_text_state.scroll_offset
+                );
                 self.text_dirty = true;
                 return true;
             } else {
-                println!("  Scroll offset unchanged (hit limit)");
+                debug_println!("  Scroll offset unchanged (hit limit)");
             }
         }
         false

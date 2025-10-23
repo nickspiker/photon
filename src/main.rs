@@ -1,11 +1,8 @@
 // Hide console window on Windows
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
-mod crypto;
-mod network;
-mod storage;
-mod types;
-mod ui;
+use photon::debug_println;
+use photon::ui::PhotonApp;
 
 use winit::{
     application::ApplicationHandler,
@@ -14,11 +11,9 @@ use winit::{
     window::{Window, WindowId},
 };
 
-use crate::ui::PhotonApp;
-
 struct App {
     window: Option<Window>,
-    photon_app: Option<ui::PhotonApp>,
+    photon_app: Option<PhotonApp>,
     screen_width: u32,
     screen_height: u32,
     maximized_size: Option<(u32, u32)>, // Maximized dimensions (learned on first maximize)
@@ -73,7 +68,7 @@ impl ApplicationHandler for App {
 
                 #[cfg(target_os = "windows")]
                 {
-                    let mut app = ui::PhotonApp::new(
+                    let mut app = PhotonApp::new(
                         window,
                         self.screen_width,
                         self.screen_height,
@@ -87,7 +82,7 @@ impl ApplicationHandler for App {
                 #[cfg(target_os = "linux")]
                 {
                     let app =
-                        pollster::block_on(ui::PhotonApp::new(window, self.cursor_blink_rate_ms));
+                        pollster::block_on(PhotonApp::new(window, self.cursor_blink_rate_ms));
                     self.photon_app = Some(app);
                     // Trigger redraw with correct fullscreen state
                     window.request_redraw();
@@ -134,7 +129,7 @@ impl ApplicationHandler for App {
                 if let (Some(app), Some(window)) = (&mut self.photon_app, &self.window) {
                     if event.state.is_pressed() {
                         if let Some(text) = &event.text {
-                            println!("⌨️  KEYBOARD EVENT: key pressed, text={:?}", text);
+                            debug_println!("⌨️  KEYBOARD EVENT: key pressed, text={:?}", text);
                         }
                     }
                     app.handle_keyboard(event);
@@ -207,10 +202,18 @@ impl ApplicationHandler for App {
                     } else {
                         "Bottom"
                     };
-                    println!(
+                    debug_println!(
                         "[{}] ⏰ {} Blink timer fired! Next blink in {}ms",
                         side, timestamp, delay_ms
                     );
+                }
+
+                // Check for query responses (non-blocking)
+                if app.check_query_response() {
+                    // Query completed, redraw to update button
+                    if let Some(window) = &self.window {
+                        window.request_redraw();
+                    }
                 }
 
                 // Always set control flow (either new or same timer)
