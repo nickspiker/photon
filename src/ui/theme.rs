@@ -36,6 +36,8 @@ pub const MINIMIZE_GLYPH: u32 = 0xFF_33_30_C7;
 pub const CLOSE_HOVER: [i8; 4] = [33, -3, -7, 0]; // Red (A, R, G, B)
 pub const MAXIMIZE_HOVER: [i8; 4] = [-6, 16, -6, 0]; // Green (A, R, G, B)
 pub const MINIMIZE_HOVER: [i8; 4] = [-9, -6, 37, 0]; // Blue (A, R, G, B)
+pub const TEXTBOX_HOVER: [i8; 4] = [0, 10, 10, 10]; // Subtle brightness increase
+pub const QUERY_BUTTON_HOVER: [i8; 4] = [0, 15, 15, 15]; // Brighter than textbox
 
 // Textbox colours
 pub const TEXTBOX_LIGHT_EDGE: u32 = 0xFF_44_41_37;

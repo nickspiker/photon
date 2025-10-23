@@ -102,8 +102,8 @@ impl PhotonApp {
             return false;
         }
 
-        let cursor_pixel_offset: usize = self.current_text_state.widths
-            [..self.current_text_state.cursor_index]
+        let blinkey_pixel_offset: usize = self.current_text_state.widths
+            [..self.current_text_state.blinkey_index]
             .iter()
             .sum();
 
@@ -111,17 +111,17 @@ impl PhotonApp {
         let textbox_half = (textbox_width / 2) as f32;
         let text_half = (total_text_width / 2) as f32;
 
-        let cursor_pos_in_centered_text = cursor_pixel_offset as f32 - text_half;
-        let cursor_pos_in_view =
-            cursor_pos_in_centered_text + self.current_text_state.scroll_offset;
+        let blinkey_pos_in_centered_text = blinkey_pixel_offset as f32 - text_half;
+        let blinkey_pos_in_view =
+            blinkey_pos_in_centered_text + self.current_text_state.scroll_offset;
 
-        if cursor_pos_in_view < -textbox_half + margin as f32 {
+        if blinkey_pos_in_view < -textbox_half + margin as f32 {
             self.current_text_state.scroll_offset =
-                -textbox_half + margin as f32 - cursor_pos_in_centered_text;
+                -textbox_half + margin as f32 - blinkey_pos_in_centered_text;
             return true;
-        } else if cursor_pos_in_view > textbox_half - margin as f32 {
+        } else if blinkey_pos_in_view > textbox_half - margin as f32 {
             self.current_text_state.scroll_offset =
-                textbox_half - margin as f32 - cursor_pos_in_centered_text;
+                textbox_half - margin as f32 - blinkey_pos_in_centered_text;
             return true;
         }
         false
@@ -170,7 +170,10 @@ impl PhotonApp {
         if distance_outside > 0. {
             debug_println!(
                 "SCROLL: mouse outside by {:.1}px, box_left={}, box_right={}, mouse_x={:.1}",
-                distance_outside, box_left, box_right, mouse_x
+                distance_outside,
+                box_left,
+                box_right,
+                mouse_x
             );
             let base_speed = 1000.; // scroll offset units per second
             let speed_ratio = distance_outside / box_width as f32;
@@ -178,7 +181,8 @@ impl PhotonApp {
             let scroll_delta = scroll_speed * time_delta;
             debug_println!(
                 "  speed_ratio={:.2}, scroll_delta={:.2}",
-                speed_ratio, scroll_delta
+                speed_ratio,
+                scroll_delta
             );
 
             let total_text_width = self.current_text_state.width as f32;
@@ -218,7 +222,8 @@ impl PhotonApp {
             if self.current_text_state.scroll_offset != old_offset {
                 debug_println!(
                     "  Scroll offset changed: {} -> {}",
-                    old_offset, self.current_text_state.scroll_offset
+                    old_offset,
+                    self.current_text_state.scroll_offset
                 );
                 self.text_dirty = true;
                 return true;
@@ -232,12 +237,12 @@ impl PhotonApp {
     /// Get the selection range as (start, end) where start < end, or None if no selection
     pub fn get_selection_range(&self) -> Option<(usize, usize)> {
         self.current_text_state.selection_anchor.and_then(|anchor| {
-            if anchor < self.current_text_state.cursor_index {
-                Some((anchor, self.current_text_state.cursor_index))
-            } else if anchor > self.current_text_state.cursor_index {
-                Some((self.current_text_state.cursor_index, anchor))
+            if anchor < self.current_text_state.blinkey_index {
+                Some((anchor, self.current_text_state.blinkey_index))
+            } else if anchor > self.current_text_state.blinkey_index {
+                Some((self.current_text_state.blinkey_index, anchor))
             } else {
-                // Anchor equals cursor - no selection
+                // Anchor equals blinkey - no selection
                 None
             }
         })
@@ -247,7 +252,7 @@ impl PhotonApp {
     pub fn delete_selection(&mut self) {
         if let Some((start, end)) = self.get_selection_range() {
             self.current_text_state.delete_range(start..end);
-            self.current_text_state.cursor_index = start;
+            self.current_text_state.blinkey_index = start;
             self.current_text_state.selection_anchor = None;
 
             // Reset scroll offset if text is now empty
@@ -263,162 +268,174 @@ impl PhotonApp {
             .map(|(start, end)| self.current_text_state.chars[start..end].iter().collect())
     }
 
-    pub fn handle_cursor_left(&mut self) {
+    pub fn handle_blinkey_left(&mut self) {
         self.hovered_button = HoveredButton::None;
         self.render();
     }
 
-    /// Get next cursor blink wake time (random interval 0..=125ms)
+    /// Get next blinkey blink wake time (random interval 0..=125ms)
     pub fn next_blink_wake_time(&self) -> std::time::Instant {
         let interval_ms = rand::thread_rng().gen_range(0..=300);
         std::time::Instant::now() + std::time::Duration::from_millis(interval_ms)
     }
 
-    pub fn start_cursor(
+    pub fn start_blinkey(
         pixels: &mut [u32],
         width: usize,
-        cursor_pixel_x: usize,
-        cursor_pixel_y: usize,
-        cursor_visible: &mut bool,
-        cursor_wave_top_bright: &mut bool,
+        blinkey_pixel_x: usize,
+        blinkey_pixel_y: usize,
+        blinkey_visible: &mut bool,
+        blinkey_wave_top_bright: &mut bool,
         font_size: usize,
     ) {
-        if *cursor_visible {
-            panic!("Cursor already visible when starting cursor!");
+        if *blinkey_visible {
+            panic!("Cursor already visible when starting blinkey!");
         }
-        *cursor_wave_top_bright = rand::thread_rng().gen();
-        if *cursor_wave_top_bright {
-            Self::add_cursor_top(pixels, width, cursor_pixel_x, cursor_pixel_y, font_size);
+        *blinkey_wave_top_bright = rand::thread_rng().gen();
+        if *blinkey_wave_top_bright {
+            Self::add_blinkey_top(pixels, width, blinkey_pixel_x, blinkey_pixel_y, font_size);
         } else {
-            Self::add_cursor_bottom(pixels, width, cursor_pixel_x, cursor_pixel_y, font_size);
+            Self::add_blinkey_bottom(pixels, width, blinkey_pixel_x, blinkey_pixel_y, font_size);
         }
-        *cursor_visible = true;
+        *blinkey_visible = true;
     }
 
-    pub fn stop_cursor(
+    pub fn stop_blinkey(
         pixels: &mut [u32],
         width: usize,
-        cursor_pixel_x: usize,
-        cursor_pixel_y: usize,
-        cursor_visible: &mut bool,
-        cursor_wave_top_bright: &mut bool,
+        blinkey_pixel_x: usize,
+        blinkey_pixel_y: usize,
+        blinkey_visible: &mut bool,
+        blinkey_wave_top_bright: &mut bool,
         font_size: usize,
     ) {
-        if !*cursor_visible {
-            panic!("Cursor not visible when stopping cursor!");
+        if !*blinkey_visible {
+            panic!("Cursor not visible when stopping blinkey!");
         }
-        if *cursor_wave_top_bright {
-            Self::subtract_cursor_top(pixels, width, cursor_pixel_x, cursor_pixel_y, font_size);
+        if *blinkey_wave_top_bright {
+            Self::subtract_blinkey_top(pixels, width, blinkey_pixel_x, blinkey_pixel_y, font_size);
         } else {
-            Self::subtract_cursor_bottom(pixels, width, cursor_pixel_x, cursor_pixel_y, font_size);
+            Self::subtract_blinkey_bottom(
+                pixels,
+                width,
+                blinkey_pixel_x,
+                blinkey_pixel_y,
+                font_size,
+            );
         }
-        *cursor_visible = false;
+        *blinkey_visible = false;
     }
 
-    pub fn undraw_cursor(
+    pub fn undraw_blinkey(
         pixels: &mut [u32],
         width: usize,
-        cursor_pixel_x: usize,
-        cursor_pixel_y: usize,
-        cursor_visible: &mut bool,
-        cursor_wave_top_bright: &mut bool,
+        blinkey_pixel_x: usize,
+        blinkey_pixel_y: usize,
+        blinkey_visible: &mut bool,
+        blinkey_wave_top_bright: &mut bool,
         font_size: usize,
     ) {
-        if !*cursor_visible {
-            panic!("Cursor not visible when redrawing cursor!");
+        if !*blinkey_visible {
+            panic!("Cursor not visible when redrawing blinkey!");
         }
-        if *cursor_wave_top_bright {
-            Self::subtract_cursor_top(pixels, width, cursor_pixel_x, cursor_pixel_y, font_size);
+        if *blinkey_wave_top_bright {
+            Self::subtract_blinkey_top(pixels, width, blinkey_pixel_x, blinkey_pixel_y, font_size);
         } else {
-            Self::subtract_cursor_bottom(pixels, width, cursor_pixel_x, cursor_pixel_y, font_size);
-        }
-    }
-
-    pub fn draw_cursor(
-        pixels: &mut [u32],
-        width: usize,
-        cursor_pixel_x: usize,
-        cursor_pixel_y: usize,
-        cursor_visible: &mut bool,
-        cursor_wave_top_bright: &mut bool,
-        font_size: usize,
-    ) {
-        if !*cursor_visible {
-            panic!("Cursor not visible when redrawing cursor!");
-        }
-        if *cursor_wave_top_bright {
-            Self::add_cursor_top(pixels, width, cursor_pixel_x, cursor_pixel_y, font_size);
-        } else {
-            Self::add_cursor_bottom(pixels, width, cursor_pixel_x, cursor_pixel_y, font_size);
+            Self::subtract_blinkey_bottom(
+                pixels,
+                width,
+                blinkey_pixel_x,
+                blinkey_pixel_y,
+                font_size,
+            );
         }
     }
 
-    pub fn flip_cursor(
+    pub fn draw_blinkey(
+        pixels: &mut [u32],
+        width: usize,
+        blinkey_pixel_x: usize,
+        blinkey_pixel_y: usize,
+        blinkey_visible: &mut bool,
+        blinkey_wave_top_bright: &mut bool,
+        font_size: usize,
+    ) {
+        if !*blinkey_visible {
+            panic!("Cursor not visible when redrawing blinkey!");
+        }
+        if *blinkey_wave_top_bright {
+            Self::add_blinkey_top(pixels, width, blinkey_pixel_x, blinkey_pixel_y, font_size);
+        } else {
+            Self::add_blinkey_bottom(pixels, width, blinkey_pixel_x, blinkey_pixel_y, font_size);
+        }
+    }
+
+    pub fn flip_blinkey(
         renderer: &mut Renderer,
         width: usize,
-        cursor_pixel_x: usize,
-        cursor_pixel_y: usize,
-        cursor_visible: &mut bool,
-        cursor_wave_top_bright: &mut bool,
+        blinkey_pixel_x: usize,
+        blinkey_pixel_y: usize,
+        blinkey_visible: &mut bool,
+        blinkey_wave_top_bright: &mut bool,
         font_size: usize,
         is_mouse_selecting: bool,
     ) {
-        if *cursor_visible && !is_mouse_selecting {
+        if *blinkey_visible && !is_mouse_selecting {
             let font_size = font_size as usize;
             let mut buffer = renderer.lock_buffer();
             let pixels = buffer.as_mut();
-            if *cursor_wave_top_bright {
-                Self::subtract_cursor_top(
+            if *blinkey_wave_top_bright {
+                Self::subtract_blinkey_top(
                     pixels,
                     width as usize,
-                    cursor_pixel_x,
-                    cursor_pixel_y,
+                    blinkey_pixel_x,
+                    blinkey_pixel_y,
                     font_size,
                 );
-                Self::add_cursor_bottom(
+                Self::add_blinkey_bottom(
                     pixels,
                     width as usize,
-                    cursor_pixel_x,
-                    cursor_pixel_y,
+                    blinkey_pixel_x,
+                    blinkey_pixel_y,
                     font_size,
                 );
-                *cursor_wave_top_bright = false;
+                *blinkey_wave_top_bright = false;
             } else {
-                Self::add_cursor_top(
+                Self::add_blinkey_top(
                     pixels,
                     width as usize,
-                    cursor_pixel_x,
-                    cursor_pixel_y,
+                    blinkey_pixel_x,
+                    blinkey_pixel_y,
                     font_size,
                 );
-                Self::subtract_cursor_bottom(
+                Self::subtract_blinkey_bottom(
                     pixels,
                     width as usize,
-                    cursor_pixel_x,
-                    cursor_pixel_y,
+                    blinkey_pixel_x,
+                    blinkey_pixel_y,
                     font_size,
                 );
-                *cursor_wave_top_bright = true;
+                *blinkey_wave_top_bright = true;
             }
             buffer.present().unwrap();
         }
     }
 
-    pub fn add_cursor_top(
+    pub fn add_blinkey_top(
         pixels: &mut [u32],
         window_width: usize,
-        cursor_x: usize,
-        cursor_top: usize,
-        cursor_height: usize,
+        blinkey_x: usize,
+        blinkey_top: usize,
+        blinkey_height: usize,
     ) {
-        let y_end = cursor_top + cursor_height;
-        let half_height = cursor_height / 2;
+        let y_end = blinkey_top + blinkey_height;
+        let half_height = blinkey_height / 2;
 
-        for y in cursor_top..y_end {
-            let idx = y * window_width + cursor_x;
+        for y in blinkey_top..y_end {
+            let idx = y * window_width + blinkey_x;
 
-            // Map to [-1, 1] range for full cursor
-            let t = (y - cursor_top - half_height) as isize as f32 / half_height as f32;
+            // Map to [-1, 1] range for full blinkey
+            let t = (y - blinkey_top - half_height) as isize as f32 / half_height as f32;
 
             let wave = (1. - t * t) * (1. - t) * (1. - t) * theme::CURSOR_BRIGHTNESS;
 
@@ -428,21 +445,21 @@ impl PhotonApp {
         }
     }
 
-    pub fn add_cursor_bottom(
+    pub fn add_blinkey_bottom(
         pixels: &mut [u32],
         window_width: usize,
-        cursor_x: usize,
-        cursor_top: usize,
-        cursor_height: usize,
+        blinkey_x: usize,
+        blinkey_top: usize,
+        blinkey_height: usize,
     ) {
-        let y_end = cursor_top + cursor_height;
-        let half_height = cursor_height / 2;
+        let y_end = blinkey_top + blinkey_height;
+        let half_height = blinkey_height / 2;
 
-        for y in cursor_top..y_end {
-            let idx = y * window_width + cursor_x;
+        for y in blinkey_top..y_end {
+            let idx = y * window_width + blinkey_x;
 
-            // Map to [-1, 1] range for full cursor
-            let t = (y - cursor_top - half_height) as isize as f32 / half_height as f32;
+            // Map to [-1, 1] range for full blinkey
+            let t = (y - blinkey_top - half_height) as isize as f32 / half_height as f32;
 
             let wave = (1. - t * t) * (1. + t) * (1. + t) * theme::CURSOR_BRIGHTNESS;
 
@@ -452,21 +469,21 @@ impl PhotonApp {
         }
     }
 
-    pub fn subtract_cursor_top(
+    pub fn subtract_blinkey_top(
         pixels: &mut [u32],
         window_width: usize,
-        cursor_x: usize,
-        cursor_top: usize,
-        cursor_height: usize,
+        blinkey_x: usize,
+        blinkey_top: usize,
+        blinkey_height: usize,
     ) {
-        let y_end = cursor_top + cursor_height;
-        let half_height = cursor_height / 2;
+        let y_end = blinkey_top + blinkey_height;
+        let half_height = blinkey_height / 2;
 
-        for y in cursor_top..y_end {
-            let idx = y * window_width + cursor_x;
+        for y in blinkey_top..y_end {
+            let idx = y * window_width + blinkey_x;
 
-            // Map to [-1, 1] range for full cursor
-            let t = (y - cursor_top - half_height) as isize as f32 / half_height as f32;
+            // Map to [-1, 1] range for full blinkey
+            let t = (y - blinkey_top - half_height) as isize as f32 / half_height as f32;
 
             let wave = (1. - t * t) * (1. - t) * (1. - t) * theme::CURSOR_BRIGHTNESS;
             for x in -7..=7isize {
@@ -475,21 +492,21 @@ impl PhotonApp {
         }
     }
 
-    pub fn subtract_cursor_bottom(
+    pub fn subtract_blinkey_bottom(
         pixels: &mut [u32],
         window_width: usize,
-        cursor_x: usize,
-        cursor_top: usize,
-        cursor_height: usize,
+        blinkey_x: usize,
+        blinkey_top: usize,
+        blinkey_height: usize,
     ) {
-        let y_end = cursor_top + cursor_height;
-        let half_height = cursor_height / 2;
+        let y_end = blinkey_top + blinkey_height;
+        let half_height = blinkey_height / 2;
 
-        for y in cursor_top..y_end {
-            let idx = y * window_width + cursor_x;
+        for y in blinkey_top..y_end {
+            let idx = y * window_width + blinkey_x;
 
-            // Map to [-1, 1] range for full cursor
-            let t = (y - cursor_top - half_height) as isize as f32 / half_height as f32;
+            // Map to [-1, 1] range for full blinkey
+            let t = (y - blinkey_top - half_height) as isize as f32 / half_height as f32;
 
             let wave = (1. - t * t) * (1. + t) * (1. + t) * theme::CURSOR_BRIGHTNESS;
             for x in -7..=7isize {

@@ -1,5 +1,5 @@
+use crate::debug_println;
 use crate::ui::{app::*, colour::*, text_rasterizing::*, theme};
-use crate::{debug_println, DEBUG};
 
 impl PhotonApp {
     pub fn render(&mut self) {
@@ -29,7 +29,7 @@ impl PhotonApp {
             }
         }
 
-        // Always update scroll to keep cursor in view (but not during selection drag)
+        // Always update scroll to keep blinkey in view (but not during selection drag)
         if self.current_text_state.textbox_focused
             && !self.current_text_state.chars.is_empty()
             && !self.is_mouse_selecting
@@ -48,7 +48,7 @@ impl PhotonApp {
         if !self.selection_dirty {
             self.selection_dirty = self.current_text_state.selection_anchor
                 != self.previous_text_state.selection_anchor
-                || self.current_text_state.cursor_index != self.previous_text_state.cursor_index
+                || self.current_text_state.blinkey_index != self.previous_text_state.blinkey_index
                 || self.current_text_state.scroll_offset != self.previous_text_state.scroll_offset;
         }
 
@@ -435,7 +435,6 @@ impl PhotonApp {
                             }
                         }
                     }
-
                 }
 
                 // Debug: overlay textbox mask visualization (grayscale alpha)
@@ -456,20 +455,20 @@ impl PhotonApp {
             } else {
                 // Differential rendering blocks (only if window wasn't fully redrawn)
                 if self.selection_dirty || self.text_dirty {
-                    // 1. Invert old cursor (if visible)
-                    if self.cursor_visible {
+                    // 1. Invert old blinkey (if visible)
+                    if self.blinkey_visible {
                         debug_println!(
-                            "  DIFF: undraw cursor at ({}, {})",
-                            self.cursor_pixel_x,
-                            self.cursor_pixel_y
+                            "  DIFF: undraw blinkey at ({}, {})",
+                            self.blinkey_pixel_x,
+                            self.blinkey_pixel_y
                         );
-                        Self::undraw_cursor(
+                        Self::undraw_blinkey(
                             pixels,
                             self.width as usize,
-                            self.cursor_pixel_x,
-                            self.cursor_pixel_y,
-                            &mut self.cursor_visible,
-                            &mut self.cursor_wave_top_bright,
+                            self.blinkey_pixel_x,
+                            self.blinkey_pixel_y,
+                            &mut self.blinkey_visible,
+                            &mut self.blinkey_wave_top_bright,
                             font_size as usize,
                         );
                     }
@@ -478,10 +477,10 @@ impl PhotonApp {
                         // 2. Invert old selection (if present)
                         if let Some(anchor) = self.previous_text_state.selection_anchor {
                             let (sel_start, sel_end) =
-                                if anchor < self.previous_text_state.cursor_index {
-                                    (anchor, self.previous_text_state.cursor_index)
-                                } else if anchor > self.previous_text_state.cursor_index {
-                                    (self.previous_text_state.cursor_index, anchor)
+                                if anchor < self.previous_text_state.blinkey_index {
+                                    (anchor, self.previous_text_state.blinkey_index)
+                                } else if anchor > self.previous_text_state.blinkey_index {
+                                    (self.previous_text_state.blinkey_index, anchor)
                                 } else {
                                     (0, 0)
                                 };
@@ -590,10 +589,10 @@ impl PhotonApp {
             if self.selection_dirty || self.window_dirty {
                 // 5. Invert new selection (if present)
                 if let Some(anchor) = self.current_text_state.selection_anchor {
-                    let (sel_start, sel_end) = if anchor < self.current_text_state.cursor_index {
-                        (anchor, self.current_text_state.cursor_index)
-                    } else if anchor > self.current_text_state.cursor_index {
-                        (self.current_text_state.cursor_index, anchor)
+                    let (sel_start, sel_end) = if anchor < self.current_text_state.blinkey_index {
+                        (anchor, self.current_text_state.blinkey_index)
+                    } else if anchor > self.current_text_state.blinkey_index {
+                        (self.current_text_state.blinkey_index, anchor)
                     } else {
                         (0, 0)
                     };
@@ -618,12 +617,14 @@ impl PhotonApp {
             }
 
             // 6. Cursor drawing MOVED to after both rendering paths (with button drawing)
-            // This ensures cursor is drawn exactly once per frame on both full redraws and differential updates
+            // This ensures blinkey is drawn exactly once per frame on both full redraws and differential updates
 
             // Controls dirty - handle hover and focus transitions
             if self.controls_dirty {
                 // Handle hover state changes
                 if self.prev_hovered_button != self.hovered_button {
+                    debug_println!("HOVER: State change from {:?} to {:?}, blinkey_visible={}, textbox_focused={}",
+                        self.prev_hovered_button, self.hovered_button, self.blinkey_visible, self.current_text_state.textbox_focused);
                     // Calculate button centers for centerpoint fill
                     let smaller_dim = self.width.min(self.height) as f32;
                     let button_height = (smaller_dim / 16.).ceil() as usize;
@@ -644,6 +645,7 @@ impl PhotonApp {
                     let close_center_x = button_area_x_start + button_width * 2 + 1;
 
                     // Unhover old button
+                    debug_println!("  Unhovering prev button: {:?}", self.prev_hovered_button);
                     match self.prev_hovered_button {
                         HoveredButton::Close => {
                             Self::draw_hover_centerpoint(
@@ -656,7 +658,7 @@ impl PhotonApp {
                                 HIT_CLOSE_BUTTON,
                                 false,
                                 theme::CLOSE_HOVER,
-                                self.debug_hit_test,
+                                self.debug,
                             );
                         }
                         HoveredButton::Maximize => {
@@ -670,7 +672,7 @@ impl PhotonApp {
                                 HIT_MAXIMIZE_BUTTON,
                                 false,
                                 theme::MAXIMIZE_HOVER,
-                                self.debug_hit_test,
+                                self.debug,
                             );
                         }
                         HoveredButton::Minimize => {
@@ -684,13 +686,43 @@ impl PhotonApp {
                                 HIT_MINIMIZE_BUTTON,
                                 false,
                                 theme::MINIMIZE_HOVER,
-                                self.debug_hit_test,
+                                self.debug,
+                            );
+                        }
+                        HoveredButton::Textbox => {
+                            Self::draw_hover_centerpoint(
+                                pixels,
+                                &self.hit_test_map,
+                                self.width as usize,
+                                self.height as usize,
+                                center_x,
+                                center_y,
+                                HIT_HANDLE_TEXTBOX,
+                                false,
+                                theme::TEXTBOX_HOVER,
+                                self.debug,
+                            );
+                        }
+                        HoveredButton::QueryButton => {
+                            let query_button_center_y = center_y + box_height + box_height;
+                            Self::draw_hover_centerpoint(
+                                pixels,
+                                &self.hit_test_map,
+                                self.width as usize,
+                                self.height as usize,
+                                center_x,
+                                query_button_center_y,
+                                HIT_PRIMARY_BUTTON,
+                                false,
+                                theme::QUERY_BUTTON_HOVER,
+                                self.debug,
                             );
                         }
                         HoveredButton::None => {}
                     }
 
                     // Hover new button
+                    debug_println!("  Hovering new button: {:?}", self.hovered_button);
                     match self.hovered_button {
                         HoveredButton::Close => {
                             Self::draw_hover_centerpoint(
@@ -703,7 +735,7 @@ impl PhotonApp {
                                 HIT_CLOSE_BUTTON,
                                 true,
                                 theme::CLOSE_HOVER,
-                                self.debug_hit_test,
+                                self.debug,
                             );
                         }
                         HoveredButton::Maximize => {
@@ -717,7 +749,7 @@ impl PhotonApp {
                                 HIT_MAXIMIZE_BUTTON,
                                 true,
                                 theme::MAXIMIZE_HOVER,
-                                self.debug_hit_test,
+                                self.debug,
                             );
                         }
                         HoveredButton::Minimize => {
@@ -731,7 +763,36 @@ impl PhotonApp {
                                 HIT_MINIMIZE_BUTTON,
                                 true,
                                 theme::MINIMIZE_HOVER,
-                                self.debug_hit_test,
+                                self.debug,
+                            );
+                        }
+                        HoveredButton::Textbox => {
+                            Self::draw_hover_centerpoint(
+                                pixels,
+                                &self.hit_test_map,
+                                self.width as usize,
+                                self.height as usize,
+                                center_x,
+                                center_y,
+                                HIT_HANDLE_TEXTBOX,
+                                true,
+                                theme::TEXTBOX_HOVER,
+                                self.debug,
+                            );
+                        }
+                        HoveredButton::QueryButton => {
+                            let query_button_center_y = center_y + box_height + box_height;
+                            Self::draw_hover_centerpoint(
+                                pixels,
+                                &self.hit_test_map,
+                                self.width as usize,
+                                self.height as usize,
+                                center_x,
+                                query_button_center_y,
+                                HIT_PRIMARY_BUTTON,
+                                true,
+                                theme::QUERY_BUTTON_HOVER,
+                                self.debug,
                             );
                         }
                         HoveredButton::None => {}
@@ -741,7 +802,7 @@ impl PhotonApp {
                     self.prev_hovered_button = self.hovered_button;
                 }
             }
-            if DEBUG {
+            if self.debug {
                 // Draw black strip at bottom for debug counters
                 let counter_size = self.min_dim / 16;
                 let strip_height = counter_size * 3;
@@ -754,7 +815,7 @@ impl PhotonApp {
                 }
 
                 // Draw debug counters (bottom left = full redraws, bottom center = updates, bottom right = frames)
-                let full_redraw_text = format!("FR:{}", self.full_redraw_counter);
+                let full_redraw_text = format!("R:{}", self.full_redraw_counter);
                 let update_text = format!("U:{}", self.update_counter);
                 let frame_text = format!("F:{}", self.frame_counter);
 
@@ -804,10 +865,12 @@ impl PhotonApp {
                 );
             }
 
-            // Draw cursor (if visible and focused) - must be done on both full redraws and differential updates
-            if self.cursor_visible && self.current_text_state.textbox_focused {
-                let cursor_pixel_offset: usize = if self.current_text_state.cursor_index > 0 {
-                    self.current_text_state.widths[..self.current_text_state.cursor_index]
+            // Draw blinkey (if visible and focused) - only on full redraws or text/selection updates
+            // Do NOT redraw on controls_dirty alone (blinkey is already there, would double-brighten)
+            if self.blinkey_visible && self.current_text_state.textbox_focused
+                && (self.window_dirty || self.text_dirty || self.selection_dirty) {
+                let blinkey_pixel_offset: usize = if self.current_text_state.blinkey_index > 0 {
+                    self.current_text_state.widths[..self.current_text_state.blinkey_index]
                         .iter()
                         .sum()
                 } else {
@@ -815,20 +878,20 @@ impl PhotonApp {
                 };
                 let total_text_width: usize = self.current_text_state.width;
                 let text_half = total_text_width / 2;
-                let cursor_x = (center_x as f32 - text_half as f32
+                let blinkey_x = (center_x as f32 - text_half as f32
                     + self.current_text_state.scroll_offset
-                    + cursor_pixel_offset as f32) as usize;
-                let cursor_y = (center_y as f32 - box_height as f32 * 0.25) as usize;
+                    + blinkey_pixel_offset as f32) as usize;
+                let blinkey_y = (center_y as f32 - box_height as f32 * 0.25) as usize;
 
-                self.cursor_pixel_x = cursor_x;
-                self.cursor_pixel_y = cursor_y;
-                Self::draw_cursor(
+                self.blinkey_pixel_x = blinkey_x;
+                self.blinkey_pixel_y = blinkey_y;
+                Self::draw_blinkey(
                     pixels,
                     self.width as usize,
-                    cursor_x,
-                    cursor_y,
-                    &mut self.cursor_visible,
-                    &mut self.cursor_wave_top_bright,
+                    blinkey_x,
+                    blinkey_y,
+                    &mut self.blinkey_visible,
+                    &mut self.blinkey_wave_top_bright,
                     font_size as usize,
                 );
             }
@@ -2027,6 +2090,8 @@ impl PhotonApp {
             HoveredButton::Close => theme::CLOSE_HOVER,
             HoveredButton::Maximize => theme::MAXIMIZE_HOVER,
             HoveredButton::Minimize => theme::MINIMIZE_HOVER,
+            HoveredButton::Textbox => theme::TEXTBOX_HOVER,
+            HoveredButton::QueryButton => theme::QUERY_BUTTON_HOVER,
             HoveredButton::None => [0, 0, 0, 0],
         };
 
@@ -2065,11 +2130,11 @@ impl PhotonApp {
         hit_id: u8,
         hover: bool,
         hover_delta: [i8; 4],
-        debug_hit_test: bool,
+        debug: bool,
     ) {
-        // Debug: draw magenta pixel at centerpoint when hit test map is visible
-        // Use alpha=254 so we can skip it in the hover effect loop
-        if debug_hit_test {
+        // Debug: draw magenta pixel at centerpoint
+        // Use alpha=254 so we can distinguish it from actual magenta UI elements
+        if debug {
             let debug_idx = center_y * window_width + center_x;
             if debug_idx < pixels.len() {
                 pixels[debug_idx] = 0xFE_FF_00_FF; // Magenta with alpha=254

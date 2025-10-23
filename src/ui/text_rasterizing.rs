@@ -671,7 +671,7 @@ impl TextRenderer {
     }
 
     /// Draw text range with horizontal scrolling, using additive/subtractive compositing
-    /// Automatically clips using textbox_mask (same as cursor blinking)
+    /// Automatically clips using textbox_mask (same as blinkey blinking)
     pub fn draw_text_scrollable_additive(
         &mut self,
         pixels: &mut [u8],

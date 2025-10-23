@@ -9,7 +9,7 @@ impl TextState {
             chars: Vec::new(),
             widths: Vec::new(),
             width: 0,
-            cursor_index: 0,
+            blinkey_index: 0,
             scroll_offset: 0.0,
             selection_anchor: None,
             textbox_focused: false,
@@ -73,7 +73,7 @@ pub struct TextState {
     pub widths: Vec<usize>,
     pub width: usize,
     pub scroll_offset: f32,
-    pub cursor_index: usize,
+    pub blinkey_index: usize,
     pub selection_anchor: Option<usize>,
     pub textbox_focused: bool,
     pub is_empty: bool, // True if chars is empty (cached for previous frame comparison)
@@ -95,16 +95,16 @@ pub struct PhotonApp {
     pub diagonal_sq: usize, // width² + height²
 
     // Launch screen state
-    pub cursor_blink_rate_ms: u64, // System cursor blink rate in milliseconds (max for random range)
-    pub cursor_wave_top_bright: bool, // True=top is bright, False=top is dark
-    pub cursor_visible: bool,      // Whether cursor is currently visible (for blinking)
-    pub is_mouse_selecting: bool,  // True when actively dragging mouse to select text
-    pub cursor_pixel_x: usize,     // Cursor x position in pixels
-    pub cursor_pixel_y: usize,     // Cursor y position in pixels
-    pub next_cursor_blink_time: std::time::Instant, // When next cursor blink should happen
+    pub blinkey_blink_rate_ms: u64, // System blinkey blink rate in milliseconds (max for random range)
+    pub blinkey_wave_top_bright: bool, // True=top is bright, False=top is dark
+    pub blinkey_visible: bool,      // Whether blinkey is currently visible (for blinking)
+    pub is_mouse_selecting: bool,   // True when actively dragging mouse to select text
+    pub blinkey_pixel_x: usize,     // Cursor x position in pixels
+    pub blinkey_pixel_y: usize,     // Cursor y position in pixels
+    pub next_blinkey_blink_time: std::time::Instant, // When next blinkey blink should happen
     pub handle_status: HandleStatus, // Handle attestation status for button flow
     pub query_start_time: Option<std::time::Instant>, // When handle query started (for 1s simulation)
-    pub handle_query: HandleQuery,   // Network query system for handle attestation
+    pub handle_query: HandleQuery,                    // Network query system for handle attestation
 
     // Text state for differential rendering
     pub current_text_state: TextState,
@@ -123,7 +123,7 @@ pub struct PhotonApp {
     pub is_dragging_resize: bool,
     pub is_dragging_move: bool,
     pub resize_edge: ResizeEdge,
-    pub drag_start_cursor_screen_pos: (f64, f64), // Global screen position when drag starts
+    pub drag_start_blinkey_screen_pos: (f64, f64), // Global screen position when drag starts
     pub drag_start_size: (u32, u32),
     pub drag_start_window_pos: (i32, i32),
     pub modifiers: ModifiersState,
@@ -145,6 +145,9 @@ pub struct PhotonApp {
     pub hit_test_map: Vec<u8>,
     pub debug_hit_test: bool,
     pub debug_hit_colours: Vec<(u8, u8, u8)>, // Random colours for each hit area ID
+
+    // Runtime debug flag (toggleable with Ctrl+D)
+    pub debug: bool,
 }
 
 // Hit test element IDs
@@ -165,6 +168,8 @@ pub enum HoveredButton {
     Close,
     Maximize,
     Minimize,
+    Textbox,
+    QueryButton,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -182,7 +187,7 @@ pub enum ResizeEdge {
 
 impl PhotonApp {
     #[cfg(target_os = "linux")]
-    pub async fn new(window: &Window, cursor_blink_rate_ms: u64) -> Self {
+    pub async fn new(window: &Window, blinkey_blink_rate_ms: u64) -> Self {
         let size = window.inner_size();
         let renderer = Renderer::new(window, size.width, size.height).await;
         let text_renderer = TextRenderer::new();
@@ -204,13 +209,13 @@ impl PhotonApp {
             min_dim: w.min(h),
             perimeter: w + h,
             diagonal_sq: w * w + h * h,
-            cursor_blink_rate_ms,
-            cursor_visible: false,
+            blinkey_blink_rate_ms,
+            blinkey_visible: false,
             is_mouse_selecting: false,
-            cursor_wave_top_bright: false,
-            cursor_pixel_x: 0,
-            cursor_pixel_y: 0,
-            next_cursor_blink_time: std::time::Instant::now(),
+            blinkey_wave_top_bright: false,
+            blinkey_pixel_x: 0,
+            blinkey_pixel_y: 0,
+            next_blinkey_blink_time: std::time::Instant::now(),
             handle_status: HandleStatus::Empty,
             query_start_time: None,
             handle_query: HandleQuery::new(),
@@ -227,7 +232,7 @@ impl PhotonApp {
             is_dragging_resize: false,
             is_dragging_move: false,
             resize_edge: ResizeEdge::None,
-            drag_start_cursor_screen_pos: (0., 0.),
+            drag_start_blinkey_screen_pos: (0., 0.),
             drag_start_size: (0, 0),
             drag_start_window_pos: (0, 0),
             modifiers: ModifiersState::empty(),
@@ -240,6 +245,7 @@ impl PhotonApp {
             hit_test_map: vec![0; (size.width * size.height) as usize],
             debug_hit_test: false,
             debug_hit_colours: Vec::new(),
+            debug: false,
             is_fullscreen,
         };
         app
@@ -250,7 +256,7 @@ impl PhotonApp {
         window: &Window,
         screen_width: u32,
         screen_height: u32,
-        cursor_blink_rate_ms: u64,
+        blinkey_blink_rate_ms: u64,
     ) -> Self {
         let size = window.inner_size();
         let renderer = Renderer::new(window, size.width, size.height);
@@ -273,25 +279,25 @@ impl PhotonApp {
             perimeter: w + h,
             diagonal_sq: w * w + h * h,
             username_input: String::new(),
-            cursor_blink_rate_ms,
-            cursor_wave_top_bright: false,
-            cursor_visible: false,
-            cursor_pixel_x: 0,
-            cursor_pixel_y: 0,
-            cursor_height: 0.0,
+            blinkey_blink_rate_ms,
+            blinkey_wave_top_bright: false,
+            blinkey_visible: false,
+            blinkey_pixel_x: 0,
+            blinkey_pixel_y: 0,
+            blinkey_height: 0.0,
             username_available: None,
             textbox_focused: false,
             current_text_state: TextState {
                 text: EditableText::new(),
                 scroll_offset: 0.0,
-                cursor_index: 0,
+                blinkey_index: 0,
                 selection_anchor: None,
                 textbox_focused: false,
             },
             old_text_state: TextState {
                 text: EditableText::new(),
                 scroll_offset: 0.0,
-                cursor_index: 0,
+                blinkey_index: 0,
                 selection_anchor: None,
                 textbox_focused: false,
             },
@@ -306,7 +312,7 @@ impl PhotonApp {
             is_dragging_resize: false,
             is_dragging_move: false,
             resize_edge: ResizeEdge::None,
-            drag_start_cursor_screen_pos: (0.0, 0.0),
+            drag_start_blinkey_screen_pos: (0.0, 0.0),
             drag_start_size: (0, 0),
             drag_start_window_pos: (0, 0),
             modifiers: ModifiersState::empty(),
@@ -325,6 +331,7 @@ impl PhotonApp {
             hit_test_map: vec![0; (size.width * size.height) as usize],
             debug_hit_test: false,
             debug_hit_colours: Vec::new(),
+            debug: false,
             is_fullscreen,
         };
         app.update_button_bounds();
@@ -363,7 +370,7 @@ impl PhotonApp {
         // Recalculate character widths for new font size
         self.recalculate_char_widths();
 
-        // Recalculate scroll to keep cursor in view with new dimensions
+        // Recalculate scroll to keep blinkey in view with new dimensions
         if !self.current_text_state.chars.is_empty() {
             let margin = self.min_dim / 8;
             let box_width = self.width as usize - margin * 2;

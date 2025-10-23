@@ -17,7 +17,7 @@ struct App {
     screen_width: u32,
     screen_height: u32,
     maximized_size: Option<(u32, u32)>, // Maximized dimensions (learned on first maximize)
-    cursor_blink_rate_ms: u64,          // System cursor blink rate in milliseconds
+    blinkey_blink_rate_ms: u64,         // System blinkey blink rate in milliseconds
 }
 
 impl ApplicationHandler for App {
@@ -72,7 +72,7 @@ impl ApplicationHandler for App {
                         window,
                         self.screen_width,
                         self.screen_height,
-                        self.cursor_blink_rate_ms,
+                        self.blinkey_blink_rate_ms,
                     );
                     self.photon_app = Some(app);
                     // Trigger redraw with correct fullscreen state
@@ -82,7 +82,7 @@ impl ApplicationHandler for App {
                 #[cfg(target_os = "linux")]
                 {
                     let app =
-                        pollster::block_on(PhotonApp::new(window, self.cursor_blink_rate_ms));
+                        pollster::block_on(PhotonApp::new(window, self.blinkey_blink_rate_ms));
                     self.photon_app = Some(app);
                     // Trigger redraw with correct fullscreen state
                     window.request_redraw();
@@ -153,7 +153,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CursorLeft { .. } => {
                 if let (Some(window), Some(app)) = (&self.window, &mut self.photon_app) {
-                    app.handle_cursor_left();
+                    app.handle_blinkey_left();
                     window.request_redraw();
                 }
             }
@@ -178,33 +178,35 @@ impl ApplicationHandler for App {
                 // Check if it's time to blink
                 let now = std::time::Instant::now();
 
-                if now >= app.next_cursor_blink_time {
+                if now >= app.next_blinkey_blink_time {
                     let timestamp = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap()
                         .as_millis();
-                    // Time to blink! Toggle cursor and set next timer
+                    // Time to blink! Toggle blinkey and set next timer
                     let font_size = app.font_size() as usize;
-                    PhotonApp::flip_cursor(
+                    PhotonApp::flip_blinkey(
                         &mut app.renderer,
                         app.width as usize,
-                        app.cursor_pixel_x,
-                        app.cursor_pixel_y,
-                        &mut app.cursor_visible,
-                        &mut app.cursor_wave_top_bright,
+                        app.blinkey_pixel_x,
+                        app.blinkey_pixel_y,
+                        &mut app.blinkey_visible,
+                        &mut app.blinkey_wave_top_bright,
                         font_size,
                         app.is_mouse_selecting,
                     );
-                    app.next_cursor_blink_time = app.next_blink_wake_time();
-                    let delay_ms = app.next_cursor_blink_time.duration_since(now).as_millis();
-                    let side = if app.cursor_wave_top_bright {
+                    app.next_blinkey_blink_time = app.next_blink_wake_time();
+                    let delay_ms = app.next_blinkey_blink_time.duration_since(now).as_millis();
+                    let side = if app.blinkey_wave_top_bright {
                         "Top"
                     } else {
                         "Bottom"
                     };
                     debug_println!(
                         "[{}] ⏰ {} Blink timer fired! Next blink in {}ms",
-                        side, timestamp, delay_ms
+                        side,
+                        timestamp,
+                        delay_ms
                     );
                 }
 
@@ -217,7 +219,7 @@ impl ApplicationHandler for App {
                 }
 
                 // Always set control flow (either new or same timer)
-                event_loop.set_control_flow(ControlFlow::WaitUntil(app.next_cursor_blink_time));
+                event_loop.set_control_flow(ControlFlow::WaitUntil(app.next_blinkey_blink_time));
             } else {
                 event_loop.set_control_flow(ControlFlow::Wait);
             }
@@ -243,8 +245,8 @@ unsafe fn enable_windows_transparency(hwnd: isize) {
     // UpdateLayeredWindow handles the alpha blending directly
 }
 
-/// Get the system cursor blink rate in milliseconds
-fn get_system_cursor_blink_rate() -> u64 {
+/// Get the system blinkey blink rate in milliseconds
+fn get_system_blinkey_blink_rate() -> u64 {
     #[cfg(target_os = "windows")]
     {
         use windows::Win32::UI::WindowsAndMessaging::GetCaretBlinkTime;
@@ -263,7 +265,7 @@ fn get_system_cursor_blink_rate() -> u64 {
     {
         // Try to read from GNOME settings
         let blink_rate = std::process::Command::new("gsettings")
-            .args(&["get", "org.gnome.desktop.interface", "cursor-blink-time"])
+            .args(&["get", "org.gnome.desktop.interface", "blinkey-blink-time"])
             .output()
             .ok()
             .and_then(|output| {
@@ -286,14 +288,14 @@ fn get_system_cursor_blink_rate() -> u64 {
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
-    // Set cursor size for Linux/X11 to match system cursor settings
-    // Winit doesn't read the DE cursor size, so we need to set it manually
+    // Set blinkey size for Linux/X11 to match system blinkey settings
+    // Winit doesn't read the DE blinkey size, so we need to set it manually
     #[cfg(target_os = "linux")]
     {
         if std::env::var("XCURSOR_SIZE").is_err() {
             // Try to read from GNOME/KDE settings, fallback to 24 (X11 default)
-            let cursor_size = std::process::Command::new("gsettings")
-                .args(&["get", "org.gnome.desktop.interface", "cursor-size"])
+            let blinkey_size = std::process::Command::new("gsettings")
+                .args(&["get", "org.gnome.desktop.interface", "blinkey-size"])
                 .output()
                 .ok()
                 .and_then(|output| {
@@ -303,19 +305,19 @@ fn main() {
                 })
                 .unwrap_or(24);
 
-            std::env::set_var("XCURSOR_SIZE", cursor_size.to_string());
+            std::env::set_var("XCURSOR_SIZE", blinkey_size.to_string());
         }
     }
 
     let event_loop = EventLoop::new().unwrap();
-    let cursor_blink_rate = get_system_cursor_blink_rate();
+    let blinkey_blink_rate = get_system_blinkey_blink_rate();
     let mut app = App {
         window: None,
         photon_app: None,
         screen_width: 0,
         screen_height: 0,
         maximized_size: None,
-        cursor_blink_rate_ms: cursor_blink_rate,
+        blinkey_blink_rate_ms: blinkey_blink_rate,
     };
 
     event_loop.run_app(&mut app).unwrap();

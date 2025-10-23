@@ -1,11 +1,12 @@
-// Global debug flag - set to false to disable all debug logging
-pub const DEBUG: bool = true;
+// Global debug flag - can be toggled at runtime with Ctrl+D
+use std::sync::atomic::{AtomicBool, Ordering};
+pub static DEBUG_ENABLED: AtomicBool = AtomicBool::new(false);
 
-// Debug print macro - only prints if DEBUG is true
+// Debug print macro - only prints if DEBUG_ENABLED is true
 #[macro_export]
 macro_rules! debug_println {
     ($($arg:tt)*) => {
-        if $crate::DEBUG {
+        if $crate::DEBUG_ENABLED.load(std::sync::atomic::Ordering::Relaxed) {
             println!($($arg)*);
         }
     };

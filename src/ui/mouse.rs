@@ -46,12 +46,25 @@ impl PhotonApp {
                         HIT_HANDLE_TEXTBOX => {
                             let was_focused = self.current_text_state.textbox_focused;
 
-                            // Focus the textbox and set cursor position based on click location
+                            // Focus the textbox and set blinkey position based on click location
                             self.current_text_state.textbox_focused = true;
+
+                            // Unhover textbox when activating it (hover effects interfere with blinkey)
+                            if self.hovered_button == HoveredButton::Textbox {
+                                debug_println!("  Unhovering textbox on activation");
+                                self.prev_hovered_button = HoveredButton::Textbox;
+                                self.hovered_button = HoveredButton::None;
+                                self.controls_dirty = true; // Trigger unhover rendering
+                            } else {
+                                debug_println!(
+                                    "  Textbox not hovered on activation: {:?}",
+                                    self.hovered_button
+                                );
+                            }
 
                             // Reset blink timer on focus gain to prevent rapid catch-up blinks
                             let next_blink = self.next_blink_wake_time();
-                            self.next_cursor_blink_time = next_blink;
+                            self.next_blinkey_blink_time = next_blink;
                             debug_println!("  Reset blink timer");
 
                             // If textbox is empty, need to redraw to remove infinity placeholder
@@ -59,8 +72,8 @@ impl PhotonApp {
                                 self.text_dirty = true;
                             }
 
-                            // Calculate click position relative to text (sets cursor_index)
-                            let old_cursor_index = self.current_text_state.cursor_index;
+                            // Calculate click position relative to text (sets blinkey_index)
+                            let old_blinkey_index = self.current_text_state.blinkey_index;
                             if !self.current_text_state.chars.is_empty() {
                                 let center_x = self.width as usize / 2;
                                 let total_text_width: usize = self.current_text_state.width;
@@ -78,7 +91,7 @@ impl PhotonApp {
                                 {
                                     let char_center = x_offset + char_width as f32 / 2.0;
                                     if click_x < char_center {
-                                        self.current_text_state.cursor_index = i;
+                                        self.current_text_state.blinkey_index = i;
                                         found_position = true;
                                         break;
                                     }
@@ -86,48 +99,48 @@ impl PhotonApp {
                                 }
 
                                 if !found_position {
-                                    self.current_text_state.cursor_index =
+                                    self.current_text_state.blinkey_index =
                                         self.current_text_state.chars.len();
                                 }
                             } else {
-                                self.current_text_state.cursor_index = 0;
+                                self.current_text_state.blinkey_index = 0;
                                 self.current_text_state.scroll_offset = 0.0;
                             }
 
                             let text: String = self.current_text_state.chars.iter().collect();
-                            debug_println!("CLICK: textbox @ mouse=({}, {}), was_focused={}, cursor: {} -> {}, text=\"{}\" (len={})",
-                                     mouse_x, mouse_y, was_focused, old_cursor_index,
-                                     self.current_text_state.cursor_index, text, text.len());
+                            debug_println!("CLICK: textbox @ mouse=({}, {}), was_focused={}, blinkey: {} -> {}, text=\"{}\" (len={})",
+                                     mouse_x, mouse_y, was_focused, old_blinkey_index,
+                                     self.current_text_state.blinkey_index, text, text.len());
 
-                            // Calculate cursor pixel position (needed before drawing)
+                            // Calculate blinkey pixel position (needed before drawing)
                             let margin = self.min_dim / 8;
                             let box_height = self.min_dim / 8;
                             let center_x = self.width as usize / 2;
                             let center_y = self.height as usize * 4 / 7;
                             let font_size = self.font_size();
 
-                            // Lock buffer for cursor update (immediate-mode)
+                            // Lock buffer for blinkey update (immediate-mode)
                             let mut buffer = self.renderer.lock_buffer();
                             let pixels = buffer.as_mut();
 
-                            // If cursor already visible, undraw at OLD position first
-                            if was_focused && self.cursor_visible {
-                                Self::undraw_cursor(
+                            // If blinkey already visible, undraw at OLD position first
+                            if was_focused && self.blinkey_visible {
+                                Self::undraw_blinkey(
                                     pixels,
                                     self.width as usize,
-                                    self.cursor_pixel_x,
-                                    self.cursor_pixel_y,
-                                    &mut self.cursor_visible,
-                                    &mut self.cursor_wave_top_bright,
+                                    self.blinkey_pixel_x,
+                                    self.blinkey_pixel_y,
+                                    &mut self.blinkey_visible,
+                                    &mut self.blinkey_wave_top_bright,
                                     font_size as usize,
                                 );
                             }
 
-                            // Calculate NEW cursor position
-                            let cursor_pixel_offset: usize =
-                                if self.current_text_state.cursor_index > 0 {
+                            // Calculate NEW blinkey position
+                            let blinkey_pixel_offset: usize =
+                                if self.current_text_state.blinkey_index > 0 {
                                     self.current_text_state.widths
-                                        [..self.current_text_state.cursor_index]
+                                        [..self.current_text_state.blinkey_index]
                                         .iter()
                                         .sum()
                                 } else {
@@ -135,32 +148,32 @@ impl PhotonApp {
                                 };
                             let total_text_width: usize = self.current_text_state.width;
                             let text_half = total_text_width / 2;
-                            self.cursor_pixel_x = (center_x as f32 - text_half as f32
+                            self.blinkey_pixel_x = (center_x as f32 - text_half as f32
                                 + self.current_text_state.scroll_offset
-                                + cursor_pixel_offset as f32)
+                                + blinkey_pixel_offset as f32)
                                 as usize;
-                            self.cursor_pixel_y =
+                            self.blinkey_pixel_y =
                                 (center_y as f32 - box_height as f32 * 0.25) as usize;
 
-                            // Draw cursor at NEW position (or start if first focus)
+                            // Draw blinkey at NEW position (or start if first focus)
                             if !was_focused {
-                                Self::start_cursor(
+                                Self::start_blinkey(
                                     pixels,
                                     self.width as usize,
-                                    self.cursor_pixel_x,
-                                    self.cursor_pixel_y,
-                                    &mut self.cursor_visible,
-                                    &mut self.cursor_wave_top_bright,
+                                    self.blinkey_pixel_x,
+                                    self.blinkey_pixel_y,
+                                    &mut self.blinkey_visible,
+                                    &mut self.blinkey_wave_top_bright,
                                     font_size as usize,
                                 );
                             } else {
-                                Self::draw_cursor(
+                                Self::draw_blinkey(
                                     pixels,
                                     self.width as usize,
-                                    self.cursor_pixel_x,
-                                    self.cursor_pixel_y,
-                                    &mut self.cursor_visible,
-                                    &mut self.cursor_wave_top_bright,
+                                    self.blinkey_pixel_x,
+                                    self.blinkey_pixel_y,
+                                    &mut self.blinkey_visible,
+                                    &mut self.blinkey_wave_top_bright,
                                     font_size as usize,
                                 );
                             }
@@ -169,7 +182,7 @@ impl PhotonApp {
                             // Prepare for potential drag selection - set anchor to click position
                             // is_mouse_selecting will be set to true when mouse actually moves (in handle_mouse_move)
                             self.current_text_state.selection_anchor =
-                                Some(self.current_text_state.cursor_index);
+                                Some(self.current_text_state.blinkey_index);
                             self.selection_dirty = true;
 
                             return;
@@ -224,18 +237,18 @@ impl PhotonApp {
                             if self.current_text_state.textbox_focused {
                                 self.current_text_state.textbox_focused = false;
 
-                                // State transition: cursor ON -> OFF (immediate-mode)
-                                if self.cursor_visible {
+                                // State transition: blinkey ON -> OFF (immediate-mode)
+                                if self.blinkey_visible {
                                     let font_size = self.font_size();
                                     let mut buffer = self.renderer.lock_buffer();
                                     let pixels = buffer.as_mut();
-                                    Self::stop_cursor(
+                                    Self::stop_blinkey(
                                         pixels,
                                         self.width as usize,
-                                        self.cursor_pixel_x,
-                                        self.cursor_pixel_y,
-                                        &mut self.cursor_visible,
-                                        &mut self.cursor_wave_top_bright,
+                                        self.blinkey_pixel_x,
+                                        self.blinkey_pixel_y,
+                                        &mut self.blinkey_visible,
+                                        &mut self.blinkey_wave_top_bright,
                                         font_size as usize,
                                     );
                                     buffer.present().unwrap();
@@ -256,27 +269,27 @@ impl PhotonApp {
                     self.resize_edge = edge;
                     self.drag_start_size = (self.width, self.height);
 
-                    // Store the window position and global cursor position at drag start
+                    // Store the window position and global blinkey position at drag start
                     if let Some(window_pos) = window.outer_position().ok() {
                         self.drag_start_window_pos = (window_pos.x, window_pos.y);
 
-                        // Calculate global cursor position from window-relative position
-                        let cursor_screen_x = window_pos.x as f64 + self.mouse_x as f64;
-                        let cursor_screen_y = window_pos.y as f64 + self.mouse_y as f64;
-                        self.drag_start_cursor_screen_pos = (cursor_screen_x, cursor_screen_y);
+                        // Calculate global blinkey position from window-relative position
+                        let blinkey_screen_x = window_pos.x as f64 + self.mouse_x as f64;
+                        let blinkey_screen_y = window_pos.y as f64 + self.mouse_y as f64;
+                        self.drag_start_blinkey_screen_pos = (blinkey_screen_x, blinkey_screen_y);
                     }
                 } else {
                     // Not on a resize edge, start window drag
                     self.is_dragging_move = true;
 
-                    // Store the window position and global cursor position at drag start
+                    // Store the window position and global blinkey position at drag start
                     if let Some(window_pos) = window.outer_position().ok() {
                         self.drag_start_window_pos = (window_pos.x, window_pos.y);
 
-                        // Calculate global cursor position from window-relative position
-                        let cursor_screen_x = window_pos.x as f64 + self.mouse_x as f64;
-                        let cursor_screen_y = window_pos.y as f64 + self.mouse_y as f64;
-                        self.drag_start_cursor_screen_pos = (cursor_screen_x, cursor_screen_y);
+                        // Calculate global blinkey position from window-relative position
+                        let blinkey_screen_x = window_pos.x as f64 + self.mouse_x as f64;
+                        let blinkey_screen_y = window_pos.y as f64 + self.mouse_y as f64;
+                        self.drag_start_blinkey_screen_pos = (blinkey_screen_x, blinkey_screen_y);
                     }
                 }
             }
@@ -288,17 +301,19 @@ impl PhotonApp {
                     self.is_mouse_selecting = false;
                     self.selection_last_update_time = None;
 
-                    // State transition: cursor OFF -> ON (immediate-mode)
-                    if !self.cursor_visible && self.current_text_state.textbox_focused {
-                        // Recalculate cursor position first
+                    // State transition: blinkey OFF -> ON (immediate-mode)
+                    if !self.blinkey_visible && self.current_text_state.textbox_focused {
+                        // Recalculate blinkey position first
                         let margin = self.min_dim / 8;
                         let box_height = self.min_dim / 8;
                         let center_x = self.width as usize / 2;
                         let center_y = self.height as usize * 4 / 7;
                         let font_size = self.font_size();
 
-                        let cursor_pixel_offset: usize = if self.current_text_state.cursor_index > 0 {
-                            self.current_text_state.widths[..self.current_text_state.cursor_index]
+                        let blinkey_pixel_offset: usize = if self.current_text_state.blinkey_index
+                            > 0
+                        {
+                            self.current_text_state.widths[..self.current_text_state.blinkey_index]
                                 .iter()
                                 .sum()
                         } else {
@@ -306,32 +321,33 @@ impl PhotonApp {
                         };
                         let total_text_width: usize = self.current_text_state.width;
                         let text_half = total_text_width / 2;
-                        self.cursor_pixel_x = (center_x as f32 - text_half as f32
+                        self.blinkey_pixel_x = (center_x as f32 - text_half as f32
                             + self.current_text_state.scroll_offset
-                            + cursor_pixel_offset as f32)
+                            + blinkey_pixel_offset as f32)
                             as usize;
-                        self.cursor_pixel_y = (center_y as f32 - box_height as f32 * 0.25) as usize;
+                        self.blinkey_pixel_y =
+                            (center_y as f32 - box_height as f32 * 0.25) as usize;
 
                         let mut buffer = self.renderer.lock_buffer();
                         let pixels = buffer.as_mut();
-                        Self::start_cursor(
+                        Self::start_blinkey(
                             pixels,
                             self.width as usize,
-                            self.cursor_pixel_x,
-                            self.cursor_pixel_y,
-                            &mut self.cursor_visible,
-                            &mut self.cursor_wave_top_bright,
+                            self.blinkey_pixel_x,
+                            self.blinkey_pixel_y,
+                            &mut self.blinkey_visible,
+                            &mut self.blinkey_wave_top_bright,
                             font_size as usize,
                         );
                         buffer.present().unwrap();
                     }
 
                     // Reset blink timer to prevent immediate blink after selection ends
-                    self.next_cursor_blink_time = self.next_blink_wake_time();
+                    self.next_blinkey_blink_time = self.next_blink_wake_time();
 
-                    // If anchor == cursor, it was just a click (not a drag), clear selection
+                    // If anchor == blinkey, it was just a click (not a drag), clear selection
                     if self.current_text_state.selection_anchor
-                        == Some(self.current_text_state.cursor_index)
+                        == Some(self.current_text_state.blinkey_index)
                     {
                         self.current_text_state.selection_anchor = None;
                         self.selection_dirty = true;
@@ -339,7 +355,7 @@ impl PhotonApp {
                 } else {
                     // Mouse released without dragging - clear anchor if it's just a click
                     if self.current_text_state.selection_anchor
-                        == Some(self.current_text_state.cursor_index)
+                        == Some(self.current_text_state.blinkey_index)
                     {
                         self.current_text_state.selection_anchor = None;
                         self.selection_dirty = true;
@@ -363,14 +379,14 @@ impl PhotonApp {
 
         // Handle window move dragging
         if self.is_dragging_move {
-            // Get current global cursor position
+            // Get current global blinkey position
             if let Some(window_pos) = window.outer_position().ok() {
-                let current_cursor_screen_x = window_pos.x as f64 + self.mouse_x as f64;
-                let current_cursor_screen_y = window_pos.y as f64 + self.mouse_y as f64;
+                let current_blinkey_screen_x = window_pos.x as f64 + self.mouse_x as f64;
+                let current_blinkey_screen_y = window_pos.y as f64 + self.mouse_y as f64;
 
                 // Calculate delta in global screen space
-                let dx = (current_cursor_screen_x - self.drag_start_cursor_screen_pos.0) as i32;
-                let dy = (current_cursor_screen_y - self.drag_start_cursor_screen_pos.1) as i32;
+                let dx = (current_blinkey_screen_x - self.drag_start_blinkey_screen_pos.0) as i32;
+                let dy = (current_blinkey_screen_y - self.drag_start_blinkey_screen_pos.1) as i32;
 
                 // Move window
                 let new_x = self.drag_start_window_pos.0 + dx;
@@ -379,14 +395,14 @@ impl PhotonApp {
             }
             false // No redraw needed for window move
         } else if self.is_dragging_resize {
-            // Get current global cursor position
+            // Get current global blinkey position
             if let Some(window_pos) = window.outer_position().ok() {
-                let current_cursor_screen_x = window_pos.x as f64 + self.mouse_x as f64;
-                let current_cursor_screen_y = window_pos.y as f64 + self.mouse_y as f64;
+                let current_blinkey_screen_x = window_pos.x as f64 + self.mouse_x as f64;
+                let current_blinkey_screen_y = window_pos.y as f64 + self.mouse_y as f64;
 
                 // Calculate delta in global screen space
-                let dx = (current_cursor_screen_x - self.drag_start_cursor_screen_pos.0) as f32;
-                let dy = (current_cursor_screen_y - self.drag_start_cursor_screen_pos.1) as f32;
+                let dx = (current_blinkey_screen_x - self.drag_start_blinkey_screen_pos.0) as f32;
+                let dy = (current_blinkey_screen_y - self.drag_start_blinkey_screen_pos.1) as f32;
 
                 // Minimum window dimension: 32 pixels
                 let min_size = 128.;
@@ -477,18 +493,18 @@ impl PhotonApp {
             {
                 self.is_mouse_selecting = true;
 
-                // State transition: cursor ON -> OFF (immediate-mode)
-                if self.cursor_visible {
+                // State transition: blinkey ON -> OFF (immediate-mode)
+                if self.blinkey_visible {
                     let font_size = self.font_size();
                     let mut buffer = self.renderer.lock_buffer();
                     let pixels = buffer.as_mut();
-                    Self::stop_cursor(
+                    Self::stop_blinkey(
                         pixels,
                         self.width as usize,
-                        self.cursor_pixel_x,
-                        self.cursor_pixel_y,
-                        &mut self.cursor_visible,
-                        &mut self.cursor_wave_top_bright,
+                        self.blinkey_pixel_x,
+                        self.blinkey_pixel_y,
+                        &mut self.blinkey_visible,
+                        &mut self.blinkey_wave_top_bright,
                         font_size as usize,
                     );
                     buffer.present().unwrap();
@@ -502,7 +518,7 @@ impl PhotonApp {
                 let box_right = self.width as usize - margin;
                 let mouse_x = self.mouse_x as f32;
 
-                // Clamp mouse position to textbox bounds for cursor calculation
+                // Clamp mouse position to textbox bounds for blinkey calculation
                 let clamped_mouse_x = mouse_x.clamp(box_left as f32, box_right as f32) as usize;
 
                 // Find which character is at (clamped) mouse position
@@ -519,7 +535,7 @@ impl PhotonApp {
                 for (i, &char_width) in self.current_text_state.widths.iter().enumerate() {
                     let char_center = x_offset + char_width as f32 / 2.0;
                     if click_x < char_center {
-                        self.current_text_state.cursor_index = i;
+                        self.current_text_state.blinkey_index = i;
                         found_position = true;
                         break;
                     }
@@ -527,7 +543,7 @@ impl PhotonApp {
                 }
 
                 if !found_position {
-                    self.current_text_state.cursor_index = self.current_text_state.chars.len();
+                    self.current_text_state.blinkey_index = self.current_text_state.chars.len();
                 }
 
                 self.selection_dirty = true;
@@ -545,11 +561,25 @@ impl PhotonApp {
             let element_id = if mouse_x < self.width as usize && mouse_y < self.height as usize {
                 let hit_idx = mouse_y * self.width as usize + mouse_x;
                 let element_id = self.hit_test_map[hit_idx];
+                debug_println!("MOUSE: pos=({}, {}), hit_idx={}, element_id={}", mouse_x, mouse_y, hit_idx, element_id);
 
                 self.hovered_button = match element_id {
                     HIT_CLOSE_BUTTON => HoveredButton::Close,
                     HIT_MAXIMIZE_BUTTON => HoveredButton::Maximize,
                     HIT_MINIMIZE_BUTTON => HoveredButton::Minimize,
+                    HIT_HANDLE_TEXTBOX => {
+                        // Don't hover textbox when it's focused (would interfere with blinkey)
+                        if self.current_text_state.textbox_focused {
+                            debug_println!("HOVER: Textbox is focused, not hovering");
+                            HoveredButton::None
+                        } else {
+                            debug_println!("HOVER: Textbox not focused, hovering");
+                            HoveredButton::Textbox
+                        }
+                    }
+                    HIT_PRIMARY_BUTTON | HIT_RECOVER_BUTTON | HIT_CHALLENGE_BUTTON => {
+                        HoveredButton::QueryButton
+                    }
                     _ => HoveredButton::None,
                 };
                 element_id
@@ -558,11 +588,14 @@ impl PhotonApp {
                 HIT_NONE
             };
 
-            // Update cursor icon based on hover position
+            // Update blinkey icon based on hover position
             // Check what we're hovering over
-            let cursor = if self.hovered_button != HoveredButton::None {
+            let blinkey = if self.hovered_button != HoveredButton::None {
                 CursorIcon::Pointer
-            } else if element_id == HIT_PRIMARY_BUTTON || element_id == HIT_RECOVER_BUTTON || element_id == HIT_CHALLENGE_BUTTON {
+            } else if element_id == HIT_PRIMARY_BUTTON
+                || element_id == HIT_RECOVER_BUTTON
+                || element_id == HIT_CHALLENGE_BUTTON
+            {
                 CursorIcon::Pointer
             } else if element_id == HIT_HANDLE_TEXTBOX {
                 CursorIcon::Text
@@ -576,7 +609,7 @@ impl PhotonApp {
                     ResizeEdge::TopRight | ResizeEdge::BottomLeft => CursorIcon::NeswResize,
                 }
             };
-            window.set_cursor(cursor);
+            window.set_cursor(blinkey);
 
             // Return true if hover state changed
             if old_hovered != self.hovered_button {
