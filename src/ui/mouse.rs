@@ -51,7 +51,6 @@ impl PhotonApp {
 
                             // Unhover textbox when activating it (hover effects interfere with blinkey)
                             if self.hovered_button == HoveredButton::Textbox {
-                                debug_println!("  Unhovering textbox on activation");
                                 self.prev_hovered_button = HoveredButton::Textbox;
                                 self.hovered_button = HoveredButton::None;
                                 self.controls_dirty = true; // Trigger unhover rendering
@@ -107,10 +106,6 @@ impl PhotonApp {
                                 self.current_text_state.scroll_offset = 0.0;
                             }
 
-                            let text: String = self.current_text_state.chars.iter().collect();
-                            debug_println!("CLICK: textbox @ mouse=({}, {}), was_focused={}, blinkey: {} -> {}, text=\"{}\" (len={})",
-                                     mouse_x, mouse_y, was_focused, old_blinkey_index,
-                                     self.current_text_state.blinkey_index, text, text.len());
 
                             // Calculate blinkey pixel position (needed before drawing)
                             let box_width = self.textbox_width();
@@ -158,7 +153,7 @@ impl PhotonApp {
                             // Draw blinkey at NEW position (or start if first focus)
                             if !was_focused {
                                 // Add textbox glow on focus
-                                debug_println!("  Adding textbox glow");
+                                debug_println!("Textbox glow: ON");
                                 Self::apply_textbox_glow(
                                     pixels,
                                     &self.textbox_mask,
@@ -201,6 +196,41 @@ impl PhotonApp {
                         }
                         HIT_PRIMARY_BUTTON => {
                             // Primary button click: "Query", "Attest", or "Recover / Challenge"
+
+                            // Defocus textbox on button click
+                            if self.current_text_state.textbox_focused {
+                                self.current_text_state.textbox_focused = false;
+
+                                if self.blinkey_visible {
+                                    let box_width = self.textbox_width();
+                                    let box_height = self.textbox_height();
+                                    let center_y = self.height as usize * 4 / 7;
+                                    let font_size = self.font_size();
+                                    let mut buffer = self.renderer.lock_buffer();
+                                    let pixels = buffer.as_mut();
+
+                                    Self::apply_textbox_glow(
+                                        pixels,
+                                        &self.textbox_mask,
+                                        self.width as usize,
+                                        center_y,
+                                        box_width,
+                                        box_height,
+                                        false,
+                                    );
+
+                                    Self::stop_blinkey(
+                                        pixels,
+                                        self.width as usize,
+                                        self.blinkey_pixel_x,
+                                        self.blinkey_pixel_y,
+                                        &mut self.blinkey_visible,
+                                        &mut self.blinkey_wave_top_bright,
+                                        font_size as usize,
+                                    );
+                                }
+                            }
+
                             let handle: String = self.current_text_state.chars.iter().collect();
                             match self.handle_status {
                                 HandleStatus::Empty => {
@@ -232,6 +262,41 @@ impl PhotonApp {
                         }
                         HIT_RECOVER_BUTTON => {
                             // "Recover" button clicked (I'm recovering my own identity)
+
+                            // Defocus textbox on button click
+                            if self.current_text_state.textbox_focused {
+                                self.current_text_state.textbox_focused = false;
+
+                                if self.blinkey_visible {
+                                    let box_width = self.textbox_width();
+                                    let box_height = self.textbox_height();
+                                    let center_y = self.height as usize * 4 / 7;
+                                    let font_size = self.font_size();
+                                    let mut buffer = self.renderer.lock_buffer();
+                                    let pixels = buffer.as_mut();
+
+                                    Self::apply_textbox_glow(
+                                        pixels,
+                                        &self.textbox_mask,
+                                        self.width as usize,
+                                        center_y,
+                                        box_width,
+                                        box_height,
+                                        false,
+                                    );
+
+                                    Self::stop_blinkey(
+                                        pixels,
+                                        self.width as usize,
+                                        self.blinkey_pixel_x,
+                                        self.blinkey_pixel_y,
+                                        &mut self.blinkey_visible,
+                                        &mut self.blinkey_wave_top_bright,
+                                        font_size as usize,
+                                    );
+                                }
+                            }
+
                             let handle: String = self.current_text_state.chars.iter().collect();
                             debug_println!("Recovering handle: {}", handle);
                             // TODO: Implement recovery flow (reconstruct from trust circle)
@@ -239,6 +304,41 @@ impl PhotonApp {
                         }
                         HIT_CHALLENGE_BUTTON => {
                             // "Challenge" button clicked (proving earlier attestation)
+
+                            // Defocus textbox on button click
+                            if self.current_text_state.textbox_focused {
+                                self.current_text_state.textbox_focused = false;
+
+                                if self.blinkey_visible {
+                                    let box_width = self.textbox_width();
+                                    let box_height = self.textbox_height();
+                                    let center_y = self.height as usize * 4 / 7;
+                                    let font_size = self.font_size();
+                                    let mut buffer = self.renderer.lock_buffer();
+                                    let pixels = buffer.as_mut();
+
+                                    Self::apply_textbox_glow(
+                                        pixels,
+                                        &self.textbox_mask,
+                                        self.width as usize,
+                                        center_y,
+                                        box_width,
+                                        box_height,
+                                        false,
+                                    );
+
+                                    Self::stop_blinkey(
+                                        pixels,
+                                        self.width as usize,
+                                        self.blinkey_pixel_x,
+                                        self.blinkey_pixel_y,
+                                        &mut self.blinkey_visible,
+                                        &mut self.blinkey_wave_top_bright,
+                                        font_size as usize,
+                                    );
+                                }
+                            }
+
                             let handle: String = self.current_text_state.chars.iter().collect();
                             debug_println!("Challenging attestation for handle: {}", handle);
                             // TODO: Implement challenge flow (prove earlier attestation)
@@ -259,7 +359,7 @@ impl PhotonApp {
                                     let pixels = buffer.as_mut();
 
                                     // Remove textbox glow on unfocus
-                                    debug_println!("  Removing textbox glow");
+                                    debug_println!("Textbox glow: OFF");
                                     Self::apply_textbox_glow(
                                         pixels,
                                         &self.textbox_mask,
@@ -589,13 +689,6 @@ impl PhotonApp {
             let element_id = if mouse_x < self.width as usize && mouse_y < self.height as usize {
                 let hit_idx = mouse_y * self.width as usize + mouse_x;
                 let element_id = self.hit_test_map[hit_idx];
-                debug_println!(
-                    "MOUSE: pos=({}, {}), hit_idx={}, element_id={}",
-                    mouse_x,
-                    mouse_y,
-                    hit_idx,
-                    element_id
-                );
 
                 self.hovered_button = match element_id {
                     HIT_CLOSE_BUTTON => HoveredButton::Close,
@@ -604,10 +697,8 @@ impl PhotonApp {
                     HIT_HANDLE_TEXTBOX => {
                         // Don't hover textbox when it's focused (would interfere with blinkey)
                         if self.current_text_state.textbox_focused {
-                            debug_println!("HOVER: Textbox is focused, not hovering");
                             HoveredButton::None
                         } else {
-                            debug_println!("HOVER: Textbox not focused, hovering");
                             HoveredButton::Textbox
                         }
                     }

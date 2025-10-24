@@ -201,17 +201,6 @@ impl ApplicationHandler for App {
                     );
                     app.next_blinkey_blink_time = app.next_blink_wake_time();
                     let delay_ms = app.next_blinkey_blink_time.duration_since(now).as_millis();
-                    let side = if app.blinkey_wave_top_bright {
-                        "Top"
-                    } else {
-                        "Bottom"
-                    };
-                    debug_println!(
-                        "[{}] ⏰ {} Blink timer fired! Next blink in {}ms",
-                        side,
-                        timestamp,
-                        delay_ms
-                    );
                 }
 
                 // Check for query responses (non-blocking)

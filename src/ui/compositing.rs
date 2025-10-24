@@ -7,9 +7,6 @@ impl PhotonApp {
 
         // Increment frame counter (every render() call)
         self.frame_counter += 1;
-
-        debug_println!("FRAME #{}", self.frame_counter);
-
         // Calculate layout constants (needed by all rendering paths)
         let font_size = self.font_size();
         let margin = self.min_dim / 8;
@@ -65,13 +62,11 @@ impl PhotonApp {
 
         if self.text_dirty || self.selection_dirty || self.window_dirty || self.controls_dirty {
             self.update_counter += 1;
-            debug_println!("UPDATE #{}", self.update_counter);
             let mut buffer = self.renderer.lock_buffer();
             let pixels = buffer.as_mut();
 
             if self.window_dirty {
                 self.full_redraw_counter += 1;
-                debug_println!("FULL REDRAW #{}", self.full_redraw_counter);
                 self.selection_dirty = false;
                 self.text_dirty = false;
                 self.hit_test_map.fill(HIT_NONE);
@@ -152,6 +147,19 @@ impl PhotonApp {
                     box_width,
                     box_height,
                 );
+
+                // Re-apply textbox glow if textbox is focused (restore after redraw)
+                if self.current_text_state.textbox_focused {
+                    Self::apply_textbox_glow(
+                        pixels,
+                        &self.textbox_mask,
+                        self.width as usize,
+                        center_y,
+                        box_width,
+                        box_height,
+                        true,
+                    );
+                }
 
                 // Label below the box
                 self.text_renderer.draw_text_center_u32(
@@ -469,11 +477,6 @@ impl PhotonApp {
                 if self.selection_dirty || self.text_dirty {
                     // 1. Invert old blinkey (if visible)
                     if self.blinkey_visible {
-                        debug_println!(
-                            "  DIFF: undraw blinkey at ({}, {})",
-                            self.blinkey_pixel_x,
-                            self.blinkey_pixel_y
-                        );
                         Self::undraw_blinkey(
                             pixels,
                             self.width as usize,
@@ -635,8 +638,6 @@ impl PhotonApp {
             if self.controls_dirty {
                 // Handle hover state changes
                 if self.prev_hovered_button != self.hovered_button {
-                    debug_println!("HOVER: State change from {:?} to {:?}, blinkey_visible={}, textbox_focused={}",
-                        self.prev_hovered_button, self.hovered_button, self.blinkey_visible, self.current_text_state.textbox_focused);
                     // Calculate button centers for centerpoint fill
                     let smaller_dim = self.width.min(self.height) as f32;
                     let button_height = (smaller_dim / 16.).ceil() as usize;
@@ -657,7 +658,6 @@ impl PhotonApp {
                     let close_center_x = button_area_x_start + button_width * 2 + 1;
 
                     // Unhover old button
-                    debug_println!("  Unhovering prev button: {:?}", self.prev_hovered_button);
                     match self.prev_hovered_button {
                         HoveredButton::Close => {
                             Self::draw_hover_centerpoint(
@@ -734,7 +734,6 @@ impl PhotonApp {
                     }
 
                     // Hover new button
-                    debug_println!("  Hovering new button: {:?}", self.hovered_button);
                     match self.hovered_button {
                         HoveredButton::Close => {
                             Self::draw_hover_centerpoint(
@@ -2665,8 +2664,8 @@ impl PhotonApp {
         add: bool,
     ) {
         // Blur radii (how far to blur in each direction)
-        let blur_radius_horiz = 64;
-        let blur_radius_vert = 32;
+        let blur_radius_horiz = 32;
+        let blur_radius_vert = 16;
 
         // Textbox bounds
         let y_top = center_y - box_height / 2;
@@ -2716,11 +2715,8 @@ impl PhotonApp {
                     if x > 0 && textbox_mask[idx] < textbox_mask[idx - 1] {
                         adder += (textbox_mask[idx - 1] - textbox_mask[idx]) as u32;
                     }
-                    adder = (adder * 7 >> 3).min(128);
+                    adder = (adder * 15 >> 4).min(71);
                     pixels[idx] += ((adder * (255 - textbox_mask[idx]) as u32) >> 8) * 0x00010101;
-                    if adder == 0 {
-                        pixels[idx] += 0x00101010
-                    }
                 }
             }
 
@@ -2737,11 +2733,8 @@ impl PhotonApp {
                     if x + 1 < window_width && textbox_mask[idx] < textbox_mask[idx + 1] {
                         adder += (textbox_mask[idx + 1] - textbox_mask[idx]) as u32;
                     }
-                    adder = (adder * 7 >> 3).min(128);
+                    adder = (adder * 15 >> 4).min(71);
                     pixels[idx] += ((adder * (255 - textbox_mask[idx]) as u32) >> 8) * 0x00010101;
-                    if adder == 0 {
-                        pixels[idx] += 0x00101010
-                    }
                 }
             }
 
@@ -2760,11 +2753,8 @@ impl PhotonApp {
                             adder += (textbox_mask[idx_above] - textbox_mask[idx]) as u32;
                         }
                     }
-                    adder = (adder * 3 >> 2).min(64);
+                    adder = (adder * 3 >> 2).min(70);
                     pixels[idx] += ((adder * (255 - textbox_mask[idx]) as u32) >> 8) * 0x00010101;
-                    if adder == 0 {
-                        pixels[idx] += 0x00101010
-                    }
                 }
             }
 
@@ -2784,11 +2774,8 @@ impl PhotonApp {
                             adder += (textbox_mask[idx_below] - textbox_mask[idx]) as u32;
                         }
                     }
-                    adder = (adder * 3 >> 2).min(64);
+                    adder = (adder * 3 >> 2).min(70);
                     pixels[idx] += ((adder * (255 - textbox_mask[idx]) as u32) >> 8) * 0x00010101;
-                    if adder == 0 {
-                        pixels[idx] += 0x00101010
-                    }
                 }
             }
         } else {
@@ -2804,11 +2791,8 @@ impl PhotonApp {
                     if x > 0 && textbox_mask[idx] < textbox_mask[idx - 1] {
                         adder += (textbox_mask[idx - 1] - textbox_mask[idx]) as u32;
                     }
-                    adder = (adder * 7 >> 3).min(128);
+                    adder = (adder * 15 >> 4).min(71);
                     pixels[idx] -= ((adder * (255 - textbox_mask[idx]) as u32) >> 8) * 0x00010101;
-                    if adder == 0 {
-                        pixels[idx] += 0x00101010
-                    }
                 }
             }
 
@@ -2825,11 +2809,8 @@ impl PhotonApp {
                     if x + 1 < window_width && textbox_mask[idx] < textbox_mask[idx + 1] {
                         adder += (textbox_mask[idx + 1] - textbox_mask[idx]) as u32;
                     }
-                    adder = (adder * 7 >> 3).min(128);
+                    adder = (adder * 15 >> 4).min(71);
                     pixels[idx] -= ((adder * (255 - textbox_mask[idx]) as u32) >> 8) * 0x00010101;
-                    if adder == 0 {
-                        pixels[idx] += 0x00101010
-                    }
                 }
             }
 
@@ -2848,11 +2829,8 @@ impl PhotonApp {
                             adder += (textbox_mask[idx_above] - textbox_mask[idx]) as u32;
                         }
                     }
-                    adder = (adder * 3 >> 2).min(64);
+                    adder = (adder * 3 >> 2).min(70);
                     pixels[idx] -= ((adder * (255 - textbox_mask[idx]) as u32) >> 8) * 0x00010101;
-                    if adder == 0 {
-                        pixels[idx] += 0x00101010
-                    }
                 }
             }
 
@@ -2872,11 +2850,8 @@ impl PhotonApp {
                             adder += (textbox_mask[idx_below] - textbox_mask[idx]) as u32;
                         }
                     }
-                    adder = (adder * 3 >> 2).min(64);
+                    adder = (adder * 3 >> 2).min(70);
                     pixels[idx] -= ((adder * (255 - textbox_mask[idx]) as u32) >> 8) * 0x00010101;
-                    if adder == 0 {
-                        pixels[idx] += 0x00101010
-                    }
                 }
             }
         }
