@@ -106,6 +106,7 @@ pub struct PhotonApp {
     pub query_start_time: Option<std::time::Instant>, // When handle query started (for 1s simulation)
     pub handle_query: HandleQuery,                    // Network query system for handle attestation
     pub spectrum_phase: f32,                          // Rainbow sine wave phase (radians), animates during query
+    pub speckle_counter: f32,                         // Background speckle animation counter, animates during query
     pub last_frame_time: std::time::Instant,          // Last frame timestamp for delta time calculation
     pub fps: f32,                                     // Current frames per second
     pub frame_times: Vec<f32>,                        // Recent frame delta times for FPS averaging
@@ -224,6 +225,7 @@ impl PhotonApp {
             query_start_time: None,
             handle_query: HandleQuery::new(),
             spectrum_phase: 0.0,
+            speckle_counter: 0.0,
             last_frame_time: std::time::Instant::now(),
             fps: 0.0,
             frame_times: Vec::with_capacity(60),
@@ -457,16 +459,20 @@ impl PhotonApp {
         // Set status to Checking and trigger query
         self.handle_status = HandleStatus::Checking;
         self.handle_query.query(handle);
-        self.query_start_time = Some(std::time::Instant::now());
+        let now = std::time::Instant::now();
+        self.query_start_time = Some(now);
+        self.last_frame_time = now; // Reset to prevent animation jerk on first frame
     }
 
     /// Check if query response is ready and update handle_status
     pub fn check_query_response(&mut self) -> bool {
         if let Some(result) = self.handle_query.try_recv() {
-            self.handle_status = match result {
+            let new_status = match result {
                 QueryResult::Unattested => HandleStatus::Unattested,
                 QueryResult::AlreadyAttested => HandleStatus::AlreadyAttested,
             };
+            debug_println!("Query completed: {:?} -> {:?}", self.handle_status, new_status);
+            self.handle_status = new_status;
             self.query_start_time = None;
             self.window_dirty = true; // Trigger redraw to update button
             return true;

@@ -245,6 +245,9 @@ impl PhotonApp {
                     if self.current_text_state.selection_anchor.is_some() {
                         debug_println!("BACKSPACE: deleting selection");
                         self.delete_selection();
+                        if self.handle_status != HandleStatus::Empty {
+                            self.window_dirty = true; // Force redraw to update button
+                        }
                         self.handle_status = HandleStatus::Empty;
                         self.text_dirty = true;
                         self.selection_dirty = true;
@@ -262,6 +265,9 @@ impl PhotonApp {
                         self.current_text_state.blinkey_index -= 1;
                         let text: String = self.current_text_state.chars.iter().collect();
                         debug_println!("  Text now: \"{}\" (len={})", text, text.len());
+                        if self.handle_status != HandleStatus::Empty {
+                            self.window_dirty = true; // Force redraw to update button
+                        }
                         self.handle_status = HandleStatus::Empty;
                         self.text_dirty = true;
                         self.selection_dirty = true;
@@ -273,6 +279,9 @@ impl PhotonApp {
                     // If selection exists, delete it; otherwise delete char at blinkey
                     if self.current_text_state.selection_anchor.is_some() {
                         self.delete_selection();
+                        if self.handle_status != HandleStatus::Empty {
+                            self.window_dirty = true; // Force redraw to update button
+                        }
                         self.handle_status = HandleStatus::Empty;
                         self.text_dirty = true;
                         self.selection_dirty = true;
@@ -281,6 +290,9 @@ impl PhotonApp {
                     {
                         self.current_text_state
                             .remove(self.current_text_state.blinkey_index);
+                        if self.handle_status != HandleStatus::Empty {
+                            self.window_dirty = true; // Force redraw to update button
+                        }
                         self.handle_status = HandleStatus::Empty;
                         self.text_dirty = true;
                         self.selection_dirty = true;
@@ -343,6 +355,10 @@ impl PhotonApp {
                     self.current_text_state.blinkey_index += 1;
                     let text: String = self.current_text_state.chars.iter().collect();
                     debug_println!("  Text now: \"{}\" (len={})", text, text.len());
+                }
+                // Only trigger full redraw if status is changing (not already Empty)
+                if self.handle_status != HandleStatus::Empty {
+                    self.window_dirty = true; // Force redraw to update button
                 }
                 self.handle_status = HandleStatus::Empty;
                 self.text_dirty = true;

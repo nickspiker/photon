@@ -178,7 +178,17 @@ impl ApplicationHandler for App {
                         window.request_redraw();
                     }
                 }
-            } else if app.textbox_is_focused() {
+            }
+
+            // Check for query responses (non-blocking) - always check, regardless of focus
+            if app.check_query_response() {
+                // Query completed, redraw to update button
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            }
+
+            if app.textbox_is_focused() {
                 // Check if it's time to blink
                 let now = std::time::Instant::now();
 
@@ -201,14 +211,6 @@ impl ApplicationHandler for App {
                     );
                     app.next_blinkey_blink_time = app.next_blink_wake_time();
                     let delay_ms = app.next_blinkey_blink_time.duration_since(now).as_millis();
-                }
-
-                // Check for query responses (non-blocking)
-                if app.check_query_response() {
-                    // Query completed, redraw to update button
-                    if let Some(window) = &self.window {
-                        window.request_redraw();
-                    }
                 }
 
                 // Always set control flow (either new or same timer)

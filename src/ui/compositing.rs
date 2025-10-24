@@ -15,12 +15,19 @@ impl PhotonApp {
         let center_x = self.width as usize / 2;
         let center_y = self.height as usize * 4 / 7;
 
-        // Update spectrum phase animation while querying (1/10 pi radians per second)
+        // Update spectrum phase and speckle animation while querying
         if self.handle_status == HandleStatus::Checking {
             let delta_time = now.duration_since(self.last_frame_time).as_secs_f32();
-            self.spectrum_phase += delta_time * std::f32::consts::PI / 10.0;
-            // Wrap phase to prevent floating point precision issues
-            self.spectrum_phase %= std::f32::consts::TAU; // TAU = 2*PI
+            debug_println!(
+                "Animating query: delta={:.3}s, phase={:.2}",
+                delta_time,
+                self.spectrum_phase
+            );
+            // Spectrum: 2 pi radians per second = 1 full cycle/sec
+            self.spectrum_phase += delta_time * std::f32::consts::PI * 2.0;
+            self.spectrum_phase %= std::f32::consts::TAU; // Wrap phase
+            // Speckles: 10 increments per second
+            self.speckle_counter += delta_time * 10.0;
             self.window_dirty = true; // Force redraw to show phase change
         }
 
@@ -72,7 +79,7 @@ impl PhotonApp {
                 self.hit_test_map.fill(HIT_NONE);
                 self.textbox_mask.fill(0);
 
-                Self::draw_background_texture(pixels, self.width as usize, self.height as usize);
+                Self::draw_background_texture(pixels, self.width as usize, self.height as usize, self.speckle_counter as u8);
 
                 let (start, edges, button_x_start, button_height) = Self::draw_window_controls(
                     pixels,
@@ -1827,7 +1834,7 @@ impl PhotonApp {
     }
 
     // Motion triggered by network action, motion speed dependent on latency
-    pub fn draw_background_texture(pixels: &mut [u32], width: usize, height: usize) {
+    pub fn draw_background_texture(pixels: &mut [u32], width: usize, height: usize, speckle: u8) {
         use rayon::prelude::*;
 
         let middle_rows = &mut pixels[width..(height - 1) * width];
@@ -1848,7 +1855,7 @@ impl PhotonApp {
                 for x in width / 2..width - 1 {
                     rng ^= rng.rotate_left(13).wrapping_add(12345678901);
                     let adder = rng as u32 & ones;
-                    if rng as u8 == 42 {
+                    if rng as u8 == speckle {
                         colour = rng as u32 >> 8 & 0x00_3F_1F_7F | alpha;
                     } else {
                         colour = colour + adder & mask;
@@ -1866,7 +1873,7 @@ impl PhotonApp {
                 for x in (1..width / 2).rev() {
                     rng ^= rng.rotate_left(13).wrapping_sub(12345678901);
                     let adder = rng as u32 & ones;
-                    if rng as u8 == 42 {
+                    if rng as u8 == speckle {
                         colour = rng as u32 >> 8 & 0x00_3F_1F_7F | alpha;
                     } else {
                         colour = colour + adder & mask;

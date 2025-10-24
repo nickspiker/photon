@@ -29,6 +29,7 @@ impl HandleQuery {
         // Spawn worker thread to handle queries
         thread::spawn(move || {
             while let Ok(handle) = rx_request.recv() {
+                println!("Network: Querying handle '{}'...", handle);
                 // TODO: Implement actual DHT query
                 // For now, simulate network delay and mock response
                 thread::sleep(Duration::from_secs(8));
@@ -41,8 +42,11 @@ impl HandleQuery {
                     QueryResult::Unattested
                 };
 
+                println!("Network: Query complete, result={:?}", result);
                 // Send response back
-                let _ = tx_response.send(result);
+                if tx_response.send(result).is_err() {
+                    println!("Network: ERROR - Failed to send response (receiver dropped)");
+                }
             }
         });
 
