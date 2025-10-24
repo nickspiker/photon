@@ -113,8 +113,8 @@ impl PhotonApp {
                                      self.current_text_state.blinkey_index, text, text.len());
 
                             // Calculate blinkey pixel position (needed before drawing)
-                            let margin = self.min_dim / 8;
-                            let box_height = self.min_dim / 8;
+                            let box_width = self.textbox_width();
+                            let box_height = self.textbox_height();
                             let center_x = self.width as usize / 2;
                             let center_y = self.height as usize * 4 / 7;
                             let font_size = self.font_size();
@@ -157,6 +157,18 @@ impl PhotonApp {
 
                             // Draw blinkey at NEW position (or start if first focus)
                             if !was_focused {
+                                // Add textbox glow on focus
+                                debug_println!("  Adding textbox glow");
+                                Self::apply_textbox_glow(
+                                    pixels,
+                                    &self.textbox_mask,
+                                    self.width as usize,
+                                    center_y,
+                                    box_width,
+                                    box_height,
+                                    true,
+                                );
+
                                 Self::start_blinkey(
                                     pixels,
                                     self.width as usize,
@@ -239,9 +251,25 @@ impl PhotonApp {
 
                                 // State transition: blinkey ON -> OFF (immediate-mode)
                                 if self.blinkey_visible {
+                                    let box_width = self.textbox_width();
+                                    let box_height = self.textbox_height();
+                                    let center_y = self.height as usize * 4 / 7;
                                     let font_size = self.font_size();
                                     let mut buffer = self.renderer.lock_buffer();
                                     let pixels = buffer.as_mut();
+
+                                    // Remove textbox glow on unfocus
+                                    debug_println!("  Removing textbox glow");
+                                    Self::apply_textbox_glow(
+                                        pixels,
+                                        &self.textbox_mask,
+                                        self.width as usize,
+                                        center_y,
+                                        box_width,
+                                        box_height,
+                                        false,
+                                    );
+
                                     Self::stop_blinkey(
                                         pixels,
                                         self.width as usize,
@@ -304,8 +332,8 @@ impl PhotonApp {
                     // State transition: blinkey OFF -> ON (immediate-mode)
                     if !self.blinkey_visible && self.current_text_state.textbox_focused {
                         // Recalculate blinkey position first
-                        let margin = self.min_dim / 8;
-                        let box_height = self.min_dim / 8;
+                        let box_width = self.textbox_width();
+                        let box_height = self.textbox_height();
                         let center_x = self.width as usize / 2;
                         let center_y = self.height as usize * 4 / 7;
                         let font_size = self.font_size();
@@ -561,7 +589,13 @@ impl PhotonApp {
             let element_id = if mouse_x < self.width as usize && mouse_y < self.height as usize {
                 let hit_idx = mouse_y * self.width as usize + mouse_x;
                 let element_id = self.hit_test_map[hit_idx];
-                debug_println!("MOUSE: pos=({}, {}), hit_idx={}, element_id={}", mouse_x, mouse_y, hit_idx, element_id);
+                debug_println!(
+                    "MOUSE: pos=({}, {}), hit_idx={}, element_id={}",
+                    mouse_x,
+                    mouse_y,
+                    hit_idx,
+                    element_id
+                );
 
                 self.hovered_button = match element_id {
                     HIT_CLOSE_BUTTON => HoveredButton::Close,

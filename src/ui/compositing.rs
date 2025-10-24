@@ -3,6 +3,8 @@ use crate::ui::{app::*, colour::*, text_rasterizing::*, theme};
 
 impl PhotonApp {
     pub fn render(&mut self) {
+        let now = std::time::Instant::now();
+
         // Increment frame counter (every render() call)
         self.frame_counter += 1;
 
@@ -11,10 +13,19 @@ impl PhotonApp {
         // Calculate layout constants (needed by all rendering paths)
         let font_size = self.font_size();
         let margin = self.min_dim / 8;
-        let box_width = self.width as usize - margin * 2;
-        let box_height = self.min_dim / 8;
+        let box_width = self.textbox_width();
+        let box_height = self.textbox_height();
         let center_x = self.width as usize / 2;
         let center_y = self.height as usize * 4 / 7;
+
+        // Update spectrum phase animation while querying (1/10 pi radians per second)
+        if self.handle_status == HandleStatus::Checking {
+            let delta_time = now.duration_since(self.last_frame_time).as_secs_f32();
+            self.spectrum_phase += delta_time * std::f32::consts::PI / 10.0;
+            // Wrap phase to prevent floating point precision issues
+            self.spectrum_phase %= std::f32::consts::TAU; // TAU = 2*PI
+            self.window_dirty = true; // Force redraw to show phase change
+        }
 
         // Check if empty state changed (for button show/hide logic)
         let current_is_empty = self.current_text_state.chars.is_empty();
@@ -119,6 +130,7 @@ impl PhotonApp {
                     self.width,
                     self.height,
                     logo_center_y - self.height.min(self.width) as usize / 8,
+                    self.spectrum_phase,
                 );
                 Self::draw_logo_text(
                     pixels,
@@ -863,12 +875,28 @@ impl PhotonApp {
                     0xFFFFFFFF,
                     "Josefin Slab",
                 );
+
+                // Top left - FPS counter
+                let fps_text = format!("FPS: {:.1}", self.fps);
+                self.text_renderer.draw_text_left_u32(
+                    pixels,
+                    self.width as usize,
+                    &fps_text,
+                    counter_size,
+                    counter_size,
+                    counter_size,
+                    400,
+                    0xFFFFFFFF,
+                    "Josefin Slab",
+                );
             }
 
             // Draw blinkey (if visible and focused) - only on full redraws or text/selection updates
             // Do NOT redraw on controls_dirty alone (blinkey is already there, would double-brighten)
-            if self.blinkey_visible && self.current_text_state.textbox_focused
-                && (self.window_dirty || self.text_dirty || self.selection_dirty) {
+            if self.blinkey_visible
+                && self.current_text_state.textbox_focused
+                && (self.window_dirty || self.text_dirty || self.selection_dirty)
+            {
                 let blinkey_pixel_offset: usize = if self.current_text_state.blinkey_index > 0 {
                     self.current_text_state.widths[..self.current_text_state.blinkey_index]
                         .iter()
@@ -1169,6 +1197,21 @@ impl PhotonApp {
         self.controls_dirty = false;
         self.previous_text_state = self.current_text_state.clone();
         self.previous_text_state.is_empty = self.current_text_state.chars.is_empty();
+
+        // Calculate FPS from frame delta times
+        let delta_time = now.duration_since(self.last_frame_time).as_secs_f32();
+        self.frame_times.push(delta_time);
+        if self.frame_times.len() > 60 {
+            self.frame_times.remove(0);
+        }
+        if !self.frame_times.is_empty() {
+            let avg_frame_time: f32 =
+                self.frame_times.iter().sum::<f32>() / self.frame_times.len() as f32;
+            self.fps = 1.0 / avg_frame_time;
+        }
+
+        // Update frame time for delta time calculation
+        self.last_frame_time = now;
     }
 
     pub fn draw_window_controls(
@@ -2611,6 +2654,234 @@ impl PhotonApp {
         }
     }
 
+    /// Generate textbox glow mask by blurring textbox_mask left/right and knocking out center
+    pub fn apply_textbox_glow(
+        pixels: &mut [u32],
+        textbox_mask: &[u8],
+        window_width: usize,
+        center_y: usize,
+        box_width: usize,
+        box_height: usize,
+        add: bool,
+    ) {
+        // Blur radii (how far to blur in each direction)
+        let blur_radius_horiz = 64;
+        let blur_radius_vert = 32;
+
+        // Textbox bounds
+        let y_top = center_y - box_height / 2;
+        let y_bottom = center_y + box_height / 2;
+
+        // Find horizontal bounds of textbox (left/right edges)
+        let center_x = window_width / 2;
+        let mut x_left = center_x;
+        let mut x_right = center_x;
+
+        // Scan from center to find textbox edges
+        let scan_y = center_y * window_width;
+        for x in (0..center_x).rev() {
+            if textbox_mask[scan_y + x] > 0 {
+                x_left = x;
+            } else {
+                break;
+            }
+        }
+        for x in center_x..window_width {
+            if textbox_mask[scan_y + x] > 0 {
+                x_right = x;
+            } else {
+                break;
+            }
+        }
+
+        // Corner radius for skipping rounded corners
+        // Rounded corners have radius = min(box_width, box_height) / 2
+        let corner_radius = box_width.min(box_height) / 2;
+        let x_vert_start = x_left + corner_radius;
+        let x_vert_end = x_right - corner_radius;
+        let y_horiz_start = y_top + corner_radius;
+        let y_horiz_end = y_bottom - corner_radius;
+
+        let mut adder;
+        if add {
+            // Horizontal blur pass - right from right edge (skip rounded corners)
+            for y in y_top..y_bottom {
+                adder = 0;
+                for x in x_right
+                    - (y_horiz_start as isize - y as isize).max(0) as usize
+                    - (y as isize - y_horiz_end as isize).max(0) as usize
+                    ..x_right + blur_radius_horiz
+                {
+                    let idx = y * window_width + x;
+                    if x > 0 && textbox_mask[idx] < textbox_mask[idx - 1] {
+                        adder += (textbox_mask[idx - 1] - textbox_mask[idx]) as u32;
+                    }
+                    adder = (adder * 7 >> 3).min(128);
+                    pixels[idx] += ((adder * (255 - textbox_mask[idx]) as u32) >> 8) * 0x00010101;
+                    if adder == 0 {
+                        pixels[idx] += 0x00101010
+                    }
+                }
+            }
+
+            // Horizontal blur pass - left from left edge (with diagonal corner fill)
+            for y in y_top..y_bottom {
+                adder = 0;
+                for x in (x_left.saturating_sub(blur_radius_horiz)
+                    ..=x_left
+                        + (y_horiz_start as isize - y as isize).max(0) as usize
+                        + (y as isize - y_horiz_end as isize).max(0) as usize)
+                    .rev()
+                {
+                    let idx = y * window_width + x;
+                    if x + 1 < window_width && textbox_mask[idx] < textbox_mask[idx + 1] {
+                        adder += (textbox_mask[idx + 1] - textbox_mask[idx]) as u32;
+                    }
+                    adder = (adder * 7 >> 3).min(128);
+                    pixels[idx] += ((adder * (255 - textbox_mask[idx]) as u32) >> 8) * 0x00010101;
+                    if adder == 0 {
+                        pixels[idx] += 0x00101010
+                    }
+                }
+            }
+
+            // Vertical blur pass - down from bottom edge (with diagonal corner fill)
+            for x in x_left..x_right {
+                adder = 0;
+                for y in y_bottom
+                    - (x_vert_start as isize - x as isize).max(0) as usize
+                    - (x as isize - x_vert_end as isize).max(0) as usize
+                    ..(y_bottom + blur_radius_vert).min(textbox_mask.len() / window_width)
+                {
+                    let idx = y * window_width + x;
+                    if y > 0 {
+                        let idx_above = (y - 1) * window_width + x;
+                        if textbox_mask[idx] < textbox_mask[idx_above] {
+                            adder += (textbox_mask[idx_above] - textbox_mask[idx]) as u32;
+                        }
+                    }
+                    adder = (adder * 3 >> 2).min(64);
+                    pixels[idx] += ((adder * (255 - textbox_mask[idx]) as u32) >> 8) * 0x00010101;
+                    if adder == 0 {
+                        pixels[idx] += 0x00101010
+                    }
+                }
+            }
+
+            // Vertical blur pass - up from top edge (with diagonal corner fill)
+            for x in x_left..x_right {
+                adder = 0;
+                for y in (y_top.saturating_sub(blur_radius_vert)
+                    ..=y_top
+                        + (x_vert_start as isize - x as isize).max(0) as usize
+                        + (x as isize - x_vert_end as isize).max(0) as usize)
+                    .rev()
+                {
+                    let idx = y * window_width + x;
+                    if y + 1 < textbox_mask.len() / window_width {
+                        let idx_below = (y + 1) * window_width + x;
+                        if textbox_mask[idx] < textbox_mask[idx_below] {
+                            adder += (textbox_mask[idx_below] - textbox_mask[idx]) as u32;
+                        }
+                    }
+                    adder = (adder * 3 >> 2).min(64);
+                    pixels[idx] += ((adder * (255 - textbox_mask[idx]) as u32) >> 8) * 0x00010101;
+                    if adder == 0 {
+                        pixels[idx] += 0x00101010
+                    }
+                }
+            }
+        } else {
+            // Horizontal blur pass - right from right edge (skip rounded corners)
+            for y in y_top..y_bottom {
+                adder = 0;
+                for x in x_right
+                    - (y_horiz_start as isize - y as isize).max(0) as usize
+                    - (y as isize - y_horiz_end as isize).max(0) as usize
+                    ..x_right + blur_radius_horiz
+                {
+                    let idx = y * window_width + x;
+                    if x > 0 && textbox_mask[idx] < textbox_mask[idx - 1] {
+                        adder += (textbox_mask[idx - 1] - textbox_mask[idx]) as u32;
+                    }
+                    adder = (adder * 7 >> 3).min(128);
+                    pixels[idx] -= ((adder * (255 - textbox_mask[idx]) as u32) >> 8) * 0x00010101;
+                    if adder == 0 {
+                        pixels[idx] += 0x00101010
+                    }
+                }
+            }
+
+            // Horizontal blur pass - left from left edge (with diagonal corner fill)
+            for y in y_top..y_bottom {
+                adder = 0;
+                for x in (x_left.saturating_sub(blur_radius_horiz)
+                    ..=x_left
+                        + (y_horiz_start as isize - y as isize).max(0) as usize
+                        + (y as isize - y_horiz_end as isize).max(0) as usize)
+                    .rev()
+                {
+                    let idx = y * window_width + x;
+                    if x + 1 < window_width && textbox_mask[idx] < textbox_mask[idx + 1] {
+                        adder += (textbox_mask[idx + 1] - textbox_mask[idx]) as u32;
+                    }
+                    adder = (adder * 7 >> 3).min(128);
+                    pixels[idx] -= ((adder * (255 - textbox_mask[idx]) as u32) >> 8) * 0x00010101;
+                    if adder == 0 {
+                        pixels[idx] += 0x00101010
+                    }
+                }
+            }
+
+            // Vertical blur pass - down from bottom edge (with diagonal corner fill)
+            for x in x_left..x_right {
+                adder = 0;
+                for y in y_bottom
+                    - (x_vert_start as isize - x as isize).max(0) as usize
+                    - (x as isize - x_vert_end as isize).max(0) as usize
+                    ..(y_bottom + blur_radius_vert).min(textbox_mask.len() / window_width)
+                {
+                    let idx = y * window_width + x;
+                    if y > 0 {
+                        let idx_above = (y - 1) * window_width + x;
+                        if textbox_mask[idx] < textbox_mask[idx_above] {
+                            adder += (textbox_mask[idx_above] - textbox_mask[idx]) as u32;
+                        }
+                    }
+                    adder = (adder * 3 >> 2).min(64);
+                    pixels[idx] -= ((adder * (255 - textbox_mask[idx]) as u32) >> 8) * 0x00010101;
+                    if adder == 0 {
+                        pixels[idx] += 0x00101010
+                    }
+                }
+            }
+
+            // Vertical blur pass - up from top edge (with diagonal corner fill)
+            for x in x_left..x_right {
+                adder = 0;
+                for y in (y_top.saturating_sub(blur_radius_vert)
+                    ..=y_top
+                        + (x_vert_start as isize - x as isize).max(0) as usize
+                        + (x as isize - x_vert_end as isize).max(0) as usize)
+                    .rev()
+                {
+                    let idx = y * window_width + x;
+                    if y + 1 < textbox_mask.len() / window_width {
+                        let idx_below = (y + 1) * window_width + x;
+                        if textbox_mask[idx] < textbox_mask[idx_below] {
+                            adder += (textbox_mask[idx_below] - textbox_mask[idx]) as u32;
+                        }
+                    }
+                    adder = (adder * 3 >> 2).min(64);
+                    pixels[idx] -= ((adder * (255 - textbox_mask[idx]) as u32) >> 8) * 0x00010101;
+                    if adder == 0 {
+                        pixels[idx] += 0x00101010
+                    }
+                }
+            }
+        }
+    }
+
     pub fn draw_button(
         pixels: &mut [u32],
         hit_test_map: &mut [u8],
@@ -2910,6 +3181,7 @@ impl PhotonApp {
         window_width: u32,
         window_height: u32,
         vertical_center_px: usize, // Vertical center position in pixels
+        phase_offset: f32,         // Sine wave phase offset in radians
     ) {
         let window_width = window_width as usize;
         let _window_height = window_height as usize;
@@ -2931,7 +3203,8 @@ impl PhotonApp {
                 let x_norm = x_flipped as f32 / logo_width as f32;
                 let amplitude = logo_height as f32 / (1. + 12. * x_norm);
 
-                let wave_phase = (logo_width as f32 / (x_flipped + logo_width / 2) as f32) * 55.;
+                let wave_phase =
+                    (logo_width as f32 / (x_flipped + logo_width / 2) as f32) * 55. + phase_offset;
                 let wave_offset = wave_phase.sin() * amplitude;
 
                 let mut scale = (y as f32 + wave_offset - logo_height as f32) / logo_height as f32;

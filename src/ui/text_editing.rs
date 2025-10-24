@@ -12,6 +12,17 @@ impl PhotonApp {
         self.min_dim as f32 / 16.0
     }
 
+    /// Returns the textbox width (wide/horizontal layout)
+    pub fn textbox_width(&self) -> usize {
+        let margin = self.min_dim / 8;
+        self.width as usize - margin * 2
+    }
+
+    /// Returns the textbox height
+    pub fn textbox_height(&self) -> usize {
+        self.min_dim / 8
+    }
+
     /// Recalculate all character widths (e.g., after font size change on resize)
     pub fn recalculate_char_widths(&mut self) {
         let font_size = self.font_size();

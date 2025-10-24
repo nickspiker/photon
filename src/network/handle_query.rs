@@ -31,7 +31,7 @@ impl HandleQuery {
             while let Ok(handle) = rx_request.recv() {
                 // TODO: Implement actual DHT query
                 // For now, simulate network delay and mock response
-                thread::sleep(Duration::from_millis(500));
+                thread::sleep(Duration::from_secs(8));
 
                 // Mock logic: handles starting with vowels are "attested"
                 let first_char = handle.chars().next().unwrap_or('a').to_ascii_lowercase();

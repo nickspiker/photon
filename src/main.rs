@@ -116,8 +116,12 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::RedrawRequested => {
-                if let Some(app) = &mut self.photon_app {
+                if let (Some(app), Some(window)) = (&mut self.photon_app, &self.window) {
                     app.render();
+                    // Request continuous redraws while animating
+                    if app.should_animate() {
+                        window.request_redraw();
+                    }
                 }
             }
             WindowEvent::ModifiersChanged(modifiers) => {

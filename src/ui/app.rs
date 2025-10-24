@@ -105,6 +105,10 @@ pub struct PhotonApp {
     pub handle_status: HandleStatus, // Handle attestation status for button flow
     pub query_start_time: Option<std::time::Instant>, // When handle query started (for 1s simulation)
     pub handle_query: HandleQuery,                    // Network query system for handle attestation
+    pub spectrum_phase: f32,                          // Rainbow sine wave phase (radians), animates during query
+    pub last_frame_time: std::time::Instant,          // Last frame timestamp for delta time calculation
+    pub fps: f32,                                     // Current frames per second
+    pub frame_times: Vec<f32>,                        // Recent frame delta times for FPS averaging
 
     // Text state for differential rendering
     pub current_text_state: TextState,
@@ -219,6 +223,10 @@ impl PhotonApp {
             handle_status: HandleStatus::Empty,
             query_start_time: None,
             handle_query: HandleQuery::new(),
+            spectrum_phase: 0.0,
+            last_frame_time: std::time::Instant::now(),
+            fps: 0.0,
+            frame_times: Vec::with_capacity(60),
             current_text_state: TextState::new(),
             previous_text_state: TextState::new(),
             textbox_mask: vec![0; (size.width * size.height) as usize],
@@ -382,6 +390,7 @@ impl PhotonApp {
 
         // Clear textbox focus on resize - user must click to refocus
         self.current_text_state.textbox_focused = false;
+        self.blinkey_visible = false;
 
         // Trigger full redraw - differential rendering will be skipped automatically
         self.window_dirty = true;
@@ -463,5 +472,10 @@ impl PhotonApp {
             return true;
         }
         false
+    }
+
+    /// Check if we should continuously animate (request redraws every frame)
+    pub fn should_animate(&self) -> bool {
+        self.handle_status == HandleStatus::Checking
     }
 }
