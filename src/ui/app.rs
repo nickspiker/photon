@@ -110,6 +110,8 @@ pub struct PhotonApp {
     pub last_frame_time: std::time::Instant,          // Last frame timestamp for delta time calculation
     pub fps: f32,                                     // Current frames per second
     pub frame_times: Vec<f32>,                        // Recent frame delta times for FPS averaging
+    pub target_frame_duration_ms: u64,                // Target frame duration based on monitor refresh rate
+    pub next_animation_frame: std::time::Instant,     // When next animation frame should be drawn
 
     // Text state for differential rendering
     pub current_text_state: TextState,
@@ -119,7 +121,7 @@ pub struct PhotonApp {
     pub show_textbox_mask: bool, // Debug: show textbox mask visualization (Ctrl+T)
     pub frame_counter: usize,  // Every render() call (from RedrawRequested)
     pub update_counter: usize, // Any actual drawing (partial or full)
-    pub full_redraw_counter: usize, // Complete scene redraws only
+    pub redraw_counter: usize, // Complete scene redraws only
 
     // Input state
     pub mouse_x: f32,
@@ -140,11 +142,6 @@ pub struct PhotonApp {
 
     // Mouse selection state
     pub selection_last_update_time: Option<std::time::Instant>, // Last time selection scroll was updated
-
-    // Cached button pixel coordinates for fast hover effects
-    pub minimize_pixels: Vec<usize>,
-    pub maximize_pixels: Vec<usize>,
-    pub close_pixels: Vec<usize>,
 
     // Hit test bitmap (one byte per pixel, element ID)
     pub hit_test_map: Vec<u8>,
@@ -192,7 +189,7 @@ pub enum ResizeEdge {
 
 impl PhotonApp {
     #[cfg(target_os = "linux")]
-    pub async fn new(window: &Window, blinkey_blink_rate_ms: u64) -> Self {
+    pub async fn new(window: &Window, blinkey_blink_rate_ms: u64, target_frame_duration_ms: u64) -> Self {
         let size = window.inner_size();
         let renderer = Renderer::new(window, size.width, size.height).await;
         let text_renderer = TextRenderer::new();
@@ -229,13 +226,15 @@ impl PhotonApp {
             last_frame_time: std::time::Instant::now(),
             fps: 0.0,
             frame_times: Vec::with_capacity(60),
+            target_frame_duration_ms,
+            next_animation_frame: std::time::Instant::now(),
             current_text_state: TextState::new(),
             previous_text_state: TextState::new(),
             textbox_mask: vec![0; (size.width * size.height) as usize],
             show_textbox_mask: false,
             frame_counter: 0,
             update_counter: 0,
-            full_redraw_counter: 0,
+            redraw_counter: 0,
             mouse_x: 0.,
             mouse_y: 0.,
             mouse_button_pressed: false,
@@ -249,9 +248,6 @@ impl PhotonApp {
             hovered_button: HoveredButton::None,
             prev_hovered_button: HoveredButton::None,
             selection_last_update_time: None,
-            minimize_pixels: Vec::new(), // Needs nuked in favor of centerpoint fill
-            maximize_pixels: Vec::new(),
-            close_pixels: Vec::new(),
             hit_test_map: vec![0; (size.width * size.height) as usize],
             debug_hit_test: false,
             debug_hit_colours: Vec::new(),
@@ -267,6 +263,7 @@ impl PhotonApp {
         screen_width: u32,
         screen_height: u32,
         blinkey_blink_rate_ms: u64,
+        target_frame_duration_ms: u64,
     ) -> Self {
         let size = window.inner_size();
         let renderer = Renderer::new(window, size.width, size.height);
@@ -462,6 +459,8 @@ impl PhotonApp {
         let now = std::time::Instant::now();
         self.query_start_time = Some(now);
         self.last_frame_time = now; // Reset to prevent animation jerk on first frame
+        // Initialize animation frame timing
+        self.next_animation_frame = now + std::time::Duration::from_millis(self.target_frame_duration_ms);
     }
 
     /// Check if query response is ready and update handle_status

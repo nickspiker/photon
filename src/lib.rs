@@ -1,5 +1,5 @@
 // Global debug flag - can be toggled at runtime with Ctrl+D
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 pub static DEBUG_ENABLED: AtomicBool = AtomicBool::new(false);
 
 // Debug print macro - only prints if DEBUG_ENABLED is true

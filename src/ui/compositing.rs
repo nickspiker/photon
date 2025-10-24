@@ -26,25 +26,23 @@ impl PhotonApp {
             // Spectrum: 2 pi radians per second = 1 full cycle/sec
             self.spectrum_phase += delta_time * std::f32::consts::PI * 2.0;
             self.spectrum_phase %= std::f32::consts::TAU; // Wrap phase
-            // Speckles: 10 increments per second
-            self.speckle_counter += delta_time * 10.0;
-            self.window_dirty = true; // Force redraw to show phase change
+            // Speckles: high increment rate creates nice animated effect
+            self.speckle_counter += delta_time * (usize::MAX / 64) as f32;
+            // Mark window dirty to trigger redraw of animated elements
+            self.window_dirty = true;
         }
 
         // Check if empty state changed (for button show/hide logic)
         let current_is_empty = self.current_text_state.chars.is_empty();
         let prev_is_empty = self.previous_text_state.is_empty;
         if current_is_empty != prev_is_empty {
-            if !current_is_empty {
-                // Empty → Non-empty: button will appear (draw it after text updates)
-                // No action needed here, we'll draw it after differential rendering
-            } else {
+            if current_is_empty {
                 // Non-empty → Empty: button needs to disappear, trigger full redraw
                 self.window_dirty = true;
             }
         }
 
-        // Always update scroll to keep blinkey in view (but not during selection drag)
+        // Always update scroll to keep blinkey in view except during selection drag
         if self.current_text_state.textbox_focused
             && !self.current_text_state.chars.is_empty()
             && !self.is_mouse_selecting
@@ -73,13 +71,18 @@ impl PhotonApp {
             let pixels = buffer.as_mut();
 
             if self.window_dirty {
-                self.full_redraw_counter += 1;
+                self.redraw_counter += 1;
                 self.selection_dirty = false;
                 self.text_dirty = false;
                 self.hit_test_map.fill(HIT_NONE);
                 self.textbox_mask.fill(0);
 
-                Self::draw_background_texture(pixels, self.width as usize, self.height as usize, self.speckle_counter as u8);
+                Self::draw_background_texture(
+                    pixels,
+                    self.width as usize,
+                    self.height as usize,
+                    self.speckle_counter as usize,
+                );
 
                 let (start, edges, button_x_start, button_height) = Self::draw_window_controls(
                     pixels,
@@ -98,20 +101,6 @@ impl PhotonApp {
                         start,
                         &edges,
                     );
-                }
-
-                // Needs swaped for centerpoint fill algorithm
-                self.minimize_pixels.clear();
-                self.maximize_pixels.clear();
-                self.close_pixels.clear();
-
-                for idx in 0..self.hit_test_map.len() {
-                    match self.hit_test_map[idx] {
-                        HIT_MINIMIZE_BUTTON => self.minimize_pixels.push(idx),
-                        HIT_MAXIMIZE_BUTTON => self.maximize_pixels.push(idx),
-                        HIT_CLOSE_BUTTON => self.close_pixels.push(idx),
-                        _ => {}
-                    }
                 }
 
                 Self::draw_button_hairlines(
@@ -181,273 +170,6 @@ impl PhotonApp {
                     theme::FONT_UI,
                 );
 
-                // 4. Draw attestation buttons - MOVED to after differential rendering
-                // (so buttons are drawn on both full redraws and differential updates)
-
-                /*
-                if !self.current_text_state.chars.is_empty() {
-                    let button_center_y = center_y + box_height + box_height;
-                    let button_height = box_height;
-
-                    match self.handle_status {
-                        HandleStatus::Empty => {
-                            // Show "Query" button with blue fill
-                            let button_width = box_width / 2;
-                            Self::draw_button(
-                                pixels,
-                                &mut self.hit_test_map,
-                                self.width as usize,
-                                self.height as usize,
-                                center_x,
-                                button_center_y,
-                                button_width,
-                                button_height,
-                                HIT_PRIMARY_BUTTON,
-                                theme::BUTTON_BLUE, // Blue fill
-                                theme::BUTTON_LIGHT_EDGE,
-                                theme::BUTTON_SHADOW_EDGE,
-                            );
-
-                            self.text_renderer.draw_text_center_u32(
-                                pixels,
-                                self.width as usize,
-                                "Query",
-                                center_x as f32,
-                                button_center_y as f32,
-                                font_size,
-                                500,
-                                0xFF_D0_D0_D0,
-                                theme::FONT_USER_CONTENT,
-                            );
-                        }
-                        HandleStatus::Checking => {
-                            // Show "Querying..." button with grey fill
-                            let button_width = box_width / 2;
-                            Self::draw_button(
-                                pixels,
-                                &mut self.hit_test_map,
-                                self.width as usize,
-                                self.height as usize,
-                                center_x,
-                                button_center_y,
-                                button_width,
-                                button_height,
-                                HIT_NONE,           // Not clickable while querying
-                                theme::BUTTON_BASE, // Grey fill
-                                theme::BUTTON_LIGHT_EDGE,
-                                theme::BUTTON_SHADOW_EDGE,
-                            );
-
-                            self.text_renderer.draw_text_center_u32(
-                                pixels,
-                                self.width as usize,
-                                "Querying...",
-                                center_x as f32,
-                                button_center_y as f32,
-                                font_size,
-                                500,
-                                0xFF_80_80_80, // Dimmer text for disabled state
-                                theme::FONT_USER_CONTENT,
-                            );
-                        }
-                        HandleStatus::Unattested => {
-                            // Show single "Attest" button with dark green fill
-                            let button_width = box_width / 2;
-                            Self::draw_button(
-                                pixels,
-                                &mut self.hit_test_map,
-                                self.width as usize,
-                                self.height as usize,
-                                center_x,
-                                button_center_y,
-                                button_width,
-                                button_height,
-                                HIT_PRIMARY_BUTTON,
-                                theme::BUTTON_GREEN, // Dark green fill
-                                theme::BUTTON_LIGHT_EDGE,
-                                theme::BUTTON_SHADOW_EDGE,
-                            );
-
-                            self.text_renderer.draw_text_center_u32(
-                                pixels,
-                                self.width as usize,
-                                "Attest",
-                                center_x as f32,
-                                button_center_y as f32,
-                                font_size,
-                                500,
-                                0xFF_D0_D0_D0,
-                                theme::FONT_USER_CONTENT,
-                            );
-                        }
-                        HandleStatus::AlreadyAttested => {
-                            // Show single "Recover / Challenge" button with dark yellow fill
-                            let button_width = box_width / 2;
-                            Self::draw_button(
-                                pixels,
-                                &mut self.hit_test_map,
-                                self.width as usize,
-                                self.height as usize,
-                                center_x,
-                                button_center_y,
-                                button_width,
-                                button_height,
-                                HIT_PRIMARY_BUTTON,
-                                theme::BUTTON_YELLOW, // Dark yellow fill
-                                theme::BUTTON_LIGHT_EDGE,
-                                theme::BUTTON_SHADOW_EDGE,
-                            );
-
-                            self.text_renderer.draw_text_center_u32(
-                                pixels,
-                                self.width as usize,
-                                "Recover / Challenge",
-                                center_x as f32,
-                                button_center_y as f32,
-                                font_size,
-                                500,
-                                0xFF_D0_D0_D0,
-                                theme::FONT_USER_CONTENT,
-                            );
-                        }
-                        HandleStatus::RecoverOrChallenge => {
-                            // Show explanation text
-                            let handle_text =
-                                self.current_text_state.chars.iter().collect::<String>();
-                            let explanation = format!("{} is already attested.", handle_text);
-
-                            let text_y = button_center_y - box_height * 2;
-                            self.text_renderer.draw_text_center_u32(
-                                pixels,
-                                self.width as usize,
-                                &explanation,
-                                center_x as f32,
-                                text_y as f32,
-                                font_size * 0.75,
-                                400,
-                                0xFF_B0_B0_B0,
-                                theme::FONT_USER_CONTENT,
-                            );
-
-                            let question_y = text_y + (box_height as f32 * 0.75) as usize;
-                            self.text_renderer.draw_text_center_u32(
-                                pixels,
-                                self.width as usize,
-                                "Are you recovering your own identity,",
-                                center_x as f32,
-                                question_y as f32,
-                                font_size * 0.75,
-                                400,
-                                0xFF_B0_B0_B0,
-                                theme::FONT_USER_CONTENT,
-                            );
-
-                            let question2_y = question_y + (box_height as f32 * 0.6) as usize;
-                            self.text_renderer.draw_text_center_u32(
-                                pixels,
-                                self.width as usize,
-                                "or challenging someone else's claim?",
-                                center_x as f32,
-                                question2_y as f32,
-                                font_size * 0.75,
-                                400,
-                                0xFF_B0_B0_B0,
-                                theme::FONT_USER_CONTENT,
-                            );
-
-                            // Draw two buttons side by side
-                            let button_width = box_width / 4;
-                            let spacing = box_width / 8;
-                            let recover_x = center_x - spacing - button_width / 2;
-                            let challenge_x = center_x + spacing + button_width / 2;
-
-                            // Left button: "Recover"
-                            Self::draw_button(
-                                pixels,
-                                &mut self.hit_test_map,
-                                self.width as usize,
-                                self.height as usize,
-                                recover_x,
-                                button_center_y,
-                                button_width,
-                                button_height,
-                                HIT_RECOVER_BUTTON,
-                                theme::BUTTON_GREEN, // Green for recover
-                                theme::BUTTON_LIGHT_EDGE,
-                                theme::BUTTON_SHADOW_EDGE,
-                            );
-
-                            self.text_renderer.draw_text_center_u32(
-                                pixels,
-                                self.width as usize,
-                                "Recover",
-                                recover_x as f32,
-                                button_center_y as f32,
-                                font_size * 0.85,
-                                500,
-                                0xFF_D0_D0_D0,
-                                theme::FONT_USER_CONTENT,
-                            );
-
-                            // Small subtitle under Recover button
-                            let subtitle_y = button_center_y + (box_height as f32 * 0.6) as usize;
-                            self.text_renderer.draw_text_center_u32(
-                                pixels,
-                                self.width as usize,
-                                "(I'm you)",
-                                recover_x as f32,
-                                subtitle_y as f32,
-                                font_size * 0.5,
-                                300,
-                                0xFF_80_80_80,
-                                theme::FONT_USER_CONTENT,
-                            );
-
-                            // Right button: "Challenge"
-                            Self::draw_button(
-                                pixels,
-                                &mut self.hit_test_map,
-                                self.width as usize,
-                                self.height as usize,
-                                challenge_x,
-                                button_center_y,
-                                button_width,
-                                button_height,
-                                HIT_CHALLENGE_BUTTON,
-                                theme::BUTTON_YELLOW, // Yellow for challenge
-                                theme::BUTTON_LIGHT_EDGE,
-                                theme::BUTTON_SHADOW_EDGE,
-                            );
-
-                            self.text_renderer.draw_text_center_u32(
-                                pixels,
-                                self.width as usize,
-                                "Challenge",
-                                challenge_x as f32,
-                                button_center_y as f32,
-                                font_size * 0.85,
-                                500,
-                                0xFF_D0_D0_D0,
-                                theme::FONT_USER_CONTENT,
-                            );
-
-                            // Small subtitle under Challenge button
-                            self.text_renderer.draw_text_center_u32(
-                                pixels,
-                                self.width as usize,
-                                "(They stole this)",
-                                challenge_x as f32,
-                                subtitle_y as f32,
-                                font_size * 0.5,
-                                300,
-                                0xFF_80_80_80,
-                                theme::FONT_USER_CONTENT,
-                            );
-                        }
-                    }
-                }
-                */
-
                 // Debug: overlay hit test map visualization with random colours
                 if self.debug_hit_test {
                     for y in 0..self.height as usize {
@@ -477,12 +199,11 @@ impl PhotonApp {
                 }
 
                 // Frame counter continues incrementing (not reset)
-                // After full redraw, pixel lists are rebuilt - reset prev_hovered to force hover reapply
                 self.prev_hovered_button = HoveredButton::None;
             } else {
                 // Differential rendering blocks (only if window wasn't fully redrawn)
                 if self.selection_dirty || self.text_dirty {
-                    // 1. Invert old blinkey (if visible)
+                    // Remove old blinkey (if visible)
                     if self.blinkey_visible {
                         Self::undraw_blinkey(
                             pixels,
@@ -496,7 +217,7 @@ impl PhotonApp {
                     }
 
                     if self.selection_dirty {
-                        // 2. Invert old selection (if present)
+                        // Remove old selection (if present)
                         if let Some(anchor) = self.previous_text_state.selection_anchor {
                             let (sel_start, sel_end) =
                                 if anchor < self.previous_text_state.blinkey_index {
@@ -526,7 +247,7 @@ impl PhotonApp {
                         }
 
                         if self.text_dirty {
-                            // 3. Remove old text
+                            // Remove old text
                             if !self.previous_text_state.chars.is_empty() {
                                 Self::render_text_clipped(
                                     pixels,
@@ -569,7 +290,7 @@ impl PhotonApp {
             }
 
             if self.text_dirty || self.window_dirty {
-                // 4. Add new text
+                // Add new text
                 if !self.current_text_state.chars.is_empty() {
                     Self::render_text_clipped(
                         pixels,
@@ -609,7 +330,7 @@ impl PhotonApp {
             }
 
             if self.selection_dirty || self.window_dirty {
-                // 5. Invert new selection (if present)
+                // Invert new selection (if present)
                 if let Some(anchor) = self.current_text_state.selection_anchor {
                     let (sel_start, sel_end) = if anchor < self.current_text_state.blinkey_index {
                         (anchor, self.current_text_state.blinkey_index)
@@ -638,8 +359,37 @@ impl PhotonApp {
                 }
             }
 
-            // 6. Cursor drawing MOVED to after both rendering paths (with button drawing)
-            // This ensures blinkey is drawn exactly once per frame on both full redraws and differential updates
+            // Draw blinkey (if visible and focused) - only on full redraws or text/selection updates
+            if self.blinkey_visible
+                && self.current_text_state.textbox_focused
+                && (self.window_dirty || self.text_dirty || self.selection_dirty)
+            {
+                let blinkey_pixel_offset: usize = if self.current_text_state.blinkey_index > 0 {
+                    self.current_text_state.widths[..self.current_text_state.blinkey_index]
+                        .iter()
+                        .sum()
+                } else {
+                    0
+                };
+                let total_text_width: usize = self.current_text_state.width;
+                let text_half = total_text_width / 2;
+                let blinkey_x = (center_x as f32 - text_half as f32
+                    + self.current_text_state.scroll_offset
+                    + blinkey_pixel_offset as f32) as usize;
+                let blinkey_y = (center_y as f32 - box_height as f32 * 0.25) as usize;
+
+                self.blinkey_pixel_x = blinkey_x;
+                self.blinkey_pixel_y = blinkey_y;
+                Self::draw_blinkey(
+                    pixels,
+                    self.width as usize,
+                    blinkey_x,
+                    blinkey_y,
+                    &mut self.blinkey_visible,
+                    &mut self.blinkey_wave_top_bright,
+                    font_size as usize,
+                );
+            }
 
             // Controls dirty - handle hover and focus transitions
             if self.controls_dirty {
@@ -822,8 +572,8 @@ impl PhotonApp {
             }
             if self.debug {
                 // Draw black strip at bottom for debug counters
-                let counter_size = self.min_dim / 16;
-                let strip_height = counter_size * 3;
+                let counter_size = self.min_dim / 24;
+                let strip_height = counter_size * 2;
                 let counter_size = counter_size as f32;
                 for y in (self.height as usize - strip_height)..self.height as usize {
                     for x in 0..self.width as usize {
@@ -832,101 +582,61 @@ impl PhotonApp {
                     }
                 }
 
-                // Draw debug counters (bottom left = full redraws, bottom center = updates, bottom right = frames)
-                let full_redraw_text = format!("R:{}", self.full_redraw_counter);
+                // Draw debug counters (bottom left = redraws, bottom center = updates, bottom right = frames)
+                let redraw_text = format!("R:{}", self.redraw_counter);
                 let update_text = format!("U:{}", self.update_counter);
                 let frame_text = format!("F:{}", self.frame_counter);
+                let fps_text = format!("S: {:.1}", self.fps);
 
-                // Bottom left - full redraw counter
+                // Bottom left - redraw counter
                 self.text_renderer.draw_text_left_u32(
                     pixels,
                     self.width as usize,
-                    &full_redraw_text,
+                    &redraw_text,
                     counter_size,
-                    self.height as f32 - counter_size * 2.,
+                    self.height as f32 - counter_size ,
                     counter_size,
                     400,
                     0xFFFFFFFF,
                     "Josefin Slab",
                 );
 
-                // Bottom center - update counter
-                let text_width = self.text_renderer.measure_text_width(
-                    &update_text,
-                    counter_size,
-                    400,
-                    "Josefin Slab",
-                );
-                self.text_renderer.draw_text_left_u32(
+                self.text_renderer.draw_text_center_u32(
                     pixels,
                     self.width as usize,
                     &update_text,
-                    self.width as f32 / 2.0 - text_width / 2.0,
-                    self.height as f32 - counter_size * 2.,
+                    self.width as f32 / 3.,
+                    self.height as f32 - counter_size ,
                     counter_size,
                     400,
                     0xFFFFFFFF,
                     "Josefin Slab",
                 );
 
-                // Bottom right - frame counter
-                self.text_renderer.draw_text_right_u32(
+                // Bottom right center - frame counter
+                self.text_renderer.draw_text_center_u32(
                     pixels,
                     self.width as usize,
                     &frame_text,
-                    self.width as f32 - counter_size,
-                    self.height as f32 - counter_size * 2.,
+                    self.width as f32 / 3. * 2.,
+                    self.height as f32 - counter_size ,
                     counter_size,
                     400,
                     0xFFFFFFFF,
                     "Josefin Slab",
                 );
 
-                // Top left - FPS counter
-                let fps_text = format!("FPS: {:.1}", self.fps);
-                self.text_renderer.draw_text_left_u32(
+                // Bottom right - FPS counter
+                self.text_renderer.draw_text_right_u32(
                     pixels,
                     self.width as usize,
                     &fps_text,
-                    counter_size,
-                    counter_size,
+                    self.width as f32 - counter_size,
+                    self.height as f32 - counter_size ,
                     counter_size,
                     400,
                     0xFFFFFFFF,
                     "Josefin Slab",
-                );
-            }
-
-            // Draw blinkey (if visible and focused) - only on full redraws or text/selection updates
-            // Do NOT redraw on controls_dirty alone (blinkey is already there, would double-brighten)
-            if self.blinkey_visible
-                && self.current_text_state.textbox_focused
-                && (self.window_dirty || self.text_dirty || self.selection_dirty)
-            {
-                let blinkey_pixel_offset: usize = if self.current_text_state.blinkey_index > 0 {
-                    self.current_text_state.widths[..self.current_text_state.blinkey_index]
-                        .iter()
-                        .sum()
-                } else {
-                    0
-                };
-                let total_text_width: usize = self.current_text_state.width;
-                let text_half = total_text_width / 2;
-                let blinkey_x = (center_x as f32 - text_half as f32
-                    + self.current_text_state.scroll_offset
-                    + blinkey_pixel_offset as f32) as usize;
-                let blinkey_y = (center_y as f32 - box_height as f32 * 0.25) as usize;
-
-                self.blinkey_pixel_x = blinkey_x;
-                self.blinkey_pixel_y = blinkey_y;
-                Self::draw_blinkey(
-                    pixels,
-                    self.width as usize,
-                    blinkey_x,
-                    blinkey_y,
-                    &mut self.blinkey_visible,
-                    &mut self.blinkey_wave_top_bright,
-                    font_size as usize,
                 );
             }
 
@@ -1834,7 +1544,12 @@ impl PhotonApp {
     }
 
     // Motion triggered by network action, motion speed dependent on latency
-    pub fn draw_background_texture(pixels: &mut [u32], width: usize, height: usize, speckle: u8) {
+    pub fn draw_background_texture(
+        pixels: &mut [u32],
+        width: usize,
+        height: usize,
+        speckle: usize,
+    ) {
         use rayon::prelude::*;
 
         let middle_rows = &mut pixels[width..(height - 1) * width];
@@ -1843,7 +1558,7 @@ impl PhotonApp {
             .par_chunks_mut(width)
             .enumerate()
             .for_each(|(row_idx, row_pixels)| {
-                let mut rng: usize = 0xDEADBEEF01234567
+                let mut rng: usize = (0xDEADBEEF01234567)
                     ^ ((row_idx.wrapping_sub(height / 2)).wrapping_mul(0x9E3779B94517B397));
                 let mask = 0xFF0F071F; // ARGB
                 let alpha = 0xFF000000;
@@ -1855,7 +1570,7 @@ impl PhotonApp {
                 for x in width / 2..width - 1 {
                     rng ^= rng.rotate_left(13).wrapping_add(12345678901);
                     let adder = rng as u32 & ones;
-                    if rng as u8 == speckle {
+                    if rng + speckle < usize::MAX / 256 {
                         colour = rng as u32 >> 8 & 0x00_3F_1F_7F | alpha;
                     } else {
                         colour = colour + adder & mask;
@@ -1873,7 +1588,7 @@ impl PhotonApp {
                 for x in (1..width / 2).rev() {
                     rng ^= rng.rotate_left(13).wrapping_sub(12345678901);
                     let adder = rng as u32 & ones;
-                    if rng as u8 == speckle {
+                    if rng + speckle < usize::MAX / 256 {
                         colour = rng as u32 >> 8 & 0x00_3F_1F_7F | alpha;
                     } else {
                         colour = colour + adder & mask;

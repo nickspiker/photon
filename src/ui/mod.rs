@@ -20,4 +20,4 @@ use renderer_linux as renderer;
 
 pub mod theme;
 
-pub use app::PhotonApp;
+pub use app::{HandleStatus, PhotonApp};

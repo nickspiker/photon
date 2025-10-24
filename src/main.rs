@@ -37,6 +37,15 @@ impl ApplicationHandler for App {
             self.screen_width = screen_width;
             self.screen_height = screen_height;
 
+            // Query monitor refresh rate and calculate target frame duration
+            // Floor the value so 60Hz -> 16ms (slightly overshoots to avoid frame skips)
+            let target_frame_duration_ms: u64 = if let Some(refresh_millihertz) = monitor.refresh_rate_millihertz() {
+                let refresh_hz = refresh_millihertz / 1000;
+                (1000 / refresh_hz) as u64
+            } else {
+                16 // Default to 60 FPS if query fails
+            };
+
             // Calculate window dimensions: height = min(width, height/2), width = height/2
             let window_height = screen_width.min(screen_height) / 2;
             let window_width = window_height / 2;
@@ -73,6 +82,7 @@ impl ApplicationHandler for App {
                         self.screen_width,
                         self.screen_height,
                         self.blinkey_blink_rate_ms,
+                        target_frame_duration_ms,
                     );
                     self.photon_app = Some(app);
                     // Trigger redraw with correct fullscreen state
@@ -82,7 +92,7 @@ impl ApplicationHandler for App {
                 #[cfg(target_os = "linux")]
                 {
                     let app =
-                        pollster::block_on(PhotonApp::new(window, self.blinkey_blink_rate_ms));
+                        pollster::block_on(PhotonApp::new(window, self.blinkey_blink_rate_ms, target_frame_duration_ms));
                     self.photon_app = Some(app);
                     // Trigger redraw with correct fullscreen state
                     window.request_redraw();
@@ -116,12 +126,9 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::RedrawRequested => {
-                if let (Some(app), Some(window)) = (&mut self.photon_app, &self.window) {
+                if let Some(app) = &mut self.photon_app {
                     app.render();
-                    // Request continuous redraws while animating
-                    if app.should_animate() {
-                        window.request_redraw();
-                    }
+                    // Animation timing is now handled in about_to_wait() via ControlFlow::WaitUntil
                 }
             }
             WindowEvent::ModifiersChanged(modifiers) => {
@@ -169,7 +176,7 @@ impl ApplicationHandler for App {
         if let Some(app) = &mut self.photon_app {
             use winit::event_loop::ControlFlow;
 
-            // If selecting, use Poll mode and update scroll continuously
+            // Priority 1: If selecting, use Poll mode and update scroll continuously
             if app.is_mouse_selecting {
                 event_loop.set_control_flow(ControlFlow::Poll);
                 // Only request redraw if scroll actually changed
@@ -178,6 +185,7 @@ impl ApplicationHandler for App {
                         window.request_redraw();
                     }
                 }
+                return;
             }
 
             // Check for query responses (non-blocking) - always check, regardless of focus
@@ -188,6 +196,21 @@ impl ApplicationHandler for App {
                 }
             }
 
+            // Priority 2: If animating query, sync to display refresh rate
+            if app.handle_status == photon::ui::HandleStatus::Checking {
+                let now = std::time::Instant::now();
+                if now >= app.next_animation_frame {
+                    if let Some(window) = &self.window {
+                        window.request_redraw();
+                    }
+                    // Advance to next frame immediately to avoid busy-looping
+                    app.next_animation_frame = now + std::time::Duration::from_millis(app.target_frame_duration_ms);
+                }
+                event_loop.set_control_flow(ControlFlow::WaitUntil(app.next_animation_frame));
+                return;
+            }
+
+            // Priority 3: If textbox focused, handle blinkey timing
             if app.textbox_is_focused() {
                 // Check if it's time to blink
                 let now = std::time::Instant::now();
@@ -283,14 +306,14 @@ fn get_system_blinkey_blink_rate() -> u64 {
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
-    // Set blinkey size for Linux/X11 to match system blinkey settings
-    // Winit doesn't read the DE blinkey size, so we need to set it manually
+    // Set cursor size for Linux/X11 to match system cursor settings
+    // Winit doesn't read the DE cursor size, so we need to set it manually
     #[cfg(target_os = "linux")]
     {
         if std::env::var("XCURSOR_SIZE").is_err() {
             // Try to read from GNOME/KDE settings, fallback to 24 (X11 default)
-            let blinkey_size = std::process::Command::new("gsettings")
-                .args(&["get", "org.gnome.desktop.interface", "blinkey-size"])
+            let cursor_size = std::process::Command::new("gsettings")
+                .args(&["get", "org.gnome.desktop.interface", "cursor-size"])
                 .output()
                 .ok()
                 .and_then(|output| {
@@ -300,7 +323,7 @@ fn main() {
                 })
                 .unwrap_or(24);
 
-            std::env::set_var("XCURSOR_SIZE", blinkey_size.to_string());
+            std::env::set_var("XCURSOR_SIZE", cursor_size.to_string());
         }
     }
 
