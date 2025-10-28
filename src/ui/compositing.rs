@@ -1568,7 +1568,7 @@ impl PhotonApp {
 
                 // Right half: left-to-right
                 for x in width / 2..width - 1 {
-                    rng ^= rng.rotate_left(13).wrapping_add(12345678901);
+                    rng ^= rng.rotate_left(13).wrapping_add(12345678942);
                     let adder = rng as u32 & ones;
                     if rng + speckle < usize::MAX / 256 {
                         colour = rng as u32 >> 8 & 0x00_3F_1F_7F | alpha;
@@ -1586,7 +1586,7 @@ impl PhotonApp {
                 colour = rng as u32 & mask | alpha;
 
                 for x in (1..width / 2).rev() {
-                    rng ^= rng.rotate_left(13).wrapping_sub(12345678901);
+                    rng ^= rng.rotate_left(13).wrapping_sub(12345678942);
                     let adder = rng as u32 & ones;
                     if rng + speckle < usize::MAX / 256 {
                         colour = rng as u32 >> 8 & 0x00_3F_1F_7F | alpha;
