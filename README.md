@@ -35,6 +35,28 @@ Photon is a peer-to-peer messaging application that replaces traditional authent
 
 We will **not** distribute via Google Play Store, Apple App Store, or Microsoft Store. These platforms impose restrictions on encryption and require backdoors incompatible with end-to-end security. Ready-to-run builds are provided in `bin/`—installation instructions below.
 
+### Why No iOS?
+
+Apple's iOS platform is **architecturally incompatible** with Photon's design:
+
+**Distribution barriers:**
+- No anonymous, keyless app distribution (App Store requires $99/year developer account)
+- Code signing mandatory (all binaries must be signed with Apple-issued certificates)
+- App Review can reject encryption apps arbitrarily
+- Sideloading requires re-installation every 7 days (free accounts) or yearly (paid)
+- Enterprise distribution violates terms if used publicly
+
+**Technical limitations:**
+- **No raw socket access** - Cannot connect to DHT peers directly
+- **No background processes** - Apps terminated after ~30 seconds in background
+- **Sandbox restrictions** - Cannot run persistent TOKEN daemon
+- **Entitlement gatekeeping** - Advanced crypto operations require Apple approval
+- **No system-level services** - Architecture assumes apps are foreground-only
+
+Photon requires long-running background connections, direct peer-to-peer networking, and system-level cryptographic services. iOS prohibits all of these to maintain App Store monopoly and enable government compliance.
+
+**Could this change?** Unlikely. Apple spent 15+ years building walls specifically to prevent decentralized, P2P applications. The EU's Digital Markets Act may force sideloading in Europe by 2026, but it won't be truly keyless and won't affect US/rest of world.
+
 ## Installation
 
 ### Pre-built Binaries
@@ -92,10 +114,13 @@ Alice advances to state₁
 
 **Why wait for acknowledgment?**
 
-1. **Prevents desynchronization**: If a message is lost, both parties remain at the same state—no "skipped keys" needed
-2. **Enforces ordering**: Messages must be processed sequentially (sequence numbers verified)
-3. **Enables immutability**: Deleting or editing a message breaks all subsequent hashes—cryptographic proof of tampering
-4. **Simplifies recovery**: New devices can replay message history from checkpoints without complex key management
+**0. Prevents desynchronization**: If a message is lost, both parties remain at the same state—no "skipped keys" needed
+
+**1. Enforces ordering**: Messages must be processed sequentially (sequence numbers verified)
+
+**2. Enables immutability**: Deleting or editing a message breaks all subsequent hashes—cryptographic proof of tampering
+
+**3. Simplifies recovery**: New devices can replay message history from checkpoints without complex key management
 
 **How the hash chain works:**
 
@@ -164,21 +189,29 @@ No passwords. No PINs. No biometrics unlocking a password. No "passkeys" that ar
 
 You authenticate **once** when creating your identity. All subsequent access uses cryptographic proofs derived from that single authentication event. New devices receive identity thru:
 
-1. **Proximity transfer**: Authorized device cryptographically transfers identity to new device (QR code, NFC, local network)
-2. **Social recovery**: Lose all devices? Trusted contacts hold encrypted shards of your private key—threshold reconstruction (typically 5 friends required)
+**0. Proximity transfer**: Authorized device cryptographically transfers identity to new device (QR code, NFC, local network)
+
+**1. Social recovery**: Lose all devices? Trusted contacts hold encrypted shards of your private key—threshold reconstruction (typically 5 friends required)
 
 **Handle attestation:**
 
 Identity is `handle@photon` (e.g., `fractaldecoder@photon`). Claiming a handle requires **two human attestations**—existing users vouch for your identity. This is invite-only by design. No bots, no spam, no anonymous harassment.
 
 Attestation flow (see [AUTH.md](AUTH.md) for full specification):
-1. User requests handle (e.g., `alice`)
-2. System queries DHT: is `alice` already claimed?
-3. If unclaimed, user requests attestations from 2 trusted people
-4. Attesters see: device type, approximate location, timestamp
-5. Attesters verify out-of-band (phone call, video, in-person)
-6. Both attestations required within 24 hours
-7. Handle bound to user's public key cryptographically
+
+**0. User requests handle** (e.g., `alice`)
+
+**1. System queries DHT**: is `alice` already claimed?
+
+**2. If unclaimed**, user requests attestations from 2 trusted people
+
+**3. Attesters see**: device type, approximate location, timestamp
+
+**4. Attesters verify out-of-band** (phone call, video, in-person)
+
+**5. Both attestations required** within 24 hours
+
+**6. Handle bound** to user's public key cryptographically
 
 **Why attestation?**
 
@@ -298,11 +331,15 @@ See `tools/` directory for VSF utilities (format inspection, validation).
 
 Drawn from [AGENT.md](https://github.com/yourusername/photon/blob/main/AGENT.md):
 
-1. **Trust the math**: If loop bounds guarantee safety, don't add runtime checks
-2. **Fail fast, fail loud**: Panics expose bugs; bounds checks hide them
-3. **No fixed pixels**: Everything scales relative to screen dimensions (`min_dim`, `perimeter`, `diagonal_sq`)
-4. **Explicit over "safe"**: `pixels[idx] = color` not `pixels.get_mut(idx).map(...)`
-5. **Bounds checks require proof**: State why, prove necessity, explain what undefined behavior is prevented
+**0. Trust the math**: If loop bounds guarantee safety, don't add runtime checks
+
+**1. Fail fast, fail loud**: Panics expose bugs; bounds checks hide them
+
+**2. No fixed pixels**: Everything scales relative to screen dimensions (`min_dim`, `perimeter`, `diagonal_sq`)
+
+**3. Explicit over "safe"**: `pixels[idx] = color` not `pixels.get_mut(idx).map(...)`
+
+**4. Bounds checks require proof**: State why, prove necessity, explain what undefined behavior is prevented
 
 If you add a bounds check or saturating arithmetic without justification, expect rejection. See [AGENT.md](AGENT.md) for full rules.
 
@@ -315,11 +352,16 @@ Photon is in early development. Contributions welcome, but read the architecture
 - This README - Architecture and current status
 
 **High-priority areas:**
-1. Network transport (DHT queries, peer connections, WebSocket)
-2. Message persistence (SQLite schema, storage layer)
-3. Social recovery (shard distribution, threshold reconstruction)
-4. Android testing (NDK integration works, needs real-device testing)
-5. ChaCha20-Poly1305 integration (replace XOR placeholder in rolling-chain)
+
+**0. Network transport** (DHT queries, peer connections, WebSocket)
+
+**1. Message persistence** (SQLite schema, storage layer)
+
+**2. Social recovery** (shard distribution, threshold reconstruction)
+
+**3. Android testing** (NDK integration works, needs real-device testing)
+
+**4. ChaCha20-Poly1305 integration** (replace XOR placeholder in rolling-chain)
 
 **Testing:**
 ```bash
@@ -364,17 +406,26 @@ No tests currently—this is early-stage development. Write tests for any new cr
 ## Security Properties
 
 **Guaranteed by rolling-chain encryption:**
-1. Forward secrecy (compromising `stateₙ` doesn't reveal `stateₙ₋₁`)
-2. Replay resistance (sequence numbers prevent replayed messages)
-3. Reorder detection (out-of-order messages fail sequence validation)
-4. Tamper evidence (modifying message `i` breaks all subsequent hashes)
-5. Message immutability (deletion/editing cryptographically detectable)
+
+**0. Forward secrecy** (compromising `stateₙ` doesn't reveal `stateₙ₋₁`)
+
+**1. Replay resistance** (sequence numbers prevent replayed messages)
+
+**2. Reorder detection** (out-of-order messages fail sequence validation)
+
+**3. Tamper evidence** (modifying message `i` breaks all subsequent hashes)
+
+**4. Message immutability** (deletion/editing cryptographically detectable)
 
 **Guaranteed by attestation system:**
-1. Human identity verification (bots can't pass two attestations)
-2. Rate limiting (1 attestation request per hour per device)
-3. Collusion detection (both attesters see each other's approval)
-4. Reputation staking (attesters risk reputation if they vouch for abusers)
+
+**0. Human identity verification** (bots can't pass two attestations)
+
+**1. Rate limiting** (1 attestation request per hour per device)
+
+**2. Collusion detection** (both attesters see each other's approval)
+
+**3. Reputation staking** (attesters risk reputation if they vouch for abusers)
 
 **Not protected against:**
 - Physical device theft (if unlocked)
@@ -382,16 +433,10 @@ No tests currently—this is early-stage development. Write tests for any new cr
 - Screenshots or cameras pointed at screen
 - Quantum computers breaking X25519 (future threat—would require protocol upgrade)
 
-See [tmessage.tex](https://github.com/yourusername/photon/blob/main/docs/tmessage.tex) for full threat model and cryptographic proofs.
-
 ## Related Projects
 
 Photon is the first implementation of **TOKEN**—a universal digital identity system where authentication happens once. Other TOKEN applications (planned):
 
-- `tmail` - Decentralized email
-- `tfiles` - Encrypted file storage
-- `twallet` - Cryptographic asset management
-- `tvote` - Verifiable voting
 - `ferros` - Kill-switch ready OS
 
 Once you authenticate with TOKEN (A = 1), all applications use that single identity. Install TOKEN on new device → everything appears automatically (apps, settings, messages, contacts, files). No passwords, no setup wizards, no per-app logins.
@@ -410,6 +455,6 @@ MIT License - See [LICENSE](LICENSE)
 
 **Project Status:** 🟡 Early Development (GUI functional, messaging implementation 1-2 months out)
 
-**Platform Support:** Linux ✅ | Windows ✅ | Android ⚠️ | macOS 🟡 | iOS ❌
+**Platform Support:** Linux ✅ | Windows ✅ | Android ⚠️ | macOS 🟡 | iOS ❌🟥❌
 
 **Last Updated:** 2025-11-04
