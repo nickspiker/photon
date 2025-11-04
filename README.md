@@ -6,7 +6,7 @@ No servers. No passwords. No phone numbers. No corporate data harvesting.
 
 ## What This Is
 
-Photon is a peer-to-peer messaging application that replaces traditional authentication (passwords, PINs, biometrics, recovery emails) with **social attestation**—your identity is verified by trusted humans, not by servers or credentials. Messages use **rolling-chain encryption**, where each message cryptographically depends on all previous messages, preventing replay attacks, reordering, and tampering while enforcing message immutability through acknowledgment-based state advancement.
+Photon is a peer-to-peer messaging application that replaces traditional authentication (passwords, PINs, biometrics, recovery emails) with **social attestation**—your identity is verified by trusted humans, not by servers or credentials. Messages use **rolling-chain encryption**, where each message cryptographically depends on all previous messages, preventing replay attacks, reordering, and tampering while enforcing message immutability thru acknowledgment-based state advancement.
 
 ## Current Status: Early Development
 
@@ -154,7 +154,7 @@ Rolling-chain provides immutability and ordering guarantees; ChaCha20-Poly1305 p
 | Message deletion undetectable | Deletion breaks chain (detectable) |
 | Message editing undetectable | Editing breaks chain (detectable) |
 
-Photon sacrifices asynchronous throughput for **cryptographic immutability** and **verifiable message ordering**. For most conversations (human typing speed, typical latency), this is acceptable. For high-volume async messaging, Double Ratchet is superior.
+Photon sacrifices asynchronous thruput for **cryptographic immutability** and **verifiable message ordering**. For most conversations (human typing speed, typical latency), this is acceptable. For high-volume async messaging, Double Ratchet is superior.
 
 ### Passless Authentication
 
@@ -162,7 +162,7 @@ No passwords. No PINs. No biometrics unlocking a password. No "passkeys" that ar
 
 **Authentication count: A = 1**
 
-You authenticate **once** when creating your identity. All subsequent access uses cryptographic proofs derived from that single authentication event. New devices receive identity through:
+You authenticate **once** when creating your identity. All subsequent access uses cryptographic proofs derived from that single authentication event. New devices receive identity thru:
 
 1. **Proximity transfer**: Authorized device cryptographically transfers identity to new device (QR code, NFC, local network)
 2. **Social recovery**: Lose all devices? Trusted contacts hold encrypted shards of your private key—threshold reconstruction (typically 5 friends required)
