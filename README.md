@@ -83,7 +83,7 @@ Or build from source (see below).
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 # Clone and build
-git clone https://github.com/yourusername/photon
+git clone https://github.com/nickspiker/photon
 cd photon
 cargo build --release
 
@@ -105,10 +105,10 @@ Traditional messaging (Signal, WhatsApp) uses **Double Ratchet**: sender advance
 Photon uses **rolling-chain encryption**: the sender does **not** advance the chain state until receiving confirmation that the message was successfully received and decrypted. This creates a **synchronization loop**:
 
 ```
-Alice (state₀)  ──message encrypted with state₀──→  Bob (state₀)
-                                                     Bob decrypts, advances to state₁
-Alice (state₀)  ←──────ACK or reply──────────────  Bob (state₁)
-Alice advances to state₁
+Eve (state₀)  ──message encrypted with state₀──→  Norman (state₀)
+                                                     Norman decrypts, advances to state₁
+Eve (state₀)  ←──────ACK or reply──────────────  Norman (state₁)
+Eve advances to state₁
 [Both now at state₁, loop complete]
 ```
 
@@ -137,9 +137,25 @@ stateᵢ = BLAKE3(stateᵢ₋₁ ‖ ciphertext)
 
 Each message's ciphertext is hashed with the previous state to produce the next state. Breaking one message doesn't reveal others (forward secrecy via BLAKE3 preimage resistance). Modifying message `i` changes all subsequent states—tampering is cryptographically detectable.
 
+**ACK timing and state branches:**
+
+Messages include a `parent_sequence` field indicating which chain state was used for encryption. If the sender receives an ACK and advances the chain while messages are still in flight, the receiver can detect the branch:
+
+```rust
+// Eve sends msg₅, msg₆ (both with state₄)
+// ACK for msg₅ arrives → Eve advances to state₅
+// Eve sends msg₇ with parent_sequence=5 (encrypted with state₅)
+
+// Norman receives msg₇ before msg₆
+// Checks: parent_sequence=5, my last ACK'd=4
+// Queues msg₇ until msg₅ arrives and is processed
+```
+
+This prevents race conditions where sender and receiver have different views of which state to use. Orphaned branches (messages encrypted with a state the receiver has moved past) are detected and trigger retransmission requests.
+
 **Multiple messages in flight:**
 
-Alice can send messages 100, 101, 102 all encrypted with `state₉₉` while waiting for ACKs. Once ACKs arrive, states advance in sequence order:
+Eve can send messages 100, 101, 102 all encrypted with `state₉₉` while waiting for ACKs. Once ACKs arrive, states advance in sequence order:
 
 ```
 msg₁₀₀ sent with state₉₉
@@ -179,8 +195,6 @@ Rolling-chain provides immutability and ordering guarantees; ChaCha20-Poly1305 p
 | Message deletion undetectable | Deletion breaks chain (detectable) |
 | Message editing undetectable | Editing breaks chain (detectable) |
 
-Photon sacrifices asynchronous thruput for **cryptographic immutability** and **verifiable message ordering**. For most conversations (human typing speed, typical latency), this is acceptable. For high-volume async messaging, Double Ratchet is superior.
-
 ### Passless Authentication
 
 No passwords. No PINs. No biometrics unlocking a password. No "passkeys" that are passwords with extra steps.
@@ -189,19 +203,19 @@ No passwords. No PINs. No biometrics unlocking a password. No "passkeys" that ar
 
 You authenticate **once** when creating your identity. All subsequent access uses cryptographic proofs derived from that single authentication event. New devices receive identity thru:
 
-**0. Proximity transfer**: Authorized device cryptographically transfers identity to new device (QR code, NFC, local network)
+**0. Proximity transfer**: Authorized device transfers identity to new device via Bluetooth LE with 3-word visual verification (or manual entry if BLE unavailable)
 
 **1. Social recovery**: Lose all devices? Trusted contacts hold encrypted shards of your private key—threshold reconstruction (typically 5 friends required)
 
 **Handle attestation:**
 
-Identity is `handle@photon` (e.g., `fractaldecoder@photon`). Claiming a handle requires **two human attestations**—existing users vouch for your identity. This is invite-only by design. No bots, no spam, no anonymous harassment.
+Identity is tied to your handle. Handles can be **any Unicode string of any length** including zero (e.g., `fractaldecoder`, `🚀`, `∫∂x`, or even empty string `""` if unclaimed). The handle is hashed with BLAKE3 to derive a unique network address—if it can be hashed, it's valid. Claiming a handle requires **two human attestations**—existing users vouch for your identity. This is invite-only by design. No bots, no spam, no anonymous harassment.
 
 Attestation flow (see [AUTH.md](AUTH.md) for full specification):
 
-**0. User requests handle** (e.g., `alice`)
+**0. User requests handle** (e.g., `Wayne`)
 
-**1. System queries DHT**: is `alice` already claimed?
+**1. System queries DHT**: is `Wayne` already claimed?
 
 **2. If unclaimed**, user requests attestations from 2 trusted people
 
@@ -221,9 +235,9 @@ See [AUTH.md](AUTH.md) for detailed specification (1,350 lines covering attestat
 
 ### Network Architecture
 
-**Peer discovery:** Mainline DHT (BitTorrent's distributed hash table)—all traffic looks like torrenting to network observers.
+**Peer discovery:** Mainline DHT (BitTorrent's distributed hash table)—handles are resolved like magnet links, all traffic looks like torrenting to network observers.
 
-**Transport:** TLS 1.3 over TCP + WebSocket upgrade—looks like HTTPS web traffic.
+**Transport:** TLS 1.3 over TCP + WebSocket upgrade—encrypted connections look like HTTPS web traffic.
 
 **Message routing:**
 - Small messages (<1KB, no expiration): Stored across your social graph with fractal gradient mesh distribution (closer friends store more copies)
