@@ -68,31 +68,48 @@ Apple's iOS platform is **architecturally incompatible** with Photon's design:
 
 Photon requires long-running background connections, direct peer-to-peer networking, and system-level cryptographic services. iOS prohibits all of these - not because the hardware can't do it, but because Apple spent decades building walls specifically to prevent applications like Photon from existing.
 
-**Could this change?** Unlikely. The EU's Digital Markets Act may force sideloading in Europe by 2026, but it won't be truly keyless and won't affect US/rest of world.
+**Could this change?** Unlikely. The EU's Digital Markets Act may force sideloading in Europe by 2026, but it won't be truly keyless and won't affect most of the world.
 
 ## Installation
 
-### Pre-built Binaries
+### Quick Install (Recommended)
 
+One-command installation that handles Rust setup automatically:
+
+**Linux/macOS:**
 ```bash
-# Download from bin/ folder
-cd bin/
-./photon  # Linux
-# photon.exe  # Windows
+curl -sSfL https://holdmyoscilloscope.com/photon/install.sh | sh
 ```
 
-Your operating system will likely throw warnings about "unverified developer" or "unknown publisher." This is expected. Corporations want you to trust only software they can monitor, backdoor, and monetize. We're working on self-verified executables with cryptographic signatures—until then, you'll need to:
+**Windows (PowerShell):**
+```powershell
+iwr -useb https://holdmyoscilloscope.com/photon/install.ps1 | iex
+```
 
-- **Windows**: Right-click → Properties → Check "Unblock" → Run anyway
-- **Linux**: `chmod +x photon && ./photon`
-- **macOS**: Right-click → Open (bypasses Gatekeeper)
+These scripts will:
+1. Check if Rust is installed (installs it if needed)
+2. Install `photon-messenger` via cargo
+3. Add it to your PATH automatically
 
-Or build from source (see below).
+After installation, run:
+```bash
+photon-messenger
+```
+
+**Note:** You may need to restart your terminal or run `source ~/.cargo/env` (Linux/macOS) to use the command immediately.
+
+### Manual Install (via Cargo)
+
+If you already have Rust installed:
+
+```bash
+cargo install photon-messenger
+```
 
 ### Building from Source
 
 ```bash
-# Install Rust
+# Install Rust (if not already installed)
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 # Clone and build
