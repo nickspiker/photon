@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Photon Messenger
+Comment=Decentralized messenger with rolling-chain encryption
+Exec=photon-messenger
+Icon=photon-messenger
+Terminal=false
+Categories=Network;InstantMessaging;
+Keywords=messenger;chat;encryption;p2p;decentralized;
+StartupWMClass=photon-messenger

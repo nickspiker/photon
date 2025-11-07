@@ -98,6 +98,21 @@ photon-messenger
 
 **Note:** You may need to restart your terminal or run `source ~/.cargo/env` (Linux/macOS) to use the command immediately.
 
+#### Optional: Desktop Shortcut (Linux)
+
+Create a desktop entry for application menu integration:
+
+```bash
+# Copy desktop file to user applications
+mkdir -p ~/.local/share/applications
+curl -o ~/.local/share/applications/photon-messenger.desktop https://holdmyoscilloscope.com/photon/photon-messenger.desktop
+
+# Update desktop database (may require logout/login)
+update-desktop-database ~/.local/share/applications/
+```
+
+This adds Photon to your application menu with proper categorization under "Network" and "Instant Messaging".
+
 ### Manual Install (via Cargo)
 
 If you already have Rust installed:

@@ -1,6 +1,8 @@
 // Hide console window on Windows
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+mod self_verify;
+
 use photon_messenger::debug_println;
 use photon_messenger::ui::PhotonApp;
 
@@ -304,6 +306,12 @@ fn get_system_blinkey_blink_rate() -> u64 {
 }
 
 fn main() {
+    // Verify binary hash first (if hash was appended during build)
+    if let Err(e) = self_verify::verify_binary_hash() {
+        eprintln!("SECURITY WARNING: {}", e);
+        std::process::exit(1);
+    }
+
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     // Set cursor size for Linux/X11 to match system cursor settings
