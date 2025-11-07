@@ -33,16 +33,29 @@ Photon is a peer-to-peer messaging application that replaces traditional authent
 - 🟡 **macOS** (possible, not tested)
 - ❌ **iOS** (unlikely—Apple's encryption restrictions incompatible with design)
 
-We will **not** distribute via Google Play Store, Apple App Store, or Microsoft Store. These platforms impose restrictions on encryption and require backdoors incompatible with end-to-end security. Ready-to-run builds are provided in `bin/`—installation instructions below.
+## Distribution
+
+We will not distribute via Google Play Store, Apple App Store, or Microsoft Store. These platforms create barriers incompatible with our security model and decentralized architecture. Ready-to-run builds are provided in `bin/`—installation instructions below.
+
+**Why not use app stores?**
+
+- **Encryption reporting requirements**: US Export Administration Regulations require registration with the Bureau of Industry and Security and disclosure of encryption implementation details before international distribution. We decline to notify the government about our cryptographic systems.
+
+- **Review process uncertainty**: App stores can reject applications with strong encryption arbitrarily or demand explanations of security implementations that we consider proprietary.
+
+- **Corporate intermediaries**: Distribution thru stores requires trusting corporations to maintain access to software we built. Yeahno.
+
+- **Sideloading restrictions**: iOS requires annual re-signing (99USD/year developer account), and free accounts must reinstall every 7 days. Android allows direct APK installation but shows warnings designed to discourage it.
+
+We provide cryptographically signed binaries with published checksums. Verify the signature, verify the source, run it yourself. That's the security model that actually works.
 
 ### Why No iOS?
 
 Apple's iOS platform is **architecturally incompatible** with Photon's design:
 
 **Distribution barriers:**
-- No anonymous, keyless app distribution (App Store requires $99/year developer account)
-- Code signing mandatory (all binaries must be signed with Apple-issued certificates)
-- App Review can reject encryption apps arbitrarily
+- App Store requires $99/year developer account (no anonymous distribution)
+- Code signing mandatory (all binaries must be Apple-signed)
 - Sideloading requires re-installation every 7 days (free accounts) or yearly (paid)
 - Enterprise distribution violates terms if used publicly
 
@@ -50,12 +63,12 @@ Apple's iOS platform is **architecturally incompatible** with Photon's design:
 - **No raw socket access** - Cannot connect to DHT peers directly
 - **No background processes** - Apps terminated after ~30 seconds in background
 - **Sandbox restrictions** - Cannot run persistent TOKEN daemon
-- **Entitlement gatekeeping** - Advanced crypto operations require Apple approval
+- **Entitlement gatekeeping** - Network access requires Apple approval
 - **No system-level services** - Architecture assumes apps are foreground-only
 
-Photon requires long-running background connections, direct peer-to-peer networking, and system-level cryptographic services. iOS prohibits all of these to maintain App Store monopoly and enable government compliance.
+Photon requires long-running background connections, direct peer-to-peer networking, and system-level cryptographic services. iOS prohibits all of these - not because the hardware can't do it, but because Apple spent decades building walls specifically to prevent applications like Photon from existing.
 
-**Could this change?** Unlikely. Apple spent 15+ years building walls specifically to prevent decentralized, P2P applications. The EU's Digital Markets Act may force sideloading in Europe by 2026, but it won't be truly keyless and won't affect US/rest of world.
+**Could this change?** Unlikely. The EU's Digital Markets Act may force sideloading in Europe by 2026, but it won't be truly keyless and won't affect US/rest of world.
 
 ## Installation
 
