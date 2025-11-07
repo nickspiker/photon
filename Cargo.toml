@@ -1,10 +1,13 @@
 [package]
-name = "photon"
+name = "photon-messenger"
 version = "0.0.0"
 edition = "2021"
 authors = ["Nick Spiker <fractaldecoder@proton.me>"]
 license = "MIT"
 description = "Decentralized messenger with rolling-chain encryption"
+repository = "https://github.com/nickspiker/photon"
+keywords = ["messenger", "encryption", "decentralized", "p2p", "privacy"]
+categories = ["cryptography", "network-programming"]
 
 [dependencies]
 
