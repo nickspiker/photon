@@ -1,8 +1,8 @@
 // Hide console window on Windows
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
-use photon::debug_println;
-use photon::ui::PhotonApp;
+use photon_messenger::debug_println;
+use photon_messenger::ui::PhotonApp;
 
 use winit::{
     application::ApplicationHandler,
@@ -197,7 +197,7 @@ impl ApplicationHandler for App {
             }
 
             // Priority 2: If animating query, sync to display refresh rate
-            if app.handle_status == photon::ui::HandleStatus::Checking {
+            if app.handle_status == photon_messenger::ui::HandleStatus::Checking {
                 let now = std::time::Instant::now();
                 if now >= app.next_animation_frame {
                     if let Some(window) = &self.window {
