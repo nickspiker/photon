@@ -88,38 +88,33 @@ iwr -useb https://holdmyoscilloscope.com/photon/install.ps1 | iex
 
 These scripts will:
 1. Check if Rust is installed (installs it if needed)
-2. Install `photon-messenger` via cargo
-3. Add it to your PATH automatically
+2. Install `photon-messenger` from crates.io
+3. Append a BLAKE3 hash to the binary for self-verification
+4. Create a desktop/Start Menu shortcut automatically
+5. Add the binary to your PATH
 
-After installation, run:
+After installation, find **Photon Messenger** in your application menu (Start Menu on Windows, app launcher on Linux/macOS), or run from terminal:
+
 ```bash
 photon-messenger
 ```
 
-**Note:** You may need to restart your terminal or run `source ~/.cargo/env` (Linux/macOS) to use the command immediately.
-
-#### Optional: Desktop Shortcut (Linux)
-
-Create a desktop entry for application menu integration:
-
-```bash
-# Copy desktop file to user applications
-mkdir -p ~/.local/share/applications
-curl -o ~/.local/share/applications/photon-messenger.desktop https://holdmyoscilloscope.com/photon/photon-messenger.desktop
-
-# Update desktop database (may require logout/login)
-update-desktop-database ~/.local/share/applications/
-```
-
-This adds Photon to your application menu with proper categorization under "Network" and "Instant Messaging".
+**Note:** You may need to restart your terminal to refresh your PATH environment variable.
 
 ### Manual Install (via Cargo)
 
-If you already have Rust installed:
+If you already have Rust installed and want to install manually:
 
 ```bash
+# Install both binaries
 cargo install photon-messenger
+
+# Sign the binary with BLAKE3 hash
+photon-hash-signer ~/.cargo/bin/photon-messenger  # Linux/macOS
+photon-hash-signer %USERPROFILE%\.cargo\bin\photon-messenger.exe  # Windows
 ```
+
+The `photon-hash-signer` binary will append a BLAKE3 hash to `photon-messenger` for self-verification, then automatically delete itself.
 
 ### Building from Source
 
