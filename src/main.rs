@@ -41,12 +41,13 @@ impl ApplicationHandler for App {
 
             // Query monitor refresh rate and calculate target frame duration
             // Floor the value so 60Hz -> 16ms (slightly overshoots to avoid frame skips)
-            let target_frame_duration_ms: u64 = if let Some(refresh_millihertz) = monitor.refresh_rate_millihertz() {
-                let refresh_hz = refresh_millihertz / 1000;
-                (1000 / refresh_hz) as u64
-            } else {
-                16 // Default to 60 FPS if query fails
-            };
+            let target_frame_duration_ms: u64 =
+                if let Some(refresh_millihertz) = monitor.refresh_rate_millihertz() {
+                    let refresh_hz = refresh_millihertz / 1000;
+                    (1000 / refresh_hz) as u64
+                } else {
+                    16 // Default to 60 FPS if query fails
+                };
 
             // Calculate window dimensions: height = min(width, height/2), width = height/2
             let window_height = screen_width.min(screen_height) / 2;
@@ -91,8 +92,11 @@ impl ApplicationHandler for App {
 
                 #[cfg(target_os = "linux")]
                 {
-                    let app =
-                        pollster::block_on(PhotonApp::new(window, self.blinkey_blink_rate_ms, target_frame_duration_ms));
+                    let app = pollster::block_on(PhotonApp::new(
+                        window,
+                        self.blinkey_blink_rate_ms,
+                        target_frame_duration_ms,
+                    ));
                     self.photon_app = Some(app);
                     // Trigger redraw with correct fullscreen state
                     window.request_redraw();
@@ -204,7 +208,8 @@ impl ApplicationHandler for App {
                         window.request_redraw();
                     }
                     // Advance to next frame immediately to avoid busy-looping
-                    app.next_animation_frame = now + std::time::Duration::from_millis(app.target_frame_duration_ms);
+                    app.next_animation_frame =
+                        now + std::time::Duration::from_millis(app.target_frame_duration_ms);
                 }
                 event_loop.set_control_flow(ControlFlow::WaitUntil(app.next_animation_frame));
                 return;
@@ -304,11 +309,29 @@ fn get_system_blinkey_blink_rate() -> u64 {
 }
 
 fn main() {
-    // Verify binary hash first (if hash was appended during build)
+    // Verify binary signature matches fractaldecoder (Ed25519 cryptographic signature)
     if let Err(e) = self_verify::verify_binary_hash() {
-        eprintln!("SECURITY WARNING: {}", e);
+        eprintln!("BINARY INTEGRITY CHECK FAILED: {}", e);
+        eprintln!();
+        eprintln!("This usually means:");
+        eprintln!("  - Download was corrupted or incomplete");
+        eprintln!("  - Storage failure (bad sectors, bit flips)");
+        eprintln!("  - Binary was modified or tampered with");
+        eprintln!();
+        eprintln!("Try reinstalling from: https://holdmyoscilloscope.com/photon");
         std::process::exit(1);
     }
+
+    // Startup message
+    eprintln!("Photon Messenger - Built from first principles for true data sovereignty");
+    eprintln!("by Nick Spiker <fractaldecoder@proton.me>");
+    eprintln!();
+    eprintln!("I built this to give you the best damn secure messaging experience possible.");
+    eprintln!("Your data belongs to you—no servers, no tracking, no compromises.");
+    eprintln!();
+    eprintln!("Found a bug? Have feedback? Email me: fractaldecoder@proton.me");
+    eprintln!("(Photon messenger coming soon—for now there's only ~3 of us!)");
+    eprintln!();
 
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 

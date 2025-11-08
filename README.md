@@ -74,24 +74,25 @@ Photon requires long-running background connections, direct peer-to-peer network
 
 ### Quick Install (Recommended)
 
-One-command installation that handles Rust setup automatically:
+Download pre-built, cryptographically signed binaries:
 
 **Linux/macOS:**
 ```bash
 curl -sSfL https://holdmyoscilloscope.com/photon/install.sh | sh
 ```
 
-**Windows (PowerShell):**<- I hate you right now!
+**Windows (PowerShell):**
 ```powershell
-iwr -useb https://holdmyoscilloscope.com/photon/install.ps1 x| iex
+iwr -useb https://holdmyoscilloscope.com/photon/install.ps1 | iex
 ```
 
 These scripts will:
-0. Check if Rust is installed (installs it if needed)
-1. Install `photon-messenger` from crates.io
-2. Append a BLAKE3 hash to the binary for self-verification
-3. Create a desktop/Start Menu shortcut automatically
-4. Add the binary to your PATH
+0. Download a pre-built, pre-signed binary from holdmyoscilloscope.com
+1. Install to `~/.local/bin` (Linux/macOS) or `%LOCALAPPDATA%\Programs\PhotonMessenger` (Windows)
+2. Create a desktop/Start Menu shortcut automatically
+3. Add the binary to your PATH
+
+**Security:** Every binary is signed with Ed25519 by Nick Spiker (fractaldecoder@proton.me) and self-verifies on startup. This protects against data corruption (bit flips, incomplete downloads, storage failures) and tampering. If verification fails, the binary won't run.
 
 After installation, find **Photon Messenger** in your application menu (Start Menu on Windows, app launcher on Linux/macOS), or run from terminal:
 
@@ -99,41 +100,41 @@ After installation, find **Photon Messenger** in your application menu (Start Me
 photon-messenger
 ```
 
-**Note:** You may need to restart your terminal to refresh your PATH environment variable.
-
-### Manual Install (via Cargo)
-
-If you already have Rust installed and want to install manually:
-
-```bash
-# Install both binaries
-cargo install photon-messenger
-
-# Sign the binary with BLAKE3 hash
-photon-hash-signer ~/.cargo/bin/photon-messenger  # Linux/macOS
-photon-hash-signer %USERPROFILE%\.cargo\bin\photon-messenger.exe  # Windows
-```
-
-The `photon-hash-signer` binary will append a BLAKE3 hash to `photon-messenger` for self-verification, then automatically delete itself.
-
 ### Building from Source
 
-```bash
-# Install Rust (if not already installed)
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+**WARNING:** Building from source requires generating your own signing keys.
 
-# Clone and build
-git clone https://github.com/nickspiker/photon
-cd photon
-cargo build --release
+**Just use the installer above unless you know what you're doing.**
 
-# Binary at target/release/photon
-```
+If you still want to build from source:
+
+0. **Clone the repository**:
+   ```bash
+   git clone https://github.com/nickspiker/photon
+   cd photon
+   ```
+
+1. **Generate signing keys**:
+   ```bash
+   # Edit src/bin/photon-keygen.rs to set your key path
+   cargo run --bin photon-keygen
+   ```
+
+2. **Update the public key** in `src/self_verify.rs` with your generated key
+
+3. **Build and sign**:
+   ```bash
+   cargo build --release
+   ./sign-after-build.sh release
+   ```
+
+See [src/self_verify.rs](src/self_verify.rs) for complete signing documentation.
 
 **Android:**
 ```bash
 rustup target add aarch64-linux-android
 cargo build --target aarch64-linux-android --release
+./sign-after-build.sh release aarch64-linux-android
 ```
 
 ## How It Works
