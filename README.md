@@ -87,11 +87,11 @@ iwr -useb https://holdmyoscilloscope.com/photon/install.ps1 | iex
 ```
 
 These scripts will:
-1. Check if Rust is installed (installs it if needed)
-2. Install `photon-messenger` from crates.io
-3. Append a BLAKE3 hash to the binary for self-verification
-4. Create a desktop/Start Menu shortcut automatically
-5. Add the binary to your PATH
+0. Check if Rust is installed (installs it if needed)
+1. Install `photon-messenger` from crates.io
+2. Append a BLAKE3 hash to the binary for self-verification
+3. Create a desktop/Start Menu shortcut automatically
+4. Add the binary to your PATH
 
 After installation, find **Photon Messenger** in your application menu (Start Menu on Windows, app launcher on Linux/macOS), or run from terminal:
 
