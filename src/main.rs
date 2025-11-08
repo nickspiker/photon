@@ -79,10 +79,8 @@ impl ApplicationHandler for App {
 
                 #[cfg(target_os = "windows")]
                 {
-                    let mut app = PhotonApp::new(
+                    let app = PhotonApp::new(
                         window,
-                        self.screen_width,
-                        self.screen_height,
                         self.blinkey_blink_rate_ms,
                         target_frame_duration_ms,
                     );

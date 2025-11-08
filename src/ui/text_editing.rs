@@ -1,5 +1,9 @@
 use crate::debug_println;
-use crate::ui::{app::*, renderer_linux::Renderer, text_rasterizing::TextRenderer, theme};
+#[cfg(target_os = "linux")]
+use crate::ui::renderer_linux::Renderer;
+#[cfg(target_os = "windows")]
+use crate::ui::renderer_windows::Renderer;
+use crate::ui::{app::*, text_rasterizing::TextRenderer, theme};
 use rand::Rng;
 impl PhotonApp {
     /// Check if textbox is focused (for event loop control flow)

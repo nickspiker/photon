@@ -258,13 +258,7 @@ impl PhotonApp {
     }
 
     #[cfg(target_os = "windows")]
-    pub fn new(
-        window: &Window,
-        screen_width: u32,
-        screen_height: u32,
-        blinkey_blink_rate_ms: u64,
-        target_frame_duration_ms: u64,
-    ) -> Self {
+    pub fn new(window: &Window, blinkey_blink_rate_ms: u64, target_frame_duration_ms: u64) -> Self {
         let size = window.inner_size();
         let renderer = Renderer::new(window, size.width, size.height);
         let text_renderer = TextRenderer::new();
@@ -274,74 +268,61 @@ impl PhotonApp {
 
         let w = size.width as usize;
         let h = size.height as usize;
-        let mut app = Self {
+        let app = Self {
             renderer,
             text_renderer,
-            window_width: size.width,
-            window_height: size.height,
-            screen_width,
-            screen_height,
-            needs_redraw: true, // Initial draw needed
+            width: size.width,
+            height: size.height,
+            window_dirty: true,
+            selection_dirty: false,
+            text_dirty: false,
+            controls_dirty: false,
             min_dim: w.min(h),
             perimeter: w + h,
             diagonal_sq: w * w + h * h,
-            username_input: String::new(),
             blinkey_blink_rate_ms,
-            blinkey_wave_top_bright: false,
             blinkey_visible: false,
+            is_mouse_selecting: false,
+            blinkey_wave_top_bright: false,
             blinkey_pixel_x: 0,
             blinkey_pixel_y: 0,
-            blinkey_height: 0.0,
-            username_available: None,
-            textbox_focused: false,
-            current_text_state: TextState {
-                text: EditableText::new(),
-                scroll_offset: 0.0,
-                blinkey_index: 0,
-                selection_anchor: None,
-                textbox_focused: false,
-            },
-            old_text_state: TextState {
-                text: EditableText::new(),
-                scroll_offset: 0.0,
-                blinkey_index: 0,
-                selection_anchor: None,
-                textbox_focused: false,
-            },
-            textbox_mask: Vec::new(),
-            textbox_bounds: (0, 0, 0, 0),
+            next_blinkey_blink_time: std::time::Instant::now(),
+            handle_status: HandleStatus::Empty,
+            query_start_time: None,
+            handle_query: HandleQuery::new(),
+            spectrum_phase: 0.0,
+            speckle_counter: 0.0,
+            last_frame_time: std::time::Instant::now(),
+            fps: 0.0,
+            frame_times: Vec::with_capacity(60),
+            target_frame_duration_ms,
+            next_animation_frame: std::time::Instant::now(),
+            current_text_state: TextState::new(),
+            previous_text_state: TextState::new(),
+            textbox_mask: vec![0; (size.width * size.height) as usize],
             show_textbox_mask: false,
+            frame_counter: 0,
+            update_counter: 0,
             redraw_counter: 0,
-            render_counter: 0,
-            text_redraw_counter: 0,
-            mouse_x: 0.0,
-            mouse_y: 0.0,
+            mouse_x: 0.,
+            mouse_y: 0.,
+            mouse_button_pressed: false,
             is_dragging_resize: false,
             is_dragging_move: false,
             resize_edge: ResizeEdge::None,
-            drag_start_blinkey_screen_pos: (0.0, 0.0),
+            drag_start_blinkey_screen_pos: (0., 0.),
             drag_start_size: (0, 0),
             drag_start_window_pos: (0, 0),
             modifiers: ModifiersState::empty(),
-            close_button_bounds: (0.0, 0.0, 0.0, 0.0),
-            maximize_button_bounds: (0.0, 0.0, 0.0, 0.0),
-            minimize_button_bounds: (0.0, 0.0, 0.0, 0.0),
             hovered_button: HoveredButton::None,
             prev_hovered_button: HoveredButton::None,
-            button_x_start: 0,
-            button_height: 0,
-            button_curve_start: 0,
-            button_crossings: Vec::new(),
-            minimize_pixels: Vec::new(),
-            maximize_pixels: Vec::new(),
-            close_pixels: Vec::new(),
+            selection_last_update_time: None,
             hit_test_map: vec![0; (size.width * size.height) as usize],
             debug_hit_test: false,
             debug_hit_colours: Vec::new(),
             debug: false,
             is_fullscreen,
         };
-        app.update_button_bounds();
         app
     }
 

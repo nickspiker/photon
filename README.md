@@ -81,9 +81,9 @@ One-command installation that handles Rust setup automatically:
 curl -sSfL https://holdmyoscilloscope.com/photon/install.sh | sh
 ```
 
-**Windows (PowerShell):**
+**Windows (PowerShell):**<- I hate you right now!
 ```powershell
-iwr -useb https://holdmyoscilloscope.com/photon/install.ps1 | iex
+iwr -useb https://holdmyoscilloscope.com/photon/install.ps1 x| iex
 ```
 
 These scripts will:
