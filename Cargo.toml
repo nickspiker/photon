@@ -1,6 +1,6 @@
 [package]
 name = "photon-messenger"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2021"
 authors = ["Nick Spiker <fractaldecoder@proton.me>"]
 license = "MIT"
@@ -10,8 +10,8 @@ keywords = ["messenger", "encryption", "decentralized", "p2p", "privacy"]
 categories = ["cryptography", "network-programming"]
 
 [[bin]]
-name = "hash-release"
-path = "tools/hash-release.rs"
+name = "photon-hash-signer"
+path = "src/bin/photon-hash-signer.rs"
 
 [dependencies]
 ed25519-dalek = { version = "2", features = ["rand_core"] }
