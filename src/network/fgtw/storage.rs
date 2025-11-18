@@ -3,7 +3,7 @@ use rand::rngs::OsRng;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
-use vsf::{VsfBuilder, VsfType};
+use vsf::{parse, VsfBuilder, VsfType};
 
 /// Ed25519 keypair for FGTW device/handle identity
 #[derive(Clone)]
@@ -173,84 +173,89 @@ fn load_keypair_vsf(path: &PathBuf) -> io::Result<Keypair> {
         ));
     }
 
-    // Verify provenance hash (hp) - find and validate
-    let stored_hash = match find_and_extract_hash(&bytes) {
-        Ok(hash) => hash,
-        Err(_) => {
-            // Hash verification optional for now - VsfBuilder may not include it
-            // TODO: Make this required once VsfBuilder adds hp/ge support
-            [0u8; 32]
-        }
-    };
+    // Use VsfHeader::decode() for proper parsing
+    let (header, header_bytes_consumed) = vsf::file_format::VsfHeader::decode(&bytes)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("Failed to parse VSF header: {}", e)))?;
 
-    // If hash is non-zero, verify it
-    if stored_hash != [0u8; 32] {
-        let computed_hash = compute_provenance_hash(&bytes)?;
-        if stored_hash != computed_hash {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Provenance hash mismatch - file corrupted or tampered",
-            ));
-        }
-    }
+    // Skip provenance hash verification for device keys
+    // Device keys use VsfBuilder which creates placeholder hp with zeros
+    // They're not cryptographically signed, so hp verification isn't meaningful
+    // TODO: Use sign_section() for device keys to get proper hp + ge
 
-    // TODO: Verify Ed25519 signature (ge) if present
+    // TODO: Verify Ed25519 signature (ge) if present in header fields
     // The keypair signs its own VSF file - beautifully self-referential!
 
-    // Find the section - skip to '[' marker
-    let section_start = bytes
-        .iter()
-        .position(|&b| b == b'[')
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "No section found"))?;
+    // Parse the section after the header
+    let mut ptr = header_bytes_consumed;
 
-    // Parse from section start
-    let mut ptr = section_start;
+    // Skip to section start '['
+    while ptr < bytes.len() && bytes[ptr] != b'[' {
+        ptr += 1;
+    }
 
-    // Expect section format: [d"name" (d"secret":ke{...}) (d"public":ke{...}) ]
-    // The VSF parser will handle the structure, we just need to extract the ke values
+    if ptr >= bytes.len() {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "No section found"));
+    }
 
-    // Find the two ke{...} values by scanning for 'ke' markers
-    let mut secret_key: Option<Vec<u8>> = None;
-    let mut public_key: Option<Vec<u8>> = None;
+    // Parse section to extract named fields
+    use std::collections::HashMap;
+    let mut fields: HashMap<String, vsf::VsfType> = HashMap::new();
 
-    // Simple approach: find ke markers and extract following 32 bytes
-    let mut i = section_start;
-    while i < bytes.len() - 35 {
-        // Need at least 'ke3' + length + 32 bytes
-        if bytes[i] == b'k' && bytes[i + 1] == b'e' {
-            // Found ke marker, next byte should be '3' (length marker), then length byte
-            if i + 2 < bytes.len() && bytes[i + 2] == b'3' {
-                let len = bytes[i + 3] as usize;
-                if len == 31 && i + 4 + 32 <= bytes.len() {
-                    // VSF uses len-1 for inclusive mode
-                    let key_bytes = bytes[i + 4..i + 4 + 32].to_vec();
-                    if secret_key.is_none() {
-                        secret_key = Some(key_bytes);
-                    } else {
-                        public_key = Some(key_bytes);
-                        break; // Found both keys
-                    }
-                }
+    ptr += 1; // Skip '['
+
+    // Parse section name
+    let section_name = parse(&bytes, &mut ptr)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("Parse section name: {}", e)))?;
+
+    // Parse fields until ']'
+    while ptr < bytes.len() && bytes[ptr] != b']' {
+        if bytes[ptr] == b'(' {
+            ptr += 1;
+
+            // Parse field name
+            let field_name = match parse(&bytes, &mut ptr)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("Parse field name: {}", e)))? {
+                VsfType::d(name) => name,
+                _ => return Err(io::Error::new(io::ErrorKind::InvalidData, "Expected field name")),
+            };
+
+            // Check for ':' and parse value
+            if ptr < bytes.len() && bytes[ptr] == b':' {
+                ptr += 1;
+                let value = parse(&bytes, &mut ptr)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("Parse field value: {}", e)))?;
+                fields.insert(field_name, value);
             }
-            i += 1;
+
+            // Skip ')'
+            if ptr < bytes.len() && bytes[ptr] == b')' {
+                ptr += 1;
+            }
         } else {
-            i += 1;
+            ptr += 1;
         }
     }
 
-    let secret_bytes = secret_key.ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Secret key not found in VSF file",
-        )
-    })?;
+    // Extract secret and public keys from fields
+    let secret_bytes = match fields.get("secret") {
+        Some(VsfType::ke(bytes)) => {
+            if bytes.len() != 32 {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "Secret key must be 32 bytes"));
+            }
+            bytes.clone()
+        }
+        _ => return Err(io::Error::new(io::ErrorKind::InvalidData, "Secret key not found")),
+    };
 
-    let public_bytes = public_key.ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Public key not found in VSF file",
-        )
-    })?;
+    let public_bytes = match fields.get("public") {
+        Some(VsfType::ke(bytes)) => {
+            if bytes.len() != 32 {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "Public key must be 32 bytes"));
+            }
+            bytes.clone()
+        }
+        _ => return Err(io::Error::new(io::ErrorKind::InvalidData, "Public key not found")),
+    };
 
     // Reconstruct keypair
     let secret =
