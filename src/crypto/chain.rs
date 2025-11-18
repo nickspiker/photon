@@ -42,8 +42,7 @@ impl MessageChain {
 
     pub fn encrypt(&mut self, payload: &[u8]) -> EncryptedMessage {
         let message = Message::new(self.send_sequence, payload.to_vec());
-        let serialized = bincode::encode_to_vec(&message, bincode::config::standard())
-            .expect("Failed to serialize message");
+        let serialized = message.to_vsf_bytes();
 
         // TODO: Proper key derivation - for now just XOR with state
         let mut ciphertext = serialized.clone();
@@ -88,9 +87,8 @@ impl MessageChain {
             *byte ^= self.state[i % 32];
         }
 
-        let (message, _): (Message, usize) =
-            bincode::decode_from_slice(&plaintext, bincode::config::standard())
-                .map_err(|_| ChainError::InvalidMessage)?;
+        let message =
+            Message::from_vsf_bytes(&plaintext).map_err(|_| ChainError::InvalidMessage)?;
 
         // Advance chain state
         self.advance_state(&encrypted.ciphertext);
@@ -125,8 +123,7 @@ impl MessageChain {
                 *byte ^= self.state[i % 32];
             }
 
-            match bincode::decode_from_slice::<Message, _>(&plaintext, bincode::config::standard())
-            {
+            match Message::from_vsf_bytes(&plaintext) {
                 Ok(_message) => {
                     // Advance chain state
                     self.advance_state(&ciphertext);

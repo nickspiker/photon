@@ -48,7 +48,6 @@
 ///!
 ///! This is a software commitment—binaries bearing this signature are guaranteed to be
 ///! built and released by the original author. No exceptions.
-
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 
 /// Embedded public key for signature verification
@@ -60,15 +59,15 @@ const PUBLIC_KEY_BYTES: [u8; 32] = [
 
 /// Verify that this binary has a valid Ed25519 signature
 ///
-/// Returns Ok(()) ONLY if signature is present and valid
+/// Returns Ok(signature_hex) ONLY if signature is present and valid
 /// Returns Err for any other condition (missing signature, tampered binary, invalid signature)
-pub fn verify_binary_hash() -> Result<(), String> {
+pub fn verify_binary_hash() -> Result<String, String> {
     // Read our own executable
-    let exe_path = std::env::current_exe()
-        .map_err(|e| format!("Failed to get executable path: {}", e))?;
+    let exe_path =
+        std::env::current_exe().map_err(|e| format!("Failed to get executable path: {}", e))?;
 
-    let mut exe_data = std::fs::read(&exe_path)
-        .map_err(|e| format!("Failed to read executable: {}", e))?;
+    let mut exe_data =
+        std::fs::read(&exe_path).map_err(|e| format!("Failed to read executable: {}", e))?;
 
     // Check if binary has signature appended (last 64 bytes)
     if exe_data.len() < 64 {
@@ -103,5 +102,5 @@ pub fn verify_binary_hash() -> Result<(), String> {
         .verify(hash.as_bytes(), &signature)
         .map_err(|_| "Signature verification failed - binary corrupted or modified".to_string())?;
 
-    Ok(())
+    Ok(hex::encode(signature.to_bytes()).to_uppercase())
 }

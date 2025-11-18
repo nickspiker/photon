@@ -105,13 +105,13 @@ pub struct PhotonApp {
     pub handle_status: HandleStatus, // Handle attestation status for button flow
     pub query_start_time: Option<std::time::Instant>, // When handle query started (for 1s simulation)
     pub handle_query: HandleQuery,                    // Network query system for handle attestation
-    pub spectrum_phase: f32,                          // Rainbow sine wave phase (radians), animates during query
-    pub speckle_counter: f32,                         // Background speckle animation counter, animates during query
-    pub last_frame_time: std::time::Instant,          // Last frame timestamp for delta time calculation
-    pub fps: f32,                                     // Current frames per second
-    pub frame_times: Vec<f32>,                        // Recent frame delta times for FPS averaging
-    pub target_frame_duration_ms: u64,                // Target frame duration based on monitor refresh rate
-    pub next_animation_frame: std::time::Instant,     // When next animation frame should be drawn
+    pub spectrum_phase: f32, // Rainbow sine wave phase (radians), animates during query
+    pub speckle_counter: f32, // Background speckle animation counter, animates during query
+    pub last_frame_time: std::time::Instant, // Last frame timestamp for delta time calculation
+    pub fps: f32,            // Current frames per second
+    pub frame_times: Vec<f32>, // Recent frame delta times for FPS averaging
+    pub target_frame_duration_ms: u64, // Target frame duration based on monitor refresh rate
+    pub next_animation_frame: std::time::Instant, // When next animation frame should be drawn
 
     // Text state for differential rendering
     pub current_text_state: TextState,
@@ -189,7 +189,11 @@ pub enum ResizeEdge {
 
 impl PhotonApp {
     #[cfg(target_os = "linux")]
-    pub async fn new(window: &Window, blinkey_blink_rate_ms: u64, target_frame_duration_ms: u64) -> Self {
+    pub async fn new(
+        window: &Window,
+        blinkey_blink_rate_ms: u64,
+        target_frame_duration_ms: u64,
+    ) -> Self {
         let size = window.inner_size();
         let renderer = Renderer::new(window, size.width, size.height).await;
         let text_renderer = TextRenderer::new();
@@ -220,7 +224,22 @@ impl PhotonApp {
             next_blinkey_blink_time: std::time::Instant::now(),
             handle_status: HandleStatus::Empty,
             query_start_time: None,
-            handle_query: HandleQuery::new(),
+            handle_query: {
+                use crate::network::fgtw::{load_or_generate_device_key, FgtwPaths, FgtwTransport};
+                let paths = FgtwPaths::new().expect("Failed to get FGTW paths");
+                let device_keypair = load_or_generate_device_key(&paths.device_key)
+                    .expect("Failed to load/generate device key");
+
+                let our_identity = crate::types::PublicIdentity::from_bytes(
+                    *device_keypair.public.as_bytes(),
+                );
+
+                let handle_query = HandleQuery::new(our_identity.clone());
+                let transport = std::sync::Arc::new(FgtwTransport::new(our_identity, 41641));
+                handle_query.set_transport(transport);
+
+                handle_query
+            },
             spectrum_phase: 0.0,
             speckle_counter: 0.0,
             last_frame_time: std::time::Instant::now(),
@@ -289,7 +308,22 @@ impl PhotonApp {
             next_blinkey_blink_time: std::time::Instant::now(),
             handle_status: HandleStatus::Empty,
             query_start_time: None,
-            handle_query: HandleQuery::new(),
+            handle_query: {
+                use crate::network::fgtw::{load_or_generate_device_key, FgtwPaths, FgtwTransport};
+                let paths = FgtwPaths::new().expect("Failed to get FGTW paths");
+                let device_keypair = load_or_generate_device_key(&paths.device_key)
+                    .expect("Failed to load/generate device key");
+
+                let our_identity = crate::types::PublicIdentity::from_bytes(
+                    *device_keypair.public.as_bytes(),
+                );
+
+                let handle_query = HandleQuery::new(our_identity.clone());
+                let transport = std::sync::Arc::new(FgtwTransport::new(our_identity, 41641));
+                handle_query.set_transport(transport);
+
+                handle_query
+            },
             spectrum_phase: 0.0,
             speckle_counter: 0.0,
             last_frame_time: std::time::Instant::now(),
@@ -440,21 +474,34 @@ impl PhotonApp {
         let now = std::time::Instant::now();
         self.query_start_time = Some(now);
         self.last_frame_time = now; // Reset to prevent animation jerk on first frame
-        // Initialize animation frame timing
-        self.next_animation_frame = now + std::time::Duration::from_millis(self.target_frame_duration_ms);
+                                    // Initialize animation frame timing
+        self.next_animation_frame =
+            now + std::time::Duration::from_millis(self.target_frame_duration_ms);
     }
 
     /// Check if query response is ready and update handle_status
     pub fn check_query_response(&mut self) -> bool {
         if let Some(result) = self.handle_query.try_recv() {
+            eprintln!("UI: Received query result: {:?}", result);
             let new_status = match result {
-                QueryResult::Unattested => HandleStatus::Unattested,
-                QueryResult::AlreadyAttested => HandleStatus::AlreadyAttested,
+                QueryResult::Unattested => {
+                    eprintln!("UI: Handle is AVAILABLE - transitioning to Unattested state");
+                    HandleStatus::Unattested
+                }
+                QueryResult::AlreadyAttested(_peers) => {
+                    eprintln!("UI: Handle is CLAIMED - transitioning to AlreadyAttested state");
+                    HandleStatus::AlreadyAttested
+                }
             };
-            debug_println!("Query completed: {:?} -> {:?}", self.handle_status, new_status);
+            debug_println!(
+                "Query completed: {:?} -> {:?}",
+                self.handle_status,
+                new_status
+            );
             self.handle_status = new_status;
             self.query_start_time = None;
             self.window_dirty = true; // Trigger redraw to update button
+            eprintln!("UI: Query complete, window marked dirty for redraw");
             return true;
         }
         false

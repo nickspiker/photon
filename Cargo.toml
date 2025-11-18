@@ -3,11 +3,15 @@ name = "photon-messenger"
 version = "0.0.36"
 edition = "2021"
 authors = ["Nick Spiker <fractaldecoder@proton.me>"]
-license = "MIT"
+license = "MIT OR Apache-2.0"
 description = "Decentralized messenger with rolling-chain encryption"
 repository = "https://github.com/nickspiker/photon"
 keywords = ["messenger", "encryption", "decentralized", "p2p", "privacy"]
 categories = ["cryptography", "network-programming"]
+
+[features]
+default = []
+skip-sig = []  # Skip binary signature verification
 
 [[bin]]
 name = "photon-keygen"
@@ -23,7 +27,8 @@ ed25519-dalek = { version = "2", features = ["rand_core"] }
 # Crypto
 blake3 = "1.5"
 chacha20poly1305 = "0.10"
-x25519-dalek = "2.0"
+aes-gcm = "0.10"
+x25519-dalek = { version = "2.0", features = ["static_secrets"] }
 rand = "0.8"
 zeroize = { version = "1.7", features = ["derive"] }
 
@@ -31,7 +36,6 @@ zeroize = { version = "1.7", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = "0.28.0"
 tokio-native-tls = "0.3"
-mainline = "6.0.0"  # DHT
 serde = { version = "1.0", features = ["derive"] }
 
 # Storage
@@ -50,7 +54,11 @@ cosmic-text = "0.14.2"
 rayon = "1.11.0"
 softbuffer = "0.4"
 arboard = "3.4"  # Cross-platform clipboard access
-unicode-normalization = "0.1"  # NFC normalization for handle validation
+vsf = { version = "0.1.11", path = "../vsf", features = ["crypto"] }
+chrono = "0.4.42"
+reqwest = { version = "0.12.24", default-features = false, features = ["rustls-tls"] }
+dirs = "6.0.0"
+curve25519-dalek = "4"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.58", features = [
@@ -65,6 +73,7 @@ windows = { version = "0.58", features = [
 jni = "0.21"
 ndk = "0.9.0"
 ndk-glue = "0.7"
+
 
 [dev-dependencies]
 criterion = "0.7.0"

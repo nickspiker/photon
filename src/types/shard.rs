@@ -1,5 +1,6 @@
 use super::ContactId;
 use serde::{Deserialize, Serialize};
+use std::time::{SystemTime, UNIX_EPOCH};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -71,7 +72,10 @@ impl KeyShard {
             index,
             threshold,
             total_shards,
-            created_at: crate::types::message::current_timestamp(),
+            created_at: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
         }
     }
 }

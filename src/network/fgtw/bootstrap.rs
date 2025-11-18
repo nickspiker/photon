@@ -1,39 +1,219 @@
-use super::PeerRecord;
+use super::{storage::Keypair, PeerRecord};
 use vsf::parse;
 
-const BOOTSTRAP_URL: &str = "https://fgtw.org/peers.vsf";
+const FGTW_URL: &str = "https://fgtw.org";
 
-/// Load bootstrap peers from fgtw.org/peers.vsf
-pub async fn load_bootstrap_peers() -> Result<Vec<PeerRecord>, String> {
-    println!("FGTW: Fetching bootstrap peers from {}", BOOTSTRAP_URL);
+// FGTW Seed Public Key (hardcoded to avoid extra queries)
+// This is the X25519 public key of the fgtw.org bootstrap server
+// Used for encrypting announce messages
+pub const FGTW_X25519_PUBLIC_KEY: [u8; 32] = [
+    0x3D, 0x55, 0x63, 0xA3, 0x9C, 0xB4, 0x0F, 0x68,
+    0x0E, 0x20, 0x88, 0x76, 0xDC, 0x2E, 0x3E, 0x58,
+    0xC2, 0xFB, 0xF4, 0xA0, 0x37, 0x60, 0xB1, 0x25,
+    0x61, 0xC0, 0xAF, 0xE1, 0x12, 0xAD, 0xDD, 0x11,
+];
 
-    // Fetch VSF file
+/// Load bootstrap peers by announcing to FGTW
+/// This requires authenticating with our handle and device key
+pub async fn load_bootstrap_peers(
+    device_key: &Keypair,
+    handle_hash: [u8; 32],
+    port: u16,
+) -> Result<Vec<PeerRecord>, String> {
+    println!("FGTW: Bootstrapping via announce to {}", FGTW_URL);
+
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
-    let response = client
-        .get(BOOTSTRAP_URL)
+    // Step 1: Get challenge from FGTW
+    let challenge_response = client
+        .get(&format!("{}/challenge", FGTW_URL))
         .send()
         .await
-        .map_err(|e| format!("Failed to fetch bootstrap file: {}", e))?;
+        .map_err(|e| format!("Failed to fetch challenge: {}", e))?;
 
-    if !response.status().is_success() {
-        return Err(format!("HTTP error: {}", response.status()));
+    if !challenge_response.status().is_success() {
+        return Err(format!("Challenge HTTP error: {}", challenge_response.status()));
     }
 
-    let bytes = response
+    let challenge_bytes = challenge_response
         .bytes()
         .await
-        .map_err(|e| format!("Failed to read response: {}", e))?;
+        .map_err(|e| format!("Failed to read challenge: {}", e))?;
 
-    // Parse VSF peer list
-    parse_bootstrap_file(&bytes)
+    // Step 2: Parse challenge to extract provenance hash
+    let challenge_hash = parse_challenge_hash(&challenge_bytes)?;
+
+    // Step 3: Build announce message with challenge provenance hash
+    // The announce will generate its own timestamp at flattening time
+    let announce_bytes = build_announce_message(handle_hash, device_key, port, challenge_hash)?;
+
+    // DEBUG: Save announce message for inspection
+    std::fs::write("/tmp/photon-announce.vsf", &announce_bytes).ok();
+
+    // Step 4: Send announce to FGTW
+    let announce_response = client
+        .post(&format!("{}/announce", FGTW_URL))
+        .header("Content-Type", "application/octet-stream")
+        .body(announce_bytes)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to send announce: {}", e))?;
+
+    if !announce_response.status().is_success() {
+        return Err(format!("Announce HTTP error: {}", announce_response.status()));
+    }
+
+    let peer_list_bytes = announce_response
+        .bytes()
+        .await
+        .map_err(|e| format!("Failed to read peer list: {}", e))?;
+
+    // Parse VSF peer list from response
+    parse_peer_list(&peer_list_bytes)
 }
 
-/// Parse bootstrap VSF file (list of peer records)
-fn parse_bootstrap_file(bytes: &[u8]) -> Result<Vec<PeerRecord>, String> {
+/// Parse challenge VSF to extract provenance hash
+/// The timestamp in the challenge is ignored - announce generates its own timestamp
+fn parse_challenge_hash(bytes: &[u8]) -> Result<[u8; 32], String> {
+    // Use VSF's compute_provenance_hash to extract the hp field
+    // This handles all the encoding details for us
+    let hash_bytes = vsf::verification::compute_provenance_hash(bytes)
+        .map_err(|e| format!("Failed to extract challenge hash: {}", e))?;
+
+    eprintln!("DEBUG parse_challenge: Extracted challenge hash: {}", hex::encode(&hash_bytes));
+    Ok(hash_bytes)
+}
+
+/// Encrypt data for FGTW using ephemeral X25519 + AES-256-GCM
+/// Format: [ephemeral_pubkey:32][nonce:12][ciphertext+tag]
+/// This matches FGTW's Web Crypto API implementation
+fn encrypt_for_fgtw(plaintext: &[u8], fgtw_x25519_pubkey: &[u8; 32]) -> Result<Vec<u8>, String> {
+    use aes_gcm::{
+        aead::{Aead, KeyInit, OsRng},
+        Aes256Gcm, Nonce,
+    };
+    use x25519_dalek::{EphemeralSecret, PublicKey};
+
+    // Use the X25519 public key directly
+    let x25519_pubkey = PublicKey::from(*fgtw_x25519_pubkey);
+
+    // Generate ephemeral X25519 keypair
+    let ephemeral_secret = EphemeralSecret::random_from_rng(OsRng);
+    let ephemeral_public = PublicKey::from(&ephemeral_secret);
+
+    // Perform ECDH with FGTW's X25519 public key
+    let shared_secret = ephemeral_secret.diffie_hellman(&x25519_pubkey);
+
+    // Derive AES-256-GCM key from shared secret (32 bytes)
+    let cipher = Aes256Gcm::new(shared_secret.as_bytes().into());
+
+    // Generate random nonce (12 bytes for AES-GCM)
+    let mut nonce_bytes = [0u8; 12];
+    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce_bytes);
+    let nonce = Nonce::from(nonce_bytes);
+
+    // Encrypt
+    let ciphertext = cipher
+        .encrypt(&nonce, plaintext)
+        .map_err(|e| format!("Encryption error: {}", e))?;
+
+    // Combine: ephemeral_pubkey || nonce || ciphertext+tag
+    let mut result = Vec::new();
+    result.extend_from_slice(ephemeral_public.as_bytes());
+    result.extend_from_slice(&nonce_bytes);
+    result.extend_from_slice(&ciphertext);
+
+    Ok(result)
+}
+
+/// Encode a hash in VSF format with actual bytes (not flattened zeros)
+/// Format: b'h' b'<type>' [encoding of (len-1)] [actual bytes]
+fn encode_hash_bytes(hash_type: u8, bytes: &[u8]) -> Vec<u8> {
+    use vsf::encoding::traits::EncodeNumber;
+    let mut encoded = vec![b'h', hash_type];
+    encoded.extend_from_slice(&(bytes.len() - 1).encode_number());
+    encoded.extend_from_slice(bytes);
+    encoded
+}
+
+/// Build VSF announce message (new encrypted format)
+/// Structure: RÅ< z y b ef6 hp n[1] (d"announce" ke v'e'[encrypted] o b n0) > [d"announce" v(b'e', encrypted[hb(challenge) + hb(handle) + u(port)])]
+/// The device Ed25519 key (ke) is in the header field, signature (ge) is added by sign_section()
+/// Timestamp is generated at flattening time by sign_section()
+fn build_announce_message(
+    handle_hash: [u8; 32],
+    device_key: &Keypair,
+    port: u16,
+    challenge_hash: [u8; 32],
+) -> Result<Vec<u8>, String> {
+    use vsf::file_format::{HeaderField, VsfSection};
+    use vsf::types::EtType;
+    use vsf::verification::sign_section;
+    use vsf::vsf_builder::VsfBuilder;
+    use vsf::{VsfType, VSF_BACKWARD_COMPAT, VSF_VERSION};
+
+    // 1. Build encrypted payload: hb(challenge_hash) + hb(handle_hash) + u(port)
+    // IMPORTANT: Must encode with actual hash bytes, NOT flatten() which zeros them out!
+    let mut plaintext = Vec::new();
+    plaintext.extend(encode_hash_bytes(b'b', &challenge_hash));
+    plaintext.extend(encode_hash_bytes(b'b', &handle_hash));
+    plaintext.extend(VsfType::u(port as usize, false).flatten());
+
+    // 2. Encrypt for FGTW using ephemeral X25519 + AES-GCM
+    let encrypted = encrypt_for_fgtw(&plaintext, &FGTW_X25519_PUBLIC_KEY)?;
+
+    // 3. Build the "announce" section with encrypted wrapper
+    let mut section_bytes = Vec::new();
+    section_bytes.push(b'[');
+    section_bytes.extend(VsfType::d("announce".to_string()).flatten());
+    section_bytes.extend(VsfType::v(b'e', encrypted).flatten());
+    section_bytes.push(b']');
+
+    // 4. Create VsfHeader without timestamp - sign_section() will generate one at flattening time
+    let mut header = vsf::file_format::VsfHeader::new(VSF_VERSION, VSF_BACKWARD_COMPAT);
+
+    // 5. Create header field with device Ed25519 key and encryption metadata
+    // FGTW will derive X25519 from Ed25519 when needed for encryption
+    let announce_field = HeaderField {
+        name: "announce".to_string(),
+        hash: None,
+        signature: None, // Will be added by sign_section()
+        key: Some(VsfType::ke(device_key.public.to_bytes().to_vec())), // Ed25519 device public key
+        wrap: Some(VsfType::v(b'e', vec![])), // Empty vec = metadata only
+        offset_bytes: 0, // Placeholder, will be fixed by stabilization
+        size_bytes: section_bytes.len(),
+        child_count: 0, // Encrypted sections have implied n[0]
+    };
+    header.add_field(announce_field);
+
+    // 6. Use VsfHeader's encode and stabilization
+    let mut header_bytes = header.encode()?;
+    vsf::file_format::VsfHeader::update_header_length(&mut header_bytes)?;
+
+    // Append section
+    header_bytes.extend(&section_bytes);
+
+    // 7. Sign the "announce" section using sign_section
+    // This will parse the VSF, rebuild it with correct offsets, compute hashes, and add signature
+    eprintln!("DEBUG build_announce: About to call sign_section, header_bytes len: {}", header_bytes.len());
+    let signed_message = sign_section(header_bytes, "announce", device_key.secret.as_bytes())?;
+    eprintln!("DEBUG build_announce: sign_section returned, signed_message len: {}", signed_message.len());
+
+    // Check signature bytes in the result
+    if signed_message.len() > 0xA9 {
+        let sig_start = 0x6A;
+        let sig_bytes = &signed_message[sig_start..sig_start+8];
+        eprintln!("DEBUG build_announce: Signature bytes at 0x{:X}: {:02X?}", sig_start, sig_bytes);
+    }
+
+    Ok(signed_message)
+}
+
+/// Parse peer list from VSF bytes
+fn parse_peer_list(bytes: &[u8]) -> Result<Vec<PeerRecord>, String> {
     let mut ptr = 0;
 
     // Parse peer count

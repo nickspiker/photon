@@ -26,7 +26,7 @@ impl PhotonApp {
             // Spectrum: 2 pi radians per second = 1 full cycle/sec
             self.spectrum_phase += delta_time * std::f32::consts::PI * 2.0;
             self.spectrum_phase %= std::f32::consts::TAU; // Wrap phase
-            // Speckles: high increment rate creates nice animated effect
+                                                          // Speckles: high increment rate creates nice animated effect
             self.speckle_counter += delta_time * (usize::MAX / 64) as f32;
             // Mark window dirty to trigger redraw of animated elements
             self.window_dirty = true;
@@ -570,6 +570,106 @@ impl PhotonApp {
                     self.prev_hovered_button = self.hovered_button;
                 }
             }
+
+            // Reapply current hover state after window_dirty redraws
+            // (full redraws clear the framebuffer, losing hover overlays)
+            // This runs OUTSIDE controls_dirty so it works during animation
+            if self.window_dirty && self.hovered_button != HoveredButton::None {
+                // Calculate button centers for centerpoint fill
+                let smaller_dim = self.width.min(self.height) as f32;
+                let button_height = (smaller_dim / 16.).ceil() as usize;
+                let button_width = button_height;
+                let total_width = button_width * 7 / 2;
+                let x_start = self.width as usize - total_width;
+                let y_start = 0;
+                let button_center_y = y_start + button_height / 2;
+
+                // Buttons are offset by button_width / 4 from x_start
+                let button_area_x_start = x_start + button_width / 4;
+
+                // Minimize: 1px left of left hairline
+                let minimize_center_x = button_area_x_start + button_width - 1;
+                // Maximize: center between the two hairlines
+                let maximize_center_x = button_area_x_start + button_width + button_width / 2;
+                // Close: 1px right of right hairline
+                let close_center_x = button_area_x_start + button_width * 2 + 1;
+
+                // Reapply current hover
+                match self.hovered_button {
+                    HoveredButton::Close => {
+                        Self::draw_hover_centerpoint(
+                            pixels,
+                            &self.hit_test_map,
+                            self.width as usize,
+                            self.height as usize,
+                            close_center_x,
+                            button_center_y,
+                            HIT_CLOSE_BUTTON,
+                            true,
+                            theme::CLOSE_HOVER,
+                            self.debug,
+                        );
+                    }
+                    HoveredButton::Maximize => {
+                        Self::draw_hover_centerpoint(
+                            pixels,
+                            &self.hit_test_map,
+                            self.width as usize,
+                            self.height as usize,
+                            maximize_center_x,
+                            button_center_y,
+                            HIT_MAXIMIZE_BUTTON,
+                            true,
+                            theme::MAXIMIZE_HOVER,
+                            self.debug,
+                        );
+                    }
+                    HoveredButton::Minimize => {
+                        Self::draw_hover_centerpoint(
+                            pixels,
+                            &self.hit_test_map,
+                            self.width as usize,
+                            self.height as usize,
+                            minimize_center_x,
+                            button_center_y,
+                            HIT_MINIMIZE_BUTTON,
+                            true,
+                            theme::MINIMIZE_HOVER,
+                            self.debug,
+                        );
+                    }
+                    HoveredButton::Textbox => {
+                        Self::draw_hover_centerpoint(
+                            pixels,
+                            &self.hit_test_map,
+                            self.width as usize,
+                            self.height as usize,
+                            center_x,
+                            center_y,
+                            HIT_HANDLE_TEXTBOX,
+                            true,
+                            theme::TEXTBOX_HOVER,
+                            self.debug,
+                        );
+                    }
+                    HoveredButton::QueryButton => {
+                        let query_button_center_y = center_y + box_height + box_height;
+                        Self::draw_hover_centerpoint(
+                            pixels,
+                            &self.hit_test_map,
+                            self.width as usize,
+                            self.height as usize,
+                            center_x,
+                            query_button_center_y,
+                            HIT_PRIMARY_BUTTON,
+                            true,
+                            theme::QUERY_BUTTON_HOVER,
+                            self.debug,
+                        );
+                    }
+                    HoveredButton::None => {}
+                }
+            }
             if self.debug {
                 // Draw black strip at bottom for debug counters
                 let counter_size = self.min_dim / 24;
@@ -594,7 +694,7 @@ impl PhotonApp {
                     self.width as usize,
                     &redraw_text,
                     counter_size,
-                    self.height as f32 - counter_size ,
+                    self.height as f32 - counter_size,
                     counter_size,
                     400,
                     0xFFFFFFFF,
@@ -606,7 +706,7 @@ impl PhotonApp {
                     self.width as usize,
                     &update_text,
                     self.width as f32 / 3.,
-                    self.height as f32 - counter_size ,
+                    self.height as f32 - counter_size,
                     counter_size,
                     400,
                     0xFFFFFFFF,
@@ -619,7 +719,7 @@ impl PhotonApp {
                     self.width as usize,
                     &frame_text,
                     self.width as f32 / 3. * 2.,
-                    self.height as f32 - counter_size ,
+                    self.height as f32 - counter_size,
                     counter_size,
                     400,
                     0xFFFFFFFF,
@@ -632,7 +732,7 @@ impl PhotonApp {
                     self.width as usize,
                     &fps_text,
                     self.width as f32 - counter_size,
-                    self.height as f32 - counter_size ,
+                    self.height as f32 - counter_size,
                     counter_size,
                     400,
                     0xFFFFFFFF,

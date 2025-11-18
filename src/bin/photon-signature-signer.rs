@@ -1,11 +1,10 @@
 //! Sign photon-messenger binary with Ed25519 cryptographic signature
 //!
-//! This utility is installed alongside photon-messenger via cargo install.
-//! After signing the main binary, it deletes itself.
+//! This utility signs binaries for distribution.
 //!
 //! Usage: photon-signature-signer <binary-path>
 
-use ed25519_dalek::{Signature, Signer, SigningKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use std::{env, fs, path::PathBuf};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -23,12 +22,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Signing binary: {}", binary_path);
 
     // Read the binary
-    let binary_data = fs::read(binary_path)?;
+    let mut binary_data = fs::read(binary_path)?;
     println!("  Binary size: {} bytes", binary_data.len());
-
-    // Hash it with BLAKE3
-    let hash = blake3::hash(&binary_data);
-    println!("  BLAKE3 hash: {}", hex::encode(hash.as_bytes()));
 
     // Load private key
     let keys_dir = PathBuf::from("/mnt/Chiton/MEGA/Code/keys");
@@ -48,10 +43,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .try_into()
             .map_err(|_| "Invalid private key length")?,
     );
+    let verifying_key = signing_key.verifying_key();
+
+    // Check if already signed by attempting to verify the signature
+    if binary_data.len() >= 64 {
+        let signature_bytes = binary_data.split_off(binary_data.len() - 64);
+        let signature =
+            Signature::from_bytes(signature_bytes.as_slice().try_into().unwrap_or(&[0u8; 64]));
+
+        let hash = blake3::hash(&binary_data);
+
+        if verifying_key.verify(hash.as_bytes(), &signature).is_ok() {
+            println!("\n⚠ Binary is already signed with your key!");
+            println!("  Signature verification passed");
+            println!("  Skipping to avoid double-signing");
+            println!("  Rebuild the binary first if you need to re-sign");
+            return Ok(());
+        }
+
+        // Not signed with our key, restore the data
+        binary_data.extend_from_slice(&signature_bytes);
+    }
+
+    // Hash it with BLAKE3
+    let hash = blake3::hash(&binary_data);
+    println!(
+        "  BLAKE3 hash: {}",
+        hex::encode(hash.as_bytes()).to_uppercase()
+    );
 
     // Sign the hash
     let signature: Signature = signing_key.sign(hash.as_bytes());
-    println!("  Ed25519 signature: {}", hex::encode(signature.to_bytes()));
+    println!(
+        "  Ed25519 signature: {}",
+        hex::encode(signature.to_bytes()).to_uppercase()
+    );
 
     // Append signature to binary (64 bytes)
     let mut signed_binary = binary_data;
@@ -61,43 +87,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     fs::write(binary_path, &signed_binary)?;
 
     println!("\n✓ Signature appended to binary!");
-    println!("  New size: {} bytes (+64 for signature)", signed_binary.len());
-
-    // Self-delete after successful signing
-    let self_path = env::current_exe()?;
-    println!("\nCleaning up...");
-
-    // On Windows, we can't delete ourselves while running, so we need a workaround
-    #[cfg(target_os = "windows")]
-    {
-        // Create a batch file that waits and deletes us
-        let batch_path = self_path.with_extension("bat");
-        let batch_content = format!(
-            "@echo off\n\
-             :wait\n\
-             timeout /t 1 /nobreak >nul\n\
-             del /f /q \"{}\" 2>nul\n\
-             if exist \"{}\" goto wait\n\
-             del /f /q \"%~f0\"\n",
-            self_path.display(),
-            self_path.display()
-        );
-        fs::write(&batch_path, batch_content)?;
-
-        // Launch the batch file detached
-        std::process::Command::new("cmd")
-            .args(&["/C", "start", "/B", batch_path.to_str().unwrap()])
-            .spawn()?;
-
-        println!("✓ Self-deletion scheduled");
-    }
-
-    // On Unix, we can delete ourselves directly
-    #[cfg(not(target_os = "windows"))]
-    {
-        fs::remove_file(&self_path)?;
-        println!("✓ Signer removed");
-    }
+    println!(
+        "  New size: {} bytes (+64 for signature)",
+        signed_binary.len()
+    );
 
     Ok(())
 }

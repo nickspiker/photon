@@ -6,26 +6,10 @@ use std::sync::atomic::Ordering;
 
 use super::app::{HandleStatus, PhotonApp};
 use rand::Rng;
-use unicode_normalization::UnicodeNormalization;
 use winit::{
     event::{ElementState, KeyEvent},
     keyboard::{Key, NamedKey},
 };
-
-/// Check if a character passes the NFC round-trip test
-/// Only rule: must round-trip cleanly through NFC normalization as a single char
-fn is_char_valid(ch: char) -> bool {
-    let normalized: String = ch.to_string().nfc().collect();
-
-    // Must produce exactly 1 char after normalization
-    if normalized.chars().count() != 1 {
-        return false;
-    }
-
-    // Must round-trip (input == normalized output)
-    let round_trip_char = normalized.chars().next().unwrap();
-    round_trip_char == ch
-}
 
 impl PhotonApp {
     pub fn handle_keyboard(&mut self, event: KeyEvent) {
@@ -327,11 +311,7 @@ impl PhotonApp {
 
                 let font_size = self.font_size();
                 for ch in text.chars() {
-                    // Validate character: must round-trip cleanly through NFC
-                    if !is_char_valid(ch) {
-                        // Silently reject invalid characters
-                        continue;
-                    }
+                    // VSF handles normalization, accept all chars
 
                     // Measure character width
                     let width = self.text_renderer.measure_text_width(

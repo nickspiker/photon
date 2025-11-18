@@ -1,6 +1,7 @@
 use super::PublicIdentity;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Peer {
@@ -31,7 +32,10 @@ impl Peer {
         Self {
             public_identity,
             address,
-            last_seen: crate::types::message::current_timestamp(),
+            last_seen: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
             connection_state: ConnectionState::Disconnected,
         }
     }
@@ -39,7 +43,10 @@ impl Peer {
     pub fn update_connection_state(&mut self, state: ConnectionState) {
         self.connection_state = state;
         if state == ConnectionState::Connected || state == ConnectionState::Authenticated {
-            self.last_seen = crate::types::message::current_timestamp();
+            self.last_seen = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
         }
     }
 

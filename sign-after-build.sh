@@ -21,9 +21,11 @@ fi
 
 echo "Signing $BINARY_PATH..."
 
-# Build the signer if it doesn't exist
+# Build the signer if it doesn't exist (native target only)
 if [ ! -f "target/release/photon-signature-signer" ]; then
+    echo "Building signature signer (one-time setup)..."
     cargo build --release --bin photon-signature-signer
+    echo ""
 fi
 
 # Sign the binary

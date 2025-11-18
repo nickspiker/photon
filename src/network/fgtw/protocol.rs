@@ -43,130 +43,234 @@ pub struct PeerRecord {
 }
 
 impl FgtwMessage {
-    /// Serialize to VSF bytes
+    /// Serialize to proper VSF file
     pub fn to_vsf_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::new();
+        use vsf::VsfBuilder;
 
-        match self {
+        let builder = VsfBuilder::new();
+
+        let result = match self {
             FgtwMessage::Ping { device_pubkey } => {
-                bytes.extend(VsfType::u3(0).flatten());
-                bytes.extend(VsfType::kx(device_pubkey.as_bytes().to_vec()).flatten());
+                builder.add_section("fgtw", vec![
+                    ("msg_type".to_string(), VsfType::u3(0)),
+                    ("device_pubkey".to_string(), VsfType::kx(device_pubkey.as_bytes().to_vec())),
+                ]).build()
             }
-            FgtwMessage::Pong {
-                device_pubkey,
-                peers,
-            } => {
-                bytes.extend(VsfType::u3(1).flatten());
-                bytes.extend(VsfType::kx(device_pubkey.as_bytes().to_vec()).flatten());
-                bytes.extend(serialize_peer_list(peers));
+            FgtwMessage::Pong { device_pubkey, peers } => {
+                let mut fields = vec![
+                    ("msg_type".to_string(), VsfType::u3(1)),
+                    ("device_pubkey".to_string(), VsfType::kx(device_pubkey.as_bytes().to_vec())),
+                    ("peer_count".to_string(), VsfType::u(peers.len(), false)),
+                ];
+
+                // Add each peer as separate fields
+                for (i, peer) in peers.iter().enumerate() {
+                    let prefix = format!("peer_{}", i);
+                    fields.push((format!("{}_handle_hash", prefix), VsfType::hb(peer.handle_hash.to_vec())));
+                    fields.push((format!("{}_device_pubkey", prefix), VsfType::kx(peer.device_pubkey.as_bytes().to_vec())));
+                    fields.push((format!("{}_ip", prefix), VsfType::x(peer.ip.to_string())));
+                    fields.push((format!("{}_last_seen", prefix), VsfType::f6(peer.last_seen)));
+                }
+
+                builder.add_section("fgtw", fields).build()
             }
-            FgtwMessage::FindNode {
-                handle_hash,
-                requester_pubkey,
-            } => {
-                bytes.extend(VsfType::u3(2).flatten());
-                bytes.extend(VsfType::hb(handle_hash.to_vec()).flatten());
-                bytes.extend(VsfType::kx(requester_pubkey.as_bytes().to_vec()).flatten());
+            FgtwMessage::FindNode { handle_hash, requester_pubkey } => {
+                builder.add_section("fgtw", vec![
+                    ("msg_type".to_string(), VsfType::u3(2)),
+                    ("handle_hash".to_string(), VsfType::hb(handle_hash.to_vec())),
+                    ("requester_pubkey".to_string(), VsfType::kx(requester_pubkey.as_bytes().to_vec())),
+                ]).build()
             }
             FgtwMessage::FoundNodes { devices } => {
-                bytes.extend(VsfType::u3(3).flatten());
-                bytes.extend(serialize_peer_list(devices));
+                let mut fields = vec![
+                    ("msg_type".to_string(), VsfType::u3(3)),
+                    ("device_count".to_string(), VsfType::u(devices.len(), false)),
+                ];
+
+                for (i, device) in devices.iter().enumerate() {
+                    let prefix = format!("device_{}", i);
+                    fields.push((format!("{}_handle_hash", prefix), VsfType::hb(device.handle_hash.to_vec())));
+                    fields.push((format!("{}_device_pubkey", prefix), VsfType::kx(device.device_pubkey.as_bytes().to_vec())));
+                    fields.push((format!("{}_ip", prefix), VsfType::x(device.ip.to_string())));
+                    fields.push((format!("{}_last_seen", prefix), VsfType::f6(device.last_seen)));
+                }
+
+                builder.add_section("fgtw", fields).build()
             }
-            FgtwMessage::Announce {
-                handle_hash,
-                device_pubkey,
-                port,
-            } => {
-                bytes.extend(VsfType::u3(4).flatten());
-                bytes.extend(VsfType::hb(handle_hash.to_vec()).flatten());
-                bytes.extend(VsfType::kx(device_pubkey.as_bytes().to_vec()).flatten());
-                bytes.extend(VsfType::u(*port as usize, false).flatten());
+            FgtwMessage::Announce { handle_hash, device_pubkey, port } => {
+                builder.add_section("fgtw", vec![
+                    ("msg_type".to_string(), VsfType::u3(4)),
+                    ("handle_hash".to_string(), VsfType::hb(handle_hash.to_vec())),
+                    ("device_pubkey".to_string(), VsfType::kx(device_pubkey.as_bytes().to_vec())),
+                    ("port".to_string(), VsfType::u(*port as usize, false)),
+                ]).build()
             }
-            FgtwMessage::Query {
-                handle_hash,
-                requester_pubkey,
-            } => {
-                bytes.extend(VsfType::u3(5).flatten());
-                bytes.extend(VsfType::hb(handle_hash.to_vec()).flatten());
-                bytes.extend(VsfType::kx(requester_pubkey.as_bytes().to_vec()).flatten());
+            FgtwMessage::Query { handle_hash, requester_pubkey } => {
+                builder.add_section("fgtw", vec![
+                    ("msg_type".to_string(), VsfType::u3(5)),
+                    ("handle_hash".to_string(), VsfType::hb(handle_hash.to_vec())),
+                    ("requester_pubkey".to_string(), VsfType::kx(requester_pubkey.as_bytes().to_vec())),
+                ]).build()
             }
             FgtwMessage::QueryResponse { devices } => {
-                bytes.extend(VsfType::u3(6).flatten());
-                bytes.extend(serialize_peer_list(devices));
-            }
-        }
+                let mut fields = vec![
+                    ("msg_type".to_string(), VsfType::u3(6)),
+                    ("device_count".to_string(), VsfType::u(devices.len(), false)),
+                ];
 
-        bytes
+                for (i, device) in devices.iter().enumerate() {
+                    let prefix = format!("device_{}", i);
+                    fields.push((format!("{}_handle_hash", prefix), VsfType::hb(device.handle_hash.to_vec())));
+                    fields.push((format!("{}_device_pubkey", prefix), VsfType::kx(device.device_pubkey.as_bytes().to_vec())));
+                    fields.push((format!("{}_ip", prefix), VsfType::x(device.ip.to_string())));
+                    fields.push((format!("{}_last_seen", prefix), VsfType::f6(device.last_seen)));
+                }
+
+                builder.add_section("fgtw", fields).build()
+            }
+        };
+
+        result.unwrap_or_else(|e| {
+            eprintln!("FGTW: Failed to build VSF message: {}", e);
+            Vec::new()
+        })
     }
 
-    /// Deserialize from VSF bytes
+    /// Deserialize from proper VSF file
     pub fn from_vsf_bytes(bytes: &[u8]) -> Result<Self, String> {
+        // Check magic number FIRST (reject non-VSF immediately)
+        if bytes.len() < 4 {
+            return Err("Message too short".to_string());
+        }
+
+        if &bytes[0..3] != "RÅ".as_bytes() || bytes[3] != b'<' {
+            return Err("Not a VSF file (invalid magic)".to_string());
+        }
+
+        // Parse VSF file to find the "fgtw" section
         use vsf::parse;
 
         let mut ptr = 0;
-        let msg_type = match parse(bytes, &mut ptr).map_err(|e| format!("Parse msg type: {}", e))? {
-            VsfType::u3(v) => v,
-            _ => return Err("Invalid message type".to_string()),
+
+        // Skip magic "RÅ<"
+        ptr = 4;
+
+        // Parse header length
+        let _header_length = match parse(bytes, &mut ptr) {
+            Ok(VsfType::b(len, _)) => len,
+            _ => return Err("Invalid header length".to_string()),
         };
 
+        // Skip version, backward_compat, creation_time, hashes
+        // Just scan forward to find the section marker '>'
+        while ptr < bytes.len() && bytes[ptr] != b'>' {
+            ptr += 1;
+        }
+
+        if ptr >= bytes.len() {
+            return Err("No header end marker found".to_string());
+        }
+
+        ptr += 1; // Skip '>'
+
+        // Now we should be at the section start '['
+        if ptr >= bytes.len() || bytes[ptr] != b'[' {
+            return Err("No section found".to_string());
+        }
+
+        ptr += 1; // Skip '['
+
+        // Parse section name (should be "fgtw")
+        let section_name = match parse(bytes, &mut ptr) {
+            Ok(VsfType::d(name)) => name,
+            _ => return Err("Invalid section name".to_string()),
+        };
+
+        if section_name != "fgtw" {
+            return Err(format!("Expected 'fgtw' section, got '{}'", section_name));
+        }
+
+        // Parse fields into a map
+        use std::collections::HashMap;
+        let mut fields: HashMap<String, VsfType> = HashMap::new();
+
+        while ptr < bytes.len() && bytes[ptr] != b']' {
+            if bytes[ptr] != b'(' {
+                return Err("Expected field start '('".to_string());
+            }
+            ptr += 1;
+
+            // Parse field name
+            let field_name = match parse(bytes, &mut ptr) {
+                Ok(VsfType::d(name)) => name,
+                _ => return Err("Invalid field name".to_string()),
+            };
+
+            // Check for value (colon means there's a value)
+            if ptr < bytes.len() && bytes[ptr] == b':' {
+                ptr += 1;
+                let value = parse(bytes, &mut ptr).map_err(|e| format!("Parse field value: {}", e))?;
+                fields.insert(field_name, value);
+            }
+
+            // Skip closing ')'
+            if ptr >= bytes.len() || bytes[ptr] != b')' {
+                return Err("Expected field end ')'".to_string());
+            }
+            ptr += 1;
+        }
+
+        // Extract msg_type
+        let msg_type = match fields.get("msg_type") {
+            Some(VsfType::u3(v)) => *v,
+            _ => return Err("Missing or invalid msg_type".to_string()),
+        };
+
+        // Reconstruct message based on type
         match msg_type {
             0 => {
                 // Ping
-                let device_pubkey = parse_pubkey(bytes, &mut ptr)?;
+                let device_pubkey = extract_pubkey(&fields, "device_pubkey")?;
                 Ok(FgtwMessage::Ping { device_pubkey })
             }
             1 => {
                 // Pong
-                let device_pubkey = parse_pubkey(bytes, &mut ptr)?;
-                let peers = parse_peer_list(bytes, &mut ptr)?;
-                Ok(FgtwMessage::Pong {
-                    device_pubkey,
-                    peers,
-                })
+                let device_pubkey = extract_pubkey(&fields, "device_pubkey")?;
+                let peers = extract_peer_list(&fields, "peer")?;
+                Ok(FgtwMessage::Pong { device_pubkey, peers })
             }
             2 => {
                 // FindNode
-                let handle_hash = parse_hash(bytes, &mut ptr)?;
-                let requester_pubkey = parse_pubkey(bytes, &mut ptr)?;
-                Ok(FgtwMessage::FindNode {
-                    handle_hash,
-                    requester_pubkey,
-                })
+                let handle_hash = extract_hash(&fields, "handle_hash")?;
+                let requester_pubkey = extract_pubkey(&fields, "requester_pubkey")?;
+                Ok(FgtwMessage::FindNode { handle_hash, requester_pubkey })
             }
             3 => {
                 // FoundNodes
-                let devices = parse_peer_list(bytes, &mut ptr)?;
+                let devices = extract_peer_list(&fields, "device")?;
                 Ok(FgtwMessage::FoundNodes { devices })
             }
             4 => {
                 // Announce
-                let handle_hash = parse_hash(bytes, &mut ptr)?;
-                let device_pubkey = parse_pubkey(bytes, &mut ptr)?;
-
-                let port = match parse(bytes, &mut ptr).map_err(|e| format!("Parse port: {}", e))? {
-                    VsfType::u(v, _) => v as u16,
-                    VsfType::u3(v) => v as u16,
-                    VsfType::u4(v) => v as u16,
-                    _ => return Err("Invalid port type".to_string()),
+                let handle_hash = extract_hash(&fields, "handle_hash")?;
+                let device_pubkey = extract_pubkey(&fields, "device_pubkey")?;
+                let port = match fields.get("port") {
+                    Some(VsfType::u(v, _)) => *v as u16,
+                    Some(VsfType::u3(v)) => *v as u16,
+                    Some(VsfType::u4(v)) => *v as u16,
+                    _ => return Err("Missing or invalid port".to_string()),
                 };
-                Ok(FgtwMessage::Announce {
-                    handle_hash,
-                    device_pubkey,
-                    port,
-                })
+                Ok(FgtwMessage::Announce { handle_hash, device_pubkey, port })
             }
             5 => {
                 // Query
-                let handle_hash = parse_hash(bytes, &mut ptr)?;
-                let requester_pubkey = parse_pubkey(bytes, &mut ptr)?;
-                Ok(FgtwMessage::Query {
-                    handle_hash,
-                    requester_pubkey,
-                })
+                let handle_hash = extract_hash(&fields, "handle_hash")?;
+                let requester_pubkey = extract_pubkey(&fields, "requester_pubkey")?;
+                Ok(FgtwMessage::Query { handle_hash, requester_pubkey })
             }
             6 => {
                 // QueryResponse
-                let devices = parse_peer_list(bytes, &mut ptr)?;
+                let devices = extract_peer_list(&fields, "device")?;
                 Ok(FgtwMessage::QueryResponse { devices })
             }
             _ => Err(format!("Unknown message type: {}", msg_type)),
@@ -188,85 +292,69 @@ impl PeerRecord {
     }
 }
 
-// Helper functions for serialization
-fn serialize_peer_record(peer: &PeerRecord) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    bytes.extend(VsfType::hb(peer.handle_hash.to_vec()).flatten());
-    bytes.extend(VsfType::kx(peer.device_pubkey.as_bytes().to_vec()).flatten());
-    bytes.extend(VsfType::x(peer.ip.to_string()).flatten());
-    bytes.extend(VsfType::f6(peer.last_seen).flatten());
-    bytes
-}
-
-fn serialize_peer_list(peers: &[PeerRecord]) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    bytes.extend(VsfType::u(peers.len(), false).flatten());
-    for peer in peers {
-        bytes.extend(serialize_peer_record(peer));
-    }
-    bytes
-}
-
-fn parse_hash(bytes: &[u8], ptr: &mut usize) -> Result<[u8; 32], String> {
-    use vsf::parse;
-    let hash_bytes = match parse(bytes, ptr).map_err(|e| format!("Parse hash: {}", e))? {
-        VsfType::hb(bytes) => bytes,
-        _ => return Err("Invalid hash type".to_string()),
+// Helper functions for extracting fields from VSF
+fn extract_hash(fields: &std::collections::HashMap<String, VsfType>, key: &str) -> Result<[u8; 32], String> {
+    let hash_bytes = match fields.get(key) {
+        Some(VsfType::hb(bytes)) => bytes,
+        _ => return Err(format!("Missing or invalid hash: {}", key)),
     };
     let mut arr = [0u8; 32];
+    if hash_bytes.len() != 32 {
+        return Err(format!("Hash {} must be 32 bytes", key));
+    }
     arr.copy_from_slice(&hash_bytes);
     Ok(arr)
 }
 
-fn parse_pubkey(bytes: &[u8], ptr: &mut usize) -> Result<PublicIdentity, String> {
-    use vsf::parse;
-    let pubkey_bytes = match parse(bytes, ptr).map_err(|e| format!("Parse pubkey: {}", e))? {
-        VsfType::kx(bytes) => bytes,
-        _ => return Err("Invalid pubkey type".to_string()),
+fn extract_pubkey(fields: &std::collections::HashMap<String, VsfType>, key: &str) -> Result<PublicIdentity, String> {
+    let pubkey_bytes = match fields.get(key) {
+        Some(VsfType::kx(bytes)) => bytes,
+        _ => return Err(format!("Missing or invalid pubkey: {}", key)),
     };
     let mut pubkey_arr = [0u8; 32];
+    if pubkey_bytes.len() != 32 {
+        return Err(format!("Pubkey {} must be 32 bytes", key));
+    }
     pubkey_arr.copy_from_slice(&pubkey_bytes);
     Ok(PublicIdentity::from_bytes(pubkey_arr))
 }
 
-fn parse_peer_record(bytes: &[u8], ptr: &mut usize) -> Result<PeerRecord, String> {
-    use vsf::parse;
-
-    let handle_hash = parse_hash(bytes, ptr)?;
-    let device_pubkey = parse_pubkey(bytes, ptr)?;
-
-    let ip_str = match parse(bytes, ptr).map_err(|e| format!("Parse ip: {}", e))? {
-        VsfType::x(s) => s,
-        _ => return Err("Invalid ip type".to_string()),
-    };
-    let ip: SocketAddr = ip_str.parse().map_err(|e| format!("Invalid IP: {}", e))?;
-
-    let last_seen = match parse(bytes, ptr).map_err(|e| format!("Parse last_seen: {}", e))? {
-        VsfType::f6(v) => v,
-        _ => return Err("Invalid last_seen type".to_string()),
-    };
-
-    Ok(PeerRecord {
-        handle_hash,
-        device_pubkey,
-        ip,
-        last_seen,
-    })
-}
-
-fn parse_peer_list(bytes: &[u8], ptr: &mut usize) -> Result<Vec<PeerRecord>, String> {
-    use vsf::parse;
-
-    let count = match parse(bytes, ptr).map_err(|e| format!("Parse peer count: {}", e))? {
-        VsfType::u(v, _) => v,
-        VsfType::u3(v) => v as usize,
-        VsfType::u4(v) => v as usize,
-        _ => return Err("Invalid peer count type".to_string()),
+fn extract_peer_list(fields: &std::collections::HashMap<String, VsfType>, prefix: &str) -> Result<Vec<PeerRecord>, String> {
+    let count_key = format!("{}_count", prefix);
+    let count = match fields.get(&count_key) {
+        Some(VsfType::u(v, _)) => *v,
+        Some(VsfType::u3(v)) => *v as usize,
+        Some(VsfType::u4(v)) => *v as usize,
+        _ => return Err(format!("Missing or invalid {}_count", prefix)),
     };
 
     let mut peers = Vec::with_capacity(count);
-    for _ in 0..count {
-        peers.push(parse_peer_record(bytes, ptr)?);
+    for i in 0..count {
+        let peer_prefix = format!("{}_{}", prefix, i);
+
+        let handle_hash = extract_hash(fields, &format!("{}_handle_hash", peer_prefix))?;
+        let device_pubkey = extract_pubkey(fields, &format!("{}_device_pubkey", peer_prefix))?;
+
+        let ip_key = format!("{}_ip", peer_prefix);
+        let ip_str = match fields.get(&ip_key) {
+            Some(VsfType::x(s)) => s,
+            _ => return Err(format!("Missing or invalid {}", ip_key)),
+        };
+        let ip: SocketAddr = ip_str.parse().map_err(|e| format!("Invalid IP {}: {}", ip_key, e))?;
+
+        let last_seen_key = format!("{}_last_seen", peer_prefix);
+        let last_seen = match fields.get(&last_seen_key) {
+            Some(VsfType::f6(v)) => *v,
+            _ => return Err(format!("Missing or invalid {}", last_seen_key)),
+        };
+
+        peers.push(PeerRecord {
+            handle_hash,
+            device_pubkey,
+            ip,
+            last_seen,
+        });
     }
+
     Ok(peers)
 }

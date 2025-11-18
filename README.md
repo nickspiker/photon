@@ -276,7 +276,7 @@ See [AUTH.md](AUTH.md) for detailed specification (1,350 lines covering attestat
 
 ### Network Architecture
 
-**Peer discovery:** Mainline DHT (BitTorrent's distributed hash table)—handles are resolved like magnet links, all traffic looks like torrenting to network observers.
+**Peer discovery:** FGTW (Fractal Gradient Towards Wire)—custom Kademlia DHT with 32-byte BLAKE3 node IDs, 256 k-buckets, and VSF-serialized protocol messages. Handle lookups: `BLAKE3(handle) → handle_hash → Kademlia routing → peer records`. Bootstrap via `fgtw.org/peers.vsf` (Cloudflare Workers endpoint that tracks active peers and provides initial routing table population).
 
 **Transport:** TLS 1.3 over TCP + WebSocket upgrade—encrypted connections look like HTTPS web traffic.
 
@@ -285,7 +285,7 @@ See [AUTH.md](AUTH.md) for detailed specification (1,350 lines covering attestat
 - Large messages (>1KB): Direct peer-to-peer transfer
 - Ephemeral messages (expiration <7 days): Direct-only, auto-deleted
 
-**No servers.** Messages persist as long as **you** want them to, distributed across devices you control and friends who've agreed to store encrypted backups. No company can read, delete, or subpoena your messages—they don't have them.
+**No central servers.** Bootstrap endpoint (`fgtw.org`) only provides initial peer discovery—after that, the DHT is self-sustaining. Messages persist as long as **you** want them to, distributed across devices you control and friends who've agreed to store encrypted backups. No company can read, delete, or subpoena your messages—they don't have them.
 
 ## Architecture
 
@@ -355,9 +355,9 @@ src/
 
 **Network:**
 - `tokio` - Async runtime
-- `mainline` - DHT client
 - `tokio-tungstenite` - WebSocket
 - `tokio-native-tls` - TLS 1.3
+- `reqwest` - HTTP client (bootstrap peer fetching)
 
 **Storage:**
 - `rusqlite` - SQLite with bundled library
@@ -500,7 +500,7 @@ Photon proves the social attestation and recovery model works before applying it
 
 ## License
 
-MIT License - See [LICENSE](LICENSE)
+MIT OR Apache-2.0 (dual) - See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE)
 
 ## Contact
 

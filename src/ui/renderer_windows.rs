@@ -29,10 +29,7 @@ impl<'a> WindowsBuffer<'a> {
             u32_view.push(pixel);
         }
 
-        Self {
-            renderer,
-            u32_view,
-        }
+        Self { renderer, u32_view }
     }
 
     pub fn as_mut(&mut self) -> &mut [u32] {
@@ -44,9 +41,9 @@ impl<'a> WindowsBuffer<'a> {
         for i in 0..(self.renderer.width * self.renderer.height) as usize {
             let pixel = self.u32_view[i];
             let idx = i * 4;
-            self.renderer.pixel_buffer[idx] = ((pixel >> 16) & 0xFF) as u8;     // R
-            self.renderer.pixel_buffer[idx + 1] = ((pixel >> 8) & 0xFF) as u8;  // G
-            self.renderer.pixel_buffer[idx + 2] = (pixel & 0xFF) as u8;         // B
+            self.renderer.pixel_buffer[idx] = ((pixel >> 16) & 0xFF) as u8; // R
+            self.renderer.pixel_buffer[idx + 1] = ((pixel >> 8) & 0xFF) as u8; // G
+            self.renderer.pixel_buffer[idx + 2] = (pixel & 0xFF) as u8; // B
             self.renderer.pixel_buffer[idx + 3] = ((pixel >> 24) & 0xFF) as u8; // A
         }
 

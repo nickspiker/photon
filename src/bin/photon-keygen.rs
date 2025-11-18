@@ -48,7 +48,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     fs::write(&public_key_path, verifying_key.to_bytes())?;
     println!("✓ Public key saved:  {}", public_key_path.display());
 
-    println!("\nPublic key (hex): {}", hex::encode(verifying_key.to_bytes()));
+    println!(
+        "\nPublic key (hex): {}",
+        hex::encode(verifying_key.to_bytes())
+    );
     println!("\nKeep the private key secure!");
     println!("The public key will be embedded in installer scripts.");
 

@@ -37,7 +37,7 @@ impl HandleQuery {
             println!("Network: FGTW query worker initialized");
 
             while let Ok(username) = rx_request.recv() {
-                println!("Network: Querying handle '@{}'...", username);
+                println!("Network: Querying handle '{}'...", username);
 
                 // Wait for transport to be set
                 let transport_arc = loop {
@@ -58,7 +58,7 @@ impl HandleQuery {
                 let devices = store.get_devices_for_handle(&handle_hash);
                 if !devices.is_empty() {
                     println!(
-                        "Network: Handle '@{}' is CLAIMED (found {} device(s) in local store)",
+                        "Network: Handle '{}' is CLAIMED (found {} device(s) in local store)",
                         username,
                         devices.len()
                     );
@@ -69,9 +69,81 @@ impl HandleQuery {
                     continue;
                 }
 
-                // TODO: Query remote peers via FGTW FindNode/Query messages
-                // For now, if not in local store, consider it unattested
-                println!("Network: Handle '@{}' is AVAILABLE (not found)", username);
+                // Not in local store - query fgtw.org
+                drop(store); // Release lock before network I/O
+                println!("Network: Querying fgtw.org for handle '{}'...", username);
+
+                // Load keys for query
+                let paths = match crate::network::fgtw::FgtwPaths::new() {
+                    Ok(p) => p,
+                    Err(e) => {
+                        eprintln!("Network: ERROR - Failed to get FGTW paths: {}", e);
+                        let result = QueryResult::Unattested;
+                        let _ = tx_response.send(result);
+                        continue;
+                    }
+                };
+
+                let device_keypair = match crate::network::fgtw::load_or_generate_device_key(&paths.device_key) {
+                    Ok(kp) => kp,
+                    Err(e) => {
+                        eprintln!("Network: ERROR - Failed to load device key: {}", e);
+                        let result = QueryResult::Unattested;
+                        let _ = tx_response.send(result);
+                        continue;
+                    }
+                };
+
+                let handle_keypair = match crate::network::fgtw::load_or_generate_handle_key(&paths.handle_key) {
+                    Ok(kp) => kp,
+                    Err(e) => {
+                        eprintln!("Network: ERROR - Failed to load handle key: {}", e);
+                        let result = QueryResult::Unattested;
+                        let _ = tx_response.send(result);
+                        continue;
+                    }
+                };
+
+                // Query FGTW by announcing ourselves (this returns the peer list for the handle)
+                // Port 0 means we're just querying, not actually announcing availability
+                // We need a tokio runtime since the worker is a plain thread
+                let peers = match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("Failed to create tokio runtime")
+                    .block_on(
+                        crate::network::fgtw::bootstrap::load_bootstrap_peers(
+                            &device_keypair,
+                            handle_hash,
+                            0, // Port 0 = query only
+                        )
+                    ) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        eprintln!("Network: ERROR - Failed to query fgtw.org: {}", e);
+                        let result = QueryResult::Unattested;
+                        let _ = tx_response.send(result);
+                        continue;
+                    }
+                };
+
+                // Add peers to store
+                if !peers.is_empty() {
+                    println!("Network: Handle '{}' is CLAIMED (found {} peer(s) from fgtw.org)", username, peers.len());
+
+                    // Add peers to local store
+                    let mut store = peer_store.lock().unwrap();
+                    for peer in &peers {
+                        store.add_peer(peer.clone());
+                    }
+                    drop(store);
+
+                    let result = QueryResult::AlreadyAttested(peers[0].clone());
+                    let _ = tx_response.send(result);
+                    continue;
+                }
+
+                println!("Network: Handle '{}' is AVAILABLE (not found on network)", username);
                 let result = QueryResult::Unattested;
 
                 if tx_response.send(result).is_err() {
@@ -145,6 +217,10 @@ pub fn announce_handle(
     Ok(())
 }
 
+// NOTE: The old TCP-based query functions have been removed.
+// We now use the HTTP-based load_bootstrap_peers() function from bootstrap.rs
+// which properly implements the FGTW announce/query protocol over HTTPS.
+
 // Helper function for sending FGTW messages (to avoid circular dependency)
 async fn transport_send(peer_addr: &str, message: FgtwMessage) -> Result<FgtwMessage, String> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -154,12 +230,8 @@ async fn transport_send(peer_addr: &str, message: FgtwMessage) -> Result<FgtwMes
         .await
         .map_err(|e| format!("Failed to connect to {}: {}", peer_addr, e))?;
 
+    // Send raw VSF message (self-describing)
     let msg_bytes = message.to_vsf_bytes();
-    let len = msg_bytes.len() as u32;
-    stream
-        .write_all(&len.to_be_bytes())
-        .await
-        .map_err(|e| format!("Write error: {}", e))?;
     stream
         .write_all(&msg_bytes)
         .await
@@ -169,20 +241,16 @@ async fn transport_send(peer_addr: &str, message: FgtwMessage) -> Result<FgtwMes
         .await
         .map_err(|e| format!("Flush error: {}", e))?;
 
-    let mut len_buf = [0u8; 4];
+    // Shutdown write side to signal EOF to server
     stream
-        .read_exact(&mut len_buf)
+        .shutdown()
         .await
-        .map_err(|e| format!("Read error: {}", e))?;
-    let len = u32::from_be_bytes(len_buf) as usize;
+        .map_err(|e| format!("Shutdown error: {}", e))?;
 
-    if len > 10_000_000 {
-        return Err(format!("Message too large: {} bytes", len));
-    }
-
-    let mut msg_buf = vec![0u8; len];
+    // Read raw VSF response until EOF
+    let mut msg_buf = Vec::new();
     stream
-        .read_exact(&mut msg_buf)
+        .read_to_end(&mut msg_buf)
         .await
         .map_err(|e| format!("Read error: {}", e))?;
 

@@ -106,7 +106,6 @@ impl PhotonApp {
                                 self.current_text_state.scroll_offset = 0.0;
                             }
 
-
                             // Calculate blinkey pixel position (needed before drawing)
                             let box_width = self.textbox_width();
                             let box_height = self.textbox_height();

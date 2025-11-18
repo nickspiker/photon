@@ -1,17 +1,21 @@
 use blake3::Hasher;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use vsf::VsfType;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq, Hash)]
+/// Public identity (X25519 public key)
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct PublicIdentity {
     pub key: [u8; 32],
 }
 
+/// Private identity (X25519 secret key)
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct PrivateIdentity {
     secret: [u8; 32],
 }
 
+/// Complete identity (public + private keys)
 #[derive(Clone)]
 pub struct Identity {
     pub public: PublicIdentity,
@@ -25,6 +29,23 @@ impl PublicIdentity {
 
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.key
+    }
+
+    /// Convert to VSF X25519 key type
+    pub fn to_vsf(&self) -> VsfType {
+        VsfType::kx(self.key.to_vec())
+    }
+
+    /// Create from VSF X25519 key type
+    pub fn from_vsf(vsf: VsfType) -> Option<Self> {
+        match vsf {
+            VsfType::kx(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                Some(Self { key: arr })
+            }
+            _ => None,
+        }
     }
 
     pub fn to_dht_infohash(&self) -> [u8; 20] {
@@ -52,6 +73,26 @@ impl PublicIdentity {
     }
 }
 
+// Serde implementations for PublicIdentity (serialize as hex string)
+impl Serialize for PublicIdentity {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_hex())
+    }
+}
+
+impl<'de> Deserialize<'de> for PublicIdentity {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let hex_str = String::deserialize(deserializer)?;
+        PublicIdentity::from_hex(&hex_str).map_err(serde::de::Error::custom)
+    }
+}
+
 impl PrivateIdentity {
     pub fn generate() -> Self {
         let mut secret = [0u8; 32];
@@ -64,9 +105,9 @@ impl PrivateIdentity {
     }
 
     pub fn to_public(&self) -> PublicIdentity {
-        let scalar = x25519_dalek::EphemeralSecret::random_from_rng(&mut rand::thread_rng());
-        let public = x25519_dalek::PublicKey::from(&scalar);
-        // For now, we'll use the ephemeral key. In production, we'd derive from secret.
+        // Properly derive X25519 public key from secret
+        let secret = x25519_dalek::StaticSecret::from(self.secret);
+        let public = x25519_dalek::PublicKey::from(&secret);
         PublicIdentity {
             key: *public.as_bytes(),
         }
@@ -74,6 +115,23 @@ impl PrivateIdentity {
 
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.secret
+    }
+
+    /// Convert to VSF X25519 key type (CAREFUL: this exposes the private key!)
+    pub fn to_vsf(&self) -> VsfType {
+        VsfType::kx(self.secret.to_vec())
+    }
+
+    /// Create from VSF X25519 key type
+    pub fn from_vsf(vsf: VsfType) -> Option<Self> {
+        match vsf {
+            VsfType::kx(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                Some(Self { secret: arr })
+            }
+            _ => None,
+        }
     }
 }
 
@@ -94,12 +152,39 @@ impl Identity {
         self.private.as_bytes()
     }
 
+    /// Compute X25519 Diffie-Hellman shared secret
     pub fn compute_shared_secret(&self, their_public: &PublicIdentity) -> [u8; 32] {
-        // For now, return a placeholder. In production, implement proper DH.
-        let mut shared = [0u8; 32];
-        shared[..16].copy_from_slice(&self.private.secret[..16]);
-        shared[16..].copy_from_slice(&their_public.key[..16]);
-        blake3::hash(&shared).into()
+        let our_secret = x25519_dalek::StaticSecret::from(self.private.secret);
+        let their_pubkey = x25519_dalek::PublicKey::from(their_public.key);
+        let shared = our_secret.diffie_hellman(&their_pubkey);
+        *shared.as_bytes()
+    }
+
+    /// Serialize identity to bare VSF bytes (includes private key - handle carefully!)
+    pub fn to_vsf_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend(self.public.to_vsf().flatten());
+        bytes.extend(self.private.to_vsf().flatten());
+        bytes
+    }
+
+    /// Deserialize identity from bare VSF bytes
+    pub fn from_vsf_bytes(bytes: &[u8]) -> Result<Self, String> {
+        use vsf::parse;
+
+        let mut ptr = 0;
+
+        // Parse public key
+        let public_vsf =
+            parse(bytes, &mut ptr).map_err(|e| format!("Parse public key error: {}", e))?;
+        let public = PublicIdentity::from_vsf(public_vsf).ok_or("Invalid public key type")?;
+
+        // Parse private key
+        let private_vsf =
+            parse(bytes, &mut ptr).map_err(|e| format!("Parse private key error: {}", e))?;
+        let private = PrivateIdentity::from_vsf(private_vsf).ok_or("Invalid private key type")?;
+
+        Ok(Identity { public, private })
     }
 }
 

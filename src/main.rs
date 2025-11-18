@@ -310,16 +310,33 @@ fn get_system_blinkey_blink_rate() -> u64 {
 
 fn main() {
     // Verify binary signature matches fractaldecoder (Ed25519 cryptographic signature)
-    if let Err(e) = self_verify::verify_binary_hash() {
-        eprintln!("BINARY INTEGRITY CHECK FAILED: {}", e);
+    // Enabled by default, skip only with --features skip-sig for development
+    #[cfg(not(feature = "skip-sig"))]
+    {
+        let signature_hex = match self_verify::verify_binary_hash() {
+            Ok(sig) => sig,
+            Err(e) => {
+                eprintln!("BINARY INTEGRITY CHECK FAILED: {}", e);
+                eprintln!();
+                eprintln!("This usually means:");
+                eprintln!("  - Download was corrupted or incomplete");
+                eprintln!("  - Storage failure (bad sectors, bit flips)");
+                eprintln!("  - Binary was modified or tampered with");
+                eprintln!();
+                eprintln!("Try reinstalling from: https://holdmyoscilloscope.com/photon");
+                std::process::exit(1);
+            }
+        };
+
+        eprintln!("SIGNATURE CHECK PASSED");
+        eprintln!("Ed25519 signature: {}", signature_hex);
         eprintln!();
-        eprintln!("This usually means:");
-        eprintln!("  - Download was corrupted or incomplete");
-        eprintln!("  - Storage failure (bad sectors, bit flips)");
-        eprintln!("  - Binary was modified or tampered with");
+    }
+
+    #[cfg(feature = "skip-sig")]
+    {
+        eprintln!("SIGNATURE CHECK SKIPPED (development build)");
         eprintln!();
-        eprintln!("Try reinstalling from: https://holdmyoscilloscope.com/photon");
-        std::process::exit(1);
     }
 
     // Startup message

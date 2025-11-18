@@ -66,13 +66,8 @@ impl FgtwTransport {
             .await
             .map_err(|e| format!("Failed to connect to {}: {}", peer_addr, e))?;
 
-        // Send message (length-prefixed)
+        // Send raw VSF message (self-describing)
         let msg_bytes = message.to_vsf_bytes();
-        let len = msg_bytes.len() as u32;
-        stream
-            .write_all(&len.to_be_bytes())
-            .await
-            .map_err(|e| format!("Write len error: {}", e))?;
         stream
             .write_all(&msg_bytes)
             .await
@@ -82,21 +77,16 @@ impl FgtwTransport {
             .await
             .map_err(|e| format!("Flush error: {}", e))?;
 
-        // Read response
-        let mut len_buf = [0u8; 4];
+        // Shutdown write side to signal EOF to server
         stream
-            .read_exact(&mut len_buf)
+            .shutdown()
             .await
-            .map_err(|e| format!("Read len error: {}", e))?;
-        let len = u32::from_be_bytes(len_buf) as usize;
+            .map_err(|e| format!("Shutdown error: {}", e))?;
 
-        if len > 10_000_000 {
-            return Err(format!("Message too large: {} bytes", len));
-        }
-
-        let mut msg_buf = vec![0u8; len];
+        // Read raw VSF response until EOF
+        let mut msg_buf = Vec::new();
         stream
-            .read_exact(&mut msg_buf)
+            .read_to_end(&mut msg_buf)
             .await
             .map_err(|e| format!("Read msg error: {}", e))?;
 
@@ -125,17 +115,10 @@ async fn handle_connection(
     peer_store: Arc<Mutex<PeerStore>>,
     our_pubkey: PublicIdentity,
 ) -> Result<(), String> {
-    // Read message (length-prefixed)
-    let mut len_buf = [0u8; 4];
+    // Read raw VSF message until EOF
+    let mut msg_buf = Vec::new();
     socket
-        .read_exact(&mut len_buf)
-        .await
-        .map_err(|e| format!("Read len error: {}", e))?;
-    let len = u32::from_be_bytes(len_buf) as usize;
-
-    let mut msg_buf = vec![0u8; len];
-    socket
-        .read_exact(&mut msg_buf)
+        .read_to_end(&mut msg_buf)
         .await
         .map_err(|e| format!("Read msg error: {}", e))?;
 
@@ -144,13 +127,8 @@ async fn handle_connection(
     // Process message and generate response
     let response = process_message(message, &peer_store, &our_pubkey, addr);
 
-    // Send response
+    // Send raw VSF response
     let resp_bytes = response.to_vsf_bytes();
-    let resp_len = resp_bytes.len() as u32;
-    socket
-        .write_all(&resp_len.to_be_bytes())
-        .await
-        .map_err(|e| format!("Write len error: {}", e))?;
     socket
         .write_all(&resp_bytes)
         .await
@@ -159,6 +137,12 @@ async fn handle_connection(
         .flush()
         .await
         .map_err(|e| format!("Flush error: {}", e))?;
+
+    // Shutdown write side to signal EOF to client
+    socket
+        .shutdown()
+        .await
+        .map_err(|e| format!("Shutdown error: {}", e))?;
 
     Ok(())
 }

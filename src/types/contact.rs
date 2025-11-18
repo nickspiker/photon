@@ -1,5 +1,6 @@
 use super::{PublicIdentity, Seed};
 use serde::{Deserialize, Serialize};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Contact {
@@ -53,7 +54,10 @@ impl Contact {
             public_identity,
             relationship_seed: None,
             trust_level: TrustLevel::Stranger,
-            added_timestamp: crate::types::message::current_timestamp(),
+            added_timestamp: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
             last_seen: None,
         }
     }
