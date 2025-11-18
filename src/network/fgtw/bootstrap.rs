@@ -20,14 +20,26 @@ pub async fn load_bootstrap_peers(
     handle_hash: [u8; 32],
     port: u16,
 ) -> Result<Vec<PeerRecord>, String> {
-    println!("FGTW: Bootstrapping via announce to {}", FGTW_URL);
+    println!("\n╔════════════════════════════════════════════════════════════╗");
+    println!("║ FGTW Bootstrap Authentication                              ║");
+    println!("╚════════════════════════════════════════════════════════════╝");
+    println!();
+    println!("Server: {}", FGTW_URL);
+    println!("Handle Hash: {}", hex::encode(&handle_hash));
+    println!("Port: {}", port);
+    println!();
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
-    // Step 1: Get challenge from FGTW
+    // ═══ Step 1: Get challenge from FGTW ═══
+    println!("─────────────────────────────────────────────────────────────");
+    println!("Step 1: Request Challenge");
+    println!("─────────────────────────────────────────────────────────────");
+    println!("GET {}/challenge", FGTW_URL);
+
     let challenge_response = client
         .get(&format!("{}/challenge", FGTW_URL))
         .send()
@@ -43,17 +55,42 @@ pub async fn load_bootstrap_peers(
         .await
         .map_err(|e| format!("Failed to read challenge: {}", e))?;
 
-    // Step 2: Parse challenge to extract provenance hash
+    println!("Response: {} bytes", challenge_bytes.len());
+
+    // ═══ Step 2: Parse challenge to extract provenance hash ═══
+    println!();
+    println!("─────────────────────────────────────────────────────────────");
+    println!("Step 2: Parse Challenge");
+    println!("─────────────────────────────────────────────────────────────");
+
     let challenge_hash = parse_challenge_hash(&challenge_bytes)?;
 
-    // Step 3: Build announce message with challenge provenance hash
-    // The announce will generate its own timestamp at flattening time
+    println!("Challenge Hash (hp): {}", hex::encode(&challenge_hash));
+
+    // ═══ Step 3: Build announce message with challenge provenance hash ═══
+    println!();
+    println!("─────────────────────────────────────────────────────────────");
+    println!("Step 3: Build Announce Message");
+    println!("─────────────────────────────────────────────────────────────");
+
     let announce_bytes = build_announce_message(handle_hash, device_key, port, challenge_hash)?;
+
+    println!("Built VSF announce: {} bytes", announce_bytes.len());
+    println!("  • Encrypted with FGTW X25519 key");
+    println!("  • Signed with device Ed25519 key");
+    println!("  • Includes challenge response");
 
     // DEBUG: Save announce message for inspection
     std::fs::write("/tmp/photon-announce.vsf", &announce_bytes).ok();
+    println!("Saved to: /tmp/photon-announce.vsf");
 
-    // Step 4: Send announce to FGTW
+    // ═══ Step 4: Send announce to FGTW ═══
+    println!();
+    println!("─────────────────────────────────────────────────────────────");
+    println!("Step 4: Send Announce");
+    println!("─────────────────────────────────────────────────────────────");
+    println!("POST {}/announce", FGTW_URL);
+
     let announce_response = client
         .post(&format!("{}/announce", FGTW_URL))
         .header("Content-Type", "application/octet-stream")
@@ -71,8 +108,23 @@ pub async fn load_bootstrap_peers(
         .await
         .map_err(|e| format!("Failed to read peer list: {}", e))?;
 
-    // Parse VSF peer list from response
-    parse_peer_list(&peer_list_bytes)
+    println!("Response: {} bytes", peer_list_bytes.len());
+
+    // ═══ Step 5: Parse peer list ═══
+    println!();
+    println!("─────────────────────────────────────────────────────────────");
+    println!("Step 5: Parse Peer List");
+    println!("─────────────────────────────────────────────────────────────");
+
+    let peers = parse_peer_list(&peer_list_bytes)?;
+
+    println!();
+    println!("╔════════════════════════════════════════════════════════════╗");
+    println!("║ Bootstrap Complete: {} peer(s)                           ║", peers.len());
+    println!("╚════════════════════════════════════════════════════════════╝");
+    println!();
+
+    Ok(peers)
 }
 
 /// Parse challenge VSF to extract provenance hash
@@ -224,13 +276,43 @@ fn parse_peer_list(bytes: &[u8]) -> Result<Vec<PeerRecord>, String> {
         _ => return Err("Invalid peer count type".to_string()),
     };
 
+    println!("Received {} peer(s):", count);
+    println!();
+
     let mut peers = Vec::with_capacity(count);
-    for _ in 0..count {
-        peers.push(parse_peer_record(bytes, &mut ptr)?);
+    for i in 0..count {
+        let peer = parse_peer_record(bytes, &mut ptr)?;
+        println!("  Peer {}: {}", i + 1, peer.ip);
+        println!("    Handle Hash: {}", hex::encode(&peer.handle_hash[..8]));
+        println!("    Device Key:  {}...", hex::encode(&peer.device_pubkey.as_bytes()[..8]));
+        println!("    Last Seen:   {}", format_timestamp(peer.last_seen));
+        println!();
+        peers.push(peer);
     }
 
-    println!("FGTW: Loaded {} bootstrap peers", peers.len());
     Ok(peers)
+}
+
+/// Format timestamp as human-readable
+fn format_timestamp(ts: f64) -> String {
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64();
+
+    let diff = now - ts;
+
+    if diff < 60.0 {
+        format!("{:.0}s ago", diff)
+    } else if diff < 3600.0 {
+        format!("{:.0}m ago", diff / 60.0)
+    } else if diff < 86400.0 {
+        format!("{:.1}h ago", diff / 3600.0)
+    } else {
+        format!("{:.1}d ago", diff / 86400.0)
+    }
 }
 
 /// Parse a single peer record from VSF bytes
