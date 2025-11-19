@@ -2444,6 +2444,7 @@ dependencies = [
  "reqwest",
  "rusqlite",
  "serde",
+ "sha2",
  "softbuffer",
  "thiserror 2.0.17",
  "tokio",
@@ -3988,6 +3989,7 @@ checksum = "051eb1abcf10076295e815102942cc58f9d5e3b4560e46e53c21e8ff6f3af7b1"
 name = "vsf"
 version = "0.1.12"
 dependencies = [
+ "aes-gcm",
  "bitvec",
  "blake3",
  "chacha20poly1305",
@@ -3998,6 +4000,7 @@ dependencies = [
  "num-traits",
  "rand 0.8.5",
  "ureq",
+ "x25519-dalek",
 ]
 
 [[package]]

@@ -57,6 +57,10 @@ pub async fn load_bootstrap_peers(
 
     println!("Response: {} bytes", challenge_bytes.len());
 
+    // DEBUG: Save challenge for inspection
+    std::fs::write("/tmp/photon-challenge.vsf", &challenge_bytes).ok();
+    println!("Saved to: /tmp/photon-challenge.vsf");
+
     // ═══ Step 2: Parse challenge to extract provenance hash ═══
     println!();
     println!("─────────────────────────────────────────────────────────────");
@@ -116,7 +120,7 @@ pub async fn load_bootstrap_peers(
     println!("Step 5: Parse Peer List");
     println!("─────────────────────────────────────────────────────────────");
 
-    let peers = parse_peer_list(&peer_list_bytes)?;
+    let peers = parse_peer_list(&peer_list_bytes, device_key)?;
 
     println!();
     println!("╔════════════════════════════════════════════════════════════╗");
@@ -181,14 +185,75 @@ fn encrypt_for_fgtw(plaintext: &[u8], fgtw_x25519_pubkey: &[u8; 32]) -> Result<V
     Ok(result)
 }
 
-/// Encode a hash in VSF format with actual bytes (not flattened zeros)
-/// Format: b'h' b'<type>' [encoding of (len-1)] [actual bytes]
-fn encode_hash_bytes(hash_type: u8, bytes: &[u8]) -> Vec<u8> {
-    use vsf::encoding::traits::EncodeNumber;
-    let mut encoded = vec![b'h', hash_type];
-    encoded.extend_from_slice(&(bytes.len() - 1).encode_number());
-    encoded.extend_from_slice(bytes);
-    encoded
+/// Convert Ed25519 secret key to X25519 secret key (RFC 8032)
+/// This is a one-way deterministic conversion using SHA-512 and clamping
+/// Matches FGTW's implementation for compatibility
+fn ed25519_secret_to_x25519(ed25519_secret: &[u8]) -> [u8; 32] {
+    use sha2::{Digest, Sha512};
+
+    // Hash the Ed25519 secret key
+    let mut hasher = Sha512::new();
+    hasher.update(ed25519_secret);
+    let hash = hasher.finalize();
+
+    // Take first 32 bytes and clamp them for X25519
+    let mut x25519_secret = [0u8; 32];
+    x25519_secret.copy_from_slice(&hash[..32]);
+
+    // Clamp the secret key (RFC 7748)
+    x25519_secret[0] &= 248;
+    x25519_secret[31] &= 127;
+    x25519_secret[31] |= 64;
+
+    x25519_secret
+}
+
+/// Decrypt data from FGTW using ephemeral X25519 + AES-256-GCM
+/// Format: [ephemeral_pubkey:32][nonce:12][ciphertext+tag]
+/// The device_key is Ed25519 but we derive X25519 for decryption
+fn decrypt_from_fgtw(ciphertext_with_header: &[u8], device_key: &Keypair) -> Result<Vec<u8>, String> {
+    use aes_gcm::{
+        aead::{Aead, KeyInit},
+        Aes256Gcm, Nonce,
+    };
+    use ed25519_dalek::SecretKey;
+    use x25519_dalek::{PublicKey, StaticSecret};
+
+    if ciphertext_with_header.len() < 44 {
+        // 32 (ephemeral pubkey) + 12 (nonce) = 44 minimum
+        return Err("Ciphertext too short".to_string());
+    }
+
+    // Extract ephemeral public key (first 32 bytes)
+    let mut ephemeral_pubkey_bytes = [0u8; 32];
+    ephemeral_pubkey_bytes.copy_from_slice(&ciphertext_with_header[0..32]);
+    let ephemeral_pubkey = PublicKey::from(ephemeral_pubkey_bytes);
+
+    // Extract nonce (next 12 bytes)
+    let mut nonce_bytes = [0u8; 12];
+    nonce_bytes.copy_from_slice(&ciphertext_with_header[32..44]);
+    let nonce = Nonce::from(nonce_bytes);
+
+    // Remaining bytes are ciphertext+tag
+    let ciphertext = &ciphertext_with_header[44..];
+
+    // Convert Ed25519 secret key to X25519 secret key using RFC 8032 method
+    // This matches FGTW's conversion: SHA-512 hash + clamping
+    let x25519_secret_bytes = ed25519_secret_to_x25519(device_key.secret.as_bytes());
+    let x25519_secret = StaticSecret::from(x25519_secret_bytes);
+
+    // Perform ECDH with ephemeral public key
+    let shared_secret = x25519_secret.diffie_hellman(&ephemeral_pubkey);
+
+    // Derive AES-256-GCM key from shared secret (32 bytes)
+    let cipher = Aes256Gcm::new(shared_secret.as_bytes().into());
+
+    // Decrypt
+    let plaintext = cipher
+        .decrypt(&nonce, ciphertext)
+        .map_err(|e| format!("Decryption error: {}", e))?;
+
+    Ok(plaintext)
 }
 
 /// Build VSF announce message (new encrypted format)
@@ -208,10 +273,9 @@ fn build_announce_message(
     use vsf::{VsfType, VSF_BACKWARD_COMPAT, VSF_VERSION};
 
     // 1. Build encrypted payload: hb(challenge_hash) + hb(handle_hash) + u(port)
-    // IMPORTANT: Must encode with actual hash bytes, NOT flatten() which zeros them out!
     let mut plaintext = Vec::new();
-    plaintext.extend(encode_hash_bytes(b'b', &challenge_hash));
-    plaintext.extend(encode_hash_bytes(b'b', &handle_hash));
+    plaintext.extend(VsfType::hb(challenge_hash.to_vec()).flatten());
+    plaintext.extend(VsfType::hb(handle_hash.to_vec()).flatten());
     plaintext.extend(VsfType::u(port as usize, false).flatten());
 
     // 2. Encrypt for FGTW using ephemeral X25519 + AES-GCM
@@ -265,16 +329,65 @@ fn build_announce_message(
 }
 
 /// Parse peer list from VSF bytes
-fn parse_peer_list(bytes: &[u8]) -> Result<Vec<PeerRecord>, String> {
+fn parse_peer_list(bytes: &[u8], device_key: &Keypair) -> Result<Vec<PeerRecord>, String> {
     let mut ptr = 0;
 
-    // Parse peer count
-    let count = match parse(bytes, &mut ptr).map_err(|e| format!("Parse peer count: {}", e))? {
+    // First check if this is an encrypted response (v'e')
+    let plaintext_bytes = match parse(bytes, &mut ptr).map_err(|e| format!("Parse response type: {}", e))? {
+        vsf::VsfType::v(b'e', encrypted_data) => {
+            println!("Response is encrypted, decrypting...");
+            // Decrypt the encrypted payload
+            decrypt_from_fgtw(&encrypted_data, device_key)?
+        }
+        // If it's already a peer count, we have unencrypted data
+        vsf::VsfType::u(v, _) => {
+            println!("Response is unencrypted");
+            // Reset ptr and return original bytes
+            return parse_unencrypted_peer_list(bytes, v);
+        }
+        vsf::VsfType::u3(v) => {
+            println!("Response is unencrypted");
+            return parse_unencrypted_peer_list(bytes, v as usize);
+        }
+        vsf::VsfType::u4(v) => {
+            println!("Response is unencrypted");
+            return parse_unencrypted_peer_list(bytes, v as usize);
+        }
+        other => return Err(format!("Invalid peer list type: {:?}", other)),
+    };
+
+    // Parse the decrypted plaintext
+    ptr = 0;
+    let count = match parse(&plaintext_bytes, &mut ptr).map_err(|e| format!("Parse peer count: {}", e))? {
         vsf::VsfType::u(v, _) => v,
         vsf::VsfType::u3(v) => v as usize,
         vsf::VsfType::u4(v) => v as usize,
         _ => return Err("Invalid peer count type".to_string()),
     };
+
+    println!("Received {} peer(s):", count);
+    println!();
+
+    let mut peers = Vec::with_capacity(count);
+    for i in 0..count {
+        let peer = parse_peer_record(&plaintext_bytes, &mut ptr)?;
+        println!("  Peer {}: {}", i + 1, peer.ip);
+        println!("    Handle Hash: {}", hex::encode(&peer.handle_hash[..8]));
+        println!("    Device Key:  {}...", hex::encode(&peer.device_pubkey.as_bytes()[..8]));
+        println!("    Last Seen:   {}", format_timestamp(peer.last_seen));
+        println!();
+        peers.push(peer);
+    }
+
+    Ok(peers)
+}
+
+/// Helper function to parse unencrypted peer list (for backward compatibility)
+fn parse_unencrypted_peer_list(bytes: &[u8], count: usize) -> Result<Vec<PeerRecord>, String> {
+    let mut ptr = 0;
+
+    // Re-parse to position ptr after the count
+    let _ = parse(bytes, &mut ptr).map_err(|e| format!("Parse peer count: {}", e))?;
 
     println!("Received {} peer(s):", count);
     println!();
@@ -294,15 +407,20 @@ fn parse_peer_list(bytes: &[u8]) -> Result<Vec<PeerRecord>, String> {
 }
 
 /// Format timestamp as human-readable
-fn format_timestamp(ts: f64) -> String {
+/// Timestamp is in Eagle Time, so we need to convert current time to Eagle Time for comparison
+fn format_timestamp(eagle_ts: f64) -> String {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-    let now = SystemTime::now()
+    // Get current Unix time
+    let unix_now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs_f64();
 
-    let diff = now - ts;
+    // Convert to Eagle Time (add offset: Eagle epoch is 14,182,940 seconds before Unix epoch)
+    let eagle_now = unix_now + 14182940.0;
+
+    let diff = eagle_now - eagle_ts;
 
     if diff < 60.0 {
         format!("{:.0}s ago", diff)
@@ -324,26 +442,50 @@ fn parse_peer_record(bytes: &[u8], ptr: &mut usize) -> Result<PeerRecord, String
         vsf::VsfType::hb(bytes) => bytes,
         _ => return Err("Invalid handle_hash type".to_string()),
     };
+    println!("DEBUG parse_peer_record: handle_hash len={}, bytes={:02x?}", hash_bytes.len(), &hash_bytes[..hash_bytes.len().min(16)]);
     let mut handle_hash = [0u8; 32];
     handle_hash.copy_from_slice(&hash_bytes);
 
-    // Parse device_pubkey (X25519 key)
+    // Parse device_pubkey (Ed25519 key from FGTW)
     let pubkey_bytes = match parse(bytes, ptr).map_err(|e| format!("Parse device_pubkey: {}", e))? {
-        vsf::VsfType::kx(bytes) => bytes,
+        vsf::VsfType::ke(bytes) => bytes,
         _ => return Err("Invalid device_pubkey type".to_string()),
     };
     let mut pubkey_arr = [0u8; 32];
     pubkey_arr.copy_from_slice(&pubkey_bytes);
     let device_pubkey = PublicIdentity::from_bytes(pubkey_arr);
 
-    // Parse IP
-    let ip_str = match parse(bytes, ptr).map_err(|e| format!("Parse ip: {}", e))? {
-        vsf::VsfType::x(s) => s,
-        _ => return Err("Invalid ip type".to_string()),
+    // Parse IP as 1D tensor of u3 bytes (4 for IPv4, 16 for IPv6)
+    let ip_tensor = match parse(bytes, ptr).map_err(|e| format!("Parse ip tensor: {}", e))? {
+        vsf::VsfType::t_u3(tensor) => tensor,
+        _ => return Err("Invalid ip type (expected t_u3 tensor)".to_string()),
     };
-    let ip = ip_str
-        .parse()
-        .map_err(|e| format!("Invalid IP address: {}", e))?;
+    let ip_bytes = ip_tensor.data;
+    let ip_addr = if ip_bytes.len() == 4 {
+        // IPv4
+        use std::net::{IpAddr, Ipv4Addr};
+        let ipv4 = Ipv4Addr::new(ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3]);
+        IpAddr::V4(ipv4)
+    } else if ip_bytes.len() == 16 {
+        // IPv6
+        use std::net::{IpAddr, Ipv6Addr};
+        let mut octets = [0u8; 16];
+        octets.copy_from_slice(&ip_bytes);
+        IpAddr::V6(Ipv6Addr::from(octets))
+    } else {
+        return Err(format!("Invalid IP length: {} bytes", ip_bytes.len()));
+    };
+
+    // Parse port
+    let port = match parse(bytes, ptr).map_err(|e| format!("Parse port: {}", e))? {
+        vsf::VsfType::u(v, _) => v as u16,
+        vsf::VsfType::u3(v) => v as u16,
+        vsf::VsfType::u4(v) => v as u16,
+        _ => return Err("Invalid port type".to_string()),
+    };
+
+    // Combine IP and port into SocketAddr
+    let ip = std::net::SocketAddr::new(ip_addr, port);
 
     // Parse last_seen
     let last_seen = match parse(bytes, ptr).map_err(|e| format!("Parse last_seen: {}", e))? {

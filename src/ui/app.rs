@@ -444,26 +444,6 @@ impl PhotonApp {
         }
     }
 
-    pub fn submit_username(&mut self) {
-        // TODO: Implement semantic embedding for discovery
-        // Username -> Hash (identity/keys) + Embedding vector (semantic search, opt-in)
-        // Embedding platform: SentenceTransformers (all-MiniLM-L6-v2, ~80MB, 384-dim)
-        // Store on DHT: hash=identity, embedding=public discovery vector
-        log::warn!(
-            "⚠️  SEMANTIC EMBEDDING NOT IMPLEMENTED - Username discovery will be hash-only!"
-        );
-        log::warn!("⚠️  TODO: Add semantic embedding for fuzzy username search");
-
-        // TODO: Query DHT for username availability
-        let username: String = self.current_text_state.chars.iter().collect();
-        log::info!("Querying handle availability: {}", username);
-
-        // Start simulated 1-second DHT query
-        self.handle_status = HandleStatus::Empty;
-        self.query_start_time = Some(std::time::Instant::now());
-        self.window_dirty = true;
-    }
-
     /// Start a network query for handle attestation status
     pub fn query_handle(&mut self) {
         let handle: String = self.current_text_state.chars.iter().collect();

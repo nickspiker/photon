@@ -1,5 +1,6 @@
 use crate::types::PublicIdentity;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
+use vsf::types::Vector;
 use vsf::VsfType;
 
 /// FGTW protocol messages (VSF serialized)
@@ -42,6 +43,51 @@ pub struct PeerRecord {
     pub last_seen: f64,                // Timestamp (f64, serializes as VSF type f6)
 }
 
+/// Convert SocketAddr to binary format for VSF
+/// Format:
+/// - IPv4: 4 bytes (address) + 2 bytes (port big-endian) = 6 bytes
+/// - IPv6: 16 bytes (address) + 2 bytes (port big-endian) = 18 bytes
+fn socketaddr_to_bytes(addr: &SocketAddr) -> Vec<u8> {
+    let mut bytes = Vec::new();
+
+    // Add IP address bytes
+    match addr.ip() {
+        IpAddr::V4(ipv4) => {
+            bytes.extend_from_slice(&ipv4.octets());
+        }
+        IpAddr::V6(ipv6) => {
+            bytes.extend_from_slice(&ipv6.octets());
+        }
+    }
+
+    // Add port (big-endian u16)
+    bytes.extend_from_slice(&addr.port().to_be_bytes());
+
+    bytes
+}
+
+/// Convert binary format back to SocketAddr
+/// Returns None if the format is invalid
+fn bytes_to_socketaddr(bytes: &[u8]) -> Option<SocketAddr> {
+    if bytes.len() == 6 {
+        // IPv4: 4 bytes address + 2 bytes port
+        let ip = IpAddr::V4(std::net::Ipv4Addr::new(
+            bytes[0], bytes[1], bytes[2], bytes[3]
+        ));
+        let port = u16::from_be_bytes([bytes[4], bytes[5]]);
+        Some(SocketAddr::new(ip, port))
+    } else if bytes.len() == 18 {
+        // IPv6: 16 bytes address + 2 bytes port
+        let mut octets = [0u8; 16];
+        octets.copy_from_slice(&bytes[0..16]);
+        let ip = IpAddr::V6(std::net::Ipv6Addr::from(octets));
+        let port = u16::from_be_bytes([bytes[16], bytes[17]]);
+        Some(SocketAddr::new(ip, port))
+    } else {
+        None
+    }
+}
+
 impl FgtwMessage {
     /// Serialize to proper VSF file
     pub fn to_vsf_bytes(&self) -> Vec<u8> {
@@ -68,7 +114,7 @@ impl FgtwMessage {
                     let prefix = format!("peer_{}", i);
                     fields.push((format!("{}_handle_hash", prefix), VsfType::hb(peer.handle_hash.to_vec())));
                     fields.push((format!("{}_device_pubkey", prefix), VsfType::kx(peer.device_pubkey.as_bytes().to_vec())));
-                    fields.push((format!("{}_ip", prefix), VsfType::x(peer.ip.to_string())));
+                    fields.push((format!("{}_ip", prefix), VsfType::v_u3(Vector { data: socketaddr_to_bytes(&peer.ip) })));
                     fields.push((format!("{}_last_seen", prefix), VsfType::f6(peer.last_seen)));
                 }
 
@@ -91,7 +137,7 @@ impl FgtwMessage {
                     let prefix = format!("device_{}", i);
                     fields.push((format!("{}_handle_hash", prefix), VsfType::hb(device.handle_hash.to_vec())));
                     fields.push((format!("{}_device_pubkey", prefix), VsfType::kx(device.device_pubkey.as_bytes().to_vec())));
-                    fields.push((format!("{}_ip", prefix), VsfType::x(device.ip.to_string())));
+                    fields.push((format!("{}_ip", prefix), VsfType::v_u3(Vector { data: socketaddr_to_bytes(&device.ip) })));
                     fields.push((format!("{}_last_seen", prefix), VsfType::f6(device.last_seen)));
                 }
 
@@ -122,7 +168,7 @@ impl FgtwMessage {
                     let prefix = format!("device_{}", i);
                     fields.push((format!("{}_handle_hash", prefix), VsfType::hb(device.handle_hash.to_vec())));
                     fields.push((format!("{}_device_pubkey", prefix), VsfType::kx(device.device_pubkey.as_bytes().to_vec())));
-                    fields.push((format!("{}_ip", prefix), VsfType::x(device.ip.to_string())));
+                    fields.push((format!("{}_ip", prefix), VsfType::v_u3(Vector { data: socketaddr_to_bytes(&device.ip) })));
                     fields.push((format!("{}_last_seen", prefix), VsfType::f6(device.last_seen)));
                 }
 
@@ -336,11 +382,12 @@ fn extract_peer_list(fields: &std::collections::HashMap<String, VsfType>, prefix
         let device_pubkey = extract_pubkey(fields, &format!("{}_device_pubkey", peer_prefix))?;
 
         let ip_key = format!("{}_ip", peer_prefix);
-        let ip_str = match fields.get(&ip_key) {
-            Some(VsfType::x(s)) => s,
+        let ip_bytes = match fields.get(&ip_key) {
+            Some(VsfType::v_u3(vec)) => &vec.data,
             _ => return Err(format!("Missing or invalid {}", ip_key)),
         };
-        let ip: SocketAddr = ip_str.parse().map_err(|e| format!("Invalid IP {}: {}", ip_key, e))?;
+        let ip = bytes_to_socketaddr(ip_bytes)
+            .ok_or_else(|| format!("Invalid IP bytes for {}", ip_key))?;
 
         let last_seen_key = format!("{}_last_seen", peer_prefix);
         let last_seen = match fields.get(&last_seen_key) {

@@ -286,7 +286,7 @@ impl PhotonApp {
                 }
                 Key::Named(NamedKey::Enter) => {
                     if !self.current_text_state.chars.is_empty() {
-                        self.submit_username();
+                        self.query_handle();
                     }
                     return;
                 }
