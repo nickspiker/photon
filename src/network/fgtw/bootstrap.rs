@@ -1,17 +1,87 @@
 use super::{storage::Keypair, PeerRecord};
-use vsf::parse;
+use vsf::{parse, schema::FromVsfType};
 
 const FGTW_URL: &str = "https://fgtw.org";
 
-// FGTW Seed Public Key (hardcoded to avoid extra queries)
-// This is the X25519 public key of the fgtw.org bootstrap server
-// Used for encrypting announce messages
+// FGTW Seed Public Keys (hardcoded to avoid extra queries)
+// X25519 public key - for encrypting announce messages
 pub const FGTW_X25519_PUBLIC_KEY: [u8; 32] = [
     0x3D, 0x55, 0x63, 0xA3, 0x9C, 0xB4, 0x0F, 0x68,
     0x0E, 0x20, 0x88, 0x76, 0xDC, 0x2E, 0x3E, 0x58,
     0xC2, 0xFB, 0xF4, 0xA0, 0x37, 0x60, 0xB1, 0x25,
     0x61, 0xC0, 0xAF, 0xE1, 0x12, 0xAD, 0xDD, 0x11,
 ];
+
+// Ed25519 public key - for verifying challenge signatures
+pub const FGTW_ED25519_PUBLIC_KEY: [u8; 32] = [
+    0x6D, 0x9F, 0x6E, 0x73, 0xBF, 0xA4, 0x83, 0x11,
+    0x58, 0x63, 0x42, 0x7C, 0xC7, 0x50, 0x5D, 0xC4,
+    0x8F, 0xA7, 0x01, 0x6A, 0x60, 0xA6, 0xF4, 0x02,
+    0x05, 0xCA, 0x95, 0x0D, 0x9B, 0xF0, 0x58, 0x88,
+];
+
+/// Try to parse a VSF error message from response bytes
+/// Returns Some(error_message) if the response is a valid VSF error, None otherwise
+/// Uses VSF crate's built-in field parser for robust parsing
+fn try_parse_vsf_error(bytes: &[u8]) -> Option<String> {
+    use vsf::file_format::VsfField;
+    use vsf::VsfType;
+
+    // Check VSF magic header "RÅ<"
+    let magic = "RÅ<".as_bytes();
+    if bytes.len() < magic.len() || &bytes[0..magic.len()] != magic {
+        return None;
+    }
+
+    let mut ptr = magic.len(); // Skip "RÅ<"
+
+    // Skip version, compat, header_length, timestamp
+    for _ in 0..4 {
+        if parse(bytes, &mut ptr).is_err() {
+            return None;
+        }
+    }
+
+    // Skip provenance hash (hp) or signature (ge)
+    if parse(bytes, &mut ptr).is_err() {
+        return None;
+    }
+
+    // Skip optional rolling hash (hb) if present
+    if ptr < bytes.len() && bytes[ptr] == b'h' {
+        if parse(bytes, &mut ptr).is_err() {
+            return None;
+        }
+    }
+
+    // Skip optional signature (ge) if present
+    if ptr < bytes.len() && bytes[ptr] == b'g' {
+        if parse(bytes, &mut ptr).is_err() {
+            return None;
+        }
+    }
+
+    // Parse field count
+    let field_count = match parse(bytes, &mut ptr) {
+        Ok(VsfType::n(count)) => count,
+        _ => return None,
+    };
+
+    // Parse fields using VsfField::parse() from VSF crate
+    for _ in 0..field_count {
+        let field = VsfField::parse(bytes, &mut ptr).ok()?;
+
+        // Look for "error" field
+        if field.name == "error" {
+            // Extract error message from first value (should be VsfType::l)
+            if let Some(VsfType::l(error_msg)) = field.values.first() {
+                return Some(error_msg.clone());
+            }
+        }
+    }
+
+    None
+}
 
 /// Load bootstrap peers by announcing to FGTW
 /// This requires authenticating with our handle and device key
@@ -103,14 +173,31 @@ pub async fn load_bootstrap_peers(
         .await
         .map_err(|e| format!("Failed to send announce: {}", e))?;
 
-    if !announce_response.status().is_success() {
-        return Err(format!("Announce HTTP error: {}", announce_response.status()));
-    }
+    // Capture status before consuming response
+    let status = announce_response.status();
+    let is_success = status.is_success();
 
-    let peer_list_bytes = announce_response
+    // Read response body
+    let response_bytes = announce_response
         .bytes()
         .await
-        .map_err(|e| format!("Failed to read peer list: {}", e))?;
+        .map_err(|e| format!("Failed to read response: {}", e))?;
+
+    if !is_success {
+        // Try to parse VSF error message from response body
+        eprintln!("DEBUG: Got error response, {} bytes, first 32 bytes: {:?}",
+                  response_bytes.len(),
+                  &response_bytes[..response_bytes.len().min(32)]);
+
+        if let Some(error_msg) = try_parse_vsf_error(&response_bytes) {
+            return Err(format!("FGTW error: {}", error_msg));
+        } else {
+            eprintln!("DEBUG: Failed to parse VSF error message");
+            return Err(format!("Announce HTTP error: {}", status));
+        }
+    }
+
+    let peer_list_bytes = response_bytes;
 
     println!("Response: {} bytes", peer_list_bytes.len());
 
@@ -134,13 +221,67 @@ pub async fn load_bootstrap_peers(
 /// Parse challenge VSF to extract provenance hash
 /// The timestamp in the challenge is ignored - announce generates its own timestamp
 fn parse_challenge_hash(bytes: &[u8]) -> Result<[u8; 32], String> {
-    // Use VSF's compute_provenance_hash to extract the hp field
-    // This handles all the encoding details for us
-    let hash_bytes = vsf::verification::compute_provenance_hash(bytes)
-        .map_err(|e| format!("Failed to extract challenge hash: {}", e))?;
+    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 
-    eprintln!("DEBUG parse_challenge: Extracted challenge hash: {}", hex::encode(&hash_bytes));
-    Ok(hash_bytes)
+    // Parse VSF to extract signature (ge) from header
+    let mut ptr = 4; // Skip "RÅ<"
+
+    // Skip version, backward_compat, header_length, timestamp
+    let _ = parse(bytes, &mut ptr).map_err(|e| format!("Parse version: {}", e))?;
+    let _ = parse(bytes, &mut ptr).map_err(|e| format!("Parse backward compat: {}", e))?;
+    let _ = parse(bytes, &mut ptr).map_err(|e| format!("Parse header length: {}", e))?;
+    let _ = parse(bytes, &mut ptr).map_err(|e| format!("Parse timestamp: {}", e))?;
+
+    // Extract provenance hash (hp) - this is what gets signed
+    let prov_hash_result = parse(bytes, &mut ptr).map_err(|e| format!("Parse provenance hash: {}", e))?;
+    let prov_hash_bytes = match &prov_hash_result {
+        vsf::VsfType::hp(hash) => {
+            if hash.len() != 32 {
+                return Err(format!("Invalid provenance hash length: {}", hash.len()));
+            }
+            hash.clone()
+        }
+        _ => return Err("Invalid provenance hash type".to_string()),
+    };
+
+    // Skip rolling hash if present
+    let next_type = parse(bytes, &mut ptr).map_err(|e| format!("Parse after hp: {}", e))?;
+
+    // Check if next is signature (ge) or rolling hash (hb)
+    let signature_bytes = match &next_type {
+        vsf::VsfType::ge(sig) => sig.clone(),
+        vsf::VsfType::hb(_) => {
+            // Skip rolling hash, next should be signature
+            let sig_type = parse(bytes, &mut ptr).map_err(|e| format!("Parse signature: {}", e))?;
+            match sig_type {
+                vsf::VsfType::ge(sig) => sig,
+                _ => return Err("Challenge missing signature (ge)".to_string()),
+            }
+        }
+        _ => return Err("Challenge missing signature (ge)".to_string()),
+    };
+
+    if signature_bytes.len() != 64 {
+        return Err(format!("Invalid signature length: {} (expected 64)", signature_bytes.len()));
+    }
+
+    // Verify signature over provenance hash
+    let verifying_key = VerifyingKey::from_bytes(&FGTW_ED25519_PUBLIC_KEY)
+        .map_err(|e| format!("Invalid FGTW public key: {}", e))?;
+
+    let signature = Signature::from_bytes(signature_bytes.as_slice().try_into()
+        .map_err(|_| "Invalid signature bytes".to_string())?);
+
+    verifying_key.verify(&prov_hash_bytes, &signature)
+        .map_err(|_| "Challenge signature verification failed - not from authentic FGTW")?;
+
+    println!("✓ Challenge signature verified (authentic FGTW response)");
+
+    // Return the provenance hash (which becomes the challenge value)
+    let mut arr = [0u8; 32];
+    arr.copy_from_slice(&prov_hash_bytes);
+    eprintln!("DEBUG parse_challenge: Extracted challenge hash: {}", hex::encode(&arr));
+    Ok(arr)
 }
 
 /// Encrypt data for FGTW using ephemeral X25519 + AES-256-GCM
@@ -332,75 +473,149 @@ fn build_announce_message(
 fn parse_peer_list(bytes: &[u8], device_key: &Keypair) -> Result<Vec<PeerRecord>, String> {
     let mut ptr = 0;
 
-    // First check if this is an encrypted response (v'e')
-    let plaintext_bytes = match parse(bytes, &mut ptr).map_err(|e| format!("Parse response type: {}", e))? {
+    // Response MUST be encrypted (v'e') - authentication required
+    let first_type = parse(bytes, &mut ptr).map_err(|e| format!("Parse response type: {}", e))?;
+    let plaintext_bytes = match &first_type {
         vsf::VsfType::v(b'e', encrypted_data) => {
             println!("Response is encrypted, decrypting...");
-            // Decrypt the encrypted payload
-            decrypt_from_fgtw(&encrypted_data, device_key)?
+            decrypt_from_fgtw(encrypted_data, device_key)?
         }
-        // If it's already a peer count, we have unencrypted data
-        vsf::VsfType::u(v, _) => {
-            println!("Response is unencrypted");
-            // Reset ptr and return original bytes
-            return parse_unencrypted_peer_list(bytes, v);
+        _ => {
+            return Err(format!(
+                "Invalid peer list: must be encrypted (v'e') for authentication, got {:?}",
+                first_type
+            ));
         }
-        vsf::VsfType::u3(v) => {
-            println!("Response is unencrypted");
-            return parse_unencrypted_peer_list(bytes, v as usize);
-        }
-        vsf::VsfType::u4(v) => {
-            println!("Response is unencrypted");
-            return parse_unencrypted_peer_list(bytes, v as usize);
-        }
-        other => return Err(format!("Invalid peer list type: {:?}", other)),
     };
 
-    // Parse the decrypted plaintext
-    ptr = 0;
-    let count = match parse(&plaintext_bytes, &mut ptr).map_err(|e| format!("Parse peer count: {}", e))? {
-        vsf::VsfType::u(v, _) => v,
-        vsf::VsfType::u3(v) => v as usize,
-        vsf::VsfType::u4(v) => v as usize,
-        _ => return Err("Invalid peer count type".to_string()),
+    // The decrypted plaintext is now a complete VSF file with proper sections
+    // Format: RÅ<[header]>[d"peer0" (d"handle_hash":hb) ...][d"peer1" ...]
+    println!("Parsing decrypted VSF file ({} bytes)", plaintext_bytes.len());
+
+    // Validate VSF magic number "RÅ" (3 bytes UTF-8) and '<'
+    if plaintext_bytes.len() < 4 || &plaintext_bytes[0..3] != "RÅ".as_bytes() || plaintext_bytes[3] != b'<' {
+        return Err("Invalid VSF format: missing magic bytes RÅ<".to_string());
+    }
+
+    // Parse VSF header to find peer section offsets
+    ptr = 4; // Skip "RÅ<"
+
+    // Skip version, backward_compat, header_length, creation_time
+    let _ = parse(&plaintext_bytes, &mut ptr).map_err(|e| format!("Parse version: {}", e))?;
+    let _ = parse(&plaintext_bytes, &mut ptr).map_err(|e| format!("Parse backward_compat: {}", e))?;
+    let _ = parse(&plaintext_bytes, &mut ptr).map_err(|e| format!("Parse header_length: {}", e))?;
+    let _ = parse(&plaintext_bytes, &mut ptr).map_err(|e| format!("Parse creation_time: {}", e))?;
+
+    // Parse provenance hash (hp)
+    let _ = parse(&plaintext_bytes, &mut ptr).map_err(|e| format!("Parse provenance hash: {}", e))?;
+
+    // Skip optional rolling hash (hb) if present
+    let next_type = parse(&plaintext_bytes, &mut ptr).map_err(|e| format!("Parse after hp: {}", e))?;
+    let field_count = match next_type {
+        vsf::VsfType::hb(_) => {
+            match parse(&plaintext_bytes, &mut ptr).map_err(|e| format!("Parse field count: {}", e))? {
+                vsf::VsfType::n(count) => count,
+                _ => return Err("Invalid field count type".to_string()),
+            }
+        }
+        vsf::VsfType::n(count) => count,
+        _ => return Err("Expected field count or rolling hash".to_string()),
     };
 
-    println!("Received {} peer(s):", count);
-    println!();
+    // Parse header field definitions to find section offsets
+    let mut section_offsets = Vec::new();
+    for _ in 0..field_count {
+        if plaintext_bytes[ptr] != b'(' {
+            return Err("Expected '(' for field".to_string());
+        }
+        ptr += 1;
 
-    let mut peers = Vec::with_capacity(count);
-    for i in 0..count {
-        let peer = parse_peer_record(&plaintext_bytes, &mut ptr)?;
-        println!("  Peer {}: {}", i + 1, peer.ip);
-        println!("    Handle Hash: {}", hex::encode(&peer.handle_hash[..8]));
-        println!("    Device Key:  {}...", hex::encode(&peer.device_pubkey.as_bytes()[..8]));
-        println!("    Last Seen:   {}", format_timestamp(peer.last_seen));
-        println!();
+        // Parse section name (d type)
+        let section_name = match parse(&plaintext_bytes, &mut ptr).map_err(|e| format!("Parse section name: {}", e))? {
+            vsf::VsfType::d(name) => name,
+            _ => return Err("Invalid section name type".to_string()),
+        };
+
+        // Skip ':' separator
+        if plaintext_bytes[ptr] != b':' {
+            return Err("Expected ':' after section name".to_string());
+        }
+        ptr += 1;
+
+        // Parse offset, size, child_count
+        let mut offset = None;
+        while ptr < plaintext_bytes.len() && plaintext_bytes[ptr] != b')' {
+            let field = parse(&plaintext_bytes, &mut ptr).map_err(|e| format!("Parse header field: {}", e))?;
+            match field {
+                vsf::VsfType::o(o) => offset = Some(o),
+                _ => {}
+            }
+            if ptr < plaintext_bytes.len() && plaintext_bytes[ptr] == b',' {
+                ptr += 1;
+            }
+        }
+
+        if plaintext_bytes[ptr] != b')' {
+            return Err("Expected ')' after field".to_string());
+        }
+        ptr += 1;
+
+        if let Some(off) = offset {
+            section_offsets.push((section_name, off));
+        }
+    }
+
+    // Skip '>'
+    if plaintext_bytes[ptr] != b'>' {
+        return Err("Expected '>' for header end".to_string());
+    }
+    ptr += 1;
+
+    // Find the "peers" section
+    let peers_offset = section_offsets.iter()
+        .find(|(name, _)| name == "peers")
+        .map(|(_, offset)| *offset)
+        .ok_or("Missing 'peers' section")?;
+
+    // Parse the peers section
+    let mut peers = Vec::new();
+    let mut ptr = peers_offset;
+
+    // Expect section start '['
+    if plaintext_bytes[ptr] != b'[' {
+        return Err("Expected '[' for peers section start".to_string());
+    }
+    ptr += 1;
+
+    // Parse section name "peers"
+    let _ = parse(&plaintext_bytes, &mut ptr).map_err(|e| format!("Parse section name: {}", e))?;
+
+    // Parse all (peer: ...) fields until ']'
+    while ptr < plaintext_bytes.len() && plaintext_bytes[ptr] != b']' {
+        // Skip whitespace
+        while ptr < plaintext_bytes.len() && (plaintext_bytes[ptr] == b'\n' || plaintext_bytes[ptr] == b' ') {
+            ptr += 1;
+        }
+
+        if plaintext_bytes[ptr] == b']' {
+            break;
+        }
+
+        let (peer, new_ptr) = parse_peer_field(&plaintext_bytes, ptr)?;
+        ptr = new_ptr;
+
         peers.push(peer);
     }
 
-    Ok(peers)
-}
-
-/// Helper function to parse unencrypted peer list (for backward compatibility)
-fn parse_unencrypted_peer_list(bytes: &[u8], count: usize) -> Result<Vec<PeerRecord>, String> {
-    let mut ptr = 0;
-
-    // Re-parse to position ptr after the count
-    let _ = parse(bytes, &mut ptr).map_err(|e| format!("Parse peer count: {}", e))?;
-
-    println!("Received {} peer(s):", count);
+    println!("Received {} peer(s):", peers.len());
     println!();
 
-    let mut peers = Vec::with_capacity(count);
-    for i in 0..count {
-        let peer = parse_peer_record(bytes, &mut ptr)?;
-        println!("  Peer {}: {}", i + 1, peer.ip);
+    for (i, peer) in peers.iter().enumerate() {
+        println!("  Peer {}: {}", i, peer.ip);
         println!("    Handle Hash: {}", hex::encode(&peer.handle_hash[..8]));
         println!("    Device Key:  {}...", hex::encode(&peer.device_pubkey.as_bytes()[..8]));
         println!("    Last Seen:   {}", format_timestamp(peer.last_seen));
         println!();
-        peers.push(peer);
     }
 
     Ok(peers)
@@ -433,70 +648,121 @@ fn format_timestamp(eagle_ts: f64) -> String {
     }
 }
 
-/// Parse a single peer record from VSF bytes
-fn parse_peer_record(bytes: &[u8], ptr: &mut usize) -> Result<PeerRecord, String> {
+/// Parse a single peer section from VSF bytes with named fields
+fn parse_peer_field(bytes: &[u8], offset: usize) -> Result<(PeerRecord, usize), String> {
     use crate::types::PublicIdentity;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
-    // Parse handle_hash (BLAKE3 hash)
-    let hash_bytes = match parse(bytes, ptr).map_err(|e| format!("Parse handle_hash: {}", e))? {
-        vsf::VsfType::hb(bytes) => bytes,
-        _ => return Err("Invalid handle_hash type".to_string()),
-    };
-    println!("DEBUG parse_peer_record: handle_hash len={}, bytes={:02x?}", hash_bytes.len(), &hash_bytes[..hash_bytes.len().min(16)]);
-    let mut handle_hash = [0u8; 32];
-    handle_hash.copy_from_slice(&hash_bytes);
+    let mut ptr = offset;
 
-    // Parse device_pubkey (Ed25519 key from FGTW)
-    let pubkey_bytes = match parse(bytes, ptr).map_err(|e| format!("Parse device_pubkey: {}", e))? {
-        vsf::VsfType::ke(bytes) => bytes,
-        _ => return Err("Invalid device_pubkey type".to_string()),
-    };
-    let mut pubkey_arr = [0u8; 32];
-    pubkey_arr.copy_from_slice(&pubkey_bytes);
-    let device_pubkey = PublicIdentity::from_bytes(pubkey_arr);
+    // Expect field start '('
+    if bytes[ptr] != b'(' {
+        return Err("Expected '(' for peer field start".to_string());
+    }
+    ptr += 1;
 
-    // Parse IP as 1D tensor of u3 bytes (4 for IPv4, 16 for IPv6)
-    let ip_tensor = match parse(bytes, ptr).map_err(|e| format!("Parse ip tensor: {}", e))? {
-        vsf::VsfType::t_u3(tensor) => tensor,
-        _ => return Err("Invalid ip type (expected t_u3 tensor)".to_string()),
+    // Parse field name (should be "peer")
+    let field_name = match parse(bytes, &mut ptr).map_err(|e| format!("Parse field name: {}", e))? {
+        vsf::VsfType::d(name) => name,
+        _ => return Err("Invalid field name type".to_string()),
     };
-    let ip_bytes = ip_tensor.data;
-    let ip_addr = if ip_bytes.len() == 4 {
-        // IPv4
-        use std::net::{IpAddr, Ipv4Addr};
-        let ipv4 = Ipv4Addr::new(ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3]);
-        IpAddr::V4(ipv4)
+
+    if field_name != "peer" {
+        return Err(format!("Expected field name 'peer', got '{}'", field_name));
+    }
+
+    // Skip ':' separator
+    if bytes[ptr] != b':' {
+        return Err("Expected ':' after field name".to_string());
+    }
+    ptr += 1;
+
+    // Parse all comma-separated values for this peer
+    // Expected format: (peer: hb{32}{...}, ke{32}{...}, t u3{IP}, u3{port}, ef6{timestamp})
+
+    // Parse handle_hash (hb{32})
+    let handle_hash = match parse(bytes, &mut ptr).map_err(|e| format!("Parse handle_hash: {}", e))? {
+        vsf::VsfType::hb(h) if h.len() == 32 => {
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&h);
+            arr
+        }
+        _ => return Err("Invalid handle_hash type or length".to_string()),
+    };
+
+    // Expect comma separator
+    if bytes[ptr] != b',' {
+        return Err("Expected ',' after handle_hash".to_string());
+    }
+    ptr += 1;
+
+    // Parse device_pubkey (ke{32})
+    let device_pubkey = match parse(bytes, &mut ptr).map_err(|e| format!("Parse device_pubkey: {}", e))? {
+        vsf::VsfType::ke(k) if k.len() == 32 => {
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&k);
+            PublicIdentity::from_bytes(arr)
+        }
+        _ => return Err("Invalid device_pubkey type or length".to_string()),
+    };
+
+    // Expect comma separator
+    if bytes[ptr] != b',' {
+        return Err("Expected ',' after device_pubkey".to_string());
+    }
+    ptr += 1;
+
+    // Parse IP address (t u3{4 or 16 bytes})
+    let ip_bytes = match parse(bytes, &mut ptr).map_err(|e| format!("Parse ip: {}", e))? {
+        vsf::VsfType::t_u3(tensor) => tensor.data,
+        _ => return Err("Invalid ip type".to_string()),
+    };
+
+    let parsed_ip = if ip_bytes.len() == 4 {
+        IpAddr::V4(Ipv4Addr::new(ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3]))
     } else if ip_bytes.len() == 16 {
-        // IPv6
-        use std::net::{IpAddr, Ipv6Addr};
         let mut octets = [0u8; 16];
         octets.copy_from_slice(&ip_bytes);
         IpAddr::V6(Ipv6Addr::from(octets))
     } else {
-        return Err(format!("Invalid IP length: {} bytes", ip_bytes.len()));
+        return Err(format!("Invalid IP length: {}", ip_bytes.len()));
     };
 
-    // Parse port
-    let port = match parse(bytes, ptr).map_err(|e| format!("Parse port: {}", e))? {
-        vsf::VsfType::u(v, _) => v as u16,
-        vsf::VsfType::u3(v) => v as u16,
-        vsf::VsfType::u4(v) => v as u16,
-        _ => return Err("Invalid port type".to_string()),
+    // Expect comma separator
+    if bytes[ptr] != b',' {
+        return Err("Expected ',' after ip".to_string());
+    }
+    ptr += 1;
+
+    // Parse port (u3 or generic u)
+    let port = u16::from_vsf_type(&parse(bytes, &mut ptr).map_err(|e| format!("Parse port: {}", e))?)
+        .map_err(|e| format!("Invalid port: {}", e))?;
+
+    // Expect comma separator
+    if bytes[ptr] != b',' {
+        return Err("Expected ',' after port".to_string());
+    }
+    ptr += 1;
+
+    // Parse timestamp (e with EtType::f6)
+    let last_seen = match parse(bytes, &mut ptr).map_err(|e| format!("Parse last_seen: {}", e))? {
+        vsf::VsfType::e(et) => match et {
+            vsf::types::EtType::f6(timestamp) => timestamp,
+            _ => return Err("Expected f6 Eagle Time timestamp".to_string()),
+        },
+        _ => return Err("Expected Eagle Time (e) type for timestamp".to_string()),
     };
 
-    // Combine IP and port into SocketAddr
-    let ip = std::net::SocketAddr::new(ip_addr, port);
+    // Expect field end ')'
+    if bytes[ptr] != b')' {
+        return Err("Expected ')' after peer field".to_string());
+    }
+    ptr += 1;
 
-    // Parse last_seen
-    let last_seen = match parse(bytes, ptr).map_err(|e| format!("Parse last_seen: {}", e))? {
-        vsf::VsfType::f6(v) => v,
-        _ => return Err("Invalid last_seen type".to_string()),
-    };
-
-    Ok(PeerRecord {
+    Ok((PeerRecord {
         handle_hash,
         device_pubkey,
-        ip,
+        ip: SocketAddr::new(parsed_ip, port),
         last_seen,
-    })
+    }, ptr))
 }

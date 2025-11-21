@@ -5,6 +5,7 @@
 
 use crate::network::fgtw::{FgtwMessage, FgtwTransport, PeerRecord};
 use crate::types::{Handle, PublicIdentity};
+use std::net::UdpSocket;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -21,6 +22,8 @@ pub struct HandleQuery {
     sender: Sender<String>,
     receiver: Receiver<QueryResult>,
     transport: Arc<Mutex<Option<Arc<FgtwTransport>>>>,
+    socket: Arc<UdpSocket>,
+    port: u16,
 }
 
 impl HandleQuery {
@@ -29,8 +32,15 @@ impl HandleQuery {
         let (tx_request, rx_request) = channel::<String>();
         let (tx_response, rx_response) = channel::<QueryResult>();
 
+        // Bind UDP socket to port 0 (OS picks an available port)
+        let socket = UdpSocket::bind("0.0.0.0:0").expect("Failed to bind UDP socket");
+        let port = socket.local_addr().expect("Failed to get socket address").port();
+        println!("Network: Listening on UDP port {}", port);
+        let socket = Arc::new(socket);
+
         let transport = Arc::new(Mutex::new(None::<Arc<FgtwTransport>>));
         let transport_clone = transport.clone();
+        let port_clone = port;
 
         // Spawn worker thread to handle FGTW queries
         thread::spawn(move || {
@@ -94,16 +104,6 @@ impl HandleQuery {
                     }
                 };
 
-                let handle_keypair = match crate::network::fgtw::load_or_generate_handle_key(&paths.handle_key) {
-                    Ok(kp) => kp,
-                    Err(e) => {
-                        eprintln!("Network: ERROR - Failed to load handle key: {}", e);
-                        let result = QueryResult::Unattested;
-                        let _ = tx_response.send(result);
-                        continue;
-                    }
-                };
-
                 // Query FGTW by announcing ourselves (this returns the peer list for the handle)
                 // Port 0 means we're just querying, not actually announcing availability
                 // We need a tokio runtime since the worker is a plain thread
@@ -115,7 +115,7 @@ impl HandleQuery {
                         crate::network::fgtw::bootstrap::load_bootstrap_peers(
                             &device_keypair,
                             handle_hash,
-                            0, // Port 0 = query only
+                            port_clone,
                         )
                     ) {
                     Ok(p) => p,
@@ -129,7 +129,16 @@ impl HandleQuery {
 
                 // Add peers to store
                 if !peers.is_empty() {
-                    println!("Network: Handle '{}' is CLAIMED (found {} peer(s) from fgtw.org)", username, peers.len());
+                    // Check if this is OUR device or someone else's
+                    let our_pubkey = device_keypair.public.as_bytes();
+                    let peer = &peers[0];
+                    let is_ours = peer.device_pubkey.as_bytes() == our_pubkey;
+
+                    if is_ours {
+                        println!("Network: Handle '{}' registered to this device", username);
+                    } else {
+                        println!("Network: Handle '{}' is CLAIMED by another device", username);
+                    }
 
                     // Add peers to local store
                     let mut store = peer_store.lock().unwrap();
@@ -143,7 +152,7 @@ impl HandleQuery {
                     continue;
                 }
 
-                println!("Network: Handle '{}' is AVAILABLE (not found on network)", username);
+                println!("Network: Handle '{}' is available", username);
                 let result = QueryResult::Unattested;
 
                 if tx_response.send(result).is_err() {
@@ -156,7 +165,19 @@ impl HandleQuery {
             sender: tx_request,
             receiver: rx_response,
             transport,
+            socket,
+            port,
         }
+    }
+
+    /// Get the UDP port we're listening on
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    /// Get a reference to the UDP socket
+    pub fn socket(&self) -> &Arc<UdpSocket> {
+        &self.socket
     }
 
     /// Set the FGTW transport (must be called after creating transport)
