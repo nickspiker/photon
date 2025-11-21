@@ -1,5 +1,6 @@
 use crate::types::PublicIdentity;
 use std::net::{IpAddr, SocketAddr};
+use vsf::schema::FromVsfType;
 use vsf::types::Vector;
 use vsf::VsfType;
 
@@ -268,8 +269,9 @@ impl FgtwMessage {
 
         // Extract msg_type
         let msg_type = match fields.get("msg_type") {
-            Some(VsfType::u3(v)) => *v,
-            _ => return Err("Missing or invalid msg_type".to_string()),
+            Some(vsf_val) => u8::from_vsf_type(vsf_val)
+                .map_err(|e| format!("Invalid msg_type: {}", e))?,
+            None => return Err("Missing msg_type".to_string()),
         };
 
         // Reconstruct message based on type
@@ -301,10 +303,9 @@ impl FgtwMessage {
                 let handle_hash = extract_hash(&fields, "handle_hash")?;
                 let device_pubkey = extract_pubkey(&fields, "device_pubkey")?;
                 let port = match fields.get("port") {
-                    Some(VsfType::u(v, _)) => *v as u16,
-                    Some(VsfType::u3(v)) => *v as u16,
-                    Some(VsfType::u4(v)) => *v as u16,
-                    _ => return Err("Missing or invalid port".to_string()),
+                    Some(vsf_val) => u16::from_vsf_type(vsf_val)
+                        .map_err(|e| format!("Invalid port: {}", e))?,
+                    None => return Err("Missing port".to_string()),
                 };
                 Ok(FgtwMessage::Announce { handle_hash, device_pubkey, port })
             }
@@ -368,10 +369,9 @@ fn extract_pubkey(fields: &std::collections::HashMap<String, VsfType>, key: &str
 fn extract_peer_list(fields: &std::collections::HashMap<String, VsfType>, prefix: &str) -> Result<Vec<PeerRecord>, String> {
     let count_key = format!("{}_count", prefix);
     let count = match fields.get(&count_key) {
-        Some(VsfType::u(v, _)) => *v,
-        Some(VsfType::u3(v)) => *v as usize,
-        Some(VsfType::u4(v)) => *v as usize,
-        _ => return Err(format!("Missing or invalid {}_count", prefix)),
+        Some(vsf_val) => usize::from_vsf_type(vsf_val)
+            .map_err(|e| format!("Invalid {}_count: {}", prefix, e))?,
+        None => return Err(format!("Missing {}_count", prefix)),
     };
 
     let mut peers = Vec::with_capacity(count);

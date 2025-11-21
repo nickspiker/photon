@@ -30,8 +30,6 @@ impl Keypair {
 pub struct FgtwPaths {
     /// Device key: system-wide FGTW identity (/etc/fgtw/device.key or fallback)
     pub device_key: PathBuf,
-    /// User handle: per-user FGTW identity (~/.config/fgtw/handle.key)
-    pub handle_key: PathBuf,
     /// Peer cache: per-user peer list (~/.cache/fgtw/peers.vsf)
     pub peer_cache: PathBuf,
 }
@@ -73,11 +71,6 @@ impl FgtwPaths {
             .join("fgtw")
             .join("device.key");
 
-        let handle_key = dirs::config_dir()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "No config dir"))?
-            .join("fgtw")
-            .join("handle.key");
-
         let peer_cache = dirs::cache_dir()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "No cache dir"))?
             .join("fgtw")
@@ -85,7 +78,6 @@ impl FgtwPaths {
 
         Ok(Self {
             device_key,
-            handle_key,
             peer_cache,
         })
     }
@@ -105,20 +97,6 @@ pub fn load_or_generate_device_key(path: &PathBuf) -> io::Result<Keypair> {
         load_keypair_vsf(path)
     } else {
         // Generate new device key
-        let keypair = Keypair::generate();
-        save_keypair_vsf(path, &keypair)?;
-        Ok(keypair)
-    }
-}
-
-/// Load or generate handle keypair from VSF file
-/// Handle is per-user FGTW identity (portable across apps)
-pub fn load_or_generate_handle_key(path: &PathBuf) -> io::Result<Keypair> {
-    if path.exists() {
-        // Load existing handle
-        load_keypair_vsf(path)
-    } else {
-        // Generate new handle
         let keypair = Keypair::generate();
         save_keypair_vsf(path, &keypair)?;
         Ok(keypair)
