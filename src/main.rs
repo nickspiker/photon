@@ -4,12 +4,12 @@
 mod self_verify;
 
 use photon_messenger::debug_println;
-use photon_messenger::ui::PhotonApp;
+use photon_messenger::ui::{PhotonApp, PhotonEvent};
 
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
-    event_loop::{ActiveEventLoop, EventLoop},
+    event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy},
     window::{Window, WindowId},
 };
 
@@ -20,9 +20,10 @@ struct App {
     screen_height: u32,
     maximized_size: Option<(u32, u32)>, // Maximized dimensions (learned on first maximize)
     blinkey_blink_rate_ms: u64,         // System blinkey blink rate in milliseconds
+    event_proxy: EventLoopProxy<PhotonEvent>, // For cross-thread wake
 }
 
-impl ApplicationHandler for App {
+impl ApplicationHandler<PhotonEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_none() {
             // Get primary monitor size
@@ -84,6 +85,7 @@ impl ApplicationHandler for App {
                         window,
                         self.blinkey_blink_rate_ms,
                         target_frame_duration_ms,
+                        self.event_proxy.clone(),
                     );
                     self.photon_app = Some(app);
                     // Trigger redraw with correct fullscreen state
@@ -96,6 +98,7 @@ impl ApplicationHandler for App {
                         window,
                         self.blinkey_blink_rate_ms,
                         target_frame_duration_ms,
+                        self.event_proxy.clone(),
                     ));
                     self.photon_app = Some(app);
                     // Trigger redraw with correct fullscreen state
@@ -192,16 +195,24 @@ impl ApplicationHandler for App {
                 return;
             }
 
-            // Check for query responses (non-blocking) - always check, regardless of focus
-            if app.check_query_response() {
-                // Query completed, redraw to update button
+            // Check for FGTW connectivity status (non-blocking)
+            app.check_fgtw_online();
+            if app.controls_dirty {
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            }
+
+            // Check for attestation responses (non-blocking) - always check, regardless of focus
+            if app.check_attestation_response() {
+                // Attestation completed, redraw to update button
                 if let Some(window) = &self.window {
                     window.request_redraw();
                 }
             }
 
             // Priority 2: If animating query, sync to display refresh rate
-            if app.handle_status == photon_messenger::ui::HandleStatus::Checking {
+            if app.should_animate() {
                 let now = std::time::Instant::now();
                 if now >= app.next_animation_frame {
                     if let Some(window) = &self.window {
@@ -221,11 +232,6 @@ impl ApplicationHandler for App {
                 let now = std::time::Instant::now();
 
                 if now >= app.next_blinkey_blink_time {
-                    let timestamp = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_millis();
-                    // Time to blink! Toggle blinkey and set next timer
                     let font_size = app.font_size() as usize;
                     PhotonApp::flip_blinkey(
                         &mut app.renderer,
@@ -238,13 +244,40 @@ impl ApplicationHandler for App {
                         app.is_mouse_selecting,
                     );
                     app.next_blinkey_blink_time = app.next_blink_wake_time();
-                    let delay_ms = app.next_blinkey_blink_time.duration_since(now).as_millis();
                 }
 
                 // Always set control flow (either new or same timer)
                 event_loop.set_control_flow(ControlFlow::WaitUntil(app.next_blinkey_blink_time));
             } else {
                 event_loop.set_control_flow(ControlFlow::Wait);
+            }
+        }
+    }
+
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: PhotonEvent) {
+        match event {
+            PhotonEvent::ConnectivityChanged(online) => {
+                if let Some(app) = &mut self.photon_app {
+                    if online != app.fgtw_online {
+                        app.fgtw_online = online;
+                        app.controls_dirty = true;
+                        if let Some(window) = &self.window {
+                            window.request_redraw();
+                        }
+                    }
+                }
+            }
+            PhotonEvent::AttestationComplete => {
+                // Wake up event loop to check attestation result
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            }
+            PhotonEvent::MessageReceived => {
+                // Future: handle incoming messages
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
             }
         }
     }
@@ -373,7 +406,10 @@ fn main() {
         }
     }
 
-    let event_loop = EventLoop::new().unwrap();
+    let event_loop = EventLoop::<PhotonEvent>::with_user_event()
+        .build()
+        .unwrap();
+    let event_proxy = event_loop.create_proxy();
     let blinkey_blink_rate = get_system_blinkey_blink_rate();
     let mut app = App {
         window: None,
@@ -382,6 +418,7 @@ fn main() {
         screen_height: 0,
         maximized_size: None,
         blinkey_blink_rate_ms: blinkey_blink_rate,
+        event_proxy,
     };
 
     event_loop.run_app(&mut app).unwrap();

@@ -2,6 +2,15 @@ use super::{PublicIdentity, Seed};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+fn eagle_time_secs() -> u64 {
+    const EAGLE_TO_UNIX_OFFSET: u64 = 14182940;
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + EAGLE_TO_UNIX_OFFSET
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Contact {
     pub id: ContactId,
@@ -54,10 +63,7 @@ impl Contact {
             public_identity,
             relationship_seed: None,
             trust_level: TrustLevel::Stranger,
-            added_timestamp: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
+            added_timestamp: eagle_time_secs(),
             last_seen: None,
         }
     }

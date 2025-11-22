@@ -1,7 +1,8 @@
 use super::renderer::Renderer;
 use super::text_rasterizing::TextRenderer;
+use super::PhotonEvent;
 use crate::network::{HandleQuery, QueryResult};
-use winit::{dpi::PhysicalSize, keyboard::ModifiersState, window::Window};
+use winit::{dpi::PhysicalSize, event_loop::EventLoopProxy, keyboard::ModifiersState, window::Window};
 
 impl TextState {
     pub fn new() -> Self {
@@ -56,14 +57,113 @@ impl TextState {
     }
 }
 
-/// Handle attestation status for launch screen flow
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HandleStatus {
-    Empty,              // No query sent yet, show "Query" button (when textbox non-empty)
-    Checking,           // Query in flight, show "Querying..." button (disabled)
-    Unattested,         // Handle is available, show "Attest" button
-    AlreadyAttested,    // Handle is taken, show "Recover / Challenge" button
-    RecoverOrChallenge, // User clicked "Recover / Challenge", show both buttons + explanation
+/// Application lifecycle state
+///
+/// State machine:
+/// ```text
+///                    ┌─────────────────────────────────────────────────────────┐
+///                    │                      FRESH INSTALL                      │
+///                    └─────────────────────────────────────────────────────────┘
+///                                            │
+///                                            ▼
+///     ┌──────────────────────────────────────────────────────────────────────┐
+///     │  Launch::Fresh                                                        │
+///     │  - No device key on disk                                              │
+///     │  - Show "Enter your handle" prompt                                    │
+///     │  - User types handle, clicks Query                                    │
+///     └──────────────────────────────────────────────────────────────────────┘
+///                           │                              │
+///                    (handle available)            (handle claimed)
+///                           ▼                              ▼
+///     ┌─────────────────────────────┐    ┌─────────────────────────────────────┐
+///     │  Launch::Available          │    │  Launch::Claimed                    │
+///     │  - Show "Attest" button     │    │  - Show "Add Device" / "Challenge"  │
+///     │  - Create new identity      │    │  - Need auth code from other device │
+///     └─────────────────────────────┘    └─────────────────────────────────────┘
+///                           │                              │
+///                    (attest success)              (auth verified)
+///                           ▼                              ▼
+///     ┌──────────────────────────────────────────────────────────────────────┐
+///     │  Ready                                                                │
+///     │  - Device key encrypted on disk                                       │
+///     │  - Registered with FGTW                                               │
+///     │  - Can search for peers and start conversations                       │
+///     └──────────────────────────────────────────────────────────────────────┘
+///                                            │
+///                                     (start P2P session)
+///                                            ▼
+///     ┌──────────────────────────────────────────────────────────────────────┐
+///     │  Connected { peer_handle: String }                                    │
+///     │  - Active encrypted P2P session                                       │
+///     │  - Can send/receive messages                                          │
+///     └──────────────────────────────────────────────────────────────────────┘
+///
+///                    ┌─────────────────────────────────────────────────────────┐
+///                    │                    RETURNING USER                       │
+///                    └─────────────────────────────────────────────────────────┘
+///                                            │
+///                                            ▼
+///     ┌──────────────────────────────────────────────────────────────────────┐
+///     │  Launch::Locked                                                       │
+///     │  - Device key exists on disk (encrypted)                              │
+///     │  - Show "Enter your handle" prompt                                    │
+///     │  - User types handle to unlock                                        │
+///     └──────────────────────────────────────────────────────────────────────┘
+///                           │                              │
+///                    (handle correct)              (handle wrong)
+///                           ▼                              ▼
+///                        Ready                    "Wrong handle" error
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AppState {
+    /// Launch screen states (before main messenger UI)
+    Launch(LaunchState),
+
+    /// Main messenger - ready to search peers and chat
+    Ready,
+
+    /// Active P2P conversation
+    Connected { peer_handle: String },
+}
+
+/// Sub-states for the launch screen
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LaunchState {
+    /// Ready to attest - show handle input + "Attest" button
+    Fresh,
+
+    /// Computing handle_proof + announcing to FGTW
+    /// Show loading spinner, no button
+    Attesting,
+
+    /// Attestation failed - show error message, no button
+    /// User can edit textbox to return to Fresh
+    Error(String),
+}
+
+impl LaunchState {
+    /// Check if we're in a state where the user can type in the handle textbox
+    pub fn can_edit_handle(&self) -> bool {
+        !matches!(self, LaunchState::Attesting)
+    }
+
+    /// Check if we're waiting for a network response
+    pub fn is_loading(&self) -> bool {
+        matches!(self, LaunchState::Attesting)
+    }
+}
+
+/// Result of searching for a handle
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SearchResult {
+    Found(String),  // IP:port of found peer
+    NotFound,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        AppState::Launch(LaunchState::Fresh)
+    }
 }
 
 /// ENTIRE text state, selection, all that (excluding blinkey)
@@ -102,9 +202,12 @@ pub struct PhotonApp {
     pub blinkey_pixel_x: usize,     // Cursor x position in pixels
     pub blinkey_pixel_y: usize,     // Cursor y position in pixels
     pub next_blinkey_blink_time: std::time::Instant, // When next blinkey blink should happen
-    pub handle_status: HandleStatus, // Handle attestation status for button flow
+    pub app_state: AppState,         // Application lifecycle state
     pub query_start_time: Option<std::time::Instant>, // When handle query started (for 1s simulation)
     pub handle_query: HandleQuery,                    // Network query system for handle attestation
+    pub fgtw_online: bool,                            // True if FGTW server is reachable
+    pub prev_fgtw_online: bool,                       // Previous state for differential rendering
+    pub search_result: Option<SearchResult>,          // Result of handle search
     pub spectrum_phase: f32, // Rainbow sine wave phase (radians), animates during query
     pub speckle_counter: f32, // Background speckle animation counter, animates during query
     pub last_frame_time: std::time::Instant, // Last frame timestamp for delta time calculation
@@ -158,9 +261,7 @@ pub const HIT_MINIMIZE_BUTTON: u8 = 1;
 pub const HIT_MAXIMIZE_BUTTON: u8 = 2;
 pub const HIT_CLOSE_BUTTON: u8 = 3;
 pub const HIT_HANDLE_TEXTBOX: u8 = 4;
-pub const HIT_PRIMARY_BUTTON: u8 = 5; // "Attest" or "Recover / Challenge"
-pub const HIT_RECOVER_BUTTON: u8 = 6; // "Recover" (left button in dual mode)
-pub const HIT_CHALLENGE_BUTTON: u8 = 7; // "Challenge" (right button in dual mode)
+pub const HIT_PRIMARY_BUTTON: u8 = 5; // "Attest" button
 
 // Button hover colour deltas are now in theme module
 
@@ -193,6 +294,7 @@ impl PhotonApp {
         window: &Window,
         blinkey_blink_rate_ms: u64,
         target_frame_duration_ms: u64,
+        event_proxy: EventLoopProxy<PhotonEvent>,
     ) -> Self {
         let size = window.inner_size();
         let renderer = Renderer::new(window, size.width, size.height).await;
@@ -222,7 +324,20 @@ impl PhotonApp {
             blinkey_pixel_x: 0,
             blinkey_pixel_y: 0,
             next_blinkey_blink_time: std::time::Instant::now(),
-            handle_status: HandleStatus::Empty,
+            app_state: {
+                // Determine initial state based on whether device key exists
+                // Device key = random Ed25519, stored unencrypted
+                // Handle hash = BLAKE3(Argon2(handle)), computed on-the-fly, never stored
+                use crate::network::fgtw::FgtwPaths;
+                let paths = FgtwPaths::new().expect("Failed to get FGTW paths");
+                if paths.device_key.exists() {
+                    // Returning user - device key exists, need handle to verify with FGTW
+                    AppState::Launch(LaunchState::Fresh)
+                } else {
+                    // Fresh install - no device key yet
+                    AppState::Launch(LaunchState::Fresh)
+                }
+            },
             query_start_time: None,
             handle_query: {
                 use crate::network::fgtw::{load_or_generate_device_key, FgtwPaths, FgtwTransport};
@@ -234,12 +349,15 @@ impl PhotonApp {
                     *device_keypair.public.as_bytes(),
                 );
 
-                let handle_query = HandleQuery::new(our_identity.clone());
+                let handle_query = HandleQuery::new(our_identity.clone(), event_proxy.clone());
                 let transport = std::sync::Arc::new(FgtwTransport::new(our_identity, 41641));
                 handle_query.set_transport(transport);
 
                 handle_query
             },
+            fgtw_online: false, // Updated by connectivity check
+            prev_fgtw_online: false,
+            search_result: None,
             spectrum_phase: 0.0,
             speckle_counter: 0.0,
             last_frame_time: std::time::Instant::now(),
@@ -277,7 +395,7 @@ impl PhotonApp {
     }
 
     #[cfg(target_os = "windows")]
-    pub fn new(window: &Window, blinkey_blink_rate_ms: u64, target_frame_duration_ms: u64) -> Self {
+    pub fn new(window: &Window, blinkey_blink_rate_ms: u64, target_frame_duration_ms: u64, event_proxy: EventLoopProxy<PhotonEvent>) -> Self {
         let size = window.inner_size();
         let renderer = Renderer::new(window, size.width, size.height);
         let text_renderer = TextRenderer::new();
@@ -306,7 +424,20 @@ impl PhotonApp {
             blinkey_pixel_x: 0,
             blinkey_pixel_y: 0,
             next_blinkey_blink_time: std::time::Instant::now(),
-            handle_status: HandleStatus::Empty,
+            app_state: {
+                // Determine initial state based on whether device key exists
+                // Device key = random Ed25519, stored unencrypted
+                // Handle hash = BLAKE3(Argon2(handle)), computed on-the-fly, never stored
+                use crate::network::fgtw::FgtwPaths;
+                let paths = FgtwPaths::new().expect("Failed to get FGTW paths");
+                if paths.device_key.exists() {
+                    // Returning user - device key exists, need handle to verify with FGTW
+                    AppState::Launch(LaunchState::Fresh)
+                } else {
+                    // Fresh install - no device key yet
+                    AppState::Launch(LaunchState::Fresh)
+                }
+            },
             query_start_time: None,
             handle_query: {
                 use crate::network::fgtw::{load_or_generate_device_key, FgtwPaths, FgtwTransport};
@@ -318,12 +449,15 @@ impl PhotonApp {
                     *device_keypair.public.as_bytes(),
                 );
 
-                let handle_query = HandleQuery::new(our_identity.clone());
+                let handle_query = HandleQuery::new(our_identity.clone(), event_proxy.clone());
                 let transport = std::sync::Arc::new(FgtwTransport::new(our_identity, 41641));
                 handle_query.set_transport(transport);
 
                 handle_query
             },
+            fgtw_online: false, // Updated by connectivity check
+            prev_fgtw_online: false,
+            search_result: None,
             spectrum_phase: 0.0,
             speckle_counter: 0.0,
             last_frame_time: std::time::Instant::now(),
@@ -444,12 +578,12 @@ impl PhotonApp {
         }
     }
 
-    /// Start a network query for handle attestation status
-    pub fn query_handle(&mut self) {
+    /// Start attestation - compute handle_proof and announce to FGTW
+    pub fn start_attestation(&mut self) {
         let handle: String = self.current_text_state.chars.iter().collect();
 
-        // Set status to Checking and trigger query
-        self.handle_status = HandleStatus::Checking;
+        // Set status to Attesting and trigger attestation
+        self.app_state = AppState::Launch(LaunchState::Attesting);
         self.handle_query.query(handle);
         let now = std::time::Instant::now();
         self.query_start_time = Some(now);
@@ -459,29 +593,81 @@ impl PhotonApp {
             now + std::time::Duration::from_millis(self.target_frame_duration_ms);
     }
 
-    /// Check if query response is ready and update handle_status
-    pub fn check_query_response(&mut self) -> bool {
+    /// Check if FGTW connectivity status is available and update fgtw_online
+    pub fn check_fgtw_online(&mut self) {
+        if let Some(online) = self.handle_query.try_recv_online() {
+            if online != self.fgtw_online {
+                self.fgtw_online = online;
+                self.controls_dirty = true; // Trigger indicator redraw
+            }
+        }
+    }
+
+    /// Search for a handle in our peer list
+    pub fn start_handle_search(&mut self, handle: &str) {
+        use crate::types::Handle;
+
+        // Compute handle_proof for the search term
+        let handle_proof = Handle::username_to_handle_proof(handle);
+
+        // Check if this handle_proof exists in our peer store
+        if let Some(transport) = self.handle_query.get_transport() {
+            let peer_store = transport.peer_store();
+            let store = peer_store.lock().unwrap();
+
+            let peers = store.get_devices_for_handle(&handle_proof);
+            if let Some(peer) = peers.first() {
+                eprintln!("Found peer: {} at {}", handle, peer.ip);
+                self.search_result = Some(SearchResult::Found(peer.ip.to_string()));
+            } else {
+                eprintln!("Handle '{}' not found in peer list", handle);
+                self.search_result = Some(SearchResult::NotFound);
+            }
+        } else {
+            eprintln!("No transport available for search");
+            self.search_result = Some(SearchResult::NotFound);
+        }
+    }
+
+    /// Check if attestation response is ready and update app_state
+    pub fn check_attestation_response(&mut self) -> bool {
         if let Some(result) = self.handle_query.try_recv() {
-            eprintln!("UI: Received query result: {:?}", result);
-            let new_status = match result {
-                QueryResult::Unattested => {
-                    eprintln!("UI: Handle is AVAILABLE - transitioning to Unattested state");
-                    HandleStatus::Unattested
+            eprintln!("UI: Received attestation result: {:?}", result);
+            let new_state = match result {
+                QueryResult::Success => {
+                    // Success - we're now registered
+                    eprintln!("UI: Attestation SUCCESS - transitioning to Ready state");
+                    AppState::Ready
                 }
                 QueryResult::AlreadyAttested(_peers) => {
-                    eprintln!("UI: Handle is CLAIMED - transitioning to AlreadyAttested state");
-                    HandleStatus::AlreadyAttested
+                    // Handle already bound to different device
+                    eprintln!("UI: Handle already attested - showing error");
+                    AppState::Launch(LaunchState::Error(
+                        "Handle already attested".to_string(),
+                    ))
+                }
+                QueryResult::Error(msg) => {
+                    // Error during attestation
+                    eprintln!("UI: Attestation error - {}", msg);
+                    AppState::Launch(LaunchState::Error(msg))
                 }
             };
             debug_println!(
-                "Query completed: {:?} -> {:?}",
-                self.handle_status,
-                new_status
+                "Attestation completed: {:?} -> {:?}",
+                self.app_state,
+                new_state
             );
-            self.handle_status = new_status;
+            // Clear textbox when transitioning to Ready
+            if matches!(new_state, AppState::Ready) {
+                self.current_text_state.chars.clear();
+                self.current_text_state.blinkey_index = 0;
+                self.current_text_state.selection_anchor = None;
+                self.current_text_state.scroll_offset = 0.0;
+            }
+            self.app_state = new_state;
             self.query_start_time = None;
-            self.window_dirty = true; // Trigger redraw to update button
-            eprintln!("UI: Query complete, window marked dirty for redraw");
+            self.window_dirty = true;
+            eprintln!("UI: Attestation complete, window marked dirty for redraw");
             return true;
         }
         false
@@ -489,6 +675,19 @@ impl PhotonApp {
 
     /// Check if we should continuously animate (request redraws every frame)
     pub fn should_animate(&self) -> bool {
-        self.handle_status == HandleStatus::Checking
+        matches!(self.app_state, AppState::Launch(LaunchState::Attesting))
+    }
+
+    /// Get the current launch state (if in Launch mode)
+    pub fn launch_state(&self) -> Option<&LaunchState> {
+        match &self.app_state {
+            AppState::Launch(state) => Some(state),
+            _ => None,
+        }
+    }
+
+    /// Set the launch state (only if currently in Launch mode)
+    pub fn set_launch_state(&mut self, state: LaunchState) {
+        self.app_state = AppState::Launch(state);
     }
 }

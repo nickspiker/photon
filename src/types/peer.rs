@@ -3,6 +3,15 @@ use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+fn eagle_time_secs() -> u64 {
+    const EAGLE_TO_UNIX_OFFSET: u64 = 14182940;
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + EAGLE_TO_UNIX_OFFSET
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Peer {
     pub public_identity: PublicIdentity,
@@ -32,10 +41,7 @@ impl Peer {
         Self {
             public_identity,
             address,
-            last_seen: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
+            last_seen: eagle_time_secs(),
             connection_state: ConnectionState::Disconnected,
         }
     }
@@ -43,10 +49,7 @@ impl Peer {
     pub fn update_connection_state(&mut self, state: ConnectionState) {
         self.connection_state = state;
         if state == ConnectionState::Connected || state == ConnectionState::Authenticated {
-            self.last_seen = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
+            self.last_seen = eagle_time_secs();
         }
     }
 

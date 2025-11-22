@@ -4,7 +4,7 @@ use crate::ui::theme;
 use crate::{debug_println, DEBUG_ENABLED};
 use std::sync::atomic::Ordering;
 
-use super::app::{HandleStatus, PhotonApp};
+use super::app::{AppState, LaunchState, PhotonApp};
 use rand::Rng;
 use winit::{
     event::{ElementState, KeyEvent},
@@ -86,7 +86,9 @@ impl PhotonApp {
                                 // Only delete if clipboard succeeded (or you don't care about failures)
                                 if clipboard_ok {
                                     self.delete_selection();
-                                    self.handle_status = HandleStatus::Empty;
+                                    if matches!(self.app_state, AppState::Launch(_)) {
+                                        self.set_launch_state(LaunchState::Fresh);
+                                    }
                                     self.text_dirty = true;
                                     self.selection_dirty = true;
                                     self.controls_dirty = true; // Cursor position changed
@@ -126,7 +128,9 @@ impl PhotonApp {
                                     self.current_text_state
                                         .insert_str(insert_idx, &text, &widths);
                                     self.current_text_state.blinkey_index += widths.len();
-                                    self.handle_status = HandleStatus::Empty;
+                                    if matches!(self.app_state, AppState::Launch(_)) {
+                                        self.set_launch_state(LaunchState::Fresh);
+                                    }
                                     self.text_dirty = true;
                                     self.controls_dirty = true;
                                 }
@@ -229,10 +233,12 @@ impl PhotonApp {
                     if self.current_text_state.selection_anchor.is_some() {
                         debug_println!("BACKSPACE: deleting selection");
                         self.delete_selection();
-                        if self.handle_status != HandleStatus::Empty {
-                            self.window_dirty = true; // Force redraw to update button
+                        if matches!(self.app_state, AppState::Launch(_)) {
+                            if !matches!(self.app_state, AppState::Launch(LaunchState::Fresh)) {
+                                self.window_dirty = true; // Force redraw to update button
+                            }
+                            self.set_launch_state(LaunchState::Fresh);
                         }
-                        self.handle_status = HandleStatus::Empty;
                         self.text_dirty = true;
                         self.selection_dirty = true;
                     } else if self.current_text_state.blinkey_index > 0 {
@@ -249,10 +255,12 @@ impl PhotonApp {
                         self.current_text_state.blinkey_index -= 1;
                         let text: String = self.current_text_state.chars.iter().collect();
                         debug_println!("  Text now: \"{}\" (len={})", text, text.len());
-                        if self.handle_status != HandleStatus::Empty {
-                            self.window_dirty = true; // Force redraw to update button
+                        if matches!(self.app_state, AppState::Launch(_)) {
+                            if !matches!(self.app_state, AppState::Launch(LaunchState::Fresh)) {
+                                self.window_dirty = true; // Force redraw to update button
+                            }
+                            self.set_launch_state(LaunchState::Fresh);
                         }
-                        self.handle_status = HandleStatus::Empty;
                         self.text_dirty = true;
                         self.selection_dirty = true;
                         self.controls_dirty = true;
@@ -263,10 +271,12 @@ impl PhotonApp {
                     // If selection exists, delete it; otherwise delete char at blinkey
                     if self.current_text_state.selection_anchor.is_some() {
                         self.delete_selection();
-                        if self.handle_status != HandleStatus::Empty {
-                            self.window_dirty = true; // Force redraw to update button
+                        if matches!(self.app_state, AppState::Launch(_)) {
+                            if !matches!(self.app_state, AppState::Launch(LaunchState::Fresh)) {
+                                self.window_dirty = true; // Force redraw to update button
+                            }
+                            self.set_launch_state(LaunchState::Fresh);
                         }
-                        self.handle_status = HandleStatus::Empty;
                         self.text_dirty = true;
                         self.selection_dirty = true;
                     } else if self.current_text_state.blinkey_index
@@ -274,10 +284,12 @@ impl PhotonApp {
                     {
                         self.current_text_state
                             .remove(self.current_text_state.blinkey_index);
-                        if self.handle_status != HandleStatus::Empty {
-                            self.window_dirty = true; // Force redraw to update button
+                        if matches!(self.app_state, AppState::Launch(_)) {
+                            if !matches!(self.app_state, AppState::Launch(LaunchState::Fresh)) {
+                                self.window_dirty = true; // Force redraw to update button
+                            }
+                            self.set_launch_state(LaunchState::Fresh);
                         }
-                        self.handle_status = HandleStatus::Empty;
                         self.text_dirty = true;
                         self.selection_dirty = true;
                         self.controls_dirty = true;
@@ -286,7 +298,21 @@ impl PhotonApp {
                 }
                 Key::Named(NamedKey::Enter) => {
                     if !self.current_text_state.chars.is_empty() {
-                        self.query_handle();
+                        match &self.app_state {
+                            AppState::Launch(_) => {
+                                // In Launch state: attest this handle
+                                self.start_attestation();
+                            }
+                            AppState::Ready => {
+                                // In Ready state: search for this handle
+                                let handle: String = self.current_text_state.chars.iter().collect();
+                                self.start_handle_search(&handle);
+                            }
+                            AppState::Connected { .. } => {
+                                // In Connected state: send message (TODO)
+                                // For now, do nothing
+                            }
+                        }
                     }
                     return;
                 }
@@ -336,11 +362,14 @@ impl PhotonApp {
                     let text: String = self.current_text_state.chars.iter().collect();
                     debug_println!("  Text now: \"{}\" (len={})", text, text.len());
                 }
-                // Only trigger full redraw if status is changing (not already Empty)
-                if self.handle_status != HandleStatus::Empty {
-                    self.window_dirty = true; // Force redraw to update button
+                // Only reset to Fresh state if we're in Launch mode
+                // Don't touch app_state if we're in Ready or Connected
+                if matches!(self.app_state, AppState::Launch(_)) {
+                    if !matches!(self.app_state, AppState::Launch(LaunchState::Fresh)) {
+                        self.window_dirty = true; // Force redraw to update button
+                    }
+                    self.set_launch_state(LaunchState::Fresh);
                 }
-                self.handle_status = HandleStatus::Empty;
                 self.text_dirty = true;
                 self.controls_dirty = true;
             }

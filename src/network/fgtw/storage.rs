@@ -1,9 +1,9 @@
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use rand::rngs::OsRng;
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io;
 use std::path::PathBuf;
-use vsf::{parse, VsfBuilder, VsfType};
+use vsf::{VsfBuilder, VsfSection, VsfType};
 
 /// Ed25519 keypair for FGTW device/handle identity
 #[derive(Clone)]
@@ -152,8 +152,13 @@ fn load_keypair_vsf(path: &PathBuf) -> io::Result<Keypair> {
     }
 
     // Use VsfHeader::decode() for proper parsing
-    let (header, header_bytes_consumed) = vsf::file_format::VsfHeader::decode(&bytes)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("Failed to parse VSF header: {}", e)))?;
+    let (header, header_bytes_consumed) =
+        vsf::file_format::VsfHeader::decode(&bytes).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Failed to parse VSF header: {}", e),
+            )
+        })?;
 
     // Skip provenance hash verification for device keys
     // Device keys use VsfBuilder which creates placeholder hp with zeros
@@ -172,67 +177,57 @@ fn load_keypair_vsf(path: &PathBuf) -> io::Result<Keypair> {
     }
 
     if ptr >= bytes.len() {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "No section found"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "No section found",
+        ));
     }
 
-    // Parse section to extract named fields
-    use std::collections::HashMap;
-    let mut fields: HashMap<String, vsf::VsfType> = HashMap::new();
+    // Parse section using VSF crate
+    let section = VsfSection::parse(&bytes, &mut ptr).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Parse section: {}", e),
+        )
+    })?;
 
-    ptr += 1; // Skip '['
-
-    // Parse section name
-    let section_name = parse(&bytes, &mut ptr)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("Parse section name: {}", e)))?;
-
-    // Parse fields until ']'
-    while ptr < bytes.len() && bytes[ptr] != b']' {
-        if bytes[ptr] == b'(' {
-            ptr += 1;
-
-            // Parse field name
-            let field_name = match parse(&bytes, &mut ptr)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("Parse field name: {}", e)))? {
-                VsfType::d(name) => name,
-                _ => return Err(io::Error::new(io::ErrorKind::InvalidData, "Expected field name")),
-            };
-
-            // Check for ':' and parse value
-            if ptr < bytes.len() && bytes[ptr] == b':' {
-                ptr += 1;
-                let value = parse(&bytes, &mut ptr)
-                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("Parse field value: {}", e)))?;
-                fields.insert(field_name, value);
-            }
-
-            // Skip ')'
-            if ptr < bytes.len() && bytes[ptr] == b')' {
-                ptr += 1;
-            }
-        } else {
-            ptr += 1;
+    // Extract secret and public keys from section fields
+    let secret_field = section.get_field("secret").ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidData, "Secret key field not found")
+    })?;
+    let secret_bytes = match secret_field.values.first() {
+        Some(VsfType::ke(bytes)) if bytes.len() == 32 => bytes.clone(),
+        Some(VsfType::ke(_)) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Secret key must be 32 bytes",
+            ))
         }
-    }
-
-    // Extract secret and public keys from fields
-    let secret_bytes = match fields.get("secret") {
-        Some(VsfType::ke(bytes)) => {
-            if bytes.len() != 32 {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "Secret key must be 32 bytes"));
-            }
-            bytes.clone()
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Secret key must be ke type",
+            ))
         }
-        _ => return Err(io::Error::new(io::ErrorKind::InvalidData, "Secret key not found")),
     };
 
-    let public_bytes = match fields.get("public") {
-        Some(VsfType::ke(bytes)) => {
-            if bytes.len() != 32 {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "Public key must be 32 bytes"));
-            }
-            bytes.clone()
+    let public_field = section.get_field("public").ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidData, "Public key field not found")
+    })?;
+    let public_bytes = match public_field.values.first() {
+        Some(VsfType::ke(bytes)) if bytes.len() == 32 => bytes.clone(),
+        Some(VsfType::ke(_)) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Public key must be 32 bytes",
+            ))
         }
-        _ => return Err(io::Error::new(io::ErrorKind::InvalidData, "Public key not found")),
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Public key must be ke type",
+            ))
+        }
     };
 
     // Reconstruct keypair
@@ -253,113 +248,6 @@ fn load_keypair_vsf(path: &PathBuf) -> io::Result<Keypair> {
         })?;
 
     Ok(Keypair { secret, public })
-}
-
-/// Compute BLAKE3 provenance hash with hash field zeroed
-fn compute_provenance_hash(bytes: &[u8]) -> io::Result<[u8; 32]> {
-    let mut temp = bytes.to_vec();
-
-    // Find and zero out the hash bytes
-    for i in 0..bytes.len().saturating_sub(35) {
-        if bytes[i] == b'h' && (bytes[i + 1] == b'b' || bytes[i + 1] == b'p') {
-            if i + 2 < bytes.len() && bytes[i + 2] == b'3' {
-                let len = bytes[i + 3] as usize;
-                if len == 31 && i + 4 + 32 <= bytes.len() {
-                    // Zero out the hash bytes
-                    for j in 0..32 {
-                        temp[i + 4 + j] = 0;
-                    }
-                    break;
-                }
-            }
-        }
-    }
-
-    // Compute BLAKE3
-    let hash = blake3::hash(&temp);
-    Ok(*hash.as_bytes())
-}
-
-/// Find and extract hash from VSF file
-fn find_and_extract_hash(bytes: &[u8]) -> io::Result<[u8; 32]> {
-    // Look for 'hb' or 'hp' markers followed by hash bytes
-    for i in 0..bytes.len().saturating_sub(35) {
-        if bytes[i] == b'h' && (bytes[i + 1] == b'b' || bytes[i + 1] == b'p') {
-            // Found hash marker, next should be length indicator
-            if i + 2 < bytes.len() && bytes[i + 2] == b'3' {
-                let len = bytes[i + 3] as usize;
-                if len == 31 && i + 4 + 32 <= bytes.len() {
-                    let mut hash = [0u8; 32];
-                    hash.copy_from_slice(&bytes[i + 4..i + 4 + 32]);
-                    return Ok(hash);
-                }
-            }
-        }
-    }
-    Err(io::Error::new(io::ErrorKind::InvalidData, "No hash found"))
-}
-
-/// Find position of hp (provenance hash) field in VSF bytes
-/// Structure: RÅ< [header_len] l[ [version] [backward_compat] [timestamp] hp[HASH] ...
-fn find_hash_position(bytes: &[u8]) -> io::Result<usize> {
-    let mut ptr = 4; // Skip magic "RÅ<"
-
-    // Skip header length
-    let _ = vsf::parse(bytes, &mut ptr)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("Parse error: {:?}", e)))?;
-
-    // Parse list marker
-    if ptr >= bytes.len() || bytes[ptr] != b'l' {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "Expected list"));
-    }
-    ptr += 2; // Skip 'l['
-
-    // Skip version (u type)
-    let _ = vsf::parse(bytes, &mut ptr)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("Parse error: {:?}", e)))?;
-
-    // Skip backward_compat (u type)
-    let _ = vsf::parse(bytes, &mut ptr)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("Parse error: {:?}", e)))?;
-
-    // Skip timestamp (f6 type)
-    let _ = vsf::parse(bytes, &mut ptr)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("Parse error: {:?}", e)))?;
-
-    // Now at hp[HASH]
-    if ptr >= bytes.len() || bytes[ptr] != b'h' {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Expected hp marker",
-        ));
-    }
-    ptr += 3; // Skip 'hp['
-
-    Ok(ptr)
-}
-
-/// Find position of ge (Ed25519 signature) field in VSF bytes
-/// Structure: ... hp[32 bytes] ge[SIGNATURE] ...
-fn find_signature_position(bytes: &[u8]) -> io::Result<usize> {
-    let hash_pos = find_hash_position(bytes)?;
-
-    // Signature is right after hash: skip 32 bytes + ']'
-    let mut ptr = hash_pos + 32;
-    if ptr >= bytes.len() || bytes[ptr] != b']' {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "Expected ]"));
-    }
-    ptr += 1;
-
-    // Next should be ge[64]
-    if ptr + 2 >= bytes.len() || &bytes[ptr..ptr + 2] != b"ge" {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Expected ge marker",
-        ));
-    }
-    ptr += 3; // Skip 'ge['
-
-    Ok(ptr)
 }
 
 #[cfg(test)]

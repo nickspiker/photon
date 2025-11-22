@@ -86,9 +86,9 @@ If there's a SAFETY comment, **read it**. It's there because the human proved co
 - **Assembly**: When you need exact control
 - **Metal**: GPU compute with known performance characteristics
 
-### Strongly Avoided:
-- **Python**: Slow, loose typing causes bugs, 1-indexed nonsense infected everything
-- High-level scripting when systems programming is needed
+### Not Allowed:
+- **Python**: Slow, loose typing causes bugs, cannot copy-paste, 1-indexed nonsense infected everything
+- High-level scripting when systems programming is needed, text parsing, terribly unsafe
 
 ## Code Style
 

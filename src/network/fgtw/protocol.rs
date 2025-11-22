@@ -15,19 +15,19 @@ pub enum FgtwMessage {
         peers: Vec<PeerRecord>,
     },
     FindNode {
-        handle_hash: [u8; 32],
+        handle_proof: [u8; 32],
         requester_pubkey: PublicIdentity,
     },
     FoundNodes {
         devices: Vec<PeerRecord>,
     },
     Announce {
-        handle_hash: [u8; 32],
+        handle_proof: [u8; 32],
         device_pubkey: PublicIdentity,
         port: u16,
     },
     Query {
-        handle_hash: [u8; 32],
+        handle_proof: [u8; 32],
         requester_pubkey: PublicIdentity,
     },
     QueryResponse {
@@ -38,7 +38,7 @@ pub enum FgtwMessage {
 /// Peer record - one device for a user handle
 #[derive(Debug, Clone)]
 pub struct PeerRecord {
-    pub handle_hash: [u8; 32],         // BLAKE3 of VSF-normalized username
+    pub handle_proof: [u8; 32],        // Memory-hard PoW output (24MB, 17 rounds)
     pub device_pubkey: PublicIdentity, // Device's X25519 public key (used as device identifier)
     pub ip: SocketAddr,                // Where to reach this device
     pub last_seen: f64,                // Timestamp (f64, serializes as VSF type f6)
@@ -113,7 +113,7 @@ impl FgtwMessage {
                 // Add each peer as separate fields
                 for (i, peer) in peers.iter().enumerate() {
                     let prefix = format!("peer_{}", i);
-                    fields.push((format!("{}_handle_hash", prefix), VsfType::hb(peer.handle_hash.to_vec())));
+                    fields.push((format!("{}_handle_proof", prefix), VsfType::hb(peer.handle_proof.to_vec())));
                     fields.push((format!("{}_device_pubkey", prefix), VsfType::kx(peer.device_pubkey.as_bytes().to_vec())));
                     fields.push((format!("{}_ip", prefix), VsfType::v_u3(Vector { data: socketaddr_to_bytes(&peer.ip) })));
                     fields.push((format!("{}_last_seen", prefix), VsfType::f6(peer.last_seen)));
@@ -121,10 +121,10 @@ impl FgtwMessage {
 
                 builder.add_section("fgtw", fields).build()
             }
-            FgtwMessage::FindNode { handle_hash, requester_pubkey } => {
+            FgtwMessage::FindNode { handle_proof, requester_pubkey } => {
                 builder.add_section("fgtw", vec![
                     ("msg_type".to_string(), VsfType::u3(2)),
-                    ("handle_hash".to_string(), VsfType::hb(handle_hash.to_vec())),
+                    ("handle_proof".to_string(), VsfType::hb(handle_proof.to_vec())),
                     ("requester_pubkey".to_string(), VsfType::kx(requester_pubkey.as_bytes().to_vec())),
                 ]).build()
             }
@@ -136,7 +136,7 @@ impl FgtwMessage {
 
                 for (i, device) in devices.iter().enumerate() {
                     let prefix = format!("device_{}", i);
-                    fields.push((format!("{}_handle_hash", prefix), VsfType::hb(device.handle_hash.to_vec())));
+                    fields.push((format!("{}_handle_proof", prefix), VsfType::hb(device.handle_proof.to_vec())));
                     fields.push((format!("{}_device_pubkey", prefix), VsfType::kx(device.device_pubkey.as_bytes().to_vec())));
                     fields.push((format!("{}_ip", prefix), VsfType::v_u3(Vector { data: socketaddr_to_bytes(&device.ip) })));
                     fields.push((format!("{}_last_seen", prefix), VsfType::f6(device.last_seen)));
@@ -144,18 +144,18 @@ impl FgtwMessage {
 
                 builder.add_section("fgtw", fields).build()
             }
-            FgtwMessage::Announce { handle_hash, device_pubkey, port } => {
+            FgtwMessage::Announce { handle_proof, device_pubkey, port } => {
                 builder.add_section("fgtw", vec![
                     ("msg_type".to_string(), VsfType::u3(4)),
-                    ("handle_hash".to_string(), VsfType::hb(handle_hash.to_vec())),
+                    ("handle_proof".to_string(), VsfType::hb(handle_proof.to_vec())),
                     ("device_pubkey".to_string(), VsfType::kx(device_pubkey.as_bytes().to_vec())),
                     ("port".to_string(), VsfType::u(*port as usize, false)),
                 ]).build()
             }
-            FgtwMessage::Query { handle_hash, requester_pubkey } => {
+            FgtwMessage::Query { handle_proof, requester_pubkey } => {
                 builder.add_section("fgtw", vec![
                     ("msg_type".to_string(), VsfType::u3(5)),
-                    ("handle_hash".to_string(), VsfType::hb(handle_hash.to_vec())),
+                    ("handle_proof".to_string(), VsfType::hb(handle_proof.to_vec())),
                     ("requester_pubkey".to_string(), VsfType::kx(requester_pubkey.as_bytes().to_vec())),
                 ]).build()
             }
@@ -167,7 +167,7 @@ impl FgtwMessage {
 
                 for (i, device) in devices.iter().enumerate() {
                     let prefix = format!("device_{}", i);
-                    fields.push((format!("{}_handle_hash", prefix), VsfType::hb(device.handle_hash.to_vec())));
+                    fields.push((format!("{}_handle_proof", prefix), VsfType::hb(device.handle_proof.to_vec())));
                     fields.push((format!("{}_device_pubkey", prefix), VsfType::kx(device.device_pubkey.as_bytes().to_vec())));
                     fields.push((format!("{}_ip", prefix), VsfType::v_u3(Vector { data: socketaddr_to_bytes(&device.ip) })));
                     fields.push((format!("{}_last_seen", prefix), VsfType::f6(device.last_seen)));
@@ -289,9 +289,9 @@ impl FgtwMessage {
             }
             2 => {
                 // FindNode
-                let handle_hash = extract_hash(&fields, "handle_hash")?;
+                let handle_proof = extract_hash(&fields, "handle_proof")?;
                 let requester_pubkey = extract_pubkey(&fields, "requester_pubkey")?;
-                Ok(FgtwMessage::FindNode { handle_hash, requester_pubkey })
+                Ok(FgtwMessage::FindNode { handle_proof, requester_pubkey })
             }
             3 => {
                 // FoundNodes
@@ -300,20 +300,20 @@ impl FgtwMessage {
             }
             4 => {
                 // Announce
-                let handle_hash = extract_hash(&fields, "handle_hash")?;
+                let handle_proof = extract_hash(&fields, "handle_proof")?;
                 let device_pubkey = extract_pubkey(&fields, "device_pubkey")?;
                 let port = match fields.get("port") {
                     Some(vsf_val) => u16::from_vsf_type(vsf_val)
                         .map_err(|e| format!("Invalid port: {}", e))?,
                     None => return Err("Missing port".to_string()),
                 };
-                Ok(FgtwMessage::Announce { handle_hash, device_pubkey, port })
+                Ok(FgtwMessage::Announce { handle_proof, device_pubkey, port })
             }
             5 => {
                 // Query
-                let handle_hash = extract_hash(&fields, "handle_hash")?;
+                let handle_proof = extract_hash(&fields, "handle_proof")?;
                 let requester_pubkey = extract_pubkey(&fields, "requester_pubkey")?;
-                Ok(FgtwMessage::Query { handle_hash, requester_pubkey })
+                Ok(FgtwMessage::Query { handle_proof, requester_pubkey })
             }
             6 => {
                 // QueryResponse
@@ -326,15 +326,19 @@ impl FgtwMessage {
 }
 
 impl PeerRecord {
-    pub fn new(handle_hash: [u8; 32], device_pubkey: PublicIdentity, ip: SocketAddr) -> Self {
+    pub fn new(handle_proof: [u8; 32], device_pubkey: PublicIdentity, ip: SocketAddr) -> Self {
         Self {
-            handle_hash,
+            handle_proof,
             device_pubkey,
             ip,
-            last_seen: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs_f64(),
+            last_seen: {
+                const EAGLE_TO_UNIX_OFFSET: f64 = 14182940.0;
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs_f64()
+                    + EAGLE_TO_UNIX_OFFSET
+            },
         }
     }
 }
@@ -378,7 +382,7 @@ fn extract_peer_list(fields: &std::collections::HashMap<String, VsfType>, prefix
     for i in 0..count {
         let peer_prefix = format!("{}_{}", prefix, i);
 
-        let handle_hash = extract_hash(fields, &format!("{}_handle_hash", peer_prefix))?;
+        let handle_proof = extract_hash(fields, &format!("{}_handle_proof", peer_prefix))?;
         let device_pubkey = extract_pubkey(fields, &format!("{}_device_pubkey", peer_prefix))?;
 
         let ip_key = format!("{}_ip", peer_prefix);
@@ -396,7 +400,7 @@ fn extract_peer_list(fields: &std::collections::HashMap<String, VsfType>, prefix
         };
 
         peers.push(PeerRecord {
-            handle_hash,
+            handle_proof,
             device_pubkey,
             ip,
             last_seen,

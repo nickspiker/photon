@@ -14,17 +14,17 @@ Photon is a peer-to-peer messaging application that replaces traditional authent
 - Cross-platform GUI (Windows, Linux)
 - Text input, selection, editing
 - Window management, rendering pipeline
-- Handle attestation UI (mock DHT queries)
+- Handle attestation (memory-hard PoW, ~1s computation)
+- Peer discovery via FGTW DHT (handle → IP lookup working)
 - Cryptographic type system (identities, seeds, shards)
 - Rolling-chain encryption framework
 - Android build pipeline (close to complete)
 
 **What doesn't work yet:**
-- Actual peer-to-peer messaging (1-2 months out)
-- Network transport (DHT integration stubbed)
+- Actual peer-to-peer messaging (direct connections pending)
 - Identity validation and key recovery
 - Message persistence (database layer empty)
-- Social attestation flow (design complete in [AUTH.md](AUTH.md), implementation pending)
+- Full social attestation flow (2-human requirement not yet enforced—design in [AUTH.md](AUTH.md))
 
 **Platform support:**
 - ✅ **Linux** (X11/Wayland)
@@ -333,8 +333,9 @@ src/
 | Input Handling | ✅ Complete | Keyboard, mouse, clipboard integration |
 | Crypto Types | ✅ Complete | Identity, seed, shard, message structures |
 | Rolling-Chain Crypto | ⚠️ Framework | Core logic implemented, needs ChaCha20 integration |
-| Handle Attestation UI | ⚠️ Mock | UI complete, DHT queries simulated (8s delay) |
-| Network Transport | ❌ Stubbed | DHT/TLS/WebSocket integration pending |
+| Handle Attestation | ✅ Working | Memory-hard PoW (~1s), stores in DHT |
+| Peer Discovery | ✅ Working | FGTW DHT queries return peer IP addresses |
+| Network Transport | ⚠️ Partial | DHT working, direct peer connections pending |
 | Message Persistence | ❌ Empty | SQLite schema and storage layer not implemented |
 | Social Recovery | ❌ Stubbed | Shard distribution/reconstruction TODO |
 | Peer Messaging | ❌ Not Started | End-to-end message flow not implemented |
@@ -430,14 +431,21 @@ No tests currently—this is early-stage development. Write tests for any new cr
 
 | Property | Signal | WhatsApp | Telegram | Matrix | Photon |
 |----------|--------|----------|----------|--------|--------|
+| Architecture | Centralized | Centralized | Centralized | Federated | **P2P** |
 | Authentication count | >1 | >1 | >1 | >1 | **1** |
-| Decentralized | No | No | No | Yes | Yes |
 | Social recovery | No | No | No | No | **Yes** |
 | Metadata privacy | Partial | No | No | Partial | **Yes** |
 | Self-sovereign data | No | No | No | Partial | **Yes** |
 | Message immutability | No | No | No | No | **Yes** |
 | Phone number required | Yes | Yes | Yes | No | No |
-| Can be shut down | Yes | Yes | Yes | No | No |
+| Can be shut down | Yes | Yes | Yes | Partial | No |
+
+**Architecture matters:**
+- **Centralized** (Signal, WhatsApp, Telegram): One company runs the servers. They can be subpoenaed, shut down, or pressured by governments.
+- **Federated** (Matrix): Multiple servers run by different operators. Better than centralized, but still relies on homeservers—your messages flow thru infrastructure you don't control.
+- **P2P** (Photon): No servers. Peers connect directly. DHT bootstrap is the only infrastructure, and it only provides initial peer discovery—after that, the network is self-sustaining.
+
+Think Bitcoin vs XRP: Bitcoin is decentralized (no central authority), XRP is federated (distributed but controlled). Matrix is the XRP of messaging. Photon is Bitcoin.
 
 **Signal/WhatsApp:**
 - Centralized servers (can be subpoenaed, shut down)
@@ -446,17 +454,18 @@ No tests currently—this is early-stage development. Write tests for any new cr
 - Message deletion undetectable (sender can unsend)
 
 **Matrix:**
-- Federation, not true P2P (still relies on homeservers)
+- Federation, not P2P (still relies on homeservers)
 - Authentication per device/homeserver
 - No social key recovery
 - Metadata leaked to homeserver operators
+- Homeservers can be shut down individually
 
 **Photon:**
 - True P2P (no servers, just DHT peer discovery)
 - Passless authentication (A = 1)
 - Social recovery (friends hold key shards)
 - Message immutability (rolling-chain makes tampering detectable)
-- Metadata privacy (traffic looks like BitTorrent + HTTPS)
+- Metadata privacy (traffic looks like HTTPS)
 
 ## Security Properties
 
@@ -512,4 +521,4 @@ MIT OR Apache-2.0 (dual) - See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](L
 
 **Platform Support:** Linux ✅ | Windows ✅ | Android ⚠️ | macOS 🟡 | iOS ❌🟥❌
 
-**Last Updated:** 2025-11-04
+**Last Updated:** 2025-11-21

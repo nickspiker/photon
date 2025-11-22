@@ -4,9 +4,8 @@ use crate::debug_println;
 use crate::ui::app::HoveredButton;
 
 use super::app::{
-    HandleStatus, PhotonApp, ResizeEdge, HIT_CHALLENGE_BUTTON, HIT_CLOSE_BUTTON,
-    HIT_HANDLE_TEXTBOX, HIT_MAXIMIZE_BUTTON, HIT_MINIMIZE_BUTTON, HIT_NONE, HIT_PRIMARY_BUTTON,
-    HIT_RECOVER_BUTTON,
+    AppState, LaunchState, PhotonApp, ResizeEdge, HIT_CLOSE_BUTTON, HIT_HANDLE_TEXTBOX,
+    HIT_MAXIMIZE_BUTTON, HIT_MINIMIZE_BUTTON, HIT_NONE, HIT_PRIMARY_BUTTON,
 };
 use rand::Rng;
 use winit::event::{ElementState, MouseButton};
@@ -231,116 +230,31 @@ impl PhotonApp {
                             }
 
                             let handle: String = self.current_text_state.chars.iter().collect();
-                            match self.handle_status {
-                                HandleStatus::Empty => {
-                                    // "Query" button clicked - start network query
-                                    debug_println!("Querying handle: {}", handle);
-                                    self.query_handle();
+                            match &self.app_state {
+                                AppState::Launch(launch_state) => match launch_state {
+                                    LaunchState::Fresh => {
+                                        // "Attest" button clicked - start attestation
+                                        debug_println!("Attesting handle: {}", handle);
+                                        self.start_attestation();
+                                        self.window_dirty = true;
+                                    }
+                                    LaunchState::Attesting => {
+                                        // Attestation already in progress - ignore clicks
+                                        debug_println!("Attestation already in progress, ignoring click");
+                                    }
+                                    LaunchState::Error(_) => {
+                                        // Error state doesn't show button, shouldn't reach here
+                                        debug_println!("Primary button clicked in error state (unexpected)");
+                                    }
+                                },
+                                AppState::Ready => {
+                                    // "Find" button clicked - search for handle
+                                    debug_println!("Finding handle: {}", handle);
+                                    self.start_handle_search(&handle);
                                     self.window_dirty = true;
                                 }
-                                HandleStatus::Checking => {
-                                    // Query already in progress - ignore clicks
-                                    debug_println!("Query already in progress, ignoring click");
-                                }
-                                HandleStatus::Unattested => {
-                                    // "Attest" button clicked
-                                    debug_println!("Attesting handle: {}", handle);
-                                    // TODO: Implement attestation logic (create new identity)
-                                }
-                                HandleStatus::AlreadyAttested => {
-                                    // "Recover / Challenge" button clicked - show dual choice screen
-                                    self.handle_status = HandleStatus::RecoverOrChallenge;
-                                    self.window_dirty = true;
-                                }
-                                _ => {
-                                    // Shouldn't happen (Checking or RecoverOrChallenge states don't show primary button)
-                                    debug_println!("Primary button clicked in unexpected state");
-                                }
+                                _ => {}
                             }
-                            return;
-                        }
-                        HIT_RECOVER_BUTTON => {
-                            // "Recover" button clicked (I'm recovering my own identity)
-
-                            // Defocus textbox on button click
-                            if self.current_text_state.textbox_focused {
-                                self.current_text_state.textbox_focused = false;
-
-                                if self.blinkey_visible {
-                                    let box_width = self.textbox_width();
-                                    let box_height = self.textbox_height();
-                                    let center_y = self.height as usize * 4 / 7;
-                                    let font_size = self.font_size();
-                                    let mut buffer = self.renderer.lock_buffer();
-                                    let pixels = buffer.as_mut();
-
-                                    Self::apply_textbox_glow(
-                                        pixels,
-                                        &self.textbox_mask,
-                                        self.width as usize,
-                                        center_y,
-                                        box_width,
-                                        box_height,
-                                        false,
-                                    );
-
-                                    Self::stop_blinkey(
-                                        pixels,
-                                        self.width as usize,
-                                        self.blinkey_pixel_x,
-                                        self.blinkey_pixel_y,
-                                        &mut self.blinkey_visible,
-                                        &mut self.blinkey_wave_top_bright,
-                                        font_size as usize,
-                                    );
-                                }
-                            }
-
-                            let handle: String = self.current_text_state.chars.iter().collect();
-                            debug_println!("Recovering handle: {}", handle);
-                            // TODO: Implement recovery flow (reconstruct from trust circle)
-                            return;
-                        }
-                        HIT_CHALLENGE_BUTTON => {
-                            // "Challenge" button clicked (proving earlier attestation)
-
-                            // Defocus textbox on button click
-                            if self.current_text_state.textbox_focused {
-                                self.current_text_state.textbox_focused = false;
-
-                                if self.blinkey_visible {
-                                    let box_width = self.textbox_width();
-                                    let box_height = self.textbox_height();
-                                    let center_y = self.height as usize * 4 / 7;
-                                    let font_size = self.font_size();
-                                    let mut buffer = self.renderer.lock_buffer();
-                                    let pixels = buffer.as_mut();
-
-                                    Self::apply_textbox_glow(
-                                        pixels,
-                                        &self.textbox_mask,
-                                        self.width as usize,
-                                        center_y,
-                                        box_width,
-                                        box_height,
-                                        false,
-                                    );
-
-                                    Self::stop_blinkey(
-                                        pixels,
-                                        self.width as usize,
-                                        self.blinkey_pixel_x,
-                                        self.blinkey_pixel_y,
-                                        &mut self.blinkey_visible,
-                                        &mut self.blinkey_wave_top_bright,
-                                        font_size as usize,
-                                    );
-                                }
-                            }
-
-                            let handle: String = self.current_text_state.chars.iter().collect();
-                            debug_println!("Challenging attestation for handle: {}", handle);
-                            // TODO: Implement challenge flow (prove earlier attestation)
                             return;
                         }
                         _ => {
@@ -701,9 +615,7 @@ impl PhotonApp {
                             HoveredButton::Textbox
                         }
                     }
-                    HIT_PRIMARY_BUTTON | HIT_RECOVER_BUTTON | HIT_CHALLENGE_BUTTON => {
-                        HoveredButton::QueryButton
-                    }
+                    HIT_PRIMARY_BUTTON => HoveredButton::QueryButton,
                     _ => HoveredButton::None,
                 };
                 element_id
@@ -716,10 +628,7 @@ impl PhotonApp {
             // Check what we're hovering over
             let blinkey = if self.hovered_button != HoveredButton::None {
                 CursorIcon::Pointer
-            } else if element_id == HIT_PRIMARY_BUTTON
-                || element_id == HIT_RECOVER_BUTTON
-                || element_id == HIT_CHALLENGE_BUTTON
-            {
+            } else if element_id == HIT_PRIMARY_BUTTON {
                 CursorIcon::Pointer
             } else if element_id == HIT_HANDLE_TEXTBOX {
                 CursorIcon::Text

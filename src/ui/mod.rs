@@ -20,4 +20,15 @@ use renderer_linux as renderer;
 
 pub mod theme;
 
-pub use app::{HandleStatus, PhotonApp};
+pub use app::{AppState, LaunchState, PhotonApp};
+
+/// Custom events for cross-thread communication with the event loop
+#[derive(Debug, Clone)]
+pub enum PhotonEvent {
+    /// FGTW connectivity status changed
+    ConnectivityChanged(bool),
+    /// Attestation completed (background thread finished)
+    AttestationComplete,
+    /// Message received from peer (future use)
+    MessageReceived,
+}

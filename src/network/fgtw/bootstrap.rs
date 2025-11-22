@@ -1,5 +1,5 @@
 use super::{storage::Keypair, PeerRecord};
-use vsf::{parse, schema::FromVsfType};
+use vsf::{parse, schema::FromVsfType, VsfField, VsfHeader, VsfSection};
 
 const FGTW_URL: &str = "https://fgtw.org";
 
@@ -24,7 +24,6 @@ pub const FGTW_ED25519_PUBLIC_KEY: [u8; 32] = [
 /// Returns Some(error_message) if the response is a valid VSF error, None otherwise
 /// Uses VSF crate's built-in field parser for robust parsing
 fn try_parse_vsf_error(bytes: &[u8]) -> Option<String> {
-    use vsf::file_format::VsfField;
     use vsf::VsfType;
 
     // Check VSF magic header "RÅ<"
@@ -87,7 +86,7 @@ fn try_parse_vsf_error(bytes: &[u8]) -> Option<String> {
 /// This requires authenticating with our handle and device key
 pub async fn load_bootstrap_peers(
     device_key: &Keypair,
-    handle_hash: [u8; 32],
+    handle_proof: [u8; 32],
     port: u16,
 ) -> Result<Vec<PeerRecord>, String> {
     println!("\n╔════════════════════════════════════════════════════════════╗");
@@ -95,7 +94,7 @@ pub async fn load_bootstrap_peers(
     println!("╚════════════════════════════════════════════════════════════╝");
     println!();
     println!("Server: {}", FGTW_URL);
-    println!("Handle Hash: {}", hex::encode(&handle_hash));
+    println!("Handle Hash: {}", hex::encode(&handle_proof));
     println!("Port: {}", port);
     println!();
 
@@ -147,7 +146,7 @@ pub async fn load_bootstrap_peers(
     println!("Step 3: Build Announce Message");
     println!("─────────────────────────────────────────────────────────────");
 
-    let announce_bytes = build_announce_message(handle_hash, device_key, port, challenge_hash)?;
+    let announce_bytes = build_announce_message(handle_proof, device_key, port, challenge_hash)?;
 
     println!("Built VSF announce: {} bytes", announce_bytes.len());
     println!("  • Encrypted with FGTW X25519 key");
@@ -402,7 +401,7 @@ fn decrypt_from_fgtw(ciphertext_with_header: &[u8], device_key: &Keypair) -> Res
 /// The device Ed25519 key (ke) is in the header field, signature (ge) is added by sign_section()
 /// Timestamp is generated at flattening time by sign_section()
 fn build_announce_message(
-    handle_hash: [u8; 32],
+    handle_proof: [u8; 32],
     device_key: &Keypair,
     port: u16,
     challenge_hash: [u8; 32],
@@ -413,10 +412,10 @@ fn build_announce_message(
     use vsf::vsf_builder::VsfBuilder;
     use vsf::{VsfType, VSF_BACKWARD_COMPAT, VSF_VERSION};
 
-    // 1. Build encrypted payload: hb(challenge_hash) + hb(handle_hash) + u(port)
+    // 1. Build encrypted payload: hb(challenge_hash) + hb(handle_proof) + u(port)
     let mut plaintext = Vec::new();
     plaintext.extend(VsfType::hb(challenge_hash.to_vec()).flatten());
-    plaintext.extend(VsfType::hb(handle_hash.to_vec()).flatten());
+    plaintext.extend(VsfType::hb(handle_proof.to_vec()).flatten());
     plaintext.extend(VsfType::u(port as usize, false).flatten());
 
     // 2. Encrypt for FGTW using ephemeral X25519 + AES-GCM
@@ -429,31 +428,51 @@ fn build_announce_message(
     section_bytes.extend(VsfType::v(b'e', encrypted).flatten());
     section_bytes.push(b']');
 
-    // 4. Create VsfHeader without timestamp - sign_section() will generate one at flattening time
-    let mut header = vsf::file_format::VsfHeader::new(VSF_VERSION, VSF_BACKWARD_COMPAT);
+    // 4. Stabilization loop to calculate correct offset
+    // The offset depends on header length, which depends on offset encoding size
+    let mut offset_bytes = 0usize;
+    let mut header_bytes: Vec<u8> = Vec::new();
 
-    // 5. Create header field with device Ed25519 key and encryption metadata
-    // FGTW will derive X25519 from Ed25519 when needed for encryption
-    let announce_field = HeaderField {
-        name: "announce".to_string(),
-        hash: None,
-        signature: None, // Will be added by sign_section()
-        key: Some(VsfType::ke(device_key.public.to_bytes().to_vec())), // Ed25519 device public key
-        wrap: Some(VsfType::v(b'e', vec![])), // Empty vec = metadata only
-        offset_bytes: 0, // Placeholder, will be fixed by stabilization
-        size_bytes: section_bytes.len(),
-        child_count: 0, // Encrypted sections have implied n[0]
-    };
-    header.add_field(announce_field);
+    const MAX_ITERATIONS: usize = 10;
+    for _iteration in 0..MAX_ITERATIONS {
+        // Create header with current offset estimate
+        let mut header = vsf::file_format::VsfHeader::new(VSF_VERSION, VSF_BACKWARD_COMPAT);
 
-    // 6. Use VsfHeader's encode and stabilization
-    let mut header_bytes = header.encode()?;
-    vsf::file_format::VsfHeader::update_header_length(&mut header_bytes)?;
+        // Create header field with device Ed25519 key and encryption metadata
+        let announce_field = HeaderField {
+            name: "announce".to_string(),
+            hash: None,
+            signature: None, // Will be added by sign_section()
+            key: Some(VsfType::ke(device_key.public.to_bytes().to_vec())), // Ed25519 device public key
+            wrap: Some(VsfType::v(b'e', vec![])), // Empty vec = metadata only
+            offset_bytes,
+            size_bytes: section_bytes.len(),
+            child_count: 0, // Encrypted sections have implied n[0]
+        };
+        header.add_field(announce_field);
 
-    // Append section
-    header_bytes.extend(&section_bytes);
+        // Encode and update header length
+        header_bytes = header.encode()?;
+        vsf::file_format::VsfHeader::update_header_length(&mut header_bytes)?;
 
-    // 7. Sign the "announce" section using sign_section
+        // Check if offset is correct (header length = section start)
+        let actual_offset = header_bytes.len();
+        if actual_offset == offset_bytes {
+            // Converged - append section and break
+            header_bytes.extend(&section_bytes);
+            break;
+        }
+
+        // Update estimate for next iteration
+        offset_bytes = actual_offset;
+
+        // On last iteration, just use current values
+        if _iteration == MAX_ITERATIONS - 1 {
+            header_bytes.extend(&section_bytes);
+        }
+    }
+
+    // 5. Sign the "announce" section using sign_section
     // This will parse the VSF, rebuild it with correct offsets, compute hashes, and add signature
     eprintln!("DEBUG build_announce: About to call sign_section, header_bytes len: {}", header_bytes.len());
     let signed_message = sign_section(header_bytes, "announce", device_key.secret.as_bytes())?;
@@ -489,121 +508,29 @@ fn parse_peer_list(bytes: &[u8], device_key: &Keypair) -> Result<Vec<PeerRecord>
     };
 
     // The decrypted plaintext is now a complete VSF file with proper sections
-    // Format: RÅ<[header]>[d"peer0" (d"handle_hash":hb) ...][d"peer1" ...]
+    // Format: RÅ<[header]>[d"peers" (peer:...)(peer:...)...]
     println!("Parsing decrypted VSF file ({} bytes)", plaintext_bytes.len());
 
-    // Validate VSF magic number "RÅ" (3 bytes UTF-8) and '<'
-    if plaintext_bytes.len() < 4 || &plaintext_bytes[0..3] != "RÅ".as_bytes() || plaintext_bytes[3] != b'<' {
-        return Err("Invalid VSF format: missing magic bytes RÅ<".to_string());
-    }
+    // Parse VSF header using the crate
+    let (header, _header_bytes) = VsfHeader::decode(&plaintext_bytes)
+        .map_err(|e| format!("Parse VSF header: {}", e))?;
 
-    // Parse VSF header to find peer section offsets
-    ptr = 4; // Skip "RÅ<"
+    // Find the "peers" section offset from header fields
+    let peers_offset = header.fields.iter()
+        .find(|f| f.name == "peers")
+        .map(|f| f.offset_bytes)
+        .ok_or("Missing 'peers' section in header")?;
 
-    // Skip version, backward_compat, header_length, creation_time
-    let _ = parse(&plaintext_bytes, &mut ptr).map_err(|e| format!("Parse version: {}", e))?;
-    let _ = parse(&plaintext_bytes, &mut ptr).map_err(|e| format!("Parse backward_compat: {}", e))?;
-    let _ = parse(&plaintext_bytes, &mut ptr).map_err(|e| format!("Parse header_length: {}", e))?;
-    let _ = parse(&plaintext_bytes, &mut ptr).map_err(|e| format!("Parse creation_time: {}", e))?;
-
-    // Parse provenance hash (hp)
-    let _ = parse(&plaintext_bytes, &mut ptr).map_err(|e| format!("Parse provenance hash: {}", e))?;
-
-    // Skip optional rolling hash (hb) if present
-    let next_type = parse(&plaintext_bytes, &mut ptr).map_err(|e| format!("Parse after hp: {}", e))?;
-    let field_count = match next_type {
-        vsf::VsfType::hb(_) => {
-            match parse(&plaintext_bytes, &mut ptr).map_err(|e| format!("Parse field count: {}", e))? {
-                vsf::VsfType::n(count) => count,
-                _ => return Err("Invalid field count type".to_string()),
-            }
-        }
-        vsf::VsfType::n(count) => count,
-        _ => return Err("Expected field count or rolling hash".to_string()),
-    };
-
-    // Parse header field definitions to find section offsets
-    let mut section_offsets = Vec::new();
-    for _ in 0..field_count {
-        if plaintext_bytes[ptr] != b'(' {
-            return Err("Expected '(' for field".to_string());
-        }
-        ptr += 1;
-
-        // Parse section name (d type)
-        let section_name = match parse(&plaintext_bytes, &mut ptr).map_err(|e| format!("Parse section name: {}", e))? {
-            vsf::VsfType::d(name) => name,
-            _ => return Err("Invalid section name type".to_string()),
-        };
-
-        // Skip ':' separator
-        if plaintext_bytes[ptr] != b':' {
-            return Err("Expected ':' after section name".to_string());
-        }
-        ptr += 1;
-
-        // Parse offset, size, child_count
-        let mut offset = None;
-        while ptr < plaintext_bytes.len() && plaintext_bytes[ptr] != b')' {
-            let field = parse(&plaintext_bytes, &mut ptr).map_err(|e| format!("Parse header field: {}", e))?;
-            match field {
-                vsf::VsfType::o(o) => offset = Some(o),
-                _ => {}
-            }
-            if ptr < plaintext_bytes.len() && plaintext_bytes[ptr] == b',' {
-                ptr += 1;
-            }
-        }
-
-        if plaintext_bytes[ptr] != b')' {
-            return Err("Expected ')' after field".to_string());
-        }
-        ptr += 1;
-
-        if let Some(off) = offset {
-            section_offsets.push((section_name, off));
-        }
-    }
-
-    // Skip '>'
-    if plaintext_bytes[ptr] != b'>' {
-        return Err("Expected '>' for header end".to_string());
-    }
-    ptr += 1;
-
-    // Find the "peers" section
-    let peers_offset = section_offsets.iter()
-        .find(|(name, _)| name == "peers")
-        .map(|(_, offset)| *offset)
-        .ok_or("Missing 'peers' section")?;
-
-    // Parse the peers section
-    let mut peers = Vec::new();
+    // Parse the peers section using the crate
     let mut ptr = peers_offset;
+    let peers_section = VsfSection::parse(&plaintext_bytes, &mut ptr)
+        .map_err(|e| format!("Parse peers section: {}", e))?;
 
-    // Expect section start '['
-    if plaintext_bytes[ptr] != b'[' {
-        return Err("Expected '[' for peers section start".to_string());
-    }
-    ptr += 1;
-
-    // Parse section name "peers"
-    let _ = parse(&plaintext_bytes, &mut ptr).map_err(|e| format!("Parse section name: {}", e))?;
-
-    // Parse all (peer: ...) fields until ']'
-    while ptr < plaintext_bytes.len() && plaintext_bytes[ptr] != b']' {
-        // Skip whitespace
-        while ptr < plaintext_bytes.len() && (plaintext_bytes[ptr] == b'\n' || plaintext_bytes[ptr] == b' ') {
-            ptr += 1;
-        }
-
-        if plaintext_bytes[ptr] == b']' {
-            break;
-        }
-
-        let (peer, new_ptr) = parse_peer_field(&plaintext_bytes, ptr)?;
-        ptr = new_ptr;
-
+    // Get all peer fields and convert to PeerRecords
+    let peer_fields = peers_section.get_fields("peer");
+    let mut peers = Vec::new();
+    for field in peer_fields {
+        let peer = parse_peer_from_field(field)?;
         peers.push(peer);
     }
 
@@ -612,7 +539,7 @@ fn parse_peer_list(bytes: &[u8], device_key: &Keypair) -> Result<Vec<PeerRecord>
 
     for (i, peer) in peers.iter().enumerate() {
         println!("  Peer {}: {}", i, peer.ip);
-        println!("    Handle Hash: {}", hex::encode(&peer.handle_hash[..8]));
+        println!("    Handle Hash: {}", hex::encode(&peer.handle_proof[..8]));
         println!("    Device Key:  {}...", hex::encode(&peer.device_pubkey.as_bytes()[..8]));
         println!("    Last Seen:   {}", format_timestamp(peer.last_seen));
         println!();
@@ -648,73 +575,39 @@ fn format_timestamp(eagle_ts: f64) -> String {
     }
 }
 
-/// Parse a single peer section from VSF bytes with named fields
-fn parse_peer_field(bytes: &[u8], offset: usize) -> Result<(PeerRecord, usize), String> {
+/// Parse a PeerRecord from a VsfField
+/// Expected format: (peer: hb{32}, ke{32}, t_u3{IP}, u3{port}, ef6{timestamp})
+fn parse_peer_from_field(field: &vsf::VsfField) -> Result<PeerRecord, String> {
     use crate::types::PublicIdentity;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
-    let mut ptr = offset;
-
-    // Expect field start '('
-    if bytes[ptr] != b'(' {
-        return Err("Expected '(' for peer field start".to_string());
-    }
-    ptr += 1;
-
-    // Parse field name (should be "peer")
-    let field_name = match parse(bytes, &mut ptr).map_err(|e| format!("Parse field name: {}", e))? {
-        vsf::VsfType::d(name) => name,
-        _ => return Err("Invalid field name type".to_string()),
-    };
-
-    if field_name != "peer" {
-        return Err(format!("Expected field name 'peer', got '{}'", field_name));
+    if field.values.len() < 5 {
+        return Err(format!("Peer field needs 5 values, got {}", field.values.len()));
     }
 
-    // Skip ':' separator
-    if bytes[ptr] != b':' {
-        return Err("Expected ':' after field name".to_string());
-    }
-    ptr += 1;
-
-    // Parse all comma-separated values for this peer
-    // Expected format: (peer: hb{32}{...}, ke{32}{...}, t u3{IP}, u3{port}, ef6{timestamp})
-
-    // Parse handle_hash (hb{32})
-    let handle_hash = match parse(bytes, &mut ptr).map_err(|e| format!("Parse handle_hash: {}", e))? {
+    // Parse handle_proof (hb{32})
+    let handle_proof = match &field.values[0] {
         vsf::VsfType::hb(h) if h.len() == 32 => {
             let mut arr = [0u8; 32];
-            arr.copy_from_slice(&h);
+            arr.copy_from_slice(h);
             arr
         }
-        _ => return Err("Invalid handle_hash type or length".to_string()),
+        _ => return Err("Invalid handle_proof type or length".to_string()),
     };
 
-    // Expect comma separator
-    if bytes[ptr] != b',' {
-        return Err("Expected ',' after handle_hash".to_string());
-    }
-    ptr += 1;
-
     // Parse device_pubkey (ke{32})
-    let device_pubkey = match parse(bytes, &mut ptr).map_err(|e| format!("Parse device_pubkey: {}", e))? {
+    let device_pubkey = match &field.values[1] {
         vsf::VsfType::ke(k) if k.len() == 32 => {
             let mut arr = [0u8; 32];
-            arr.copy_from_slice(&k);
+            arr.copy_from_slice(k);
             PublicIdentity::from_bytes(arr)
         }
         _ => return Err("Invalid device_pubkey type or length".to_string()),
     };
 
-    // Expect comma separator
-    if bytes[ptr] != b',' {
-        return Err("Expected ',' after device_pubkey".to_string());
-    }
-    ptr += 1;
-
-    // Parse IP address (t u3{4 or 16 bytes})
-    let ip_bytes = match parse(bytes, &mut ptr).map_err(|e| format!("Parse ip: {}", e))? {
-        vsf::VsfType::t_u3(tensor) => tensor.data,
+    // Parse IP address (t_u3{4 or 16 bytes})
+    let ip_bytes = match &field.values[2] {
+        vsf::VsfType::t_u3(tensor) => &tensor.data,
         _ => return Err("Invalid ip type".to_string()),
     };
 
@@ -722,47 +615,29 @@ fn parse_peer_field(bytes: &[u8], offset: usize) -> Result<(PeerRecord, usize), 
         IpAddr::V4(Ipv4Addr::new(ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3]))
     } else if ip_bytes.len() == 16 {
         let mut octets = [0u8; 16];
-        octets.copy_from_slice(&ip_bytes);
+        octets.copy_from_slice(ip_bytes);
         IpAddr::V6(Ipv6Addr::from(octets))
     } else {
         return Err(format!("Invalid IP length: {}", ip_bytes.len()));
     };
 
-    // Expect comma separator
-    if bytes[ptr] != b',' {
-        return Err("Expected ',' after ip".to_string());
-    }
-    ptr += 1;
-
     // Parse port (u3 or generic u)
-    let port = u16::from_vsf_type(&parse(bytes, &mut ptr).map_err(|e| format!("Parse port: {}", e))?)
+    let port = u16::from_vsf_type(&field.values[3])
         .map_err(|e| format!("Invalid port: {}", e))?;
 
-    // Expect comma separator
-    if bytes[ptr] != b',' {
-        return Err("Expected ',' after port".to_string());
-    }
-    ptr += 1;
-
     // Parse timestamp (e with EtType::f6)
-    let last_seen = match parse(bytes, &mut ptr).map_err(|e| format!("Parse last_seen: {}", e))? {
+    let last_seen = match &field.values[4] {
         vsf::VsfType::e(et) => match et {
-            vsf::types::EtType::f6(timestamp) => timestamp,
+            vsf::types::EtType::f6(timestamp) => *timestamp,
             _ => return Err("Expected f6 Eagle Time timestamp".to_string()),
         },
         _ => return Err("Expected Eagle Time (e) type for timestamp".to_string()),
     };
 
-    // Expect field end ')'
-    if bytes[ptr] != b')' {
-        return Err("Expected ')' after peer field".to_string());
-    }
-    ptr += 1;
-
-    Ok((PeerRecord {
-        handle_hash,
+    Ok(PeerRecord {
+        handle_proof,
         device_pubkey,
         ip: SocketAddr::new(parsed_ip, port),
         last_seen,
-    }, ptr))
+    })
 }

@@ -2,6 +2,15 @@ use crate::types::PublicIdentity;
 use std::net::SocketAddr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+fn eagle_time() -> f64 {
+    const EAGLE_TO_UNIX_OFFSET: f64 = 14182940.0;
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64()
+        + EAGLE_TO_UNIX_OFFSET
+}
+
 /// Node identifier for FGTW routing
 /// Wraps the device's X25519 pubkey for use in Kademlia XOR distance calculations
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -84,25 +93,16 @@ impl NodeContact {
             node_id: NodeId::from_pubkey(&pubkey),
             pubkey,
             addr,
-            last_seen: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs_f64(),
+            last_seen: eagle_time(),
         }
     }
 
     pub fn update_last_seen(&mut self) {
-        self.last_seen = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs_f64();
+        self.last_seen = eagle_time();
     }
 
     pub fn is_stale(&self, max_age_secs: f64) -> bool {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs_f64();
+        let now = eagle_time();
         now - self.last_seen > max_age_secs
     }
 }

@@ -15,8 +15,8 @@ impl PhotonApp {
         let center_x = self.width as usize / 2;
         let center_y = self.height as usize * 4 / 7;
 
-        // Update spectrum phase and speckle animation while querying
-        if self.handle_status == HandleStatus::Checking {
+        // Update spectrum phase and speckle animation while attesting
+        if matches!(self.app_state, AppState::Launch(LaunchState::Attesting)) {
             let delta_time = now.duration_since(self.last_frame_time).as_secs_f32();
             debug_println!(
                 "Animating query: delta={:.3}s, phase={:.2}",
@@ -114,61 +114,148 @@ impl PhotonApp {
                     &edges,
                 );
 
-                // Draw spectrum and logo text
-                let logo_center_y = self.height as usize / 4; // Centered in top half
-                Self::draw_spectrum(
-                    pixels,
-                    self.width,
-                    self.height,
-                    logo_center_y - self.height.min(self.width) as usize / 8,
-                    self.spectrum_phase,
-                );
-                Self::draw_logo_text(
-                    pixels,
-                    &mut self.text_renderer,
-                    self.width,
-                    self.height,
-                    logo_center_y + self.height.min(self.width) as usize / 8,
-                );
+                // Draw FGTW connectivity indicator (small circle in top-left) - always black on full redraw
+                let indicator_radius = (self.min_dim / 80).max(3);
+                let indicator_x = indicator_radius * 4;
+                let indicator_y = indicator_x;
+                Self::draw_filled_circle(pixels, self.width as usize, indicator_x, indicator_y, indicator_radius, 0xFF000000);
+                // If online, immediately draw green on top
+                if self.fgtw_online {
+                    Self::draw_filled_circle(pixels, self.width as usize, indicator_x, indicator_y, indicator_radius, 0xFF00AA00);
+                }
+                self.prev_fgtw_online = self.fgtw_online;
 
-                // 2. Draw textbox (full width with min_dim/8 margins)
-                Self::draw_textbox(
-                    pixels,
-                    &mut self.hit_test_map,
-                    HIT_HANDLE_TEXTBOX,
-                    &mut self.textbox_mask,
-                    self.width as usize,
-                    center_x,
-                    center_y,
-                    box_width,
-                    box_height,
-                );
-
-                // Re-apply textbox glow if textbox is focused (restore after redraw)
-                if self.current_text_state.textbox_focused {
-                    Self::apply_textbox_glow(
+                // Different UI based on app state
+                if matches!(self.app_state, AppState::Launch(_)) {
+                    // Launch screen: spectrum, logo, handle entry
+                    let logo_center_y = self.height as usize / 4;
+                    Self::draw_spectrum(
                         pixels,
-                        &self.textbox_mask,
+                        self.width,
+                        self.height,
+                        logo_center_y - self.height.min(self.width) as usize / 8,
+                        self.spectrum_phase,
+                    );
+                    Self::draw_logo_text(
+                        pixels,
+                        &mut self.text_renderer,
+                        self.width,
+                        self.height,
+                        logo_center_y + self.height.min(self.width) as usize / 8,
+                    );
+
+                    // Handle textbox
+                    Self::draw_textbox(
+                        pixels,
+                        &mut self.hit_test_map,
+                        HIT_HANDLE_TEXTBOX,
+                        &mut self.textbox_mask,
                         self.width as usize,
+                        center_x,
                         center_y,
                         box_width,
                         box_height,
-                        true,
                     );
-                }
 
-                // Label below the box
-                self.text_renderer.draw_text_center_u32(
-                    pixels,
-                    self.width as usize,
-                    "handle",
-                    center_x as f32,
-                    (center_y + box_height) as f32,
-                    font_size,
-                    300,
-                    theme::FONT_LABEL,
-                    theme::FONT_UI,
-                );
+                    if self.current_text_state.textbox_focused {
+                        Self::apply_textbox_glow(
+                            pixels,
+                            &self.textbox_mask,
+                            self.width as usize,
+                            center_y,
+                            box_width,
+                            box_height,
+                            true,
+                        );
+                    }
+
+                    self.text_renderer.draw_text_center_u32(
+                        pixels,
+                        self.width as usize,
+                        "handle",
+                        center_x as f32,
+                        (center_y + box_height) as f32,
+                        font_size,
+                        300,
+                        theme::FONT_LABEL,
+                        theme::FONT_UI,
+                    );
+                } else if matches!(self.app_state, AppState::Ready) {
+                    // Ready screen: find friends
+                    let title_y = self.height as usize / 4;
+                    self.text_renderer.draw_text_center_u32(
+                        pixels,
+                        self.width as usize,
+                        "Find Friends",
+                        center_x as f32,
+                        title_y as f32,
+                        font_size * 2.0,
+                        600,
+                        0xFF_E0_E0_E0,
+                        theme::FONT_USER_CONTENT,
+                    );
+
+                    // Search textbox (reuse same position)
+                    Self::draw_textbox(
+                        pixels,
+                        &mut self.hit_test_map,
+                        HIT_HANDLE_TEXTBOX,
+                        &mut self.textbox_mask,
+                        self.width as usize,
+                        center_x,
+                        center_y,
+                        box_width,
+                        box_height,
+                    );
+
+                    if self.current_text_state.textbox_focused {
+                        Self::apply_textbox_glow(
+                            pixels,
+                            &self.textbox_mask,
+                            self.width as usize,
+                            center_y,
+                            box_width,
+                            box_height,
+                            true,
+                        );
+                    }
+
+                    self.text_renderer.draw_text_center_u32(
+                        pixels,
+                        self.width as usize,
+                        "search handle",
+                        center_x as f32,
+                        (center_y + box_height) as f32,
+                        font_size,
+                        300,
+                        theme::FONT_LABEL,
+                        theme::FONT_UI,
+                    );
+
+                    // Show search result below the button area
+                    let result_y = center_y + box_height * 4;
+                    if let Some(ref result) = self.search_result {
+                        let (text, color) = match result {
+                            SearchResult::Found(addr) => {
+                                (format!("✓ Online at {}", addr), 0xFF_40_FF_40)
+                            }
+                            SearchResult::NotFound => {
+                                ("✗ Not found".to_string(), 0xFF_FF_60_60)
+                            }
+                        };
+                        self.text_renderer.draw_text_center_u32(
+                            pixels,
+                            self.width as usize,
+                            &text,
+                            center_x as f32,
+                            result_y as f32,
+                            font_size,
+                            500,
+                            color,
+                            theme::FONT_USER_CONTENT,
+                        );
+                    }
+                }
 
                 // Debug: overlay hit test map visualization with random colours
                 if self.debug_hit_test {
@@ -571,6 +658,16 @@ impl PhotonApp {
                 }
             }
 
+            // Differential update for FGTW connectivity indicator
+            if self.fgtw_online != self.prev_fgtw_online {
+                let indicator_radius = (self.min_dim / 80).max(3);
+                let indicator_x = indicator_radius * 4;
+                let indicator_y = indicator_x;
+                let color = if self.fgtw_online { 0xFF00FF00 } else { 0xFF000000 };
+                Self::draw_filled_circle(pixels, self.width as usize, indicator_x, indicator_y, indicator_radius, color);
+                self.prev_fgtw_online = self.fgtw_online;
+            }
+
             // Reapply current hover state after window_dirty redraws
             // (full redraws clear the framebuffer, losing hover overlays)
             // This runs OUTSIDE controls_dirty so it works during animation
@@ -747,9 +844,10 @@ impl PhotonApp {
                 let button_center_y = center_y + box_height + box_height;
                 let button_height = box_height;
 
-                match self.handle_status {
-                    HandleStatus::Empty => {
-                        // Show "Query" button with blue fill
+                match &self.app_state {
+                    AppState::Launch(launch_state) => match launch_state {
+                    LaunchState::Fresh => {
+                        // Show "Attest" button
                         let button_width = box_width / 2;
                         Self::draw_button(
                             pixels,
@@ -769,7 +867,7 @@ impl PhotonApp {
                         self.text_renderer.draw_text_center_u32(
                             pixels,
                             self.width as usize,
-                            "Query",
+                            "Attest",
                             center_x as f32,
                             button_center_y as f32,
                             font_size,
@@ -778,8 +876,8 @@ impl PhotonApp {
                             theme::FONT_USER_CONTENT,
                         );
                     }
-                    HandleStatus::Checking => {
-                        // Show "Querying..." button with grey fill
+                    LaunchState::Attesting => {
+                        // Show "Attesting..." with grey fill (loading state)
                         let button_width = box_width / 2;
                         Self::draw_button(
                             pixels,
@@ -799,7 +897,7 @@ impl PhotonApp {
                         self.text_renderer.draw_text_center_u32(
                             pixels,
                             self.width as usize,
-                            "Querying...",
+                            "Attesting...",
                             center_x as f32,
                             button_center_y as f32,
                             font_size,
@@ -808,8 +906,23 @@ impl PhotonApp {
                             theme::FONT_USER_CONTENT,
                         );
                     }
-                    HandleStatus::Unattested => {
-                        // Show single "Attest" button with dark green fill
+                    LaunchState::Error(ref msg) => {
+                        // Show error message text, no button
+                        self.text_renderer.draw_text_center_u32(
+                            pixels,
+                            self.width as usize,
+                            msg,
+                            center_x as f32,
+                            button_center_y as f32,
+                            font_size * 0.8,
+                            500,
+                            0xFF_FF_60_60,
+                            theme::FONT_USER_CONTENT,
+                        );
+                    }
+                    },
+                    AppState::Ready => {
+                        // Show "Find" button
                         let button_width = box_width / 2;
                         Self::draw_button(
                             pixels,
@@ -821,7 +934,7 @@ impl PhotonApp {
                             button_width,
                             button_height,
                             HIT_PRIMARY_BUTTON,
-                            theme::BUTTON_GREEN,
+                            theme::BUTTON_BLUE,
                             theme::BUTTON_LIGHT_EDGE,
                             theme::BUTTON_SHADOW_EDGE,
                         );
@@ -829,7 +942,7 @@ impl PhotonApp {
                         self.text_renderer.draw_text_center_u32(
                             pixels,
                             self.width as usize,
-                            "Attest",
+                            "Find",
                             center_x as f32,
                             button_center_y as f32,
                             font_size,
@@ -838,169 +951,7 @@ impl PhotonApp {
                             theme::FONT_USER_CONTENT,
                         );
                     }
-                    HandleStatus::AlreadyAttested => {
-                        // Show single "Recover / Challenge" button with dark yellow fill
-                        let button_width = box_width / 2;
-                        Self::draw_button(
-                            pixels,
-                            &mut self.hit_test_map,
-                            self.width as usize,
-                            self.height as usize,
-                            center_x,
-                            button_center_y,
-                            button_width,
-                            button_height,
-                            HIT_PRIMARY_BUTTON,
-                            theme::BUTTON_YELLOW,
-                            theme::BUTTON_LIGHT_EDGE,
-                            theme::BUTTON_SHADOW_EDGE,
-                        );
-
-                        self.text_renderer.draw_text_center_u32(
-                            pixels,
-                            self.width as usize,
-                            "Recover / Challenge",
-                            center_x as f32,
-                            button_center_y as f32,
-                            font_size,
-                            500,
-                            0xFF_D0_D0_D0,
-                            theme::FONT_USER_CONTENT,
-                        );
-                    }
-                    HandleStatus::RecoverOrChallenge => {
-                        // Show explanation text
-                        let handle_text = self.current_text_state.chars.iter().collect::<String>();
-                        let explanation = format!("{} is already attested.", handle_text);
-
-                        let text_y = button_center_y - box_height * 2;
-                        self.text_renderer.draw_text_center_u32(
-                            pixels,
-                            self.width as usize,
-                            &explanation,
-                            center_x as f32,
-                            text_y as f32,
-                            font_size * 0.75,
-                            400,
-                            0xFF_B0_B0_B0,
-                            theme::FONT_USER_CONTENT,
-                        );
-
-                        let question_y = text_y + (box_height as f32 * 0.75) as usize;
-                        self.text_renderer.draw_text_center_u32(
-                            pixels,
-                            self.width as usize,
-                            "Are you recovering your own identity,",
-                            center_x as f32,
-                            question_y as f32,
-                            font_size * 0.75,
-                            400,
-                            0xFF_B0_B0_B0,
-                            theme::FONT_USER_CONTENT,
-                        );
-
-                        let question2_y = question_y + (box_height as f32 * 0.6) as usize;
-                        self.text_renderer.draw_text_center_u32(
-                            pixels,
-                            self.width as usize,
-                            "or challenging someone else's claim?",
-                            center_x as f32,
-                            question2_y as f32,
-                            font_size * 0.75,
-                            400,
-                            0xFF_B0_B0_B0,
-                            theme::FONT_USER_CONTENT,
-                        );
-
-                        // Draw two buttons side by side
-                        let button_width = box_width / 4;
-                        let spacing = box_width / 8;
-                        let recover_x = center_x - spacing - button_width / 2;
-                        let challenge_x = center_x + spacing + button_width / 2;
-
-                        // Left button: "Recover"
-                        Self::draw_button(
-                            pixels,
-                            &mut self.hit_test_map,
-                            self.width as usize,
-                            self.height as usize,
-                            recover_x,
-                            button_center_y,
-                            button_width,
-                            button_height,
-                            HIT_RECOVER_BUTTON,
-                            theme::BUTTON_GREEN,
-                            theme::BUTTON_LIGHT_EDGE,
-                            theme::BUTTON_SHADOW_EDGE,
-                        );
-
-                        self.text_renderer.draw_text_center_u32(
-                            pixels,
-                            self.width as usize,
-                            "Recover",
-                            recover_x as f32,
-                            button_center_y as f32,
-                            font_size * 0.85,
-                            500,
-                            0xFF_D0_D0_D0,
-                            theme::FONT_USER_CONTENT,
-                        );
-
-                        // Small subtitle under Recover button
-                        let subtitle_y = button_center_y + (box_height as f32 * 0.6) as usize;
-                        self.text_renderer.draw_text_center_u32(
-                            pixels,
-                            self.width as usize,
-                            "(I'm you)",
-                            recover_x as f32,
-                            subtitle_y as f32,
-                            font_size * 0.5,
-                            300,
-                            0xFF_80_80_80,
-                            theme::FONT_USER_CONTENT,
-                        );
-
-                        // Right button: "Challenge"
-                        Self::draw_button(
-                            pixels,
-                            &mut self.hit_test_map,
-                            self.width as usize,
-                            self.height as usize,
-                            challenge_x,
-                            button_center_y,
-                            button_width,
-                            button_height,
-                            HIT_CHALLENGE_BUTTON,
-                            theme::BUTTON_YELLOW,
-                            theme::BUTTON_LIGHT_EDGE,
-                            theme::BUTTON_SHADOW_EDGE,
-                        );
-
-                        self.text_renderer.draw_text_center_u32(
-                            pixels,
-                            self.width as usize,
-                            "Challenge",
-                            challenge_x as f32,
-                            button_center_y as f32,
-                            font_size * 0.85,
-                            500,
-                            0xFF_D0_D0_D0,
-                            theme::FONT_USER_CONTENT,
-                        );
-
-                        // Small subtitle under Challenge button
-                        self.text_renderer.draw_text_center_u32(
-                            pixels,
-                            self.width as usize,
-                            "(They stole this)",
-                            challenge_x as f32,
-                            subtitle_y as f32,
-                            font_size * 0.5,
-                            300,
-                            0xFF_80_80_80,
-                            theme::FONT_USER_CONTENT,
-                        );
-                    }
+                    _ => {}
                 }
             }
 
@@ -3228,6 +3179,30 @@ impl PhotonApp {
                 b.wrapping_add(grey),
                 a,
             );
+        }
+    }
+
+    /// Draw a filled circle with solid color
+    fn draw_filled_circle(pixels: &mut [u32], width: usize, cx: usize, cy: usize, radius: usize, color: u32) {
+        let r2 = (radius * radius) as isize;
+        let r = radius as isize;
+        for dy in -r..=r {
+            let y = cy as isize + dy;
+            if y < 0 || y >= (pixels.len() / width) as isize {
+                continue;
+            }
+            // Calculate horizontal extent at this y
+            let dx_max = ((r2 - dy * dy) as f32).sqrt() as isize;
+            for dx in -dx_max..=dx_max {
+                let x = cx as isize + dx;
+                if x < 0 || x >= width as isize {
+                    continue;
+                }
+                let idx = y as usize * width + x as usize;
+                if idx < pixels.len() {
+                    pixels[idx] = color;
+                }
+            }
         }
     }
 }

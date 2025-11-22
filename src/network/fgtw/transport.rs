@@ -164,34 +164,34 @@ fn process_message(
             }
         }
         FgtwMessage::FindNode {
-            handle_hash,
+            handle_proof,
             requester_pubkey: _,
         } => {
             let store = peer_store.lock().unwrap();
-            let devices = store.get_devices_for_handle(&handle_hash);
+            let devices = store.get_devices_for_handle(&handle_proof);
             FgtwMessage::FoundNodes { devices }
         }
         FgtwMessage::Announce {
-            handle_hash,
+            handle_proof,
             device_pubkey,
             port,
         } => {
             let ip = format!("{}:{}", _addr.ip(), port).parse().unwrap();
-            let peer = PeerRecord::new(handle_hash, device_pubkey, ip);
+            let peer = PeerRecord::new(handle_proof, device_pubkey, ip);
             let mut store = peer_store.lock().unwrap();
             store.add_peer(peer);
-            println!("FGTW: Announced handle_hash {:?}", &handle_hash[..8]);
+            println!("FGTW: Announced handle_proof {:?}", &handle_proof[..8]);
             FgtwMessage::Pong {
                 device_pubkey: our_pubkey.clone(),
                 peers: vec![],
             }
         }
         FgtwMessage::Query {
-            handle_hash,
+            handle_proof,
             requester_pubkey: _,
         } => {
             let store = peer_store.lock().unwrap();
-            let devices = store.get_devices_for_handle(&handle_hash);
+            let devices = store.get_devices_for_handle(&handle_proof);
             FgtwMessage::QueryResponse { devices }
         }
         _ => {

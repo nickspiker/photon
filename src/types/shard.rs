@@ -3,6 +3,15 @@ use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
+fn eagle_time_secs() -> u64 {
+    const EAGLE_TO_UNIX_OFFSET: u64 = 14182940;
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + EAGLE_TO_UNIX_OFFSET
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct KeyShard {
     pub id: ShardId,
@@ -72,10 +81,7 @@ impl KeyShard {
             index,
             threshold,
             total_shards,
-            created_at: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
+            created_at: eagle_time_secs(),
         }
     }
 }

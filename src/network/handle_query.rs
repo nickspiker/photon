@@ -5,16 +5,19 @@
 
 use crate::network::fgtw::{FgtwMessage, FgtwTransport, PeerRecord};
 use crate::types::{Handle, PublicIdentity};
+use crate::ui::PhotonEvent;
 use std::net::UdpSocket;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use winit::event_loop::EventLoopProxy;
 
 /// Result of a handle query
 #[derive(Debug, Clone)]
 pub enum QueryResult {
-    Unattested,                  // Handle is available
-    AlreadyAttested(PeerRecord), // Handle is claimed, with peer info
+    Success,                     // Successfully attested/registered
+    AlreadyAttested(PeerRecord), // Handle is claimed by another device
+    Error(String),               // Error during attestation
 }
 
 /// Handle query request/response channel
@@ -24,23 +27,50 @@ pub struct HandleQuery {
     transport: Arc<Mutex<Option<Arc<FgtwTransport>>>>,
     socket: Arc<UdpSocket>,
     port: u16,
+    online_receiver: Receiver<bool>,
 }
 
 impl HandleQuery {
     /// Create a new handle query system with FGTW
-    pub fn new(_our_identity: PublicIdentity) -> Self {
+    pub fn new(_our_identity: PublicIdentity, event_proxy: EventLoopProxy<PhotonEvent>) -> Self {
         let (tx_request, rx_request) = channel::<String>();
         let (tx_response, rx_response) = channel::<QueryResult>();
+        let (tx_online, rx_online) = channel::<bool>();
 
         // Bind UDP socket to port 0 (OS picks an available port)
         let socket = UdpSocket::bind("0.0.0.0:0").expect("Failed to bind UDP socket");
-        let port = socket.local_addr().expect("Failed to get socket address").port();
+        let port = socket
+            .local_addr()
+            .expect("Failed to get socket address")
+            .port();
         println!("Network: Listening on UDP port {}", port);
         let socket = Arc::new(socket);
 
         let transport = Arc::new(Mutex::new(None::<Arc<FgtwTransport>>));
         let transport_clone = transport.clone();
         let port_clone = port;
+
+        // Spawn connectivity check thread
+        let event_proxy_connectivity = event_proxy.clone();
+        thread::spawn(move || {
+            // Simple HTTP GET to check if FGTW is reachable
+            let online = match reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(5))
+                .build()
+            {
+                Ok(client) => match client.get("https://fgtw.org/status").send() {
+                    Ok(resp) if resp.status().is_success() => true,
+                    _ => false,
+                },
+                Err(_) => false,
+            };
+
+            // Send via channel (for backward compatibility with try_recv_online)
+            let _ = tx_online.send(online);
+
+            // Wake event loop via proxy - this is the key cross-thread signal
+            let _ = event_proxy_connectivity.send_event(PhotonEvent::ConnectivityChanged(online));
+        });
 
         // Spawn worker thread to handle FGTW queries
         thread::spawn(move || {
@@ -64,8 +94,8 @@ impl HandleQuery {
                 let store = peer_store.lock().unwrap();
 
                 // First check local peer store
-                let handle_hash = crate::types::Handle::username_to_infohash(&username);
-                let devices = store.get_devices_for_handle(&handle_hash);
+                let handle_proof = crate::types::Handle::username_to_handle_proof(&username);
+                let devices = store.get_devices_for_handle(&handle_proof);
                 if !devices.is_empty() {
                     println!(
                         "Network: Handle '{}' is CLAIMED (found {} device(s) in local store)",
@@ -88,21 +118,23 @@ impl HandleQuery {
                     Ok(p) => p,
                     Err(e) => {
                         eprintln!("Network: ERROR - Failed to get FGTW paths: {}", e);
-                        let result = QueryResult::Unattested;
+                        let result = QueryResult::Error(format!("Failed to get paths: {}", e));
                         let _ = tx_response.send(result);
                         continue;
                     }
                 };
 
-                let device_keypair = match crate::network::fgtw::load_or_generate_device_key(&paths.device_key) {
-                    Ok(kp) => kp,
-                    Err(e) => {
-                        eprintln!("Network: ERROR - Failed to load device key: {}", e);
-                        let result = QueryResult::Unattested;
-                        let _ = tx_response.send(result);
-                        continue;
-                    }
-                };
+                let device_keypair =
+                    match crate::network::fgtw::load_or_generate_device_key(&paths.device_key) {
+                        Ok(kp) => kp,
+                        Err(e) => {
+                            eprintln!("Network: ERROR - Failed to load device key: {}", e);
+                            let result =
+                                QueryResult::Error(format!("Failed to load device key: {}", e));
+                            let _ = tx_response.send(result);
+                            continue;
+                        }
+                    };
 
                 // Query FGTW by announcing ourselves (this returns the peer list for the handle)
                 // Port 0 means we're just querying, not actually announcing availability
@@ -111,49 +143,46 @@ impl HandleQuery {
                     .enable_all()
                     .build()
                     .expect("Failed to create tokio runtime")
-                    .block_on(
-                        crate::network::fgtw::bootstrap::load_bootstrap_peers(
-                            &device_keypair,
-                            handle_hash,
-                            port_clone,
-                        )
-                    ) {
+                    .block_on(crate::network::fgtw::bootstrap::load_bootstrap_peers(
+                        &device_keypair,
+                        handle_proof,
+                        port_clone,
+                    )) {
                     Ok(p) => p,
                     Err(e) => {
                         eprintln!("Network: ERROR - Failed to query fgtw.org: {}", e);
-                        let result = QueryResult::Unattested;
+                        let result = QueryResult::Error(e.clone());
                         let _ = tx_response.send(result);
                         continue;
                     }
                 };
 
-                // Add peers to store
+                // Add peers to local store
                 if !peers.is_empty() {
-                    // Check if this is OUR device or someone else's
-                    let our_pubkey = device_keypair.public.as_bytes();
-                    let peer = &peers[0];
-                    let is_ours = peer.device_pubkey.as_bytes() == our_pubkey;
-
-                    if is_ours {
-                        println!("Network: Handle '{}' registered to this device", username);
-                    } else {
-                        println!("Network: Handle '{}' is CLAIMED by another device", username);
-                    }
-
-                    // Add peers to local store
                     let mut store = peer_store.lock().unwrap();
                     for peer in &peers {
                         store.add_peer(peer.clone());
                     }
                     drop(store);
-
-                    let result = QueryResult::AlreadyAttested(peers[0].clone());
-                    let _ = tx_response.send(result);
-                    continue;
                 }
 
-                println!("Network: Handle '{}' is available", username);
-                let result = QueryResult::Unattested;
+                // Check if this is OUR device or someone else's
+                let our_pubkey = device_keypair.public.as_bytes();
+                let is_ours = peers.is_empty()
+                    || peers
+                        .iter()
+                        .any(|p| p.device_pubkey.as_bytes() == our_pubkey);
+
+                let result = if is_ours {
+                    println!("Network: Handle '{}' registered to this device", username);
+                    QueryResult::Success
+                } else {
+                    println!(
+                        "Network: Handle '{}' is CLAIMED by another device",
+                        username
+                    );
+                    QueryResult::AlreadyAttested(peers[0].clone())
+                };
 
                 if tx_response.send(result).is_err() {
                     eprintln!("Network: ERROR - Failed to send response (receiver dropped)");
@@ -167,7 +196,13 @@ impl HandleQuery {
             transport,
             socket,
             port,
+            online_receiver: rx_online,
         }
+    }
+
+    /// Check if FGTW connectivity status is available (non-blocking)
+    pub fn try_recv_online(&self) -> Option<bool> {
+        self.online_receiver.try_recv().ok()
     }
 
     /// Get the UDP port we're listening on
@@ -184,6 +219,11 @@ impl HandleQuery {
     pub fn set_transport(&self, t: Arc<FgtwTransport>) {
         let mut guard = self.transport.lock().unwrap();
         *guard = Some(t);
+    }
+
+    /// Get the transport (for peer lookup)
+    pub fn get_transport(&self) -> Option<Arc<FgtwTransport>> {
+        self.transport.lock().unwrap().clone()
     }
 
     /// Query a handle (non-blocking)
@@ -217,11 +257,11 @@ pub fn announce_handle(
     println!("Network: Announcing to {} peer(s)", peers.len());
 
     // Announce to all known peers
-    let handle_hash = handle.to_infohash();
+    let handle_proof = handle.to_handle_proof();
     for peer in peers.iter().take(10) {
         // Announce to first 10 peers
         let message = FgtwMessage::Announce {
-            handle_hash,
+            handle_proof,
             device_pubkey: handle.key.clone(),
             port,
         };

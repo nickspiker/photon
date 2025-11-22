@@ -6,10 +6,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const PEER_EXPIRY_SECONDS: f64 = 604800.0; // 7 days
 
 /// In-memory peer storage for FGTW
-/// Stores PeerRecords keyed by handle_hash
+/// Stores PeerRecords keyed by handle_proof
 /// Multiple devices per handle are supported (Vec<PeerRecord>)
 pub struct PeerStore {
-    /// Map: handle_hash -> list of devices for that handle
+    /// Map: handle_proof -> list of devices for that handle
     peers: HashMap<[u8; 32], Vec<PeerRecord>>,
 }
 
@@ -24,7 +24,7 @@ impl PeerStore {
     /// If device already exists for this handle, update it
     /// Otherwise add new device to the handle's device list
     pub fn add_peer(&mut self, peer: PeerRecord) {
-        let devices = self.peers.entry(peer.handle_hash).or_insert_with(Vec::new);
+        let devices = self.peers.entry(peer.handle_proof).or_insert_with(Vec::new);
 
         // Check if this device already exists
         if let Some(existing) = devices
@@ -39,11 +39,11 @@ impl PeerStore {
         }
     }
 
-    /// Get all devices for a specific handle hash
-    pub fn get_devices_for_handle(&self, handle_hash: &[u8; 32]) -> Vec<PeerRecord> {
+    /// Get all devices for a specific handle proof
+    pub fn get_devices_for_handle(&self, handle_proof: &[u8; 32]) -> Vec<PeerRecord> {
         let now = current_timestamp();
         self.peers
-            .get(handle_hash)
+            .get(handle_proof)
             .map(|devices| {
                 devices
                     .iter()
@@ -89,8 +89,8 @@ impl PeerStore {
     }
 
     /// Update last_seen for a specific device
-    pub fn update_peer_seen(&mut self, handle_hash: &[u8; 32], device_pubkey: &PublicIdentity) {
-        if let Some(devices) = self.peers.get_mut(handle_hash) {
+    pub fn update_peer_seen(&mut self, handle_proof: &[u8; 32], device_pubkey: &PublicIdentity) {
+        if let Some(devices) = self.peers.get_mut(handle_proof) {
             if let Some(peer) = devices
                 .iter_mut()
                 .find(|p| p.device_pubkey.as_bytes() == device_pubkey.as_bytes())
@@ -124,8 +124,10 @@ impl Default for PeerStore {
 }
 
 fn current_timestamp() -> f64 {
+    const EAGLE_TO_UNIX_OFFSET: f64 = 14182940.0;
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs_f64()
+        + EAGLE_TO_UNIX_OFFSET
 }
