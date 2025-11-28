@@ -1,0 +1,17 @@
+/target
+
+# Local files
+peers.vsf
+node_modules/
+android/keystore.properties
+
+# Android build artifacts
+android/.gradle/
+android/app/build/
+android/build/
+*.apk
+*.dex
+*.class
+
+# Desktop launcher (local only)
+*.desktop
