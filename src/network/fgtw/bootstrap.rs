@@ -1,4 +1,4 @@
-use super::{storage::Keypair, PeerRecord};
+use super::{identity::Keypair, PeerRecord};
 use vsf::{parse, schema::FromVsfType, VsfField, VsfHeader, VsfSection};
 
 const FGTW_URL: &str = "https://fgtw.org";
@@ -13,18 +13,14 @@ pub struct BootstrapResult {
 // FGTW Seed Public Keys (hardcoded to avoid extra queries)
 // X25519 public key - for encrypting announce messages
 pub const FGTW_X25519_PUBLIC_KEY: [u8; 32] = [
-    0x3D, 0x55, 0x63, 0xA3, 0x9C, 0xB4, 0x0F, 0x68,
-    0x0E, 0x20, 0x88, 0x76, 0xDC, 0x2E, 0x3E, 0x58,
-    0xC2, 0xFB, 0xF4, 0xA0, 0x37, 0x60, 0xB1, 0x25,
-    0x61, 0xC0, 0xAF, 0xE1, 0x12, 0xAD, 0xDD, 0x11,
+    0x3D, 0x55, 0x63, 0xA3, 0x9C, 0xB4, 0x0F, 0x68, 0x0E, 0x20, 0x88, 0x76, 0xDC, 0x2E, 0x3E, 0x58,
+    0xC2, 0xFB, 0xF4, 0xA0, 0x37, 0x60, 0xB1, 0x25, 0x61, 0xC0, 0xAF, 0xE1, 0x12, 0xAD, 0xDD, 0x11,
 ];
 
 // Ed25519 public key - for verifying challenge signatures
 pub const FGTW_ED25519_PUBLIC_KEY: [u8; 32] = [
-    0x6D, 0x9F, 0x6E, 0x73, 0xBF, 0xA4, 0x83, 0x11,
-    0x58, 0x63, 0x42, 0x7C, 0xC7, 0x50, 0x5D, 0xC4,
-    0x8F, 0xA7, 0x01, 0x6A, 0x60, 0xA6, 0xF4, 0x02,
-    0x05, 0xCA, 0x95, 0x0D, 0x9B, 0xF0, 0x58, 0x88,
+    0x6D, 0x9F, 0x6E, 0x73, 0xBF, 0xA4, 0x83, 0x11, 0x58, 0x63, 0x42, 0x7C, 0xC7, 0x50, 0x5D, 0xC4,
+    0x8F, 0xA7, 0x01, 0x6A, 0x60, 0xA6, 0xF4, 0x02, 0x05, 0xCA, 0x95, 0x0D, 0x9B, 0xF0, 0x58, 0x88,
 ];
 
 /// Try to parse a VSF error message from response bytes
@@ -106,7 +102,10 @@ pub async fn load_bootstrap_peers(
 ) -> BootstrapResult {
     match load_bootstrap_peers_inner(device_key, handle_proof, port, handle).await {
         Ok(peers) => BootstrapResult { peers, error: None },
-        Err(e) => BootstrapResult { peers: vec![], error: Some(e) },
+        Err(e) => BootstrapResult {
+            peers: vec![],
+            error: Some(e),
+        },
     }
 }
 
@@ -130,7 +129,10 @@ async fn load_bootstrap_peers_inner(
         .map_err(|e| format!("Failed to fetch challenge: {}", e))?;
 
     if !challenge_response.status().is_success() {
-        return Err(format!("Challenge HTTP error: {}", challenge_response.status()));
+        return Err(format!(
+            "Challenge HTTP error: {}",
+            challenge_response.status()
+        ));
     }
 
     let challenge_bytes = challenge_response
@@ -142,11 +144,18 @@ async fn load_bootstrap_peers_inner(
     let challenge_hash = parse_challenge_hash(&challenge_bytes)?;
 
     // Derive avatar keypair for authentication
-    let (_, avatar_verifying_key) = crate::avatar::derive_avatar_keypair(&device_key.secret, handle);
+    let (_, avatar_verifying_key) =
+        crate::avatar::derive_avatar_keypair(&device_key.secret, handle);
     let avatar_pub_key = Some(*avatar_verifying_key.as_bytes());
 
     // Build announce message with challenge response and avatar pubkey
-    let announce_bytes = build_announce_message(handle_proof, device_key, port, challenge_hash, avatar_pub_key)?;
+    let announce_bytes = build_announce_message(
+        handle_proof,
+        device_key,
+        port,
+        challenge_hash,
+        avatar_pub_key,
+    )?;
 
     // Send announce to FGTW
     let announce_response = client
@@ -176,7 +185,7 @@ async fn load_bootstrap_peers_inner(
     // Parse peer list
     let peers = parse_peer_list(&response_bytes, device_key)?;
 
-    eprintln!("FGTW: Received {} peer(s)", peers.len());
+    crate::log_info(&format!("FGTW: Received {} peer(s)", peers.len()));
 
     Ok(peers)
 }
@@ -196,7 +205,8 @@ fn parse_challenge_hash(bytes: &[u8]) -> Result<[u8; 32], String> {
     let _ = parse(bytes, &mut ptr).map_err(|e| format!("Parse timestamp: {}", e))?;
 
     // Extract provenance hash (hp) - this is what gets signed
-    let prov_hash_result = parse(bytes, &mut ptr).map_err(|e| format!("Parse provenance hash: {}", e))?;
+    let prov_hash_result =
+        parse(bytes, &mut ptr).map_err(|e| format!("Parse provenance hash: {}", e))?;
     let prov_hash_bytes = match &prov_hash_result {
         vsf::VsfType::hp(hash) => {
             if hash.len() != 32 {
@@ -225,17 +235,25 @@ fn parse_challenge_hash(bytes: &[u8]) -> Result<[u8; 32], String> {
     };
 
     if signature_bytes.len() != 64 {
-        return Err(format!("Invalid signature length: {} (expected 64)", signature_bytes.len()));
+        return Err(format!(
+            "Invalid signature length: {} (expected 64)",
+            signature_bytes.len()
+        ));
     }
 
     // Verify signature over provenance hash
     let verifying_key = VerifyingKey::from_bytes(&FGTW_ED25519_PUBLIC_KEY)
         .map_err(|e| format!("Invalid FGTW public key: {}", e))?;
 
-    let signature = Signature::from_bytes(signature_bytes.as_slice().try_into()
-        .map_err(|_| "Invalid signature bytes".to_string())?);
+    let signature = Signature::from_bytes(
+        signature_bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| "Invalid signature bytes".to_string())?,
+    );
 
-    verifying_key.verify(&prov_hash_bytes, &signature)
+    verifying_key
+        .verify(&prov_hash_bytes, &signature)
         .map_err(|_| "Challenge signature verification failed - not from authentic FGTW")?;
 
     // Return the provenance hash (which becomes the challenge value)
@@ -312,7 +330,10 @@ fn ed25519_secret_to_x25519(ed25519_secret: &[u8]) -> [u8; 32] {
 /// Decrypt data from FGTW using ephemeral X25519 + AES-256-GCM
 /// Format: [ephemeral_pubkey:32][nonce:12][ciphertext+tag]
 /// The device_key is Ed25519 but we derive X25519 for decryption
-fn decrypt_from_fgtw(ciphertext_with_header: &[u8], device_key: &Keypair) -> Result<Vec<u8>, String> {
+fn decrypt_from_fgtw(
+    ciphertext_with_header: &[u8],
+    device_key: &Keypair,
+) -> Result<Vec<u8>, String> {
     use aes_gcm::{
         aead::{Aead, KeyInit},
         Aes256Gcm, Nonce,
@@ -449,9 +470,7 @@ fn parse_peer_list(bytes: &[u8], device_key: &Keypair) -> Result<Vec<PeerRecord>
     // Response MUST be encrypted (v'e') - authentication required
     let first_type = parse(bytes, &mut ptr).map_err(|e| format!("Parse response type: {}", e))?;
     let plaintext_bytes = match &first_type {
-        vsf::VsfType::v(b'e', encrypted_data) => {
-            decrypt_from_fgtw(encrypted_data, device_key)?
-        }
+        vsf::VsfType::v(b'e', encrypted_data) => decrypt_from_fgtw(encrypted_data, device_key)?,
         _ => {
             return Err(format!(
                 "Invalid peer list: must be encrypted (v'e') for authentication, got {:?}",
@@ -463,11 +482,13 @@ fn parse_peer_list(bytes: &[u8], device_key: &Keypair) -> Result<Vec<PeerRecord>
     // The decrypted plaintext is now a complete VSF file with proper sections
 
     // Parse VSF header using the crate
-    let (header, _header_bytes) = VsfHeader::decode(&plaintext_bytes)
-        .map_err(|e| format!("Parse VSF header: {}", e))?;
+    let (header, _header_bytes) =
+        VsfHeader::decode(&plaintext_bytes).map_err(|e| format!("Parse VSF header: {}", e))?;
 
     // Find the "peers" section offset from header fields
-    let peers_offset = header.fields.iter()
+    let peers_offset = header
+        .fields
+        .iter()
         .find(|f| f.name == "peers")
         .map(|f| f.offset_bytes)
         .ok_or("Missing 'peers' section in header")?;
@@ -495,7 +516,10 @@ fn parse_peer_from_field(field: &vsf::VsfField) -> Result<PeerRecord, String> {
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
     if field.values.len() < 5 {
-        return Err(format!("Peer field needs 5 values, got {}", field.values.len()));
+        return Err(format!(
+            "Peer field needs 5 values, got {}",
+            field.values.len()
+        ));
     }
 
     // Parse handle_proof (hb{32})
@@ -525,7 +549,12 @@ fn parse_peer_from_field(field: &vsf::VsfField) -> Result<PeerRecord, String> {
     };
 
     let parsed_ip = if ip_bytes.len() == 4 {
-        IpAddr::V4(Ipv4Addr::new(ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3]))
+        IpAddr::V4(Ipv4Addr::new(
+            ip_bytes[0],
+            ip_bytes[1],
+            ip_bytes[2],
+            ip_bytes[3],
+        ))
     } else if ip_bytes.len() == 16 {
         let mut octets = [0u8; 16];
         octets.copy_from_slice(ip_bytes);
@@ -535,8 +564,7 @@ fn parse_peer_from_field(field: &vsf::VsfField) -> Result<PeerRecord, String> {
     };
 
     // Parse port (u3 or generic u)
-    let port = u16::from_vsf_type(&field.values[3])
-        .map_err(|e| format!("Invalid port: {}", e))?;
+    let port = u16::from_vsf_type(&field.values[3]).map_err(|e| format!("Invalid port: {}", e))?;
 
     // Parse timestamp (e with EtType::f6)
     let last_seen = match &field.values[4] {

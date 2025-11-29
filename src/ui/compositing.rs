@@ -397,6 +397,7 @@ impl PhotonApp {
                         match &self.search_result {
                             Some(SearchResult::Found(_)) => theme::GLOW_SUCCESS, // Green for found
                             Some(SearchResult::NotFound) => theme::GLOW_ERROR, // Red for not found
+                            Some(SearchResult::Error(_)) => theme::GLOW_ERROR, // Red for error
                             None => theme::GLOW_DEFAULT,                       // White default
                         }
                     };
@@ -426,6 +427,9 @@ impl PhotonApp {
                             }
                             SearchResult::NotFound => {
                                 ("not found".to_string(), theme::SEARCH_RESULT_NOT_FOUND)
+                            }
+                            SearchResult::Error(e) => {
+                                (format!("error: {}", e), theme::SEARCH_RESULT_NOT_FOUND)
                             }
                         };
                         self.text_renderer.draw_text_center_u32(

@@ -11,7 +11,10 @@ categories = ["cryptography", "network-programming"]
 
 [features]
 default = []
-skip-sig = []  # Skip binary signature verification
+skip-sig = []      # Skip binary signature verification
+logging = []       # Enable log_info/log_error output
+debug-keys = []    # Enable Ctrl+D/H/T debug shortcuts
+development = ["logging", "debug-keys"]  # All dev features
 
 [lib]
 # cdylib for Android JNI, rlib for desktop linking
@@ -40,9 +43,6 @@ zeroize = { version = "1.7", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = "0.28.0"
 serde = { version = "1.0", features = ["derive"] }
-
-# Storage
-rusqlite = { version = "0.37.0", features = ["bundled"] }
 
 # Utilities
 thiserror = "2.0.17"

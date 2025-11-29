@@ -8,6 +8,7 @@ import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.inputmethod.InputMethodManager
 import android.widget.FrameLayout
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -35,13 +36,38 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     private var keyboardVisible = false
 
     // Native methods
-    private external fun nativeInit(width: Int, height: Int, fingerprint: ByteArray): Long
+    private external fun nativeInit(width: Int, height: Int, fingerprint: ByteArray, dataDir: String): Long
     private external fun nativeDraw(contextPtr: Long, surface: android.view.Surface)
     private external fun nativeResize(contextPtr: Long, width: Int, height: Int)
-    private external fun nativeOnTouch(contextPtr: Long, action: Int, x: Float, y: Float): Int  // Returns: 1=show keyboard, -1=hide keyboard, 0=no change
+    private external fun nativeOnTouch(contextPtr: Long, action: Int, x: Float, y: Float): Int  // Returns: 1=show keyboard, -1=hide keyboard, 2=open image picker, 0=no change
     private external fun nativeOnTextInput(contextPtr: Long, text: String)  // Text from soft keyboard
     private external fun nativeOnKeyEvent(contextPtr: Long, keyCode: Int): Boolean  // Special keys (backspace, enter)
+    private external fun nativeSetAvatarFromFile(contextPtr: Long, fileBytes: ByteArray)  // Raw image file bytes (preserves ICC profile)
     private external fun nativeDestroy(contextPtr: Long)
+
+    // Image picker for avatar selection - passes RAW FILE BYTES to Rust
+    // We do NOT decode in Android because BitmapFactory destroys ICC profiles
+    // and mangles colors. Rust handles proper color management via XYZ.
+    private val imagePickerLauncher = registerForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri ->
+        uri?.let {
+            try {
+                contentResolver.openInputStream(it)?.use { stream ->
+                    val fileBytes = stream.readBytes()
+                    if (nativePtr != 0L && fileBytes.isNotEmpty()) {
+                        nativeSetAvatarFromFile(nativePtr, fileBytes)
+                    }
+                }
+            } catch (e: Exception) {
+                // Silently fail - Rust will log if needed
+            }
+        }
+    }
+
+    private fun openImagePicker() {
+        imagePickerLauncher.launch("image/*")
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -84,6 +110,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
                     when (keyboardAction) {
                         1 -> showKeyboard()
                         -1 -> hideKeyboard()
+                        2 -> openImagePicker()
                     }
                 }
             }
@@ -125,7 +152,8 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
             nativePtr = nativeInit(
                 holder.surfaceFrame.width(),
                 holder.surfaceFrame.height(),
-                fingerprintResult!!.fingerprint
+                fingerprintResult!!.fingerprint,
+                filesDir.absolutePath
             )
 
             if (nativePtr != 0L) {

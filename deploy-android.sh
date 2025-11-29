@@ -1,4 +1,5 @@
 #!/bin/bash
+set -eo pipefail  # Exit on error, including pipe failures
 
 # Clean up any Android heap dump files
 find . -name "*.hprof" -type f -delete 2>/dev/null || true
@@ -60,12 +61,17 @@ export CC="clang"
 export CXX="clang++"
 
 echo "Building Photon for Android (arm64)..."
-cargo build --release --lib --target aarch64-linux-android
+cargo build --features development --lib --target aarch64-linux-android
 
 # Copy to Android project jniLibs
 echo "Copying .so to Android project..."
 mkdir -p android/app/src/main/jniLibs/arm64-v8a
-cp target/aarch64-linux-android/release/libphoton_messenger.so android/app/src/main/jniLibs/arm64-v8a/
+SO_FILE="target/aarch64-linux-android/debug/libphoton_messenger.so"
+if [ ! -f "$SO_FILE" ]; then
+    echo "ERROR: Build failed - $SO_FILE not found"
+    exit 1
+fi
+cp "$SO_FILE" android/app/src/main/jniLibs/arm64-v8a/
 
 echo "Building APK with Gradle..."
 cd android

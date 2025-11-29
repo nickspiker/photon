@@ -8,7 +8,8 @@
 //! - Signature covers the provenance_hash
 //! - Timestamp uses nanosecond precision (ef6) for uniqueness
 
-use crate::network::fgtw::{load_or_generate_device_key, FgtwMessage, FgtwPaths};
+use crate::network::fgtw::FgtwMessage;
+use crate::network::fgtw::Keypair;
 use crate::types::PublicIdentity;
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -69,22 +70,36 @@ impl StatusChecker {
     /// Create a new status checker using a shared socket
     ///
     /// `socket` is the shared UDP socket from HandleQuery (same port announced to FGTW).
+    /// `keypair` is the device keypair (same one used for FGTW registration).
     /// `contacts` is shared with UI - only respond to pings from pubkeys in this list.
-    pub fn new(socket: Arc<UdpSocket>, contacts: ContactPubkeys) -> Result<Self, String> {
+    pub fn new(
+        socket: Arc<UdpSocket>,
+        keypair: Keypair,
+        contacts: ContactPubkeys,
+    ) -> Result<Self, String> {
         let (ping_tx, ping_rx) = channel::<PingRequest>();
         let (status_tx, status_rx) = channel::<StatusUpdate>();
 
-        let paths = FgtwPaths::new().map_err(|e| format!("Failed to get paths: {}", e))?;
-        let keypair = load_or_generate_device_key(&paths.device_key)
-            .map_err(|e| format!("Failed to load device key: {}", e))?;
         let our_pubkey = PublicIdentity::from_bytes(keypair.public.to_bytes());
 
         // Note: Avatar is no longer exchanged in ping/pong
         // Contacts fetch avatar by handle: storage key = BLAKE3(BLAKE3(handle) || "avatar")
 
-        socket.set_nonblocking(true).map_err(|e| format!("Failed to set non-blocking: {}", e))?;
+        // Log which port we're using
+        let local_addr = socket
+            .local_addr()
+            .map_err(|e| format!("Failed to get local addr: {}", e))?;
+        crate::log_info(&format!(
+            "Status: Using socket on port {}",
+            local_addr.port()
+        ));
+
+        socket
+            .set_nonblocking(true)
+            .map_err(|e| format!("Failed to set non-blocking: {}", e))?;
 
         thread::spawn(move || {
+            crate::log_info("Status: Background thread started");
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -118,7 +133,7 @@ impl StatusChecker {
 /// Main checker loop running in tokio
 async fn run_checker(
     std_socket: Arc<UdpSocket>,
-    keypair: crate::network::fgtw::storage::Keypair,
+    keypair: crate::network::fgtw::Keypair,
     our_pubkey: PublicIdentity,
     ping_rx: Receiver<PingRequest>,
     status_tx: Sender<StatusUpdate>,
@@ -128,12 +143,18 @@ async fn run_checker(
 
     let cloned = match std_socket.try_clone() {
         Ok(s) => s,
-        Err(_) => return,
+        Err(e) => {
+            crate::log_error(&format!("Status: Failed to clone socket: {}", e));
+            return;
+        }
     };
 
     let socket = match TokioUdpSocket::from_std(cloned) {
         Ok(s) => Arc::new(s),
-        Err(_) => return,
+        Err(e) => {
+            crate::log_error(&format!("Status: Failed to convert to tokio socket: {}", e));
+            return;
+        }
     };
 
     // Pending pings - just a Vec, ~10 contacts max
@@ -148,132 +169,165 @@ async fn run_checker(
 
     // Spawn receiver task
     tokio::spawn(async move {
+        crate::log_info("Status: Receiver task started, waiting for UDP packets...");
         let mut buf = [0u8; 2048];
         loop {
             match socket_recv.recv_from(&mut buf).await {
                 Ok((len, src_addr)) => {
                     let msg_bytes = &buf[..len];
-                    println!("Status: UDP received {} bytes from {}", len, src_addr);
+                    crate::log_info(&format!(
+                        "Status: UDP received {} bytes from {}",
+                        len, src_addr
+                    ));
                     // Save received message for vsfinfo inspection
                     let _ = std::fs::write("/tmp/photon-received.vsf", msg_bytes);
                     match FgtwMessage::from_vsf_bytes(msg_bytes) {
                         Ok(message) => {
-                        match message {
-                            FgtwMessage::StatusPing {
-                                timestamp,
-                                sender_pubkey,
-                                provenance_hash,
-                                signature,
-                            } => {
-                                println!("Status: PING received from {} ({})",
-                                    src_addr,
-                                    hex::encode(&sender_pubkey.as_bytes()[..8]));
-                                println!("  timestamp: {:.6}", timestamp);
-                                println!("  provenance: {}", hex::encode(&provenance_hash[..16]));
-                                println!("  signature: {}...", hex::encode(&signature[..16]));
-
-                                // Only respond to contacts (friends only)
-                                let is_contact = {
-                                    let list = contacts_recv.lock().unwrap();
-                                    list.iter().any(|p| *p == sender_pubkey)
-                                };
-                                if !is_contact {
-                                    println!("  -> IGNORED (not in contacts)");
-                                    continue;
-                                }
-
-                                // Verify signature
-                                if !verify_provenance_signature(
-                                    &provenance_hash,
-                                    &sender_pubkey,
-                                    &signature,
-                                ) {
-                                    println!("  -> REJECTED (bad signature)");
-                                    continue;
-                                }
-
-                                // Send pong (no avatar_id - avatars are fetched by handle)
-                                let sig = keypair_recv.sign(&provenance_hash);
-                                let mut sig_bytes = [0u8; 64];
-                                sig_bytes.copy_from_slice(&sig.to_bytes());
-
-                                let pong = FgtwMessage::StatusPong {
-                                    timestamp: eagle_time_nanos(),
-                                    responder_pubkey: our_pubkey_recv.clone(),
+                            match message {
+                                FgtwMessage::StatusPing {
+                                    timestamp,
+                                    sender_pubkey,
                                     provenance_hash,
-                                    signature: sig_bytes,
-                                };
+                                    signature,
+                                } => {
+                                    crate::log_info(&format!(
+                                        "Status: PING received from {} ({})",
+                                        src_addr,
+                                        hex::encode(&sender_pubkey.as_bytes()[..8])
+                                    ));
+                                    crate::log_info(&format!("  timestamp: {:.6}", timestamp));
+                                    crate::log_info(&format!(
+                                        "  provenance: {}",
+                                        hex::encode(&provenance_hash[..16])
+                                    ));
+                                    crate::log_info(&format!(
+                                        "  signature: {}...",
+                                        hex::encode(&signature[..16])
+                                    ));
 
-                                let pong_bytes = pong.to_vsf_bytes();
-                                if !pong_bytes.is_empty() {
-                                    println!("  -> PONG sent ({} bytes)", pong_bytes.len());
-                                    // Save to file for vsfinfo inspection
-                                    let _ = std::fs::write("/tmp/photon-pong-sent.vsf", &pong_bytes);
-                                    let _ = socket_recv.send_to(&pong_bytes, src_addr).await;
-                                }
-                            }
-
-                            FgtwMessage::StatusPong {
-                                timestamp,
-                                responder_pubkey,
-                                provenance_hash,
-                                signature,
-                            } => {
-                                println!("Status: PONG received from {} ({})",
-                                    src_addr,
-                                    hex::encode(&responder_pubkey.as_bytes()[..8]));
-                                println!("  timestamp: {:.6}", timestamp);
-                                println!("  provenance: {}", hex::encode(&provenance_hash[..16]));
-                                println!("  signature: {}...", hex::encode(&signature[..16]));
-
-                                // Find and remove matching pending ping
-                                let pending_ping = {
-                                    let mut list = pending_recv.lock().unwrap();
-                                    if let Some(idx) = list.iter().position(|p| p.provenance_hash == provenance_hash) {
-                                        Some(list.swap_remove(idx))
-                                    } else {
-                                        None
-                                    }
-                                };
-
-                                let pending_ping = match pending_ping {
-                                    Some(p) => p,
-                                    None => {
-                                        println!("  -> IGNORED (no matching pending ping)");
+                                    // Only respond to contacts (friends only)
+                                    let is_contact = {
+                                        let list = contacts_recv.lock().unwrap();
+                                        list.iter().any(|p| *p == sender_pubkey)
+                                    };
+                                    if !is_contact {
+                                        crate::log_info("  -> IGNORED (not in contacts)");
                                         continue;
                                     }
-                                };
 
-                                // Verify responder matches who we pinged
-                                if responder_pubkey != pending_ping.recipient_pubkey {
-                                    println!("  -> REJECTED (responder mismatch)");
-                                    continue;
+                                    // Verify signature
+                                    if !verify_provenance_signature(
+                                        &provenance_hash,
+                                        &sender_pubkey,
+                                        &signature,
+                                    ) {
+                                        crate::log_info("  -> REJECTED (bad signature)");
+                                        continue;
+                                    }
+
+                                    // Send pong (no avatar_id - avatars are fetched by handle)
+                                    let sig = keypair_recv.sign(&provenance_hash);
+                                    let mut sig_bytes = [0u8; 64];
+                                    sig_bytes.copy_from_slice(&sig.to_bytes());
+
+                                    let pong = FgtwMessage::StatusPong {
+                                        timestamp: eagle_time_nanos(),
+                                        responder_pubkey: our_pubkey_recv.clone(),
+                                        provenance_hash,
+                                        signature: sig_bytes,
+                                    };
+
+                                    let pong_bytes = pong.to_vsf_bytes();
+                                    if !pong_bytes.is_empty() {
+                                        crate::log_info(&format!(
+                                            "  -> PONG sent ({} bytes)",
+                                            pong_bytes.len()
+                                        ));
+                                        // Save to file for vsfinfo inspection
+                                        let _ = std::fs::write(
+                                            "/tmp/photon-pong-sent.vsf",
+                                            &pong_bytes,
+                                        );
+                                        let _ = socket_recv.send_to(&pong_bytes, src_addr).await;
+                                    }
                                 }
 
-                                // Verify signature
-                                if !verify_provenance_signature(
-                                    &provenance_hash,
-                                    &responder_pubkey,
-                                    &signature,
-                                ) {
-                                    println!("  -> REJECTED (bad signature)");
-                                    continue;
+                                FgtwMessage::StatusPong {
+                                    timestamp,
+                                    responder_pubkey,
+                                    provenance_hash,
+                                    signature,
+                                } => {
+                                    crate::log_info(&format!(
+                                        "Status: PONG received from {} ({})",
+                                        src_addr,
+                                        hex::encode(&responder_pubkey.as_bytes()[..8])
+                                    ));
+                                    crate::log_info(&format!("  timestamp: {:.6}", timestamp));
+                                    crate::log_info(&format!(
+                                        "  provenance: {}",
+                                        hex::encode(&provenance_hash[..16])
+                                    ));
+                                    crate::log_info(&format!(
+                                        "  signature: {}...",
+                                        hex::encode(&signature[..16])
+                                    ));
+
+                                    // Find and remove matching pending ping
+                                    let pending_ping = {
+                                        let mut list = pending_recv.lock().unwrap();
+                                        if let Some(idx) = list
+                                            .iter()
+                                            .position(|p| p.provenance_hash == provenance_hash)
+                                        {
+                                            Some(list.swap_remove(idx))
+                                        } else {
+                                            None
+                                        }
+                                    };
+
+                                    let pending_ping = match pending_ping {
+                                        Some(p) => p,
+                                        None => {
+                                            crate::log_info(
+                                                "  -> IGNORED (no matching pending ping)",
+                                            );
+                                            continue;
+                                        }
+                                    };
+
+                                    // Verify responder matches who we pinged
+                                    if responder_pubkey != pending_ping.recipient_pubkey {
+                                        crate::log_info("  -> REJECTED (responder mismatch)");
+                                        continue;
+                                    }
+
+                                    // Verify signature
+                                    if !verify_provenance_signature(
+                                        &provenance_hash,
+                                        &responder_pubkey,
+                                        &signature,
+                                    ) {
+                                        crate::log_info("  -> REJECTED (bad signature)");
+                                        continue;
+                                    }
+
+                                    crate::log_info("  -> ONLINE confirmed!");
+
+                                    // Send status update (avatar fetched by handle, not in ping/pong)
+                                    let _ = status_tx_recv.send(StatusUpdate {
+                                        peer_pubkey: responder_pubkey,
+                                        is_online: true,
+                                    });
                                 }
 
-                                println!("  -> ONLINE confirmed!");
-
-                                // Send status update (avatar fetched by handle, not in ping/pong)
-                                let _ = status_tx_recv.send(StatusUpdate {
-                                    peer_pubkey: responder_pubkey,
-                                    is_online: true,
-                                });
+                                _ => {
+                                    crate::log_info("Status: Unknown message type received");
+                                }
                             }
-
-                            _ => {}
-                        }
                         }
                         Err(e) => {
-                            println!("Status: Parse error: {}", e);
+                            crate::log_info(&format!("Status: Parse error: {}", e));
                         }
                     }
                 }
@@ -303,14 +357,19 @@ async fn run_checker(
 
                 let msg_bytes = ping.to_vsf_bytes();
                 if msg_bytes.is_empty() {
-                    println!("Status: PING build failed for {}", request.peer_addr);
+                    crate::log_info(&format!(
+                        "Status: PING build failed for {}",
+                        request.peer_addr
+                    ));
                     continue;
                 }
 
-                println!("Status: PING sent to {} ({}) - {} bytes",
+                crate::log_info(&format!(
+                    "Status: PING sent to {} ({}) - {} bytes",
                     request.peer_addr,
                     hex::encode(&request.peer_pubkey.as_bytes()[..8]),
-                    msg_bytes.len());
+                    msg_bytes.len()
+                ));
 
                 // Save to file for vsfinfo inspection
                 let _ = std::fs::write("/tmp/photon-ping.vsf", &msg_bytes);
@@ -340,13 +399,17 @@ async fn run_checker(
             let timeout = Duration::from_secs(5);
 
             // Find expired pings and send offline status for each
-            let expired: Vec<_> = list.iter()
+            let expired: Vec<_> = list
+                .iter()
                 .filter(|ping| now.duration_since(ping.sent_at) >= timeout)
                 .map(|ping| ping.recipient_pubkey.clone())
                 .collect();
 
             for pubkey in expired {
-                println!("Status: TIMEOUT - {} marked offline", hex::encode(&pubkey.as_bytes()[..8]));
+                crate::log_info(&format!(
+                    "Status: TIMEOUT - {} marked offline",
+                    hex::encode(&pubkey.as_bytes()[..8])
+                ));
                 let _ = status_tx.send(StatusUpdate {
                     peer_pubkey: pubkey,
                     is_online: false,

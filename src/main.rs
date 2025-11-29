@@ -1,8 +1,7 @@
 // Hide console window on Windows
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
-mod self_verify;
-
+use photon_messenger::crypto::self_verify;
 use photon_messenger::debug_println;
 use photon_messenger::ui::{PhotonApp, PhotonEvent};
 
@@ -79,31 +78,15 @@ impl ApplicationHandler<PhotonEvent> for App {
                     }
                 }
 
-                #[cfg(target_os = "windows")]
-                {
-                    let app = PhotonApp::new(
-                        window,
-                        self.blinkey_blink_rate_ms,
-                        target_frame_duration_ms,
-                        self.event_proxy.clone(),
-                    );
-                    self.photon_app = Some(app);
-                    // Trigger redraw with correct fullscreen state
-                    window.request_redraw();
-                }
-
-                #[cfg(target_os = "linux")]
-                {
-                    let app = pollster::block_on(PhotonApp::new(
-                        window,
-                        self.blinkey_blink_rate_ms,
-                        target_frame_duration_ms,
-                        self.event_proxy.clone(),
-                    ));
-                    self.photon_app = Some(app);
-                    // Trigger redraw with correct fullscreen state
-                    window.request_redraw();
-                }
+                // Unified app creation for all desktop platforms
+                let app = PhotonApp::new(
+                    window,
+                    self.blinkey_blink_rate_ms,
+                    target_frame_duration_ms,
+                    self.event_proxy.clone(),
+                );
+                self.photon_app = Some(app);
+                window.request_redraw();
             }
         }
     }
@@ -464,9 +447,7 @@ fn main() {
         }
     }
 
-    let event_loop = EventLoop::<PhotonEvent>::with_user_event()
-        .build()
-        .unwrap();
+    let event_loop = EventLoop::<PhotonEvent>::with_user_event().build().unwrap();
     let event_proxy = event_loop.create_proxy();
     let blinkey_blink_rate = get_system_blinkey_blink_rate();
     let mut app = App {

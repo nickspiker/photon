@@ -52,10 +52,15 @@ fi
 # Make it executable
 chmod +x "$TMP_BINARY"
 
+# Remove quarantine flag on macOS
+if [ "$PLATFORM" = "macos" ]; then
+    xattr -d com.apple.quarantine "$TMP_BINARY" 2>/dev/null || true
+fi
+
 # Run binary once to self-verify signature
 # (Binary will verify Ed25519 signature on startup and exit if invalid)
 echo "Verifying signature..."
-if ! "$TMP_BINARY" --version >/dev/null 2>&1; then
+if ! "$TMP_BINARY" --verify >/dev/null 2>&1; then
     echo "Error: Binary signature verification failed."
     echo "The downloaded file may be corrupted or tampered with."
     rm -f "$TMP_BINARY"

@@ -14,7 +14,8 @@ use winit::{
 impl PhotonApp {
     pub fn handle_keyboard(&mut self, event: KeyEvent) {
         if event.state == ElementState::Pressed {
-            // Toggle debug visualizations with Ctrl shortcuts
+            // Toggle debug visualizations with Ctrl shortcuts (development builds only)
+            #[cfg(feature = "debug-keys")]
             if self.modifiers.control_key() {
                 if let Key::Character(ref c) = event.logical_key {
                     // Ctrl+D: Toggle debug mode (counters + debug_println!)
@@ -50,7 +51,12 @@ impl PhotonApp {
                         self.window_dirty = true; // Force redraw to show visualization
                         return; // Don't process as regular input
                     }
+                }
+            }
 
+            // Clipboard and text editing Ctrl shortcuts
+            if self.modifiers.control_key() {
+                if let Key::Character(ref c) = event.logical_key {
                     // Only process clipboard shortcuts if textbox is focused
                     if self.current_text_state.textbox_focused {
                         // Ctrl+A: Select all

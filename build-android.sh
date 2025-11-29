@@ -29,11 +29,18 @@ export PHOTON_KEY_ALIAS="$KEY_ALIAS"
 # Set up Android NDK environment
 export ANDROID_NDK_HOME=/home/nick/android-sdk/ndk/25.2.9519653
 export ANDROID_HOME=/home/nick/android-sdk
-export PATH=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
+NDK_BIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin
+export PATH=$NDK_BIN:$PATH
+
+# Create symlinks for ring crate (expects aarch64-linux-android-clang without API suffix)
+if [ ! -f "$NDK_BIN/aarch64-linux-android-clang" ]; then
+    ln -sf aarch64-linux-android21-clang "$NDK_BIN/aarch64-linux-android-clang"
+    ln -sf aarch64-linux-android21-clang++ "$NDK_BIN/aarch64-linux-android-clang++"
+fi
 
 # Android target environment (ARM64 only)
-export CC_aarch64_linux_android=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang
-export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang
+export CC_aarch64_linux_android=$NDK_BIN/aarch64-linux-android21-clang
+export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$NDK_BIN/aarch64-linux-android21-clang
 
 # Host build flags for build scripts (build.rs)
 export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER="clang"

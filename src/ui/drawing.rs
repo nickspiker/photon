@@ -38,7 +38,15 @@ pub fn draw_background_texture(
     rows.par_chunks_mut(width)
         .enumerate()
         .for_each(|(row_idx, row_pixels)| {
-            draw_background_row(row_pixels, width, row_start + row_idx, height, x_start, x_end, speckle);
+            draw_background_row(
+                row_pixels,
+                width,
+                row_start + row_idx,
+                height,
+                x_start,
+                x_end,
+                speckle,
+            );
         });
 }
 

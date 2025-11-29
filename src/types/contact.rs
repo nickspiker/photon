@@ -6,9 +6,9 @@ use std::net::SocketAddr;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub content: String,
-    pub timestamp: u64,      // Eagle time (seconds since Apollo 11 landing)
-    pub is_outgoing: bool,   // true = we sent it, false = they sent it
-    pub delivered: bool,     // true = confirmed delivered to recipient
+    pub timestamp: u64,    // Eagle time (seconds since Apollo 11 landing)
+    pub is_outgoing: bool, // true = we sent it, false = they sent it
+    pub delivered: bool,   // true = confirmed delivered to recipient
 }
 
 impl ChatMessage {
@@ -59,26 +59,26 @@ pub struct Contact {
     pub trust_level: TrustLevel,
     pub added_timestamp: u64,
     pub last_seen: Option<u64>,
-    pub is_online: bool,      // True when we have confirmed bidirectional comms
+    pub is_online: bool, // True when we have confirmed bidirectional comms
     pub messages: Vec<ChatMessage>, // Conversation history
     #[serde(skip)]
     pub prev_is_online: bool, // For differential rendering (not persisted)
     #[serde(skip)]
-    pub indicator_x: usize,   // Cached indicator dot X position (set during draw)
+    pub indicator_x: usize, // Cached indicator dot X position (set during draw)
     #[serde(skip)]
-    pub indicator_y: usize,   // Cached indicator dot Y position (set during draw)
+    pub indicator_y: usize, // Cached indicator dot Y position (set during draw)
     #[serde(skip)]
-    pub text_x: f32,          // Cached text X position (set during draw)
+    pub text_x: f32, // Cached text X position (set during draw)
     #[serde(skip)]
-    pub text_y: f32,          // Cached text Y position (set during draw)
+    pub text_y: f32, // Cached text Y position (set during draw)
     // Avatar cache - fetched from FGTW by handle
     // Storage key is deterministic: BLAKE3(BLAKE3(handle) || "avatar")
     #[serde(skip)]
-    pub avatar_pixels: Option<Vec<u8>>,      // Full 256x256 VSF RGB pixels (cached)
+    pub avatar_pixels: Option<Vec<u8>>, // Full 256x256 VSF RGB pixels (cached)
     #[serde(skip)]
-    pub avatar_scaled: Option<Vec<u8>>,      // Pre-scaled to current display size
+    pub avatar_scaled: Option<Vec<u8>>, // Pre-scaled to current display size
     #[serde(skip)]
-    pub avatar_scaled_diameter: usize,       // Diameter the scaled pixels were rendered for
+    pub avatar_scaled_diameter: usize, // Diameter the scaled pixels were rendered for
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]

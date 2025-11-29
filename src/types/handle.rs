@@ -65,8 +65,14 @@ mod tests {
         println!("Proof 2: {}", hex::encode(&proof2));
         println!("Proof 3: {}", hex::encode(&proof3));
 
-        assert_eq!(proof1, proof2, "Proof should be deterministic between calls");
-        assert_eq!(proof2, proof3, "Proof should be deterministic between calls");
+        assert_eq!(
+            proof1, proof2,
+            "Proof should be deterministic between calls"
+        );
+        assert_eq!(
+            proof2, proof3,
+            "Proof should be deterministic between calls"
+        );
     }
 
     #[test]

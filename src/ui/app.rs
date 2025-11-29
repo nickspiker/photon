@@ -3,11 +3,13 @@ use super::text_rasterizing::TextRenderer;
 use super::theme;
 #[cfg(not(target_os = "android"))]
 use super::PhotonEvent;
-#[cfg(not(target_os = "android"))]
-use crate::network::{HandleQuery, QueryResult, StatusChecker};
+use crate::network::StatusChecker;
+use crate::network::{HandleQuery, QueryResult};
 use crate::types::{Contact, HandleText};
 #[cfg(not(target_os = "android"))]
-use winit::{dpi::PhysicalSize, event_loop::EventLoopProxy, keyboard::ModifiersState, window::Window};
+use winit::{
+    dpi::PhysicalSize, event_loop::EventLoopProxy, keyboard::ModifiersState, window::Window,
+};
 
 /// Cross-platform keyboard modifier state
 #[cfg(target_os = "android")]
@@ -143,6 +145,7 @@ pub struct FoundPeer {
 pub enum SearchResult {
     Found(FoundPeer),
     NotFound,
+    Error(String),
 }
 
 impl Default for AppState {
@@ -187,22 +190,20 @@ pub struct PhotonApp {
     pub blinkey_pixel_x: usize,     // Cursor x position in pixels
     pub blinkey_pixel_y: usize,     // Cursor y position in pixels
     pub next_blinkey_blink_time: std::time::Instant, // When next blinkey blink should happen
-    pub app_state: AppState,         // Application lifecycle state
+    pub app_state: AppState,        // Application lifecycle state
     pub query_start_time: Option<std::time::Instant>, // When handle query started (for 1s simulation)
-    #[cfg(not(target_os = "android"))]
-    pub handle_query: HandleQuery,                    // Network query system for handle attestation
+    pub handle_query: Option<HandleQuery>,            // Network query system for handle attestation
     pub fgtw_online: bool,                            // True if FGTW server is reachable
     pub prev_fgtw_online: bool,                       // Previous state for differential rendering
-    pub hint_was_shown: bool,                         // Track if network hint was shown (for cleanup)
-    pub search_result: Option<SearchResult>,          // Result of handle search
-    #[cfg(not(target_os = "android"))]
+    pub hint_was_shown: bool, // Track if network hint was shown (for cleanup)
+    pub search_result: Option<SearchResult>, // Result of handle search
     pub search_receiver: Option<std::sync::mpsc::Receiver<SearchResult>>, // Async search result
-    pub searching_handle: Option<String>,             // Handle being searched (for display)
-    pub glow_colour: u32,                              // Current textbox glow colour (0x00RRGGBB)
-    pub spectrum_phase: f32, // Rainbow sine wave phase (radians), animates during query
+    pub searching_handle: Option<String>, // Handle being searched (for display)
+    pub glow_colour: u32,     // Current textbox glow colour (0x00RRGGBB)
+    pub spectrum_phase: f32,  // Rainbow sine wave phase (radians), animates during query
     pub speckle_counter: f32, // Background speckle animation counter, animates during query
     pub last_frame_time: std::time::Instant, // Last frame timestamp for delta time calculation
-    pub fps: f32,            // Current frames per second
+    pub fps: f32,             // Current frames per second
     pub frame_times: Vec<f32>, // Recent frame delta times for FPS averaging
     pub target_frame_duration_ms: u64, // Target frame duration based on monitor refresh rate
     pub next_animation_frame: std::time::Instant, // When next animation frame should be drawn
@@ -248,7 +249,6 @@ pub struct PhotonApp {
     // Contacts list (handles we've searched and found)
     pub contacts: Vec<Contact>,
     // Shared pubkey list for StatusChecker (synced with contacts)
-    #[cfg(not(target_os = "android"))]
     pub contact_pubkeys: crate::network::status::ContactPubkeys,
     // Currently hovered contact index (None if not hovering any)
     pub hovered_contact: Option<usize>,
@@ -257,15 +257,12 @@ pub struct PhotonApp {
     pub selected_contact: Option<usize>,
 
     // P2P status checker for contact online status
-    #[cfg(not(target_os = "android"))]
     pub status_checker: Option<StatusChecker>,
-    #[cfg(not(target_os = "android"))]
     pub next_status_ping: std::time::Instant, // When to ping contacts next
 
     // Periodic FGTW refresh
-    #[cfg(not(target_os = "android"))]
     pub next_fgtw_refresh: std::time::Instant, // When to re-announce to FGTW
-    pub attesting_handle: Option<String>,       // Handle being attested (for storing handle_proof)
+    pub attesting_handle: Option<String>,      // Handle being attested (for storing handle_proof)
 
     // User avatar and identity
     pub avatar_pixels: Option<Vec<u8>>, // Decoded VSF RGB pixels (AVATAR_SIZE x AVATAR_SIZE x 3)
@@ -276,10 +273,11 @@ pub struct PhotonApp {
     pub file_hovering_avatar: bool,     // Track if file is being dragged over avatar
 
     // Contact avatar fetching (background thread)
-    #[cfg(not(target_os = "android"))]
     pub contact_avatar_rx: std::sync::mpsc::Receiver<crate::avatar::AvatarDownloadResult>,
-    #[cfg(not(target_os = "android"))]
     pub contact_avatar_tx: std::sync::mpsc::Sender<crate::avatar::AvatarDownloadResult>,
+
+    // Device keypair for signing (needed by StatusChecker)
+    pub device_keypair: crate::network::fgtw::Keypair,
 }
 
 // Hit test element IDs
@@ -320,142 +318,14 @@ pub enum ResizeEdge {
 }
 
 impl PhotonApp {
-    #[cfg(target_os = "linux")]
-    pub async fn new(
+    /// Desktop constructor (Linux + Windows)
+    #[cfg(not(target_os = "android"))]
+    pub fn new(
         window: &Window,
         blinkey_blink_rate_ms: u64,
         target_frame_duration_ms: u64,
         event_proxy: EventLoopProxy<PhotonEvent>,
     ) -> Self {
-        let size = window.inner_size();
-        let renderer = Renderer::new(window, size.width, size.height).await;
-        let text_renderer = TextRenderer::new();
-
-        // Check initial fullscreen/maximized state
-        let is_fullscreen = window.fullscreen().is_some() || window.is_maximized();
-
-        let w = size.width as usize;
-        let h = size.height as usize;
-
-        // Avatar is loaded after attestation when we have a handle
-        // (the storage key is derived from handle)
-        let avatar_pixels: Option<Vec<u8>> = None;
-
-        // Create channel for background avatar downloads
-        let (contact_avatar_tx, contact_avatar_rx) = std::sync::mpsc::channel();
-
-        let app = Self {
-            renderer,
-            text_renderer,
-            width: size.width,
-            height: size.height,
-            window_dirty: true,
-            selection_dirty: false,
-            text_dirty: false,
-            controls_dirty: false,
-            min_dim: w.min(h),
-            perimeter: w + h,
-            diagonal_sq: w * w + h * h,
-            blinkey_blink_rate_ms,
-            blinkey_visible: false,
-            is_mouse_selecting: false,
-            blinkey_wave_top_bright: false,
-            blinkey_pixel_x: 0,
-            blinkey_pixel_y: 0,
-            next_blinkey_blink_time: std::time::Instant::now(),
-            app_state: {
-                // Determine initial state based on whether device key exists
-                // Device key = random Ed25519, stored unencrypted
-                // Handle hash = BLAKE3(Argon2(handle)), computed on-the-fly, never stored
-                use crate::network::fgtw::FgtwPaths;
-                let paths = FgtwPaths::new().expect("Failed to get FGTW paths");
-                if paths.device_key.exists() {
-                    // Returning user - device key exists, need handle to verify with FGTW
-                    AppState::Launch(LaunchState::Fresh)
-                } else {
-                    // Fresh install - no device key yet
-                    AppState::Launch(LaunchState::Fresh)
-                }
-            },
-            query_start_time: None,
-            handle_query: {
-                use crate::network::fgtw::{load_or_generate_device_key, FgtwPaths, FgtwTransport};
-                let paths = FgtwPaths::new().expect("Failed to get FGTW paths");
-                let device_keypair = load_or_generate_device_key(&paths.device_key)
-                    .expect("Failed to load/generate device key");
-
-                let our_identity = crate::types::PublicIdentity::from_bytes(
-                    *device_keypair.public.as_bytes(),
-                );
-
-                let handle_query = HandleQuery::new(our_identity.clone(), event_proxy.clone());
-                let transport = std::sync::Arc::new(FgtwTransport::new(our_identity, 41641));
-                handle_query.set_transport(transport);
-
-                handle_query
-            },
-            fgtw_online: false, // Updated by connectivity check
-            prev_fgtw_online: false,
-            hint_was_shown: false,
-            search_result: None,
-            search_receiver: None,
-            searching_handle: None,
-            glow_colour: theme::GLOW_DEFAULT, // White glow by default
-            spectrum_phase: 0.0,
-            speckle_counter: 0.0,
-            last_frame_time: std::time::Instant::now(),
-            fps: 0.0,
-            frame_times: Vec::with_capacity(60),
-            target_frame_duration_ms,
-            next_animation_frame: std::time::Instant::now(),
-            current_text_state: TextState::new(),
-            previous_text_state: TextState::new(),
-            textbox_mask: vec![0; (size.width * size.height) as usize],
-            show_textbox_mask: false,
-            frame_counter: 0,
-            update_counter: 0,
-            redraw_counter: 0,
-            mouse_x: 0.,
-            mouse_y: 0.,
-            mouse_button_pressed: false,
-            is_dragging_resize: false,
-            is_dragging_move: false,
-            resize_edge: ResizeEdge::None,
-            drag_start_blinkey_screen_pos: (0., 0.),
-            drag_start_size: (0, 0),
-            drag_start_window_pos: (0, 0),
-            modifiers: ModifiersState::empty(),
-            hovered_button: HoveredButton::None,
-            prev_hovered_button: HoveredButton::None,
-            selection_last_update_time: None,
-            hit_test_map: vec![0; (size.width * size.height) as usize],
-            debug_hit_test: false,
-            debug_hit_colours: Vec::new(),
-            debug: false,
-            is_fullscreen,
-            contacts: Vec::new(),
-            contact_pubkeys: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
-            hovered_contact: None,
-            prev_hovered_contact: None,
-            selected_contact: None,
-            status_checker: None, // Initialized AFTER attestation succeeds
-            next_status_ping: std::time::Instant::now(),
-            next_fgtw_refresh: std::time::Instant::now() + std::time::Duration::from_secs(60),
-            attesting_handle: None,
-            avatar_pixels,
-            avatar_scaled: None,
-            avatar_scaled_diameter: 0,
-            user_handle: None,
-            show_avatar_hint: false,
-            file_hovering_avatar: false,
-            contact_avatar_rx,
-            contact_avatar_tx,
-        };
-        app
-    }
-
-    #[cfg(target_os = "windows")]
-    pub fn new(window: &Window, blinkey_blink_rate_ms: u64, target_frame_duration_ms: u64, event_proxy: EventLoopProxy<PhotonEvent>) -> Self {
         let size = window.inner_size();
         let renderer = Renderer::new(window, size.width, size.height);
         let text_renderer = TextRenderer::new();
@@ -473,7 +343,7 @@ impl PhotonApp {
         // Create channel for background avatar downloads
         let (contact_avatar_tx, contact_avatar_rx) = std::sync::mpsc::channel();
 
-        let app = Self {
+        let mut app = Self {
             renderer,
             text_renderer,
             width: size.width,
@@ -492,36 +362,20 @@ impl PhotonApp {
             blinkey_pixel_x: 0,
             blinkey_pixel_y: 0,
             next_blinkey_blink_time: std::time::Instant::now(),
-            app_state: {
-                // Determine initial state based on whether device key exists
-                // Device key = random Ed25519, stored unencrypted
-                // Handle hash = BLAKE3(Argon2(handle)), computed on-the-fly, never stored
-                use crate::network::fgtw::FgtwPaths;
-                let paths = FgtwPaths::new().expect("Failed to get FGTW paths");
-                if paths.device_key.exists() {
-                    // Returning user - device key exists, need handle to verify with FGTW
-                    AppState::Launch(LaunchState::Fresh)
-                } else {
-                    // Fresh install - no device key yet
-                    AppState::Launch(LaunchState::Fresh)
-                }
-            },
+            app_state: AppState::Launch(LaunchState::Fresh),
             query_start_time: None,
-            handle_query: {
-                use crate::network::fgtw::{load_or_generate_device_key, FgtwPaths, FgtwTransport};
-                let paths = FgtwPaths::new().expect("Failed to get FGTW paths");
-                let device_keypair = load_or_generate_device_key(&paths.device_key)
-                    .expect("Failed to load/generate device key");
-
-                let our_identity = crate::types::PublicIdentity::from_bytes(
-                    *device_keypair.public.as_bytes(),
-                );
-
-                let handle_query = HandleQuery::new(our_identity.clone(), event_proxy.clone());
-                let transport = std::sync::Arc::new(FgtwTransport::new(our_identity, 41641));
-                handle_query.set_transport(transport);
-
-                handle_query
+            handle_query: None, // Initialized below after device_keypair
+            device_keypair: {
+                // Derive deterministically from machine-id - NEVER stored to disk
+                use crate::network::fgtw::{derive_device_keypair, get_machine_fingerprint};
+                let fingerprint = get_machine_fingerprint()
+                    .expect("Failed to get machine fingerprint for key derivation");
+                let keypair = derive_device_keypair(&fingerprint);
+                crate::log_info(&format!(
+                    "Device pubkey: {}",
+                    hex::encode(keypair.public.as_bytes())
+                ));
+                keypair
             },
             fgtw_online: false, // Updated by connectivity check
             prev_fgtw_online: false,
@@ -580,17 +434,34 @@ impl PhotonApp {
             contact_avatar_rx,
             contact_avatar_tx,
         };
+
+        // Initialize handle_query with the derived keypair
+        {
+            use crate::network::fgtw::FgtwTransport;
+            use crate::network::HandleQuery;
+            use crate::types::PublicIdentity;
+
+            let our_identity = PublicIdentity::from_bytes(*app.device_keypair.public.as_bytes());
+            let handle_query = HandleQuery::new(app.device_keypair.clone(), event_proxy.clone());
+            let transport = std::sync::Arc::new(FgtwTransport::new(our_identity, 41641));
+            handle_query.set_transport(transport);
+            app.handle_query = Some(handle_query);
+        }
+
         app
     }
 
-    /// Android constructor - simpler, no winit, device key passed in
+    /// Android constructor - takes device keypair derived from JNI fingerprint
     #[cfg(target_os = "android")]
-    pub fn new(width: u32, height: u32) -> Self {
+    pub fn new(width: u32, height: u32, device_keypair: crate::network::fgtw::Keypair) -> Self {
         let renderer = Renderer::new(width, height);
         let text_renderer = TextRenderer::new();
 
         let w = width as usize;
         let h = height as usize;
+
+        // Create channel for background avatar downloads
+        let (contact_avatar_tx, contact_avatar_rx) = std::sync::mpsc::channel();
 
         Self {
             renderer,
@@ -613,10 +484,13 @@ impl PhotonApp {
             next_blinkey_blink_time: std::time::Instant::now(),
             app_state: AppState::Launch(LaunchState::Fresh),
             query_start_time: None,
+            handle_query: None, // Initialized via set_handle_query() after this
+            device_keypair,
             fgtw_online: false,
             prev_fgtw_online: false,
             hint_was_shown: false,
             search_result: None,
+            search_receiver: None,
             searching_handle: None,
             glow_colour: theme::GLOW_DEFAULT,
             spectrum_phase: 0.0,
@@ -652,9 +526,13 @@ impl PhotonApp {
             debug: false,
             is_fullscreen: true, // Android is always fullscreen
             contacts: Vec::new(),
+            contact_pubkeys: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             hovered_contact: None,
             prev_hovered_contact: None,
             selected_contact: None,
+            status_checker: None,
+            next_status_ping: std::time::Instant::now(),
+            next_fgtw_refresh: std::time::Instant::now() + std::time::Duration::from_secs(60),
             attesting_handle: None,
             avatar_pixels: None,
             avatar_scaled: None,
@@ -662,6 +540,8 @@ impl PhotonApp {
             user_handle: None,
             show_avatar_hint: false,
             file_hovering_avatar: false,
+            contact_avatar_rx,
+            contact_avatar_tx,
         }
     }
 
@@ -829,12 +709,13 @@ impl PhotonApp {
                 // Execute primary button action
                 match &self.app_state {
                     AppState::Launch(LaunchState::Fresh) => {
-                        // TODO: Start attestation (needs Android network stack)
-                        log::info!("Primary button: Attest (not yet implemented on Android)");
+                        self.start_attestation();
                     }
                     AppState::Ready => {
-                        // TODO: Start handle search (needs Android network stack)
-                        log::info!("Primary button: Query (not yet implemented on Android)");
+                        let handle: String = self.current_text_state.chars.iter().collect();
+                        if !handle.is_empty() {
+                            self.start_handle_search(&handle);
+                        }
                     }
                     _ => {}
                 }
@@ -848,7 +729,15 @@ impl PhotonApp {
                 // Check if we're on avatar (doesn't use hover state)
                 if element == HIT_AVATAR {
                     if matches!(self.app_state, AppState::Ready | AppState::Searching) {
-                        self.show_avatar_hint = true;
+                        #[cfg(target_os = "android")]
+                        {
+                            // Return 2 to signal "open image picker" to Android
+                            keyboard_action = 2;
+                        }
+                        #[cfg(not(target_os = "android"))]
+                        {
+                            self.show_avatar_hint = true;
+                        }
                     }
                 } else if self.hovered_contact.is_none() {
                     // Tapped outside interactive elements - unfocus textbox and hide keyboard
@@ -960,13 +849,14 @@ impl PhotonApp {
         }
 
         match &self.app_state {
-            AppState::Launch(_) => {
-                // TODO: Start attestation (needs Android network stack)
-                log::info!("Enter pressed: Attest (not yet implemented on Android)");
+            AppState::Launch(LaunchState::Fresh) => {
+                self.start_attestation();
             }
-            AppState::Ready | AppState::Searching => {
-                // TODO: Start handle search (needs Android network stack)
-                log::info!("Enter pressed: Query (not yet implemented on Android)");
+            AppState::Ready => {
+                let handle: String = self.current_text_state.chars.iter().collect();
+                if !handle.is_empty() {
+                    self.start_handle_search(&handle);
+                }
             }
             _ => return false,
         }
@@ -1027,6 +917,75 @@ impl PhotonApp {
         false
     }
 
+    // ============ Network Methods ============
+
+    /// Set the handle query system (called from JNI after keypair is available on Android,
+    /// or can be used to reinitialize on any platform)
+    pub fn set_handle_query(&mut self, handle_query: HandleQuery) {
+        self.handle_query = Some(handle_query);
+    }
+
+    /// Set avatar from raw image file bytes (Android image picker)
+    ///
+    /// This receives the raw file bytes (JPEG/PNG/WebP) from Android's ContentResolver
+    /// and passes them to encode_avatar_from_image() which properly handles ICC profiles
+    /// for accurate color conversion to VSF RGB.
+    #[cfg(target_os = "android")]
+    pub fn set_avatar_from_file(&mut self, image_bytes: Vec<u8>) {
+        use log::info;
+
+        // Need handle to save avatar (storage key derived from handle)
+        let handle = match &self.user_handle {
+            Some(h) => h.clone(),
+            None => {
+                info!("Cannot save avatar: no handle (need to attest first)");
+                return;
+            }
+        };
+
+        info!("Processing avatar from picker: {} bytes", image_bytes.len());
+
+        // Encode avatar using full ICC profile color management
+        let av1_data = match crate::avatar::encode_avatar_from_image(&image_bytes) {
+            Ok(data) => data,
+            Err(e) => {
+                info!("Avatar encoding failed: {}", e);
+                return;
+            }
+        };
+
+        info!("AV1 data size: {} bytes", av1_data.len());
+
+        // Save avatar to local cache by handle's storage key
+        if let Err(e) = crate::avatar::save_avatar(&av1_data, &handle) {
+            info!("Failed to save avatar: {}", e);
+            return;
+        }
+
+        // Read back from disk to verify end-to-end, convert to display colorspace
+        let (_, pixels) = match crate::avatar::load_avatar(&handle) {
+            Some(result) => result,
+            None => {
+                info!("Failed to load saved avatar");
+                return;
+            }
+        };
+
+        self.avatar_pixels =
+            Some(crate::display_profile::DisplayConverter::new().convert_avatar(&pixels));
+        self.avatar_scaled = None; // Invalidate cache to force re-scale
+        self.window_dirty = true;
+
+        info!("Avatar saved successfully");
+
+        // Upload to FGTW
+        if let Err(e) = crate::avatar::upload_avatar(&self.device_keypair.secret, &handle) {
+            info!("Failed to upload avatar to FGTW: {}", e);
+        } else {
+            info!("Avatar uploaded to FGTW");
+        }
+    }
+
     /// Handle file hover during drag operation
     pub fn handle_file_hover(&mut self, _path: &std::path::Path) {
         // Only on Ready screen
@@ -1085,11 +1044,12 @@ impl PhotonApp {
         self.file_hovering_avatar = false;
 
         // Read file
-        let image_data = std::fs::read(path)
-            .map_err(|e| format!("Failed to read file: {}", e))?;
+        let image_data = std::fs::read(path).map_err(|e| format!("Failed to read file: {}", e))?;
 
         // Need handle to save avatar (storage key derived from handle)
-        let handle = self.user_handle.as_ref()
+        let handle = self
+            .user_handle
+            .as_ref()
             .ok_or("Cannot save avatar: no handle (need to attest first)")?;
 
         // Encode avatar at fixed size, save to .vsf
@@ -1101,23 +1061,18 @@ impl PhotonApp {
             .map_err(|e| format!("Failed to save avatar: {}", e))?;
 
         // Read back from disk to verify end-to-end, convert to display colorspace
-        let (_, pixels) = crate::avatar::load_avatar(handle)
-            .ok_or("Failed to load saved avatar")?;
+        let (_, pixels) =
+            crate::avatar::load_avatar(handle).ok_or("Failed to load saved avatar")?;
 
-        self.avatar_pixels = Some(
-            crate::display_profile::DisplayConverter::new().convert_avatar(&pixels)
-        );
+        self.avatar_pixels =
+            Some(crate::display_profile::DisplayConverter::new().convert_avatar(&pixels));
         self.avatar_scaled = None; // Invalidate cache to force re-scale
         self.show_avatar_hint = false; // Hide hint after successful upload
         self.window_dirty = true;
 
         // Upload to FGTW
-        if let Ok(paths) = crate::network::fgtw::FgtwPaths::new() {
-            if let Ok(keypair) = crate::network::fgtw::load_or_generate_device_key(&paths.device_key) {
-                if let Err(e) = crate::avatar::upload_avatar(&keypair.secret, handle) {
-                    eprintln!("Avatar: Failed to upload to FGTW: {}", e);
-                }
-            }
+        if let Err(e) = crate::avatar::upload_avatar(&self.device_keypair.secret, handle) {
+            eprintln!("Avatar: Failed to upload to FGTW: {}", e);
         }
 
         eprintln!("Avatar saved successfully");
@@ -1228,8 +1183,6 @@ impl PhotonApp {
         self.current_text_state.chars.len()
     }
 
-    // ============ Network-dependent methods (desktop only) ============
-    #[cfg(not(target_os = "android"))]
     /// Start attestation - compute handle_proof and announce to FGTW
     pub fn start_attestation(&mut self) {
         let handle: String = self.current_text_state.chars.iter().collect();
@@ -1240,7 +1193,9 @@ impl PhotonApp {
         // Set status to Attesting and trigger attestation
         self.app_state = AppState::Launch(LaunchState::Attesting);
         self.glow_colour = theme::GLOW_ATTESTING; // Yellow for attesting
-        self.handle_query.query(handle);
+        if let Some(hq) = &self.handle_query {
+            hq.query(handle);
+        }
         let now = std::time::Instant::now();
         self.query_start_time = Some(now);
         self.last_frame_time = now; // Reset to prevent animation jerk on first frame
@@ -1249,10 +1204,13 @@ impl PhotonApp {
             now + std::time::Duration::from_millis(self.target_frame_duration_ms);
     }
 
-    #[cfg(not(target_os = "android"))]
     /// Check if FGTW connectivity status is available and update fgtw_online
     pub fn check_fgtw_online(&mut self) {
-        if let Some(online) = self.handle_query.try_recv_online() {
+        let online_opt = self
+            .handle_query
+            .as_ref()
+            .and_then(|hq| hq.try_recv_online());
+        if let Some(online) = online_opt {
             if online != self.fgtw_online {
                 self.fgtw_online = online;
                 self.controls_dirty = true; // Trigger indicator redraw
@@ -1260,12 +1218,10 @@ impl PhotonApp {
         }
     }
 
-    #[cfg(not(target_os = "android"))]
     /// Search for a handle in our peer list (async - spawns background thread)
     pub fn start_handle_search(&mut self, handle: &str) {
-        use std::sync::mpsc;
         use crate::types::Handle;
-
+        use std::sync::mpsc;
 
         // Set state to Searching and start animation
         self.app_state = AppState::Searching;
@@ -1274,14 +1230,15 @@ impl PhotonApp {
         let now = std::time::Instant::now();
         self.query_start_time = Some(now);
         self.last_frame_time = now;
-        self.next_animation_frame = now + std::time::Duration::from_millis(self.target_frame_duration_ms);
+        self.next_animation_frame =
+            now + std::time::Duration::from_millis(self.target_frame_duration_ms);
 
         // Create channel for result
         let (tx, rx) = mpsc::channel();
         self.search_receiver = Some(rx);
 
         // Get transport for peer lookup (need to clone Arc)
-        let transport = self.handle_query.get_transport();
+        let transport = self.handle_query.as_ref().and_then(|hq| hq.get_transport());
         let handle_owned = handle.to_string();
 
         // Spawn background thread to compute handle_proof and lookup
@@ -1314,7 +1271,6 @@ impl PhotonApp {
         self.window_dirty = true;
     }
 
-    #[cfg(not(target_os = "android"))]
     /// Check if search result is ready (non-blocking)
     pub fn check_search_result(&mut self) -> bool {
         if let Some(ref receiver) = self.search_receiver {
@@ -1325,32 +1281,51 @@ impl PhotonApp {
                         self.glow_colour = theme::GLOW_SUCCESS;
 
                         // Add to contacts if not already present
-                        let already_exists = self.contacts.iter().any(|c| c.handle == found_peer.handle);
+                        let already_exists =
+                            self.contacts.iter().any(|c| c.handle == found_peer.handle);
                         if !already_exists {
                             let contact = Contact::new(
                                 found_peer.handle.clone(),
                                 found_peer.device_pubkey.clone(),
-                            ).with_ip(found_peer.ip);
+                            )
+                            .with_ip(found_peer.ip);
                             self.contacts.push(contact);
 
                             // Update shared pubkey list for StatusChecker
                             {
                                 let mut pubkeys = self.contact_pubkeys.lock().unwrap();
                                 pubkeys.push(found_peer.device_pubkey.clone());
-                                println!("Contact added: {} ({})",
+                                crate::log_info(&format!(
+                                    "Contact added: {} ({})",
                                     found_peer.handle,
-                                    hex::encode(&found_peer.device_pubkey.as_bytes()[..8]));
+                                    hex::encode(&found_peer.device_pubkey.as_bytes()[..8])
+                                ));
                             }
 
                             // Try to load avatar from local cache immediately
-                            // If not cached, it will be fetched when contact comes online
-                            if let Some((_, pixels)) = crate::avatar::load_avatar(found_peer.handle.as_str()) {
+                            if let Some((_, pixels)) =
+                                crate::avatar::load_avatar(found_peer.handle.as_str())
+                            {
                                 if let Some(contact) = self.contacts.last_mut() {
                                     contact.avatar_pixels = Some(
-                                        crate::display_profile::DisplayConverter::new().convert_avatar(&pixels)
+                                        crate::display_profile::DisplayConverter::new()
+                                            .convert_avatar(&pixels),
                                     );
-                                    eprintln!("Avatar: Loaded {} from local cache on add", found_peer.handle);
+                                    crate::log_info(&format!(
+                                        "Avatar: Loaded {} from local cache on add",
+                                        found_peer.handle
+                                    ));
                                 }
+                            } else {
+                                // Not in cache - fetch from FGTW
+                                crate::log_info(&format!(
+                                    "Avatar: {} not in cache, fetching from FGTW",
+                                    found_peer.handle
+                                ));
+                                crate::avatar::download_avatar_background(
+                                    found_peer.handle.as_str().to_string(),
+                                    self.contact_avatar_tx.clone(),
+                                );
                             }
                         }
 
@@ -1366,7 +1341,7 @@ impl PhotonApp {
                         self.controls_dirty = true;
                         self.selection_dirty = true;
                     }
-                    SearchResult::NotFound => {
+                    SearchResult::NotFound | SearchResult::Error(_) => {
                         // Red glow, keep text in box
                         self.glow_colour = theme::GLOW_ERROR;
                     }
@@ -1384,95 +1359,101 @@ impl PhotonApp {
         false
     }
 
-    #[cfg(not(target_os = "android"))]
     /// Check if attestation response is ready and update app_state
     pub fn check_attestation_response(&mut self) -> bool {
-        if let Some(result) = self.handle_query.try_recv() {
-            eprintln!("UI: Received attestation result: {:?}", result);
-            let new_state = match result {
-                QueryResult::Success => {
-                    // Success - we're now registered
-                    eprintln!("UI: Attestation SUCCESS - transitioning to Ready state");
-                    AppState::Ready
-                }
-                QueryResult::AlreadyAttested(_peers) => {
-                    // Handle already bound to different device
-                    eprintln!("UI: Handle already attested - showing error");
-                    AppState::Launch(LaunchState::Error(
-                        "Handle already attested".to_string(),
-                    ))
-                }
-                QueryResult::Error(msg) => {
-                    // Error during attestation
-                    eprintln!("UI: Attestation error - {}", msg);
-                    AppState::Launch(LaunchState::Error(msg))
-                }
-            };
-            debug_println!(
-                "Attestation completed: {:?} -> {:?}",
-                self.app_state,
-                new_state
-            );
-            // Clear textbox when transitioning to Ready
-            if matches!(new_state, AppState::Ready) {
-                self.current_text_state.chars.clear();
-                self.current_text_state.widths.clear();
-                self.current_text_state.width = 0;
-                self.current_text_state.blinkey_index = 0;
-                self.current_text_state.selection_anchor = None;
-                self.current_text_state.scroll_offset = 0.0;
-                self.current_text_state.is_empty = true;
-                self.text_dirty = true;
-                self.controls_dirty = true;
-                self.selection_dirty = true;
+        let result = self.handle_query.as_ref().and_then(|hq| hq.try_recv());
+        let Some(result) = result else { return false };
 
-                // Store handle_proof for periodic refresh and save user handle for display
-                if let Some(ref handle) = self.attesting_handle {
-                    use crate::types::Handle;
-                    let handle_proof = Handle::username_to_handle_proof(handle);
-                    self.handle_query.set_handle_proof(handle_proof, handle);
-                    self.user_handle = Some(handle.clone());
-                    eprintln!("UI: Stored handle_proof for periodic refresh");
+        crate::log_info(&format!("UI: Received attestation result: {:?}", result));
 
-                    // Load avatar from local cache now that we have a handle
-                    if let Some((_, pixels)) = crate::avatar::load_avatar(handle) {
-                        self.avatar_pixels = Some(
-                            crate::display_profile::DisplayConverter::new().convert_avatar(&pixels)
-                        );
-                        self.avatar_scaled = None; // Force re-scale
-                        eprintln!("UI: Loaded avatar from local cache");
-                    }
+        let new_state = match result {
+            QueryResult::Success => {
+                crate::log_info("UI: Attestation SUCCESS - transitioning to Ready state");
+                AppState::Ready
+            }
+            QueryResult::AlreadyAttested(_peers) => {
+                crate::log_info("UI: Handle already attested - showing error");
+                AppState::Launch(LaunchState::Error("Handle already attested".to_string()))
+            }
+            QueryResult::Error(msg) => {
+                crate::log_error(&format!("UI: Attestation error - {}", msg));
+                AppState::Launch(LaunchState::Error(msg))
+            }
+        };
+
+        debug_println!(
+            "Attestation completed: {:?} -> {:?}",
+            self.app_state,
+            new_state
+        );
+
+        // Clear textbox when transitioning to Ready
+        if matches!(new_state, AppState::Ready) {
+            self.current_text_state.chars.clear();
+            self.current_text_state.widths.clear();
+            self.current_text_state.width = 0;
+            self.current_text_state.blinkey_index = 0;
+            self.current_text_state.selection_anchor = None;
+            self.current_text_state.scroll_offset = 0.0;
+            self.current_text_state.is_empty = true;
+            self.text_dirty = true;
+            self.controls_dirty = true;
+            self.selection_dirty = true;
+
+            // Store handle_proof for periodic refresh and save user handle for display
+            if let Some(ref handle) = self.attesting_handle {
+                use crate::types::Handle;
+                let handle_proof = Handle::username_to_handle_proof(handle);
+                if let Some(hq) = &self.handle_query {
+                    hq.set_handle_proof(handle_proof, handle);
                 }
-                self.attesting_handle = None;
+                self.user_handle = Some(handle.clone());
+                crate::log_info("UI: Stored handle_proof for periodic refresh");
 
-                // NOW initialize status checker - only after attestation succeeds
-                // This ensures we don't listen for/respond to pings until we're authenticated
-                if self.user_handle.is_some() {
+                // Load avatar from local cache now that we have a handle
+                if let Some((_, pixels)) = crate::avatar::load_avatar(handle) {
+                    self.avatar_pixels = Some(
+                        crate::display_profile::DisplayConverter::new().convert_avatar(&pixels),
+                    );
+                    self.avatar_scaled = None; // Force re-scale
+                    crate::log_info("UI: Loaded avatar from local cache");
+                }
+            }
+            self.attesting_handle = None;
+
+            // Initialize status checker for P2P contact pinging
+            if self.user_handle.is_some() {
+                if let Some(hq) = &self.handle_query {
                     self.status_checker = StatusChecker::new(
-                        self.handle_query.socket().clone(),
+                        hq.socket().clone(),
+                        self.device_keypair.clone(),
                         self.contact_pubkeys.clone(),
-                    ).ok();
-                    eprintln!("UI: Status checker initialized after attestation");
+                    )
+                    .ok();
+                    crate::log_info("UI: Status checker initialized after attestation");
                 }
+            }
 
-                // Schedule first FGTW refresh in 60-120 seconds
+            // Schedule first FGTW refresh in 60-120 seconds
+            {
                 use rand::Rng;
                 let delay = rand::thread_rng().gen_range(60..=120);
-                self.next_fgtw_refresh = std::time::Instant::now() + std::time::Duration::from_secs(delay);
+                self.next_fgtw_refresh =
+                    std::time::Instant::now() + std::time::Duration::from_secs(delay);
             }
-            // Set glow colour based on new state (for refocus without full redraw)
-            if matches!(new_state, AppState::Launch(LaunchState::Error(_))) {
-                self.glow_colour = theme::GLOW_ERROR; // Red for error
-            } else {
-                self.glow_colour = theme::GLOW_DEFAULT; // White default
-            }
-            self.app_state = new_state;
-            self.query_start_time = None;
-            self.window_dirty = true;
-            eprintln!("UI: Attestation complete, window marked dirty for redraw");
-            return true;
         }
-        false
+
+        // Set glow colour based on new state
+        if matches!(new_state, AppState::Launch(LaunchState::Error(_))) {
+            self.glow_colour = theme::GLOW_ERROR;
+        } else {
+            self.glow_colour = theme::GLOW_DEFAULT;
+        }
+        self.app_state = new_state;
+        self.query_start_time = None;
+        self.window_dirty = true;
+        crate::log_info("UI: Attestation complete, window marked dirty for redraw");
+        true
     }
 
     /// Check if we should continuously animate (request redraws every frame)
@@ -1496,7 +1477,6 @@ impl PhotonApp {
         self.app_state = AppState::Launch(state);
     }
 
-    #[cfg(not(target_os = "android"))]
     /// Check for status updates from P2P checker (non-blocking)
     /// Returns true if any contact status changed
     pub fn check_status_updates(&mut self) -> bool {
@@ -1513,20 +1493,24 @@ impl PhotonApp {
                     if contact.is_online != update.is_online {
                         contact.is_online = update.is_online;
                         changed = true;
-                        eprintln!(
+                        crate::log_info(&format!(
                             "Status: {} is now {}",
                             contact.handle,
-                            if update.is_online { "ONLINE" } else { "offline" }
-                        );
+                            if update.is_online {
+                                "ONLINE"
+                            } else {
+                                "offline"
+                            }
+                        ));
                     }
 
                     // Fetch avatar by handle if we don't have it yet and contact is online
                     // Storage key is deterministic: BLAKE3(BLAKE3(handle) || "avatar")
                     if update.is_online && contact.avatar_pixels.is_none() {
-                        eprintln!(
+                        crate::log_info(&format!(
                             "Avatar: {} is online, fetching avatar by handle from FGTW",
                             contact.handle
-                        );
+                        ));
                         // Spawn background download using handle-based storage key
                         crate::avatar::download_avatar_background(
                             contact.handle.as_str().to_string(),
@@ -1540,7 +1524,6 @@ impl PhotonApp {
         changed
     }
 
-    #[cfg(not(target_os = "android"))]
     /// Check for completed avatar downloads and update contacts
     /// Returns true if any avatars were updated
     pub fn check_avatar_downloads(&mut self) -> bool {
@@ -1557,9 +1540,13 @@ impl PhotonApp {
                         contact.avatar_scaled = None; // Invalidate scaled cache
                         contact.avatar_scaled_diameter = 0;
                         changed = true;
-                        eprintln!("Avatar: {} loaded ({} bytes)", contact.handle, pixels.len());
+                        crate::log_info(&format!(
+                            "Avatar: {} loaded ({} bytes)",
+                            contact.handle,
+                            pixels.len()
+                        ));
                     } else {
-                        eprintln!("Avatar: {} download failed", contact.handle);
+                        crate::log_info(&format!("Avatar: {} download failed", contact.handle));
                     }
                     break;
                 }
@@ -1571,13 +1558,12 @@ impl PhotonApp {
         changed
     }
 
-    #[cfg(not(target_os = "android"))]
     /// Ping all contacts that have IP addresses (call periodically)
     pub fn ping_contacts(&mut self) {
         let checker = match &self.status_checker {
             Some(c) => c,
             None => {
-                eprintln!("Status: No checker available!");
+                crate::log_info("Status: No checker available!");
                 return;
             }
         };
@@ -1590,11 +1576,10 @@ impl PhotonApp {
             }
         }
         if pinged > 0 {
-            eprintln!("Status: Pinged {} contact(s)", pinged);
+            crate::log_info(&format!("Status: Pinged {} contact(s)", pinged));
         }
     }
 
-    #[cfg(not(target_os = "android"))]
     /// Check if it's time to ping contacts and do so
     /// Returns true if pings were sent
     pub fn maybe_ping_contacts(&mut self) -> bool {
@@ -1611,64 +1596,69 @@ impl PhotonApp {
         }
     }
 
-    #[cfg(not(target_os = "android"))]
     /// Check if it's time to refresh FGTW and do so
     /// Returns true if refresh was triggered
     pub fn maybe_refresh_fgtw(&mut self) -> bool {
         let now = std::time::Instant::now();
         if now >= self.next_fgtw_refresh && matches!(self.app_state, AppState::Ready) {
-            if self.handle_query.refresh() {
-                eprintln!("Network: Triggering FGTW refresh");
-                // Refresh every 60-120 seconds (randomized to avoid synchronized traffic)
-                use rand::Rng;
-                let delay = rand::thread_rng().gen_range(60..=120);
-                self.next_fgtw_refresh = now + std::time::Duration::from_secs(delay);
-                true
-            } else {
-                false
+            if let Some(hq) = &self.handle_query {
+                if hq.refresh() {
+                    crate::log_info("Network: Triggering FGTW refresh");
+                    // Refresh every 60-120 seconds (randomized to avoid synchronized traffic)
+                    use rand::Rng;
+                    let delay = rand::thread_rng().gen_range(60..=120);
+                    self.next_fgtw_refresh = now + std::time::Duration::from_secs(delay);
+                    return true;
+                }
             }
-        } else {
-            false
         }
+        false
     }
 
-    #[cfg(not(target_os = "android"))]
     /// Check for FGTW refresh results and update contact IPs
     /// Returns true if any contacts were updated
     pub fn check_refresh_result(&mut self) -> bool {
-        if let Some(result) = self.handle_query.try_recv_refresh() {
-            if let Some(ref error) = result.error {
-                eprintln!("Network: Refresh error: {}", error);
-            }
+        let result = self
+            .handle_query
+            .as_ref()
+            .and_then(|hq| hq.try_recv_refresh());
+        let Some(result) = result else { return false };
 
-            if result.peers.is_empty() {
-                return false;
-            }
+        if let Some(ref error) = result.error {
+            crate::log_error(&format!("Network: Refresh error: {}", error));
+        }
 
-            eprintln!("Network: Refresh got {} peer(s)", result.peers.len());
+        if result.peers.is_empty() {
+            return false;
+        }
 
-            // Update contact IPs from fresh peer data
-            let mut updated = 0;
-            for peer in &result.peers {
-                for contact in &mut self.contacts {
-                    if contact.public_identity == peer.device_pubkey {
-                        if contact.ip != Some(peer.ip) {
-                            eprintln!("Network: Updated {} IP: {:?} -> {}",
-                                contact.handle, contact.ip, peer.ip);
-                            contact.ip = Some(peer.ip);
-                            updated += 1;
-                        }
-                        break;
+        crate::log_info(&format!(
+            "Network: Refresh got {} peer(s)",
+            result.peers.len()
+        ));
+
+        // Update contact IPs from fresh peer data
+        let mut updated = 0;
+        for peer in &result.peers {
+            for contact in &mut self.contacts {
+                if contact.public_identity == peer.device_pubkey {
+                    if contact.ip != Some(peer.ip) {
+                        crate::log_info(&format!(
+                            "Network: Updated {} IP: {:?} -> {}",
+                            contact.handle, contact.ip, peer.ip
+                        ));
+                        contact.ip = Some(peer.ip);
+                        updated += 1;
                     }
+                    break;
                 }
             }
-
-            if updated > 0 {
-                eprintln!("Network: Updated {} contact IP(s)", updated);
-            }
-
-            return updated > 0;
         }
-        false
+
+        if updated > 0 {
+            crate::log_info(&format!("Network: Updated {} contact IP(s)", updated));
+        }
+
+        updated > 0
     }
 }

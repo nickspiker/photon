@@ -24,8 +24,8 @@ pub struct MessageChain {
     state: [u8; 32],
     send_sequence: u64,
     receive_sequence: u64,
-    pending_messages: Vec<(u64, Vec<u8>)>,    // Out-of-order messages waiting
-    sent_messages: Vec<(u64, Vec<u8>)>,       // Sent ciphertexts until ACK'd
+    pending_messages: Vec<(u64, Vec<u8>)>, // Out-of-order messages waiting
+    sent_messages: Vec<(u64, Vec<u8>)>,    // Sent ciphertexts until ACK'd
 }
 
 impl MessageChain {
@@ -65,7 +65,8 @@ impl MessageChain {
         if encrypted.sequence != self.receive_sequence {
             if encrypted.sequence > self.receive_sequence {
                 // Store for later
-                self.pending_messages.push((encrypted.sequence, encrypted.ciphertext.clone()));
+                self.pending_messages
+                    .push((encrypted.sequence, encrypted.ciphertext.clone()));
                 return Err(ChainError::SequenceMismatch {
                     expected: self.receive_sequence,
                     actual: encrypted.sequence,
@@ -115,7 +116,11 @@ impl MessageChain {
     }
 
     fn process_pending_messages(&mut self) {
-        while let Some(idx) = self.pending_messages.iter().position(|(s, _)| *s == self.receive_sequence) {
+        while let Some(idx) = self
+            .pending_messages
+            .iter()
+            .position(|(s, _)| *s == self.receive_sequence)
+        {
             let (_, ciphertext) = self.pending_messages.swap_remove(idx);
             // TODO: Proper decryption - for now just XOR with state
             let mut plaintext = ciphertext.clone();

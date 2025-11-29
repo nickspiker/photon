@@ -256,22 +256,26 @@ impl PhotonApp {
 
                             let handle: String = self.current_text_state.chars.iter().collect();
                             match &self.app_state {
-                                AppState::Launch(launch_state) => match launch_state {
-                                    LaunchState::Fresh => {
-                                        // "Attest" button clicked - start attestation
-                                        debug_println!("Attesting handle: {}", handle);
-                                        self.start_attestation();
-                                        self.window_dirty = true;
+                                AppState::Launch(launch_state) => {
+                                    match launch_state {
+                                        LaunchState::Fresh => {
+                                            // "Attest" button clicked - start attestation
+                                            debug_println!("Attesting handle: {}", handle);
+                                            self.start_attestation();
+                                            self.window_dirty = true;
+                                        }
+                                        LaunchState::Attesting => {
+                                            // Attestation already in progress - ignore clicks
+                                            debug_println!(
+                                                "Attestation already in progress, ignoring click"
+                                            );
+                                        }
+                                        LaunchState::Error(_) => {
+                                            // Error state doesn't show button, shouldn't reach here
+                                            debug_println!("Primary button clicked in error state (unexpected)");
+                                        }
                                     }
-                                    LaunchState::Attesting => {
-                                        // Attestation already in progress - ignore clicks
-                                        debug_println!("Attestation already in progress, ignoring click");
-                                    }
-                                    LaunchState::Error(_) => {
-                                        // Error state doesn't show button, shouldn't reach here
-                                        debug_println!("Primary button clicked in error state (unexpected)");
-                                    }
-                                },
+                                }
                                 AppState::Ready => {
                                     // "Query" button clicked - search for handle
                                     debug_println!("Querying handle: {}", handle);
@@ -295,13 +299,20 @@ impl PhotonApp {
                             // Contact clicked - enter conversation view
                             let contact_idx = (id - HIT_CONTACT_BASE) as usize;
                             if contact_idx < self.contacts.len() {
-                                debug_println!("Contact clicked: {} (index {})",
-                                    self.contacts[contact_idx].handle, contact_idx);
+                                debug_println!(
+                                    "Contact clicked: {} (index {})",
+                                    self.contacts[contact_idx].handle,
+                                    contact_idx
+                                );
 
                                 // Fetch avatar if we don't have it (don't require online status)
                                 if self.contacts[contact_idx].avatar_pixels.is_none() {
-                                    let handle = self.contacts[contact_idx].handle.as_str().to_string();
-                                    eprintln!("Avatar: Entering conversation with {}, fetching avatar", handle);
+                                    let handle =
+                                        self.contacts[contact_idx].handle.as_str().to_string();
+                                    eprintln!(
+                                        "Avatar: Entering conversation with {}, fetching avatar",
+                                        handle
+                                    );
                                     crate::avatar::download_avatar_background(
                                         handle,
                                         self.contact_avatar_tx.clone(),

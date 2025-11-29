@@ -27,7 +27,7 @@ impl FgtwTransport {
             .await
             .map_err(|e| format!("Failed to bind to {}: {}", addr, e))?;
 
-        println!("FGTW: Listening on {}", addr);
+        crate::log_info(&format!("FGTW: Listening on {}", addr));
 
         let peer_store = self.peer_store.clone();
         let our_pubkey = self.our_pubkey.clone();
@@ -42,12 +42,15 @@ impl FgtwTransport {
                             if let Err(e) =
                                 handle_connection(socket, addr, peer_store, our_pubkey).await
                             {
-                                eprintln!("FGTW: Connection error from {}: {}", addr, e);
+                                crate::log_error(&format!(
+                                    "FGTW: Connection error from {}: {}",
+                                    addr, e
+                                ));
                             }
                         });
                     }
                     Err(e) => {
-                        eprintln!("FGTW: Accept error: {}", e);
+                        crate::log_error(&format!("FGTW: Accept error: {}", e));
                     }
                 }
             }
@@ -104,7 +107,10 @@ impl FgtwTransport {
         for peer in peers {
             store.add_peer(peer);
         }
-        println!("FGTW: Added {} bootstrap peers", store.peer_count());
+        crate::log_info(&format!(
+            "FGTW: Added {} bootstrap peers",
+            store.peer_count()
+        ));
     }
 }
 
@@ -180,7 +186,10 @@ fn process_message(
             let peer = PeerRecord::new(handle_proof, device_pubkey, ip);
             let mut store = peer_store.lock().unwrap();
             store.add_peer(peer);
-            println!("FGTW: Announced handle_proof {:?}", &handle_proof[..8]);
+            crate::log_info(&format!(
+                "FGTW: Announced handle_proof {:?}",
+                &handle_proof[..8]
+            ));
             FgtwMessage::Pong {
                 device_pubkey: our_pubkey.clone(),
                 peers: vec![],

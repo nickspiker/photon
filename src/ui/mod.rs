@@ -1,6 +1,8 @@
-mod app;
+pub mod app;
+pub mod avatar;
 mod colour;
 mod compositing;
+pub mod display_profile;
 pub mod drawing;
 #[cfg(not(target_os = "android"))]
 mod keyboard;

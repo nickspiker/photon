@@ -1,29 +1,6 @@
 use ndk::native_window::NativeWindow;
 use ndk_sys::{ANativeWindow_Buffer, ANativeWindow_lock, ANativeWindow_unlockAndPost};
 
-/// A pre-rendered screen page with associated metadata
-pub struct ScreenPage {
-    pub pixels: Vec<u32>,   // Pre-rendered screen in u32 ARGB format
-    pub hit_map: Vec<u8>,   // Hit testing map (button IDs, etc.)
-    pub text_mask: Vec<u8>, // Text rendering alpha mask (0-255)
-}
-
-impl ScreenPage {
-    pub fn new(width: usize, height: usize) -> Self {
-        Self {
-            pixels: vec![0; width * height],
-            hit_map: vec![0; width * height],
-            text_mask: vec![0; width * height],
-        }
-    }
-
-    pub fn resize(&mut self, width: usize, height: usize) {
-        self.pixels.resize(width * height, 0);
-        self.hit_map.resize(width * height, 0);
-        self.text_mask.resize(width * height, 0);
-    }
-}
-
 /// Buffer wrapper for Android that mimics softbuffer's interface
 /// Allows compositing code to work identically across platforms
 pub struct AndroidBuffer<'a> {
@@ -65,9 +42,6 @@ pub struct Renderer {
     /// Magic pixel counter for buffer tracking
     /// Android gives us random buffers from a pool, this tracks which one we last wrote to
     magic_counter: u32,
-
-    // Screen pages for different screens
-    pub login_page: ScreenPage,
 }
 
 impl Renderer {
@@ -77,7 +51,6 @@ impl Renderer {
             height,
             buffer: vec![0; (width * height) as usize],
             magic_counter: 1, // Start at 1 so 0 (cleared buffer) is always a miss
-            login_page: ScreenPage::new(width as usize, height as usize),
         }
     }
 
@@ -86,7 +59,6 @@ impl Renderer {
             self.width = width;
             self.height = height;
             self.buffer.resize((width * height) as usize, 0);
-            self.login_page.resize(width as usize, height as usize);
         }
     }
 
@@ -111,7 +83,12 @@ impl Renderer {
         unsafe {
             let mut android_buffer = std::mem::zeroed::<ANativeWindow_Buffer>();
 
-            if ANativeWindow_lock(window.ptr().as_ptr(), &mut android_buffer, std::ptr::null_mut()) < 0 {
+            if ANativeWindow_lock(
+                window.ptr().as_ptr(),
+                &mut android_buffer,
+                std::ptr::null_mut(),
+            ) < 0
+            {
                 log::error!("Failed to lock NativeWindow buffer");
                 return false;
             }
@@ -121,10 +98,8 @@ impl Renderer {
             let width = android_buffer.width as usize;
 
             // RGBA_8888: 4 bytes per pixel, interpret as u32
-            let dst_pixels = std::slice::from_raw_parts_mut(
-                android_buffer.bits as *mut u32,
-                stride * height,
-            );
+            let dst_pixels =
+                std::slice::from_raw_parts_mut(android_buffer.bits as *mut u32, stride * height);
 
             // Check magic pixel at top-right corner (stride - 1, not width - 1)
             let magic_idx = stride - 1;

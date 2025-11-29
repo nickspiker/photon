@@ -23,7 +23,6 @@ $tempBinary = "$env:TEMP\photon-messenger-$PID.exe"
 Write-Host "Downloading Photon Messenger..." -ForegroundColor Yellow
 
 try {
-    $ProgressPreference = 'SilentlyContinue'  # Suppress progress bar for faster downloads
     Invoke-WebRequest -Uri $downloadUrl -OutFile $tempBinary -ErrorAction Stop
 } catch {
     Write-Host "Error: Failed to download binary" -ForegroundColor Red
@@ -35,7 +34,7 @@ try {
 Write-Host "Verifying signature..." -ForegroundColor Yellow
 
 try {
-    $verifyOutput = & $tempBinary --version 2>&1
+    $verifyOutput = & $tempBinary --verify 2>&1
     if ($LASTEXITCODE -ne 0) {
         throw "Binary verification failed"
     }

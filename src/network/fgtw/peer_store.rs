@@ -46,7 +46,9 @@ impl PeerStore {
 
         // Debug: verify sort order is maintained
         debug_assert!(
-            self.peers.windows(2).all(|w| w[0].handle_proof <= w[1].handle_proof),
+            self.peers
+                .windows(2)
+                .all(|w| w[0].handle_proof <= w[1].handle_proof),
             "PeerStore sort order violated after insert"
         );
     }
@@ -120,7 +122,8 @@ impl PeerStore {
     pub fn cleanup_stale(&mut self) -> usize {
         let now = current_timestamp();
         let before = self.peers.len();
-        self.peers.retain(|p| now - p.last_seen < PEER_EXPIRY_SECONDS);
+        self.peers
+            .retain(|p| now - p.last_seen < PEER_EXPIRY_SECONDS);
         before - self.peers.len()
     }
 }

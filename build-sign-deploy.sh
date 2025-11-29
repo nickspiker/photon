@@ -22,19 +22,16 @@ echo ""
 echo "Signing Redox binary..."
 ./target/release/photon-signature-signer target/x86_64-unknown-redox/release/photon-messenger
 
-# Build Android (arm64) - library only, no signing (APK signing handles that)
+# Build Android APK
 echo ""
 echo "Building Android release..."
-cargo build --release --lib --target aarch64-linux-android
+./build-android.sh
 
 # Copy to deployment folder
 cp target/release/photon-messenger /mnt/Chiton/MEGA/holdmyoscilloscope/photon/photon-messenger-linux
 cp target/x86_64-pc-windows-gnu/release/photon-messenger.exe /mnt/Chiton/MEGA/holdmyoscilloscope/photon/photon-messenger-windows.exe
 cp target/x86_64-unknown-redox/release/photon-messenger /mnt/Chiton/MEGA/holdmyoscilloscope/photon/photon-messenger-redox
-
-# Copy Android .so to Android project jniLibs (for APK building)
-mkdir -p android/app/src/main/jniLibs/arm64-v8a
-cp target/aarch64-linux-android/release/libphoton_messenger.so android/app/src/main/jniLibs/arm64-v8a/
+cp android/app/build/outputs/apk/release/app-release.apk /mnt/Chiton/MEGA/holdmyoscilloscope/photon/photon-messenger.apk
 
 echo ""
 echo "✓ Linux, Windows, Redox, and Android binaries deployed"
