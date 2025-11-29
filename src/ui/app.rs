@@ -700,10 +700,14 @@ impl PhotonApp {
         match self.hovered_button {
             HoveredButton::Textbox => {
                 // Focus textbox and show keyboard
+                // Always return 1 even if already focused - keyboard may have been dismissed
                 self.current_text_state.textbox_focused = true;
                 self.blinkey_visible = true;
                 self.text_dirty = true;
-                keyboard_action = 1;
+                #[cfg(target_os = "android")]
+                {
+                    keyboard_action = 1; // Always request keyboard on Android
+                }
             }
             HoveredButton::QueryButton => {
                 // Execute primary button action

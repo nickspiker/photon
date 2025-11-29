@@ -22,6 +22,28 @@ echo ""
 echo "Signing Redox binary..."
 ./target/release/photon-signature-signer target/x86_64-unknown-redox/release/photon-messenger
 
+# Build macOS Intel
+echo ""
+echo "Building macOS Intel release..."
+CC_x86_64_apple_darwin=/mnt/Octopus/Code/osxcross/target/bin/x86_64-apple-darwin-clang-wrapper \
+CXX_x86_64_apple_darwin=/mnt/Octopus/Code/osxcross/target/bin/x86_64-apple-darwin-clang-wrapper \
+cargo build --release --target x86_64-apple-darwin
+
+echo ""
+echo "Signing macOS Intel binary..."
+./target/release/photon-signature-signer target/x86_64-apple-darwin/release/photon-messenger
+
+# Build macOS Apple Silicon
+echo ""
+echo "Building macOS ARM64 release..."
+CC_aarch64_apple_darwin=/mnt/Octopus/Code/osxcross/target/bin/aarch64-apple-darwin-clang-wrapper \
+CXX_aarch64_apple_darwin=/mnt/Octopus/Code/osxcross/target/bin/aarch64-apple-darwin-clang-wrapper \
+cargo build --release --target aarch64-apple-darwin
+
+echo ""
+echo "Signing macOS ARM64 binary..."
+./target/release/photon-signature-signer target/aarch64-apple-darwin/release/photon-messenger
+
 # Build Android APK
 echo ""
 echo "Building Android release..."
@@ -31,9 +53,11 @@ echo "Building Android release..."
 cp target/release/photon-messenger /mnt/Chiton/MEGA/holdmyoscilloscope/photon/photon-messenger-linux
 cp target/x86_64-pc-windows-gnu/release/photon-messenger.exe /mnt/Chiton/MEGA/holdmyoscilloscope/photon/photon-messenger-windows.exe
 cp target/x86_64-unknown-redox/release/photon-messenger /mnt/Chiton/MEGA/holdmyoscilloscope/photon/photon-messenger-redox
+cp target/x86_64-apple-darwin/release/photon-messenger /mnt/Chiton/MEGA/holdmyoscilloscope/photon/photon-messenger-macos-intel
+cp target/aarch64-apple-darwin/release/photon-messenger /mnt/Chiton/MEGA/holdmyoscilloscope/photon/photon-messenger-macos-arm64
 cp android/app/build/outputs/apk/release/app-release.apk /mnt/Chiton/MEGA/holdmyoscilloscope/photon/photon-messenger.apk
 
 echo ""
-echo "✓ Linux, Windows, Redox, and Android binaries deployed"
+echo "✓ Linux, Windows, Redox, macOS Intel, macOS ARM64, and Android binaries deployed"
 
 wrangler pages deploy /mnt/Chiton/MEGA/holdmyoscilloscope --project-name=oscilloscope

@@ -28,6 +28,10 @@ path = "src/bin/photon-keygen.rs"
 name = "photon-signature-signer"
 path = "src/bin/photon-signature-signer.rs"
 
+[[bin]]
+name = "test-device-key"
+path = "src/bin/test-device-key.rs"
+
 [dependencies]
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 

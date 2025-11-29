@@ -17,6 +17,9 @@ mod renderer_windows;
 #[cfg(any(target_os = "linux", target_os = "redox"))]
 mod renderer_linux;
 
+#[cfg(target_os = "macos")]
+mod renderer_macos;
+
 #[cfg(target_os = "android")]
 pub mod renderer_android;
 
@@ -25,6 +28,9 @@ use renderer_windows as renderer;
 
 #[cfg(any(target_os = "linux", target_os = "redox"))]
 use renderer_linux as renderer;
+
+#[cfg(target_os = "macos")]
+use renderer_macos as renderer;
 
 #[cfg(target_os = "android")]
 pub use renderer_android as renderer;

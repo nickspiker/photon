@@ -383,6 +383,9 @@ fn get_system_blinkey_blink_rate() -> u64 {
 }
 
 fn main() {
+    // Check for --verify flag (used by install script to validate binary)
+    let verify_only = std::env::args().any(|arg| arg == "--verify");
+
     // Verify binary signature matches fractaldecoder (Ed25519 cryptographic signature)
     // Enabled by default, skip only with --features skip-sig for development
     #[cfg(not(feature = "skip-sig"))]
@@ -402,6 +405,12 @@ fn main() {
             }
         };
 
+        // If --verify flag, print result and exit successfully
+        if verify_only {
+            println!("OK");
+            std::process::exit(0);
+        }
+
         eprintln!("SIGNATURE CHECK PASSED");
         eprintln!("Ed25519 signature: {}", signature_hex);
         eprintln!();
@@ -409,6 +418,11 @@ fn main() {
 
     #[cfg(feature = "skip-sig")]
     {
+        // If --verify flag on dev build, still exit cleanly
+        if verify_only {
+            eprintln!("SIGNATURE CHECK SKIPPED (development build)");
+            std::process::exit(0);
+        }
         eprintln!("SIGNATURE CHECK SKIPPED (development build)");
         eprintln!();
     }
