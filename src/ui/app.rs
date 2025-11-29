@@ -689,10 +689,15 @@ impl PhotonApp {
             self.current_text_state.selection_anchor = None;
             self.text_dirty = true;
 
-            // Clear hover and return - keyboard already visible
+            // Clear hover state
             self.prev_hovered_button = self.hovered_button;
             self.hovered_button = HoveredButton::None;
             self.controls_dirty = true;
+
+            // On Android, always request keyboard - user may have dismissed it
+            #[cfg(target_os = "android")]
+            return 1;
+            #[cfg(not(target_os = "android"))]
             return 0;
         }
 
@@ -1421,6 +1426,13 @@ impl PhotonApp {
                     );
                     self.avatar_scaled = None; // Force re-scale
                     crate::log_info("UI: Loaded avatar from local cache");
+                } else {
+                    // Not in local cache - try to fetch from FGTW
+                    crate::log_info("UI: Avatar not in local cache, fetching from FGTW");
+                    crate::avatar::download_avatar_background(
+                        handle.clone(),
+                        self.event_proxy.clone(),
+                    );
                 }
             }
             self.attesting_handle = None;

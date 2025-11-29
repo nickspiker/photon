@@ -17,7 +17,7 @@ Write-Host "Detected: Windows ($arch)" -ForegroundColor White
 Write-Host ""
 
 # Download binary
-$downloadUrl = "https://holdmyoscilloscope.com/photon/binaries/photon-messenger-windows.exe"
+$downloadUrl = "https://holdmyoscilloscope.com/photon/photon-messenger-windows.exe"
 $tempBinary = "$env:TEMP\photon-messenger-$PID.exe"
 
 Write-Host "Downloading Photon Messenger..." -ForegroundColor Yellow

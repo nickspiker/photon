@@ -2,7 +2,7 @@
 set -e
 
 echo "Photon Messenger Installer"
-echo "============================"
+echo "=========================="
 echo ""
 
 # Detect OS and architecture
@@ -36,7 +36,7 @@ echo "Detected: $OS ($ARCH)"
 echo ""
 
 # Download binary
-DOWNLOAD_URL="https://holdmyoscilloscope.com/photon/binaries/photon-messenger-$PLATFORM"
+DOWNLOAD_URL="https://holdmyoscilloscope.com/photon/photon-messenger-$PLATFORM"
 TMP_BINARY="/tmp/photon-messenger-$$"
 
 echo "Downloading Photon Messenger..."

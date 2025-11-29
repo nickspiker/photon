@@ -50,9 +50,10 @@ pub const MAXIMIZE_GLYPH_INTERIOR: u32 = fmt(0xFF_28_2D_2E);
 pub const MINIMIZE_GLYPH: u32 = fmt(0xFF_33_30_C7);
 
 // Button hover deltas (applied on hover, negated on unhover)
-pub const CLOSE_HOVER: u32 = fmt(0x00_21_FD_F9); // Red
-pub const MAXIMIZE_HOVER: u32 = fmt(0x00_FA_10_FA); // Green
-pub const MINIMIZE_HOVER: u32 = fmt(0x00_F7_FA_25); // Blue
+// RGB channels wrap intentionally; 0xFF alpha absorbs carry from R overflow
+pub const CLOSE_HOVER: u32 = fmt(0xFF_21_FD_F9); // Red
+pub const MAXIMIZE_HOVER: u32 = fmt(0xFF_FA_10_FA); // Green
+pub const MINIMIZE_HOVER: u32 = fmt(0xFF_F7_FA_25); // Blue
 pub const TEXTBOX_HOVER: u32 = fmt(0x00_0A_0A_0A); // Suttle brightness increase
 pub const QUERY_BUTTON_HOVER: u32 = fmt(0x00_0F_0F_0F); // Brighter than textbox
 pub const BACK_HEADER_HOVER: u32 = fmt(0x00_0C_0C_0C); // Suttle brightness for header

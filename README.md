@@ -4,71 +4,56 @@
 
 No servers. No passwords. No phone numbers. No corporate data harvesting.
 
+---
+
 ## What This Is
 
-Photon is a peer-to-peer messaging application that replaces traditional authentication (passwords, PINs, biometrics, recovery emails) with **social attestation**—your identity is verified by trusted humans, not by servers or credentials. Messages use **rolling-chain encryption**, where each message cryptographically depends on all previous messages, preventing replay attacks, reordering, and tampering while enforcing message immutability thru acknowledgment-based state advancement.
+Photon is a peer-to-peer messaging application that replaces traditional authentication (passwords, PINs, biometrics, recovery emails) with **social attestation**—your identity is verified by trusted humans, not by servers or credentials. Messages use **rolling-chain encryption**, where each message cryptographically depends on all previous messages, creating an immutable, tamper-evident communication history.
 
-## Current Status: Early Development
+**Key Properties:**
+- **A = 1**: Authentication happens once when you create your identity. All subsequent access uses cryptographic proofs from that single event.
+- **True P2P**: No message servers. Peers connect directly after DHT-based discovery.
+- **Hardware-bound identity**: Device keys derived deterministically from hardware fingerprints, never stored on disk.
+- **Social recovery**: Lose your devices? Trusted contacts hold encrypted key shards for threshold reconstruction.
+- **Message immutability**: Editing or deleting messages breaks cryptographic chain—tampering is detectable.
 
-**What works:**
-- Cross-platform GUI (Windows, Linux)
-- Text input, selection, editing
-- Window management, rendering pipeline
-- Handle attestation (memory-hard PoW, ~1s computation)
-- Peer discovery via FGTW DHT (handle → IP lookup working)
-- Cryptographic type system (identities, seeds, shards)
-- Rolling-chain encryption framework
-- Android build pipeline (close to complete)
+---
 
-**What doesn't work yet:**
-- Actual peer-to-peer messaging (direct connections pending)
-- Identity validation and key recovery
-- Message persistence (database layer empty)
-- Full social attestation flow (2-human requirement not yet enforced—design in [AUTH.md](AUTH.md))
+## Current Status
 
-**Platform support:**
-- ✅ **Linux** (X11/Wayland)
-- ✅ **Windows** (DirectDraw)
-- ⚠️ **Android** (NDK bindings ready, testing in progress)
-- 🟡 **macOS** (possible, not tested)
-- ❌ **iOS** (unlikely—Apple's encryption restrictions incompatible with design)
+**Early Development** — Core infrastructure functional, messaging implementation in progress.
 
-## Distribution
+### What Works
+- ✅ Cross-platform GUI (Windows, Linux, macOS, Android)
+- ✅ Text input, selection, editing with cosmic-text rendering
+- ✅ Window management and compositing pipeline
+- ✅ Handle attestation with memory-hard proof-of-work (~1s computation)
+- ✅ Peer discovery via FGTW DHT (handle → IP lookup)
+- ✅ P2P status detection (online/offline via UDP ping/pong)
+- ✅ Avatar upload/download to FGTW storage
+- ✅ Deterministic device identity (keys derived from hardware)
+- ✅ Rolling-chain encryption framework
+- ✅ Android build pipeline (tested on device)
+- ✅ Signed binary distribution with self-verification
 
-We will not distribute via Google Play Store, Apple App Store, or Microsoft Store. These platforms create barriers incompatible with our security model and decentralized architecture. Ready-to-run builds are provided in `bin/`—installation instructions below.
+### What Doesn't Work Yet
+- ❌ Actual peer-to-peer messaging (direct connections pending)
+- ❌ Identity validation and key recovery flows
+- ❌ Message persistence (database layer empty)
+- ❌ Full social attestation (2-human requirement not enforced)
 
-**Why not use app stores?**
+### Platform Support
 
-- **Encryption reporting requirements**: US Export Administration Regulations require registration with the Bureau of Industry and Security and disclosure of encryption implementation details before international distribution. We decline to notify the government about our cryptographic systems.
+| Platform | Status | Notes |
+|----------|--------|-------|
+| Linux | ✅ Working | X11/Wayland |
+| Windows | ✅ Working | DirectDraw |
+| macOS | ✅ Working | Intel + Apple Silicon |
+| Android | ✅ Working | ARM64, tested on device |
+| Redox | 🟡 Compiles | Orbital, untested |
+| iOS | ❌ Blocked | See "Why No iOS?" below |
 
-- **Review process uncertainty**: App stores can reject applications with strong encryption arbitrarily or demand explanations of security implementations that we consider proprietary.
-
-- **Corporate intermediaries**: Distribution thru stores requires trusting corporations to maintain access to software we built. Yeahno.
-
-- **Sideloading restrictions**: iOS requires annual re-signing (99USD/year developer account), and free accounts must reinstall every 7 days. Android allows direct APK installation but shows warnings designed to discourage it.
-
-We provide cryptographically signed binaries with published checksums. Verify the signature, verify the source, run it yourself. That's the security model that actually works.
-
-### Why No iOS?
-
-Apple's iOS platform is **architecturally incompatible** with Photon's design:
-
-**Distribution barriers:**
-- App Store requires $99/year developer account (no anonymous distribution)
-- Code signing mandatory (all binaries must be Apple-signed)
-- Sideloading requires re-installation every 7 days (free accounts) or yearly (paid)
-- Enterprise distribution violates terms if used publicly
-
-**Technical limitations:**
-- **No raw socket access** - Cannot connect to DHT peers directly
-- **No background processes** - Apps terminated after ~30 seconds in background
-- **Sandbox restrictions** - Cannot run persistent TOKEN daemon
-- **Entitlement gatekeeping** - Network access requires Apple approval
-- **No system-level services** - Architecture assumes apps are foreground-only
-
-Photon requires long-running background connections, direct peer-to-peer networking, and system-level cryptographic services. iOS prohibits all of these - not because the hardware can't do it, but because Apple spent decades building walls specifically to prevent applications like Photon from existing.
-
-**Could this change?** Unlikely. The EU's Digital Markets Act may force sideloading in Europe by 2026, but it won't be truly keyless and won't affect most of the world.
+---
 
 ## Installation
 
@@ -76,7 +61,7 @@ Photon requires long-running background connections, direct peer-to-peer network
 
 Download pre-built, cryptographically signed binaries:
 
-**Linux/macOS:**
+**Linux/macOS/Redox:**
 ```bash
 curl -sSfL https://holdmyoscilloscope.com/photon/install.sh | sh
 ```
@@ -86,47 +71,37 @@ curl -sSfL https://holdmyoscilloscope.com/photon/install.sh | sh
 iwr -useb https://holdmyoscilloscope.com/photon/install.ps1 | iex
 ```
 
-These scripts will:
-0. Download a pre-built, pre-signed binary from holdmyoscilloscope.com
-1. Install to `~/.local/bin` (Linux/macOS) or `%LOCALAPPDATA%\Programs\PhotonMessenger` (Windows)
-2. Create a desktop/Start Menu shortcut automatically
-3. Add the binary to your PATH
+The installer will:
+0. Download a signed binary from holdmyoscilloscope.com
+1. Install to `~/.local/bin` (Unix) or `%LOCALAPPDATA%\Programs\PhotonMessenger` (Windows)
+2. Create desktop/Start Menu shortcut
+3. Add binary to PATH
 
-**Security:** Every binary is signed with Ed25519 by Nick Spiker (fractaldecoder@proton.me) and self-verifies on startup. This protects against data corruption (bit flips, incomplete downloads, storage failures) and tampering. If verification fails, the binary won't run.
+**Security**: Every binary is Ed25519-signed by Nick Spiker (fractaldecoder@proton.me) and self-verifies on startup. This protects against corruption and tampering. If verification fails, the binary won't run.
 
-After installation, find **Photon Messenger** in your application menu (Start Menu on Windows, app launcher on Linux/macOS), or run from terminal:
-
+After installation, launch **Photon Messenger** from your application menu or run:
 ```bash
 photon-messenger
 ```
 
 ### Building from Source
 
-**WARNING:** Building from source requires generating your own signing keys.
+**⚠️ Warning**: Building from source requires generating your own signing keys. Use the installer unless you have specific reasons to build yourself.
 
-**Just use the installer above unless you know what you're doing.**
+If needed:
+```bash
+git clone https://github.com/nickspiker/photon
+cd photon
 
-If you still want to build from source:
+# Generate signing keys (edit src/bin/photon-keygen.rs for key path)
+cargo run --bin photon-keygen
 
-0. **Clone the repository**:
-   ```bash
-   git clone https://github.com/nickspiker/photon
-   cd photon
-   ```
+# Update public key in src/self_verify.rs with your generated key
 
-1. **Generate signing keys**:
-   ```bash
-   # Edit src/bin/photon-keygen.rs to set your key path
-   cargo run --bin photon-keygen
-   ```
-
-2. **Update the public key** in `src/self_verify.rs` with your generated key
-
-3. **Build and sign**:
-   ```bash
-   cargo build --release
-   ./sign-after-build.sh release
-   ```
+# Build and sign
+cargo build --release
+./sign-after-build.sh release
+```
 
 See [src/self_verify.rs](src/self_verify.rs) for complete signing documentation.
 
@@ -137,40 +112,101 @@ cargo build --target aarch64-linux-android --release
 ./sign-after-build.sh release aarch64-linux-android
 ```
 
+---
+
 ## How It Works
+
+### Device Identity (Keys Derived From Hardware)
+
+Photon derives device keys **deterministically from hardware identifiers**—keys are never stored on disk. Each launch, the app reads a platform-specific machine fingerprint and derives the Ed25519 keypair:
+
+```rust
+let fingerprint = get_machine_fingerprint();  // Platform-specific
+let seed = blake3::hash(&fingerprint);        // 32-byte seed
+let keypair = Ed25519::from_seed(&seed);      // Deterministic
+```
+
+**Platform fingerprint sources:**
+
+| Platform | Source | Stability |
+|----------|--------|-----------|
+| Linux | `/etc/machine-id` | Survives reboots, unique per install |
+| Windows | Registry `MachineGuid` | Survives reboots, unique per install |
+| macOS | `IOPlatformUUID` | Hardware-burned, survives reinstalls |
+| Android | `ANDROID_ID` + user number | Per-device, per-signing-key |
+| Redox | `/etc/hostid` or hostname | Fallback path |
+
+**Why derived keys?**
+
+Stored keys can be copied to another device (identity theft), extracted by malware, or found in forensic analysis. Derived keys tie identity to physical hardware—the device IS the identity.
+
+#### Hardware Security Reality
+
+Modern devices contain dedicated security chips capable of unforgeable cryptographic proofs:
+
+- **Android**: StrongBox/TEE secure processors
+- **iOS/macOS**: Secure Enclave (T2/Apple Silicon)
+- **Windows/Linux**: TPM 2.0
+
+These chips can perform **cryptographic oracles**—signing data with hardware-bound keys that never leave the chip. This would provide stronger guarantees: attacker can't forge signatures without physical chip access, software compromise doesn't leak secrets, device identity persists across OS reinstalls.
+
+**Why Photon doesn't use hardware security:**
+
+Platform vendors reserve these features for internal services and don't expose them to third-party applications:
+
+| Platform | Hardware | Third-Party Access | Limitation |
+|----------|----------|-------------------|------------|
+| Android | ✅ StrongBox/TEE | ✅ Partial | `ANDROID_ID` is 64-bit oracle output |
+| iOS/macOS | ✅ Secure Enclave | ❌ Internal only | Reserved for Apple services |
+| Windows | ✅ TPM 2.0 | ⚠️ Complex | Inconsistent availability, no standard API |
+| Linux | ✅ TPM 2.0 | ⚠️ Manual | Requires manual setup, arcane tools |
+
+Android's `ANDROID_ID` is effectively `HMAC(device_secret, signing_key)` with 64-bit output—better than readable identifiers but not full hardware oracle access. Other platforms provide readable identifiers (machine-id, IOPlatformUUID) that are unique and persistent but not cryptographically secret.
+
+**Photon's approach:**
+
+Given platform limitations, Photon derives app-specific secrets from readable identifiers:
+
+```rust
+const APP_CONTEXT: &[u8] = b"photon_device_identity_v0";
+let device_secret = blake3::derive_key(APP_CONTEXT, &machine_id);
+```
+
+This provides: device-specific keys, resistance to remote attacks (requires both identifier exfiltration and app reverse-engineering), and security comparable to SSH keys or cryptocurrency wallets. Physical device theft remains the primary threat vector.
+
+The hardware exists and is capable. Platform vendors use it internally for device attestation, DRM, and payment processing. Third-party access would enable applications that bypass platform identity systems—a business model conflict, not a technical limitation.
+
+---
 
 ### Rolling-Chain Encryption
 
-Traditional messaging (Signal, WhatsApp) uses **Double Ratchet**: sender advances keys immediately, receiver stores "skipped message keys" for out-of-order delivery. This allows asynchronous messaging but makes message ordering non-deterministic.
+Traditional messaging (Signal, WhatsApp) uses **Double Ratchet**: sender advances keys immediately, receiver stores "skipped message keys" for out-of-order delivery. This enables asynchronous messaging but makes ordering non-deterministic.
 
-Photon uses **rolling-chain encryption**: the sender does **not** advance the chain state until receiving confirmation that the message was successfully received and decrypted. This creates a **synchronization loop**:
+Photon uses **rolling-chain encryption**: the sender does not advance chain state until receiving confirmation that the message was successfully received and decrypted. This creates a synchronization loop:
 
 ```
-Eve (state₀)  ──message encrypted with state₀──→  Norman (state₀)
-                                                     Norman decrypts, advances to state₁
-Eve (state₀)  ←──────ACK or reply──────────────  Norman (state₁)
-Eve advances to state₁
+Alice (state₀)  ──message encrypted with state₀──→  Bob (state₀)
+                                                      Bob decrypts, advances to state₁
+Alice (state₀)  ←──────ACK or reply──────────────  Bob (state₁)
+Alice advances to state₁
 [Both now at state₁, loop complete]
 ```
 
-**Why wait for acknowledgment?**
+**Properties enabled by acknowledgment-based advancement:**
 
-**0. Prevents desynchronization**: If a message is lost, both parties remain at the same state—no "skipped keys" needed
+0. **Prevents desynchronization**: Lost messages leave both parties at same state—no "skipped keys"
+1. **Enforces ordering**: Messages processed sequentially with verified sequence numbers
+2. **Enables immutability**: Deleting or editing message breaks all subsequent hashes—cryptographic proof of tampering
+3. **Simplifies recovery**: New devices replay message history from checkpoints without complex key management
 
-**1. Enforces ordering**: Messages must be processed sequentially (sequence numbers verified)
-
-**2. Enables immutability**: Deleting or editing a message breaks all subsequent hashes—cryptographic proof of tampering
-
-**3. Simplifies recovery**: New devices can replay message history from checkpoints without complex key management
-
-**How the hash chain works:**
+**How the chain works:**
 
 ```rust
 // Initial state from shared seed (exchanged out-of-band)
 state₀ = BLAKE3(seed)
 
 // Encrypt message
-ciphertext = plaintext ⊕ state₀  // XOR with current state
+ciphertext = plaintext ⊕ state₀  // XOR for chain linkage
 
 // Advance ONLY after receiving ACK
 stateᵢ = BLAKE3(stateᵢ₋₁ ‖ ciphertext)
@@ -178,53 +214,29 @@ stateᵢ = BLAKE3(stateᵢ₋₁ ‖ ciphertext)
 
 Each message's ciphertext is hashed with the previous state to produce the next state. Breaking one message doesn't reveal others (forward secrecy via BLAKE3 preimage resistance). Modifying message `i` changes all subsequent states—tampering is cryptographically detectable.
 
-**ACK timing and state branches:**
+**Encryption layer:**
 
-Messages include a `parent_sequence` field indicating which chain state was used for encryption. If the sender receives an ACK and advances the chain while messages are still in flight, the receiver can detect the branch:
-
-```rust
-// Eve sends msg₅, msg₆ (both with state₄)
-// ACK for msg₅ arrives → Eve advances to state₅
-// Eve sends msg₇ with parent_sequence=5 (encrypted with state₅)
-
-// Norman receives msg₇ before msg₆
-// Checks: parent_sequence=5, my last ACK'd=4
-// Queues msg₇ until msg₅ arrives and is processed
-```
-
-This prevents race conditions where sender and receiver have different views of which state to use. Orphaned branches (messages encrypted with a state the receiver has moved past) are detected and trigger retransmission requests.
-
-**Multiple messages in flight:**
-
-Eve can send messages 100, 101, 102 all encrypted with `state₉₉` while waiting for ACKs. Once ACKs arrive, states advance in sequence order:
-
-```
-msg₁₀₀ sent with state₉₉
-msg₁₀₁ sent with state₉₉ (still waiting)
-msg₁₀₂ sent with state₉₉ (still waiting)
-
-ACK for msg₁₀₀ → state₉₉ → state₁₀₀
-ACK for msg₁₀₁ → state₁₀₀ → state₁₀₁
-ACK for msg₁₀₂ → state₁₀₁ → state₁₀₂
-```
-
-This is secure because:
-- Each message has unique nonce (64-bit random)
-- Each message has unique timestamp (128-bit microsecond precision)
-- Combined serialized plaintext is always unique
-- State advances once ACK received, limiting exposure window
-- Known-plaintext attack on one message doesn't reveal past/future states (BLAKE3 preimage resistance)
-
-**Traditional encryption on top:**
-
-The XOR with chain state is not the only encryption layer. Final messages use **ChaCha20-Poly1305 AEAD** with keys derived from chain state:
+The chain state XOR is not the only encryption. Final messages use **ChaCha20-Poly1305 AEAD**:
 
 ```rust
 encryption_key = BLAKE3_KDF(chain_state, "photon.encryption.v1")
 encrypted_message = ChaCha20Poly1305::encrypt(key, nonce, plaintext)
 ```
+Rolling-chain provides immutability and ordering; ChaCha20-Poly1305 provides standard cryptographic security.
 
-Rolling-chain provides immutability and ordering guarantees; ChaCha20-Poly1305 provides standard cryptographic security.
+**Latency characteristics:**
+
+This synchronization model doesn't compromise performance. Direct peer-to-peer connections have significantly lower latency than server-relayed messaging:
+
+| Path | Round-trip Latency |
+|------|-------------------|
+| Photon P2P (Seattle–Los Angeles) | ~25-30ms |
+| Photon P2P (Los Angeles–New York) | ~50-60ms |
+| Signal/WhatsApp | 100-300ms (server relay) |
+| Zoom | 100-300ms (central server) |
+| FaceTime | 80-200ms (Apple relay) |
+
+For regional connections (Seattle–LA), video frames arrive **before the next frame starts capturing** at 30fps (33.33ms per frame). Acknowledgments return faster than human perception can register. Even coast-to-coast (LA–NYC), Photon is **3-6x faster** than commercial services while providing cryptographic immutability and no corporate surveillance.
 
 **Trade-offs:**
 
@@ -236,56 +248,58 @@ Rolling-chain provides immutability and ordering guarantees; ChaCha20-Poly1305 p
 | Message deletion undetectable | Deletion breaks chain (detectable) |
 | Message editing undetectable | Editing breaks chain (detectable) |
 
+---
+
 ### Passless Authentication
 
-No passwords. No PINs. No biometrics unlocking a password. No "passkeys" that are passwords with extra steps.
+**Authentication Count: A = 1**
 
-**Authentication count: A = 1**
+You authenticate once when creating your identity. All subsequent access uses cryptographic proofs derived from that single authentication event.
 
-You authenticate **once** when creating your identity. All subsequent access uses cryptographic proofs derived from that single authentication event. New devices receive identity thru:
+**Identity recovery mechanisms:**
 
-**0. Proximity transfer**: Authorized device transfers identity to new device via Bluetooth LE with 3-word visual verification (or manual entry if BLE unavailable)
+0. **Proximity transfer**: Authorized device transfers identity to new device via Bluetooth LE with 3-word visual verification (manual entry if BLE unavailable or out of range)
 
-**1. Social recovery**: Lose all devices? Trusted contacts hold encrypted shards of your private key—threshold reconstruction (typically 5 friends required)
+1. **Social recovery**: Lose all devices? Trusted contacts hold encrypted shards of your private key. Threshold reconstruction typically requires 5 friends—your security boundary is the number of trusted contacts who would need to collude to compromise your identity.
 
 **Handle attestation:**
 
-Identity is tied to your handle. Handles can be **any Unicode string of any length** including zero (e.g., `fractaldecoder`, `🚀`, `∫∂x`, or even empty string `""` if unclaimed). The handle is hashed with BLAKE3 to derive a unique network address—if it can be hashed, it's valid. Claiming a handle requires **two human attestations**—existing users vouch for your identity. This is invite-only by design. No bots, no spam, no anonymous harassment.
+Identity is tied to your handle—any Unicode string of any length (e.g., `fractal decoder`, `🚀`, `∫∂x`, or `☢⚡☃`). The handle is hashed with BLAKE3 to derive a network address. Claiming a handle requires **two human attestations**—existing users vouch for your identity. This is invite-only by design.
 
-Attestation flow (see [AUTH.md](AUTH.md) for full specification):
+**Attestation flow** (see [AUTH.md](AUTH.md) for full specification):
 
-**0. User requests handle** (e.g., `Wayne`)
-
-**1. System queries DHT**: is `Wayne` already claimed?
-
-**2. If unclaimed**, user requests attestations from 2 trusted people
-
-**3. Attesters see**: device type, approximate location, timestamp
-
-**4. Attesters verify out-of-band** (phone call, video, in-person)
-
-**5. Both attestations required** within 24 hours
-
-**6. Handle bound** to user's public key cryptographically
+0. User requests handle (e.g., `Wayne`)
+1. System queries DHT: is `Wayne` already claimed?
+2. If unclaimed, user requests attestations from 2 trusted people
+3. Attesters see: device type, approximate location, timestamp
+4. Attesters verify out-of-band (phone call, video, in-person)
+5. Both attestations required within 24 hours
+6. Handle cryptographically bound to user's public key
 
 **Why attestation?**
 
-Password reset flows prove identity doesn't exist—anyone with access to your email/phone can take your account. Photon uses the security model humans have used for millennia: **trusted relationships**. Your friends vouch for you. They hold shards of your identity. They verify recovery requests. No company, no customer support, no "click this link to reset."
+Traditional authentication asks "prove you are you" then accepts a password—which proves nothing about identity, only knowledge of a secret. It doesn't even prove you're human. Password reset flows are worse: anyone with access to your email or phone can claim your account.
 
-See [AUTH.md](AUTH.md) for detailed specification (1,350 lines covering attestation, reputation, social recovery, verification phrases, rate limiting, attack resistance).
+Photon uses the security model humans have used for millennia: trusted relationships. Your friends vouch for you, hold shards of your identity, and verify recovery requests. No company, no customer support, no "click this link to reset."
+
+See [AUTH.md](AUTH.md) for detailed specification.
+
+---
 
 ### Network Architecture
 
-**Peer discovery:** FGTW (Fractal Gradient Towards Wire)—custom Kademlia DHT with 32-byte BLAKE3 node IDs, 256 k-buckets, and VSF-serialized protocol messages. Handle lookups: `BLAKE3(handle) → handle_hash → Kademlia routing → peer records`. Bootstrap via `fgtw.org/peers.vsf` (Cloudflare Workers endpoint that tracks active peers and provides initial routing table population).
+**Peer discovery:** FGTW (Fractal Gradient Trust Web)—custom Kademlia DHT with 32-byte BLAKE3 node IDs, 256 k-buckets, and VSF-serialized protocol messages. Handle lookups: `BLAKE3(handle) → handle_hash → Kademlia routing → peer records`. Bootstrap via `fgtw.org/peers.vsf` (Cloudflare Workers endpoint providing seed routing table population).
 
-**Transport:** TLS 1.3 over TCP + WebSocket upgrade—encrypted connections look like HTTPS web traffic.
+**Transport:** UDP for P2P status and messaging, HTTPS (rustls) for bootstrap fetches. WebSocket support planned for NAT traversal.
 
-**Message routing:**
-- Small messages (<1KB, no expiration): Stored across your social graph with fractal gradient mesh distribution (closer friends store more copies)
-- Large messages (>1KB): Direct peer-to-peer transfer
-- Ephemeral messages (expiration <7 days): Direct-only, auto-deleted
+**Message routing (planned):**
+- Direct UDP when both peers online
+- Store-and-forward via trusted contacts when recipient offline
+- No central relay servers
 
-**No central servers.** Bootstrap endpoint (`fgtw.org`) only provides initial peer discovery—after that, the DHT is self-sustaining. Messages persist as long as **you** want them to, distributed across devices you control and friends who've agreed to store encrypted backups. No company can read, delete, or subpoena your messages—they don't have them.
+**Storage model:** Messages persist as long as you want them to, distributed across devices you control and friends who've agreed to store encrypted backups. The bootstrap endpoint (`fgtw.org`) only provides initial peer discovery—after that, the DHT is self-sustaining. No central servers store or process messages.
+
+---
 
 ## Architecture
 
@@ -295,48 +309,53 @@ See [AUTH.md](AUTH.md) for detailed specification (1,350 lines covering attestat
 src/
 ├── main.rs              - Winit event loop, window management
 ├── lib.rs               - Module exports, debug utilities
+├── self_verify.rs       - Ed25519 binary signature verification
 ├── crypto/
 │   ├── chain.rs         - Rolling-chain encryption (IMPLEMENTED)
 │   ├── keys.rs          - Identity key management (TODO)
 │   └── shards.rs        - Social recovery key sharding (TODO)
 ├── network/
-│   └── handle_query.rs  - DHT attestation status queries (STUBBED)
+│   ├── fgtw/
+│   │   ├── identity.rs  - Deterministic key derivation
+│   │   ├── protocol.rs  - VSF-encoded FGTW messages
+│   │   ├── transport.rs - UDP/WebSocket transport
+│   │   ├── node.rs      - Kademlia DHT routing
+│   │   ├── peer_store.rs - Peer caching
+│   │   └── bootstrap.rs - Initial peer discovery
+│   ├── handle_query.rs  - Handle attestation and lookup
+│   └── status.rs        - P2P ping/pong status checker
 ├── ui/
 │   ├── app.rs           - Application state machine
+│   ├── avatar.rs        - Avatar encoding/upload/download
 │   ├── text_rasterizing.rs - Font rendering (cosmic-text)
-│   ├── renderer_linux.rs   - X11/Wayland rendering
-│   ├── renderer_windows.rs - DirectDraw rendering
+│   ├── renderer_*.rs    - Platform-specific rendering
 │   ├── keyboard.rs      - Input handling
-│   ├── mouse.rs         - Mouse tracking
 │   ├── text_editing.rs  - Text input state
-│   ├── theme.rs         - Color palette
-│   └── compositing.rs   - Layer blending
+│   └── theme.rs         - Color palette
 ├── types/
 │   ├── identity.rs      - Public/private keys (X25519)
 │   ├── message.rs       - Message structure, status, expiration
 │   ├── contact.rs       - Contact info, trust levels
-│   ├── peer.rs          - Network peer info
-│   ├── seed.rs          - Cryptographic seed generation
 │   └── shard.rs         - Key shard structures
-├── storage/             - SQLite integration (EMPTY - TODO)
-├── logic/               - Business logic orchestration (EMPTY - TODO)
-└── platform/            - Platform-specific code (EMPTY)
+└── storage/             - VSF persistence (TODO)
 ```
 
-### What's Implemented
+### Implementation Status
 
 | Component | Status | Notes |
 |-----------|--------|-------|
 | UI Framework | ✅ Complete | Custom winit-based GUI, differential rendering |
-| Text Rendering | ✅ Complete | cosmic-text with multiple fonts, selection, editing |
-| Window Management | ✅ Complete | Resize, maximize, fullscreen, transparency |
-| Input Handling | ✅ Complete | Keyboard, mouse, clipboard integration |
+| Text Rendering | ✅ Complete | cosmic-text, selection, editing |
+| Device Identity | ✅ Complete | Deterministic keys from hardware (never stored) |
 | Crypto Types | ✅ Complete | Identity, seed, shard, message structures |
-| Rolling-Chain Crypto | ⚠️ Framework | Core logic implemented, needs ChaCha20 integration |
-| Handle Attestation | ✅ Working | Memory-hard PoW (~1s), stores in DHT |
-| Peer Discovery | ✅ Working | FGTW DHT queries return peer IP addresses |
-| Network Transport | ⚠️ Partial | DHT working, direct peer connections pending |
-| Message Persistence | ❌ Empty | SQLite schema and storage layer not implemented |
+| Rolling-Chain | ⚠️ Framework | Core logic implemented, ChaCha20 integration pending |
+| Handle Attestation | ✅ Working | Memory-hard PoW (~1s), DHT storage |
+| Peer Discovery | ✅ Working | FGTW DHT queries return peer IPs |
+| P2P Status | ✅ Working | UDP ping/pong with Ed25519 signatures |
+| Avatar System | ✅ Working | VSF-encoded, FGTW storage, encryption |
+| Binary Signing | ✅ Working | Ed25519 signatures, self-verification on startup |
+| Network Transport | ⚠️ Partial | DHT functional, direct peer connections pending |
+| Message Persistence | ❌ Empty | VSF storage layer not implemented |
 | Social Recovery | ❌ Stubbed | Shard distribution/reconstruction TODO |
 | Peer Messaging | ❌ Not Started | End-to-end message flow not implemented |
 
@@ -356,68 +375,167 @@ src/
 
 **Network:**
 - `tokio` - Async runtime
-- `tokio-tungstenite` - WebSocket
-- `tokio-native-tls` - TLS 1.3
-- `reqwest` - HTTP client (bootstrap peer fetching)
+- `tokio-tungstenite` - WebSocket (planned for NAT traversal)
+- `reqwest` - HTTP client with rustls (bootstrap fetches)
 
 **Storage:**
-- `rusqlite` - SQLite with bundled library
+- `vsf` - Versatile Storage Format (self-describing binary with embedded schemas, versioning, and per-record cryptographic signatures)
 - `bincode` - Binary serialization
 
-**Build:**
-- LTO enabled (release)
-- Symbols stripped
-- Parallel codegen (dev)
-- `opt-level=2` (dev for fast iteration)
+---
 
 ## File Format: VSF (Versatile Storage Format)
 
-Messages and identity data use **VSF**—a self-describing binary format with cryptographic integrity. Implementation is functional but needs updates for messaging (1-2 months estimated).
+Messages and identity data use VSF—a self-describing binary format with cryptographic integrity. Implementation is functional but needs updates for messaging.
 
-VSF provides:
+**VSF provides:**
 - Type-length-value encoding
-- Embedded schemas
-- Versioning and forward compatibility
-- Cryptographic signatures per record
-- Compression (optional)
+- Embedded schemas with version information
+- Forward compatibility
+- Per-record cryptographic signatures
+- Optional compression
 
 See `tools/` directory for VSF utilities (format inspection, validation).
 
+---
+
+## Distribution Philosophy
+
+We do not distribute via Google Play Store, Apple App Store, or Microsoft Store. These platforms create barriers incompatible with our security model and decentralized architecture. Ready-to-run signed binaries are provided in `bin/`.
+
+**Reasons for direct distribution:**
+
+0. **Encryption reporting requirements**: US Export Administration Regulations require registration with the Bureau of Industry and Security and disclosure of encryption implementation details before international distribution.
+
+1. **Review process uncertainty**: App stores can reject applications with strong encryption or demand explanations of security implementations.
+
+2. **Corporate intermediaries**: Distribution thru stores requires trusting corporations to maintain access to software.
+
+3. **Sideloading restrictions**: iOS requires annual re-signing ($99/year developer account), free accounts must reinstall every 7 days. Android allows direct APK installation but shows discouragement warnings.
+
+We provide cryptographically signed binaries with published checksums. Users verify signatures, verify source, and run directly.
+
+---
+
+## Why No iOS?
+
+Apple's iOS platform has architectural incompatibilities with Photon's design:
+
+**Distribution barriers:**
+- App Store requires $99/year developer account tied to real identity
+- All binaries must be Apple-signed
+- Sideloading requires re-installation every 7 days (free accounts) or yearly (paid)
+- Enterprise distribution violates terms if used publicly
+- No mechanism for "public infrastructure without corporate owner"
+
+**Technical limitations:**
+- **No raw socket access**: Cannot connect to DHT peers directly
+- **No background processes**: Apps terminated after ~30 seconds in background
+- **Sandbox restrictions**: Cannot run persistent TOKEN daemon
+- **Entitlement gatekeeping**: Network access requires Apple approval
+- **No system-level services**: Architecture assumes apps are foreground-only
+
+Photon requires persistent background connections, direct peer-to-peer networking, and system-level cryptographic services. iOS prohibits all of these by design, not by technical limitation.
+
+The EU's Digital Markets Act may force sideloading in Europe by 2026, but likely won't address the fundamental architectural restrictions.
+
+---
+
+## Comparison with Existing Messengers
+
+| Property | Signal | WhatsApp | Matrix | Photon |
+|----------|--------|----------|--------|--------|
+| Architecture | Centralized | Centralized | Federated | P2P |
+| Authentication count | Multiple | Multiple | Multiple | **1** |
+| Social recovery | No | No | No | **Yes** |
+| Metadata privacy | Partial | No | Partial | **Yes** |
+| Self-sovereign data | No | No | Partial | **Yes** |
+| Message immutability | No | No | No | **Yes** |
+| Phone number required | Yes | Yes | No | No |
+| Single point of failure | Yes | Yes | Partial | No |
+
+**Architecture implications:**
+
+- **Centralized** (Signal, WhatsApp): Single company runs servers. Can be subpoenaed, shut down, or pressured by governments.
+- **Federated** (Matrix): Multiple servers run by different operators. Better than centralized but still relies on homeservers—messages flow thru infrastructure users don't control.
+- **P2P** (Photon): No message servers. Peers connect directly. DHT bootstrap only provides initial peer discovery—after that, the network is self-sustaining.
+
+**Signal/WhatsApp:**
+- Centralized servers (legal vulnerability)
+- Phone number required (ties identity to carrier)
+- No social recovery (lose device → lose account)
+- Message deletion undetectable by recipient
+
+**Matrix:**
+- Federation, not P2P (homeserver dependency)
+- Authentication per device/homeserver
+- No social key recovery
+- Metadata visible to homeserver operators
+- Homeservers can be individually shut down
+
+**Photon:**
+- True P2P (no message servers)
+- Single authentication event (A = 1)
+- Social recovery (threshold reconstruction)
+- Message immutability (tampering detectable)
+- Metadata privacy (traffic appears as HTTPS)
+
+---
+
+## Security Properties
+
+**Guaranteed by rolling-chain encryption:**
+
+0. Forward secrecy (compromising state_n doesn't reveal state_n-1)
+1. Replay resistance (sequence numbers prevent replayed messages)
+2. Reorder detection (out-of-order messages fail sequence validation)
+3. Tamper evidence (modifying message breaks all subsequent hashes)
+4. Message immutability (deletion/editing cryptographically detectable)
+
+**Guaranteed by attestation system:**
+
+0. Human identity verification (automated systems can't pass two attestations)
+1. Rate limiting (1 attestation request per hour per device)
+2. Collusion visibility (both attesters see each other's approval)
+3. Reputation staking (attesters risk reputation vouching for abusers)
+
+**Not protected against:**
+
+- Physical device theft (if device unlocked)
+- Threshold collusion (k or more trusted contacts)
+- Screenshots or physical photography of screen
+- Quantum computers breaking X25519 (future threat—would require protocol upgrade)
+
+---
+
 ## Design Philosophy
 
-Drawn from [AGENT.md](https://github.com/yourusername/photon/blob/main/AGENT.md):
+From [AGENT.md](https://github.com/nickspiker/photon/blob/main/AGENT.md):
 
-**0. Trust the math**: If loop bounds guarantee safety, don't add runtime checks
+0. **Trust the math**: If loop bounds guarantee safety, don't add runtime checks
+1. **Fail fast, fail loud**: Panics expose bugs; bounds checks can hide them
+2. **No fixed pixels**: Everything scales relative to screen dimensions
+3. **Explicit over "safe"**: Direct indexing when mathematically proven safe
 
-**1. Fail fast, fail loud**: Panics expose bugs; bounds checks hide them
+See [AGENT.md](AGENT.md) for complete code generation rules.
 
-**2. No fixed pixels**: Everything scales relative to screen dimensions (`min_dim`, `perimeter`, `diagonal_sq`)
-
-**3. Explicit over "safe"**: `pixels[idx] = color` not `pixels.get_mut(idx).map(...)`
-
-**4. Bounds checks require proof**: State why, prove necessity, explain what undefined behavior is prevented
-
-If you add a bounds check or saturating arithmetic without justification, expect rejection. See [AGENT.md](AGENT.md) for full rules.
+---
 
 ## Contributing
 
-Photon is in early development. Contributions welcome, but read the architecture docs first:
+Photon is in early development. Contributions welcome—please read architecture documentation first:
 
 - [AUTH.md](AUTH.md) - Attestation system specification (1,350 lines)
-- [AGENT.md](AGENT.md) - Code generation rules (bounds checks, scaling, philosophy)
+- [AGENT.md](AGENT.md) - Code generation rules
 - This README - Architecture and current status
 
 **High-priority areas:**
 
-**0. Network transport** (DHT queries, peer connections, WebSocket)
-
-**1. Message persistence** (SQLite schema, storage layer)
-
-**2. Social recovery** (shard distribution, threshold reconstruction)
-
-**3. Android testing** (NDK integration works, needs real-device testing)
-
-**4. ChaCha20-Poly1305 integration** (replace XOR placeholder in rolling-chain)
+0. Network transport (direct peer connections, WebSocket)
+1. Message persistence (VSF storage layer)
+2. Social recovery (shard distribution, threshold reconstruction)
+3. Android testing (real-device validation)
+4. ChaCha20-Poly1305 integration (complete rolling-chain implementation)
 
 **Testing:**
 ```bash
@@ -425,91 +543,30 @@ cargo test
 cargo bench  # Crypto benchmarks
 ```
 
-No tests currently—this is early-stage development. Write tests for any new crypto code.
+Test coverage is currently minimal—this is early-stage development. Write tests for any new cryptographic code.
 
-## Why Not Use Signal/WhatsApp/Matrix?
-
-| Property | Signal | WhatsApp | Telegram | Matrix | Photon |
-|----------|--------|----------|----------|--------|--------|
-| Architecture | Centralized | Centralized | Centralized | Federated | **P2P** |
-| Authentication count | >1 | >1 | >1 | >1 | **1** |
-| Social recovery | No | No | No | No | **Yes** |
-| Metadata privacy | Partial | No | No | Partial | **Yes** |
-| Self-sovereign data | No | No | No | Partial | **Yes** |
-| Message immutability | No | No | No | No | **Yes** |
-| Phone number required | Yes | Yes | Yes | No | No |
-| Can be shut down | Yes | Yes | Yes | Partial | No |
-
-**Architecture matters:**
-- **Centralized** (Signal, WhatsApp, Telegram): One company runs the servers. They can be subpoenaed, shut down, or pressured by governments.
-- **Federated** (Matrix): Multiple servers run by different operators. Better than centralized, but still relies on homeservers—your messages flow thru infrastructure you don't control.
-- **P2P** (Photon): No servers. Peers connect directly. DHT bootstrap is the only infrastructure, and it only provides initial peer discovery—after that, the network is self-sustaining.
-
-Think Bitcoin vs XRP: Bitcoin is decentralized (no central authority), XRP is federated (distributed but controlled). Matrix is the XRP of messaging. Photon is Bitcoin.
-
-**Signal/WhatsApp:**
-- Centralized servers (can be subpoenaed, shut down)
-- Phone number required (ties identity to carrier)
-- No social recovery (lose device → lose account)
-- Message deletion undetectable (sender can unsend)
-
-**Matrix:**
-- Federation, not P2P (still relies on homeservers)
-- Authentication per device/homeserver
-- No social key recovery
-- Metadata leaked to homeserver operators
-- Homeservers can be shut down individually
-
-**Photon:**
-- True P2P (no servers, just DHT peer discovery)
-- Passless authentication (A = 1)
-- Social recovery (friends hold key shards)
-- Message immutability (rolling-chain makes tampering detectable)
-- Metadata privacy (traffic looks like HTTPS)
-
-## Security Properties
-
-**Guaranteed by rolling-chain encryption:**
-
-**0. Forward secrecy** (compromising `stateₙ` doesn't reveal `stateₙ₋₁`)
-
-**1. Replay resistance** (sequence numbers prevent replayed messages)
-
-**2. Reorder detection** (out-of-order messages fail sequence validation)
-
-**3. Tamper evidence** (modifying message `i` breaks all subsequent hashes)
-
-**4. Message immutability** (deletion/editing cryptographically detectable)
-
-**Guaranteed by attestation system:**
-
-**0. Human identity verification** (bots can't pass two attestations)
-
-**1. Rate limiting** (1 attestation request per hour per device)
-
-**2. Collusion detection** (both attesters see each other's approval)
-
-**3. Reputation staking** (attesters risk reputation if they vouch for abusers)
-
-**Not protected against:**
-- Physical device theft (if unlocked)
-- `k` or more friends colluding (threshold is your security boundary)
-- Screenshots or cameras pointed at screen
-- Quantum computers breaking X25519 (future threat—would require protocol upgrade)
+---
 
 ## Related Projects
 
-Photon is the first implementation of **TOKEN**—a universal digital identity system where authentication happens once. Other TOKEN applications (planned):
+Photon is the first implementation of **TOKEN**—a universal digital identity system where authentication happens once (A = 1). Planned TOKEN applications:
 
 - `ferros` - Kill-switch ready OS
+- Additional applications TBD
 
-Once you authenticate with TOKEN (A = 1), all applications use that single identity. Install TOKEN on new device → everything appears automatically (apps, settings, messages, contacts, files). No passwords, no setup wizards, no per-app logins.
+Once authenticated with TOKEN, all applications use that single identity. Install TOKEN on new device → everything appears automatically (apps, settings, messages, contacts, files). No passwords, no setup wizards, no per-app logins.
 
-Photon proves the social attestation and recovery model works before applying it to high-stakes use cases (property deeds, medical records, financial assets).
+Photon demonstrates the social attestation and recovery model works before applying it to higher-stakes use cases (property deeds, medical records, financial assets).
+
+---
 
 ## License
 
-MIT OR Apache-2.0 (dual) - See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE)
+MIT OR Apache-2.0 (dual-licensed)
+
+See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE)
+
+---
 
 ## Contact
 
@@ -517,8 +574,8 @@ MIT OR Apache-2.0 (dual) - See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](L
 
 ---
 
-**Project Status:** 🟡 Early Development (GUI functional, messaging implementation 1-2 months out)
+**Project Status:** 🟡 Early Development (GUI functional, P2P status working, messaging pending)
 
-**Platform Support:** Linux ✅ | Windows ✅ | Android ⚠️ | macOS 🟡 | iOS ❌🟥❌
+**Platform Support:** Linux ✅ | Windows ✅ | macOS ✅ | Android ✅ | Redox 🟡 | iOS ❌
 
-**Last Updated:** 2025-11-21
+**Last Updated:** 2025-11-29

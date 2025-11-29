@@ -3,6 +3,7 @@
 //! Keys are NEVER stored on disk - always derived deterministically from:
 //! - Linux: /etc/machine-id
 //! - Windows: Registry MachineGuid
+//! - macOS: IOPlatformUUID (hardware-burned)
 //! - Android: Device fingerprint (passed via JNI)
 
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
@@ -82,6 +83,7 @@ pub fn derive_device_keypair(fingerprint: &[u8]) -> Keypair {
 ///
 /// Linux: /etc/machine-id (stable across reboots, unique per install)
 /// Windows: MachineGuid from registry
+/// macOS: IOPlatformUUID (hardware-burned, survives reinstalls)
 /// Android: Handled separately via JNI with device fingerprint
 #[cfg(target_os = "linux")]
 pub fn get_machine_fingerprint() -> io::Result<Vec<u8>> {
@@ -103,9 +105,25 @@ pub fn get_machine_fingerprint() -> io::Result<Vec<u8>> {
     Ok(output.stdout)
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "android")))]
+#[cfg(target_os = "macos")]
 pub fn get_machine_fingerprint() -> io::Result<Vec<u8>> {
-    // Fallback: use hostname + some stable system info
+    // Read IOPlatformUUID - hardware-burned UUID that survives OS reinstalls
+    use std::process::Command;
+    let output = Command::new("ioreg")
+        .args(["-rd1", "-c", "IOPlatformExpertDevice"])
+        .output()?;
+    // Output contains IOPlatformUUID among other fields
+    // We hash the whole output - includes UUID and is deterministic
+    Ok(output.stdout)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos", target_os = "android")))]
+pub fn get_machine_fingerprint() -> io::Result<Vec<u8>> {
+    // Fallback for other Unix-like systems (FreeBSD, etc.)
+    // Try /etc/hostid first, then hostname
+    if let Ok(hostid) = std::fs::read("/etc/hostid") {
+        return Ok(hostid);
+    }
     let hostname = std::fs::read("/etc/hostname").unwrap_or_else(|_| b"unknown".to_vec());
     Ok(hostname)
 }

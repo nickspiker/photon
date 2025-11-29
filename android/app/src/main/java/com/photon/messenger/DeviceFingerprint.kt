@@ -1,21 +1,24 @@
 package com.photon.messenger
 
 import android.content.Context
-import android.os.Build
+import android.os.Process
 import android.provider.Settings
-import java.io.File
 
 /**
  * Device fingerprint for deterministic key derivation.
  *
- * Combines hardware identifiers to create a stable device fingerprint
- * that survives app reinstalls but changes on factory reset or hardware swap.
+ * Uses ANDROID_ID + user number to create a stable device fingerprint.
  *
- * The fingerprint is NEVER stored - it's derived fresh each time and used
- * immediately to derive the device's Ed25519 keypair via BLAKE3.
+ * ANDROID_ID is:
+ * - Per-device (unique to this physical device)
+ * - Per-signing-key (all apps signed with same key get same value)
+ * - Persistent across app reinstalls
+ * - Reset on factory reset
  *
- * Note: IMEI/Serial are unavailable on Android 10+ for non-system apps.
- * We use ANDROID_ID + hardware identifiers instead.
+ * This effectively makes ANDROID_ID a hardware oracle scoped to our signing key.
+ * Other developers can't get the same value even on the same device.
+ *
+ * User number distinguishes between Android multi-user profiles on the same device.
  */
 object DeviceFingerprint {
 
@@ -25,56 +28,26 @@ object DeviceFingerprint {
     )
 
     /**
-     * Gather device fingerprint components.
+     * Gather device fingerprint: ANDROID_ID + user number
      */
     fun gather(context: Context): FingerprintResult {
-        val components = mutableListOf<String>()
         val warnings = mutableListOf<String>()
 
-        // 1. ANDROID_ID - persistent per-app, scoped to signing key
+        // ANDROID_ID - per-device, per-signing-key oracle
         val androidId = Settings.Secure.getString(
             context.contentResolver,
             Settings.Secure.ANDROID_ID
         ) ?: ""
-        components.add("android_id:$androidId")
 
-        // 2. Build identifiers - device model fingerprint
-        components.add("manufacturer:${Build.MANUFACTURER}")
-        components.add("model:${Build.MODEL}")
-        components.add("device:${Build.DEVICE}")
-        components.add("board:${Build.BOARD}")
-        components.add("hardware:${Build.HARDWARE}")
+        // User number - distinguishes multi-user profiles
+        val userId = Process.myUserHandle().hashCode()
 
-        // 3. CPU info
-        val cpuInfo = getCpuInfo()
-        components.add("cpu:$cpuInfo")
-
-        // 4. Version tag for future-proofing
-        components.add("photon-device-v0")
-
-        // Combine all components into a single string, then to bytes
-        val combined = components.joinToString("|")
+        // Combine: "android_id:abc123|user:0|photon-v1"
+        val fingerprint = "android_id:$androidId|user:$userId|photon-v1"
 
         return FingerprintResult(
-            fingerprint = combined.toByteArray(Charsets.UTF_8),
+            fingerprint = fingerprint.toByteArray(Charsets.UTF_8),
             warnings = warnings
         )
     }
-
-    /**
-     * Get CPU info from /proc/cpuinfo
-     */
-    private fun getCpuInfo(): String {
-        return try {
-            val cpuInfo = File("/proc/cpuinfo").readText()
-            // Extract key identifiers: Hardware, CPU implementer, CPU part
-            val hardware = Regex("Hardware\\s*:\\s*(.+)").find(cpuInfo)?.groupValues?.get(1)?.trim() ?: ""
-            val implementer = Regex("CPU implementer\\s*:\\s*(.+)").find(cpuInfo)?.groupValues?.get(1)?.trim() ?: ""
-            val part = Regex("CPU part\\s*:\\s*(.+)").find(cpuInfo)?.groupValues?.get(1)?.trim() ?: ""
-            "$hardware|$implementer|$part"
-        } catch (e: Exception) {
-            Build.SUPPORTED_ABIS.joinToString(",")
-        }
-    }
-
 }

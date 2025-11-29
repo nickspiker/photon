@@ -1248,7 +1248,9 @@ pub fn upload_avatar(device_secret: &SigningKey, handle: &str) -> Result<String,
         ));
         Ok(storage_key)
     } else {
-        Err(format!("Avatar upload failed: {}", response.status()))
+        let status = response.status();
+        let body = response.text().unwrap_or_else(|_| String::new());
+        Err(format!("Avatar upload failed: {} - {}", status, body))
     }
 }
 

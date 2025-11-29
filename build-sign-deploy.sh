@@ -56,8 +56,10 @@ cp target/x86_64-unknown-redox/release/photon-messenger /mnt/Chiton/MEGA/holdmyo
 cp target/x86_64-apple-darwin/release/photon-messenger /mnt/Chiton/MEGA/holdmyoscilloscope/photon/photon-messenger-macos-intel
 cp target/aarch64-apple-darwin/release/photon-messenger /mnt/Chiton/MEGA/holdmyoscilloscope/photon/photon-messenger-macos-arm64
 cp android/app/build/outputs/apk/release/app-release.apk /mnt/Chiton/MEGA/holdmyoscilloscope/photon/photon-messenger.apk
+cp install.sh /mnt/Chiton/MEGA/holdmyoscilloscope/photon/install.sh
+cp install.ps1 /mnt/Chiton/MEGA/holdmyoscilloscope/photon/install.ps1
 
 echo ""
-echo "✓ Linux, Windows, Redox, macOS Intel, macOS ARM64, and Android binaries deployed"
+echo "✓ Linux, Windows, Redox, macOS Intel, macOS ARM64, Android binaries, and install script deployed"
 
 wrangler pages deploy /mnt/Chiton/MEGA/holdmyoscilloscope --project-name=oscilloscope

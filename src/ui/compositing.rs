@@ -364,21 +364,18 @@ impl PhotonApp {
                             theme::BUTTON_SHADOW_EDGE,
                         );
 
-                        // Draw magnifying glass or hourglass (⧗) during search
+                        // Draw magnifying glass or hourglass during search
+                        let (r, g, b, _a) = unpack_argb(theme::BUTTON_TEXT);
                         if matches!(self.app_state, AppState::Searching) {
-                            self.text_renderer.draw_text_center_u32(
+                            Self::draw_hourglass_symbol(
                                 pixels,
                                 self.width as usize,
-                                "⧗",
-                                button_center_x as f32,
-                                button_center_y as f32,
-                                font_size * 0.8,
-                                700,
-                                theme::BUTTON_TEXT,
-                                theme::FONT_USER_CONTENT,
+                                button_center_x,
+                                button_center_y,
+                                button_size * 3 / 4,
+                                (r, g, b),
                             );
                         } else {
-                            let (r, g, b, _a) = unpack_argb(theme::BUTTON_TEXT);
                             Self::draw_magnify_symbol(
                                 pixels,
                                 self.width as usize,
@@ -2374,6 +2371,96 @@ impl PhotonApp {
         }
     }
 
+    /// Draw hourglass icon (two triangles meeting at center point)
+    pub fn draw_hourglass_symbol(
+        pixels: &mut [u32],
+        width: usize,
+        cx: usize,
+        cy: usize,
+        size: usize,
+        stroke_colour: (u8, u8, u8),
+    ) {
+        let scale = size as f32 / 1000.0;
+        let stroke_width = 83.0 * scale;
+        let radius = stroke_width / 2.0;
+
+        let half_h = 400.0 * scale; // Half height of hourglass
+        let half_w = 300.0 * scale; // Half width at top/bottom
+
+        // Top triangle: apex at center, base at top
+        let top_apex_x = cx as f32;
+        let top_apex_y = cy as f32;
+        let top_left_x = cx as f32 - half_w;
+        let top_left_y = cy as f32 - half_h;
+        let top_right_x = cx as f32 + half_w;
+        let top_right_y = cy as f32 - half_h;
+
+        // Bottom triangle: apex at center, base at bottom
+        let bot_left_x = cx as f32 - half_w;
+        let bot_left_y = cy as f32 + half_h;
+        let bot_right_x = cx as f32 + half_w;
+        let bot_right_y = cy as f32 + half_h;
+
+        let stroke_packed = pack_argb(stroke_colour.0, stroke_colour.1, stroke_colour.2, 255);
+
+        // Bounding box
+        let half_size = (size / 2 + 2) as isize;
+        let min_x = (cx as isize - half_size).max(0) as usize;
+        let max_x = (cx as isize + half_size) as usize;
+        let min_y = (cy as isize - half_size).max(0) as usize;
+        let max_y = (cy as isize + half_size) as usize;
+
+        for py in min_y..max_y {
+            for px in min_x..max_x {
+                let px_f = px as f32 + 0.5;
+                let py_f = py as f32 + 0.5;
+
+                // Distance to each line segment of the hourglass (6 edges total)
+                // Top triangle edges
+                let d1 = Self::distance_to_capsule(px_f, py_f, top_left_x, top_left_y, top_right_x, top_right_y, radius); // top base
+                let d2 = Self::distance_to_capsule(px_f, py_f, top_left_x, top_left_y, top_apex_x, top_apex_y, radius); // top-left to apex
+                let d3 = Self::distance_to_capsule(px_f, py_f, top_right_x, top_right_y, top_apex_x, top_apex_y, radius); // top-right to apex
+
+                // Bottom triangle edges
+                let d4 = Self::distance_to_capsule(px_f, py_f, bot_left_x, bot_left_y, bot_right_x, bot_right_y, radius); // bottom base
+                let d5 = Self::distance_to_capsule(px_f, py_f, bot_left_x, bot_left_y, top_apex_x, top_apex_y, radius); // bot-left to apex
+                let d6 = Self::distance_to_capsule(px_f, py_f, bot_right_x, bot_right_y, top_apex_x, top_apex_y, radius); // bot-right to apex
+
+                // Minimum distance (union of all edges)
+                let dist = d1.min(d2).min(d3).min(d4).min(d5).min(d6);
+
+                // Antialiased rendering
+                let alpha_f = if dist < -0.5 {
+                    1.0
+                } else if dist < 0.5 {
+                    0.5 - dist
+                } else {
+                    0.0
+                };
+
+                if alpha_f > 0.0 {
+                    let idx = py * width + px;
+                    let alpha = (alpha_f * 256.0) as u64;
+                    let inv_alpha = 256 - alpha;
+
+                    let mut bg = pixels[idx] as u64;
+                    bg = (bg | (bg << 16)) & 0x0000FFFF0000FFFF;
+                    bg = (bg | (bg << 8)) & 0x00FF00FF00FF00FF;
+
+                    let mut stroke = stroke_packed as u64;
+                    stroke = (stroke | (stroke << 16)) & 0x0000FFFF0000FFFF;
+                    stroke = (stroke | (stroke << 8)) & 0x00FF00FF00FF00FF;
+
+                    let mut blended = bg * inv_alpha + stroke * alpha;
+                    blended = (blended >> 8) & 0x00FF00FF00FF00FF;
+                    blended = (blended | (blended >> 8)) & 0x0000FFFF0000FFFF;
+                    blended = blended | (blended >> 16);
+                    pixels[idx] = blended as u32;
+                }
+            }
+        }
+    }
+
     // Helper function: distance from point to capsule (line segment with rounded ends)
     pub fn distance_to_capsule(
         px: f32,
@@ -2766,7 +2853,7 @@ impl PhotonApp {
                         }
                     }
 
-                    // Add/sub directly on packed u32 (deltas chosen to never overflow)
+                    // Add/sub directly on packed u32 (deltas have 0xFF alpha to absorb RGB carry)
                     pixels[idx] = if hover {
                         pixels[idx].wrapping_add(hover_delta)
                     } else {
