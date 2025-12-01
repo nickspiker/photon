@@ -1,6 +1,21 @@
 use ndk::native_window::NativeWindow;
 use ndk_sys::{ANativeWindow_Buffer, ANativeWindow_lock, ANativeWindow_unlockAndPost};
 
+/// Samsung devices have a compositor that breaks magic pixel optimization
+/// Set once at startup, never changes
+static mut SAMSUNG_MODE: bool = false;
+
+/// Set Samsung mode (called once from JNI init before any rendering)
+pub fn set_samsung_mode(is_samsung: bool) {
+    // SAFETY: Called once at startup before any rendering threads
+    unsafe { SAMSUNG_MODE = is_samsung; }
+}
+
+fn is_samsung() -> bool {
+    // SAFETY: Read-only after init, no data race possible
+    unsafe { SAMSUNG_MODE }
+}
+
 /// Buffer wrapper for Android that mimics softbuffer's interface
 /// Allows compositing code to work identically across platforms
 pub struct AndroidBuffer<'a> {
@@ -39,8 +54,8 @@ pub struct Renderer {
     /// Internal pixel buffer - compositing draws here
     buffer: Vec<u32>,
 
-    /// Magic pixel counter for buffer tracking
-    /// Android gives us random buffers from a pool, this tracks which one we last wrote to
+    /// Magic pixel counter for non-Samsung devices
+    /// Incremented on dirty frames, written to top-right pixel to detect stale buffers
     magic_counter: u32,
 }
 
@@ -50,7 +65,7 @@ impl Renderer {
             width,
             height,
             buffer: vec![0; (width * height) as usize],
-            magic_counter: 1, // Start at 1 so 0 (cleared buffer) is always a miss
+            magic_counter: 1, // Start at 1 so 0 (uninitialized) never matches
         }
     }
 
@@ -59,6 +74,11 @@ impl Renderer {
             self.width = width;
             self.height = height;
             self.buffer.resize((width * height) as usize, 0);
+            // Force full redraw after resize
+            self.magic_counter = self.magic_counter.wrapping_add(1);
+            if self.magic_counter == 0 {
+                self.magic_counter = 1;
+            }
         }
     }
 
@@ -73,13 +93,10 @@ impl Renderer {
     /// Present internal buffer to Android NativeWindow surface
     /// Only call this after compositing has drawn to lock_buffer()
     ///
-    /// Returns true if pixels were copied, false if magic pixel matched (no copy needed)
+    /// Always locks and posts every frame (Samsung requires this).
+    /// Samsung: always copies (their compositor breaks magic pixel optimization)
+    /// Non-Samsung: uses magic pixel in top-right to skip copy when buffer is current
     pub fn present(&mut self, window: &NativeWindow, dirty: bool) -> bool {
-        // Early out if nothing is dirty
-        if !dirty {
-            return false;
-        }
-
         unsafe {
             let mut android_buffer = std::mem::zeroed::<ANativeWindow_Buffer>();
 
@@ -101,36 +118,54 @@ impl Renderer {
             let dst_pixels =
                 std::slice::from_raw_parts_mut(android_buffer.bits as *mut u32, stride * height);
 
-            // Check magic pixel at top-right corner (stride - 1, not width - 1)
-            let magic_idx = stride - 1;
-            let needs_full_copy = dst_pixels[magic_idx] != self.magic_counter;
+            let src_width = self.width as usize;
+            let copy_height = height.min(self.height as usize);
+            let copy_width = width.min(src_width);
 
-            if needs_full_copy {
-                // Increment magic counter for next frame
-                self.magic_counter = self.magic_counter.wrapping_add(1);
-                if self.magic_counter == 0 {
-                    self.magic_counter = 1; // Skip 0
-                }
-
-                // Direct copy - colours already in ABGR format via theme::fmt()
-                let src_width = self.width as usize;
-                let copy_height = height.min(self.height as usize);
-                let copy_width = width.min(src_width);
-
+            let copied = if is_samsung() {
+                // Samsung: always copy everything, their compositor is weird
                 for y in 0..copy_height {
                     let src_row = &self.buffer[y * src_width..y * src_width + copy_width];
                     let dst_row = &mut dst_pixels[y * stride..y * stride + copy_width];
                     dst_row.copy_from_slice(src_row);
                 }
+                true
+            } else {
+                // Non-Samsung: use magic pixel optimization
+                let magic_idx = width.saturating_sub(1);
+                let buffer_is_current = !dirty
+                    && magic_idx < stride
+                    && dst_pixels[magic_idx] == self.magic_counter;
 
-                // Write magic pixel
-                dst_pixels[magic_idx] = self.magic_counter;
-            }
-            // If magic matched, we could do differential copy here for dirty regions
-            // For now, full copy on any dirty (Android buffer recycling makes partial tricky)
+                if buffer_is_current {
+                    // Buffer already has correct content - skip the copy
+                    false
+                } else {
+                    // Need to copy - either dirty or buffer is stale
+                    if dirty {
+                        self.magic_counter = self.magic_counter.wrapping_add(1);
+                        if self.magic_counter == 0 {
+                            self.magic_counter = 1;
+                        }
+                    }
 
+                    for y in 0..copy_height {
+                        let src_row = &self.buffer[y * src_width..y * src_width + copy_width];
+                        let dst_row = &mut dst_pixels[y * stride..y * stride + copy_width];
+                        dst_row.copy_from_slice(src_row);
+                    }
+
+                    // Write magic pixel
+                    if magic_idx < stride {
+                        dst_pixels[magic_idx] = self.magic_counter;
+                    }
+                    true
+                }
+            };
+
+            // Always post - Samsung throttles Choreographer if we don't
             ANativeWindow_unlockAndPost(window.ptr().as_ptr());
-            needs_full_copy
+            copied
         }
     }
 

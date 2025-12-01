@@ -206,6 +206,7 @@ impl PhotonApp {
                             self.app_state = AppState::Ready;
                             self.selected_contact = None;
                             self.window_dirty = true;
+                            self.reset_textbox();
 
                             // Clear hover states when transitioning screens
                             // Set both current and prev to None to avoid differential rendering artifacts
@@ -313,15 +314,24 @@ impl PhotonApp {
                                         "Avatar: Entering conversation with {}, fetching avatar",
                                         handle
                                     );
+                                    #[cfg(not(target_os = "android"))]
                                     crate::avatar::download_avatar_background(
                                         handle,
                                         self.contact_avatar_tx.clone(),
+                                        Some(self.event_proxy.clone()),
+                                    );
+                                    #[cfg(target_os = "android")]
+                                    crate::avatar::download_avatar_background(
+                                        handle,
+                                        self.contact_avatar_tx.clone(),
+                                        None,
                                     );
                                 }
 
                                 self.selected_contact = Some(contact_idx);
                                 self.app_state = AppState::Conversation;
                                 self.window_dirty = true;
+                                self.reset_textbox();
 
                                 // Clear hover states when transitioning screens
                                 // Set both current and prev to None to avoid differential rendering artifacts

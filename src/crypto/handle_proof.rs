@@ -45,7 +45,8 @@ use i256::U256;
 ///
 /// ```rust
 /// let handle = "fractal decoder";
-/// let handle_hash = blake3::hash(handle.as_bytes());
+/// let vsf_bytes = vsf::VsfType::x(handle.to_string()).flatten();
+/// let handle_hash = blake3::hash(&vsf_bytes);
 /// let public_id = handle_proof(&handle_hash);
 /// ```
 const SIZE: usize = 24_873_856; // 24MB - fits in L3 cache, prevents bulk parallelization

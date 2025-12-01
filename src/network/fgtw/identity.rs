@@ -117,7 +117,12 @@ pub fn get_machine_fingerprint() -> io::Result<Vec<u8>> {
     Ok(output.stdout)
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos", target_os = "android")))]
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "windows",
+    target_os = "macos",
+    target_os = "android"
+)))]
 pub fn get_machine_fingerprint() -> io::Result<Vec<u8>> {
     // Fallback for other Unix-like systems (FreeBSD, etc.)
     // Try /etc/hostid first, then hostname

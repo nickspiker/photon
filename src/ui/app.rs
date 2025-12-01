@@ -3,13 +3,16 @@ use super::text_rasterizing::TextRenderer;
 use super::theme;
 #[cfg(not(target_os = "android"))]
 use super::PhotonEvent;
+use crate::crypto::chain::MessageChain;
 use crate::network::StatusChecker;
 use crate::network::{HandleQuery, QueryResult};
-use crate::types::{Contact, HandleText};
+use crate::types::{ChatMessage, Contact, ContactId, EncryptedMessage, HandleText};
+use std::collections::HashMap;
 #[cfg(not(target_os = "android"))]
 use winit::{
     dpi::PhysicalSize, event_loop::EventLoopProxy, keyboard::ModifiersState, window::Window,
 };
+use zeroize::Zeroize;
 
 /// Cross-platform keyboard modifier state
 #[cfg(target_os = "android")]
@@ -137,6 +140,7 @@ impl LaunchState {
 #[derive(Debug, Clone)]
 pub struct FoundPeer {
     pub handle: HandleText,
+    pub handle_proof: [u8; 32], // Cached handle_proof (expensive - ~1 second to compute)
     pub device_pubkey: crate::types::PublicIdentity,
     pub ip: std::net::SocketAddr,
 }
@@ -202,6 +206,7 @@ pub struct PhotonApp {
     pub glow_colour: u32,     // Current textbox glow colour (0x00RRGGBB)
     pub spectrum_phase: f32,  // Rainbow sine wave phase (radians), animates during query
     pub speckle_counter: f32, // Background speckle animation counter, animates during query
+    pub hourglass_angle: f32, // Hourglass rotation (degrees), stochastic wobble during search
     pub last_frame_time: std::time::Instant, // Last frame timestamp for delta time calculation
     pub fps: f32,             // Current frames per second
     pub frame_times: Vec<f32>, // Recent frame delta times for FPS averaging
@@ -269,8 +274,10 @@ pub struct PhotonApp {
     pub avatar_scaled: Option<Vec<u8>>, // Mitchell-resampled avatar at current display size
     pub avatar_scaled_diameter: usize,  // Diameter the scaled avatar was rendered at
     pub user_handle: Option<String>,    // User's attested handle
-    pub show_avatar_hint: bool,         // Show "drag and drop" hint after clicking avatar
-    pub file_hovering_avatar: bool,     // Track if file is being dragged over avatar
+    pub user_handle_proof: Option<[u8; 32]>, // Our handle_proof (for CLUTCH initiator check)
+    pub user_identity_seed: Option<[u8; 32]>, // BLAKE3(handle) for storage encryption key derivation
+    pub show_avatar_hint: bool,               // Show "drag and drop" hint after clicking avatar
+    pub file_hovering_avatar: bool,           // Track if file is being dragged over avatar
 
     // Contact avatar fetching (background thread)
     pub contact_avatar_rx: std::sync::mpsc::Receiver<crate::avatar::AvatarDownloadResult>,
@@ -278,6 +285,13 @@ pub struct PhotonApp {
 
     // Device keypair for signing (needed by StatusChecker)
     pub device_keypair: crate::network::fgtw::Keypair,
+
+    // Message encryption chains (keyed by contact ID, runtime-only, not serialized)
+    pub message_chains: HashMap<ContactId, MessageChain>,
+
+    // Event loop proxy for waking event loop on network updates (desktop only)
+    #[cfg(not(target_os = "android"))]
+    pub event_proxy: EventLoopProxy<PhotonEvent>,
 }
 
 // Hit test element IDs
@@ -386,6 +400,7 @@ impl PhotonApp {
             glow_colour: theme::GLOW_DEFAULT, // White glow by default
             spectrum_phase: 0.0,
             speckle_counter: 0.0,
+            hourglass_angle: 0.0,
             last_frame_time: std::time::Instant::now(),
             fps: 0.0,
             frame_times: Vec::with_capacity(60),
@@ -429,10 +444,14 @@ impl PhotonApp {
             avatar_scaled: None,
             avatar_scaled_diameter: 0,
             user_handle: None,
+            user_handle_proof: None,
+            user_identity_seed: None,
             show_avatar_hint: false,
             file_hovering_avatar: false,
             contact_avatar_rx,
             contact_avatar_tx,
+            message_chains: HashMap::new(),
+            event_proxy: event_proxy.clone(),
         };
 
         // Initialize handle_query with the derived keypair
@@ -495,6 +514,7 @@ impl PhotonApp {
             glow_colour: theme::GLOW_DEFAULT,
             spectrum_phase: 0.0,
             speckle_counter: 0.0,
+            hourglass_angle: 0.0,
             last_frame_time: std::time::Instant::now(),
             fps: 0.0,
             frame_times: Vec::with_capacity(60),
@@ -538,10 +558,13 @@ impl PhotonApp {
             avatar_scaled: None,
             avatar_scaled_diameter: 0,
             user_handle: None,
+            user_handle_proof: None,
+            user_identity_seed: None,
             show_avatar_hint: false,
             file_hovering_avatar: false,
             contact_avatar_rx,
             contact_avatar_tx,
+            message_chains: HashMap::new(),
         }
     }
 
@@ -551,6 +574,22 @@ impl PhotonApp {
         if self.is_fullscreen != is_fullscreen {
             self.is_fullscreen = is_fullscreen;
         }
+    }
+
+    /// Reset textbox state when changing screens
+    /// Clears text content, hides blinkey, unfocuses textbox
+    pub fn reset_textbox(&mut self) {
+        self.current_text_state.chars.clear();
+        self.current_text_state.widths.clear();
+        self.current_text_state.width = 0;
+        self.current_text_state.blinkey_index = 0;
+        self.current_text_state.selection_anchor = None;
+        self.current_text_state.scroll_offset = 0.0;
+        self.current_text_state.is_empty = true;
+        self.current_text_state.textbox_focused = false;
+        self.blinkey_visible = false;
+        self.text_dirty = true;
+        self.selection_dirty = true;
     }
 
     /// Handle touch events on Android
@@ -733,6 +772,7 @@ impl PhotonApp {
                 // Go back to contacts list
                 self.app_state = AppState::Ready;
                 self.selected_contact = None;
+                self.reset_textbox();
             }
             HoveredButton::None => {
                 // Check if we're on avatar (doesn't use hover state)
@@ -771,6 +811,7 @@ impl PhotonApp {
             if contact_idx < self.contacts.len() {
                 self.selected_contact = Some(contact_idx);
                 self.app_state = AppState::Conversation;
+                self.reset_textbox();
             }
         }
 
@@ -923,6 +964,23 @@ impl PhotonApp {
             self.controls_dirty = true;
             return true;
         }
+        false
+    }
+
+    /// Handle Android back button
+    /// Returns true if handled (stay in app), false to allow default back behavior (exit)
+    #[cfg(target_os = "android")]
+    pub fn handle_back(&mut self) -> bool {
+        // If in a chat, go back to contacts list (same as tapping back header button)
+        if self.selected_contact.is_some() {
+            self.app_state = AppState::Ready;
+            self.selected_contact = None;
+            self.reset_textbox();
+            self.window_dirty = true;
+            return true; // Handled - don't exit
+        }
+
+        // On contacts screen - allow default back (exit app)
         false
     }
 
@@ -1202,6 +1260,11 @@ impl PhotonApp {
         // Set status to Attesting and trigger attestation
         self.app_state = AppState::Launch(LaunchState::Attesting);
         self.glow_colour = theme::GLOW_ATTESTING; // Yellow for attesting
+
+        // Disable textbox and hide blinkey during attestation
+        self.current_text_state.textbox_focused = false;
+        self.blinkey_visible = false;
+
         if let Some(hq) = &self.handle_query {
             hq.query(handle);
         }
@@ -1236,6 +1299,11 @@ impl PhotonApp {
         self.app_state = AppState::Searching;
         self.searching_handle = Some(handle.to_string());
         self.glow_colour = theme::GLOW_ATTESTING; // Yellow for searching
+
+        // Disable textbox and hide blinkey during search
+        self.current_text_state.textbox_focused = false;
+        self.blinkey_visible = false;
+
         let now = std::time::Instant::now();
         self.query_start_time = Some(now);
         self.last_frame_time = now;
@@ -1264,6 +1332,7 @@ impl PhotonApp {
                 if let Some(peer) = peers.first() {
                     SearchResult::Found(FoundPeer {
                         handle: HandleText::new(&handle_owned),
+                        handle_proof,
                         device_pubkey: peer.device_pubkey.clone(),
                         ip: peer.ip,
                     })
@@ -1295,6 +1364,7 @@ impl PhotonApp {
                         if !already_exists {
                             let contact = Contact::new(
                                 found_peer.handle.clone(),
+                                found_peer.handle_proof,
                                 found_peer.device_pubkey.clone(),
                             )
                             .with_ip(found_peer.ip);
@@ -1309,6 +1379,18 @@ impl PhotonApp {
                                     found_peer.handle,
                                     hex::encode(&found_peer.device_pubkey.as_bytes()[..8])
                                 ));
+                            }
+
+                            // Save contact (updates both state file and contact list)
+                            if let Some(ref identity_seed) = self.user_identity_seed {
+                                if let Some(contact) = self.contacts.last() {
+                                    if let Err(e) = crate::storage::contacts::save_contact(
+                                        contact,
+                                        identity_seed,
+                                    ) {
+                                        crate::log_error(&format!("Failed to save contact: {}", e));
+                                    }
+                                }
                             }
 
                             // Try to load avatar from local cache immediately
@@ -1331,9 +1413,17 @@ impl PhotonApp {
                                     "Avatar: {} not in cache, fetching from FGTW",
                                     found_peer.handle
                                 ));
+                                #[cfg(not(target_os = "android"))]
                                 crate::avatar::download_avatar_background(
                                     found_peer.handle.as_str().to_string(),
                                     self.contact_avatar_tx.clone(),
+                                    Some(self.event_proxy.clone()),
+                                );
+                                #[cfg(target_os = "android")]
+                                crate::avatar::download_avatar_background(
+                                    found_peer.handle.as_str().to_string(),
+                                    self.contact_avatar_tx.clone(),
+                                    None,
                                 );
                             }
                         }
@@ -1409,43 +1499,90 @@ impl PhotonApp {
             self.controls_dirty = true;
             self.selection_dirty = true;
 
-            // Store handle_proof for periodic refresh and save user handle for display
+            // Store handle_proof for periodic refresh, CLUTCH, and save user handle for display
             if let Some(ref handle) = self.attesting_handle {
                 use crate::types::Handle;
                 let handle_proof = Handle::username_to_handle_proof(handle);
+                // Derive identity_seed using VSF normalization for consistent key derivation
+                let identity_seed = crate::storage::contacts::derive_identity_seed(handle);
                 if let Some(hq) = &self.handle_query {
                     hq.set_handle_proof(handle_proof, handle);
                 }
                 self.user_handle = Some(handle.clone());
-                crate::log_info("UI: Stored handle_proof for periodic refresh");
+                self.user_handle_proof = Some(handle_proof);
+                self.user_identity_seed = Some(identity_seed);
+                crate::log_info(
+                    "UI: Stored handle_proof and identity_seed for refresh/CLUTCH/storage",
+                );
 
-                // Load avatar from local cache now that we have a handle
+                // Load contacts from encrypted storage
+                let loaded_contacts = crate::storage::contacts::load_all_contacts(&identity_seed);
+                if !loaded_contacts.is_empty() {
+                    crate::log_info(&format!(
+                        "UI: Loaded {} contacts from storage",
+                        loaded_contacts.len()
+                    ));
+                    for contact in loaded_contacts {
+                        // Update shared pubkey list for StatusChecker
+                        {
+                            let mut pubkeys = self.contact_pubkeys.lock().unwrap();
+                            pubkeys.push(contact.public_identity.clone());
+                        }
+                        self.contacts.push(contact);
+                    }
+                }
+
+                // Load local avatar for immediate display (if exists)
                 if let Some((_, pixels)) = crate::avatar::load_avatar(handle) {
                     self.avatar_pixels = Some(
                         crate::display_profile::DisplayConverter::new().convert_avatar(&pixels),
                     );
                     self.avatar_scaled = None; // Force re-scale
                     crate::log_info("UI: Loaded avatar from local cache");
-                } else {
-                    // Not in local cache - try to fetch from FGTW
-                    crate::log_info("UI: Avatar not in local cache, fetching from FGTW");
-                    crate::avatar::download_avatar_background(
-                        handle.clone(),
-                        self.event_proxy.clone(),
-                    );
                 }
+
+                // Start bidirectional sync in background (newest wins)
+                // This will upload if local is newer, or download if server is newer
+                crate::log_info("UI: Starting bidirectional avatar sync with FGTW");
+                #[cfg(not(target_os = "android"))]
+                crate::avatar::sync_avatar_background(
+                    *self.device_keypair.secret.as_bytes(),
+                    handle.clone(),
+                    self.contact_avatar_tx.clone(),
+                    Some(self.event_proxy.clone()),
+                );
+                #[cfg(target_os = "android")]
+                crate::avatar::sync_avatar_background(
+                    *self.device_keypair.secret.as_bytes(),
+                    handle.clone(),
+                    self.contact_avatar_tx.clone(),
+                    None,
+                );
             }
             self.attesting_handle = None;
 
             // Initialize status checker for P2P contact pinging
             if self.user_handle.is_some() {
                 if let Some(hq) = &self.handle_query {
-                    self.status_checker = StatusChecker::new(
-                        hq.socket().clone(),
-                        self.device_keypair.clone(),
-                        self.contact_pubkeys.clone(),
-                    )
-                    .ok();
+                    #[cfg(not(target_os = "android"))]
+                    {
+                        self.status_checker = StatusChecker::new(
+                            hq.socket().clone(),
+                            self.device_keypair.clone(),
+                            self.contact_pubkeys.clone(),
+                            self.event_proxy.clone(),
+                        )
+                        .ok();
+                    }
+                    #[cfg(target_os = "android")]
+                    {
+                        self.status_checker = StatusChecker::new(
+                            hq.socket().clone(),
+                            self.device_keypair.clone(),
+                            self.contact_pubkeys.clone(),
+                        )
+                        .ok();
+                    }
                     crate::log_info("UI: Status checker initialized after attestation");
                 }
             }
@@ -1496,55 +1633,614 @@ impl PhotonApp {
     /// Check for status updates from P2P checker (non-blocking)
     /// Returns true if any contact status changed
     pub fn check_status_updates(&mut self) -> bool {
+        use crate::crypto::clutch;
+        use crate::network::status::{ClutchRequest, ClutchRequestType, StatusUpdate};
+        use crate::types::ClutchState;
+
         let checker = match &self.status_checker {
             Some(c) => c,
             None => return false,
         };
 
+        // Get our handle_proof for CLUTCH (needed for initiator check and routing)
+        let our_handle_proof = match self.user_handle_proof {
+            Some(hp) => hp,
+            None => return false, // Can't do CLUTCH without our handle_proof
+        };
+
+        // Get our private identity_seed for seed derivation
+        // Formula: BLAKE3(VsfType::x(handle).flatten()) - VSF normalized for Unicode safety
+        // SECURITY: This is PRIVATE and never sent over the wire!
+        let our_identity_seed = match &self.user_handle {
+            Some(h) => crate::storage::contacts::derive_identity_seed(h),
+            None => return false, // Can't do CLUTCH without our handle
+        };
+
         let mut changed = false;
         while let Some(update) = checker.try_recv() {
-            // Find matching contact and update status
-            for contact in &mut self.contacts {
-                if contact.public_identity == update.peer_pubkey {
-                    if contact.is_online != update.is_online {
-                        contact.is_online = update.is_online;
-                        changed = true;
-                        crate::log_info(&format!(
-                            "Status: {} is now {}",
-                            contact.handle,
-                            if update.is_online {
-                                "ONLINE"
-                            } else {
-                                "offline"
+            match update {
+                StatusUpdate::Online {
+                    peer_pubkey,
+                    is_online,
+                } => {
+                    // Find matching contact and update status
+                    for contact in &mut self.contacts {
+                        if contact.public_identity == peer_pubkey {
+                            if contact.is_online != is_online {
+                                contact.is_online = is_online;
+                                changed = true;
+                                crate::log_info(&format!(
+                                    "Status: {} is now {}",
+                                    contact.handle,
+                                    if is_online { "ONLINE" } else { "offline" }
+                                ));
                             }
-                        ));
+
+                            // Fetch avatar by handle if we don't have it yet and contact is online
+                            if is_online && contact.avatar_pixels.is_none() {
+                                crate::log_info(&format!(
+                                    "Avatar: {} is online, fetching avatar by handle from FGTW",
+                                    contact.handle
+                                ));
+                                #[cfg(not(target_os = "android"))]
+                                crate::avatar::download_avatar_background(
+                                    contact.handle.as_str().to_string(),
+                                    self.contact_avatar_tx.clone(),
+                                    Some(self.event_proxy.clone()),
+                                );
+                                #[cfg(target_os = "android")]
+                                crate::avatar::download_avatar_background(
+                                    contact.handle.as_str().to_string(),
+                                    self.contact_avatar_tx.clone(),
+                                    None,
+                                );
+                            }
+
+                            // Trigger CLUTCH if contact is online and we're in Pending state
+                            // Parallel v2: Both parties send ClutchOffer immediately
+                            if is_online && contact.clutch_state == ClutchState::Pending {
+                                let their_handle_proof = contact.handle_proof;
+
+                                // Generate ephemeral keypair and send ClutchOffer
+                                let (secret, pubkey) = clutch::generate_clutch_ephemeral();
+                                contact.clutch_our_ephemeral_secret = Some(secret);
+                                contact.clutch_our_ephemeral_pubkey = Some(pubkey);
+                                contact.clutch_state = ClutchState::Offered;
+                                changed = true;
+
+                                if let Some(ip) = contact.ip {
+                                    crate::log_info(&format!(
+                                        "CLUTCH: Sending offer to {} (parallel v2)",
+                                        contact.handle
+                                    ));
+                                    checker.send_clutch(ClutchRequest {
+                                        peer_addr: ip,
+                                        our_handle_proof,
+                                        their_handle_proof,
+                                        message: ClutchRequestType::Offer {
+                                            ephemeral_pubkey: pubkey,
+                                        },
+                                    });
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+                // Parallel v2: ClutchOffer handler
+                StatusUpdate::ClutchOffer {
+                    from_handle_proof,
+                    to_handle_proof,
+                    ephemeral_pubkey,
+                    sender_addr,
+                } => {
+                    // Check if this is addressed to us
+                    if to_handle_proof != our_handle_proof {
+                        continue;
                     }
 
-                    // Fetch avatar by handle if we don't have it yet and contact is online
-                    // Storage key is deterministic: BLAKE3(BLAKE3(handle) || "avatar")
-                    if update.is_online && contact.avatar_pixels.is_none() {
-                        crate::log_info(&format!(
-                            "Avatar: {} is online, fetching avatar by handle from FGTW",
-                            contact.handle
-                        ));
-                        // Spawn background download using handle-based storage key
-                        crate::avatar::download_avatar_background(
-                            contact.handle.as_str().to_string(),
-                            self.contact_avatar_tx.clone(),
-                        );
+                    crate::log_info(&format!(
+                        "CLUTCH: Received Offer from {} (from_hp: {}...)",
+                        sender_addr,
+                        hex::encode(&from_handle_proof[..8])
+                    ));
+
+                    // Find contact by their handle_proof
+                    for contact in &mut self.contacts {
+                        if contact.handle_proof == from_handle_proof {
+                            // Store their ephemeral pubkey
+                            contact.clutch_their_ephemeral_pubkey = Some(ephemeral_pubkey);
+                            contact.ip = Some(sender_addr); // Update IP in case it changed
+
+                            // If we're in Pending, we haven't sent our offer yet - send it now
+                            if contact.clutch_state == ClutchState::Pending {
+                                let (secret, pubkey) = clutch::generate_clutch_ephemeral();
+                                contact.clutch_our_ephemeral_secret = Some(secret);
+                                contact.clutch_our_ephemeral_pubkey = Some(pubkey);
+                                contact.clutch_state = ClutchState::Offered;
+                                changed = true;
+
+                                crate::log_info(&format!(
+                                    "CLUTCH: Sending offer back to {}",
+                                    contact.handle
+                                ));
+                                checker.send_clutch(ClutchRequest {
+                                    peer_addr: sender_addr,
+                                    our_handle_proof,
+                                    their_handle_proof: contact.handle_proof,
+                                    message: ClutchRequestType::Offer {
+                                        ephemeral_pubkey: pubkey,
+                                    },
+                                });
+                            }
+
+                            // Check if we have both pubkeys - if so, complete the ceremony
+                            if let (Some(our_secret), Some(our_pub), Some(their_pub)) = (
+                                &contact.clutch_our_ephemeral_secret,
+                                &contact.clutch_our_ephemeral_pubkey,
+                                &contact.clutch_their_ephemeral_pubkey,
+                            ) {
+                                // Both parties have exchanged offers - derive seed
+                                let result = clutch::clutch_complete_parallel(
+                                    &our_identity_seed,
+                                    &contact.handle_hash,
+                                    our_secret,
+                                    our_pub,
+                                    their_pub,
+                                );
+                                contact.relationship_seed = Some(result.seed);
+                                contact.clutch_state = ClutchState::Complete;
+
+                                // Zeroize and clear ephemeral secrets
+                                if let Some(ref mut secret) = contact.clutch_our_ephemeral_secret {
+                                    secret.zeroize();
+                                }
+                                contact.clutch_our_ephemeral_secret = None;
+                                contact.clutch_our_ephemeral_pubkey = None;
+                                contact.clutch_their_ephemeral_pubkey = None;
+                                changed = true;
+
+                                crate::log_info(&format!(
+                                    "CLUTCH: Complete with {} (parallel v2)",
+                                    contact.handle
+                                ));
+
+                                // Lower handle_proof sends ClutchComplete with proof
+                                if clutch::is_clutch_initiator(
+                                    &our_handle_proof,
+                                    &contact.handle_proof,
+                                ) {
+                                    crate::log_info(
+                                        "CLUTCH: We have lower handle_proof - sending proof",
+                                    );
+                                    checker.send_clutch(ClutchRequest {
+                                        peer_addr: sender_addr,
+                                        our_handle_proof,
+                                        their_handle_proof: contact.handle_proof,
+                                        message: ClutchRequestType::Complete {
+                                            proof: result.proof,
+                                        },
+                                    });
+                                }
+                            }
+                            break;
+                        }
                     }
-                    break;
+                }
+                // Legacy v1 handlers (for backwards compatibility)
+                StatusUpdate::ClutchInit {
+                    from_handle_proof,
+                    to_handle_proof,
+                    ephemeral_pubkey,
+                    sender_addr,
+                } => {
+                    // Check if this is addressed to us
+                    if to_handle_proof != our_handle_proof {
+                        continue;
+                    }
+
+                    crate::log_info(&format!(
+                        "CLUTCH: Received Init (v1 legacy) from {} (from_hp: {}...)",
+                        sender_addr,
+                        hex::encode(&from_handle_proof[..8])
+                    ));
+
+                    // Find contact and respond with v1 protocol
+                    for contact in &mut self.contacts {
+                        if contact.handle_proof == from_handle_proof {
+                            contact.clutch_their_ephemeral_pubkey = Some(ephemeral_pubkey);
+                            let (secret, pubkey) = clutch::generate_clutch_ephemeral();
+                            contact.clutch_our_ephemeral_secret = Some(secret);
+                            contact.clutch_state = ClutchState::Offered;
+                            changed = true;
+
+                            checker.send_clutch(ClutchRequest {
+                                peer_addr: sender_addr,
+                                our_handle_proof,
+                                their_handle_proof: contact.handle_proof,
+                                message: ClutchRequestType::Response {
+                                    ephemeral_pubkey: pubkey,
+                                },
+                            });
+                            break;
+                        }
+                    }
+                }
+                StatusUpdate::ClutchResponse {
+                    from_handle_proof,
+                    to_handle_proof,
+                    ephemeral_pubkey,
+                    sender_addr,
+                } => {
+                    // Check if this is addressed to us
+                    if to_handle_proof != our_handle_proof {
+                        continue;
+                    }
+
+                    crate::log_info(&format!(
+                        "CLUTCH: Received Response (v1 legacy) from {} (from_hp: {}...)",
+                        sender_addr,
+                        hex::encode(&from_handle_proof[..8])
+                    ));
+
+                    // Find contact in Offered state and complete with v1 protocol
+                    for contact in &mut self.contacts {
+                        if contact.handle_proof == from_handle_proof
+                            && contact.clutch_state == ClutchState::Offered
+                        {
+                            contact.clutch_their_ephemeral_pubkey = Some(ephemeral_pubkey);
+
+                            // Use v1 derivation for backwards compat
+                            if let Some(our_secret) = &contact.clutch_our_ephemeral_secret {
+                                let result = clutch::clutch_as_initiator(
+                                    &our_identity_seed,
+                                    &contact.handle_hash,
+                                    our_secret,
+                                    &ephemeral_pubkey,
+                                );
+                                contact.relationship_seed = Some(result.seed);
+                                contact.clutch_state = ClutchState::Complete;
+                                if let Some(ref mut secret) = contact.clutch_our_ephemeral_secret {
+                                    secret.zeroize();
+                                }
+                                contact.clutch_our_ephemeral_secret = None;
+                                contact.clutch_their_ephemeral_pubkey = None;
+                                changed = true;
+
+                                checker.send_clutch(ClutchRequest {
+                                    peer_addr: sender_addr,
+                                    our_handle_proof,
+                                    their_handle_proof: contact.handle_proof,
+                                    message: ClutchRequestType::Complete {
+                                        proof: result.proof,
+                                    },
+                                });
+                            }
+                            break;
+                        }
+                    }
+                }
+                StatusUpdate::ClutchComplete {
+                    from_handle_proof,
+                    to_handle_proof,
+                    proof,
+                } => {
+                    // Check if this is addressed to us
+                    if to_handle_proof != our_handle_proof {
+                        continue;
+                    }
+
+                    crate::log_info(&format!(
+                        "CLUTCH: Received Complete (from_hp: {}...)",
+                        hex::encode(&from_handle_proof[..8])
+                    ));
+
+                    // Find contact by cached handle_proof
+                    // In parallel v2, contact is already Complete (higher handle_proof party)
+                    // In v1 legacy, contact is in Offered state
+                    for contact in &mut self.contacts {
+                        if contact.handle_proof == from_handle_proof {
+                            // If already complete, just verify the proof
+                            if contact.clutch_state == ClutchState::Complete {
+                                if let Some(seed) = &contact.relationship_seed {
+                                    if clutch::verify_clutch_proof(seed, &proof) {
+                                        crate::log_info(&format!(
+                                            "CLUTCH: Proof verified for {} (already complete)",
+                                            contact.handle
+                                        ));
+                                    } else {
+                                        crate::log_error(&format!(
+                                            "CLUTCH: Proof verification FAILED for {}!",
+                                            contact.handle
+                                        ));
+                                    }
+                                }
+                                break;
+                            }
+
+                            // Legacy v1: Offered state, need to derive seed
+                            if contact.clutch_state == ClutchState::Offered {
+                                if let (Some(our_secret), Some(their_pubkey)) = (
+                                    &contact.clutch_our_ephemeral_secret,
+                                    &contact.clutch_their_ephemeral_pubkey,
+                                ) {
+                                    let result = clutch::clutch_as_responder(
+                                        &our_identity_seed,
+                                        &contact.handle_hash,
+                                        our_secret,
+                                        their_pubkey,
+                                    );
+
+                                    if clutch::verify_clutch_proof(&result.seed, &proof) {
+                                        contact.relationship_seed = Some(result.seed);
+                                        contact.clutch_state = ClutchState::Complete;
+                                        if let Some(ref mut secret) =
+                                            contact.clutch_our_ephemeral_secret
+                                        {
+                                            secret.zeroize();
+                                        }
+                                        contact.clutch_our_ephemeral_secret = None;
+                                        contact.clutch_their_ephemeral_pubkey = None;
+                                        changed = true;
+
+                                        crate::log_info(&format!(
+                                            "CLUTCH: Complete with {} - proof verified! (v1 legacy)",
+                                            contact.handle
+                                        ));
+                                    } else {
+                                        crate::log_error(&format!(
+                                            "CLUTCH: Proof verification FAILED for {}!",
+                                            contact.handle
+                                        ));
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+                StatusUpdate::ChatMessage {
+                    from_handle_proof,
+                    sequence,
+                    salt,
+                    ciphertext,
+                    sender_addr,
+                } => {
+                    // Find contact by handle_proof
+                    let contact_info = self.contacts.iter().enumerate().find_map(|(idx, c)| {
+                        if c.handle_proof == from_handle_proof {
+                            Some((
+                                idx,
+                                c.id.clone(),
+                                c.relationship_seed.clone(),
+                                c.handle.to_string(),
+                            ))
+                        } else {
+                            None
+                        }
+                    });
+
+                    if let Some((contact_idx, contact_id, Some(seed), handle)) = contact_info {
+                        crate::log_info(&format!(
+                            "CHAT: Received message from {} (seq {}), {} bytes",
+                            handle,
+                            sequence,
+                            ciphertext.len()
+                        ));
+
+                        // Get or create message chain for this contact
+                        let chain = self
+                            .message_chains
+                            .entry(contact_id)
+                            .or_insert_with(|| MessageChain::new(seed));
+
+                        // Decrypt the message
+                        let encrypted = EncryptedMessage {
+                            sequence,
+                            salt,
+                            ciphertext,
+                        };
+
+                        match chain.decrypt(&encrypted) {
+                            Ok(message) => {
+                                let text = String::from_utf8_lossy(&message.payload).to_string();
+                                crate::log_info(&format!("CHAT: Decrypted: \"{}\"", text));
+
+                                // Add to contact's message list
+                                if let Some(contact) = self.contacts.get_mut(contact_idx) {
+                                    contact.messages.push(ChatMessage::new(text, false));
+                                }
+                                changed = true;
+
+                                // Send ACK back
+                                if let Some(ref checker) = self.status_checker {
+                                    if let Some(our_hp) = self.user_handle_proof {
+                                        checker.send_ack(crate::network::status::AckRequest {
+                                            peer_addr: sender_addr,
+                                            our_handle_proof: our_hp,
+                                            sequence,
+                                        });
+                                        crate::log_info(&format!(
+                                            "CHAT: Sent ACK for seq {} to {}",
+                                            sequence, sender_addr
+                                        ));
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                crate::log_error(&format!(
+                                    "CHAT: Decryption failed for seq {}: {}",
+                                    sequence, e
+                                ));
+                            }
+                        }
+                    }
+                }
+                StatusUpdate::MessageAck {
+                    from_handle_proof,
+                    sequence,
+                } => {
+                    // Find contact by handle_proof
+                    let contact_info = self.contacts.iter().enumerate().find_map(|(idx, c)| {
+                        if c.handle_proof == from_handle_proof {
+                            Some((idx, c.id.clone(), c.handle.to_string()))
+                        } else {
+                            None
+                        }
+                    });
+
+                    if let Some((contact_idx, contact_id, handle)) = contact_info {
+                        crate::log_info(&format!(
+                            "CHAT: ACK received from {} for seq {}",
+                            handle, sequence
+                        ));
+
+                        // Update chain to clear from retransmit queue
+                        if let Some(chain) = self.message_chains.get_mut(&contact_id) {
+                            chain.receive_ack(sequence);
+                        }
+
+                        // Mark message as delivered in UI
+                        if let Some(contact) = self.contacts.get_mut(contact_idx) {
+                            // Find the message by sequence (it's the Nth outgoing message)
+                            // For now, mark recent outgoing messages as delivered
+                            for msg in contact.messages.iter_mut().rev() {
+                                if msg.is_outgoing && !msg.delivered {
+                                    msg.delivered = true;
+                                    changed = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
         changed
     }
 
-    /// Check for completed avatar downloads and update contacts
+    /// Send a message to the currently selected contact
+    /// Returns true if message was sent successfully
+    pub fn send_message_to_selected_contact(&mut self, message_text: &str) -> bool {
+        use crate::network::status::MessageRequest;
+        use crate::types::ChatMessage;
+
+        // Get selected contact
+        let contact_idx = match self.selected_contact {
+            Some(idx) => idx,
+            None => return false,
+        };
+
+        // Get contact info we need
+        let (contact_id, ip, seed) = {
+            let contact = match self.contacts.get(contact_idx) {
+                Some(c) => c,
+                None => return false,
+            };
+
+            // Must have completed CLUTCH
+            if contact.clutch_state != crate::types::ClutchState::Complete {
+                crate::log_info(&format!(
+                    "Cannot send to {}: CLUTCH not complete",
+                    contact.handle
+                ));
+                return false;
+            }
+
+            // Must have relationship seed
+            let seed = match &contact.relationship_seed {
+                Some(s) => s.clone(),
+                None => return false,
+            };
+
+            // Must have IP
+            let ip = match contact.ip {
+                Some(ip) => ip,
+                None => {
+                    crate::log_info(&format!("Cannot send to {}: no IP", contact.handle));
+                    return false;
+                }
+            };
+
+            (contact.id.clone(), ip, seed)
+        };
+
+        // Get or create message chain for this contact
+        let chain = self
+            .message_chains
+            .entry(contact_id.clone())
+            .or_insert_with(|| MessageChain::new(seed.clone()));
+
+        // Encrypt the message
+        let payload = message_text.as_bytes();
+        let encrypted = match chain.encrypt(payload) {
+            Ok(e) => e,
+            Err(e) => {
+                crate::log_error(&format!("Failed to encrypt message: {}", e));
+                return false;
+            }
+        };
+
+        // Get our handle proof
+        let our_handle_proof = match self.user_handle_proof {
+            Some(hp) => hp,
+            None => return false,
+        };
+
+        // Send via StatusChecker
+        if let Some(ref checker) = self.status_checker {
+            checker.send_message(MessageRequest {
+                peer_addr: ip,
+                our_handle_proof,
+                sequence: encrypted.sequence,
+                salt: encrypted.salt,
+                ciphertext: encrypted.ciphertext,
+            });
+
+            // Add to contact's message list
+            if let Some(contact) = self.contacts.get_mut(contact_idx) {
+                contact.messages.push(ChatMessage::new(
+                    message_text.to_string(),
+                    true, // is_outgoing
+                ));
+            }
+
+            crate::log_info(&format!(
+                "CHAT: Sent message (seq {}) to {}",
+                encrypted.sequence, ip
+            ));
+            return true;
+        }
+
+        false
+    }
+
+    /// Check for completed avatar downloads and update contacts or user avatar
     /// Returns true if any avatars were updated
     pub fn check_avatar_downloads(&mut self) -> bool {
         let mut changed = false;
         while let Ok(result) = self.contact_avatar_rx.try_recv() {
+            // Check if this is the user's own avatar
+            if let Some(ref user_handle) = self.user_handle {
+                if user_handle == &result.handle {
+                    if let Some(pixels) = &result.pixels {
+                        let display_pixels =
+                            crate::display_profile::DisplayConverter::new().convert_avatar(pixels);
+                        self.avatar_pixels = Some(display_pixels);
+                        self.avatar_scaled = None; // Force re-scale
+                        changed = true;
+                        crate::log_info(&format!(
+                            "Avatar: User avatar loaded from FGTW ({} bytes)",
+                            pixels.len()
+                        ));
+                    } else {
+                        // No pixels means either no avatar exists or already in sync
+                        // (this is not an error - sync_avatar_background logs details)
+                    }
+                    continue;
+                }
+            }
+
             // Find matching contact by handle
             for contact in &mut self.contacts {
                 if contact.handle.as_str() == result.handle {

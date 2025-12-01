@@ -49,13 +49,33 @@ impl std::fmt::Display for HandleText {
     }
 }
 
+/// State of the CLUTCH key ceremony for a contact
+///
+/// Parallel v2 flow:
+/// - Pending: Contact added, ephemeral generated, waiting for their offer
+/// - Offered: We sent our offer (or received theirs), waiting for exchange to complete
+/// - Complete: Both offers exchanged, seed derived, can message
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ClutchState {
+    #[default]
+    Pending, // Ephemeral generated, waiting for their offer
+    Offered,  // We sent our offer OR received theirs, waiting for both
+    Complete, // CLUTCH done, can message
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Contact {
     pub id: ContactId,
     pub handle: HandleText, // VSF-style text for unambiguous handle storage
+    pub handle_proof: [u8; 32], // Cached handle_proof (expensive to compute - ~1 second) - PUBLIC
+    pub handle_hash: [u8; 32], // BLAKE3(handle) - PRIVATE, used for seed derivation
     pub public_identity: PublicIdentity,
     pub ip: Option<SocketAddr>, // Last known IP:port from FGTW or direct
     pub relationship_seed: Option<Seed>,
+    pub clutch_state: ClutchState,
+    pub clutch_our_ephemeral_secret: Option<[u8; 32]>, // Our ephemeral X25519 secret (zeroize after use)
+    pub clutch_our_ephemeral_pubkey: Option<[u8; 32]>, // Our ephemeral X25519 pubkey (needed for parallel seed derivation)
+    pub clutch_their_ephemeral_pubkey: Option<[u8; 32]>, // Their ephemeral for CLUTCH
     pub trust_level: TrustLevel,
     pub added_timestamp: u64,
     pub last_seen: Option<u64>,
@@ -115,13 +135,30 @@ impl Default for ContactId {
 }
 
 impl Contact {
-    pub fn new(handle: HandleText, public_identity: PublicIdentity) -> Self {
+    pub fn new(
+        handle: HandleText,
+        handle_proof: [u8; 32],
+        public_identity: PublicIdentity,
+    ) -> Self {
+        // Compute private handle_hash using VSF normalization
+        // Formula: BLAKE3(VsfType::x(handle).flatten())
+        // This ensures consistent hashing regardless of Unicode representation
+        // This is PRIVATE and used for seed derivation (NOT the public handle_proof!)
+        let vsf_bytes = vsf::VsfType::x(handle.as_str().to_string()).flatten();
+        let handle_hash = *blake3::hash(&vsf_bytes).as_bytes();
+
         Self {
             id: ContactId::new(),
             handle,
+            handle_proof,
+            handle_hash,
             public_identity,
             ip: None,
             relationship_seed: None,
+            clutch_state: ClutchState::Pending,
+            clutch_our_ephemeral_secret: None,
+            clutch_our_ephemeral_pubkey: None,
+            clutch_their_ephemeral_pubkey: None,
             trust_level: TrustLevel::Stranger,
             added_timestamp: vsf::eagle_time_nanos() as u64,
             last_seen: None,

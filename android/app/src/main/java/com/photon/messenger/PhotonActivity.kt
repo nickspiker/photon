@@ -36,12 +36,13 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     private var keyboardVisible = false
 
     // Native methods
-    private external fun nativeInit(width: Int, height: Int, fingerprint: ByteArray, dataDir: String): Long
+    private external fun nativeInit(width: Int, height: Int, fingerprint: ByteArray, dataDir: String, isSamsung: Boolean): Long
     private external fun nativeDraw(contextPtr: Long, surface: android.view.Surface)
     private external fun nativeResize(contextPtr: Long, width: Int, height: Int)
     private external fun nativeOnTouch(contextPtr: Long, action: Int, x: Float, y: Float): Int  // Returns: 1=show keyboard, -1=hide keyboard, 2=open image picker, 0=no change
     private external fun nativeOnTextInput(contextPtr: Long, text: String)  // Text from soft keyboard
     private external fun nativeOnKeyEvent(contextPtr: Long, keyCode: Int): Boolean  // Special keys (backspace, enter)
+    private external fun nativeOnBackPressed(contextPtr: Long): Boolean  // Back button - returns true if handled
     private external fun nativeSetAvatarFromFile(contextPtr: Long, fileBytes: ByteArray)  // Raw image file bytes (preserves ICC profile)
     private external fun nativeDestroy(contextPtr: Long)
 
@@ -149,11 +150,14 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     private fun initializeNativeIfReady() {
         if (surfaceReady && fingerprintResult != null && nativePtr == 0L) {
             val holder = surfaceView.holder
+            // Samsung needs workarounds for Choreographer throttling
+            val isSamsung = android.os.Build.MANUFACTURER.equals("samsung", ignoreCase = true)
             nativePtr = nativeInit(
                 holder.surfaceFrame.width(),
                 holder.surfaceFrame.height(),
                 fingerprintResult!!.fingerprint,
-                filesDir.absolutePath
+                filesDir.absolutePath,
+                isSamsung
             )
 
             if (nativePtr != 0L) {
@@ -167,6 +171,11 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     override fun surfaceCreated(holder: SurfaceHolder) {
         surfaceReady = true
         initializeNativeIfReady()
+
+        // Resume render loop if we already have a context (app resume case)
+        if (nativePtr != 0L) {
+            Choreographer.getInstance().postFrameCallback(this)
+        }
     }
 
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
@@ -255,5 +264,16 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         }
 
         return super.onKeyDown(keyCode, event)
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        if (nativePtr != 0L && nativeOnBackPressed(nativePtr)) {
+            // Rust handled it (e.g., navigated from chat to contacts)
+            return
+        }
+        // Not handled - let system handle (exit app)
+        @Suppress("DEPRECATION")
+        super.onBackPressed()
     }
 }

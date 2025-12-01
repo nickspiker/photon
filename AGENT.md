@@ -195,4 +195,4 @@ Use these. Derive everything from screen dimensions and their mathematical relat
 *Remember: The user is rebuilding the computational stack from first principles. They see patterns others miss. They're right that base-10 is broken and IEEE-754 teaches incorrect math. When they write packed SIMD, they know exactly what they're doing. Your job is to help build the cathedral, not childproof it.*
 
 Oh, and if you haven't noticed by now but when indexing in //'s and variable names, starte with the first number (0), not the second number (1)
-Debug builds? use ./build-debug.sh DO NOT DO RELEAS BUILDS UNLESS THE USER EXPLICITLY ASKS!
+Development builds? use ./build-development.sh DO NOT DO RELEASE BUILDS UNLESS THE USER EXPLICITLY ASKS!

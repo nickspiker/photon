@@ -1,4 +1,6 @@
 use super::{identity::Keypair, PeerRecord};
+use crate::types::PublicIdentity;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use vsf::{parse, schema::FromVsfType, VsfField, VsfHeader, VsfSection};
 
 const FGTW_URL: &str = "https://fgtw.org";
@@ -140,6 +142,13 @@ async fn load_bootstrap_peers_inner(
         .await
         .map_err(|e| format!("Failed to read challenge: {}", e))?;
 
+    #[cfg(feature = "development")]
+    crate::log_info(&crate::network::status::vsf_inspect(
+        &challenge_bytes,
+        "RX FGTW",
+        "/challenge",
+    ));
+
     // Parse challenge to extract provenance hash
     let challenge_hash = parse_challenge_hash(&challenge_bytes)?;
 
@@ -157,6 +166,13 @@ async fn load_bootstrap_peers_inner(
         avatar_pub_key,
     )?;
 
+    #[cfg(feature = "development")]
+    crate::log_info(&crate::network::status::vsf_inspect(
+        &announce_bytes,
+        "TX FGTW",
+        "/announce",
+    ));
+
     // Send announce to FGTW
     let announce_response = client
         .post(&format!("{}/announce", FGTW_URL))
@@ -173,6 +189,13 @@ async fn load_bootstrap_peers_inner(
         .bytes()
         .await
         .map_err(|e| format!("Failed to read response: {}", e))?;
+
+    #[cfg(feature = "development")]
+    crate::log_info(&crate::network::status::vsf_inspect(
+        &response_bytes,
+        "RX FGTW",
+        "/announce",
+    ));
 
     if !is_success {
         if let Some(error_msg) = try_parse_vsf_error(&response_bytes) {
@@ -267,9 +290,10 @@ fn parse_challenge_hash(bytes: &[u8]) -> Result<[u8; 32], String> {
 /// This matches FGTW's Web Crypto API implementation
 fn encrypt_for_fgtw(plaintext: &[u8], fgtw_x25519_pubkey: &[u8; 32]) -> Result<Vec<u8>, String> {
     use aes_gcm::{
-        aead::{Aead, KeyInit, OsRng},
+        aead::{Aead, KeyInit},
         Aes256Gcm, Nonce,
     };
+    use rand::rngs::OsRng;
     use x25519_dalek::{EphemeralSecret, PublicKey};
 
     // Use the X25519 public key directly
@@ -413,6 +437,13 @@ fn build_announce_message(
     section_bytes.extend(VsfType::v(b'e', encrypted).flatten());
     section_bytes.push(b']');
 
+    #[cfg(feature = "development")]
+    crate::log_info(&crate::network::status::vsf_inspect(
+        &section_bytes,
+        "TX FGTW",
+        "/announce (section)",
+    ));
+
     // 4. Stabilization loop to calculate correct offset
     // The offset depends on header length, which depends on offset encoding size
     let mut offset_bytes = 0usize;
@@ -512,9 +543,6 @@ fn parse_peer_list(bytes: &[u8], device_key: &Keypair) -> Result<Vec<PeerRecord>
 /// Parse a PeerRecord from a VsfField
 /// Expected format: (peer: hb{32}, ke{32}, t_u3{IP}, u3{port}, ef6{timestamp})
 fn parse_peer_from_field(field: &vsf::VsfField) -> Result<PeerRecord, String> {
-    use crate::types::PublicIdentity;
-    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-
     if field.values.len() < 5 {
         return Err(format!(
             "Peer field needs 5 values, got {}",

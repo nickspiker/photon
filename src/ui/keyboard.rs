@@ -332,8 +332,14 @@ impl PhotonApp {
                                 // Already searching, ignore Enter
                             }
                             AppState::Conversation => {
-                                // In Conversation state: send message (TODO)
-                                // For now, do nothing
+                                // In Conversation state: send message
+                                let message: String =
+                                    self.current_text_state.chars.iter().collect();
+                                if self.send_message_to_selected_contact(&message) {
+                                    // Clear textbox after successful send
+                                    self.reset_textbox();
+                                    self.window_dirty = true;
+                                }
                             }
                             AppState::Connected { .. } => {
                                 // In Connected state: send message (TODO)
@@ -349,6 +355,7 @@ impl PhotonApp {
                         self.app_state = AppState::Ready;
                         self.selected_contact = None;
                         self.window_dirty = true;
+                        self.reset_textbox();
                         return;
                     }
                     // Clear selection on Escape

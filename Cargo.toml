@@ -37,10 +37,12 @@ ed25519-dalek = { version = "2", features = ["rand_core"] }
 
 # Crypto
 blake3 = "1.5"
-chacha20poly1305 = "0.10"
-aes-gcm = "0.10"
+chacha20poly1305 = "0.11.0-rc.2"
+aes-gcm = "0.11.0-rc.2"
 x25519-dalek = { version = "2.0", features = ["static_secrets"] }
 rand = "0.8"
+rand_chacha = "0.3"  # ChaCha20Rng for PRNG salt generation
+rand_pcg = "0.3"     # Pcg64 for dual PRNG diversity
 zeroize = { version = "1.7", features = ["derive"] }
 
 # Network

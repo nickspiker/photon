@@ -26,10 +26,14 @@ impl PhotonApp {
                 self.spectrum_phase
             );
             // Spectrum: 2 pi radians per second = 1 full cycle/sec
-            self.spectrum_phase += delta_time * std::f32::consts::PI * 2.0;
+            self.spectrum_phase += delta_time * std::f32::consts::PI * 2.;
             self.spectrum_phase %= std::f32::consts::TAU; // Wrap phase
                                                           // Speckles: high increment rate creates nice animated effect
             self.speckle_counter += delta_time * (usize::MAX / 64) as f32;
+            // Hourglass: stochastic wobble (-12 to +13 degrees per frame)
+            use rand::Rng;
+            let wobble: f32 = rand::thread_rng().gen_range(-10.6..=15.);
+            self.hourglass_angle = (self.hourglass_angle + wobble) % 360.0;
             // Mark window dirty to trigger redraw of animated elements
             self.window_dirty = true;
         }
@@ -373,6 +377,7 @@ impl PhotonApp {
                                 button_center_x,
                                 button_center_y,
                                 button_size * 3 / 4,
+                                self.hourglass_angle,
                                 (r, g, b),
                             );
                         } else {
@@ -698,87 +703,144 @@ impl PhotonApp {
                             //     );
                             // }
 
-                            // Draw message area placeholder (just show "no messages" if empty)
-                            if contact.messages.is_empty() {
-                                let msg_center_y = (message_area_top + message_area_bottom) / 2;
-                                self.text_renderer.draw_text_center_u32(
-                                    pixels,
-                                    self.width as usize,
-                                    "no messages yet",
-                                    center_x as f32,
-                                    msg_center_y as f32,
-                                    font_size,
-                                    300,
-                                    theme::LABEL_COLOUR,
-                                    theme::FONT_UI,
-                                );
-                            }
-                            // TODO: Draw actual messages when they exist
+                            // Draw message area based on CLUTCH state
+                            use crate::types::ClutchState;
+                            let msg_center_y = (message_area_top + message_area_bottom) / 2;
 
-                            // Draw bottom textbox for message input (full width, centered)
-                            Self::draw_textbox(
-                                pixels,
-                                &mut self.hit_test_map,
-                                HIT_HANDLE_TEXTBOX,
-                                &mut self.textbox_mask,
-                                self.width as usize,
-                                center_x,
-                                textbox_y,
-                                box_width,
-                                box_height,
-                            );
+                            match contact.clutch_state {
+                                ClutchState::Complete => {
+                                    // CLUTCH complete - can message
+                                    if contact.messages.is_empty() {
+                                        // Line 1: "no messages yet"
+                                        let line1_y = msg_center_y - (font_size as usize);
+                                        self.text_renderer.draw_text_center_u32(
+                                            pixels,
+                                            self.width as usize,
+                                            "no messages yet",
+                                            center_x as f32,
+                                            line1_y as f32,
+                                            font_size,
+                                            300,
+                                            theme::LABEL_COLOUR,
+                                            theme::FONT_UI,
+                                        );
+                                        // Line 2: Success message (green)
+                                        let line2_y = msg_center_y + (font_size as usize / 2);
+                                        self.text_renderer.draw_text_center_u32(
+                                            pixels,
+                                            self.width as usize,
+                                            "secure channel established",
+                                            center_x as f32,
+                                            line2_y as f32,
+                                            font_size * 0.8,
+                                            400,
+                                            theme::CONTACT_ONLINE, // Green
+                                            theme::FONT_UI,
+                                        );
+                                    }
+                                    // TODO: Draw actual messages when they exist
 
-                            // Draw send button inset in bottom-right corner of textbox (only if text entered)
-                            if !self.current_text_state.chars.is_empty() {
-                                // textbox_y is the center, so bottom = textbox_y + box_height/2
-                                let send_button_size = box_height * 7 / 8; // 7/8 height for clean inset
-                                let inset = box_height / 16; // 1/16 padding on each side
-                                let button_center_x =
-                                    center_x + box_width / 2 - inset - send_button_size / 2;
-                                let textbox_bottom = textbox_y + box_height / 2;
-                                let button_center_y = textbox_bottom - inset - send_button_size / 2;
-                                Self::draw_button(
-                                    pixels,
-                                    &mut self.hit_test_map,
-                                    self.width as usize,
-                                    self.height as usize,
-                                    button_center_x,
-                                    button_center_y,
-                                    send_button_size,
-                                    send_button_size,
-                                    HIT_PRIMARY_BUTTON,
-                                    theme::BUTTON_BLUE,
-                                    theme::BUTTON_LIGHT_EDGE,
-                                    theme::BUTTON_SHADOW_EDGE,
-                                );
+                                    // Draw bottom textbox for message input (full width, centered)
+                                    Self::draw_textbox(
+                                        pixels,
+                                        &mut self.hit_test_map,
+                                        HIT_HANDLE_TEXTBOX,
+                                        &mut self.textbox_mask,
+                                        self.width as usize,
+                                        center_x,
+                                        textbox_y,
+                                        box_width,
+                                        box_height,
+                                    );
 
-                                // Draw ">" arrow on send button
-                                self.text_renderer.draw_text_center_u32(
-                                    pixels,
-                                    self.width as usize,
-                                    ">",
-                                    button_center_x as f32,
-                                    button_center_y as f32,
-                                    font_size,
-                                    700,
-                                    theme::BUTTON_TEXT,
-                                    theme::FONT_UI,
-                                );
-                            }
+                                    // Draw send button inset in bottom-right corner of textbox (only if text entered)
+                                    if !self.current_text_state.chars.is_empty() {
+                                        let send_button_size = box_height * 7 / 8;
+                                        let inset = box_height / 16;
+                                        let button_center_x =
+                                            center_x + box_width / 2 - inset - send_button_size / 2;
+                                        let textbox_bottom = textbox_y + box_height / 2;
+                                        let button_center_y =
+                                            textbox_bottom - inset - send_button_size / 2;
+                                        Self::draw_button(
+                                            pixels,
+                                            &mut self.hit_test_map,
+                                            self.width as usize,
+                                            self.height as usize,
+                                            button_center_x,
+                                            button_center_y,
+                                            send_button_size,
+                                            send_button_size,
+                                            HIT_PRIMARY_BUTTON,
+                                            theme::BUTTON_BLUE,
+                                            theme::BUTTON_LIGHT_EDGE,
+                                            theme::BUTTON_SHADOW_EDGE,
+                                        );
 
-                            // Glow if focused
-                            self.glow_colour = theme::GLOW_DEFAULT;
-                            if self.current_text_state.textbox_focused {
-                                Self::apply_textbox_glow(
-                                    pixels,
-                                    &self.textbox_mask,
-                                    self.width as usize,
-                                    textbox_y,
-                                    box_width,
-                                    box_height,
-                                    true,
-                                    self.glow_colour,
-                                );
+                                        // Draw ">" arrow on send button
+                                        self.text_renderer.draw_text_center_u32(
+                                            pixels,
+                                            self.width as usize,
+                                            ">",
+                                            button_center_x as f32,
+                                            button_center_y as f32,
+                                            font_size,
+                                            700,
+                                            theme::BUTTON_TEXT,
+                                            theme::FONT_UI,
+                                        );
+                                    }
+
+                                    // Glow if focused
+                                    self.glow_colour = theme::GLOW_DEFAULT;
+                                    if self.current_text_state.textbox_focused {
+                                        Self::apply_textbox_glow(
+                                            pixels,
+                                            &self.textbox_mask,
+                                            self.width as usize,
+                                            textbox_y,
+                                            box_width,
+                                            box_height,
+                                            true,
+                                            self.glow_colour,
+                                        );
+                                    }
+                                }
+                                ClutchState::Pending | ClutchState::Offered => {
+                                    // CLUTCH in progress - show status, hide textbox
+                                    // Line 1: "clutch in progress"
+                                    let line1_y = msg_center_y - (font_size as usize / 2);
+                                    self.text_renderer.draw_text_center_u32(
+                                        pixels,
+                                        self.width as usize,
+                                        "clutch in progress",
+                                        center_x as f32,
+                                        line1_y as f32,
+                                        font_size,
+                                        400,
+                                        theme::STATUS_TEXT_ATTESTING, // Yellow with proper alpha
+                                        theme::FONT_UI,
+                                    );
+                                    // Line 2: Hint about what's happening
+                                    let hint = match contact.clutch_state {
+                                        ClutchState::Pending => "waiting for them to add you back",
+                                        ClutchState::Offered => "key exchange in progress...",
+                                        ClutchState::Complete => unreachable!(),
+                                    };
+                                    let line2_y = msg_center_y + (font_size as usize);
+                                    self.text_renderer.draw_text_center_u32(
+                                        pixels,
+                                        self.width as usize,
+                                        hint,
+                                        center_x as f32,
+                                        line2_y as f32,
+                                        font_size * 0.7,
+                                        300,
+                                        theme::LABEL_COLOUR,
+                                        theme::FONT_UI,
+                                    );
+                                    // No textbox drawn - can't message until CLUTCH complete
+                                }
                             }
                         }
                     }
@@ -2372,12 +2434,14 @@ impl PhotonApp {
     }
 
     /// Draw hourglass icon (two triangles meeting at center point)
+    /// angle_degrees: rotation angle in degrees (stochastic wobble during search)
     pub fn draw_hourglass_symbol(
         pixels: &mut [u32],
         width: usize,
         cx: usize,
         cy: usize,
         size: usize,
+        angle_degrees: f32,
         stroke_colour: (u8, u8, u8),
     ) {
         let scale = size as f32 / 1000.0;
@@ -2387,23 +2451,25 @@ impl PhotonApp {
         let half_h = 400.0 * scale; // Half height of hourglass
         let half_w = 300.0 * scale; // Half width at top/bottom
 
-        // Top triangle: apex at center, base at top
-        let top_apex_x = cx as f32;
-        let top_apex_y = cy as f32;
-        let top_left_x = cx as f32 - half_w;
-        let top_left_y = cy as f32 - half_h;
-        let top_right_x = cx as f32 + half_w;
-        let top_right_y = cy as f32 - half_h;
+        // Precompute rotation (inverse rotation for sample point transform)
+        let angle_rad = -angle_degrees.to_radians();
+        let cos_a = angle_rad.cos();
+        let sin_a = angle_rad.sin();
+        let cx_f = cx as f32;
+        let cy_f = cy as f32;
 
+        // Hourglass vertices in local coords (center at origin)
+        // Top triangle: apex at center, base at top
+        let top_apex = (0.0_f32, 0.0_f32);
+        let top_left = (-half_w, -half_h);
+        let top_right = (half_w, -half_h);
         // Bottom triangle: apex at center, base at bottom
-        let bot_left_x = cx as f32 - half_w;
-        let bot_left_y = cy as f32 + half_h;
-        let bot_right_x = cx as f32 + half_w;
-        let bot_right_y = cy as f32 + half_h;
+        let bot_left = (-half_w, half_h);
+        let bot_right = (half_w, half_h);
 
         let stroke_packed = pack_argb(stroke_colour.0, stroke_colour.1, stroke_colour.2, 255);
 
-        // Bounding box
+        // Bounding box (expanded for rotation)
         let half_size = (size / 2 + 2) as isize;
         let min_x = (cx as isize - half_size).max(0) as usize;
         let max_x = (cx as isize + half_size) as usize;
@@ -2412,19 +2478,58 @@ impl PhotonApp {
 
         for py in min_y..max_y {
             for px in min_x..max_x {
-                let px_f = px as f32 + 0.5;
-                let py_f = py as f32 + 0.5;
+                // Rotate sample point into hourglass local space (inverse rotation)
+                let dx = px as f32 + 0.5 - cx_f;
+                let dy = py as f32 + 0.5 - cy_f;
+                let lx = dx * cos_a - dy * sin_a;
+                let ly = dx * sin_a + dy * cos_a;
 
                 // Distance to each line segment of the hourglass (6 edges total)
                 // Top triangle edges
-                let d1 = Self::distance_to_capsule(px_f, py_f, top_left_x, top_left_y, top_right_x, top_right_y, radius); // top base
-                let d2 = Self::distance_to_capsule(px_f, py_f, top_left_x, top_left_y, top_apex_x, top_apex_y, radius); // top-left to apex
-                let d3 = Self::distance_to_capsule(px_f, py_f, top_right_x, top_right_y, top_apex_x, top_apex_y, radius); // top-right to apex
+                let d1 = Self::distance_to_capsule_local(
+                    lx,
+                    ly,
+                    top_left.0,
+                    top_left.1,
+                    top_right.0,
+                    top_right.1,
+                    radius,
+                );
+                let d2 = Self::distance_to_capsule_local(
+                    lx, ly, top_left.0, top_left.1, top_apex.0, top_apex.1, radius,
+                );
+                let d3 = Self::distance_to_capsule_local(
+                    lx,
+                    ly,
+                    top_right.0,
+                    top_right.1,
+                    top_apex.0,
+                    top_apex.1,
+                    radius,
+                );
 
                 // Bottom triangle edges
-                let d4 = Self::distance_to_capsule(px_f, py_f, bot_left_x, bot_left_y, bot_right_x, bot_right_y, radius); // bottom base
-                let d5 = Self::distance_to_capsule(px_f, py_f, bot_left_x, bot_left_y, top_apex_x, top_apex_y, radius); // bot-left to apex
-                let d6 = Self::distance_to_capsule(px_f, py_f, bot_right_x, bot_right_y, top_apex_x, top_apex_y, radius); // bot-right to apex
+                let d4 = Self::distance_to_capsule_local(
+                    lx,
+                    ly,
+                    bot_left.0,
+                    bot_left.1,
+                    bot_right.0,
+                    bot_right.1,
+                    radius,
+                );
+                let d5 = Self::distance_to_capsule_local(
+                    lx, ly, bot_left.0, bot_left.1, top_apex.0, top_apex.1, radius,
+                );
+                let d6 = Self::distance_to_capsule_local(
+                    lx,
+                    ly,
+                    bot_right.0,
+                    bot_right.1,
+                    top_apex.0,
+                    top_apex.1,
+                    radius,
+                );
 
                 // Minimum distance (union of all edges)
                 let dist = d1.min(d2).min(d3).min(d4).min(d5).min(d6);
@@ -2459,6 +2564,36 @@ impl PhotonApp {
                 }
             }
         }
+    }
+
+    // Helper: distance to capsule in local coords (no center offset needed)
+    #[inline]
+    fn distance_to_capsule_local(
+        px: f32,
+        py: f32,
+        x1: f32,
+        y1: f32,
+        x2: f32,
+        y2: f32,
+        radius: f32,
+    ) -> f32 {
+        let dx = x2 - x1;
+        let dy = y2 - y1;
+        let len_sq = dx * dx + dy * dy;
+
+        let t = if len_sq > 0.0 {
+            ((px - x1) * dx + (py - y1) * dy) / len_sq
+        } else {
+            0.0
+        };
+        let t = t.clamp(0.0, 1.0);
+
+        let closest_x = x1 + t * dx;
+        let closest_y = y1 + t * dy;
+        let dist_x = px - closest_x;
+        let dist_y = py - closest_y;
+
+        (dist_x * dist_x + dist_y * dist_y).sqrt() - radius
     }
 
     // Helper function: distance from point to capsule (line segment with rounded ends)

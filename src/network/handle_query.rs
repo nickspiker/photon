@@ -26,9 +26,10 @@ const EPHEMERAL_START: u16 = 49152;
 /// Number of ports in our deterministic range (49152-65535 = 16384 ports)
 const EPHEMERAL_RANGE: u64 = 16384;
 
-/// Compute deterministic port from handle using BLAKE3
+/// Compute deterministic port from handle using VSF normalization + BLAKE3
 fn photon_port(handle: &str) -> u16 {
-    let hash = blake3::hash(handle.as_bytes());
+    let vsf_bytes = vsf::VsfType::x(handle.to_string()).flatten();
+    let hash = blake3::hash(&vsf_bytes);
     let hash_bytes: [u8; 8] = hash.as_bytes()[..8].try_into().unwrap();
     let hash_u64 = u64::from_le_bytes(hash_bytes);
     EPHEMERAL_START + (hash_u64 % EPHEMERAL_RANGE) as u16
@@ -534,6 +535,7 @@ impl HandleQuery {
                 let result = if let Some(peer) = peers.first() {
                     SearchResult::Found(FoundPeer {
                         handle: HandleText::new(&handle),
+                        handle_proof,
                         device_pubkey: peer.device_pubkey.clone(),
                         ip: peer.ip,
                     })
@@ -560,6 +562,7 @@ impl HandleQuery {
                     } else if let Some(peer) = bootstrap_result.peers.first() {
                         SearchResult::Found(FoundPeer {
                             handle: HandleText::new(&handle),
+                            handle_proof,
                             device_pubkey: peer.device_pubkey.clone(),
                             ip: peer.ip,
                         })

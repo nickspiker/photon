@@ -94,20 +94,29 @@ impl PhotonContext {
         self.app.check_search_result();
 
         // P2P status checking and FGTW refresh (unified with desktop)
-        self.app.check_status_updates();
-        self.app.check_avatar_downloads();
+        if self.app.check_status_updates() {
+            self.app.window_dirty = true;
+        }
+        if self.app.check_avatar_downloads() {
+            self.app.window_dirty = true;
+        }
         self.app.maybe_ping_contacts();
         self.app.maybe_refresh_fgtw();
         self.app.check_refresh_result();
 
-        // Check dirty BEFORE render (render clears the flags)
-        let mut dirty = self.app.window_dirty
+        // Check dirty BEFORE render to decide if we need to present
+        // BUT: animation sets window_dirty during render for NEXT frame
+        // So we check both before AND after
+        let dirty_before = self.app.window_dirty
             || self.app.text_dirty
             || self.app.selection_dirty
             || self.app.controls_dirty;
 
         // Use the full PhotonApp render loop
         self.app.render();
+
+        // Animation sets window_dirty during render - check again
+        let mut dirty = dirty_before || self.app.window_dirty;
 
         // Handle blinkey blinking (cursor animation)
         let now = std::time::Instant::now();
@@ -157,6 +166,7 @@ fn get_context(ptr: jlong) -> Option<&'static mut PhotonContext> {
 ///   concatenated device identifiers (ANDROID_ID, Build.*, etc.)
 ///   This is hashed with BLAKE3 to derive the device's Ed25519 keypair.
 /// * `data_dir` - Android app's filesDir path for persistent storage
+/// * `is_samsung` - True if running on Samsung device (needs Choreographer workarounds)
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeInit(
@@ -166,6 +176,7 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeInit(
     height: jint,
     fingerprint: JByteArray<'_>,
     data_dir: JString<'_>,
+    is_samsung: jboolean,
 ) -> jlong {
     info!("Initializing Photon: {}x{}", width, height);
 
@@ -187,11 +198,16 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeInit(
         }
     };
 
+    let is_samsung = is_samsung != JNI_FALSE;
     info!("Device fingerprint: {} bytes", fingerprint_bytes.len());
     info!("Data directory: {}", data_dir_str);
+    info!("Samsung device: {}", is_samsung);
 
     // Set global Android data directory for avatar storage
     crate::avatar::set_android_data_dir(data_dir_str);
+
+    // Samsung's compositor breaks magic pixel optimization - always copy on Samsung
+    crate::ui::renderer_android::set_samsung_mode(is_samsung);
 
     // Derive device keypair from fingerprint
     let device_keypair = derive_device_keypair(&fingerprint_bytes);
@@ -319,6 +335,26 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeOnKeyEvent(
     };
 
     if handled {
+        JNI_TRUE
+    } else {
+        JNI_FALSE
+    }
+}
+
+/// Handle Android back button
+/// Returns true if handled (stay in app), false to exit
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeOnBackPressed(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    context_ptr: jlong,
+) -> jboolean {
+    let Some(context) = get_context(context_ptr) else {
+        return JNI_FALSE;
+    };
+
+    if context.app.handle_back() {
         JNI_TRUE
     } else {
         JNI_FALSE

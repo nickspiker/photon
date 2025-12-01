@@ -49,4 +49,6 @@ pub enum PhotonEvent {
     AttestationComplete,
     /// Message received from peer (future use)
     MessageReceived,
+    /// Network update available (status, CLUTCH, avatar, etc.) - wake event loop
+    NetworkUpdate,
 }

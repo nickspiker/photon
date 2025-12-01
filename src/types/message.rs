@@ -106,9 +106,15 @@ impl Message {
 }
 
 /// Encrypted message with VSF serialization
+///
+/// Wire format (CLUTCH.md section 9):
+/// - sequence: u64 (message sequence number)
+/// - salt: [u8; 64] (dual PRNG salt - 32 from ChaCha20Rng + 32 from Pcg64)
+/// - ciphertext: Vec<u8> (ChaCha20-Poly1305 output)
 #[derive(Debug, Clone)]
 pub struct EncryptedMessage {
     pub sequence: u64,
+    pub salt: [u8; 64],
     pub ciphertext: Vec<u8>,
 }
 
@@ -116,6 +122,8 @@ impl EncryptedMessage {
     pub fn to_vsf_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
         bytes.extend(VsfType::u(self.sequence as usize, false).flatten());
+        // Salt as raw bytes tensor (64 bytes)
+        bytes.extend(VsfType::t_u3(vsf::Tensor::new(vec![64], self.salt.to_vec())).flatten());
         bytes.extend(
             VsfType::t_u3(vsf::Tensor::new(
                 vec![self.ciphertext.len()],
@@ -141,6 +149,15 @@ impl EncryptedMessage {
                 _ => return Err("Invalid sequence type".to_string()),
             };
 
+        let salt = match parse(bytes, &mut ptr).map_err(|e| format!("Parse salt error: {}", e))? {
+            VsfType::t_u3(tensor) if tensor.data.len() == 64 => {
+                let mut arr = [0u8; 64];
+                arr.copy_from_slice(&tensor.data);
+                arr
+            }
+            _ => return Err("Invalid salt type or length".to_string()),
+        };
+
         let ciphertext =
             match parse(bytes, &mut ptr).map_err(|e| format!("Parse ciphertext error: {}", e))? {
                 VsfType::t_u3(tensor) => tensor.data,
@@ -149,6 +166,7 @@ impl EncryptedMessage {
 
         Ok(EncryptedMessage {
             sequence,
+            salt,
             ciphertext,
         })
     }

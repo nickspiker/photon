@@ -45,7 +45,7 @@ pub enum FgtwMessage {
     /// Note: Avatar is fetched by handle, not exchanged in ping/pong.
     /// Storage key = BLAKE3(BLAKE3(handle) || "avatar")
     StatusPing {
-        timestamp: f64,                // Eagle time with nanosecond precision (ef6)
+        timestamp: f64,                // Eagle time with nanosecond precision (ef6) but it's not an ef6?
         sender_pubkey: PublicIdentity, // Who is pinging (for response routing)
         provenance_hash: [u8; 32],     // BLAKE3(sender_pubkey || timestamp_nanos)
         signature: [u8; 64],           // Ed25519 signature of provenance_hash
@@ -66,6 +66,83 @@ pub enum FgtwMessage {
         responder_pubkey: PublicIdentity, // Who is responding
         provenance_hash: [u8; 32],        // Same hash from ping (proves we received it)
         signature: [u8; 64],              // Ed25519 signature of provenance_hash
+    },
+    /// CLUTCH Offer - parallel key exchange (v2)
+    ///
+    /// Both parties send this simultaneously. Each party's ephemeral
+    /// pubkey contributes entropy to the final seed.
+    ///
+    /// Format: section "clutch_offer" with handle proofs and ephemeral key
+    /// - from_handle_proof: sender's handle proof
+    /// - to_handle_proof: recipient's handle proof
+    /// - ephemeral_x25519: sender's ephemeral public key for ECDH
+    /// - signature: Ed25519 over provenance hash
+    ClutchOffer {
+        timestamp: f64,
+        from_handle_proof: [u8; 32],
+        to_handle_proof: [u8; 32],
+        ephemeral_x25519: [u8; 32],
+        sender_pubkey: PublicIdentity,
+        signature: [u8; 64],
+    },
+    /// CLUTCH Init - initiator sends their ephemeral pubkey to start ceremony (v1 legacy)
+    ///
+    /// Format: header-only with clutch_init section name
+    /// - from_handle_proof: initiator's handle proof
+    /// - to_handle_proof: responder's handle proof
+    /// - ephemeral_x25519: ephemeral public key for ECDH
+    /// - signature: Ed25519 over (from || to || ephemeral)
+    ClutchInit {
+        timestamp: f64,
+        from_handle_proof: [u8; 32],
+        to_handle_proof: [u8; 32],
+        ephemeral_x25519: [u8; 32],
+        sender_pubkey: PublicIdentity, // For signature verification
+        signature: [u8; 64],
+    },
+    /// CLUTCH Response - responder sends their ephemeral pubkey back (v1 legacy)
+    ClutchResponse {
+        timestamp: f64,
+        from_handle_proof: [u8; 32],
+        to_handle_proof: [u8; 32],
+        ephemeral_x25519: [u8; 32],
+        sender_pubkey: PublicIdentity,
+        signature: [u8; 64],
+    },
+    /// CLUTCH Complete - initiator confirms they derived the same seed
+    ClutchComplete {
+        timestamp: f64,
+        from_handle_proof: [u8; 32],
+        to_handle_proof: [u8; 32],
+        proof: [u8; 32], // BLAKE3(shared_seed || "CLUTCH_v1_complete")
+        sender_pubkey: PublicIdentity,
+        signature: [u8; 64],
+    },
+    /// Encrypted chat message
+    ///
+    /// Format: section "msg" with encrypted payload
+    /// - from_handle_proof: sender's handle proof (for recipient to identify sender)
+    /// - sequence: message sequence number
+    /// - salt: 64-byte dual PRNG salt
+    /// - ciphertext: ChaCha20-Poly1305 encrypted message
+    ChatMessage {
+        timestamp: f64,
+        from_handle_proof: [u8; 32],
+        sequence: u64,
+        salt: [u8; 64],
+        ciphertext: Vec<u8>,
+        sender_pubkey: PublicIdentity,
+        signature: [u8; 64],
+    },
+    /// Message acknowledgment
+    ///
+    /// Confirms receipt of a message by sequence number
+    MessageAck {
+        timestamp: f64,
+        from_handle_proof: [u8; 32],
+        sequence: u64,
+        sender_pubkey: PublicIdentity,
+        signature: [u8; 64],
     },
 }
 
@@ -329,6 +406,168 @@ impl FgtwMessage {
                     .add_section("pong", vec![])
                     .build()
             }
+            FgtwMessage::ClutchOffer {
+                timestamp,
+                from_handle_proof,
+                to_handle_proof,
+                ephemeral_x25519,
+                sender_pubkey,
+                signature,
+            } => {
+                // CLUTCH offer: parallel exchange - both parties send this
+                let provenance =
+                    compute_clutch_provenance(from_handle_proof, to_handle_proof, ephemeral_x25519);
+                builder
+                    .creation_time_nanos(*timestamp)
+                    .provenance_hash(provenance)
+                    .signature_ed25519(*sender_pubkey.as_bytes(), *signature)
+                    .add_section(
+                        "clutch_offer",
+                        vec![
+                            ("from".to_string(), VsfType::hb(from_handle_proof.to_vec())),
+                            ("to".to_string(), VsfType::hb(to_handle_proof.to_vec())),
+                            (
+                                "ephemeral".to_string(),
+                                VsfType::kx(ephemeral_x25519.to_vec()),
+                            ),
+                        ],
+                    )
+                    .build()
+            }
+            FgtwMessage::ClutchInit {
+                timestamp,
+                from_handle_proof,
+                to_handle_proof,
+                ephemeral_x25519,
+                sender_pubkey,
+                signature,
+            } => {
+                // CLUTCH init (v1 legacy): use section body for handle proofs and ephemeral key
+                let provenance =
+                    compute_clutch_provenance(from_handle_proof, to_handle_proof, ephemeral_x25519);
+                builder
+                    .creation_time_nanos(*timestamp)
+                    .provenance_hash(provenance)
+                    .signature_ed25519(*sender_pubkey.as_bytes(), *signature)
+                    .add_section(
+                        "clutch_init",
+                        vec![
+                            ("from".to_string(), VsfType::hb(from_handle_proof.to_vec())),
+                            ("to".to_string(), VsfType::hb(to_handle_proof.to_vec())),
+                            (
+                                "ephemeral".to_string(),
+                                VsfType::kx(ephemeral_x25519.to_vec()),
+                            ),
+                        ],
+                    )
+                    .build()
+            }
+            FgtwMessage::ClutchResponse {
+                timestamp,
+                from_handle_proof,
+                to_handle_proof,
+                ephemeral_x25519,
+                sender_pubkey,
+                signature,
+            } => {
+                let provenance =
+                    compute_clutch_provenance(from_handle_proof, to_handle_proof, ephemeral_x25519);
+                builder
+                    .creation_time_nanos(*timestamp)
+                    .provenance_hash(provenance)
+                    .signature_ed25519(*sender_pubkey.as_bytes(), *signature)
+                    .add_section(
+                        "clutch_resp",
+                        vec![
+                            ("from".to_string(), VsfType::hb(from_handle_proof.to_vec())),
+                            ("to".to_string(), VsfType::hb(to_handle_proof.to_vec())),
+                            (
+                                "ephemeral".to_string(),
+                                VsfType::kx(ephemeral_x25519.to_vec()),
+                            ),
+                        ],
+                    )
+                    .build()
+            }
+            FgtwMessage::ClutchComplete {
+                timestamp,
+                from_handle_proof,
+                to_handle_proof,
+                proof,
+                sender_pubkey,
+                signature,
+            } => {
+                let provenance =
+                    compute_clutch_complete_provenance(from_handle_proof, to_handle_proof, proof);
+                builder
+                    .creation_time_nanos(*timestamp)
+                    .provenance_hash(provenance)
+                    .signature_ed25519(*sender_pubkey.as_bytes(), *signature)
+                    .add_section(
+                        "clutch_done",
+                        vec![
+                            ("from".to_string(), VsfType::hb(from_handle_proof.to_vec())),
+                            ("to".to_string(), VsfType::hb(to_handle_proof.to_vec())),
+                            ("proof".to_string(), VsfType::hb(proof.to_vec())),
+                        ],
+                    )
+                    .build()
+            }
+            FgtwMessage::ChatMessage {
+                timestamp,
+                from_handle_proof,
+                sequence,
+                salt,
+                ciphertext,
+                sender_pubkey,
+                signature,
+            } => {
+                let provenance = compute_msg_provenance(from_handle_proof, *sequence, salt);
+                builder
+                    .creation_time_nanos(*timestamp)
+                    .provenance_hash(provenance)
+                    .signature_ed25519(*sender_pubkey.as_bytes(), *signature)
+                    .add_section(
+                        "msg",
+                        vec![
+                            ("from".to_string(), VsfType::hb(from_handle_proof.to_vec())),
+                            ("seq".to_string(), VsfType::u(*sequence as usize, false)),
+                            (
+                                "salt".to_string(),
+                                VsfType::t_u3(vsf::Tensor::new(vec![64], salt.to_vec())),
+                            ),
+                            (
+                                "data".to_string(),
+                                VsfType::t_u3(vsf::Tensor::new(
+                                    vec![ciphertext.len()],
+                                    ciphertext.clone(),
+                                )),
+                            ),
+                        ],
+                    )
+                    .build()
+            }
+            FgtwMessage::MessageAck {
+                timestamp,
+                from_handle_proof,
+                sequence,
+                sender_pubkey,
+                signature,
+            } => {
+                let provenance = compute_ack_provenance(from_handle_proof, *sequence);
+                builder
+                    .creation_time_nanos(*timestamp)
+                    .provenance_hash(provenance)
+                    .signature_ed25519(*sender_pubkey.as_bytes(), *signature)
+                    .add_section(
+                        "ack",
+                        vec![
+                            ("from".to_string(), VsfType::hb(from_handle_proof.to_vec())),
+                            ("seq".to_string(), VsfType::u(*sequence as usize, false)),
+                        ],
+                    )
+                    .build()
+            }
         };
 
         result.unwrap_or_else(|e| {
@@ -426,10 +665,149 @@ impl FgtwMessage {
             }
         }
 
+        // Handle CLUTCH messages (clutch_offer, clutch_init, clutch_resp, clutch_done)
+        if section_name == "clutch_offer"
+            || section_name == "clutch_init"
+            || section_name == "clutch_resp"
+            || section_name == "clutch_done"
+        {
+            let timestamp = extract_header_timestamp(&header)?;
+            let sender_pubkey = extract_header_pubkey(&header)?;
+            let signature = extract_header_signature(&header)?;
+
+            // Parse section fields
+            let mut fields: Vec<(String, VsfType)> = Vec::new();
+            while ptr < bytes.len() && bytes[ptr] != b']' {
+                if bytes[ptr] != b'(' {
+                    return Err("Expected field start '('".to_string());
+                }
+                ptr += 1;
+                let field_name = match parse(bytes, &mut ptr) {
+                    Ok(VsfType::d(name)) => name,
+                    _ => return Err("Invalid CLUTCH field name".to_string()),
+                };
+                if ptr < bytes.len() && bytes[ptr] == b':' {
+                    ptr += 1;
+                    let value =
+                        parse(bytes, &mut ptr).map_err(|e| format!("Parse CLUTCH field: {}", e))?;
+                    fields.push((field_name, value));
+                }
+                if ptr >= bytes.len() || bytes[ptr] != b')' {
+                    return Err("Expected field end ')'".to_string());
+                }
+                ptr += 1;
+            }
+
+            let from_handle_proof = extract_hash(&fields, "from")?;
+            let to_handle_proof = extract_hash(&fields, "to")?;
+
+            if section_name == "clutch_offer" {
+                // Parallel v2 offer
+                let ephemeral = extract_clutch_ephemeral(&fields)?;
+                return Ok(FgtwMessage::ClutchOffer {
+                    timestamp,
+                    from_handle_proof,
+                    to_handle_proof,
+                    ephemeral_x25519: ephemeral,
+                    sender_pubkey,
+                    signature,
+                });
+            } else if section_name == "clutch_init" {
+                // Legacy v1 init
+                let ephemeral = extract_clutch_ephemeral(&fields)?;
+                return Ok(FgtwMessage::ClutchInit {
+                    timestamp,
+                    from_handle_proof,
+                    to_handle_proof,
+                    ephemeral_x25519: ephemeral,
+                    sender_pubkey,
+                    signature,
+                });
+            } else if section_name == "clutch_resp" {
+                // Legacy v1 response
+                let ephemeral = extract_clutch_ephemeral(&fields)?;
+                return Ok(FgtwMessage::ClutchResponse {
+                    timestamp,
+                    from_handle_proof,
+                    to_handle_proof,
+                    ephemeral_x25519: ephemeral,
+                    sender_pubkey,
+                    signature,
+                });
+            } else {
+                // clutch_done
+                let proof = extract_hash(&fields, "proof")?;
+                return Ok(FgtwMessage::ClutchComplete {
+                    timestamp,
+                    from_handle_proof,
+                    to_handle_proof,
+                    proof,
+                    sender_pubkey,
+                    signature,
+                });
+            }
+        }
+
+        // Handle msg (encrypted chat message) and ack (acknowledgment)
+        if section_name == "msg" || section_name == "ack" {
+            let timestamp = extract_header_timestamp(&header)?;
+            let sender_pubkey = extract_header_pubkey(&header)?;
+            let signature = extract_header_signature(&header)?;
+
+            // Parse section fields
+            let mut fields: Vec<(String, VsfType)> = Vec::new();
+            while ptr < bytes.len() && bytes[ptr] != b']' {
+                if bytes[ptr] != b'(' {
+                    return Err("Expected field start '('".to_string());
+                }
+                ptr += 1;
+                let field_name = match parse(bytes, &mut ptr) {
+                    Ok(VsfType::d(name)) => name,
+                    _ => return Err("Invalid msg/ack field name".to_string()),
+                };
+                if ptr < bytes.len() && bytes[ptr] == b':' {
+                    ptr += 1;
+                    let value = parse(bytes, &mut ptr)
+                        .map_err(|e| format!("Parse msg/ack field: {}", e))?;
+                    fields.push((field_name, value));
+                }
+                if ptr >= bytes.len() || bytes[ptr] != b')' {
+                    return Err("Expected field end ')'".to_string());
+                }
+                ptr += 1;
+            }
+
+            let from_handle_proof = extract_hash(&fields, "from")?;
+            let sequence = extract_sequence(&fields, "seq")?;
+
+            if section_name == "msg" {
+                let salt = extract_salt(&fields, "salt")?;
+                let ciphertext = extract_data(&fields, "data")?;
+                return Ok(FgtwMessage::ChatMessage {
+                    timestamp,
+                    from_handle_proof,
+                    sequence,
+                    salt,
+                    ciphertext,
+                    sender_pubkey,
+                    signature,
+                });
+            } else {
+                // ack
+                return Ok(FgtwMessage::MessageAck {
+                    timestamp,
+                    from_handle_proof,
+                    sequence,
+                    sender_pubkey,
+                    signature,
+                });
+            }
+        }
+
         // Original fgtw section handling
         if section_name != "fgtw" {
             return Err(format!(
-                "Expected 'fgtw' or 'ping'/'pong' section, got '{}'",
+                "Expected 'fgtw', 'ping'/'pong', 'clutch_*', 'msg', or 'ack' section, got '{}'",
                 section_name
             ));
         }
@@ -580,6 +958,48 @@ fn extract_pubkey(fields: &[(String, VsfType)], key: &str) -> Result<PublicIdent
     Ok(PublicIdentity::from_bytes(pubkey_arr))
 }
 
+fn extract_clutch_ephemeral(fields: &[(String, VsfType)]) -> Result<[u8; 32], String> {
+    let ephemeral_bytes = match get_field(fields, "ephemeral") {
+        Some(VsfType::kx(bytes)) => bytes,
+        _ => return Err("Missing or invalid ephemeral key".to_string()),
+    };
+    let mut arr = [0u8; 32];
+    if ephemeral_bytes.len() != 32 {
+        return Err("Ephemeral key must be 32 bytes".to_string());
+    }
+    arr.copy_from_slice(ephemeral_bytes);
+    Ok(arr)
+}
+
+fn extract_sequence(fields: &[(String, VsfType)], key: &str) -> Result<u64, String> {
+    match get_field(fields, key) {
+        Some(VsfType::u(v, _)) => Ok(*v as u64),
+        Some(VsfType::u3(v)) => Ok(*v as u64),
+        Some(VsfType::u4(v)) => Ok(*v as u64),
+        Some(VsfType::u5(v)) => Ok(*v as u64),
+        Some(VsfType::u6(v)) => Ok(*v),
+        _ => Err(format!("Missing or invalid sequence: {}", key)),
+    }
+}
+
+fn extract_salt(fields: &[(String, VsfType)], key: &str) -> Result<[u8; 64], String> {
+    match get_field(fields, key) {
+        Some(VsfType::t_u3(tensor)) if tensor.data.len() == 64 => {
+            let mut arr = [0u8; 64];
+            arr.copy_from_slice(&tensor.data);
+            Ok(arr)
+        }
+        _ => Err(format!("Missing or invalid salt: {}", key)),
+    }
+}
+
+fn extract_data(fields: &[(String, VsfType)], key: &str) -> Result<Vec<u8>, String> {
+    match get_field(fields, key) {
+        Some(VsfType::t_u3(tensor)) => Ok(tensor.data.clone()),
+        _ => Err(format!("Missing or invalid data: {}", key)),
+    }
+}
+
 fn extract_peer_list(
     fields: &[(String, VsfType)],
     prefix: &str,
@@ -681,3 +1101,55 @@ fn extract_header_signature(header: &vsf::file_format::VsfHeader) -> Result<[u8;
 
 // Note: extract_header_avatar_id removed - avatar is now fetched by handle
 // Storage key = BLAKE3(BLAKE3(handle) || "avatar")
+
+/// Compute provenance hash for CLUTCH init/response messages
+/// provenance = BLAKE3(from_handle_proof || to_handle_proof || ephemeral_pubkey)
+fn compute_clutch_provenance(
+    from_handle_proof: &[u8; 32],
+    to_handle_proof: &[u8; 32],
+    ephemeral_pubkey: &[u8; 32],
+) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(from_handle_proof);
+    hasher.update(to_handle_proof);
+    hasher.update(ephemeral_pubkey);
+    *hasher.finalize().as_bytes()
+}
+
+/// Compute provenance hash for CLUTCH complete message
+/// provenance = BLAKE3(from_handle_proof || to_handle_proof || proof)
+fn compute_clutch_complete_provenance(
+    from_handle_proof: &[u8; 32],
+    to_handle_proof: &[u8; 32],
+    proof: &[u8; 32],
+) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(from_handle_proof);
+    hasher.update(to_handle_proof);
+    hasher.update(proof);
+    *hasher.finalize().as_bytes()
+}
+
+/// Compute provenance hash for encrypted message
+/// provenance = BLAKE3(from_handle_proof || sequence || salt)
+fn compute_msg_provenance(
+    from_handle_proof: &[u8; 32],
+    sequence: u64,
+    salt: &[u8; 64],
+) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(from_handle_proof);
+    hasher.update(&sequence.to_le_bytes());
+    hasher.update(salt);
+    *hasher.finalize().as_bytes()
+}
+
+/// Compute provenance hash for message acknowledgment
+/// provenance = BLAKE3(from_handle_proof || sequence || "ack")
+fn compute_ack_provenance(from_handle_proof: &[u8; 32], sequence: u64) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(from_handle_proof);
+    hasher.update(&sequence.to_le_bytes());
+    hasher.update(b"ack");
+    *hasher.finalize().as_bytes()
+}

@@ -228,8 +228,8 @@ impl ApplicationHandler<PhotonEvent> for App {
 
             // Check for contact status updates (non-blocking)
             if app.check_status_updates() {
-                // Contact status changed, redraw contacts list
-                app.controls_dirty = true;
+                // Contact status or CLUTCH state changed, full redraw needed
+                app.window_dirty = true;
                 if let Some(window) = &self.window {
                     window.request_redraw();
                 }
@@ -290,6 +290,7 @@ impl ApplicationHandler<PhotonEvent> for App {
                 // Always set control flow (either new or same timer)
                 event_loop.set_control_flow(ControlFlow::WaitUntil(app.next_blinkey_blink_time));
             } else {
+                // No active textbox - wait for events (network updates will wake via EventLoopProxy)
                 event_loop.set_control_flow(ControlFlow::Wait);
             }
         }
@@ -316,6 +317,13 @@ impl ApplicationHandler<PhotonEvent> for App {
             }
             PhotonEvent::MessageReceived => {
                 // Future: handle incoming messages
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            }
+            PhotonEvent::NetworkUpdate => {
+                // Network data available (status, CLUTCH, avatar, etc.)
+                // Just request a redraw to process the pending data
                 if let Some(window) = &self.window {
                     window.request_redraw();
                 }

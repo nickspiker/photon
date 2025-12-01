@@ -12,6 +12,18 @@ use img_parts::png::Png;
 use img_parts::ImageICC;
 use rav1e::prelude::*;
 
+#[cfg(not(target_os = "android"))]
+use winit::event_loop::EventLoopProxy;
+
+#[cfg(not(target_os = "android"))]
+use super::PhotonEvent;
+
+/// Type alias for optional EventLoopProxy - actual proxy on desktop, unit type on Android
+#[cfg(not(target_os = "android"))]
+pub type OptionalEventProxy = Option<EventLoopProxy<PhotonEvent>>;
+#[cfg(target_os = "android")]
+pub type OptionalEventProxy = Option<()>;
+
 /// Tone Reproduction Curve from ICC profile
 #[derive(Clone)]
 enum TrcCurve {
@@ -66,6 +78,8 @@ pub fn encode_avatar_from_image(image_data: &[u8]) -> Result<Vec<u8>, String> {
     };
 
     // Decode image to RGB
+    // Note: image crate has default memory limits (~512MB decoded).
+    // This is fine - avatars are 256x256 output, huge sources should be resized first.
     let img = image::load_from_memory(image_data)
         .map_err(|e| format!("Failed to decode image: {}", e))?;
 
@@ -98,14 +112,17 @@ pub fn encode_avatar_from_image(image_data: &[u8]) -> Result<Vec<u8>, String> {
                     let linear_vsf = if let Some(ref converter) = icc_converter {
                         convert_pixel_linear_u16(r, g, b, converter)
                     } else {
-                        // No ICC profile - assume sRGB
-                        use vsf::colour::convert::apply_matrix_3x3;
-                        use vsf::colour::legacy::convert::linearize_srgb;
-                        use vsf::colour::SRGB2VSF_RGB;
-                        let r_lin = linearize_srgb(r as f32 / 65536.);
-                        let g_lin = linearize_srgb(g as f32 / 65536.);
-                        let b_lin = linearize_srgb(b as f32 / 65536.);
-                        apply_matrix_3x3(&SRGB2VSF_RGB, &[r_lin, g_lin, b_lin])
+                        // No ICC profile - assume sRGB (legacy but needed for compatibility)
+                        #[allow(deprecated)]
+                        {
+                            use vsf::colour::convert::apply_matrix_3x3;
+                            use vsf::colour::legacy::convert::linearize_srgb;
+                            use vsf::colour::SRGB2VSF_RGB;
+                            let r_lin = linearize_srgb(r as f32 / 65536.);
+                            let g_lin = linearize_srgb(g as f32 / 65536.);
+                            let b_lin = linearize_srgb(b as f32 / 65536.);
+                            apply_matrix_3x3(&SRGB2VSF_RGB, &[r_lin, g_lin, b_lin])
+                        }
                     };
 
                     linear_vsf_cropped[dst_idx] = linear_vsf[0];
@@ -129,14 +146,17 @@ pub fn encode_avatar_from_image(image_data: &[u8]) -> Result<Vec<u8>, String> {
                     let linear_vsf = if let Some(ref converter) = icc_converter {
                         convert_pixel_linear(r, g, b, converter)
                     } else {
-                        // No ICC profile - assume sRGB
-                        use vsf::colour::convert::apply_matrix_3x3;
-                        use vsf::colour::legacy::convert::linearize_srgb_u8;
-                        use vsf::colour::SRGB2VSF_RGB;
-                        let r_lin = linearize_srgb_u8(r);
-                        let g_lin = linearize_srgb_u8(g);
-                        let b_lin = linearize_srgb_u8(b);
-                        apply_matrix_3x3(&SRGB2VSF_RGB, &[r_lin, g_lin, b_lin])
+                        // No ICC profile - assume sRGB (legacy but needed for compatibility)
+                        #[allow(deprecated)]
+                        {
+                            use vsf::colour::convert::apply_matrix_3x3;
+                            use vsf::colour::legacy::convert::linearize_srgb_u8;
+                            use vsf::colour::SRGB2VSF_RGB;
+                            let r_lin = linearize_srgb_u8(r);
+                            let g_lin = linearize_srgb_u8(g);
+                            let b_lin = linearize_srgb_u8(b);
+                            apply_matrix_3x3(&SRGB2VSF_RGB, &[r_lin, g_lin, b_lin])
+                        }
                     };
 
                     linear_vsf_cropped[dst_idx] = linear_vsf[0];
@@ -232,8 +252,93 @@ fn extract_icc_profile(image_data: &[u8]) -> Result<Option<Vec<u8>>, String> {
         }
     }
 
+    // Try TIFF - ICC profile is in tag 34675 (InterColorProfile)
+    if let Some(icc) = extract_tiff_icc(image_data) {
+        return Ok(Some(icc));
+    }
+
     // No ICC profile found - will assume sRGB
     Ok(None)
+}
+
+/// Extract ICC profile from TIFF image data
+/// TIFF stores ICC in tag 34675 (InterColorProfile / 0x8773)
+fn extract_tiff_icc(data: &[u8]) -> Option<Vec<u8>> {
+    // Check TIFF magic bytes
+    if data.len() < 8 {
+        return None;
+    }
+
+    let (big_endian, magic) = match &data[0..4] {
+        [b'I', b'I', 0x2A, 0x00] => (false, true), // Little-endian
+        [b'M', b'M', 0x00, 0x2A] => (true, true),  // Big-endian
+        _ => (false, false),
+    };
+
+    if !magic {
+        return None;
+    }
+
+    // Helper to read u16/u32 based on endianness
+    let read_u16 = |offset: usize| -> u16 {
+        if big_endian {
+            u16::from_be_bytes([data[offset], data[offset + 1]])
+        } else {
+            u16::from_le_bytes([data[offset], data[offset + 1]])
+        }
+    };
+
+    let read_u32 = |offset: usize| -> u32 {
+        if big_endian {
+            u32::from_be_bytes([
+                data[offset],
+                data[offset + 1],
+                data[offset + 2],
+                data[offset + 3],
+            ])
+        } else {
+            u32::from_le_bytes([
+                data[offset],
+                data[offset + 1],
+                data[offset + 2],
+                data[offset + 3],
+            ])
+        }
+    };
+
+    // Get IFD offset
+    let ifd_offset = read_u32(4) as usize;
+    if ifd_offset + 2 > data.len() {
+        return None;
+    }
+
+    // Read number of directory entries
+    let num_entries = read_u16(ifd_offset) as usize;
+    let entries_start = ifd_offset + 2;
+
+    // Each entry is 12 bytes
+    for i in 0..num_entries {
+        let entry_offset = entries_start + i * 12;
+        if entry_offset + 12 > data.len() {
+            break;
+        }
+
+        let tag = read_u16(entry_offset);
+
+        // Tag 34675 (0x8773) = InterColorProfile (ICC)
+        if tag == 34675 {
+            let _field_type = read_u16(entry_offset + 2);
+            let count = read_u32(entry_offset + 4) as usize;
+            let value_offset = read_u32(entry_offset + 8) as usize;
+
+            // ICC profile data is at value_offset with length count
+            if value_offset + count <= data.len() {
+                return Some(data[value_offset..value_offset + count].to_vec());
+            }
+        }
+    }
+
+    None
 }
 
 /// Parse ICC profile into fast per-pixel converter
@@ -864,6 +969,44 @@ pub fn get_avatar_provenance_hash(handle: &str) -> Option<[u8; 32]> {
     }
 }
 
+/// Get avatar's creation timestamp (Eagle Time) from local cache
+/// Returns None if not cached or parsing fails
+pub fn get_local_avatar_timestamp(handle: &str) -> Option<f64> {
+    use vsf::file_format::VsfHeader;
+    use vsf::types::EagleTime;
+    use vsf::VsfType;
+
+    let storage_key = avatar_storage_key(handle);
+    let cache_path = avatar_cache_path(&storage_key).ok()?;
+
+    #[cfg(feature = "development")]
+    crate::log_info(&format!(
+        "Avatar: Looking for local cache at {:?}",
+        cache_path
+    ));
+
+    let vsf_data = match std::fs::read(&cache_path) {
+        Ok(data) => data,
+        Err(e) => {
+            #[cfg(feature = "development")]
+            crate::log_info(&format!("Avatar: No local cache: {}", e));
+            return None;
+        }
+    };
+
+    // Parse header to extract creation timestamp
+    let (header, _) = VsfHeader::decode(&vsf_data).ok()?;
+    match header.creation_time {
+        VsfType::e(et) => {
+            let ts = EagleTime::new(et).to_f64();
+            #[cfg(feature = "development")]
+            crate::log_info(&format!("Avatar: Local timestamp = {:.0}", ts));
+            Some(ts)
+        }
+        _ => None,
+    }
+}
+
 /// Derive the avatar Ed25519 keypair from device private key and handle
 ///
 /// This creates a deterministic keypair tied to both the device identity and handle.
@@ -882,7 +1025,9 @@ pub fn derive_avatar_keypair(
     device_secret: &SigningKey,
     handle: &str,
 ) -> (SigningKey, VerifyingKey) {
-    let handle_hash = blake3::hash(handle.as_bytes());
+    // VSF normalize handle for consistent key derivation
+    let vsf_bytes = vsf::VsfType::x(handle.to_string()).flatten();
+    let handle_hash = blake3::hash(&vsf_bytes);
 
     // Derive avatar private key seed: BLAKE3(device_priv || handle_hash || "handle-avatar")
     let mut hasher = blake3::Hasher::new();
@@ -902,7 +1047,7 @@ pub fn derive_avatar_keypair(
 ///
 /// This is the public URL-safe identifier for fetching avatars from FGTW.
 /// Anyone who knows a handle can compute the storage key and fetch the avatar.
-/// Formula: base64url(BLAKE3(BLAKE3(handle) || "avatar"))
+/// Formula: base64url(BLAKE3(BLAKE3(VsfType::x(handle).flatten()) || "avatar"))
 ///
 /// # Arguments
 /// * `handle` - The user's handle string
@@ -912,7 +1057,9 @@ pub fn derive_avatar_keypair(
 pub fn avatar_storage_key(handle: &str) -> String {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 
-    let handle_hash = blake3::hash(handle.as_bytes());
+    // VSF normalize handle for consistent key derivation
+    let vsf_bytes = vsf::VsfType::x(handle.to_string()).flatten();
+    let handle_hash = blake3::hash(&vsf_bytes);
     let mut salted = handle_hash.as_bytes().to_vec();
     salted.extend_from_slice(b"avatar");
     let avatar_hash = blake3::hash(&salted);
@@ -923,7 +1070,7 @@ pub fn avatar_storage_key(handle: &str) -> String {
 ///
 /// This key is used to encrypt avatar data so only people who know
 /// the handle plaintext can decrypt it.
-/// Formula: BLAKE3(BLAKE3(handle) || "avatar-encryption")
+/// Formula: BLAKE3(BLAKE3(VsfType::x(handle).flatten()) || "avatar-encryption")
 ///
 /// # Arguments
 /// * `handle` - The user's handle string
@@ -931,7 +1078,9 @@ pub fn avatar_storage_key(handle: &str) -> String {
 /// # Returns
 /// 32-byte AES-256-GCM key
 pub fn derive_avatar_encryption_key(handle: &str) -> [u8; 32] {
-    let handle_hash = blake3::hash(handle.as_bytes());
+    // VSF normalize handle for consistent key derivation
+    let vsf_bytes = vsf::VsfType::x(handle.to_string()).flatten();
+    let handle_hash = blake3::hash(&vsf_bytes);
     let mut salted = handle_hash.as_bytes().to_vec();
     salted.extend_from_slice(b"avatar-encryption");
     *blake3::hash(&salted).as_bytes()
@@ -949,7 +1098,7 @@ pub fn derive_avatar_encryption_key(handle: &str) -> [u8; 32] {
 /// # Returns
 /// Encrypted blob ready to be wrapped in v'e'
 pub fn encrypt_av1_data(av1_data: &[u8], handle: &str) -> Result<Vec<u8>, String> {
-    use aes_gcm::{aead::Aead, Aes256Gcm, KeyInit, Nonce};
+    use aes_gcm::{aead::Aead, Aes256Gcm, KeyInit};
     use rand::RngCore;
 
     // Build v'a' wrapped AV1 data
@@ -963,11 +1112,10 @@ pub fn encrypt_av1_data(av1_data: &[u8], handle: &str) -> Result<Vec<u8>, String
     // Generate random nonce
     let mut nonce_bytes = [0u8; 12];
     rand::thread_rng().fill_bytes(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
 
     // Encrypt
     let ciphertext = cipher
-        .encrypt(nonce, va_wrapped.as_ref())
+        .encrypt(&nonce_bytes.into(), va_wrapped.as_ref())
         .map_err(|e| format!("Encryption failed: {}", e))?;
 
     // Format: [nonce:12][ciphertext+tag]
@@ -990,7 +1138,7 @@ pub fn encrypt_av1_data(av1_data: &[u8], handle: &str) -> Result<Vec<u8>, String
 /// # Returns
 /// Raw AV1 OBU bitstream
 pub fn decrypt_av1_data(encrypted: &[u8], handle: &str) -> Result<Vec<u8>, String> {
-    use aes_gcm::{aead::Aead, Aes256Gcm, KeyInit, Nonce};
+    use aes_gcm::{aead::Aead, Aes256Gcm, KeyInit};
 
     if encrypted.len() < 12 + 16 {
         return Err(format!(
@@ -1010,11 +1158,9 @@ pub fn decrypt_av1_data(encrypted: &[u8], handle: &str) -> Result<Vec<u8>, Strin
     let cipher =
         Aes256Gcm::new_from_slice(&key).map_err(|e| format!("Failed to create cipher: {}", e))?;
 
-    let nonce = Nonce::from_slice(&nonce_bytes);
-
     // Decrypt
     let va_wrapped = cipher
-        .decrypt(nonce, ciphertext)
+        .decrypt(&nonce_bytes.into(), ciphertext)
         .map_err(|e| format!("Decryption failed: {}", e))?;
 
     // Unwrap v'a' to get raw AV1 data
@@ -1233,6 +1379,13 @@ pub fn upload_avatar(device_secret: &SigningKey, handle: &str) -> Result<String,
     // storage_key already computed above when reading from cache
     let url = format!("{}/avatar/{}", FGTW_URL, storage_key);
 
+    #[cfg(feature = "development")]
+    crate::log_info(&crate::network::status::vsf_inspect(
+        &signed_vsf,
+        "TX FGTW",
+        &format!("/avatar/{}", &storage_key[..8]),
+    ));
+
     let client = reqwest::blocking::Client::new();
     let response = client
         .put(&url)
@@ -1290,11 +1443,156 @@ pub fn download_avatar(handle: &str) -> Option<(usize, Vec<u8>)> {
 
     let vsf_data = response.bytes().ok()?;
 
+    #[cfg(feature = "development")]
+    crate::log_info(&crate::network::status::vsf_inspect(
+        &vsf_data,
+        "RX FGTW",
+        &format!("/avatar/{}", &storage_key[..8]),
+    ));
+
     // Save to local cache before decoding
     let _ = save_avatar_to_cache(handle, &vsf_data);
 
     // Verify, decrypt, and decode (FGTW stripped ke/ge, so only provenance hash is verified)
     load_avatar_from_bytes(&vsf_data, handle)
+}
+
+/// Sync avatar bidirectionally with FGTW (newest wins)
+///
+/// For the user's own avatar only - compares local and server timestamps,
+/// uploads if local is newer, downloads if server is newer.
+///
+/// # Arguments
+/// * `device_secret` - Device's Ed25519 signing key (for uploading)
+/// * `handle` - User's handle
+///
+/// # Returns
+/// Ok(SyncResult) describing what action was taken, Err on failure
+#[derive(Debug)]
+pub enum AvatarSyncResult {
+    NoLocalAvatar, // No local avatar to sync
+    LocalNewer,    // Uploaded local (was newer)
+    ServerNewer,   // Downloaded from server (was newer)
+    InSync,        // Timestamps equal, no action needed
+    ServerEmpty,   // Server has no avatar
+    Error(String), // Something went wrong
+}
+
+pub fn sync_avatar_bidirectional(device_secret: &SigningKey, handle: &str) -> AvatarSyncResult {
+    let storage_key = avatar_storage_key(handle);
+    let url = format!("{}/avatar/{}", FGTW_URL, storage_key);
+
+    // Get local timestamp (if we have a local avatar)
+    let local_ts = get_local_avatar_timestamp(handle);
+
+    // Query server for avatar with timestamp header
+    let client = reqwest::blocking::Client::new();
+    let response = match client.get(&url).send() {
+        Ok(r) => r,
+        Err(e) => return AvatarSyncResult::Error(format!("Network error: {}", e)),
+    };
+
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        // Server has no avatar
+        if local_ts.is_some() {
+            // We have local, upload it
+            crate::log_info("Avatar sync: Server empty, uploading local");
+            match upload_avatar(device_secret, handle) {
+                Ok(_) => return AvatarSyncResult::LocalNewer,
+                Err(e) => return AvatarSyncResult::Error(format!("Upload failed: {}", e)),
+            }
+        } else {
+            return AvatarSyncResult::ServerEmpty;
+        }
+    }
+
+    if !response.status().is_success() {
+        return AvatarSyncResult::Error(format!("Server returned {}", response.status()));
+    }
+
+    // Extract server timestamp from header
+    let server_ts: Option<f64> = response
+        .headers()
+        .get("X-Avatar-Timestamp")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse().ok());
+
+    match (local_ts, server_ts) {
+        (None, Some(_)) => {
+            // No local, server has one - download
+            crate::log_info("Avatar sync: No local avatar, downloading from server");
+            let vsf_data = match response.bytes() {
+                Ok(b) => b,
+                Err(e) => return AvatarSyncResult::Error(format!("Read body: {}", e)),
+            };
+            #[cfg(feature = "development")]
+            crate::log_info(&crate::network::status::vsf_inspect(
+                &vsf_data,
+                "RX FGTW",
+                &format!("/avatar/{}", &storage_key[..8]),
+            ));
+            let _ = save_avatar_to_cache(handle, &vsf_data);
+            AvatarSyncResult::ServerNewer
+        }
+        (Some(local), Some(server)) => {
+            if local > server {
+                // Local is newer - upload
+                crate::log_info(&format!(
+                    "Avatar sync: Local newer ({:.0} > {:.0}), uploading",
+                    local, server
+                ));
+                match upload_avatar(device_secret, handle) {
+                    Ok(_) => AvatarSyncResult::LocalNewer,
+                    Err(e) => AvatarSyncResult::Error(format!("Upload failed: {}", e)),
+                }
+            } else if server > local {
+                // Server is newer - download
+                crate::log_info(&format!(
+                    "Avatar sync: Server newer ({:.0} > {:.0}), downloading",
+                    server, local
+                ));
+                let vsf_data = match response.bytes() {
+                    Ok(b) => b,
+                    Err(e) => return AvatarSyncResult::Error(format!("Read body: {}", e)),
+                };
+                #[cfg(feature = "development")]
+                crate::log_info(&crate::network::status::vsf_inspect(
+                    &vsf_data,
+                    "RX FGTW",
+                    &format!("/avatar/{}", &storage_key[..8]),
+                ));
+                let _ = save_avatar_to_cache(handle, &vsf_data);
+                AvatarSyncResult::ServerNewer
+            } else {
+                AvatarSyncResult::InSync
+            }
+        }
+        (Some(_), None) => {
+            // Have local but server didn't send timestamp (shouldn't happen)
+            // Upload to be safe
+            crate::log_info("Avatar sync: Server missing timestamp, uploading local");
+            match upload_avatar(device_secret, handle) {
+                Ok(_) => AvatarSyncResult::LocalNewer,
+                Err(e) => AvatarSyncResult::Error(format!("Upload failed: {}", e)),
+            }
+        }
+        (None, None) => {
+            // Server returned 200 but no timestamp header - still download the avatar
+            crate::log_info("Avatar sync: Server has avatar (no timestamp), downloading");
+            let vsf_data = match response.bytes() {
+                Ok(b) => b,
+                Err(e) => return AvatarSyncResult::Error(format!("Read body: {}", e)),
+            };
+            #[cfg(feature = "development")]
+            crate::log_info(&crate::network::status::vsf_inspect(
+                &vsf_data,
+                "RX FGTW",
+                &format!("/avatar/{}", &storage_key[..8]),
+            ));
+            let _ = save_avatar_to_cache(handle, &vsf_data);
+            AvatarSyncResult::ServerNewer
+        }
+    }
 }
 
 /// Result of a background avatar download
@@ -1309,14 +1607,74 @@ pub struct AvatarDownloadResult {
 /// # Arguments
 /// * `handle` - Peer's handle (storage key is derived from this)
 /// * `tx` - Channel to send result
+/// * `event_proxy` - Optional EventLoopProxy to wake the event loop when done
 pub fn download_avatar_background(
     handle: String,
     tx: std::sync::mpsc::Sender<AvatarDownloadResult>,
+    #[allow(unused_variables)] event_proxy: OptionalEventProxy,
 ) {
     std::thread::spawn(move || {
         let result = download_avatar(&handle);
         let pixels = result.map(|(_, p)| p);
         let _ = tx.send(AvatarDownloadResult { handle, pixels });
+
+        // Wake the event loop on desktop
+        #[cfg(not(target_os = "android"))]
+        if let Some(proxy) = event_proxy {
+            let _ = proxy.send_event(PhotonEvent::NetworkUpdate);
+        }
+    });
+}
+
+/// Spawn background thread to sync avatar bidirectionally with FGTW
+/// For user's own avatar - compares timestamps and syncs newest version
+///
+/// # Arguments
+/// * `device_secret` - Device's Ed25519 signing key bytes (cloned for thread)
+/// * `handle` - User's handle
+/// * `tx` - Channel to send result (pixels if server was newer)
+/// * `event_proxy` - Optional EventLoopProxy to wake the event loop when done
+pub fn sync_avatar_background(
+    device_secret_bytes: [u8; 32],
+    handle: String,
+    tx: std::sync::mpsc::Sender<AvatarDownloadResult>,
+    #[allow(unused_variables)] event_proxy: OptionalEventProxy,
+) {
+    std::thread::spawn(move || {
+        let device_secret = SigningKey::from_bytes(&device_secret_bytes);
+        let result = sync_avatar_bidirectional(&device_secret, &handle);
+
+        // Only send pixels if we downloaded a newer version from server
+        let pixels = match result {
+            AvatarSyncResult::ServerNewer => {
+                // Load the newly downloaded avatar from cache
+                load_cached_avatar(&handle).map(|(_, p)| p)
+            }
+            AvatarSyncResult::LocalNewer => {
+                crate::log_info("Avatar sync: Uploaded local avatar to FGTW");
+                None // No need to update UI, local was already displayed
+            }
+            AvatarSyncResult::InSync => {
+                crate::log_info("Avatar sync: Already in sync with FGTW");
+                None
+            }
+            AvatarSyncResult::NoLocalAvatar | AvatarSyncResult::ServerEmpty => {
+                crate::log_info("Avatar sync: No avatar to sync");
+                None
+            }
+            AvatarSyncResult::Error(e) => {
+                crate::log_error(&format!("Avatar sync error: {}", e));
+                None
+            }
+        };
+
+        let _ = tx.send(AvatarDownloadResult { handle, pixels });
+
+        // Wake the event loop on desktop
+        #[cfg(not(target_os = "android"))]
+        if let Some(proxy) = event_proxy {
+            let _ = proxy.send_event(PhotonEvent::NetworkUpdate);
+        }
     });
 }
 
