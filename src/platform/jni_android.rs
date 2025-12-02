@@ -6,6 +6,7 @@
 use crate::network::fgtw::FgtwTransport;
 use crate::network::HandleQuery;
 use crate::types::DevicePubkey;
+use std::sync::Arc;
 
 #[cfg(target_os = "android")]
 use jni::{
@@ -52,27 +53,25 @@ fn derive_device_keypair(fingerprint: &[u8]) -> Keypair {
 
 #[cfg(target_os = "android")]
 impl PhotonContext {
-    pub fn new(width: u32, height: u32, device_keypair: Keypair) -> Self {
-        use std::sync::Arc;
-
+    /// Create UI context using network stack from service
+    /// Creates a fresh HandleQuery connected to the service's transport
+    pub fn new_with_network(width: u32, height: u32, network: &NetworkContext) -> Self {
         info!(
             "Device pubkey: {}",
-            hex::encode(device_keypair.public.as_bytes())
+            hex::encode(network.keypair.public.as_bytes())
         );
 
-        // Create app with keypair (keypair is stored in PhotonApp now)
-        let mut app = PhotonApp::new(width, height, device_keypair.clone());
+        // Create app with keypair from network context
+        let mut app = PhotonApp::new(width, height, network.keypair.clone());
 
-        // Initialize network stack with unified HandleQuery
-        let handle_query = HandleQuery::new(device_keypair.clone());
-        let our_identity = DevicePubkey::from_bytes(*device_keypair.public.as_bytes());
-        let transport = Arc::new(FgtwTransport::new(our_identity, 41641));
-        handle_query.set_transport(transport);
+        // Create fresh HandleQuery using service's keypair, connect to service's transport
+        let handle_query = HandleQuery::new(network.keypair.clone());
+        handle_query.set_transport(network.transport.clone());
         app.set_handle_query(handle_query);
 
         Self {
             app,
-            device_keypair,
+            device_keypair: network.keypair.clone(),
         }
     }
 
@@ -173,64 +172,42 @@ fn get_context(ptr: jlong) -> Option<&'static mut PhotonContext> {
     unsafe { Some(&mut *(ptr as *mut PhotonContext)) }
 }
 
-/// Initialize Photon UI with device fingerprint for key derivation
+/// Initialize Photon UI with network context from service
 /// Returns a pointer to the PhotonContext
 ///
 /// # Arguments
-/// * `fingerprint` - Raw bytes from DeviceFingerprint.gather() containing
-///   concatenated device identifiers (ANDROID_ID, Build.*, etc.)
-///   This is hashed with BLAKE3 to derive the device's Ed25519 keypair.
-/// * `data_dir` - Android app's filesDir path for persistent storage
+/// * `network_ptr` - Pointer to NetworkContext from PhotonConnectionService
 /// * `is_samsung` - True if running on Samsung device (needs Choreographer workarounds)
 #[cfg(target_os = "android")]
 #[no_mangle]
-pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeInit(
-    mut env: JNIEnv<'_>,
+pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeInitWithNetwork(
+    _env: JNIEnv<'_>,
     _class: JClass<'_>,
     width: jint,
     height: jint,
-    fingerprint: JByteArray<'_>,
-    data_dir: JString<'_>,
+    network_ptr: jlong,
     is_samsung: jboolean,
 ) -> jlong {
-    info!("Initializing Photon: {}x{}", width, height);
+    info!("Initializing Photon UI: {}x{} with network ptr 0x{:x}", width, height, network_ptr as u64);
 
-    // Extract fingerprint bytes from JNI array
-    let fingerprint_bytes = match env.convert_byte_array(&fingerprint) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            error!("Failed to read fingerprint bytes: {:?}", e);
-            return 0;
-        }
-    };
-
-    // Extract data directory path
-    let data_dir_str: String = match env.get_string(&data_dir) {
-        Ok(s) => s.into(),
-        Err(e) => {
-            error!("Failed to read data_dir: {:?}", e);
-            return 0;
-        }
-    };
+    if network_ptr == 0 {
+        error!("Null network pointer");
+        return 0;
+    }
 
     let is_samsung = is_samsung != JNI_FALSE;
-    info!("Device fingerprint: {} bytes", fingerprint_bytes.len());
-    info!("Data directory: {}", data_dir_str);
     info!("Samsung device: {}", is_samsung);
-
-    // Set global Android data directory for avatar storage
-    crate::avatar::set_android_data_dir(data_dir_str);
 
     // Samsung's compositor breaks magic pixel optimization - always copy on Samsung
     crate::ui::renderer_android::set_samsung_mode(is_samsung);
 
-    // Derive device keypair from fingerprint
-    let device_keypair = derive_device_keypair(&fingerprint_bytes);
+    // Get reference to network context (owned by service, DO NOT free)
+    let network_ctx = unsafe { &*(network_ptr as *const NetworkContext) };
 
-    let context = Box::new(PhotonContext::new(
+    let context = Box::new(PhotonContext::new_with_network(
         width as u32,
         height as u32,
-        device_keypair,
+        network_ctx,
     ));
     let ptr = Box::into_raw(context) as jlong;
 
@@ -444,4 +421,146 @@ pub extern "C" fn Java_com_photon_messenger_PhotonMessagingService_nativePeerUpd
 ) {
     info!("FCM peer update received - flagging for refresh");
     FCM_PEER_UPDATE_PENDING.store(true, Ordering::SeqCst);
+}
+
+// ============================================================================
+// PhotonConnectionService - Background Network Stack
+// ============================================================================
+
+/// Network context owned by the foreground service
+/// Persists across Activity lifecycle changes
+/// Holds the keypair and transport - UI creates HandleQuery on demand
+#[cfg(target_os = "android")]
+pub struct NetworkContext {
+    pub keypair: Keypair,
+    pub transport: Arc<FgtwTransport>,
+    pub data_dir: String,
+}
+
+#[cfg(target_os = "android")]
+impl NetworkContext {
+    pub fn new(fingerprint: &[u8], data_dir: &str) -> Self {
+        use std::sync::Arc;
+
+        // Set global Android data directory for avatar storage
+        crate::avatar::set_android_data_dir(data_dir.to_string());
+
+        // Derive device keypair from fingerprint
+        let keypair = derive_device_keypair(fingerprint);
+
+        info!(
+            "NetworkContext: Device pubkey: {}",
+            hex::encode(keypair.public.as_bytes())
+        );
+
+        // Create transport (persists across Activity lifecycle)
+        let our_identity = DevicePubkey::from_bytes(*keypair.public.as_bytes());
+        let transport = Arc::new(FgtwTransport::new(our_identity, 41641));
+
+        Self {
+            keypair,
+            transport,
+            data_dir: data_dir.to_string(),
+        }
+    }
+
+    /// Poll for network events (called periodically from service background thread)
+    pub fn poll(&self) {
+        // Transport handles incoming UDP internally
+        // This hook is for any periodic maintenance
+    }
+}
+
+#[cfg(target_os = "android")]
+fn get_network_context(ptr: jlong) -> Option<&'static mut NetworkContext> {
+    if ptr == 0 {
+        error!("Null NetworkContext pointer received");
+        return None;
+    }
+    unsafe { Some(&mut *(ptr as *mut NetworkContext)) }
+}
+
+/// Initialize network stack in foreground service
+/// Returns pointer to NetworkContext
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeNetworkInit(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    fingerprint: JByteArray<'_>,
+    data_dir: JString<'_>,
+) -> jlong {
+    info!("PhotonConnectionService: Initializing network stack");
+
+    let fingerprint_bytes = match env.convert_byte_array(&fingerprint) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            error!("Failed to read fingerprint bytes: {:?}", e);
+            return 0;
+        }
+    };
+
+    let data_dir_str: String = match env.get_string(&data_dir) {
+        Ok(s) => s.into(),
+        Err(e) => {
+            error!("Failed to read data_dir: {:?}", e);
+            return 0;
+        }
+    };
+
+    info!("NetworkContext: fingerprint {} bytes, data_dir: {}", fingerprint_bytes.len(), data_dir_str);
+
+    let context = Box::new(NetworkContext::new(&fingerprint_bytes, &data_dir_str));
+    let ptr = Box::into_raw(context) as jlong;
+
+    info!("NetworkContext created at 0x{:x}", ptr as u64);
+    ptr
+}
+
+/// Destroy network context
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeNetworkDestroy(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    network_ptr: jlong,
+) {
+    if network_ptr != 0 {
+        info!("Destroying NetworkContext");
+        unsafe {
+            let _ = Box::from_raw(network_ptr as *mut NetworkContext);
+        }
+    }
+}
+
+/// Poll network for updates (called from background HandlerThread)
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeNetworkPoll(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    network_ptr: jlong,
+) {
+    let Some(context) = get_network_context(network_ptr) else {
+        return;
+    };
+    context.poll();
+}
+
+/// Get device public key as hex string
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeGetDevicePubkey<'local>(
+    env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    network_ptr: jlong,
+) -> JString<'local> {
+    let empty = || env.new_string("").unwrap();
+
+    let Some(context) = get_network_context(network_ptr) else {
+        return empty();
+    };
+
+    let hex = hex::encode(context.keypair.public.as_bytes());
+    env.new_string(&hex).unwrap_or_else(|_| empty())
 }

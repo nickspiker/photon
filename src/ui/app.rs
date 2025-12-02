@@ -1464,6 +1464,20 @@ impl PhotonApp {
                         self.text_dirty = true;
                         self.controls_dirty = true;
                         self.selection_dirty = true;
+
+                        // Immediately ping to check if online
+                        // CLUTCH starts when PONG confirms they're online
+                        if let Some(checker) = &self.status_checker {
+                            if let Some(contact) = self.contacts.last() {
+                                if let Some(ip) = contact.ip {
+                                    crate::log_info(&format!(
+                                        "Status: Immediately pinging {} (on add)",
+                                        contact.handle
+                                    ));
+                                    checker.ping(ip, contact.public_identity.clone());
+                                }
+                            }
+                        }
                     }
                     SearchResult::NotFound | SearchResult::Error(_) => {
                         // Red glow, keep text in box

@@ -1,7 +1,18 @@
 package com.photon.messenger
 
+import android.Manifest
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.content.ServiceConnection
+import android.content.pm.PackageManager
 import android.graphics.PixelFormat
+import android.os.Build
 import android.os.Bundle
+import android.os.IBinder
+import android.util.Log
 import android.view.Choreographer
 import android.view.KeyEvent
 import android.view.SurfaceHolder
@@ -10,6 +21,8 @@ import android.view.inputmethod.InputMethodManager
 import android.widget.FrameLayout
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import com.google.firebase.messaging.FirebaseMessaging
@@ -20,10 +33,17 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         init {
             System.loadLibrary("photon_messenger")
         }
+        const val CHANNEL_ID = "photon_messages"
+        const val CHANNEL_NAME = "Messages"
+        private const val TAG = "PhotonActivity"
     }
 
-    // Native context pointer
+    // Native UI context pointer (rendering, touch, etc.)
     private var nativePtr: Long = 0
+
+    // Service binding for network stack
+    private var connectionService: PhotonConnectionService? = null
+    private var serviceBound = false
 
     // Surface for rendering (custom class with InputConnection)
     private lateinit var surfaceView: PhotonSurfaceView
@@ -36,8 +56,26 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     private var fullHeight: Int = 0
     private var keyboardVisible = false
 
-    // Native methods
-    private external fun nativeInit(width: Int, height: Int, fingerprint: ByteArray, dataDir: String, isSamsung: Boolean): Long
+    // Service connection callbacks
+    private val serviceConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+            val localBinder = binder as PhotonConnectionService.LocalBinder
+            connectionService = localBinder.getService()
+            serviceBound = true
+            Log.d(TAG, "Bound to PhotonConnectionService")
+            // Try to initialize UI now that service is ready
+            initializeNativeIfReady()
+        }
+
+        override fun onServiceDisconnected(name: ComponentName?) {
+            connectionService = null
+            serviceBound = false
+            Log.d(TAG, "Disconnected from PhotonConnectionService")
+        }
+    }
+
+    // Native methods for UI (network is in service)
+    private external fun nativeInitWithNetwork(width: Int, height: Int, networkPtr: Long, isSamsung: Boolean): Long
     private external fun nativeDraw(contextPtr: Long, surface: android.view.Surface)
     private external fun nativeResize(contextPtr: Long, width: Int, height: Int)
     private external fun nativeOnTouch(contextPtr: Long, action: Int, x: Float, y: Float): Int  // Returns: 1=show keyboard, -1=hide keyboard, 2=open image picker, 0=no change
@@ -46,6 +84,15 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     private external fun nativeOnBackPressed(contextPtr: Long): Boolean  // Back button - returns true if handled
     private external fun nativeSetAvatarFromFile(contextPtr: Long, fileBytes: ByteArray)  // Raw image file bytes (preserves ICC profile)
     private external fun nativeDestroy(contextPtr: Long)
+
+    // Notification permission request (Android 13+)
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            createNotificationChannel()
+        }
+    }
 
     // Image picker for avatar selection - passes RAW FILE BYTES to Rust
     // We do NOT decode in Android because BitmapFactory destroys ICC profiles
@@ -150,25 +197,110 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         // Subscribe to FCM topic for peer update notifications
         // When any peer's IP changes, FGTW broadcasts to this topic
         FirebaseMessaging.getInstance().subscribeToTopic("peer_updates")
+
+        // Request notification permission (Android 13+) and create channel
+        requestNotificationPermission()
+    }
+
+    private fun requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            when {
+                ContextCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) == PackageManager.PERMISSION_GRANTED -> {
+                    // Already have permission
+                    createNotificationChannel()
+                }
+                else -> {
+                    // Request permission
+                    notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                }
+            }
+        } else {
+            // Android 12 and below don't need runtime permission
+            createNotificationChannel()
+        }
+    }
+
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val importance = NotificationManager.IMPORTANCE_HIGH
+            val channel = NotificationChannel(CHANNEL_ID, CHANNEL_NAME, importance).apply {
+                description = "Photon message notifications"
+                enableVibration(true)
+                vibrationPattern = longArrayOf(0, 250, 100, 250)
+            }
+            val manager = getSystemService(NotificationManager::class.java)
+            manager.createNotificationChannel(channel)
+        }
+
+        // Start foreground service for persistent connection
+        startConnectionService()
+    }
+
+    private fun startConnectionService() {
+        fingerprintResult?.let { fp ->
+            // Start service with fingerprint and data dir
+            val serviceIntent = Intent(this, PhotonConnectionService::class.java).apply {
+                putExtra("fingerprint", fp.fingerprint)
+                putExtra("dataDir", filesDir.absolutePath)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(serviceIntent)
+            } else {
+                startService(serviceIntent)
+            }
+
+            // Bind to service to get network pointer
+            bindService(serviceIntent, serviceConnection, Context.BIND_AUTO_CREATE)
+            Log.d(TAG, "Started and binding to PhotonConnectionService")
+        }
+    }
+
+    private fun stopConnectionService() {
+        if (serviceBound) {
+            unbindService(serviceConnection)
+            serviceBound = false
+        }
+        val serviceIntent = Intent(this, PhotonConnectionService::class.java)
+        stopService(serviceIntent)
     }
 
     private fun initializeNativeIfReady() {
-        if (surfaceReady && fingerprintResult != null && nativePtr == 0L) {
-            val holder = surfaceView.holder
-            // Samsung needs workarounds for Choreographer throttling
-            val isSamsung = android.os.Build.MANUFACTURER.equals("samsung", ignoreCase = true)
-            nativePtr = nativeInit(
-                holder.surfaceFrame.width(),
-                holder.surfaceFrame.height(),
-                fingerprintResult!!.fingerprint,
-                filesDir.absolutePath,
-                isSamsung
-            )
+        // Need: surface ready, service bound with network initialized, not already initialized
+        if (!surfaceReady || !serviceBound || nativePtr != 0L) return
 
-            if (nativePtr != 0L) {
-                // Start render loop
-                Choreographer.getInstance().postFrameCallback(this)
-            }
+        val service = connectionService ?: return
+        if (!service.isNetworkReady()) {
+            Log.d(TAG, "Service not ready yet, waiting...")
+            return
+        }
+
+        val networkPtr = service.getNetworkPtr()
+        if (networkPtr == 0L) {
+            Log.e(TAG, "Network pointer is null")
+            return
+        }
+
+        val holder = surfaceView.holder
+        // Samsung needs workarounds for Choreographer throttling
+        val isSamsung = android.os.Build.MANUFACTURER.equals("samsung", ignoreCase = true)
+
+        Log.d(TAG, "Initializing native UI with network ptr 0x${networkPtr.toString(16)}")
+        nativePtr = nativeInitWithNetwork(
+            holder.surfaceFrame.width(),
+            holder.surfaceFrame.height(),
+            networkPtr,
+            isSamsung
+        )
+
+        if (nativePtr != 0L) {
+            Log.d(TAG, "Native UI initialized at 0x${nativePtr.toString(16)}")
+            // Start render loop
+            Choreographer.getInstance().postFrameCallback(this)
+        } else {
+            Log.e(TAG, "Failed to initialize native UI")
         }
     }
 
