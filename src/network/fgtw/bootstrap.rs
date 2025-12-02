@@ -1,7 +1,8 @@
-use super::{identity::Keypair, PeerRecord};
-use crate::types::PublicIdentity;
+use super::{fingerprint::Keypair, PeerRecord};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use crate::types::DevicePubkey;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use vsf::{parse, schema::FromVsfType, VsfField, VsfHeader, VsfSection};
+use vsf::{parse, schema::FromVsfType, VsfHeader, VsfSection};
 
 const FGTW_URL: &str = "https://fgtw.org";
 
@@ -27,60 +28,59 @@ pub const FGTW_ED25519_PUBLIC_KEY: [u8; 32] = [
 
 /// Try to parse a VSF error message from response bytes
 /// Returns Some(error_message) if the response is a valid VSF error, None otherwise
-/// Uses VSF crate's built-in field parser for robust parsing
+/// Uses VsfHeader::decode() for robust parsing
 fn try_parse_vsf_error(bytes: &[u8]) -> Option<String> {
     use vsf::VsfType;
 
-    // Check VSF magic header "RÅ<"
-    let magic = "RÅ<".as_bytes();
-    if bytes.len() < magic.len() || &bytes[0..magic.len()] != magic {
-        return None;
-    }
+    // Use VsfHeader::decode() to parse the header
+    let (header, header_len) = VsfHeader::decode(bytes).ok()?;
 
-    let mut ptr = magic.len(); // Skip "RÅ<"
-
-    // Skip version, compat, header_length, timestamp
-    for _ in 0..4 {
-        if parse(bytes, &mut ptr).is_err() {
-            return None;
-        }
-    }
-
-    // Skip provenance hash (hp) or signature (ge)
-    if parse(bytes, &mut ptr).is_err() {
-        return None;
-    }
-
-    // Skip optional rolling hash (hb) if present
-    if ptr < bytes.len() && bytes[ptr] == b'h' {
-        if parse(bytes, &mut ptr).is_err() {
-            return None;
-        }
-    }
-
-    // Skip optional signature (ge) if present
-    if ptr < bytes.len() && bytes[ptr] == b'g' {
-        if parse(bytes, &mut ptr).is_err() {
-            return None;
-        }
-    }
-
-    // Parse field count
-    let field_count = match parse(bytes, &mut ptr) {
-        Ok(VsfType::n(count)) => count,
-        _ => return None,
-    };
-
-    // Parse fields using VsfField::parse() from VSF crate
-    for _ in 0..field_count {
-        let field = VsfField::parse(bytes, &mut ptr).ok()?;
-
-        // Look for "error" field
+    // Look for "error" field in header fields
+    for field in &header.fields {
         if field.name == "error" {
-            // Extract error message from first value (should be VsfType::l)
-            if let Some(VsfType::l(error_msg)) = field.values.first() {
-                return Some(error_msg.clone());
+            // Try to parse the error section at the field's offset
+            let mut ptr = field.offset_bytes;
+            if let Ok(section) = VsfSection::parse(bytes, &mut ptr) {
+                // Look for error message in section fields - try "message" first, then "error"
+                for field_name in &["message", "error"] {
+                    if let Some(section_field) = section.get_field(field_name) {
+                        // Return first text value (l for long text, x for VSF text)
+                        for value in &section_field.values {
+                            match value {
+                                VsfType::l(msg) => return Some(msg.clone()),
+                                VsfType::x(msg) => return Some(msg.clone()),
+                                _ => {}
+                            }
+                        }
+                    }
+                }
             }
+        }
+    }
+
+    // Fallback: check if there's an error section without header field
+    // (for simple inline error responses)
+    let mut ptr = header_len;
+    while ptr < bytes.len() {
+        if bytes[ptr] == b'[' {
+            if let Ok(section) = VsfSection::parse(bytes, &mut ptr) {
+                if section.name == "error" {
+                    // Look for message field
+                    for field_name in &["message", "error"] {
+                        if let Some(section_field) = section.get_field(field_name) {
+                            for value in &section_field.values {
+                                match value {
+                                    VsfType::l(msg) => return Some(msg.clone()),
+                                    VsfType::x(msg) => return Some(msg.clone()),
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            break;
         }
     }
 
@@ -217,52 +217,29 @@ async fn load_bootstrap_peers_inner(
 /// The timestamp in the challenge is ignored - announce generates its own timestamp
 fn parse_challenge_hash(bytes: &[u8]) -> Result<[u8; 32], String> {
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+    use vsf::VsfType;
 
-    // Parse VSF to extract signature (ge) from header
-    let mut ptr = 4; // Skip "RÅ<"
-
-    // Skip version, backward_compat, header_length, timestamp
-    let _ = parse(bytes, &mut ptr).map_err(|e| format!("Parse version: {}", e))?;
-    let _ = parse(bytes, &mut ptr).map_err(|e| format!("Parse backward compat: {}", e))?;
-    let _ = parse(bytes, &mut ptr).map_err(|e| format!("Parse header length: {}", e))?;
-    let _ = parse(bytes, &mut ptr).map_err(|e| format!("Parse timestamp: {}", e))?;
+    // Use VsfHeader::decode() to parse the entire header
+    let (header, _header_len) = VsfHeader::decode(bytes)?;
 
     // Extract provenance hash (hp) - this is what gets signed
-    let prov_hash_result =
-        parse(bytes, &mut ptr).map_err(|e| format!("Parse provenance hash: {}", e))?;
-    let prov_hash_bytes = match &prov_hash_result {
-        vsf::VsfType::hp(hash) => {
-            if hash.len() != 32 {
-                return Err(format!("Invalid provenance hash length: {}", hash.len()));
-            }
-            hash.clone()
-        }
+    let prov_hash_bytes = match &header.provenance_hash {
+        VsfType::hp(hash) if hash.len() == 32 => hash.clone(),
+        VsfType::hp(hash) => return Err(format!("Invalid provenance hash length: {}", hash.len())),
         _ => return Err("Invalid provenance hash type".to_string()),
     };
 
-    // Skip rolling hash if present
-    let next_type = parse(bytes, &mut ptr).map_err(|e| format!("Parse after hp: {}", e))?;
-
-    // Check if next is signature (ge) or rolling hash (hb)
-    let signature_bytes = match &next_type {
-        vsf::VsfType::ge(sig) => sig.clone(),
-        vsf::VsfType::hb(_) => {
-            // Skip rolling hash, next should be signature
-            let sig_type = parse(bytes, &mut ptr).map_err(|e| format!("Parse signature: {}", e))?;
-            match sig_type {
-                vsf::VsfType::ge(sig) => sig,
-                _ => return Err("Challenge missing signature (ge)".to_string()),
-            }
+    // Extract signature (ge) - must be present for challenge
+    let signature_bytes = match &header.signature {
+        Some(VsfType::ge(sig)) if sig.len() == 64 => sig.clone(),
+        Some(VsfType::ge(sig)) => {
+            return Err(format!(
+                "Invalid signature length: {} (expected 64)",
+                sig.len()
+            ))
         }
         _ => return Err("Challenge missing signature (ge)".to_string()),
     };
-
-    if signature_bytes.len() != 64 {
-        return Err(format!(
-            "Invalid signature length: {} (expected 64)",
-            signature_bytes.len()
-        ));
-    }
 
     // Verify signature over provenance hash
     let verifying_key = VerifyingKey::from_bytes(&FGTW_ED25519_PUBLIC_KEY)
@@ -412,9 +389,8 @@ fn build_announce_message(
     challenge_hash: [u8; 32],
     avatar_pub_key: Option<[u8; 32]>,
 ) -> Result<Vec<u8>, String> {
-    use vsf::file_format::HeaderField;
     use vsf::verification::sign_section;
-    use vsf::{VsfType, VSF_BACKWARD_COMPAT, VSF_VERSION};
+    use vsf::{SectionMeta, VsfBuilder, VsfType};
 
     // 1. Build encrypted payload: hb(challenge_hash) + hb(handle_proof) + u(port) + ke(avatar_pub)?
     let mut plaintext = Vec::new();
@@ -430,68 +406,31 @@ fn build_announce_message(
     // 2. Encrypt for FGTW using ephemeral X25519 + AES-GCM
     let encrypted = encrypt_for_fgtw(&plaintext, &FGTW_X25519_PUBLIC_KEY)?;
 
-    // 3. Build the "announce" section with encrypted wrapper
-    let mut section_bytes = Vec::new();
-    section_bytes.push(b'[');
-    section_bytes.extend(VsfType::d("announce".to_string()).flatten());
-    section_bytes.extend(VsfType::v(b'e', encrypted).flatten());
-    section_bytes.push(b']');
+    // 3. Build VSF using VsfBuilder with section metadata
+    let meta = SectionMeta::new(
+        VsfType::ke(device_key.public.to_bytes().to_vec()), // Ed25519 device public key
+        VsfType::v(b'e', vec![]),                           // Empty vec = metadata only
+    );
+
+    let unsigned_bytes = VsfBuilder::new()
+        .add_section_with_meta(
+            "announce",
+            vec![("payload".to_string(), VsfType::v(b'e', encrypted))],
+            meta,
+        )
+        .build()?;
+
+    // 4. Sign the "announce" section
+    let vsf_bytes = sign_section(unsigned_bytes, "announce", device_key.secret.as_bytes())?;
 
     #[cfg(feature = "development")]
     crate::log_info(&crate::network::status::vsf_inspect(
-        &section_bytes,
+        &vsf_bytes,
         "TX FGTW",
-        "/announce (section)",
+        "/announce",
     ));
 
-    // 4. Stabilization loop to calculate correct offset
-    // The offset depends on header length, which depends on offset encoding size
-    let mut offset_bytes = 0usize;
-    let mut header_bytes: Vec<u8> = Vec::new();
-
-    const MAX_ITERATIONS: usize = 10;
-    for _iteration in 0..MAX_ITERATIONS {
-        // Create header with current offset estimate
-        let mut header = vsf::file_format::VsfHeader::new(VSF_VERSION, VSF_BACKWARD_COMPAT);
-
-        // Create header field with device Ed25519 key and encryption metadata
-        let announce_field = HeaderField {
-            name: "announce".to_string(),
-            hash: None,
-            signature: None, // Will be added by sign_section()
-            key: Some(VsfType::ke(device_key.public.to_bytes().to_vec())), // Ed25519 device public key
-            wrap: Some(VsfType::v(b'e', vec![])), // Empty vec = metadata only
-            offset_bytes,
-            size_bytes: section_bytes.len(),
-            child_count: 0, // Encrypted sections have implied n[0]
-        };
-        header.add_field(announce_field);
-
-        // Encode and update header length
-        header_bytes = header.encode()?;
-        vsf::file_format::VsfHeader::update_header_length(&mut header_bytes)?;
-
-        // Check if offset is correct (header length = section start)
-        let actual_offset = header_bytes.len();
-        if actual_offset == offset_bytes {
-            // Converged - append section and break
-            header_bytes.extend(&section_bytes);
-            break;
-        }
-
-        // Update estimate for next iteration
-        offset_bytes = actual_offset;
-
-        // On last iteration, just use current values
-        if _iteration == MAX_ITERATIONS - 1 {
-            header_bytes.extend(&section_bytes);
-        }
-    }
-
-    // Sign the "announce" section using sign_section
-    let signed_message = sign_section(header_bytes, "announce", device_key.secret.as_bytes())?;
-
-    Ok(signed_message)
+    Ok(vsf_bytes)
 }
 
 /// Parse peer list from VSF bytes
@@ -565,7 +504,7 @@ fn parse_peer_from_field(field: &vsf::VsfField) -> Result<PeerRecord, String> {
         vsf::VsfType::ke(k) if k.len() == 32 => {
             let mut arr = [0u8; 32];
             arr.copy_from_slice(k);
-            PublicIdentity::from_bytes(arr)
+            DevicePubkey::from_bytes(arr)
         }
         _ => return Err("Invalid device_pubkey type or length".to_string()),
     };
@@ -609,4 +548,266 @@ fn parse_peer_from_field(field: &vsf::VsfField) -> Result<PeerRecord, String> {
         ip: SocketAddr::new(parsed_ip, port),
         last_seen,
     })
+}
+
+// ============================================================================
+// Blob Storage API (GET/PUT/DELETE)
+// ============================================================================
+
+/// Error type for blob operations
+#[derive(Debug)]
+pub enum BlobError {
+    Network(String),
+    NotFound,
+    Unauthorized(String),
+    ServerError(String),
+}
+
+impl std::fmt::Display for BlobError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BlobError::Network(s) => write!(f, "Network error: {}", s),
+            BlobError::NotFound => write!(f, "Blob not found"),
+            BlobError::Unauthorized(s) => write!(f, "Unauthorized: {}", s),
+            BlobError::ServerError(s) => write!(f, "Server error: {}", s),
+        }
+    }
+}
+
+/// Upload a blob to FGTW storage
+///
+/// # Arguments
+/// * `storage_key` - Base64url-encoded 32-byte key (43 chars)
+/// * `data` - Raw bytes to store (already encrypted by caller)
+/// * `device_keypair` - Ed25519 keypair for signing
+/// * `handle_proof` - 32-byte handle proof (proves registered user)
+///
+/// # Auth Headers
+/// * X-Device-Pubkey: base64url(ed25519_pubkey)
+/// * X-Signature: base64url(sign(storage_key_bytes))
+/// * X-Timestamp: f64 Eagle Time nanoseconds
+/// * X-Handle-Proof: base64url(handle_proof) - proves registered peer
+pub async fn put_blob(
+    storage_key: &str,
+    data: &[u8],
+    device_keypair: &Keypair,
+    handle_proof: &[u8; 32],
+) -> Result<(), BlobError> {
+    use ed25519_dalek::Signer;
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| BlobError::Network(format!("Failed to create HTTP client: {}", e)))?;
+
+    // Decode storage key to bytes for signing
+    let key_bytes = URL_SAFE_NO_PAD
+        .decode(storage_key.as_bytes())
+        .map_err(|e| BlobError::Network(format!("Invalid storage key: {}", e)))?;
+
+    // Sign the storage key bytes
+    let signature = device_keypair.secret.sign(&key_bytes);
+
+    // Current Eagle Time for replay protection
+    let timestamp = vsf::eagle_time_nanos();
+
+    // Encode headers
+    let pubkey_b64 = URL_SAFE_NO_PAD.encode(device_keypair.public.as_bytes());
+    let signature_b64 = URL_SAFE_NO_PAD.encode(signature.to_bytes());
+    let handle_proof_b64 = URL_SAFE_NO_PAD.encode(handle_proof);
+
+    let response = client
+        .put(&format!("{}/blob/{}", FGTW_URL, storage_key))
+        .header("Content-Type", "application/octet-stream")
+        .header("X-Device-Pubkey", pubkey_b64)
+        .header("X-Signature", signature_b64)
+        .header("X-Timestamp", format!("{:.0}", timestamp))
+        .header("X-Handle-Proof", handle_proof_b64)
+        .body(data.to_vec())
+        .send()
+        .await
+        .map_err(|e| BlobError::Network(format!("PUT request failed: {}", e)))?;
+
+    let status = response.status();
+    if status.is_success() {
+        crate::log_info(&format!("FGTW: Uploaded blob ({} bytes)", data.len()));
+        Ok(())
+    } else if status == reqwest::StatusCode::FORBIDDEN {
+        let body = response.text().await.unwrap_or_default();
+        Err(BlobError::Unauthorized(body))
+    } else {
+        let body = response.text().await.unwrap_or_default();
+        Err(BlobError::ServerError(format!("{}: {}", status, body)))
+    }
+}
+
+/// Download a blob from FGTW storage (unauthenticated read)
+///
+/// # Arguments
+/// * `storage_key` - Base64url-encoded 32-byte key (43 chars)
+///
+/// # Returns
+/// * `Ok(Some(bytes))` - Blob data
+/// * `Ok(None)` - Blob not found (404)
+/// * `Err(...)` - Other error
+pub async fn get_blob(storage_key: &str) -> Result<Option<Vec<u8>>, BlobError> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| BlobError::Network(format!("Failed to create HTTP client: {}", e)))?;
+
+    let response = client
+        .get(&format!("{}/blob/{}", FGTW_URL, storage_key))
+        .send()
+        .await
+        .map_err(|e| BlobError::Network(format!("GET request failed: {}", e)))?;
+
+    let status = response.status();
+    if status.is_success() {
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|e| BlobError::Network(format!("Failed to read blob: {}", e)))?;
+        crate::log_info(&format!("FGTW: Downloaded blob ({} bytes)", bytes.len()));
+        Ok(Some(bytes.to_vec()))
+    } else if status == reqwest::StatusCode::NOT_FOUND {
+        Ok(None)
+    } else {
+        let body = response.text().await.unwrap_or_default();
+        Err(BlobError::ServerError(format!("{}: {}", status, body)))
+    }
+}
+
+/// Upload a blob to FGTW storage (blocking version)
+///
+/// Same as put_blob but uses blocking HTTP client for sync contexts
+pub fn put_blob_blocking(
+    storage_key: &str,
+    data: &[u8],
+    device_keypair: &Keypair,
+    handle_proof: &[u8; 32],
+) -> Result<(), BlobError> {
+    use ed25519_dalek::Signer;
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| BlobError::Network(format!("Failed to create HTTP client: {}", e)))?;
+
+    // Decode storage key to bytes for signing
+    let key_bytes = URL_SAFE_NO_PAD
+        .decode(storage_key.as_bytes())
+        .map_err(|e| BlobError::Network(format!("Invalid storage key: {}", e)))?;
+
+    // Sign the storage key bytes
+    let signature = device_keypair.secret.sign(&key_bytes);
+
+    // Current Eagle Time for replay protection
+    let timestamp = vsf::eagle_time_nanos();
+
+    // Encode headers
+    let pubkey_b64 = URL_SAFE_NO_PAD.encode(device_keypair.public.as_bytes());
+    let signature_b64 = URL_SAFE_NO_PAD.encode(signature.to_bytes());
+    let handle_proof_b64 = URL_SAFE_NO_PAD.encode(handle_proof);
+
+    let response = client
+        .put(&format!("{}/blob/{}", FGTW_URL, storage_key))
+        .header("Content-Type", "application/octet-stream")
+        .header("X-Device-Pubkey", pubkey_b64)
+        .header("X-Signature", signature_b64)
+        .header("X-Timestamp", format!("{:.0}", timestamp))
+        .header("X-Handle-Proof", handle_proof_b64)
+        .body(data.to_vec())
+        .send()
+        .map_err(|e| BlobError::Network(format!("PUT request failed: {}", e)))?;
+
+    let status = response.status();
+    if status.is_success() {
+        crate::log_info(&format!("FGTW: Uploaded blob ({} bytes)", data.len()));
+        Ok(())
+    } else if status == reqwest::StatusCode::FORBIDDEN {
+        let body = response.text().unwrap_or_default();
+        Err(BlobError::Unauthorized(body))
+    } else {
+        let body = response.text().unwrap_or_default();
+        Err(BlobError::ServerError(format!("{}: {}", status, body)))
+    }
+}
+
+/// Download a blob from FGTW storage (blocking version)
+///
+/// Same as get_blob but uses blocking HTTP client for sync contexts
+pub fn get_blob_blocking(storage_key: &str) -> Result<Option<Vec<u8>>, BlobError> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| BlobError::Network(format!("Failed to create HTTP client: {}", e)))?;
+
+    let response = client
+        .get(&format!("{}/blob/{}", FGTW_URL, storage_key))
+        .send()
+        .map_err(|e| BlobError::Network(format!("GET request failed: {}", e)))?;
+
+    let status = response.status();
+    if status.is_success() {
+        let bytes = response
+            .bytes()
+            .map_err(|e| BlobError::Network(format!("Failed to read blob: {}", e)))?;
+        crate::log_info(&format!("FGTW: Downloaded blob ({} bytes)", bytes.len()));
+        Ok(Some(bytes.to_vec()))
+    } else if status == reqwest::StatusCode::NOT_FOUND {
+        Ok(None)
+    } else {
+        let body = response.text().unwrap_or_default();
+        Err(BlobError::ServerError(format!("{}: {}", status, body)))
+    }
+}
+
+/// Delete a blob from FGTW storage
+///
+/// # Arguments
+/// * `storage_key` - Base64url-encoded 32-byte key (43 chars)
+/// * `device_keypair` - Ed25519 keypair for signing (must match stored auth)
+pub async fn delete_blob(storage_key: &str, device_keypair: &Keypair) -> Result<(), BlobError> {
+    use ed25519_dalek::Signer;
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| BlobError::Network(format!("Failed to create HTTP client: {}", e)))?;
+
+    // Decode storage key to bytes for signing
+    let key_bytes = URL_SAFE_NO_PAD
+        .decode(storage_key.as_bytes())
+        .map_err(|e| BlobError::Network(format!("Invalid storage key: {}", e)))?;
+
+    // Sign the storage key bytes
+    let signature = device_keypair.secret.sign(&key_bytes);
+
+    // Encode headers
+    let pubkey_b64 = URL_SAFE_NO_PAD.encode(device_keypair.public.as_bytes());
+    let signature_b64 = URL_SAFE_NO_PAD.encode(signature.to_bytes());
+
+    let response = client
+        .delete(&format!("{}/blob/{}", FGTW_URL, storage_key))
+        .header("X-Device-Pubkey", pubkey_b64)
+        .header("X-Signature", signature_b64)
+        .send()
+        .await
+        .map_err(|e| BlobError::Network(format!("DELETE request failed: {}", e)))?;
+
+    let status = response.status();
+    if status.is_success() {
+        crate::log_info("FGTW: Deleted blob");
+        Ok(())
+    } else if status == reqwest::StatusCode::NOT_FOUND {
+        // Treat not found as success for delete
+        Ok(())
+    } else if status == reqwest::StatusCode::FORBIDDEN {
+        let body = response.text().await.unwrap_or_default();
+        Err(BlobError::Unauthorized(body))
+    } else {
+        let body = response.text().await.unwrap_or_default();
+        Err(BlobError::ServerError(format!("{}: {}", status, body)))
+    }
 }

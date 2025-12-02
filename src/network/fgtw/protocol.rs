@@ -1,4 +1,4 @@
-use crate::types::PublicIdentity;
+use crate::types::DevicePubkey;
 use std::net::{IpAddr, SocketAddr};
 use vsf::schema::FromVsfType;
 use vsf::types::Vector;
@@ -8,27 +8,27 @@ use vsf::VsfType;
 #[derive(Debug, Clone)]
 pub enum FgtwMessage {
     Ping {
-        device_pubkey: PublicIdentity,
+        device_pubkey: DevicePubkey,
     },
     Pong {
-        device_pubkey: PublicIdentity,
+        device_pubkey: DevicePubkey,
         peers: Vec<PeerRecord>,
     },
     FindNode {
         handle_proof: [u8; 32],
-        requester_pubkey: PublicIdentity,
+        requester_pubkey: DevicePubkey,
     },
     FoundNodes {
         devices: Vec<PeerRecord>,
     },
     Announce {
         handle_proof: [u8; 32],
-        device_pubkey: PublicIdentity,
+        device_pubkey: DevicePubkey,
         port: u16,
     },
     Query {
         handle_proof: [u8; 32],
-        requester_pubkey: PublicIdentity,
+        requester_pubkey: DevicePubkey,
     },
     QueryResponse {
         devices: Vec<PeerRecord>,
@@ -45,10 +45,10 @@ pub enum FgtwMessage {
     /// Note: Avatar is fetched by handle, not exchanged in ping/pong.
     /// Storage key = BLAKE3(BLAKE3(handle) || "avatar")
     StatusPing {
-        timestamp: f64,                // Eagle time with nanosecond precision (ef6) but it's not an ef6?
-        sender_pubkey: PublicIdentity, // Who is pinging (for response routing)
-        provenance_hash: [u8; 32],     // BLAKE3(sender_pubkey || timestamp_nanos)
-        signature: [u8; 64],           // Ed25519 signature of provenance_hash
+        timestamp: f64, // Eagle time with nanosecond precision (ef6) but it's not an ef6?
+        sender_pubkey: DevicePubkey, // Who is pinging (for response routing)
+        provenance_hash: [u8; 32], // BLAKE3(sender_pubkey || timestamp_nanos)
+        signature: [u8; 64], // Ed25519 signature of provenance_hash
     },
     /// P2P status pong - "yes I'm online"
     ///
@@ -62,10 +62,10 @@ pub enum FgtwMessage {
     /// Note: Avatar is fetched by handle, not exchanged in ping/pong.
     /// Storage key = BLAKE3(BLAKE3(handle) || "avatar")
     StatusPong {
-        timestamp: f64,                   // Responder's current Eagle time (ef6)
-        responder_pubkey: PublicIdentity, // Who is responding
-        provenance_hash: [u8; 32],        // Same hash from ping (proves we received it)
-        signature: [u8; 64],              // Ed25519 signature of provenance_hash
+        timestamp: f64,                 // Responder's current Eagle time (ef6)
+        responder_pubkey: DevicePubkey, // Who is responding
+        provenance_hash: [u8; 32],      // Same hash from ping (proves we received it)
+        signature: [u8; 64],            // Ed25519 signature of provenance_hash
     },
     /// CLUTCH Offer - parallel key exchange (v2)
     ///
@@ -82,7 +82,7 @@ pub enum FgtwMessage {
         from_handle_proof: [u8; 32],
         to_handle_proof: [u8; 32],
         ephemeral_x25519: [u8; 32],
-        sender_pubkey: PublicIdentity,
+        sender_pubkey: DevicePubkey,
         signature: [u8; 64],
     },
     /// CLUTCH Init - initiator sends their ephemeral pubkey to start ceremony (v1 legacy)
@@ -97,7 +97,7 @@ pub enum FgtwMessage {
         from_handle_proof: [u8; 32],
         to_handle_proof: [u8; 32],
         ephemeral_x25519: [u8; 32],
-        sender_pubkey: PublicIdentity, // For signature verification
+        sender_pubkey: DevicePubkey, // For signature verification
         signature: [u8; 64],
     },
     /// CLUTCH Response - responder sends their ephemeral pubkey back (v1 legacy)
@@ -106,7 +106,7 @@ pub enum FgtwMessage {
         from_handle_proof: [u8; 32],
         to_handle_proof: [u8; 32],
         ephemeral_x25519: [u8; 32],
-        sender_pubkey: PublicIdentity,
+        sender_pubkey: DevicePubkey,
         signature: [u8; 64],
     },
     /// CLUTCH Complete - initiator confirms they derived the same seed
@@ -115,7 +115,7 @@ pub enum FgtwMessage {
         from_handle_proof: [u8; 32],
         to_handle_proof: [u8; 32],
         proof: [u8; 32], // BLAKE3(shared_seed || "CLUTCH_v1_complete")
-        sender_pubkey: PublicIdentity,
+        sender_pubkey: DevicePubkey,
         signature: [u8; 64],
     },
     /// Encrypted chat message
@@ -131,7 +131,7 @@ pub enum FgtwMessage {
         sequence: u64,
         salt: [u8; 64],
         ciphertext: Vec<u8>,
-        sender_pubkey: PublicIdentity,
+        sender_pubkey: DevicePubkey,
         signature: [u8; 64],
     },
     /// Message acknowledgment
@@ -141,7 +141,7 @@ pub enum FgtwMessage {
         timestamp: f64,
         from_handle_proof: [u8; 32],
         sequence: u64,
-        sender_pubkey: PublicIdentity,
+        sender_pubkey: DevicePubkey,
         signature: [u8; 64],
     },
 }
@@ -150,7 +150,7 @@ pub enum FgtwMessage {
 #[derive(Debug, Clone)]
 pub struct PeerRecord {
     pub handle_proof: [u8; 32], // Memory-hard PoW output (24MB, 17 rounds)
-    pub device_pubkey: PublicIdentity, // Device's X25519 public key (used as device identifier)
+    pub device_pubkey: DevicePubkey, // Device's X25519 public key (used as device identifier)
     pub ip: SocketAddr,         // Where to reach this device
     pub last_seen: f64,         // Timestamp (f64, serializes as VSF type f6)
 }
@@ -213,10 +213,7 @@ impl FgtwMessage {
                     "fgtw",
                     vec![
                         ("msg_type".to_string(), VsfType::u3(0)),
-                        (
-                            "device_pubkey".to_string(),
-                            VsfType::kx(device_pubkey.as_bytes().to_vec()),
-                        ),
+                        ("device_pubkey".to_string(), device_pubkey.to_vsf()),
                     ],
                 )
                 .build(),
@@ -226,10 +223,7 @@ impl FgtwMessage {
             } => {
                 let mut fields = vec![
                     ("msg_type".to_string(), VsfType::u3(1)),
-                    (
-                        "device_pubkey".to_string(),
-                        VsfType::kx(device_pubkey.as_bytes().to_vec()),
-                    ),
+                    ("device_pubkey".to_string(), device_pubkey.to_vsf()),
                     ("peer_count".to_string(), VsfType::u(peers.len(), false)),
                 ];
 
@@ -242,7 +236,7 @@ impl FgtwMessage {
                     ));
                     fields.push((
                         format!("{}_device_pubkey", prefix),
-                        VsfType::kx(peer.device_pubkey.as_bytes().to_vec()),
+                        peer.device_pubkey.to_vsf(),
                     ));
                     fields.push((
                         format!("{}_ip", prefix),
@@ -267,10 +261,7 @@ impl FgtwMessage {
                             "handle_proof".to_string(),
                             VsfType::hb(handle_proof.to_vec()),
                         ),
-                        (
-                            "requester_pubkey".to_string(),
-                            VsfType::kx(requester_pubkey.as_bytes().to_vec()),
-                        ),
+                        ("requester_pubkey".to_string(), requester_pubkey.to_vsf()),
                     ],
                 )
                 .build(),
@@ -288,7 +279,7 @@ impl FgtwMessage {
                     ));
                     fields.push((
                         format!("{}_device_pubkey", prefix),
-                        VsfType::kx(device.device_pubkey.as_bytes().to_vec()),
+                        device.device_pubkey.to_vsf(),
                     ));
                     fields.push((
                         format!("{}_ip", prefix),
@@ -317,10 +308,7 @@ impl FgtwMessage {
                             "handle_proof".to_string(),
                             VsfType::hb(handle_proof.to_vec()),
                         ),
-                        (
-                            "device_pubkey".to_string(),
-                            VsfType::kx(device_pubkey.as_bytes().to_vec()),
-                        ),
+                        ("device_pubkey".to_string(), device_pubkey.to_vsf()),
                         ("port".to_string(), VsfType::u(*port as usize, false)),
                     ],
                 )
@@ -337,10 +325,7 @@ impl FgtwMessage {
                             "handle_proof".to_string(),
                             VsfType::hb(handle_proof.to_vec()),
                         ),
-                        (
-                            "requester_pubkey".to_string(),
-                            VsfType::kx(requester_pubkey.as_bytes().to_vec()),
-                        ),
+                        ("requester_pubkey".to_string(), requester_pubkey.to_vsf()),
                     ],
                 )
                 .build(),
@@ -358,7 +343,7 @@ impl FgtwMessage {
                     ));
                     fields.push((
                         format!("{}_device_pubkey", prefix),
-                        VsfType::kx(device.device_pubkey.as_bytes().to_vec()),
+                        device.device_pubkey.to_vsf(),
                     ));
                     fields.push((
                         format!("{}_ip", prefix),
@@ -916,7 +901,7 @@ impl FgtwMessage {
 }
 
 impl PeerRecord {
-    pub fn new(handle_proof: [u8; 32], device_pubkey: PublicIdentity, ip: SocketAddr) -> Self {
+    pub fn new(handle_proof: [u8; 32], device_pubkey: DevicePubkey, ip: SocketAddr) -> Self {
         Self {
             handle_proof,
             device_pubkey,
@@ -945,9 +930,10 @@ fn extract_hash(fields: &[(String, VsfType)], key: &str) -> Result<[u8; 32], Str
     Ok(arr)
 }
 
-fn extract_pubkey(fields: &[(String, VsfType)], key: &str) -> Result<PublicIdentity, String> {
+fn extract_pubkey(fields: &[(String, VsfType)], key: &str) -> Result<DevicePubkey, String> {
+    // DevicePubkey is Ed25519 (ke), not X25519 (kx)
     let pubkey_bytes = match get_field(fields, key) {
-        Some(VsfType::kx(bytes)) => bytes,
+        Some(VsfType::ke(bytes)) => bytes,
         _ => return Err(format!("Missing or invalid pubkey: {}", key)),
     };
     let mut pubkey_arr = [0u8; 32];
@@ -955,7 +941,7 @@ fn extract_pubkey(fields: &[(String, VsfType)], key: &str) -> Result<PublicIdent
         return Err(format!("Pubkey {} must be 32 bytes", key));
     }
     pubkey_arr.copy_from_slice(pubkey_bytes);
-    Ok(PublicIdentity::from_bytes(pubkey_arr))
+    Ok(DevicePubkey::from_bytes(pubkey_arr))
 }
 
 fn extract_clutch_ephemeral(fields: &[(String, VsfType)]) -> Result<[u8; 32], String> {
@@ -1068,13 +1054,13 @@ fn extract_header_provenance(header: &vsf::file_format::VsfHeader) -> Result<[u8
     }
 }
 
-fn extract_header_pubkey(header: &vsf::file_format::VsfHeader) -> Result<PublicIdentity, String> {
+fn extract_header_pubkey(header: &vsf::file_format::VsfHeader) -> Result<DevicePubkey, String> {
     if let Some(ref pubkey) = header.signer_pubkey {
         match pubkey {
             VsfType::ke(bytes) if bytes.len() == 32 => {
                 let mut arr = [0u8; 32];
                 arr.copy_from_slice(bytes);
-                return Ok(PublicIdentity::from_bytes(arr));
+                return Ok(DevicePubkey::from_bytes(arr));
             }
             _ => {}
         }

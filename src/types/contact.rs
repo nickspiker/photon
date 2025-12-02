@@ -1,12 +1,11 @@
-use super::{PublicIdentity, Seed};
-use serde::{Deserialize, Serialize};
+use super::{DevicePubkey, Seed};
 use std::net::SocketAddr;
 
 /// A chat message in a conversation (UI-level representation)
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct ChatMessage {
     pub content: String,
-    pub timestamp: u64,    // Eagle time (seconds since Apollo 11 landing)
+    pub timestamp: f64,    // Eagle time (seconds since Apollo 11 landing)
     pub is_outgoing: bool, // true = we sent it, false = they sent it
     pub delivered: bool,   // true = confirmed delivered to recipient
 }
@@ -15,7 +14,7 @@ impl ChatMessage {
     pub fn new(content: String, is_outgoing: bool) -> Self {
         Self {
             content,
-            timestamp: vsf::eagle_time_nanos() as u64,
+            timestamp: vsf::eagle_time_nanos(),
             is_outgoing,
             delivered: false,
         }
@@ -24,7 +23,7 @@ impl ChatMessage {
 
 /// A handle name stored as VSF text (normalized Unicode, unambiguous)
 /// Wrapper around String that represents a VSF x-type text value
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HandleText(String);
 
 impl HandleText {
@@ -55,7 +54,7 @@ impl std::fmt::Display for HandleText {
 /// - Pending: Contact added, ephemeral generated, waiting for their offer
 /// - Offered: We sent our offer (or received theirs), waiting for exchange to complete
 /// - Complete: Both offers exchanged, seed derived, can message
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum ClutchState {
     #[default]
     Pending, // Ephemeral generated, waiting for their offer
@@ -63,13 +62,13 @@ pub enum ClutchState {
     Complete, // CLUTCH done, can message
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct Contact {
     pub id: ContactId,
     pub handle: HandleText, // VSF-style text for unambiguous handle storage
     pub handle_proof: [u8; 32], // Cached handle_proof (expensive to compute - ~1 second) - PUBLIC
     pub handle_hash: [u8; 32], // BLAKE3(handle) - PRIVATE, used for seed derivation
-    pub public_identity: PublicIdentity,
+    pub public_identity: DevicePubkey,
     pub ip: Option<SocketAddr>, // Last known IP:port from FGTW or direct
     pub relationship_seed: Option<Seed>,
     pub clutch_state: ClutchState,
@@ -77,34 +76,26 @@ pub struct Contact {
     pub clutch_our_ephemeral_pubkey: Option<[u8; 32]>, // Our ephemeral X25519 pubkey (needed for parallel seed derivation)
     pub clutch_their_ephemeral_pubkey: Option<[u8; 32]>, // Their ephemeral for CLUTCH
     pub trust_level: TrustLevel,
-    pub added_timestamp: u64,
-    pub last_seen: Option<u64>,
+    pub added_timestamp: f64,
+    pub last_seen: Option<f64>,
     pub is_online: bool, // True when we have confirmed bidirectional comms
     pub messages: Vec<ChatMessage>, // Conversation history
-    #[serde(skip)]
     pub prev_is_online: bool, // For differential rendering (not persisted)
-    #[serde(skip)]
     pub indicator_x: usize, // Cached indicator dot X position (set during draw)
-    #[serde(skip)]
     pub indicator_y: usize, // Cached indicator dot Y position (set during draw)
-    #[serde(skip)]
-    pub text_x: f32, // Cached text X position (set during draw)
-    #[serde(skip)]
-    pub text_y: f32, // Cached text Y position (set during draw)
+    pub text_x: f32,     // Cached text X position (set during draw)
+    pub text_y: f32,     // Cached text Y position (set during draw)
     // Avatar cache - fetched from FGTW by handle
     // Storage key is deterministic: BLAKE3(BLAKE3(handle) || "avatar")
-    #[serde(skip)]
     pub avatar_pixels: Option<Vec<u8>>, // Full 256x256 VSF RGB pixels (cached)
-    #[serde(skip)]
     pub avatar_scaled: Option<Vec<u8>>, // Pre-scaled to current display size
-    #[serde(skip)]
-    pub avatar_scaled_diameter: usize, // Diameter the scaled pixels were rendered for
+    pub avatar_scaled_diameter: usize,  // Diameter the scaled pixels were rendered for
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ContactId([u8; 16]);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TrustLevel {
     Stranger,
     Known,
@@ -135,11 +126,7 @@ impl Default for ContactId {
 }
 
 impl Contact {
-    pub fn new(
-        handle: HandleText,
-        handle_proof: [u8; 32],
-        public_identity: PublicIdentity,
-    ) -> Self {
+    pub fn new(handle: HandleText, handle_proof: [u8; 32], public_identity: DevicePubkey) -> Self {
         // Compute private handle_hash using VSF normalization
         // Formula: BLAKE3(VsfType::x(handle).flatten())
         // This ensures consistent hashing regardless of Unicode representation
@@ -160,7 +147,7 @@ impl Contact {
             clutch_our_ephemeral_pubkey: None,
             clutch_their_ephemeral_pubkey: None,
             trust_level: TrustLevel::Stranger,
-            added_timestamp: vsf::eagle_time_nanos() as u64,
+            added_timestamp: vsf::eagle_time_nanos(),
             last_seen: None,
             is_online: false,      // Starts offline until we confirm comms
             messages: Vec::new(),  // No messages yet
@@ -190,7 +177,7 @@ impl Contact {
         self
     }
 
-    pub fn update_last_seen(&mut self, timestamp: u64) {
+    pub fn update_last_seen(&mut self, timestamp: f64) {
         self.last_seen = Some(timestamp);
     }
 

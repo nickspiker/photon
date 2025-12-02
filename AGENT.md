@@ -90,6 +90,78 @@ If there's a SAFETY comment, **read it**. It's there because the human proved co
 - **Python**: Slow, loose typing causes bugs, cannot copy-paste, 1-indexed nonsense infected everything
 - High-level scripting when systems programming is needed, text parsing, terribly unsafe
 
+## VSF Serialization: Use High-Level APIs
+
+**ALWAYS prefer VSF's schema-validated builders over manual byte manipulation.**
+
+### The Right Way: SectionBuilder + SectionSchema
+
+```rust
+use vsf::schema::{SectionSchema, SectionBuilder, TypeConstraint};
+
+// Define schema (or use official: vsf::schema::official::network_peer_schema())
+let schema = SectionSchema::new("announce")
+    .field("challenge_hash", TypeConstraint::Blake3Rolling)
+    .field("handle_hash", TypeConstraint::Blake3Provenance)
+    .field("port", TypeConstraint::AnyUnsigned);
+
+// Build with validation
+let bytes = schema.build()
+    .set("challenge_hash", VsfType::hb(hash))?
+    .set("handle_hash", VsfType::hb(handle_hash))?
+    .set("port", 41641u16)?
+    .encode()?;
+
+// Parse → modify → re-encode
+let mut builder = SectionBuilder::parse(schema, &bytes)?;
+builder = builder.set("port", 8080u16)?;
+let updated = builder.encode()?;
+```
+
+### FORBIDDEN: Manual Serialization
+
+```rust
+// NO - manual byte pushing, error-prone, no validation
+let mut bytes = Vec::new();
+bytes.push(b'[');
+bytes.extend(VsfType::d("announce".to_string()).flatten());
+bytes.push(b'(');
+bytes.extend(VsfType::d("port".to_string()).flatten());
+bytes.push(b':');
+bytes.extend(VsfType::u4(41641).flatten()); // This becomes fragile. If port is less than 255 a u3 is valid.
+bytes.push(b')');
+bytes.push(b']');
+```
+
+### Why High-Level APIs:
+
+0. **Type safety** - TypeConstraint validates values match expected types
+1. **Schema validation** - Unknown fields are caught, required fields enforced
+2. **Round-trip safe** - parse → modify → encode workflow guaranteed correct
+3. **Self-documenting** - Schema IS the documentation
+4. **Future-proof** - Wire format changes handled by library, not your code
+
+### Available Official Schemas:
+
+- `vsf::schema::official::image_schema()` - Image metadata
+- `vsf::schema::official::camera_schema()` - Camera hardware config
+- `vsf::schema::official::audio_schema()` - Audio stream metadata
+- `vsf::schema::official::network_peer_schema()` - P2P peer info
+- `vsf::schema::official::announce_schema()` - FGTW bootstrap
+
+### For Complete Files: VsfBuilder
+
+```rust
+use vsf::vsf_builder::VsfBuilder;
+
+let bytes = VsfBuilder::new()
+    .add_section(my_section)
+    .provenance(provenance_hash)  // Immutable identity
+    .build()?;  // BLAKE3 hash computed automatically
+```
+
+**The library handles integrity hashing, header layout, section offsets - you just add content.**
+
 ## Code Style
 
 ### Terminal Commands:

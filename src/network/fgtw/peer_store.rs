@@ -1,5 +1,5 @@
 use super::protocol::PeerRecord;
-use crate::types::PublicIdentity;
+use crate::types::DevicePubkey;
 
 const PEER_EXPIRY_SECONDS: f64 = 604800.0; // 7 days
 
@@ -106,7 +106,7 @@ impl PeerStore {
     }
 
     /// Update last_seen for a specific device
-    pub fn update_peer_seen(&mut self, handle_proof: &[u8; 32], device_pubkey: &PublicIdentity) {
+    pub fn update_peer_seen(&mut self, handle_proof: &[u8; 32], device_pubkey: &DevicePubkey) {
         let pos = self.find_position(handle_proof);
         let mut i = pos;
         while i < self.peers.len() && self.peers[i].handle_proof == *handle_proof {

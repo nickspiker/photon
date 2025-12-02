@@ -306,6 +306,9 @@ impl PhotonApp {
                                     contact_idx
                                 );
 
+                                // Ping this specific contact when entering conversation
+                                self.ping_contact(contact_idx);
+
                                 // Fetch avatar if we don't have it (don't require online status)
                                 if self.contacts[contact_idx].avatar_pixels.is_none() {
                                     let handle =

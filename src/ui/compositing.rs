@@ -590,18 +590,12 @@ impl PhotonApp {
                             let message_area_top = header_height;
                             let message_area_bottom = textbox_y - box_height;
 
-                            // Avatar circle to left of handle
+                            // Avatar circle to left of handle, aligned with "<" arrow
                             let avatar_radius = box_height / 3;
                             let avatar_diameter = avatar_radius * 2;
-                            let text_width = self.text_renderer.measure_text_width(
-                                contact.handle.as_str(),
-                                font_size * 1.2,
-                                500,
-                                theme::FONT_USER_CONTENT,
-                            );
-                            let avatar_x =
-                                (center_x as f32 - text_width / 2. - avatar_radius as f32 * 2.)
-                                    as usize;
+                            // Position avatar right after the "<" with some spacing
+                            let arrow_width = box_height * 3 / 2; // Approximate width of "<" area
+                            let avatar_x = arrow_width + avatar_radius;
                             let avatar_y = header_height / 2;
 
                             // Scale contact avatar if needed
@@ -644,12 +638,13 @@ impl PhotonApp {
                                 theme::FONT_UI,
                             );
 
-                            // Draw header: contact handle centered at top
-                            self.text_renderer.draw_text_center_u32(
+                            // Draw header: contact handle left-aligned next to avatar
+                            let handle_x = avatar_x + avatar_radius + avatar_radius / 2; // Right of avatar with small gap
+                            self.text_renderer.draw_text_left_u32(
                                 pixels,
                                 self.width as usize,
                                 contact.handle.as_str(),
-                                center_x as f32,
+                                handle_x as f32,
                                 (header_height / 2) as f32,
                                 font_size * 1.2,
                                 500,

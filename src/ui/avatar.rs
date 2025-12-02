@@ -1353,10 +1353,13 @@ fn write_signature_to_vsf(mut vsf_bytes: Vec<u8>, signature: &[u8; 64]) -> Resul
 /// # Arguments
 /// * `device_secret` - Device's Ed25519 signing key
 /// * `handle` - User's handle
+/// * `handle_proof` - 32-byte handle proof (proves registered peer)
 ///
 /// # Returns
 /// The avatar storage key on success (for sharing with peers)
-pub fn upload_avatar(device_secret: &SigningKey, handle: &str) -> Result<String, String> {
+pub fn upload_avatar(device_secret: &SigningKey, handle: &str, handle_proof: &[u8; 32]) -> Result<String, String> {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+
     // Read from cache by handle
     let storage_key = avatar_storage_key(handle);
     let cache_path = avatar_cache_path(&storage_key).map_err(|e| e.to_string())?;
@@ -1386,10 +1389,14 @@ pub fn upload_avatar(device_secret: &SigningKey, handle: &str) -> Result<String,
         &format!("/avatar/{}", &storage_key[..8]),
     ));
 
+    // Encode handle_proof for header
+    let handle_proof_b64 = URL_SAFE_NO_PAD.encode(handle_proof);
+
     let client = reqwest::blocking::Client::new();
     let response = client
         .put(&url)
         .header("Content-Type", "application/octet-stream")
+        .header("X-Handle-Proof", handle_proof_b64)
         .body(signed_vsf)
         .send()
         .map_err(|e| format!("Failed to upload avatar: {}", e))?;
@@ -1478,7 +1485,7 @@ pub enum AvatarSyncResult {
     Error(String), // Something went wrong
 }
 
-pub fn sync_avatar_bidirectional(device_secret: &SigningKey, handle: &str) -> AvatarSyncResult {
+pub fn sync_avatar_bidirectional(device_secret: &SigningKey, handle: &str, handle_proof: Option<&[u8; 32]>) -> AvatarSyncResult {
     let storage_key = avatar_storage_key(handle);
     let url = format!("{}/avatar/{}", FGTW_URL, storage_key);
 
@@ -1495,11 +1502,16 @@ pub fn sync_avatar_bidirectional(device_secret: &SigningKey, handle: &str) -> Av
     if response.status() == reqwest::StatusCode::NOT_FOUND {
         // Server has no avatar
         if local_ts.is_some() {
-            // We have local, upload it
-            crate::log_info("Avatar sync: Server empty, uploading local");
-            match upload_avatar(device_secret, handle) {
-                Ok(_) => return AvatarSyncResult::LocalNewer,
-                Err(e) => return AvatarSyncResult::Error(format!("Upload failed: {}", e)),
+            // We have local, upload it (only if we have handle_proof)
+            if let Some(hp) = handle_proof {
+                crate::log_info("Avatar sync: Server empty, uploading local");
+                match upload_avatar(device_secret, handle, hp) {
+                    Ok(_) => return AvatarSyncResult::LocalNewer,
+                    Err(e) => return AvatarSyncResult::Error(format!("Upload failed: {}", e)),
+                }
+            } else {
+                crate::log_info("Avatar sync: Server empty, but no handle_proof for upload");
+                return AvatarSyncResult::Error("No handle_proof for upload".to_string());
             }
         } else {
             return AvatarSyncResult::ServerEmpty;
@@ -1536,14 +1548,19 @@ pub fn sync_avatar_bidirectional(device_secret: &SigningKey, handle: &str) -> Av
         }
         (Some(local), Some(server)) => {
             if local > server {
-                // Local is newer - upload
-                crate::log_info(&format!(
-                    "Avatar sync: Local newer ({:.0} > {:.0}), uploading",
-                    local, server
-                ));
-                match upload_avatar(device_secret, handle) {
-                    Ok(_) => AvatarSyncResult::LocalNewer,
-                    Err(e) => AvatarSyncResult::Error(format!("Upload failed: {}", e)),
+                // Local is newer - upload (only if we have handle_proof)
+                if let Some(hp) = handle_proof {
+                    crate::log_info(&format!(
+                        "Avatar sync: Local newer ({:.0} > {:.0}), uploading",
+                        local, server
+                    ));
+                    match upload_avatar(device_secret, handle, hp) {
+                        Ok(_) => AvatarSyncResult::LocalNewer,
+                        Err(e) => AvatarSyncResult::Error(format!("Upload failed: {}", e)),
+                    }
+                } else {
+                    crate::log_info("Avatar sync: Local newer, but no handle_proof for upload");
+                    AvatarSyncResult::Error("No handle_proof for upload".to_string())
                 }
             } else if server > local {
                 // Server is newer - download
@@ -1569,11 +1586,16 @@ pub fn sync_avatar_bidirectional(device_secret: &SigningKey, handle: &str) -> Av
         }
         (Some(_), None) => {
             // Have local but server didn't send timestamp (shouldn't happen)
-            // Upload to be safe
-            crate::log_info("Avatar sync: Server missing timestamp, uploading local");
-            match upload_avatar(device_secret, handle) {
-                Ok(_) => AvatarSyncResult::LocalNewer,
-                Err(e) => AvatarSyncResult::Error(format!("Upload failed: {}", e)),
+            // Upload to be safe (only if we have handle_proof)
+            if let Some(hp) = handle_proof {
+                crate::log_info("Avatar sync: Server missing timestamp, uploading local");
+                match upload_avatar(device_secret, handle, hp) {
+                    Ok(_) => AvatarSyncResult::LocalNewer,
+                    Err(e) => AvatarSyncResult::Error(format!("Upload failed: {}", e)),
+                }
+            } else {
+                crate::log_info("Avatar sync: Server missing timestamp, but no handle_proof for upload");
+                AvatarSyncResult::Error("No handle_proof for upload".to_string())
             }
         }
         (None, None) => {
@@ -1632,17 +1654,19 @@ pub fn download_avatar_background(
 /// # Arguments
 /// * `device_secret` - Device's Ed25519 signing key bytes (cloned for thread)
 /// * `handle` - User's handle
+/// * `handle_proof` - Optional handle proof (for uploads)
 /// * `tx` - Channel to send result (pixels if server was newer)
 /// * `event_proxy` - Optional EventLoopProxy to wake the event loop when done
 pub fn sync_avatar_background(
     device_secret_bytes: [u8; 32],
     handle: String,
+    handle_proof: Option<[u8; 32]>,
     tx: std::sync::mpsc::Sender<AvatarDownloadResult>,
     #[allow(unused_variables)] event_proxy: OptionalEventProxy,
 ) {
     std::thread::spawn(move || {
         let device_secret = SigningKey::from_bytes(&device_secret_bytes);
-        let result = sync_avatar_bidirectional(&device_secret, &handle);
+        let result = sync_avatar_bidirectional(&device_secret, &handle, handle_proof.as_ref());
 
         // Only send pixels if we downloaded a newer version from server
         let pixels = match result {

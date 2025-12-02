@@ -30,7 +30,7 @@
 //!
 //! Encrypted with ChaCha20-Poly1305 using key derived from our identity_seed.
 
-use crate::types::{ClutchState, Contact, ContactId, HandleText, PublicIdentity, Seed, TrustLevel};
+use crate::types::{ClutchState, Contact, ContactId, DevicePubkey, HandleText, Seed, TrustLevel};
 use blake3::Hasher;
 use chacha20poly1305::{
     aead::{Aead, KeyInit},
@@ -39,6 +39,7 @@ use chacha20poly1305::{
 use std::fs;
 use std::path::PathBuf;
 use vsf::schema::{SectionBuilder, SectionSchema, TypeConstraint};
+use vsf::types::EagleTime;
 use vsf::{VsfSection, VsfType};
 
 /// Errors from contact storage operations
@@ -132,6 +133,7 @@ fn contact_dir_from_seed(identity_seed: &[u8; 32]) -> Result<PathBuf, StorageErr
 }
 
 /// Encode provenance hash to URL-safe base64 for filename
+#[cfg(test)]
 fn provenance_to_filename(provenance: &[u8; 32]) -> String {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
     URL_SAFE_NO_PAD.encode(provenance)
@@ -239,7 +241,9 @@ pub fn save_contact_list(
 }
 
 /// Load the contact list from encrypted index file with schema validation
-pub fn load_contact_list(our_identity_seed: &[u8; 32]) -> Result<Vec<ContactIdentity>, StorageError> {
+pub fn load_contact_list(
+    our_identity_seed: &[u8; 32],
+) -> Result<Vec<ContactIdentity>, StorageError> {
     let index_path = contacts_dir()?.join("index.enc");
 
     if !index_path.exists() {
@@ -257,8 +261,14 @@ pub fn load_contact_list(our_identity_seed: &[u8; 32]) -> Result<Vec<ContactIden
     let mut contacts = Vec::new();
     for field in builder.get_fields("contact") {
         if field.values.len() >= 2 {
-            let handle_proof = extract_bytes32(&field.values[0])?;
-            let handle = extract_string(&field.values[1])?;
+            let handle_proof: [u8; 32] = match &field.values[0] {
+                VsfType::hb(v) if v.len() == 32 => v.as_slice().try_into().unwrap(),
+                _ => continue,
+            };
+            let handle = match &field.values[1] {
+                VsfType::x(s) => s.clone(),
+                _ => continue,
+            };
 
             contacts.push(ContactIdentity {
                 handle_proof,
@@ -280,7 +290,7 @@ fn contact_state_schema() -> SectionSchema {
         .field("clutch_state", TypeConstraint::AnyUnsigned)
         .field("trust_level", TypeConstraint::AnyUnsigned)
         .field("pubkey", TypeConstraint::Ed25519Key)
-        .field("added_timestamp", TypeConstraint::AnyUnsigned)
+        .field("added_timestamp", TypeConstraint::Any) // f64 Eagle Time
         .field("contact_id", TypeConstraint::AnyHash)
         // Optional fields
         .field("ip", TypeConstraint::AnyString)
@@ -288,7 +298,7 @@ fn contact_state_schema() -> SectionSchema {
         .field("ephemeral_secret", TypeConstraint::AnyHash)
         .field("ephemeral_pubkey", TypeConstraint::X25519Key)
         .field("ephemeral_their", TypeConstraint::X25519Key)
-        .field("last_seen", TypeConstraint::AnyUnsigned)
+        .field("last_seen", TypeConstraint::Any) // f64 Eagle Time
 }
 
 /// Save contact state (mutable data) to per-contact file with schema validation
@@ -307,9 +317,12 @@ pub fn save_contact_state(
         .map_err(|e| StorageError::Parse(e.to_string()))?
         .set("trust_level", trust_level_to_u8(contact.trust_level))
         .map_err(|e| StorageError::Parse(e.to_string()))?
-        .set("pubkey", VsfType::ke(contact.public_identity.as_bytes().to_vec()))
+        .set(
+            "pubkey",
+            contact.public_identity.to_vsf(), // Ed25519 (ke)
+        )
         .map_err(|e| StorageError::Parse(e.to_string()))?
-        .set("added_timestamp", contact.added_timestamp)
+        .set("added_timestamp", VsfType::f6(contact.added_timestamp))
         .map_err(|e| StorageError::Parse(e.to_string()))?
         .set("contact_id", VsfType::hb(contact.id.as_bytes().to_vec()))
         .map_err(|e| StorageError::Parse(e.to_string()))?;
@@ -342,7 +355,7 @@ pub fn save_contact_state(
     }
     if let Some(last_seen) = contact.last_seen {
         builder = builder
-            .set("last_seen", last_seen)
+            .set("last_seen", VsfType::f6(last_seen))
             .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
 
@@ -367,7 +380,7 @@ pub fn load_contact_state(
 
     if !state_path.exists() {
         // No state file yet - return contact with just identity info
-        let pubkey = PublicIdentity::from_bytes([0u8; 32]); // placeholder
+        let pubkey = DevicePubkey::from_bytes([0u8; 32]); // placeholder
         let contact = Contact::new(
             HandleText::new(&identity.handle),
             identity.handle_proof,
@@ -384,13 +397,28 @@ pub fn load_contact_state(
     let section = VsfSection::parse(&vsf_bytes, &mut ptr)
         .map_err(|e| StorageError::Parse(format!("Contact state parse: {}", e)))?;
 
-    // Required fields
-    let clutch_u8 = get_field_u8(&section, "clutch_state").unwrap_or(0);
-    let trust_u8 = get_field_u8(&section, "trust_level").unwrap_or(0);
-    let pubkey_bytes = get_field_bytes32(&section, "pubkey")?;
-    let added_timestamp = get_field_u64(&section, "added_timestamp").unwrap_or(0);
+    // Helper to get first value from field
+    let get_val = |name: &str| -> Option<&VsfType> { section.get_field(name)?.values.first() };
 
-    let pubkey = PublicIdentity::from_bytes(pubkey_bytes);
+    // Required fields
+    let clutch_u8 = match get_val("clutch_state") {
+        Some(VsfType::u3(v)) => *v,
+        _ => 0,
+    };
+    let trust_u8 = match get_val("trust_level") {
+        Some(VsfType::u3(v)) => *v,
+        _ => 0,
+    };
+    let pubkey_bytes: [u8; 32] = match get_val("pubkey") {
+        Some(VsfType::ke(v)) if v.len() == 32 => v.as_slice().try_into().unwrap(), // Ed25519
+        _ => return Err(StorageError::Parse("Missing pubkey".into())),
+    };
+    let added_timestamp = match get_val("added_timestamp") {
+        Some(v) => EagleTime::new_from_vsf(v.clone()).to_f64(),
+        None => 0.0,
+    };
+
+    let pubkey = DevicePubkey::from_bytes(pubkey_bytes);
     let mut contact = Contact::new(
         HandleText::new(&identity.handle),
         identity.handle_proof,
@@ -402,26 +430,36 @@ pub fn load_contact_state(
     contact.added_timestamp = added_timestamp;
 
     // Optional fields
-    if let Ok(ip_str) = get_field_string(&section, "ip") {
-        contact.ip = ip_str.parse().ok();
+    if let Some(VsfType::x(s) | VsfType::l(s) | VsfType::d(s)) = get_val("ip") {
+        contact.ip = s.parse().ok();
     }
-    if let Ok(seed_bytes) = get_field_bytes32(&section, "seed") {
-        contact.relationship_seed = Some(Seed::from_bytes(seed_bytes));
+    if let Some(VsfType::hb(v)) = get_val("seed") {
+        if v.len() == 32 {
+            contact.relationship_seed = Some(Seed::from_bytes(v.as_slice().try_into().unwrap()));
+        }
     }
-    if let Ok(secret) = get_field_bytes32(&section, "ephemeral_secret") {
-        contact.clutch_our_ephemeral_secret = Some(secret);
+    if let Some(VsfType::hb(v)) = get_val("ephemeral_secret") {
+        if v.len() == 32 {
+            contact.clutch_our_ephemeral_secret = Some(v.as_slice().try_into().unwrap());
+        }
     }
-    if let Ok(our_pub) = get_field_bytes32(&section, "ephemeral_pubkey") {
-        contact.clutch_our_ephemeral_pubkey = Some(our_pub);
+    if let Some(VsfType::kx(v)) = get_val("ephemeral_pubkey") {
+        if v.len() == 32 {
+            contact.clutch_our_ephemeral_pubkey = Some(v.as_slice().try_into().unwrap());
+        }
     }
-    if let Ok(their_pub) = get_field_bytes32(&section, "ephemeral_their") {
-        contact.clutch_their_ephemeral_pubkey = Some(their_pub);
+    if let Some(VsfType::kx(v)) = get_val("ephemeral_their") {
+        if v.len() == 32 {
+            contact.clutch_their_ephemeral_pubkey = Some(v.as_slice().try_into().unwrap());
+        }
     }
-    if let Ok(last_seen) = get_field_u64(&section, "last_seen") {
-        contact.last_seen = Some(last_seen);
+    if let Some(v) = get_val("last_seen") {
+        contact.last_seen = Some(EagleTime::new_from_vsf(v.clone()).to_f64());
     }
-    if let Ok(id_bytes) = get_field_bytes16(&section, "contact_id") {
-        contact.id = ContactId::from_bytes(id_bytes);
+    if let Some(VsfType::hb(v)) = get_val("contact_id") {
+        if v.len() == 16 {
+            contact.id = ContactId::from_bytes(v.as_slice().try_into().unwrap());
+        }
     }
 
     Ok(contact)
@@ -485,124 +523,6 @@ pub fn delete_contact(identity_seed: &[u8; 32]) -> Result<(), StorageError> {
         fs::remove_dir_all(&dir)?;
     }
     Ok(())
-}
-
-// ============================================================================
-// Helper Functions
-// ============================================================================
-
-fn extract_bytes32(value: &VsfType) -> Result<[u8; 32], StorageError> {
-    match value {
-        VsfType::hb(bytes) if bytes.len() == 32 => {
-            let mut arr = [0u8; 32];
-            arr.copy_from_slice(bytes);
-            Ok(arr)
-        }
-        _ => Err(StorageError::Parse("Expected 32-byte hash".to_string())),
-    }
-}
-
-fn extract_string(value: &VsfType) -> Result<String, StorageError> {
-    match value {
-        VsfType::x(s) => Ok(s.clone()),
-        VsfType::d(s) => Ok(s.clone()),
-        _ => Err(StorageError::Parse("Expected string".to_string())),
-    }
-}
-
-fn get_field_bytes32(section: &VsfSection, name: &str) -> Result<[u8; 32], StorageError> {
-    let field = section
-        .get_field(name)
-        .ok_or_else(|| StorageError::Parse(format!("Missing field: {}", name)))?;
-    let value = field
-        .values
-        .first()
-        .ok_or_else(|| StorageError::Parse(format!("Empty field: {}", name)))?;
-
-    match value {
-        VsfType::hb(bytes) | VsfType::ke(bytes) | VsfType::kx(bytes) if bytes.len() == 32 => {
-            let mut arr = [0u8; 32];
-            arr.copy_from_slice(bytes);
-            Ok(arr)
-        }
-        _ => Err(StorageError::Parse(format!(
-            "Field '{}' expected 32 bytes",
-            name
-        ))),
-    }
-}
-
-fn get_field_bytes16(section: &VsfSection, name: &str) -> Result<[u8; 16], StorageError> {
-    let field = section
-        .get_field(name)
-        .ok_or_else(|| StorageError::Parse(format!("Missing field: {}", name)))?;
-    let value = field
-        .values
-        .first()
-        .ok_or_else(|| StorageError::Parse(format!("Empty field: {}", name)))?;
-
-    match value {
-        VsfType::hb(bytes) if bytes.len() == 16 => {
-            let mut arr = [0u8; 16];
-            arr.copy_from_slice(bytes);
-            Ok(arr)
-        }
-        _ => Err(StorageError::Parse(format!(
-            "Field '{}' expected 16 bytes",
-            name
-        ))),
-    }
-}
-
-fn get_field_u8(section: &VsfSection, name: &str) -> Result<u8, StorageError> {
-    let field = section
-        .get_field(name)
-        .ok_or_else(|| StorageError::Parse(format!("Missing field: {}", name)))?;
-    let value = field
-        .values
-        .first()
-        .ok_or_else(|| StorageError::Parse(format!("Empty field: {}", name)))?;
-
-    match value {
-        VsfType::u3(v) => Ok(*v),
-        _ => Err(StorageError::Parse(format!("Field '{}' expected u8", name))),
-    }
-}
-
-fn get_field_u64(section: &VsfSection, name: &str) -> Result<u64, StorageError> {
-    let field = section
-        .get_field(name)
-        .ok_or_else(|| StorageError::Parse(format!("Missing field: {}", name)))?;
-    let value = field
-        .values
-        .first()
-        .ok_or_else(|| StorageError::Parse(format!("Empty field: {}", name)))?;
-
-    match value {
-        VsfType::u6(v) => Ok(*v),
-        VsfType::u5(v) => Ok(*v as u64),
-        VsfType::u4(v) => Ok(*v as u64),
-        VsfType::u3(v) => Ok(*v as u64),
-        _ => Err(StorageError::Parse(format!("Field '{}' expected u64", name))),
-    }
-}
-
-fn get_field_string(section: &VsfSection, name: &str) -> Result<String, StorageError> {
-    let field = section
-        .get_field(name)
-        .ok_or_else(|| StorageError::Parse(format!("Missing field: {}", name)))?;
-    let value = field
-        .values
-        .first()
-        .ok_or_else(|| StorageError::Parse(format!("Empty field: {}", name)))?;
-
-    match value {
-        VsfType::x(s) | VsfType::d(s) => Ok(s.clone()),
-        _ => Err(StorageError::Parse(format!(
-            "Field '{}' expected string",
-            name
-        ))),
-    }
 }
 
 fn clutch_state_to_u8(state: ClutchState) -> u8 {
@@ -672,8 +592,14 @@ mod tests {
         assert_eq!(fields.len(), 1);
         assert_eq!(fields[0].values.len(), 2);
 
-        let proof = extract_bytes32(&fields[0].values[0]).unwrap();
-        let handle = extract_string(&fields[0].values[1]).unwrap();
+        let proof: [u8; 32] = match &fields[0].values[0] {
+            VsfType::hb(v) if v.len() == 32 => v.as_slice().try_into().unwrap(),
+            _ => panic!("Expected hb"),
+        };
+        let handle = match &fields[0].values[1] {
+            VsfType::x(s) => s.clone(),
+            _ => panic!("Expected x"),
+        };
 
         assert_eq!(proof, identity.handle_proof);
         assert_eq!(handle, identity.handle);

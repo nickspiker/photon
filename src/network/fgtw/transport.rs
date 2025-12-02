@@ -1,5 +1,5 @@
 use super::PeerStore;
-use crate::types::PublicIdentity;
+use crate::types::DevicePubkey;
 use std::sync::{Arc, Mutex};
 
 /// FGTW peer store wrapper
@@ -9,7 +9,7 @@ pub struct FgtwTransport {
 }
 
 impl FgtwTransport {
-    pub fn new(_our_pubkey: PublicIdentity, _port: u16) -> Self {
+    pub fn new(_our_pubkey: DevicePubkey, _port: u16) -> Self {
         Self {
             peer_store: Arc::new(Mutex::new(PeerStore::new())),
         }

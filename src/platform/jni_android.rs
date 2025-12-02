@@ -3,6 +3,10 @@
 //! This module provides the native interface for the Android app.
 //! The Kotlin/Java activity calls these functions to initialize and draw the UI.
 
+use crate::network::fgtw::FgtwTransport;
+use crate::network::HandleQuery;
+use crate::types::DevicePubkey;
+
 #[cfg(target_os = "android")]
 use jni::{
     objects::{JByteArray, JClass, JObject, JString},
@@ -16,6 +20,8 @@ use log::*;
 #[cfg(target_os = "android")]
 use ndk::native_window::NativeWindow;
 
+#[cfg(target_os = "android")]
+use crate::ui::app::{AppState, LaunchState};
 #[cfg(target_os = "android")]
 use crate::ui::PhotonApp;
 
@@ -47,9 +53,6 @@ fn derive_device_keypair(fingerprint: &[u8]) -> Keypair {
 #[cfg(target_os = "android")]
 impl PhotonContext {
     pub fn new(width: u32, height: u32, device_keypair: Keypair) -> Self {
-        use crate::network::fgtw::FgtwTransport;
-        use crate::network::HandleQuery;
-        use crate::types::PublicIdentity;
         use std::sync::Arc;
 
         info!(
@@ -62,7 +65,7 @@ impl PhotonContext {
 
         // Initialize network stack with unified HandleQuery
         let handle_query = HandleQuery::new(device_keypair.clone());
-        let our_identity = PublicIdentity::from_bytes(*device_keypair.public.as_bytes());
+        let our_identity = DevicePubkey::from_bytes(*device_keypair.public.as_bytes());
         let transport = Arc::new(FgtwTransport::new(our_identity, 41641));
         handle_query.set_transport(transport);
         app.set_handle_query(handle_query);
@@ -93,6 +96,12 @@ impl PhotonContext {
         self.app.check_attestation_response();
         self.app.check_search_result();
 
+        // Check for FCM peer update poke - triggers immediate FGTW refresh
+        if check_fcm_peer_update() {
+            info!("FCM poke received - triggering FGTW refresh");
+            self.app.force_fgtw_refresh();
+        }
+
         // P2P status checking and FGTW refresh (unified with desktop)
         if self.app.check_status_updates() {
             self.app.window_dirty = true;
@@ -112,11 +121,17 @@ impl PhotonContext {
             || self.app.selection_dirty
             || self.app.controls_dirty;
 
+        // Check if we're in an animating state BEFORE render clears window_dirty
+        let is_animating = matches!(
+            self.app.app_state,
+            AppState::Launch(LaunchState::Attesting) | AppState::Searching
+        );
+
         // Use the full PhotonApp render loop
         self.app.render();
 
-        // Animation sets window_dirty during render - check again
-        let mut dirty = dirty_before || self.app.window_dirty;
+        // Animation state always needs fresh buffer (render() clears window_dirty at end)
+        let mut dirty = dirty_before || self.app.window_dirty || is_animating;
 
         // Handle blinkey blinking (cursor animation)
         let now = std::time::Instant::now();
@@ -402,4 +417,31 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeDestroy(
             let _ = Box::from_raw(context_ptr as *mut PhotonContext);
         }
     }
+}
+
+// ============================================================================
+// FCM Push Notification Support
+// ============================================================================
+
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Flag set by FCM service when peer update received - triggers FGTW refresh
+static FCM_PEER_UPDATE_PENDING: AtomicBool = AtomicBool::new(false);
+
+/// Check and clear the FCM peer update flag
+#[cfg(target_os = "android")]
+pub fn check_fcm_peer_update() -> bool {
+    FCM_PEER_UPDATE_PENDING.swap(false, Ordering::SeqCst)
+}
+
+/// Called from FirebaseMessagingService when peer_update FCM message received
+/// This is called from a background thread, so we just set a flag
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonMessagingService_nativePeerUpdateReceived(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+) {
+    info!("FCM peer update received - flagging for refresh");
+    FCM_PEER_UPDATE_PENDING.store(true, Ordering::SeqCst);
 }

@@ -1,4 +1,4 @@
-use crate::types::PublicIdentity;
+use crate::types::DevicePubkey;
 use std::net::SocketAddr;
 
 /// Get current Eagle Time (seconds since Apollo 11 landing)
@@ -13,7 +13,7 @@ pub struct NodeId([u8; 32]);
 
 impl NodeId {
     /// Create NodeId from public identity (directly uses pubkey bytes)
-    pub fn from_pubkey(pubkey: &PublicIdentity) -> Self {
+    pub fn from_pubkey(pubkey: &DevicePubkey) -> Self {
         Self(*pubkey.as_bytes())
     }
 
@@ -77,13 +77,13 @@ impl std::fmt::Display for NodeId {
 #[derive(Debug, Clone)]
 pub struct NodeContact {
     pub node_id: NodeId,
-    pub pubkey: PublicIdentity,
+    pub pubkey: DevicePubkey,
     pub addr: SocketAddr,
     pub last_seen: f64,
 }
 
 impl NodeContact {
-    pub fn new(pubkey: PublicIdentity, addr: SocketAddr) -> Self {
+    pub fn new(pubkey: DevicePubkey, addr: SocketAddr) -> Self {
         Self {
             node_id: NodeId::from_pubkey(&pubkey),
             pubkey,
@@ -194,7 +194,7 @@ pub struct RoutingTable {
 
 impl RoutingTable {
     /// Create a new routing table for the local node
-    pub fn new(local_pubkey: &PublicIdentity) -> Self {
+    pub fn new(local_pubkey: &DevicePubkey) -> Self {
         let local_id = NodeId::from_pubkey(local_pubkey);
         let buckets = (0..256).map(|_| KBucket::new(256)).collect();
 

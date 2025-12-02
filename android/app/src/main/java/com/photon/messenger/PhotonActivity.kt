@@ -12,6 +12,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import com.google.firebase.messaging.FirebaseMessaging
 
 class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographer.FrameCallback {
 
@@ -145,6 +146,10 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         // Gather device fingerprint (no permissions needed)
         fingerprintResult = DeviceFingerprint.gather(this)
         initializeNativeIfReady()
+
+        // Subscribe to FCM topic for peer update notifications
+        // When any peer's IP changes, FGTW broadcasts to this topic
+        FirebaseMessaging.getInstance().subscribeToTopic("peer_updates")
     }
 
     private fun initializeNativeIfReady() {

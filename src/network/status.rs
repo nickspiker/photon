@@ -11,7 +11,7 @@
 
 use crate::network::fgtw::FgtwMessage;
 use crate::network::fgtw::Keypair;
-use crate::types::PublicIdentity;
+use crate::types::DevicePubkey;
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -24,15 +24,15 @@ use crate::ui::PhotonEvent;
 use winit::event_loop::EventLoopProxy;
 
 /// Shared contact list - UI updates this, background thread reads it
-pub type ContactPubkeys = Arc<Mutex<Vec<PublicIdentity>>>;
+pub type ContactPubkeys = Arc<Mutex<Vec<DevicePubkey>>>;
 
-/// Get current Eagle Time (seconds since Apollo 11 landing: July 20, 1969, 20:17:40 UTC)
-fn eagle_time_nanos() -> f64 {
+/// Get current Eagle Time as binary64 (seconds since Apollo 11 landing: July 20, 1969, 20:17:40 UTC)
+fn eagle_time_binary64() -> f64 {
     vsf::eagle_time_nanos()
 }
 
 /// Compute provenance hash = BLAKE3(sender_pubkey || timestamp_bytes)
-fn compute_provenance_hash(sender_pubkey: &PublicIdentity, timestamp: f64) -> [u8; 32] {
+fn compute_provenance_hash(sender_pubkey: &DevicePubkey, timestamp: f64) -> [u8; 32] {
     use blake3::Hasher;
     let mut hasher = Hasher::new();
     hasher.update(sender_pubkey.as_bytes());
@@ -44,7 +44,7 @@ fn compute_provenance_hash(sender_pubkey: &PublicIdentity, timestamp: f64) -> [u
 #[derive(Clone)]
 pub struct PingRequest {
     pub peer_addr: SocketAddr,
-    pub peer_pubkey: PublicIdentity,
+    pub peer_pubkey: DevicePubkey,
 }
 
 /// Request to initiate or continue CLUTCH ceremony
@@ -91,8 +91,9 @@ pub struct AckRequest {
 pub enum StatusUpdate {
     /// Online/offline status change
     Online {
-        peer_pubkey: PublicIdentity,
+        peer_pubkey: DevicePubkey,
         is_online: bool,
+        peer_addr: Option<std::net::SocketAddr>,
     },
     /// CLUTCH ceremony message received (parallel v2)
     ClutchOffer {
@@ -137,7 +138,7 @@ pub enum StatusUpdate {
 
 /// Pending ping waiting for pong
 struct PendingPing {
-    recipient_pubkey: PublicIdentity,
+    recipient_pubkey: DevicePubkey,
     provenance_hash: [u8; 32],
     sent_at: Instant,
 }
@@ -174,7 +175,7 @@ impl StatusChecker {
         let (ack_tx, ack_rx) = channel::<AckRequest>();
         let (status_tx, status_rx) = channel::<StatusUpdate>();
 
-        let our_pubkey = PublicIdentity::from_bytes(keypair.public.to_bytes());
+        let our_pubkey = DevicePubkey::from_bytes(keypair.public.to_bytes());
 
         // Log which port we're using
         let local_addr = socket
@@ -235,7 +236,7 @@ impl StatusChecker {
         let (ack_tx, ack_rx) = channel::<AckRequest>();
         let (status_tx, status_rx) = channel::<StatusUpdate>();
 
-        let our_pubkey = PublicIdentity::from_bytes(keypair.public.to_bytes());
+        let our_pubkey = DevicePubkey::from_bytes(keypair.public.to_bytes());
 
         // Log which port we're using
         let local_addr = socket
@@ -276,7 +277,7 @@ impl StatusChecker {
     }
 
     /// Request to ping a contact (non-blocking)
-    pub fn ping(&self, peer_addr: SocketAddr, peer_pubkey: PublicIdentity) {
+    pub fn ping(&self, peer_addr: SocketAddr, peer_pubkey: DevicePubkey) {
         let _ = self.ping_sender.send(PingRequest {
             peer_addr,
             peer_pubkey,
@@ -333,7 +334,7 @@ fn send_status_update(
 async fn run_checker(
     std_socket: Arc<UdpSocket>,
     keypair: crate::network::fgtw::Keypair,
-    our_pubkey: PublicIdentity,
+    our_pubkey: DevicePubkey,
     ping_rx: Receiver<PingRequest>,
     clutch_rx: Receiver<ClutchRequest>,
     message_rx: Receiver<MessageRequest>,
@@ -432,13 +433,25 @@ async fn run_checker(
                                         continue;
                                     }
 
+                                    // Mark sender as online (they pinged us, so they're online!)
+                                    send_status_update(
+                                        &status_tx_recv,
+                                        StatusUpdate::Online {
+                                            peer_pubkey: sender_pubkey.clone(),
+                                            is_online: true,
+                                            peer_addr: Some(src_addr),
+                                        },
+                                        &event_proxy_recv,
+                                    );
+                                    crate::log_info("  -> marked ONLINE (from ping)");
+
                                     // Send pong (no avatar_id - avatars are fetched by handle)
                                     let sig = keypair_recv.sign(&provenance_hash);
                                     let mut sig_bytes = [0u8; 64];
                                     sig_bytes.copy_from_slice(&sig.to_bytes());
 
                                     let pong = FgtwMessage::StatusPong {
-                                        timestamp: eagle_time_nanos(),
+                                        timestamp: eagle_time_binary64(),
                                         responder_pubkey: our_pubkey_recv.clone(),
                                         provenance_hash,
                                         signature: sig_bytes,
@@ -533,6 +546,7 @@ async fn run_checker(
                                         StatusUpdate::Online {
                                             peer_pubkey: responder_pubkey,
                                             is_online: true,
+                                            peer_addr: Some(src_addr),
                                         },
                                         &event_proxy_recv,
                                     );
@@ -810,7 +824,7 @@ async fn run_checker(
     loop {
         match ping_rx.try_recv() {
             Ok(request) => {
-                let timestamp = eagle_time_nanos();
+                let timestamp = eagle_time_binary64();
                 let provenance_hash = compute_provenance_hash(&our_pubkey, timestamp);
 
                 let signature = keypair.sign(&provenance_hash);
@@ -891,6 +905,7 @@ async fn run_checker(
                     StatusUpdate::Online {
                         peer_pubkey: pubkey,
                         is_online: false,
+                        peer_addr: None, // No address for offline
                     },
                     &event_proxy,
                 );
@@ -901,7 +916,7 @@ async fn run_checker(
 
         // Process CLUTCH requests
         while let Ok(request) = clutch_rx.try_recv() {
-            let timestamp = eagle_time_nanos();
+            let timestamp = eagle_time_binary64();
 
             let msg = match request.message {
                 ClutchRequestType::Offer { ephemeral_pubkey } => {
@@ -1026,7 +1041,7 @@ async fn run_checker(
 
         // Process message requests (encrypted chat messages)
         while let Ok(request) = message_rx.try_recv() {
-            let timestamp = eagle_time_nanos();
+            let timestamp = eagle_time_binary64();
 
             // Compute provenance and sign
             let provenance =
@@ -1065,7 +1080,7 @@ async fn run_checker(
 
         // Process ACK requests (message acknowledgments)
         while let Ok(request) = ack_rx.try_recv() {
-            let timestamp = eagle_time_nanos();
+            let timestamp = eagle_time_binary64();
 
             // Compute provenance and sign
             let provenance = compute_ack_provenance(&request.our_handle_proof, request.sequence);
@@ -1104,7 +1119,7 @@ async fn run_checker(
 /// Verify Ed25519 signature on provenance hash
 fn verify_provenance_signature(
     provenance_hash: &[u8; 32],
-    signer_pubkey: &PublicIdentity,
+    signer_pubkey: &DevicePubkey,
     signature: &[u8; 64],
 ) -> bool {
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};

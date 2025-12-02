@@ -2874,9 +2874,9 @@ dependencies = [
  "reqwest",
  "resize",
  "rgb",
- "serde",
  "sha2",
  "softbuffer",
+ "subtle",
  "thiserror 2.0.17",
  "tokio",
  "tokio-tungstenite",
@@ -4262,8 +4262,12 @@ checksum = "d25a406cddcc431a75d3d9afc6a7c0f7428d4891dd973e4d54c56b46127bf857"
 dependencies = [
  "futures-util",
  "log",
+ "rustls",
+ "rustls-pki-types",
  "tokio",
+ "tokio-rustls",
  "tungstenite",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]
@@ -4430,6 +4434,8 @@ dependencies = [
  "httparse",
  "log",
  "rand 0.9.2",
+ "rustls",
+ "rustls-pki-types",
  "sha1",
  "thiserror 2.0.17",
  "utf-8",
@@ -4598,7 +4604,7 @@ checksum = "051eb1abcf10076295e815102942cc58f9d5e3b4560e46e53c21e8ff6f3af7b1"
 
 [[package]]
 name = "vsf"
-version = "0.1.18"
+version = "0.2.0"
 dependencies = [
  "aes-gcm 0.10.3",
  "bitvec",

@@ -38,7 +38,7 @@ fn photon_port(handle: &str) -> u16 {
 /// Result of a handle query
 #[derive(Debug, Clone)]
 pub enum QueryResult {
-    Success,                     // Successfully attested/registered
+    Success(Vec<PeerRecord>),    // Successfully attested/registered, with peer list for broadcast
     AlreadyAttested(PeerRecord), // Handle is claimed by another device
     Error(String),               // Error during attestation
 }
@@ -486,7 +486,7 @@ impl HandleQuery {
                             "Network: Handle '{}' registered to this device",
                             handle
                         ));
-                        QueryResult::Success
+                        QueryResult::Success(result.peers)
                     } else {
                         crate::log_info(&format!(
                             "Network: Handle '{}' is CLAIMED by another device",

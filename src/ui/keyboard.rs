@@ -352,6 +352,9 @@ impl PhotonApp {
                 Key::Named(NamedKey::Escape) => {
                     // In Conversation view: go back to Ready view
                     if matches!(self.app_state, AppState::Conversation) {
+                        // Trigger peer IP refresh when returning to contacts screen
+                        self.trigger_peer_refresh();
+
                         self.app_state = AppState::Ready;
                         self.selected_contact = None;
                         self.window_dirty = true;

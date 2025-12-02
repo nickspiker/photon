@@ -8,7 +8,9 @@ static mut SAMSUNG_MODE: bool = false;
 /// Set Samsung mode (called once from JNI init before any rendering)
 pub fn set_samsung_mode(is_samsung: bool) {
     // SAFETY: Called once at startup before any rendering threads
-    unsafe { SAMSUNG_MODE = is_samsung; }
+    unsafe {
+        SAMSUNG_MODE = is_samsung;
+    }
 }
 
 fn is_samsung() -> bool {
@@ -133,9 +135,8 @@ impl Renderer {
             } else {
                 // Non-Samsung: use magic pixel optimization
                 let magic_idx = width.saturating_sub(1);
-                let buffer_is_current = !dirty
-                    && magic_idx < stride
-                    && dst_pixels[magic_idx] == self.magic_counter;
+                let buffer_is_current =
+                    !dirty && magic_idx < stride && dst_pixels[magic_idx] == self.magic_counter;
 
                 if buffer_is_current {
                     // Buffer already has correct content - skip the copy

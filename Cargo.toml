@@ -44,11 +44,11 @@ rand = "0.8"
 rand_chacha = "0.3"  # ChaCha20Rng for PRNG salt generation
 rand_pcg = "0.3"     # Pcg64 for dual PRNG diversity
 zeroize = { version = "1.7", features = ["derive"] }
+subtle = "2.6"  # Constant-time comparisons
 
 # Network
 tokio = { version = "1", features = ["full"] }
-tokio-tungstenite = "0.28.0"
-serde = { version = "1.0", features = ["derive"] }
+tokio-tungstenite = { version = "0.28.0", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 
 # Utilities
 thiserror = "2.0.17"
@@ -63,7 +63,7 @@ cosmic-text = "0.14.2"
 rayon = "1.11.0"
 # softbuffer specified per-platform below
 # arboard specified per-platform below (pulls x11rb on Linux)
-vsf = { version = "0.1.17", path = "../vsf", features = ["crypto", "text"] }
+vsf = { version = "0.2", path = "../vsf", features = ["crypto", "text"] }
 rav1e = { version = "0.7", default-features = false }
 rav1d = { version = "1.1", default-features = false, features = ["bitdepth_8"] }
 icc-profile = "0.0.2"

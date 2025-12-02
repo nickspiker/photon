@@ -1,14 +1,14 @@
 use crate::crypto::handle_proof::handle_proof;
-use crate::types::PublicIdentity;
+use crate::types::DevicePubkey;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Handle {
-    pub text: String,        // handle
-    pub key: PublicIdentity, // X25519 public key
+    pub text: String,      // handle
+    pub key: DevicePubkey, // X25519 public key
 }
 
 impl Handle {
-    pub fn new(username: String, identity: PublicIdentity) -> Self {
+    pub fn new(username: String, identity: DevicePubkey) -> Self {
         Self {
             text: username,
             key: identity,
@@ -36,7 +36,7 @@ mod tests {
 
     #[test]
     fn test_handle_proof_generation() {
-        let identity = PublicIdentity::from_bytes([1u8; 32]);
+        let identity = DevicePubkey::from_bytes([1u8; 32]);
         let handle = Handle::new("alice".to_string(), identity);
 
         let proof1 = handle.to_handle_proof();
@@ -46,7 +46,7 @@ mod tests {
 
     #[test]
     fn test_any_unicode_valid() {
-        let identity = PublicIdentity::from_bytes([1u8; 32]);
+        let identity = DevicePubkey::from_bytes([1u8; 32]);
 
         let _h1 = Handle::new("alice".to_string(), identity.clone());
         let _h2 = Handle::new("🚀".to_string(), identity.clone());

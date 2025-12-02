@@ -141,7 +141,7 @@ impl LaunchState {
 pub struct FoundPeer {
     pub handle: HandleText,
     pub handle_proof: [u8; 32], // Cached handle_proof (expensive - ~1 second to compute)
-    pub device_pubkey: crate::types::PublicIdentity,
+    pub device_pubkey: crate::types::DevicePubkey,
     pub ip: std::net::SocketAddr,
 }
 
@@ -292,6 +292,10 @@ pub struct PhotonApp {
     // Event loop proxy for waking event loop on network updates (desktop only)
     #[cfg(not(target_os = "android"))]
     pub event_proxy: EventLoopProxy<PhotonEvent>,
+
+    // WebSocket client for real-time peer IP updates (desktop only)
+    #[cfg(not(target_os = "android"))]
+    pub peer_update_client: Option<crate::network::PeerUpdateClient>,
 }
 
 // Hit test element IDs
@@ -452,15 +456,16 @@ impl PhotonApp {
             contact_avatar_tx,
             message_chains: HashMap::new(),
             event_proxy: event_proxy.clone(),
+            peer_update_client: None, // Started after attestation
         };
 
         // Initialize handle_query with the derived keypair
         {
             use crate::network::fgtw::FgtwTransport;
             use crate::network::HandleQuery;
-            use crate::types::PublicIdentity;
+            use crate::types::DevicePubkey;
 
-            let our_identity = PublicIdentity::from_bytes(*app.device_keypair.public.as_bytes());
+            let our_identity = DevicePubkey::from_bytes(*app.device_keypair.public.as_bytes());
             let handle_query = HandleQuery::new(app.device_keypair.clone(), event_proxy.clone());
             let transport = std::sync::Arc::new(FgtwTransport::new(our_identity, 41641));
             handle_query.set_transport(transport);
@@ -1045,11 +1050,15 @@ impl PhotonApp {
 
         info!("Avatar saved successfully");
 
-        // Upload to FGTW
-        if let Err(e) = crate::avatar::upload_avatar(&self.device_keypair.secret, &handle) {
-            info!("Failed to upload avatar to FGTW: {}", e);
+        // Upload to FGTW (only if we have handle_proof)
+        if let Some(ref handle_proof) = self.user_handle_proof {
+            if let Err(e) = crate::avatar::upload_avatar(&self.device_keypair.secret, &handle, handle_proof) {
+                info!("Failed to upload avatar to FGTW: {}", e);
+            } else {
+                info!("Avatar uploaded to FGTW");
+            }
         } else {
-            info!("Avatar uploaded to FGTW");
+            info!("Skipping avatar upload - no handle_proof yet");
         }
     }
 
@@ -1137,9 +1146,13 @@ impl PhotonApp {
         self.show_avatar_hint = false; // Hide hint after successful upload
         self.window_dirty = true;
 
-        // Upload to FGTW
-        if let Err(e) = crate::avatar::upload_avatar(&self.device_keypair.secret, handle) {
-            eprintln!("Avatar: Failed to upload to FGTW: {}", e);
+        // Upload to FGTW (only if we have handle_proof)
+        if let Some(ref handle_proof) = self.user_handle_proof {
+            if let Err(e) = crate::avatar::upload_avatar(&self.device_keypair.secret, handle, handle_proof) {
+                eprintln!("Avatar: Failed to upload to FGTW: {}", e);
+            }
+        } else {
+            eprintln!("Avatar: Skipping FGTW upload - no handle_proof yet");
         }
 
         eprintln!("Avatar saved successfully");
@@ -1391,6 +1404,18 @@ impl PhotonApp {
                                         crate::log_error(&format!("Failed to save contact: {}", e));
                                     }
                                 }
+
+                                // Sync contacts to cloud
+                                if let Some(ref handle_proof) = self.user_handle_proof {
+                                    if let Err(e) = crate::storage::cloud::sync_contacts_to_cloud(
+                                        &self.contacts,
+                                        identity_seed,
+                                        &self.device_keypair,
+                                        handle_proof,
+                                    ) {
+                                        crate::log_error(&format!("Failed to sync contacts to cloud: {}", e));
+                                    }
+                                }
                             }
 
                             // Try to load avatar from local cache immediately
@@ -1465,18 +1490,18 @@ impl PhotonApp {
 
         crate::log_info(&format!("UI: Received attestation result: {:?}", result));
 
-        let new_state = match result {
-            QueryResult::Success => {
+        let (new_state, initial_peers) = match result {
+            QueryResult::Success(peers) => {
                 crate::log_info("UI: Attestation SUCCESS - transitioning to Ready state");
-                AppState::Ready
+                (AppState::Ready, peers)
             }
             QueryResult::AlreadyAttested(_peers) => {
                 crate::log_info("UI: Handle already attested - showing error");
-                AppState::Launch(LaunchState::Error("Handle already attested".to_string()))
+                (AppState::Launch(LaunchState::Error("Handle already attested".to_string())), vec![])
             }
             QueryResult::Error(msg) => {
                 crate::log_error(&format!("UI: Attestation error - {}", msg));
-                AppState::Launch(LaunchState::Error(msg))
+                (AppState::Launch(LaunchState::Error(msg)), vec![])
             }
         };
 
@@ -1530,6 +1555,30 @@ impl PhotonApp {
                         }
                         self.contacts.push(contact);
                     }
+
+                    // Proactive avatar loading: fetch all contact avatars immediately
+                    // This makes the contact list snappy - avatars ready before user clicks
+                    crate::log_info(&format!(
+                        "Avatar: Proactively fetching avatars for {} contact(s)",
+                        self.contacts.len()
+                    ));
+                    for contact in &self.contacts {
+                        if contact.avatar_pixels.is_none() {
+                            let handle = contact.handle.as_str().to_string();
+                            #[cfg(not(target_os = "android"))]
+                            crate::avatar::download_avatar_background(
+                                handle,
+                                self.contact_avatar_tx.clone(),
+                                Some(self.event_proxy.clone()),
+                            );
+                            #[cfg(target_os = "android")]
+                            crate::avatar::download_avatar_background(
+                                handle,
+                                self.contact_avatar_tx.clone(),
+                                None,
+                            );
+                        }
+                    }
                 }
 
                 // Load local avatar for immediate display (if exists)
@@ -1548,6 +1597,7 @@ impl PhotonApp {
                 crate::avatar::sync_avatar_background(
                     *self.device_keypair.secret.as_bytes(),
                     handle.clone(),
+                    self.user_handle_proof,
                     self.contact_avatar_tx.clone(),
                     Some(self.event_proxy.clone()),
                 );
@@ -1555,9 +1605,87 @@ impl PhotonApp {
                 crate::avatar::sync_avatar_background(
                     *self.device_keypair.secret.as_bytes(),
                     handle.clone(),
+                    self.user_handle_proof,
                     self.contact_avatar_tx.clone(),
                     None,
                 );
+
+                // Sync contacts with cloud (check if cloud has more contacts)
+                crate::log_info("UI: Checking cloud contacts sync");
+                match crate::storage::cloud::load_contacts_from_cloud(
+                    &identity_seed,
+                    &self.device_keypair,
+                ) {
+                    Ok(Some(cloud_contacts)) => {
+                        let local_count = self.contacts.len();
+                        let cloud_count = cloud_contacts.len();
+                        crate::log_info(&format!(
+                            "Cloud: {} contacts (local: {})",
+                            cloud_count, local_count
+                        ));
+
+                        // Simple merge: add any cloud contacts we don't have locally
+                        let mut added = 0;
+                        for cc in cloud_contacts {
+                            let exists = self.contacts.iter().any(|c| {
+                                c.handle_proof == cc.handle_proof
+                            });
+                            if !exists {
+                                let contact = cc.to_contact();
+                                // Update shared pubkey list
+                                {
+                                    let mut pubkeys = self.contact_pubkeys.lock().unwrap();
+                                    pubkeys.push(contact.public_identity.clone());
+                                }
+                                // Save to local storage
+                                if let Err(e) = crate::storage::contacts::save_contact(
+                                    &contact,
+                                    &identity_seed,
+                                ) {
+                                    crate::log_error(&format!("Failed to save cloud contact locally: {}", e));
+                                }
+                                self.contacts.push(contact);
+                                added += 1;
+                            }
+                        }
+                        if added > 0 {
+                            crate::log_info(&format!("Cloud: Added {} contacts from cloud", added));
+                        }
+
+                        // If we have more contacts locally, upload to cloud
+                        if self.contacts.len() > cloud_count {
+                            crate::log_info("Cloud: Uploading local contacts to cloud");
+                            if let Err(e) = crate::storage::cloud::sync_contacts_to_cloud(
+                                &self.contacts,
+                                &identity_seed,
+                                &self.device_keypair,
+                                &handle_proof,
+                            ) {
+                                crate::log_error(&format!("Failed to sync contacts to cloud: {}", e));
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        // No cloud contacts yet - upload if we have any
+                        if !self.contacts.is_empty() {
+                            crate::log_info(&format!(
+                                "Cloud: No cloud contacts, uploading {} local contacts",
+                                self.contacts.len()
+                            ));
+                            if let Err(e) = crate::storage::cloud::sync_contacts_to_cloud(
+                                &self.contacts,
+                                &identity_seed,
+                                &self.device_keypair,
+                                &handle_proof,
+                            ) {
+                                crate::log_error(&format!("Failed to upload contacts to cloud: {}", e));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        crate::log_error(&format!("Failed to load cloud contacts: {}", e));
+                    }
+                }
             }
             self.attesting_handle = None;
 
@@ -1584,6 +1712,28 @@ impl PhotonApp {
                         .ok();
                     }
                     crate::log_info("UI: Status checker initialized after attestation");
+
+                    // Start WebSocket client for real-time peer IP updates (desktop only)
+                    #[cfg(not(target_os = "android"))]
+                    {
+                        use crate::network::PeerUpdateClient;
+                        self.peer_update_client =
+                            Some(PeerUpdateClient::new(self.event_proxy.clone()));
+                        crate::log_info("UI: PeerUpdateClient started for real-time IP updates");
+                    }
+
+                    // Broadcast StatusPing to all peers so they learn our IP (NAT hole punching)
+                    if !initial_peers.is_empty() {
+                        if let Some(ref checker) = self.status_checker {
+                            for peer in &initial_peers {
+                                checker.ping(peer.ip, peer.device_pubkey.clone());
+                            }
+                            crate::log_info(&format!(
+                                "Network: Initial broadcast ping to {} peer(s)",
+                                initial_peers.len()
+                            ));
+                        }
+                    }
                 }
             }
 
@@ -1662,10 +1812,22 @@ impl PhotonApp {
                 StatusUpdate::Online {
                     peer_pubkey,
                     is_online,
+                    peer_addr,
                 } => {
                     // Find matching contact and update status
                     for contact in &mut self.contacts {
                         if contact.public_identity == peer_pubkey {
+                            // Update IP from the ping/pong source address
+                            if let Some(addr) = peer_addr {
+                                if contact.ip != Some(addr) {
+                                    crate::log_info(&format!(
+                                        "Status: Updated {} IP from ping/pong: {:?} -> {}",
+                                        contact.handle, contact.ip, addr
+                                    ));
+                                    contact.ip = Some(addr);
+                                }
+                            }
+
                             if contact.is_online != is_online {
                                 contact.is_online = is_online;
                                 changed = true;
@@ -1752,6 +1914,20 @@ impl PhotonApp {
                             contact.clutch_their_ephemeral_pubkey = Some(ephemeral_pubkey);
                             contact.ip = Some(sender_addr); // Update IP in case it changed
 
+                            // If Complete and receiving new Offer, peer lost state - re-key
+                            // Reset to Pending so we can re-run CLUTCH with fresh ephemerals
+                            if contact.clutch_state == ClutchState::Complete {
+                                crate::log_info(&format!(
+                                    "CLUTCH: Re-key requested by {} (they sent new Offer while we're Complete)",
+                                    contact.handle
+                                ));
+                                // Clear old CLUTCH state, keep relationship_seed until new one is derived
+                                contact.clutch_state = ClutchState::Pending;
+                                contact.clutch_our_ephemeral_secret = None;
+                                contact.clutch_our_ephemeral_pubkey = None;
+                                // Keep their new ephemeral, will use it below
+                            }
+
                             // If we're in Pending, we haven't sent our offer yet - send it now
                             if contact.clutch_state == ClutchState::Pending {
                                 let (secret, pubkey) = clutch::generate_clutch_ephemeral();
@@ -1781,7 +1957,12 @@ impl PhotonApp {
                                 &contact.clutch_their_ephemeral_pubkey,
                             ) {
                                 // Both parties have exchanged offers - derive seed
+                                // v3: Include device pubkeys for identity binding
+                                let our_device_pub = *self.device_keypair.public.as_bytes();
+                                let their_device_pub = *contact.public_identity.as_bytes();
                                 let result = clutch::clutch_complete_parallel(
+                                    &our_device_pub,
+                                    &their_device_pub,
                                     &our_identity_seed,
                                     &contact.handle_hash,
                                     our_secret,
@@ -1801,7 +1982,7 @@ impl PhotonApp {
                                 changed = true;
 
                                 crate::log_info(&format!(
-                                    "CLUTCH: Complete with {} (parallel v2)",
+                                    "CLUTCH: Complete with {} (v3 device-bound)",
                                     contact.handle
                                 ));
 
@@ -2292,6 +2473,36 @@ impl PhotonApp {
         }
     }
 
+    /// Ping a specific contact by index (for entering conversation)
+    pub fn ping_contact(&mut self, contact_idx: usize) {
+        let checker = match &self.status_checker {
+            Some(c) => c,
+            None => return,
+        };
+
+        if contact_idx < self.contacts.len() {
+            let contact = &self.contacts[contact_idx];
+            if let Some(ip) = contact.ip {
+                checker.ping(ip, contact.public_identity.clone());
+                crate::log_info(&format!("Status: Pinged {} on conversation enter", contact.handle));
+            }
+        }
+    }
+
+    /// Trigger peer IP refresh (FGTW query + ping all contacts)
+    /// Called when returning to contacts screen for snappy updates
+    pub fn trigger_peer_refresh(&mut self) {
+        crate::log_info("Network: Triggering peer refresh on screen return");
+
+        // Refresh FGTW peer table
+        if let Some(hq) = &self.handle_query {
+            let _ = hq.refresh();
+        }
+
+        // Ping all contacts to refresh their status
+        self.ping_contacts();
+    }
+
     /// Check if it's time to ping contacts and do so
     /// Returns true if pings were sent
     pub fn maybe_ping_contacts(&mut self) -> bool {
@@ -2327,6 +2538,20 @@ impl PhotonApp {
         false
     }
 
+    /// Force an immediate FGTW refresh (called when FCM peer update received)
+    pub fn force_fgtw_refresh(&mut self) {
+        if matches!(self.app_state, AppState::Ready) {
+            if let Some(hq) = &self.handle_query {
+                if hq.refresh() {
+                    crate::log_info("Network: FCM-triggered FGTW refresh");
+                    // Reset timer so we don't double-refresh
+                    self.next_fgtw_refresh =
+                        std::time::Instant::now() + std::time::Duration::from_secs(60);
+                }
+            }
+        }
+    }
+
     /// Check for FGTW refresh results and update contact IPs
     /// Returns true if any contacts were updated
     pub fn check_refresh_result(&mut self) -> bool {
@@ -2348,6 +2573,17 @@ impl PhotonApp {
             "Network: Refresh got {} peer(s)",
             result.peers.len()
         ));
+
+        // Broadcast StatusPing to all peers so they learn our new IP (NAT hole punching)
+        if let Some(ref checker) = self.status_checker {
+            for peer in &result.peers {
+                checker.ping(peer.ip, peer.device_pubkey.clone());
+            }
+            crate::log_info(&format!(
+                "Network: Broadcast ping to {} peer(s)",
+                result.peers.len()
+            ));
+        }
 
         // Update contact IPs from fresh peer data
         let mut updated = 0;
@@ -2372,5 +2608,47 @@ impl PhotonApp {
         }
 
         updated > 0
+    }
+
+    /// Check for peer updates from WebSocket (real-time IP changes)
+    /// Returns true if any contact IP was updated
+    #[cfg(not(target_os = "android"))]
+    pub fn check_peer_updates(&mut self) -> bool {
+        let Some(ref client) = self.peer_update_client else {
+            return false;
+        };
+
+        let mut updated = false;
+
+        // Process all pending updates
+        while let Some(update) = client.try_recv() {
+            crate::log_info(&format!(
+                "PeerUpdate: Received IP update for {}:{} (handle_proof: {}...)",
+                update.ip,
+                update.port,
+                &hex::encode(&update.handle_proof[..4])
+            ));
+
+            // Update matching contact by device_pubkey
+            for contact in &mut self.contacts {
+                if contact.public_identity.as_bytes() == &update.device_pubkey {
+                    let new_ip = format!("{}:{}", update.ip, update.port)
+                        .parse::<std::net::SocketAddr>()
+                        .ok();
+
+                    if contact.ip != new_ip {
+                        crate::log_info(&format!(
+                            "PeerUpdate: Updated {} IP: {:?} -> {:?}",
+                            contact.handle, contact.ip, new_ip
+                        ));
+                        contact.ip = new_ip;
+                        updated = true;
+                    }
+                    break;
+                }
+            }
+        }
+
+        updated
     }
 }

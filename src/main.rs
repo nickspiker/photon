@@ -235,6 +235,15 @@ impl ApplicationHandler<PhotonEvent> for App {
                 }
             }
 
+            // Check for peer update notifications from FGTW WebSocket (non-blocking)
+            if app.check_peer_updates() {
+                // Peer IP changed, update cache and redraw
+                app.window_dirty = true;
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            }
+
             // Check for completed avatar downloads (non-blocking)
             if app.check_avatar_downloads() {
                 // Avatar loaded, redraw to show it
@@ -290,8 +299,12 @@ impl ApplicationHandler<PhotonEvent> for App {
                 // Always set control flow (either new or same timer)
                 event_loop.set_control_flow(ControlFlow::WaitUntil(app.next_blinkey_blink_time));
             } else {
-                // No active textbox - wait for events (network updates will wake via EventLoopProxy)
-                event_loop.set_control_flow(ControlFlow::Wait);
+                // No active textbox - poll every 250ms for network updates
+                // EventLoopProxy.send_event() should wake us immediately, but X11 can be unreliable
+                // This ensures we check for status updates, CLUTCH messages, etc. even if wake fails
+                event_loop.set_control_flow(ControlFlow::WaitUntil(
+                    std::time::Instant::now() + std::time::Duration::from_millis(250),
+                ));
             }
         }
     }

@@ -30,14 +30,16 @@ Photon is a peer-to-peer messaging application that replaces traditional authent
 - ✅ Handle attestation with memory-hard proof-of-work (~1s computation)
 - ✅ Peer discovery via FGTW DHT (handle → IP lookup)
 - ✅ P2P status detection (online/offline via UDP ping/pong)
-- ✅ Avatar upload/download to FGTW storage
+- ✅ NAT hole punching (broadcast ping to all peers on registration)
+- ✅ Avatar upload/download to FGTW storage with rate limiting
+- ✅ Contact storage (local encrypted + cloud backup to FGTW)
 - ✅ Deterministic device identity (keys derived from hardware)
-- ✅ Rolling-chain encryption framework
+- ✅ CLUTCH key exchange (parallel ephemeral key ceremony)
 - ✅ Android build pipeline (tested on device)
 - ✅ Signed binary distribution with self-verification
 
 ### What Doesn't Work Yet
-- ❌ Actual peer-to-peer messaging (direct connections pending)
+- ❌ Encrypted message exchange (CLUTCH handshake done, message flow pending)
 - ❌ Identity validation and key recovery flows
 - ❌ Message persistence (database layer empty)
 - ❌ Full social attestation (2-human requirement not enforced)
@@ -311,7 +313,8 @@ src/
 ├── lib.rs               - Module exports, debug utilities
 ├── self_verify.rs       - Ed25519 binary signature verification
 ├── crypto/
-│   ├── chain.rs         - Rolling-chain encryption (IMPLEMENTED)
+│   ├── chain.rs         - Rolling-chain encryption
+│   ├── clutch.rs        - CLUTCH parallel key exchange ceremony
 │   ├── keys.rs          - Identity key management (TODO)
 │   └── shards.rs        - Social recovery key sharding (TODO)
 ├── network/
@@ -337,7 +340,9 @@ src/
 │   ├── message.rs       - Message structure, status, expiration
 │   ├── contact.rs       - Contact info, trust levels
 │   └── shard.rs         - Key shard structures
-└── storage/             - VSF persistence (TODO)
+└── storage/
+    ├── contacts.rs      - Local encrypted contact storage
+    └── cloud.rs         - FGTW cloud backup (contacts sync)
 ```
 
 ### Implementation Status
@@ -348,16 +353,18 @@ src/
 | Text Rendering | ✅ Complete | cosmic-text, selection, editing |
 | Device Identity | ✅ Complete | Deterministic keys from hardware (never stored) |
 | Crypto Types | ✅ Complete | Identity, seed, shard, message structures |
-| Rolling-Chain | ⚠️ Framework | Core logic implemented, ChaCha20 integration pending |
+| CLUTCH Key Exchange | ✅ Working | Parallel ephemeral key ceremony, chain state derivation |
 | Handle Attestation | ✅ Working | Memory-hard PoW (~1s), DHT storage |
 | Peer Discovery | ✅ Working | FGTW DHT queries return peer IPs |
 | P2P Status | ✅ Working | UDP ping/pong with Ed25519 signatures |
-| Avatar System | ✅ Working | VSF-encoded, FGTW storage, encryption |
+| NAT Hole Punching | ✅ Working | Broadcast ping to all peers on registration/refresh |
+| Avatar System | ✅ Working | VSF-encoded, FGTW storage, rate-limited uploads |
+| Contact Storage | ✅ Working | Local encrypted + cloud backup to FGTW |
 | Binary Signing | ✅ Working | Ed25519 signatures, self-verification on startup |
 | Network Transport | ⚠️ Partial | DHT functional, direct peer connections pending |
 | Message Persistence | ❌ Empty | VSF storage layer not implemented |
 | Social Recovery | ❌ Stubbed | Shard distribution/reconstruction TODO |
-| Peer Messaging | ❌ Not Started | End-to-end message flow not implemented |
+| Peer Messaging | ⚠️ Partial | CLUTCH done, encrypted message exchange pending |
 
 ### Technology Stack
 
@@ -578,4 +585,4 @@ See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE)
 
 **Platform Support:** Linux ✅ | Windows ✅ | macOS ✅ | Android ✅ | Redox 🟡 | iOS ❌
 
-**Last Updated:** 2025-11-29
+**Last Updated:** 2025-12-02

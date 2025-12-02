@@ -1,18 +1,7 @@
 use super::ContactId;
-use serde::{Deserialize, Serialize};
-use std::time::{SystemTime, UNIX_EPOCH};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-fn eagle_time_secs() -> u64 {
-    const EAGLE_TO_UNIX_OFFSET: u64 = 14182940;
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
-        + EAGLE_TO_UNIX_OFFSET
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct KeyShard {
     pub id: ShardId,
     pub owner: ContactId,
@@ -20,10 +9,10 @@ pub struct KeyShard {
     pub index: u8,
     pub threshold: u8,
     pub total_shards: u8,
-    pub created_at: u64,
+    pub created_at: f64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ShardId([u8; 16]);
 
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
@@ -32,20 +21,20 @@ pub struct DecryptedShard {
     pub data: [u8; 8],
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct RecoveryRequest {
     pub requester_public_key: [u8; 32],
     pub request_id: [u8; 16],
-    pub timestamp: u64,
+    pub timestamp: f64,
     pub verification_phrase: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct RecoveryApproval {
     pub request_id: [u8; 16],
     pub shard: KeyShard,
     pub approver: ContactId,
-    pub timestamp: u64,
+    pub timestamp: f64,
 }
 
 impl ShardId {
@@ -81,7 +70,7 @@ impl KeyShard {
             index,
             threshold,
             total_shards,
-            created_at: eagle_time_secs(),
+            created_at: vsf::eagle_time_nanos(),
         }
     }
 }

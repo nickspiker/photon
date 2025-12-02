@@ -1,10 +1,11 @@
-//! Device identity and key derivation
+//! Device fingerprint and key derivation
 //!
-//! Keys are NEVER stored on disk - always derived deterministically from:
-//! - Linux: /etc/machine-id
-//! - Windows: Registry MachineGuid
-//! - macOS: IOPlatformUUID (hardware-burned)
-//! - Android: Device fingerprint (passed via JNI)
+//! Keys are NEVER stored on disk - always derived deterministically from
+//! platform-specific fingerprint ORACLES (not fixed IDs - oracles are harder to steal):
+//! - Linux: /etc/machine-id (generated at install, unique per system)
+//! - Windows: Registry MachineGuid (generated at install)
+//! - macOS: IOPlatformUUID (hardware-burned, survives reinstalls)
+//! - Android: Device fingerprint (passed via JNI - ANDROID_ID is an oracle)
 
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use std::io;
