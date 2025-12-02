@@ -295,8 +295,17 @@ impl PeerUpdateClient {
                     }
                 }
                 "port" => {
-                    if let VsfType::m(p) = value {
-                        port = Some(p as u16);
+                    let p = match value {
+                        VsfType::u(v, _) => Some(v),
+                        VsfType::u3(v) => Some(v as usize),
+                        VsfType::u4(v) => Some(v as usize),
+                        VsfType::u5(v) => Some(v as usize),
+                        VsfType::u6(v) => Some(v as usize),
+                        VsfType::m(v) => Some(v), // Legacy compat
+                        _ => None,
+                    };
+                    if let Some(v) = p {
+                        port = Some(v as u16);
                     }
                 }
                 "timestamp" => {
