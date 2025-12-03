@@ -604,29 +604,32 @@ pub fn collect_clutch_eggs(
     eggs
 }
 
-/// Avalanche hash the eggs into a 1MB mixing pad for conversation state.
+/// Avalanche hash the eggs into dual 1MB pads for bidirectional conversation state.
 ///
 /// This is a memory-hard, deterministic mixing function that:
 /// 1. Flattens all 14 eggs into a single buffer (448 bytes)
-/// 2. Repeatedly copies pseudo-random chunks to grow >= 1MB
+/// 2. Repeatedly copies pseudo-random chunks to grow to 2MB
 /// 3. Heavy mixing with diverse operations (+, -, *, ^, %, <<, >>)
-/// 4. Trims to exactly 1MB
+/// 4. Final rotation and trim to exactly 2MB
+/// 5. Split into two 1MB pads (send_pad, recv_pad)
 ///
 /// Properties:
-/// - Deterministic: same eggs → same pad
-/// - Memory-hard: 1MB final state
+/// - Deterministic: same eggs → same pads
+/// - Memory-hard: 2MB total state
 /// - Avalanche: every bit of input affects every bit of output
 /// - Diverse operations: prevents algebraic attacks
 ///
-/// The returned pad is saved locally and rotated with message hashes.
-/// Seed derivation: BLAKE3(pad) whenever a key is needed.
+/// The returned pads are saved locally:
+/// - send_pad: rotates when we send messages
+/// - recv_pad: rotates when we receive messages
 ///
-/// Returns the 1MB pad (Vec<u8>) for conversation state.
-pub fn avalanche_hash_eggs(eggs: &ClutchEggs) -> Vec<u8> {
+/// Returns (send_pad, recv_pad) as two 1MB Vec<u8> for conversation state.
+pub fn avalanche_hash_eggs(eggs: &ClutchEggs) -> (Vec<u8>, Vec<u8>) {
     use i256::U256;
 
-    const MIN_SIZE: usize = 1_048_576;
-    let max_size = MIN_SIZE * 2;
+    const MIN_SIZE: usize = 1_048_576;  // 1MB
+    const TOTAL_SIZE: usize = MIN_SIZE * 2;  // 2MB
+    let max_size = TOTAL_SIZE * 2;  // Allow expansion up to 4MB
 
     // Step 1: Flatten all eggs into one buffer
     let mut omelette = Vec::with_capacity(max_size);
@@ -639,9 +642,9 @@ pub fn avalanche_hash_eggs(eggs: &ClutchEggs) -> Vec<u8> {
     target_hasher.update(&omelette);
     let target_hash = target_hasher.finalize();
     let target_u256 = U256::from_be_bytes(*target_hash.as_bytes());
-    let target_size = MIN_SIZE + (target_u256 % U256::from(MIN_SIZE as u128)).as_u128() as usize;
+    let target_size = TOTAL_SIZE + (target_u256 % U256::from(TOTAL_SIZE as u128)).as_u128() as usize;
 
-    // Step 2: Grow to 1MB by copying pseudo-random chunks
+    // Step 2: Grow to 2MB by copying pseudo-random chunks
     while omelette.len() < target_size {
         let current_len = omelette.len();
 
@@ -760,10 +763,14 @@ pub fn avalanche_hash_eggs(eggs: &ClutchEggs) -> Vec<u8> {
     let rotate_amount = (final_u256 % U256::from(omelette.len() as u128)).as_u128() as usize;
     omelette.rotate_left(rotate_amount);
 
-    // Step 5: Trim to exactly 1MB
-    omelette.truncate(MIN_SIZE);
+    // Step 5: Trim to exactly 2MB
+    omelette.truncate(TOTAL_SIZE);
 
-    omelette
+    // Step 6: Split into two 1MB pads
+    let send_pad = omelette[0..MIN_SIZE].to_vec();
+    let recv_pad = omelette[MIN_SIZE..TOTAL_SIZE].to_vec();
+
+    (send_pad, recv_pad)
 }
 
 /// Compute the CLUTCH completion proof.
