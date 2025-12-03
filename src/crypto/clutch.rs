@@ -687,7 +687,7 @@ pub fn avalanche_hash_eggs(eggs: &ClutchEggs) -> Vec<u8> {
     }
 
     // Step 3: Heavy mixing with diverse operations
-    // Process as variable-sized chunks (1-32 bytes, unaligned) for maximum diffusion
+    // Process as variable-sized chunks (1-43 bytes, unaligned) for maximum diffusion
     const MIX_ROUNDS: usize = 8;
 
     for round in 0..MIX_ROUNDS {
@@ -701,7 +701,7 @@ pub fn avalanche_hash_eggs(eggs: &ClutchEggs) -> Vec<u8> {
         let round_u256 = U256::from_be_bytes(*round_hash.as_bytes());
 
         // Determine chunk size for this round (1-32 bytes, unaligned)
-        let chunk_size = 1 + ((round_u256 % U256::from(32_u128)).as_u128() as usize);
+        let chunk_size = 1 + ((round_u256 % U256::from(43_u128)).as_u128() as usize);
 
         // Mix chunks with diverse operations
         let num_chunks = len / chunk_size;
@@ -753,7 +753,14 @@ pub fn avalanche_hash_eggs(eggs: &ClutchEggs) -> Vec<u8> {
         }
     }
 
-    // Step 4: Trim to exactly 1MB
+    // Step 4: Final rotation before trim
+    // Hash entire buffer and rotate by (hash % len) to shuffle one last time
+    let final_hash = blake3::hash(&omelette);
+    let final_u256 = U256::from_be_bytes(*final_hash.as_bytes());
+    let rotate_amount = (final_u256 % U256::from(omelette.len() as u128)).as_u128() as usize;
+    omelette.rotate_left(rotate_amount);
+
+    // Step 5: Trim to exactly 1MB
     omelette.truncate(MIN_SIZE);
 
     omelette
