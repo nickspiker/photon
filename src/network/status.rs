@@ -384,8 +384,6 @@ async fn run_checker(
                         "Status: UDP received {} bytes from {}",
                         len, src_addr
                     ));
-                    // Save received message for vsfinfo inspection
-                    let _ = std::fs::write("/tmp/photon-received.vsf", msg_bytes);
                     // Show VSF inspector in development builds
                     #[cfg(feature = "development")]
                     crate::log_info(&vsf_inspect(msg_bytes, "RX", &src_addr.to_string()));
@@ -567,10 +565,13 @@ async fn run_checker(
                                         "Status: CLUTCH_OFFER received from {}",
                                         src_addr
                                     ));
-                                    let _ = std::fs::write(
-                                        "/tmp/photon-clutch-offer-rx.vsf",
+
+                                    #[cfg(feature = "development")]
+                                    crate::log_info(&vsf_inspect(
                                         msg_bytes,
-                                    );
+                                        "RX",
+                                        &src_addr.to_string(),
+                                    ));
 
                                     let provenance = compute_clutch_provenance(
                                         &from_handle_proof,
@@ -611,9 +612,13 @@ async fn run_checker(
                                         "Status: CLUTCH_INIT received from {}",
                                         src_addr
                                     ));
-                                    // Save to separate file for vsfinfo inspection
-                                    let _ =
-                                        std::fs::write("/tmp/photon-clutch-init-rx.vsf", msg_bytes);
+
+                                    #[cfg(feature = "development")]
+                                    crate::log_info(&vsf_inspect(
+                                        msg_bytes,
+                                        "RX",
+                                        &src_addr.to_string(),
+                                    ));
 
                                     // Verify signature over provenance
                                     let provenance = compute_clutch_provenance(
@@ -655,11 +660,13 @@ async fn run_checker(
                                         "Status: CLUTCH_RESPONSE received from {}",
                                         src_addr
                                     ));
-                                    // Save to separate file for vsfinfo inspection
-                                    let _ = std::fs::write(
-                                        "/tmp/photon-clutch-response-rx.vsf",
+
+                                    #[cfg(feature = "development")]
+                                    crate::log_info(&vsf_inspect(
                                         msg_bytes,
-                                    );
+                                        "RX",
+                                        &src_addr.to_string(),
+                                    ));
 
                                     let provenance = compute_clutch_provenance(
                                         &from_handle_proof,
@@ -699,11 +706,13 @@ async fn run_checker(
                                         "Status: CLUTCH_COMPLETE received from {}",
                                         src_addr
                                     ));
-                                    // Save to separate file for vsfinfo inspection
-                                    let _ = std::fs::write(
-                                        "/tmp/photon-clutch-complete-rx.vsf",
+
+                                    #[cfg(feature = "development")]
+                                    crate::log_info(&vsf_inspect(
                                         msg_bytes,
-                                    );
+                                        "RX",
+                                        &src_addr.to_string(),
+                                    ));
 
                                     let provenance = compute_clutch_complete_provenance(
                                         &from_handle_proof,
@@ -743,7 +752,13 @@ async fn run_checker(
                                         "Status: CHAT_MESSAGE received from {} (seq {})",
                                         src_addr, sequence
                                     ));
-                                    let _ = std::fs::write("/tmp/photon-msg-rx.vsf", msg_bytes);
+
+                                    #[cfg(feature = "development")]
+                                    crate::log_info(&vsf_inspect(
+                                        msg_bytes,
+                                        "RX",
+                                        &src_addr.to_string(),
+                                    ));
 
                                     // Verify signature
                                     let provenance =
@@ -855,8 +870,6 @@ async fn run_checker(
                     msg_bytes.len()
                 ));
 
-                // Save to file for vsfinfo inspection
-                let _ = std::fs::write("/tmp/photon-ping.vsf", &msg_bytes);
                 #[cfg(feature = "development")]
                 crate::log_info(&vsf_inspect(
                     &msg_bytes,
@@ -1021,14 +1034,6 @@ async fn run_checker(
 
             let msg_bytes = msg.to_vsf_bytes();
             if !msg_bytes.is_empty() {
-                // Save to separate file based on message type for vsfinfo inspection
-                let filename = match request.message {
-                    ClutchRequestType::Offer { .. } => "/tmp/photon-clutch-offer-tx.vsf",
-                    ClutchRequestType::Init { .. } => "/tmp/photon-clutch-init-tx.vsf",
-                    ClutchRequestType::Response { .. } => "/tmp/photon-clutch-response-tx.vsf",
-                    ClutchRequestType::Complete { .. } => "/tmp/photon-clutch-complete-tx.vsf",
-                };
-                let _ = std::fs::write(filename, &msg_bytes);
                 #[cfg(feature = "development")]
                 crate::log_info(&vsf_inspect(
                     &msg_bytes,
@@ -1067,7 +1072,6 @@ async fn run_checker(
 
             let msg_bytes = msg.to_vsf_bytes();
             if !msg_bytes.is_empty() {
-                let _ = std::fs::write("/tmp/photon-msg-tx.vsf", &msg_bytes);
                 #[cfg(feature = "development")]
                 crate::log_info(&vsf_inspect(
                     &msg_bytes,
@@ -1103,7 +1107,6 @@ async fn run_checker(
 
             let msg_bytes = msg.to_vsf_bytes();
             if !msg_bytes.is_empty() {
-                let _ = std::fs::write("/tmp/photon-ack-tx.vsf", &msg_bytes);
                 #[cfg(feature = "development")]
                 crate::log_info(&vsf_inspect(
                     &msg_bytes,

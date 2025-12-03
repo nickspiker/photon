@@ -104,6 +104,12 @@ pub const BG_MASK: u32 = fmt(0xFF_0F_07_1F); // Channel mask for noise generatio
 pub const BG_ALPHA: u32 = fmt(0xFF_00_00_00); // Alpha channel (opaque)
 pub const BG_SPECKLE: u32 = fmt(0x00_3F_1F_7F); // Speckle highlight colour (no alpha)
 
+// Message colours
+pub const MESSAGE_SENT: u32 = fmt(0xFF_FF_A0_40); // Orange for outgoing messages
+pub const MESSAGE_RECEIVED: u32 = fmt(0xFF_40_E0_E0); // Cyan for incoming messages
+pub const MESSAGE_INDICATOR_SENT: u32 = fmt(0xFF_C0_C0_C0); // Gray for "sent" indicator
+pub const MESSAGE_INDICATOR_ACKD: u32 = fmt(0xFF_00_FF_00); // Green for "ACK'd" indicator
+
 // Font families and weights
 pub const FONT_LOGO: &str = "Oxanium";
 pub const FONT_UI: &str = "Josefin Slab";

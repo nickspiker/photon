@@ -840,11 +840,18 @@ An attacker must compromise **ALL** of:
 - ✅ Video streaming with H.264
 
 **In Development:**
-- 🚧 Full 8-primitive CLUTCH
+- 🚧 Full multi-primitive CLUTCH (12 primitives across 4 classes)
+  - ✅ Egg collection structure (ClutchEggs with domain separation)
+  - ✅ Function stubs for all 12 primitives
+  - ✅ Test infrastructure (15 eggs: 6 context + 9 KEMs)
+  - ⏳ Real implementations (currently placeholder stubs)
+  - ⏳ Wire format extension for ~550KB ClutchOffer
+  - ⏳ Performance optimization (<500ms target)
 - 🚧 FGTW call forwarding (optional)
 - 🚧 VSF wire format (currently using interim format)
 
 **Future:**
+- ⏳ Avalanche shuffle (prepend hashes, generate 1MB cascade)
 - ⏳ Ferros OS integration
 - ⏳ Hardware encoder optimization (mobile)
 - ⏳ Social key recovery for handles

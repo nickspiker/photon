@@ -80,6 +80,7 @@ pub struct Contact {
     pub last_seen: Option<f64>,
     pub is_online: bool, // True when we have confirmed bidirectional comms
     pub messages: Vec<ChatMessage>, // Conversation history
+    pub message_scroll_offset: f32, // Vertical scroll offset for message area (pixels)
     pub prev_is_online: bool, // For differential rendering (not persisted)
     pub indicator_x: usize, // Cached indicator dot X position (set during draw)
     pub indicator_y: usize, // Cached indicator dot Y position (set during draw)
@@ -149,15 +150,16 @@ impl Contact {
             trust_level: TrustLevel::Stranger,
             added_timestamp: vsf::eagle_time_nanos(),
             last_seen: None,
-            is_online: false,      // Starts offline until we confirm comms
-            messages: Vec::new(),  // No messages yet
-            prev_is_online: false, // Match initial state
-            indicator_x: 0,        // Set during first draw
-            indicator_y: 0,        // Set during first draw
-            text_x: 0.0,           // Set during first draw
-            text_y: 0.0,           // Set during first draw
-            avatar_pixels: None,   // Fetched from FGTW by handle when online
-            avatar_scaled: None,   // Scaled on demand for display
+            is_online: false,           // Starts offline until we confirm comms
+            messages: Vec::new(),       // No messages yet
+            message_scroll_offset: 0.0, // Starts at top (scrolled to latest when messages added)
+            prev_is_online: false,      // Match initial state
+            indicator_x: 0,             // Set during first draw
+            indicator_y: 0,             // Set during first draw
+            text_x: 0.0,                // Set during first draw
+            text_y: 0.0,                // Set during first draw
+            avatar_pixels: None,        // Fetched from FGTW by handle when online
+            avatar_scaled: None,        // Scaled on demand for display
             avatar_scaled_diameter: 0,
         }
     }

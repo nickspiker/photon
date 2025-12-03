@@ -41,10 +41,27 @@ chacha20poly1305 = "0.11.0-rc.2"
 aes-gcm = "0.11.0-rc.2"
 x25519-dalek = { version = "2.0", features = ["static_secrets"] }
 rand = "0.8"
+rand_core = "0.9.3"  # For FrodoKEM compatibility (separate from rand 0.8's rand_core 0.6)
 rand_chacha = "0.3"  # ChaCha20Rng for PRNG salt generation
 rand_pcg = "0.3"     # Pcg64 for dual PRNG diversity
 zeroize = { version = "1.7", features = ["derive"] }
 subtle = "2.6"  # Constant-time comparisons
+
+# Post-quantum KEMs
+frodo-kem-rs = "0.5.0"
+pqcrypto-ntru = "0.5.8"
+pqcrypto-hqc = "0.2.2"
+pqcrypto-traits = "0.3.5"
+classic-mceliece-rust = { version = "3.1.0", features = ["mceliece460896"] }
+
+# Classical curves (additional)
+p384 = { version = "0.14.0-rc.1", features = ["ecdh"] }
+p256 = { version = "0.14.0-rc.1", features = ["ecdh"] }
+k256 = { version = "0.14.0-rc.1", features = ["ecdh"] }
+
+# Post-quantum signatures
+pqc_dilithium = "0.2.0"
+falcon-rust = "0.1.2"
 
 # Network
 tokio = { version = "1", features = ["full"] }

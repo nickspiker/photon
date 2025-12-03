@@ -2026,6 +2026,26 @@ impl PhotonApp {
                                     contact.handle
                                 ));
 
+                                // Save contact to persist relationship seed and clutch_state
+                                if let Some(identity_seed) = self.user_identity_seed.as_ref() {
+                                    let device_secret = self.device_keypair.secret.as_bytes();
+                                    if let Err(e) = crate::storage::contacts::save_contact(
+                                        contact,
+                                        identity_seed,
+                                        device_secret,
+                                    ) {
+                                        crate::log_error(&format!(
+                                            "Failed to save contact after CLUTCH: {}",
+                                            e
+                                        ));
+                                    } else {
+                                        crate::log_info(&format!(
+                                            "CLUTCH: Saved {} state to disk",
+                                            contact.handle
+                                        ));
+                                    }
+                                }
+
                                 // Lower handle_proof sends ClutchComplete with proof
                                 if clutch::is_clutch_initiator(
                                     &our_handle_proof,
@@ -2144,6 +2164,8 @@ impl PhotonApp {
                                 // Add to contact's message list
                                 if let Some(contact) = self.contacts.get_mut(contact_idx) {
                                     contact.messages.push(ChatMessage::new(text, false));
+                                    // Auto-scroll to bottom to show new message
+                                    contact.message_scroll_offset = 0.0;
                                 }
                                 changed = true;
 
@@ -2298,6 +2320,8 @@ impl PhotonApp {
                     message_text.to_string(),
                     true, // is_outgoing
                 ));
+                // Auto-scroll to bottom to show new message
+                contact.message_scroll_offset = 0.0;
             }
 
             crate::log_info(&format!(

@@ -12,7 +12,7 @@ use chacha20poly1305::{
     aead::{Aead, KeyInit},
     ChaCha20Poly1305, Nonce,
 };
-use rand::SeedableRng;
+use rand::{RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use rand_pcg::Pcg64;
 use thiserror::Error;
@@ -82,7 +82,6 @@ impl DualPrng {
 
     /// Generate 64-byte salt from both PRNGs (32 bytes each)
     fn generate_salt(&mut self) -> [u8; 64] {
-        use rand::RngCore;
         let mut salt = [0u8; 64];
         self.chacha_rng.fill_bytes(&mut salt[..32]); // Bytes 0-31 from ChaCha20
         self.pcg_rng.fill_bytes(&mut salt[32..]); // Bytes 32-63 from Pcg64

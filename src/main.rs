@@ -152,6 +152,13 @@ impl ApplicationHandler<PhotonEvent> for App {
                     }
                 }
             }
+            WindowEvent::MouseWheel { delta, .. } => {
+                if let (Some(window), Some(app)) = (&self.window, &mut self.photon_app) {
+                    if app.handle_mouse_wheel(delta) {
+                        window.request_redraw();
+                    }
+                }
+            }
             WindowEvent::CursorLeft { .. } => {
                 if let (Some(window), Some(app)) = (&self.window, &mut self.photon_app) {
                     app.handle_blinkey_left();

@@ -732,8 +732,88 @@ impl PhotonApp {
                                             theme::CONTACT_ONLINE, // Green
                                             theme::FONT_UI,
                                         );
+                                    } else {
+                                        // Draw messages
+                                        let line_height = (font_size as f32 * 1.5) as usize;
+                                        let padding = self.min_dim / 32;
+
+                                        // Calculate total height needed for all messages
+                                        let total_height =
+                                            contact.messages.len() * line_height + padding * 2;
+                                        let visible_height =
+                                            (message_area_bottom - message_area_top) as usize;
+
+                                        // Start from bottom (most recent messages)
+                                        let mut y = message_area_bottom as usize - padding;
+
+                                        // Iterate messages in reverse (newest first at bottom)
+                                        for msg in contact.messages.iter().rev() {
+                                            y = y.saturating_sub(line_height);
+
+                                            // Apply scroll offset
+                                            let scroll_y =
+                                                (y as f32 + contact.message_scroll_offset) as usize;
+
+                                            // Skip if above visible area
+                                            if scroll_y < message_area_top as usize {
+                                                continue;
+                                            }
+                                            // Stop if below visible area
+                                            if scroll_y > message_area_bottom as usize {
+                                                break;
+                                            }
+
+                                            // Align outgoing (right) vs incoming (left)
+                                            if msg.is_outgoing {
+                                                // Outgoing: align right with orange color
+                                                self.text_renderer.draw_text_right_u32(
+                                                    pixels,
+                                                    self.width as usize,
+                                                    &msg.content,
+                                                    (center_x + (box_width / 2) - padding) as f32,
+                                                    scroll_y as f32,
+                                                    font_size * 0.9,
+                                                    theme::FONT_WEIGHT_USER_CONTENT,
+                                                    theme::MESSAGE_SENT,
+                                                    theme::FONT_USER_CONTENT,
+                                                );
+
+                                                // Draw delivery indicator
+                                                let indicator =
+                                                    if msg.delivered { "✓" } else { "·" };
+                                                let indicator_color = if msg.delivered {
+                                                    theme::MESSAGE_INDICATOR_ACKD
+                                                } else {
+                                                    theme::MESSAGE_INDICATOR_SENT
+                                                };
+                                                self.text_renderer.draw_text_right_u32(
+                                                    pixels,
+                                                    self.width as usize,
+                                                    indicator,
+                                                    (center_x + (box_width / 2) - padding * 2)
+                                                        as f32,
+                                                    scroll_y as f32,
+                                                    font_size * 0.7,
+                                                    theme::FONT_WEIGHT_USER_CONTENT,
+                                                    indicator_color,
+                                                    theme::FONT_USER_CONTENT,
+                                                );
+                                            } else {
+                                                // Incoming: align left with cyan color
+                                                self.text_renderer.draw_text_left_u32(
+                                                    pixels,
+                                                    self.width as usize,
+                                                    &msg.content,
+                                                    (center_x - (box_width / 2) + padding) as f32,
+                                                    scroll_y as f32,
+                                                    font_size * 0.9,
+                                                    theme::FONT_WEIGHT_USER_CONTENT,
+                                                    theme::MESSAGE_RECEIVED,
+                                                    theme::FONT_USER_CONTENT,
+                                                );
+                                            }
+                                        }
                                     }
-                                    // TODO: Draw actual messages when they exist
 
                                     // Draw bottom textbox for message input (full width, centered)
                                     Self::draw_textbox(

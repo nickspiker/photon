@@ -8,7 +8,7 @@ use super::app::{
     HIT_CONTACT_BASE, HIT_HANDLE_TEXTBOX, HIT_MAXIMIZE_BUTTON, HIT_MINIMIZE_BUTTON, HIT_NONE,
     HIT_PRIMARY_BUTTON,
 };
-use winit::event::{ElementState, MouseButton};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta};
 use winit::window::{CursorIcon, Window};
 
 impl PhotonApp {
@@ -741,5 +741,59 @@ impl PhotonApp {
             }
             hover_changed
         }
+    }
+
+    pub fn handle_mouse_wheel(&mut self, delta: MouseScrollDelta) -> bool {
+        // Only handle scrolling in conversation view
+        if self.app_state != AppState::Conversation {
+            return false;
+        }
+
+        let Some(contact_idx) = self.selected_contact else {
+            return false;
+        };
+
+        // Extract scroll amount (pixels or lines)
+        let scroll_pixels = match delta {
+            MouseScrollDelta::LineDelta(_x, y) => {
+                // Line scrolling: convert lines to pixels (assume ~20 pixels per line)
+                y * 20.0
+            }
+            MouseScrollDelta::PixelDelta(pos) => {
+                // Pixel scrolling: use y directly
+                pos.y as f32
+            }
+        };
+
+        // Calculate scroll bounds BEFORE mutable borrow
+        let line_height = (self.font_size() as f32 * 1.5) as usize;
+        let padding = self.min_dim / 32;
+        let box_height = self.textbox_height();
+        let center_y = self.height as usize / 2;
+        let textbox_y = center_y + (center_y / 4);
+        let message_area_top = (box_height as f32 * 1.5) as usize;
+        let message_area_bottom = textbox_y - (box_height as f32 * 0.6) as usize;
+        let visible_height = message_area_bottom - message_area_top;
+
+        // Apply scroll to contact's message area
+        if let Some(contact) = self.contacts.get_mut(contact_idx) {
+            // Positive scroll = scroll up (show older messages)
+            // Negative scroll = scroll down (show newer messages)
+            contact.message_scroll_offset += scroll_pixels;
+
+            let total_height = contact.messages.len() * line_height + padding * 2;
+
+            // Clamp scroll offset to valid range
+            // Max scroll up: 0 (no offset, messages at natural position)
+            // Max scroll down: -(total_height - visible_height) if content taller than viewport
+            let max_scroll_down = -((total_height as i32 - visible_height as i32).max(0) as f32);
+            contact.message_scroll_offset =
+                contact.message_scroll_offset.clamp(max_scroll_down, 0.0);
+
+            self.window_dirty = true;
+            return true;
+        }
+
+        false
     }
 }
