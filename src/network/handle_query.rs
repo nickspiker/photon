@@ -38,9 +38,9 @@ fn photon_port(handle: &str) -> u16 {
 /// Result of a handle query
 #[derive(Debug, Clone)]
 pub enum QueryResult {
-    Success(Vec<PeerRecord>),    // Successfully attested/registered, with peer list for broadcast
+    Success(Vec<PeerRecord>), // Successfully attested/registered, with peer list for broadcast
     AlreadyAttested(PeerRecord), // Handle is claimed by another device
-    Error(String),               // Error during attestation
+    Error(String),            // Error during attestation
 }
 
 /// Result of a re-announce (refresh) operation
@@ -359,20 +359,46 @@ impl HandleQuery {
     #[cfg(target_os = "android")]
     fn spawn_connectivity_worker_android(online_tx: Sender<bool>) {
         thread::spawn(move || {
-            let client = reqwest::blocking::Client::builder()
+            let client = match reqwest::blocking::Client::builder()
                 .timeout(Duration::from_secs(5))
                 .build()
-                .ok();
+            {
+                Ok(c) => Some(c),
+                Err(e) => {
+                    crate::log_error(&format!("Network: Failed to create HTTP client: {}", e));
+                    None
+                }
+            };
 
             let mut prev_online = false;
             let mut first_check = true;
 
             loop {
-                let online = client
-                    .as_ref()
-                    .and_then(|c| c.get("https://fgtw.org/status").send().ok())
-                    .map(|r| r.status().is_success())
-                    .unwrap_or(false);
+                let online = match &client {
+                    Some(c) => match c.get("https://fgtw.org/status").send() {
+                        Ok(r) => {
+                            let success = r.status().is_success();
+                            if first_check {
+                                crate::log_info(&format!(
+                                    "Network: FGTW status check: {} ({})",
+                                    r.status(),
+                                    if success { "online" } else { "offline" }
+                                ));
+                            }
+                            success
+                        }
+                        Err(e) => {
+                            if first_check || prev_online {
+                                crate::log_error(&format!(
+                                    "Network: FGTW status check failed: {}",
+                                    e
+                                ));
+                            }
+                            false
+                        }
+                    },
+                    None => false,
+                };
 
                 if first_check || online != prev_online {
                     let _ = online_tx.send(online);

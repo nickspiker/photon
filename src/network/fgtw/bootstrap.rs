@@ -1,6 +1,6 @@
 use super::{fingerprint::Keypair, PeerRecord};
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use crate::types::DevicePubkey;
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use vsf::{parse, schema::FromVsfType, VsfHeader, VsfSection};
 

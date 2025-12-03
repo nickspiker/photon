@@ -1,18 +1,18 @@
-# CLUTCH Protocol Specification v1.0
+# CLUTCH Protocol Specification v3.0
 
-**Protocol:** CLUTCH (8-primitive key ceremony) + Rolling Chain Encryption  
-**Author:** Nick Spiker  
-**Status:** Draft  
-**License:** MIT OR Apache-2.0  
-**Date:** November 2025
+**Protocol:** CLUTCH (Device-Bound Parallel Key Ceremony) + Rolling Chain Encryption
+**Author:** Nick Spiker
+**Status:** Draft
+**License:** MIT OR Apache-2.0
+**Date:** December 2025
 
 ---
 
 ## 0. Abstract
 
-CLUTCH is a one-time key generation ceremony combining eight independent cryptographic primitives across diverse mathematical foundations into a single shared seed. This seed bootstraps a rolling-chain encrypted relationship between two parties for text, voice, and video communication.
+CLUTCH is a one-time, device-bound key generation ceremony combining eight independent cryptographic primitives across diverse mathematical foundations into a single shared seed. This seed bootstraps a rolling-chain encrypted relationship between two parties for text, voice, and video communication.
 
-CLUTCH is not a handshake protocol. It is a **key generation ceremony** performed once per relationship. All subsequent communication is authenticated by the rolling chain itself—successful decryption *is* authentication.
+CLUTCH is not a handshake protocol. It is a **key generation ceremony** performed once per relationship per device pair. Relationship seeds are encrypted at rest using the device's private key, ensuring seeds cannot be extracted even if storage is compromised. All subsequent communication is authenticated by the rolling chain itself—successful decryption *is* authentication.
 
 ---
 
@@ -184,8 +184,9 @@ Lower handle proof = initiator. Both parties compute same result independently.
 
 ### 4.2 Message Exchange (P2P UDP)
 
-CLUTCH v2 uses **parallel key exchange** where both parties generate and send ephemeral
+CLUTCH v3 uses **parallel key exchange** where both parties generate and send ephemeral
 keys simultaneously. Both parties' ephemeral pubkeys contribute entropy to the final seed.
+The protocol is device-bound—seeds are encrypted at rest with the device's private key.
 
 **Parallel Exchange Flow:**
 
@@ -196,7 +197,7 @@ Alice                              Bob
   |<-- ClutchOffer (bob_pub) ------|  (simultaneous)
   |                                 |
   | Both compute same seed:
-  | Seed = BLAKE3(sorted_handles || sorted_pubkeys || ECDH_shared)
+  | Seed = BLAKE3(sorted_handles || sorted_pubkeys || device_secrets || ECDH_shared)
   |                                 |
   |--- ClutchComplete (proof) ---->|  (lower handle_proof sends)
 ```

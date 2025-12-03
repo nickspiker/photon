@@ -188,7 +188,10 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeInitWithNetwork
     network_ptr: jlong,
     is_samsung: jboolean,
 ) -> jlong {
-    info!("Initializing Photon UI: {}x{} with network ptr 0x{:x}", width, height, network_ptr as u64);
+    info!(
+        "Initializing Photon UI: {}x{} with network ptr 0x{:x}",
+        width, height, network_ptr as u64
+    );
 
     if network_ptr == 0 {
         error!("Null network pointer");
@@ -508,7 +511,11 @@ pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeNetwor
         }
     };
 
-    info!("NetworkContext: fingerprint {} bytes, data_dir: {}", fingerprint_bytes.len(), data_dir_str);
+    info!(
+        "NetworkContext: fingerprint {} bytes, data_dir: {}",
+        fingerprint_bytes.len(),
+        data_dir_str
+    );
 
     let context = Box::new(NetworkContext::new(&fingerprint_bytes, &data_dir_str));
     let ptr = Box::into_raw(context) as jlong;
@@ -550,7 +557,9 @@ pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeNetwor
 /// Get device public key as hex string
 #[cfg(target_os = "android")]
 #[no_mangle]
-pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeGetDevicePubkey<'local>(
+pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeGetDevicePubkey<
+    'local,
+>(
     env: JNIEnv<'local>,
     _class: JClass<'local>,
     network_ptr: jlong,

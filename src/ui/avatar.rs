@@ -1357,7 +1357,11 @@ fn write_signature_to_vsf(mut vsf_bytes: Vec<u8>, signature: &[u8; 64]) -> Resul
 ///
 /// # Returns
 /// The avatar storage key on success (for sharing with peers)
-pub fn upload_avatar(device_secret: &SigningKey, handle: &str, handle_proof: &[u8; 32]) -> Result<String, String> {
+pub fn upload_avatar(
+    device_secret: &SigningKey,
+    handle: &str,
+    handle_proof: &[u8; 32],
+) -> Result<String, String> {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 
     // Read from cache by handle
@@ -1485,7 +1489,11 @@ pub enum AvatarSyncResult {
     Error(String), // Something went wrong
 }
 
-pub fn sync_avatar_bidirectional(device_secret: &SigningKey, handle: &str, handle_proof: Option<&[u8; 32]>) -> AvatarSyncResult {
+pub fn sync_avatar_bidirectional(
+    device_secret: &SigningKey,
+    handle: &str,
+    handle_proof: Option<&[u8; 32]>,
+) -> AvatarSyncResult {
     let storage_key = avatar_storage_key(handle);
     let url = format!("{}/avatar/{}", FGTW_URL, storage_key);
 
@@ -1594,7 +1602,9 @@ pub fn sync_avatar_bidirectional(device_secret: &SigningKey, handle: &str, handl
                     Err(e) => AvatarSyncResult::Error(format!("Upload failed: {}", e)),
                 }
             } else {
-                crate::log_info("Avatar sync: Server missing timestamp, but no handle_proof for upload");
+                crate::log_info(
+                    "Avatar sync: Server missing timestamp, but no handle_proof for upload",
+                );
                 AvatarSyncResult::Error("No handle_proof for upload".to_string())
             }
         }

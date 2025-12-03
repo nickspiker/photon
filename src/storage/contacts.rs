@@ -140,19 +140,27 @@ fn provenance_to_filename(provenance: &[u8; 32]) -> String {
 }
 
 /// Derive encryption key for contact list index
-fn derive_list_key(our_identity_seed: &[u8; 32]) -> [u8; 32] {
+/// Requires device_secret so only this device can decrypt
+fn derive_list_key(our_identity_seed: &[u8; 32], device_secret: &[u8; 32]) -> [u8; 32] {
     let mut hasher = Hasher::new();
-    hasher.update(b"photon_contact_list_v2");
+    hasher.update(b"photon_contact_list_v3"); // v3: now includes device_secret
     hasher.update(our_identity_seed);
+    hasher.update(device_secret);
     *hasher.finalize().as_bytes()
 }
 
 /// Derive encryption key for per-contact state
-fn derive_state_key(our_identity_seed: &[u8; 32], their_identity_seed: &[u8; 32]) -> [u8; 32] {
+/// Requires device_secret so only this device can decrypt
+fn derive_state_key(
+    our_identity_seed: &[u8; 32],
+    their_identity_seed: &[u8; 32],
+    device_secret: &[u8; 32],
+) -> [u8; 32] {
     let mut hasher = Hasher::new();
-    hasher.update(b"photon_contact_state_v2");
+    hasher.update(b"photon_contact_state_v3"); // v3: now includes device_secret
     hasher.update(our_identity_seed);
     hasher.update(their_identity_seed);
+    hasher.update(device_secret);
     *hasher.finalize().as_bytes()
 }
 
@@ -212,6 +220,7 @@ fn contact_list_schema() -> SectionSchema {
 pub fn save_contact_list(
     contacts: &[ContactIdentity],
     our_identity_seed: &[u8; 32],
+    device_secret: &[u8; 32],
 ) -> Result<(), StorageError> {
     let index_path = contacts_dir()?.join("index.enc");
 
@@ -233,7 +242,7 @@ pub fn save_contact_list(
     let vsf_bytes = builder
         .encode()
         .map_err(|e| StorageError::Parse(e.to_string()))?;
-    let key = derive_list_key(our_identity_seed);
+    let key = derive_list_key(our_identity_seed, device_secret);
     let encrypted = encrypt_data(&vsf_bytes, &key)?;
 
     fs::write(&index_path, &encrypted)?;
@@ -243,6 +252,7 @@ pub fn save_contact_list(
 /// Load the contact list from encrypted index file with schema validation
 pub fn load_contact_list(
     our_identity_seed: &[u8; 32],
+    device_secret: &[u8; 32],
 ) -> Result<Vec<ContactIdentity>, StorageError> {
     let index_path = contacts_dir()?.join("index.enc");
 
@@ -251,7 +261,7 @@ pub fn load_contact_list(
     }
 
     let encrypted = fs::read(&index_path)?;
-    let key = derive_list_key(our_identity_seed);
+    let key = derive_list_key(our_identity_seed, device_secret);
     let vsf_bytes = decrypt_data(&encrypted, &key)?;
 
     let schema = contact_list_schema();
@@ -305,6 +315,7 @@ fn contact_state_schema() -> SectionSchema {
 pub fn save_contact_state(
     contact: &Contact,
     our_identity_seed: &[u8; 32],
+    device_secret: &[u8; 32],
 ) -> Result<(), StorageError> {
     let identity_seed = derive_identity_seed(contact.handle.as_str());
     let dir = contact_dir_from_seed(&identity_seed)?;
@@ -362,7 +373,7 @@ pub fn save_contact_state(
     let vsf_bytes = builder
         .encode()
         .map_err(|e| StorageError::Parse(e.to_string()))?;
-    let key = derive_state_key(our_identity_seed, &identity_seed);
+    let key = derive_state_key(our_identity_seed, &identity_seed, device_secret);
     let encrypted = encrypt_data(&vsf_bytes, &key)?;
 
     fs::write(&state_path, &encrypted)?;
@@ -373,6 +384,7 @@ pub fn save_contact_state(
 pub fn load_contact_state(
     identity: &ContactIdentity,
     our_identity_seed: &[u8; 32],
+    device_secret: &[u8; 32],
 ) -> Result<Contact, StorageError> {
     let their_identity_seed = identity.identity_seed();
     let dir = contact_dir_from_seed(&their_identity_seed)?;
@@ -390,7 +402,7 @@ pub fn load_contact_state(
     }
 
     let encrypted = fs::read(&state_path)?;
-    let key = derive_state_key(our_identity_seed, &their_identity_seed);
+    let key = derive_state_key(our_identity_seed, &their_identity_seed, device_secret);
     let vsf_bytes = decrypt_data(&encrypted, &key)?;
 
     let mut ptr = 0;
@@ -470,12 +482,16 @@ pub fn load_contact_state(
 // ============================================================================
 
 /// Save a contact (updates both list and state)
-pub fn save_contact(contact: &Contact, our_identity_seed: &[u8; 32]) -> Result<(), StorageError> {
+pub fn save_contact(
+    contact: &Contact,
+    our_identity_seed: &[u8; 32],
+    device_secret: &[u8; 32],
+) -> Result<(), StorageError> {
     // Save state file
-    save_contact_state(contact, our_identity_seed)?;
+    save_contact_state(contact, our_identity_seed, device_secret)?;
 
     // Update contact list
-    let mut list = load_contact_list(our_identity_seed).unwrap_or_default();
+    let mut list = load_contact_list(our_identity_seed, device_secret).unwrap_or_default();
 
     // Check if contact already exists in list (by handle)
     let exists = list.iter().any(|c| c.handle == contact.handle.as_str());
@@ -485,15 +501,15 @@ pub fn save_contact(contact: &Contact, our_identity_seed: &[u8; 32]) -> Result<(
             handle_proof: contact.handle_proof,
             handle: contact.handle.as_str().to_string(),
         });
-        save_contact_list(&list, our_identity_seed)?;
+        save_contact_list(&list, our_identity_seed, device_secret)?;
     }
 
     Ok(())
 }
 
 /// Load all contacts from disk
-pub fn load_all_contacts(our_identity_seed: &[u8; 32]) -> Vec<Contact> {
-    let identities = match load_contact_list(our_identity_seed) {
+pub fn load_all_contacts(our_identity_seed: &[u8; 32], device_secret: &[u8; 32]) -> Vec<Contact> {
+    let identities = match load_contact_list(our_identity_seed, device_secret) {
         Ok(list) => list,
         Err(e) => {
             crate::log_error(&format!("Failed to load contact list: {}", e));
@@ -503,7 +519,7 @@ pub fn load_all_contacts(our_identity_seed: &[u8; 32]) -> Vec<Contact> {
 
     let mut contacts = Vec::new();
     for identity in identities {
-        match load_contact_state(&identity, our_identity_seed) {
+        match load_contact_state(&identity, our_identity_seed, device_secret) {
             Ok(contact) => contacts.push(contact),
             Err(e) => {
                 crate::log_error(&format!(

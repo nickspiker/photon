@@ -149,7 +149,10 @@ impl PeerUpdateClient {
                                     // Ignore text, pong, frame messages
                                 }
                                 Err(e) => {
-                                    crate::log_error(&format!("PeerUpdate: WebSocket error: {}", e));
+                                    crate::log_error(&format!(
+                                        "PeerUpdate: WebSocket error: {}",
+                                        e
+                                    ));
                                     break;
                                 }
                             }

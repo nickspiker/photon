@@ -352,37 +352,6 @@ pub fn clutch_complete_parallel(
     ClutchResult { seed, proof }
 }
 
-// Legacy functions for v1 compatibility - kept for existing contacts
-/// Perform complete CLUTCH ceremony as initiator (v1 sequential).
-/// DEPRECATED: Use clutch_complete_parallel for new contacts.
-pub fn clutch_as_initiator(
-    our_handle_hash: &[u8; 32],
-    their_handle_hash: &[u8; 32],
-    our_ephemeral_secret: &[u8; 32],
-    their_ephemeral_pubkey: &[u8; 32],
-) -> ClutchResult {
-    let mut x25519_shared = clutch_ecdh(our_ephemeral_secret, their_ephemeral_pubkey);
-    let seed = derive_clutch_seed_x25519(our_handle_hash, their_handle_hash, &x25519_shared);
-    let proof = compute_clutch_proof(&seed);
-    x25519_shared.zeroize();
-    ClutchResult { seed, proof }
-}
-
-/// Perform complete CLUTCH ceremony as responder (v1 sequential).
-/// DEPRECATED: Use clutch_complete_parallel for new contacts.
-pub fn clutch_as_responder(
-    our_handle_hash: &[u8; 32],
-    their_handle_hash: &[u8; 32],
-    our_ephemeral_secret: &[u8; 32],
-    their_ephemeral_pubkey: &[u8; 32],
-) -> ClutchResult {
-    let mut x25519_shared = clutch_ecdh(our_ephemeral_secret, their_ephemeral_pubkey);
-    let seed = derive_clutch_seed_x25519(our_handle_hash, their_handle_hash, &x25519_shared);
-    let proof = compute_clutch_proof(&seed);
-    x25519_shared.zeroize();
-    ClutchResult { seed, proof }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -398,40 +367,10 @@ mod tests {
     }
 
     #[test]
-    fn test_clutch_ceremony_produces_same_seed() {
-        // Simulate private handle hashes = BLAKE3(handle)
-        let alice_handle_hash = *blake3::hash(b"alice test handle").as_bytes();
-        let bob_handle_hash = *blake3::hash(b"bob test handle").as_bytes();
-
-        // Generate ephemeral keypairs
-        let (alice_secret, alice_public) = generate_clutch_ephemeral();
-        let (bob_secret, bob_public) = generate_clutch_ephemeral();
-
-        // Alice as initiator (uses private handle hashes, NOT public handle_proof!)
-        let alice_result = clutch_as_initiator(
-            &alice_handle_hash,
-            &bob_handle_hash,
-            &alice_secret,
-            &bob_public,
-        );
-
-        // Bob as responder
-        let bob_result = clutch_as_responder(
-            &bob_handle_hash,
-            &alice_handle_hash,
-            &bob_secret,
-            &alice_public,
-        );
-
-        // Both should derive the same seed
-        assert_eq!(alice_result.seed.as_bytes(), bob_result.seed.as_bytes());
-
-        // Proofs should match
-        assert_eq!(alice_result.proof, bob_result.proof);
-
-        // Cross-verify proofs
-        assert!(verify_clutch_proof(&alice_result.seed, &bob_result.proof));
-        assert!(verify_clutch_proof(&bob_result.seed, &alice_result.proof));
+    fn test_clutch_ceremony_v1_compatibility_removed() {
+        // This test verified v1 sequential CLUTCH (initiator/responder pattern).
+        // v3 uses parallel exchange only - see test_parallel_clutch_produces_same_seed.
+        // Keeping this stub to document the intentional removal of v1 support.
     }
 
     #[test]
@@ -511,8 +450,12 @@ mod tests {
         let shared = clutch_ecdh(&secret1, &pub2);
 
         // Derive seed with pubkeys in both orders - should produce same result
-        let seed_a = derive_clutch_seed_parallel(&device1, &device2, &handle1, &handle2, &pub1, &pub2, &shared);
-        let seed_b = derive_clutch_seed_parallel(&device1, &device2, &handle1, &handle2, &pub2, &pub1, &shared);
+        let seed_a = derive_clutch_seed_parallel(
+            &device1, &device2, &handle1, &handle2, &pub1, &pub2, &shared,
+        );
+        let seed_b = derive_clutch_seed_parallel(
+            &device1, &device2, &handle1, &handle2, &pub2, &pub1, &shared,
+        );
 
         assert_eq!(seed_a.as_bytes(), seed_b.as_bytes());
     }
@@ -532,10 +475,14 @@ mod tests {
         let shared = clutch_ecdh(&secret1, &pub2);
 
         // Legitimate seed between device1 and device2
-        let legit_seed = derive_clutch_seed_parallel(&device1, &device2, &handle1, &handle2, &pub1, &pub2, &shared);
+        let legit_seed = derive_clutch_seed_parallel(
+            &device1, &device2, &handle1, &handle2, &pub1, &pub2, &shared,
+        );
 
         // Attacker tries to spoof with device3 claiming to be bob
-        let spoofed_seed = derive_clutch_seed_parallel(&device1, &device3, &handle1, &handle2, &pub1, &pub2, &shared);
+        let spoofed_seed = derive_clutch_seed_parallel(
+            &device1, &device3, &handle1, &handle2, &pub1, &pub2, &shared,
+        );
 
         // Seeds MUST be different - device key binding prevents spoofing
         assert_ne!(legit_seed.as_bytes(), spoofed_seed.as_bytes());
@@ -686,19 +633,11 @@ mod tests {
         let alice_handle = *blake3::hash(b"alice").as_bytes();
         let bob_handle = *blake3::hash(b"bob").as_bytes();
 
-        let alice_msg = compute_handshake_message(
-            &alice_device,
-            &bob_device,
-            &alice_handle,
-            &bob_handle,
-        );
+        let alice_msg =
+            compute_handshake_message(&alice_device, &bob_device, &alice_handle, &bob_handle);
 
-        let bob_msg = compute_handshake_message(
-            &bob_device,
-            &alice_device,
-            &bob_handle,
-            &alice_handle,
-        );
+        let bob_msg =
+            compute_handshake_message(&bob_device, &alice_device, &bob_handle, &alice_handle);
 
         // Both parties compute the same handshake message to sign
         assert_eq!(alice_msg, bob_msg);

@@ -1052,7 +1052,9 @@ impl PhotonApp {
 
         // Upload to FGTW (only if we have handle_proof)
         if let Some(ref handle_proof) = self.user_handle_proof {
-            if let Err(e) = crate::avatar::upload_avatar(&self.device_keypair.secret, &handle, handle_proof) {
+            if let Err(e) =
+                crate::avatar::upload_avatar(&self.device_keypair.secret, &handle, handle_proof)
+            {
                 info!("Failed to upload avatar to FGTW: {}", e);
             } else {
                 info!("Avatar uploaded to FGTW");
@@ -1148,7 +1150,9 @@ impl PhotonApp {
 
         // Upload to FGTW (only if we have handle_proof)
         if let Some(ref handle_proof) = self.user_handle_proof {
-            if let Err(e) = crate::avatar::upload_avatar(&self.device_keypair.secret, handle, handle_proof) {
+            if let Err(e) =
+                crate::avatar::upload_avatar(&self.device_keypair.secret, handle, handle_proof)
+            {
                 eprintln!("Avatar: Failed to upload to FGTW: {}", e);
             }
         } else {
@@ -1396,10 +1400,12 @@ impl PhotonApp {
 
                             // Save contact (updates both state file and contact list)
                             if let Some(ref identity_seed) = self.user_identity_seed {
+                                let device_secret = self.device_keypair.secret.as_bytes();
                                 if let Some(contact) = self.contacts.last() {
                                     if let Err(e) = crate::storage::contacts::save_contact(
                                         contact,
                                         identity_seed,
+                                        device_secret,
                                     ) {
                                         crate::log_error(&format!("Failed to save contact: {}", e));
                                     }
@@ -1413,7 +1419,10 @@ impl PhotonApp {
                                         &self.device_keypair,
                                         handle_proof,
                                     ) {
-                                        crate::log_error(&format!("Failed to sync contacts to cloud: {}", e));
+                                        crate::log_error(&format!(
+                                            "Failed to sync contacts to cloud: {}",
+                                            e
+                                        ));
                                     }
                                 }
                             }
@@ -1511,7 +1520,10 @@ impl PhotonApp {
             }
             QueryResult::AlreadyAttested(_peers) => {
                 crate::log_info("UI: Handle already attested - showing error");
-                (AppState::Launch(LaunchState::Error("Handle already attested".to_string())), vec![])
+                (
+                    AppState::Launch(LaunchState::Error("Handle already attested".to_string())),
+                    vec![],
+                )
             }
             QueryResult::Error(msg) => {
                 crate::log_error(&format!("UI: Attestation error - {}", msg));
@@ -1555,7 +1567,9 @@ impl PhotonApp {
                 );
 
                 // Load contacts from encrypted storage
-                let loaded_contacts = crate::storage::contacts::load_all_contacts(&identity_seed);
+                let device_secret = self.device_keypair.secret.as_bytes();
+                let loaded_contacts =
+                    crate::storage::contacts::load_all_contacts(&identity_seed, device_secret);
                 if !loaded_contacts.is_empty() {
                     crate::log_info(&format!(
                         "UI: Loaded {} contacts from storage",
@@ -1641,9 +1655,10 @@ impl PhotonApp {
                         // Simple merge: add any cloud contacts we don't have locally
                         let mut added = 0;
                         for cc in cloud_contacts {
-                            let exists = self.contacts.iter().any(|c| {
-                                c.handle_proof == cc.handle_proof
-                            });
+                            let exists = self
+                                .contacts
+                                .iter()
+                                .any(|c| c.handle_proof == cc.handle_proof);
                             if !exists {
                                 let contact = cc.to_contact();
                                 // Update shared pubkey list
@@ -1652,11 +1667,16 @@ impl PhotonApp {
                                     pubkeys.push(contact.public_identity.clone());
                                 }
                                 // Save to local storage
+                                let device_secret = self.device_keypair.secret.as_bytes();
                                 if let Err(e) = crate::storage::contacts::save_contact(
                                     &contact,
                                     &identity_seed,
+                                    device_secret,
                                 ) {
-                                    crate::log_error(&format!("Failed to save cloud contact locally: {}", e));
+                                    crate::log_error(&format!(
+                                        "Failed to save cloud contact locally: {}",
+                                        e
+                                    ));
                                 }
                                 self.contacts.push(contact);
                                 added += 1;
@@ -1675,7 +1695,10 @@ impl PhotonApp {
                                 &self.device_keypair,
                                 &handle_proof,
                             ) {
-                                crate::log_error(&format!("Failed to sync contacts to cloud: {}", e));
+                                crate::log_error(&format!(
+                                    "Failed to sync contacts to cloud: {}",
+                                    e
+                                ));
                             }
                         }
                     }
@@ -1692,7 +1715,10 @@ impl PhotonApp {
                                 &self.device_keypair,
                                 &handle_proof,
                             ) {
-                                crate::log_error(&format!("Failed to upload contacts to cloud: {}", e));
+                                crate::log_error(&format!(
+                                    "Failed to upload contacts to cloud: {}",
+                                    e
+                                ));
                             }
                         }
                     }
@@ -2022,98 +2048,13 @@ impl PhotonApp {
                         }
                     }
                 }
-                // Legacy v1 handlers (for backwards compatibility)
-                StatusUpdate::ClutchInit {
-                    from_handle_proof,
-                    to_handle_proof,
-                    ephemeral_pubkey,
-                    sender_addr,
-                } => {
-                    // Check if this is addressed to us
-                    if to_handle_proof != our_handle_proof {
-                        continue;
-                    }
-
-                    crate::log_info(&format!(
-                        "CLUTCH: Received Init (v1 legacy) from {} (from_hp: {}...)",
-                        sender_addr,
-                        hex::encode(&from_handle_proof[..8])
+                // v1 legacy messages - yeahnah, panic and burn
+                StatusUpdate::ClutchInit { sender_addr, .. }
+                | StatusUpdate::ClutchResponse { sender_addr, .. } => {
+                    crate::log_error(&format!(
+                        "CLUTCH: Received v1 legacy message from {} - REJECTED (v3 only)",
+                        sender_addr
                     ));
-
-                    // Find contact and respond with v1 protocol
-                    for contact in &mut self.contacts {
-                        if contact.handle_proof == from_handle_proof {
-                            contact.clutch_their_ephemeral_pubkey = Some(ephemeral_pubkey);
-                            let (secret, pubkey) = clutch::generate_clutch_ephemeral();
-                            contact.clutch_our_ephemeral_secret = Some(secret);
-                            contact.clutch_state = ClutchState::Offered;
-                            changed = true;
-
-                            checker.send_clutch(ClutchRequest {
-                                peer_addr: sender_addr,
-                                our_handle_proof,
-                                their_handle_proof: contact.handle_proof,
-                                message: ClutchRequestType::Response {
-                                    ephemeral_pubkey: pubkey,
-                                },
-                            });
-                            break;
-                        }
-                    }
-                }
-                StatusUpdate::ClutchResponse {
-                    from_handle_proof,
-                    to_handle_proof,
-                    ephemeral_pubkey,
-                    sender_addr,
-                } => {
-                    // Check if this is addressed to us
-                    if to_handle_proof != our_handle_proof {
-                        continue;
-                    }
-
-                    crate::log_info(&format!(
-                        "CLUTCH: Received Response (v1 legacy) from {} (from_hp: {}...)",
-                        sender_addr,
-                        hex::encode(&from_handle_proof[..8])
-                    ));
-
-                    // Find contact in Offered state and complete with v1 protocol
-                    for contact in &mut self.contacts {
-                        if contact.handle_proof == from_handle_proof
-                            && contact.clutch_state == ClutchState::Offered
-                        {
-                            contact.clutch_their_ephemeral_pubkey = Some(ephemeral_pubkey);
-
-                            // Use v1 derivation for backwards compat
-                            if let Some(our_secret) = &contact.clutch_our_ephemeral_secret {
-                                let result = clutch::clutch_as_initiator(
-                                    &our_identity_seed,
-                                    &contact.handle_hash,
-                                    our_secret,
-                                    &ephemeral_pubkey,
-                                );
-                                contact.relationship_seed = Some(result.seed);
-                                contact.clutch_state = ClutchState::Complete;
-                                if let Some(ref mut secret) = contact.clutch_our_ephemeral_secret {
-                                    secret.zeroize();
-                                }
-                                contact.clutch_our_ephemeral_secret = None;
-                                contact.clutch_their_ephemeral_pubkey = None;
-                                changed = true;
-
-                                checker.send_clutch(ClutchRequest {
-                                    peer_addr: sender_addr,
-                                    our_handle_proof,
-                                    their_handle_proof: contact.handle_proof,
-                                    message: ClutchRequestType::Complete {
-                                        proof: result.proof,
-                                    },
-                                });
-                            }
-                            break;
-                        }
-                    }
                 }
                 StatusUpdate::ClutchComplete {
                     from_handle_proof,
@@ -2131,66 +2072,25 @@ impl PhotonApp {
                     ));
 
                     // Find contact by cached handle_proof
-                    // In parallel v2, contact is already Complete (higher handle_proof party)
-                    // In v1 legacy, contact is in Offered state
-                    for contact in &mut self.contacts {
-                        if contact.handle_proof == from_handle_proof {
-                            // If already complete, just verify the proof
-                            if contact.clutch_state == ClutchState::Complete {
-                                if let Some(seed) = &contact.relationship_seed {
-                                    if clutch::verify_clutch_proof(seed, &proof) {
-                                        crate::log_info(&format!(
-                                            "CLUTCH: Proof verified for {} (already complete)",
-                                            contact.handle
-                                        ));
-                                    } else {
-                                        crate::log_error(&format!(
-                                            "CLUTCH: Proof verification FAILED for {}!",
-                                            contact.handle
-                                        ));
-                                    }
+                    // In v3 parallel exchange, contact should already be Complete
+                    for contact in &self.contacts {
+                        if contact.handle_proof == from_handle_proof
+                            && contact.clutch_state == ClutchState::Complete
+                        {
+                            if let Some(seed) = &contact.relationship_seed {
+                                if clutch::verify_clutch_proof(seed, &proof) {
+                                    crate::log_info(&format!(
+                                        "CLUTCH: Proof verified for {}",
+                                        contact.handle
+                                    ));
+                                } else {
+                                    crate::log_error(&format!(
+                                        "CLUTCH: Proof verification FAILED for {}!",
+                                        contact.handle
+                                    ));
                                 }
-                                break;
                             }
-
-                            // Legacy v1: Offered state, need to derive seed
-                            if contact.clutch_state == ClutchState::Offered {
-                                if let (Some(our_secret), Some(their_pubkey)) = (
-                                    &contact.clutch_our_ephemeral_secret,
-                                    &contact.clutch_their_ephemeral_pubkey,
-                                ) {
-                                    let result = clutch::clutch_as_responder(
-                                        &our_identity_seed,
-                                        &contact.handle_hash,
-                                        our_secret,
-                                        their_pubkey,
-                                    );
-
-                                    if clutch::verify_clutch_proof(&result.seed, &proof) {
-                                        contact.relationship_seed = Some(result.seed);
-                                        contact.clutch_state = ClutchState::Complete;
-                                        if let Some(ref mut secret) =
-                                            contact.clutch_our_ephemeral_secret
-                                        {
-                                            secret.zeroize();
-                                        }
-                                        contact.clutch_our_ephemeral_secret = None;
-                                        contact.clutch_their_ephemeral_pubkey = None;
-                                        changed = true;
-
-                                        crate::log_info(&format!(
-                                            "CLUTCH: Complete with {} - proof verified! (v1 legacy)",
-                                            contact.handle
-                                        ));
-                                    } else {
-                                        crate::log_error(&format!(
-                                            "CLUTCH: Proof verification FAILED for {}!",
-                                            contact.handle
-                                        ));
-                                    }
-                                }
-                                break;
-                            }
+                            break;
                         }
                     }
                 }
@@ -2421,16 +2321,22 @@ impl PhotonApp {
                     if let Some(pixels) = &result.pixels {
                         let display_pixels =
                             crate::display_profile::DisplayConverter::new().convert_avatar(pixels);
-                        self.avatar_pixels = Some(display_pixels);
+                        self.avatar_pixels = Some(display_pixels.clone());
                         self.avatar_scaled = None; // Force re-scale
                         changed = true;
                         crate::log_info(&format!(
-                            "Avatar: User avatar loaded from FGTW ({} bytes)",
+                            "Avatar: User avatar loaded ({} bytes)",
                             pixels.len()
                         ));
-                    } else {
-                        // No pixels means either no avatar exists or already in sync
-                        // (this is not an error - sync_avatar_background logs details)
+                        // Also update the contact entry for self (if user added themselves)
+                        for contact in &mut self.contacts {
+                            if contact.handle.as_str() == result.handle {
+                                contact.avatar_pixels = Some(display_pixels.clone());
+                                contact.avatar_scaled = None;
+                                contact.avatar_scaled_diameter = 0;
+                                break;
+                            }
+                        }
                     }
                     continue;
                 }
@@ -2498,7 +2404,10 @@ impl PhotonApp {
             let contact = &self.contacts[contact_idx];
             if let Some(ip) = contact.ip {
                 checker.ping(ip, contact.public_identity.clone());
-                crate::log_info(&format!("Status: Pinged {} on conversation enter", contact.handle));
+                crate::log_info(&format!(
+                    "Status: Pinged {} on conversation enter",
+                    contact.handle
+                ));
             }
         }
     }

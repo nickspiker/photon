@@ -93,7 +93,10 @@ fn cloud_contacts_schema() -> SectionSchema {
 }
 
 /// Encode contacts to encrypted VSF blob
-pub fn encode_contacts(contacts: &[CloudContact], encryption_key: &[u8; 32]) -> Result<Vec<u8>, CloudError> {
+pub fn encode_contacts(
+    contacts: &[CloudContact],
+    encryption_key: &[u8; 32],
+) -> Result<Vec<u8>, CloudError> {
     let schema = cloud_contacts_schema();
     let mut builder = schema
         .build()
@@ -123,7 +126,10 @@ pub fn encode_contacts(contacts: &[CloudContact], encryption_key: &[u8; 32]) -> 
 }
 
 /// Decode contacts from encrypted VSF blob
-pub fn decode_contacts(encrypted: &[u8], encryption_key: &[u8; 32]) -> Result<Vec<CloudContact>, CloudError> {
+pub fn decode_contacts(
+    encrypted: &[u8],
+    encryption_key: &[u8; 32],
+) -> Result<Vec<CloudContact>, CloudError> {
     let vsf_bytes = decrypt_data(encrypted, encryption_key)?;
 
     let mut ptr = 0;
@@ -183,8 +189,8 @@ impl CloudContact {
 
 /// Encrypt data with ChaCha20-Poly1305
 fn encrypt_data(data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, CloudError> {
-    let cipher = ChaCha20Poly1305::new_from_slice(key)
-        .map_err(|e| CloudError::Encryption(e.to_string()))?;
+    let cipher =
+        ChaCha20Poly1305::new_from_slice(key).map_err(|e| CloudError::Encryption(e.to_string()))?;
 
     let mut nonce_bytes = [0u8; 12];
     rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce_bytes);
@@ -207,8 +213,8 @@ fn decrypt_data(encrypted: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, CloudError>
         return Err(CloudError::Decryption("Data too short".to_string()));
     }
 
-    let cipher = ChaCha20Poly1305::new_from_slice(key)
-        .map_err(|e| CloudError::Decryption(e.to_string()))?;
+    let cipher =
+        ChaCha20Poly1305::new_from_slice(key).map_err(|e| CloudError::Decryption(e.to_string()))?;
 
     let nonce_bytes: [u8; 12] = encrypted[..12]
         .try_into()
@@ -279,12 +285,14 @@ pub fn sync_contacts_to_cloud(
     ));
 
     // Upload to FGTW
-    put_blob_blocking(&storage_key, &encrypted, device_keypair, handle_proof).map_err(|e| match e {
-        BlobError::Network(s) => CloudError::Network(s),
-        BlobError::NotFound => CloudError::Network("Blob not found".to_string()),
-        BlobError::Unauthorized(s) => CloudError::Encryption(s),
-        BlobError::ServerError(s) => CloudError::Network(s),
-    })?;
+    put_blob_blocking(&storage_key, &encrypted, device_keypair, handle_proof).map_err(
+        |e| match e {
+            BlobError::Network(s) => CloudError::Network(s),
+            BlobError::NotFound => CloudError::Network("Blob not found".to_string()),
+            BlobError::Unauthorized(s) => CloudError::Encryption(s),
+            BlobError::ServerError(s) => CloudError::Network(s),
+        },
+    )?;
 
     Ok(())
 }
