@@ -63,14 +63,14 @@ impl std::fmt::Display for HandleText {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum ClutchState {
     #[default]
-    Pending,           // Contact added, no ceremony started
-    KeysGenerated,     // All 8 ephemeral keypairs generated
-    OfferSent,         // We sent our full offer (~548KB)
-    OfferReceived,     // We received their full offer
-    OffersExchanged,   // Both offers exchanged
-    KemSent,           // We sent our KEM response (~17KB)
-    KemReceived,       // We received their KEM response
-    Complete,          // CLUTCH done, can message
+    Pending, // Contact added, no ceremony started
+    KeysGenerated,   // All 8 ephemeral keypairs generated
+    OfferSent,       // We sent our full offer (~548KB)
+    OfferReceived,   // We received their full offer
+    OffersExchanged, // Both offers exchanged
+    KemSent,         // We sent our KEM response (~17KB)
+    KemReceived,     // We received their KEM response
+    Complete,        // CLUTCH done, can message
 }
 
 #[derive(Clone, Debug)]
@@ -80,18 +80,18 @@ pub struct Contact {
     pub handle_proof: [u8; 32], // Cached handle_proof (expensive to compute - ~1 second) - PUBLIC
     pub handle_hash: [u8; 32], // BLAKE3(handle) - PRIVATE, used for seed derivation
     pub public_identity: DevicePubkey,
-    pub ip: Option<SocketAddr>,      // Last known IP:port from FGTW or direct (public IP)
-    pub local_ip: Option<Ipv4Addr>,  // LAN IP discovered via broadcast (for hairpin NAT workaround)
-    pub local_port: Option<u16>,     // LAN port discovered via broadcast
+    pub ip: Option<SocketAddr>, // Last known IP:port from FGTW or direct (public IP)
+    pub local_ip: Option<Ipv4Addr>, // LAN IP discovered via broadcast (for hairpin NAT workaround)
+    pub local_port: Option<u16>, // LAN port discovered via broadcast
     pub relationship_seed: Option<Seed>,
     pub send_pad: Option<Vec<u8>>, // 1MB rolling pad for sending messages
     pub recv_pad: Option<Vec<u8>>, // 1MB rolling pad for receiving messages
     pub clutch_state: ClutchState,
 
     // Full 8-algorithm CLUTCH state
-    pub clutch_our_keypairs: Option<ClutchAllKeypairs>,       // Our 8 ephemeral keypairs (~512KB secret keys)
-    pub clutch_their_offer: Option<ClutchFullOfferPayload>,  // Their 8 public keys (~548KB)
-    pub clutch_our_kem_secrets: Option<ClutchKemSharedSecrets>,   // Secrets from our encapsulations (we→them)
+    pub clutch_our_keypairs: Option<ClutchAllKeypairs>, // Our 8 ephemeral keypairs (~512KB secret keys)
+    pub clutch_their_offer: Option<ClutchFullOfferPayload>, // Their 8 public keys (~548KB)
+    pub clutch_our_kem_secrets: Option<ClutchKemSharedSecrets>, // Secrets from our encapsulations (we→them)
     pub clutch_their_kem_secrets: Option<ClutchKemSharedSecrets>, // Secrets from their encapsulations (them→us)
 
     // Legacy X25519-only fields (kept for backward compat with existing contacts)

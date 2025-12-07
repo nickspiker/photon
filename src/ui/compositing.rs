@@ -899,12 +899,18 @@ impl PhotonApp {
                                     // Line 2: Hint about what's happening
                                     let hint = match contact.clutch_state {
                                         ClutchState::Pending => "waiting for them to add you back",
-                                        ClutchState::KeysGenerated => "generating ephemeral keys...",
-                                        ClutchState::OfferSent => "sent keys, waiting for theirs...",
+                                        ClutchState::KeysGenerated => {
+                                            "generating ephemeral keys..."
+                                        }
+                                        ClutchState::OfferSent => {
+                                            "sent keys, waiting for theirs..."
+                                        }
                                         ClutchState::OfferReceived => "received their keys...",
                                         ClutchState::OffersExchanged => "exchanging KEM secrets...",
                                         ClutchState::KemSent => "sent KEM response, waiting...",
-                                        ClutchState::KemReceived => "received their KEM response...",
+                                        ClutchState::KemReceived => {
+                                            "received their KEM response..."
+                                        }
                                         ClutchState::Complete => unreachable!(),
                                     };
                                     let line2_y = msg_center_y + (font_size as usize);

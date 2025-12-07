@@ -129,7 +129,10 @@ impl HandleQuery {
                             ));
                             // Fall back to ephemeral port
                             let udp = UdpSocket::bind("[::]:0").expect("Failed to bind UDP socket");
-                            let p = udp.local_addr().expect("Failed to get socket address").port();
+                            let p = udp
+                                .local_addr()
+                                .expect("Failed to get socket address")
+                                .port();
                             (udp, p)
                         }
                     }
@@ -141,7 +144,10 @@ impl HandleQuery {
                     ));
                     // Fall back to ephemeral port
                     let udp = UdpSocket::bind("[::]:0").expect("Failed to bind UDP socket");
-                    let p = udp.local_addr().expect("Failed to get socket address").port();
+                    let p = udp
+                        .local_addr()
+                        .expect("Failed to get socket address")
+                        .port();
                     (udp, p)
                 }
             }
@@ -252,7 +258,10 @@ impl HandleQuery {
                             ));
                             // Fall back to ephemeral port
                             let udp = UdpSocket::bind("[::]:0").expect("Failed to bind UDP socket");
-                            let p = udp.local_addr().expect("Failed to get socket address").port();
+                            let p = udp
+                                .local_addr()
+                                .expect("Failed to get socket address")
+                                .port();
                             (udp, p)
                         }
                     }
@@ -264,7 +273,10 @@ impl HandleQuery {
                     ));
                     // Fall back to ephemeral port
                     let udp = UdpSocket::bind("[::]:0").expect("Failed to bind UDP socket");
-                    let p = udp.local_addr().expect("Failed to get socket address").port();
+                    let p = udp
+                        .local_addr()
+                        .expect("Failed to get socket address")
+                        .port();
                     (udp, p)
                 }
             }
@@ -603,7 +615,12 @@ impl HandleQuery {
                         .enable_all()
                         .build()
                         .expect("Failed to create tokio runtime")
-                        .block_on(load_bootstrap_peers(&keypair, handle_proof, crate::PHOTON_PORT, &handle));
+                        .block_on(load_bootstrap_peers(
+                            &keypair,
+                            handle_proof,
+                            crate::PHOTON_PORT,
+                            &handle,
+                        ));
 
                     // Add found peers to store
                     if !bootstrap_result.peers.is_empty() {

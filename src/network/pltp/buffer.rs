@@ -28,7 +28,12 @@ pub struct ReceiveBuffer {
 
 impl ReceiveBuffer {
     /// Create new receive buffer from SPEC
-    pub fn new(total_packets: u32, packet_size: u16, total_size: u32, expected_hash: [u8; 32]) -> Self {
+    pub fn new(
+        total_packets: u32,
+        packet_size: u16,
+        total_size: u32,
+        expected_hash: [u8; 32],
+    ) -> Self {
         // Pre-allocate data buffer
         let data = vec![0u8; total_size as usize];
 
@@ -157,8 +162,7 @@ pub struct SendBuffer {
 impl SendBuffer {
     /// Create send buffer from data
     pub fn new(data: Vec<u8>, packet_size: u16) -> Self {
-        let total_packets =
-            ((data.len() + packet_size as usize - 1) / packet_size as usize) as u32;
+        let total_packets = ((data.len() + packet_size as usize - 1) / packet_size as usize) as u32;
         let acked = bitvec![0; total_packets as usize];
         let data_hash = *blake3::hash(&data).as_bytes();
 

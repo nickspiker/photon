@@ -142,9 +142,10 @@ async fn load_bootstrap_peers_inner(
         .map_err(|e| format!("Failed to read challenge: {}", e))?;
 
     #[cfg(feature = "development")]
-    crate::log_info(&crate::network::status::vsf_inspect(
+    crate::log_info(&crate::network::inspect::vsf_inspect(
         &challenge_bytes,
-        "RX FGTW",
+        "FGTW",
+        "RX",
         "/challenge",
     ));
 
@@ -165,13 +166,6 @@ async fn load_bootstrap_peers_inner(
         avatar_pub_key,
     )?;
 
-    #[cfg(feature = "development")]
-    crate::log_info(&crate::network::status::vsf_inspect(
-        &announce_bytes,
-        "TX FGTW",
-        "/announce",
-    ));
-
     // Send announce to FGTW
     let announce_response = client
         .post(&format!("{}/announce", FGTW_URL))
@@ -190,9 +184,10 @@ async fn load_bootstrap_peers_inner(
         .map_err(|e| format!("Failed to read response: {}", e))?;
 
     #[cfg(feature = "development")]
-    crate::log_info(&crate::network::status::vsf_inspect(
+    crate::log_info(&crate::network::inspect::vsf_inspect(
         &response_bytes,
-        "RX FGTW",
+        "FGTW",
+        "RX",
         "/announce",
     ));
 
@@ -423,9 +418,10 @@ fn build_announce_message(
     let vsf_bytes = sign_section(unsigned_bytes, "announce", device_key.secret.as_bytes())?;
 
     #[cfg(feature = "development")]
-    crate::log_info(&crate::network::status::vsf_inspect(
+    crate::log_info(&crate::network::inspect::vsf_inspect(
         &vsf_bytes,
-        "TX FGTW",
+        "FGTW",
+        "TX",
         "/announce",
     ));
 
@@ -434,40 +430,64 @@ fn build_announce_message(
 
 /// Parse peer list from VSF bytes
 fn parse_peer_list(bytes: &[u8], device_key: &Keypair) -> Result<Vec<PeerRecord>, String> {
-    let mut ptr = 0;
+    // 1. Parse outer VSF file wrapper (proper VSF with header + provenance)
+    let (outer_header, _) =
+        VsfHeader::decode(bytes).map_err(|e| format!("Parse response header: {}", e))?;
 
-    // Response MUST be encrypted (v'e') - authentication required
-    let first_type = parse(bytes, &mut ptr).map_err(|e| format!("Parse response type: {}", e))?;
-    let plaintext_bytes = match &first_type {
-        vsf::VsfType::v(b'e', encrypted_data) => decrypt_from_fgtw(encrypted_data, device_key)?,
-        _ => {
-            return Err(format!(
-                "Invalid peer list: must be encrypted (v'e') for authentication, got {:?}",
-                first_type
-            ));
+    // 2. Find encrypted_peers section in outer wrapper
+    let section_offset = outer_header
+        .fields
+        .iter()
+        .find(|f| f.name == "encrypted_peers")
+        .map(|f| f.offset_bytes)
+        .ok_or("Missing 'encrypted_peers' section in response")?;
+
+    // 3. Parse section to get encrypted data field
+    let mut ptr = section_offset;
+    let section = VsfSection::parse(bytes, &mut ptr)
+        .map_err(|e| format!("Parse encrypted_peers section: {}", e))?;
+
+    // 4. Extract v'e' encrypted blob from "data" field
+    let encrypted_data = section
+        .get_field("data")
+        .and_then(|f| f.values.first())
+        .and_then(|v| match v {
+            vsf::VsfType::v(b'e', data) => Some(data.clone()),
+            _ => None,
+        })
+        .ok_or("Missing encrypted data field (v'e') in encrypted_peers section")?;
+
+    // 5. Decrypt to get inner VSF file with peers
+    let plaintext_bytes = decrypt_from_fgtw(&encrypted_data, device_key)?;
+
+    // Log decrypted VSF with inspector
+    #[cfg(feature = "development")]
+    {
+        let msg =
+            crate::network::inspect::vsf_inspect(&plaintext_bytes, "FGTW", "Decrypted", "peers");
+        if !msg.is_empty() {
+            crate::log_info(&msg);
         }
-    };
+    }
 
-    // The decrypted plaintext is now a complete VSF file with proper sections
+    // 6. Parse inner VSF header
+    let (inner_header, _) = VsfHeader::decode(&plaintext_bytes)
+        .map_err(|e| format!("Parse inner VSF header: {}", e))?;
 
-    // Parse VSF header using the crate
-    let (header, _header_bytes) =
-        VsfHeader::decode(&plaintext_bytes).map_err(|e| format!("Parse VSF header: {}", e))?;
-
-    // Find the "peers" section offset from header fields
-    let peers_offset = header
+    // 7. Find the "peers" section offset from inner header fields
+    let peers_offset = inner_header
         .fields
         .iter()
         .find(|f| f.name == "peers")
         .map(|f| f.offset_bytes)
-        .ok_or("Missing 'peers' section in header")?;
+        .ok_or("Missing 'peers' section in decrypted peer list")?;
 
-    // Parse the peers section using the crate
+    // 8. Parse the peers section
     let mut ptr = peers_offset;
     let peers_section = VsfSection::parse(&plaintext_bytes, &mut ptr)
         .map_err(|e| format!("Parse peers section: {}", e))?;
 
-    // Get all peer fields and convert to PeerRecords
+    // 9. Get all peer fields and convert to PeerRecords
     let peer_fields = peers_section.get_fields("peer");
     let mut peers = Vec::new();
     for field in peer_fields {

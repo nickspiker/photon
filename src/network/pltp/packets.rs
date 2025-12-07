@@ -36,8 +36,7 @@ impl PLTPSpec {
     pub fn new(data: &[u8]) -> Self {
         let total_size = data.len() as u32;
         let packet_size = Self::DEFAULT_PACKET_SIZE;
-        let total_packets =
-            (total_size as usize + packet_size as usize - 1) / packet_size as usize;
+        let total_packets = (total_size as usize + packet_size as usize - 1) / packet_size as usize;
         let data_hash = *blake3::hash(data).as_bytes();
 
         Self {
@@ -63,9 +62,18 @@ impl PLTPSpec {
             .add_section(
                 "pltp_spec",
                 vec![
-                    ("count".to_string(), VsfType::u(self.total_packets as usize, false)),
-                    ("psize".to_string(), VsfType::u(self.packet_size as usize, false)),
-                    ("total".to_string(), VsfType::u(self.total_size as usize, false)),
+                    (
+                        "count".to_string(),
+                        VsfType::u(self.total_packets as usize, false),
+                    ),
+                    (
+                        "psize".to_string(),
+                        VsfType::u(self.packet_size as usize, false),
+                    ),
+                    (
+                        "total".to_string(),
+                        VsfType::u(self.total_size as usize, false),
+                    ),
                     ("hash".to_string(), VsfType::hb(self.data_hash.to_vec())),
                 ],
             )
@@ -77,45 +85,50 @@ impl PLTPSpec {
     pub fn from_vsf_fields(fields: &[(String, vsf::VsfType)]) -> Option<Self> {
         use vsf::VsfType;
 
-        let total_packets = fields.iter().find(|(k, _)| k == "count").and_then(|(_, v)| {
-            match v {
-                VsfType::u(n, _) => Some(*n as u32),
-                VsfType::u3(n) => Some(*n as u32),
-                VsfType::u4(n) => Some(*n as u32),
-                VsfType::u5(n) => Some(*n as u32),
-                _ => None,
-            }
-        })?;
+        let total_packets =
+            fields
+                .iter()
+                .find(|(k, _)| k == "count")
+                .and_then(|(_, v)| match v {
+                    VsfType::u(n, _) => Some(*n as u32),
+                    VsfType::u3(n) => Some(*n as u32),
+                    VsfType::u4(n) => Some(*n as u32),
+                    VsfType::u5(n) => Some(*n as u32),
+                    _ => None,
+                })?;
 
-        let packet_size = fields.iter().find(|(k, _)| k == "psize").and_then(|(_, v)| {
-            match v {
+        let packet_size = fields
+            .iter()
+            .find(|(k, _)| k == "psize")
+            .and_then(|(_, v)| match v {
                 VsfType::u(n, _) => Some(*n as u16),
                 VsfType::u3(n) => Some(*n as u16),
                 VsfType::u4(n) => Some(*n as u16),
                 _ => None,
-            }
-        })?;
+            })?;
 
-        let total_size = fields.iter().find(|(k, _)| k == "total").and_then(|(_, v)| {
-            match v {
+        let total_size = fields
+            .iter()
+            .find(|(k, _)| k == "total")
+            .and_then(|(_, v)| match v {
                 VsfType::u(n, _) => Some(*n as u32),
                 VsfType::u3(n) => Some(*n as u32),
                 VsfType::u4(n) => Some(*n as u32),
                 VsfType::u5(n) => Some(*n as u32),
                 _ => None,
-            }
-        })?;
+            })?;
 
-        let data_hash = fields.iter().find(|(k, _)| k == "hash").and_then(|(_, v)| {
-            match v {
+        let data_hash = fields
+            .iter()
+            .find(|(k, _)| k == "hash")
+            .and_then(|(_, v)| match v {
                 VsfType::hb(bytes) if bytes.len() == 32 => {
                     let mut arr = [0u8; 32];
                     arr.copy_from_slice(bytes);
                     Some(arr)
                 }
                 _ => None,
-            }
-        })?;
+            })?;
 
         Some(Self {
             total_packets,
@@ -238,27 +251,29 @@ impl PLTPAck {
     pub fn from_vsf_fields(fields: &[(String, vsf::VsfType)]) -> Option<Self> {
         use vsf::VsfType;
 
-        let sequence = fields.iter().find(|(k, _)| k == "seq").and_then(|(_, v)| {
-            match v {
+        let sequence = fields
+            .iter()
+            .find(|(k, _)| k == "seq")
+            .and_then(|(_, v)| match v {
                 VsfType::u(n, _) => Some(*n as u32),
                 VsfType::u3(n) => Some(*n as u32),
                 VsfType::u4(n) => Some(*n as u32),
                 VsfType::u5(n) => Some(*n as u32),
                 VsfType::u6(n) => Some(*n as u32),
                 _ => None,
-            }
-        })?;
+            })?;
 
-        let chunk_hash = fields.iter().find(|(k, _)| k == "hash").and_then(|(_, v)| {
-            match v {
+        let chunk_hash = fields
+            .iter()
+            .find(|(k, _)| k == "hash")
+            .and_then(|(_, v)| match v {
                 VsfType::hb(bytes) if bytes.len() == 32 => {
                     let mut arr = [0u8; 32];
                     arr.copy_from_slice(bytes);
                     Some(arr)
                 }
                 _ => None,
-            }
-        })?;
+            })?;
 
         let buffer_percent = fields
             .iter()
@@ -298,7 +313,7 @@ pub struct PLTPNak {
 impl PLTPNak {
     /// Serialize to VSF bytes
     pub fn to_vsf_bytes(&self, keypair: &Keypair) -> Vec<u8> {
-        use vsf::{VsfBuilder, VsfType, Tensor};
+        use vsf::{Tensor, VsfBuilder, VsfType};
 
         let provenance = self.compute_provenance();
         let sig = keypair.sign(&provenance);
@@ -330,12 +345,13 @@ impl PLTPNak {
     pub fn from_vsf_fields(fields: &[(String, vsf::VsfType)]) -> Option<Self> {
         use vsf::VsfType;
 
-        let seq_bytes = fields.iter().find(|(k, _)| k == "seqs").and_then(|(_, v)| {
-            match v {
+        let seq_bytes = fields
+            .iter()
+            .find(|(k, _)| k == "seqs")
+            .and_then(|(_, v)| match v {
                 VsfType::t_u3(tensor) => Some(tensor.data.clone()),
                 _ => None,
-            }
-        })?;
+            })?;
 
         // Decode sequences (4 bytes each)
         let missing_sequences: Vec<u32> = seq_bytes
@@ -412,13 +428,14 @@ impl PLTPControl {
     pub fn from_vsf_fields(fields: &[(String, vsf::VsfType)]) -> Option<Self> {
         use vsf::VsfType;
 
-        let cmd = fields.iter().find(|(k, _)| k == "cmd").and_then(|(_, v)| {
-            match v {
+        let cmd = fields
+            .iter()
+            .find(|(k, _)| k == "cmd")
+            .and_then(|(_, v)| match v {
                 VsfType::u3(n) => ControlCommand::from_u8(*n),
                 VsfType::u(n, _) => ControlCommand::from_u8(*n as u8),
                 _ => None,
-            }
-        })?;
+            })?;
 
         Some(Self { command: cmd })
     }
@@ -459,7 +476,10 @@ impl PLTPComplete {
                 "pltp_done",
                 vec![
                     ("hash".to_string(), VsfType::hb(self.final_hash.to_vec())),
-                    ("ok".to_string(), VsfType::u3(if self.success { 1 } else { 0 })),
+                    (
+                        "ok".to_string(),
+                        VsfType::u3(if self.success { 1 } else { 0 }),
+                    ),
                 ],
             )
             .build()
@@ -470,16 +490,17 @@ impl PLTPComplete {
     pub fn from_vsf_fields(fields: &[(String, vsf::VsfType)]) -> Option<Self> {
         use vsf::VsfType;
 
-        let final_hash = fields.iter().find(|(k, _)| k == "hash").and_then(|(_, v)| {
-            match v {
+        let final_hash = fields
+            .iter()
+            .find(|(k, _)| k == "hash")
+            .and_then(|(_, v)| match v {
                 VsfType::hb(bytes) if bytes.len() == 32 => {
                     let mut arr = [0u8; 32];
                     arr.copy_from_slice(bytes);
                     Some(arr)
                 }
                 _ => None,
-            }
-        })?;
+            })?;
 
         let success = fields
             .iter()
@@ -491,7 +512,10 @@ impl PLTPComplete {
             })
             .unwrap_or(false);
 
-        Some(Self { final_hash, success })
+        Some(Self {
+            final_hash,
+            success,
+        })
     }
 
     fn compute_provenance(&self) -> [u8; 32] {

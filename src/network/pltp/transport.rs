@@ -54,7 +54,10 @@ impl TransportCapabilities {
             crate::log_info("Raw sockets unavailable, using TCP fallback (slower)");
         }
 
-        Self { raw_available, mode }
+        Self {
+            raw_available,
+            mode,
+        }
     }
 
     /// Try to create a raw socket to test availability
@@ -386,9 +389,10 @@ impl PhotonTransport {
 
     /// Send via raw254 with PLTP windowing
     fn send_raw254_pltp(&self, peer: Ipv4Addr, data: &[u8]) -> io::Result<()> {
-        let raw = self.raw.as_ref().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::Other, "Raw socket not available")
-        })?;
+        let raw = self
+            .raw
+            .as_ref()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Raw socket not available"))?;
 
         // For raw254, we need to implement PLTP windowing
         // DATA packet format: [4-byte seq][payload]

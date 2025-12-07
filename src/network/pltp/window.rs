@@ -67,7 +67,9 @@ impl RTTEstimator {
         self.rto = self.smoothed_rtt + self.rtt_variance * 4;
 
         // Clamp RTO between 100ms and 10s
-        self.rto = self.rto.clamp(Duration::from_millis(100), Duration::from_secs(10));
+        self.rto = self
+            .rto
+            .clamp(Duration::from_millis(100), Duration::from_secs(10));
     }
 
     /// Get current RTO (retransmission timeout)

@@ -1387,9 +1387,10 @@ pub fn upload_avatar(
     let url = format!("{}/avatar/{}", FGTW_URL, storage_key);
 
     #[cfg(feature = "development")]
-    crate::log_info(&crate::network::status::vsf_inspect(
+    crate::log_info(&crate::network::inspect::vsf_inspect(
         &signed_vsf,
-        "TX FGTW",
+        "FGTW",
+        "TX",
         &format!("/avatar/{}", &storage_key[..8]),
     ));
 
@@ -1455,9 +1456,10 @@ pub fn download_avatar(handle: &str) -> Option<(usize, Vec<u8>)> {
     let vsf_data = response.bytes().ok()?;
 
     #[cfg(feature = "development")]
-    crate::log_info(&crate::network::status::vsf_inspect(
+    crate::log_info(&crate::network::inspect::vsf_inspect(
         &vsf_data,
-        "RX FGTW",
+        "FGTW",
+        "RX",
         &format!("/avatar/{}", &storage_key[..8]),
     ));
 
@@ -1546,9 +1548,10 @@ pub fn sync_avatar_bidirectional(
                 Err(e) => return AvatarSyncResult::Error(format!("Read body: {}", e)),
             };
             #[cfg(feature = "development")]
-            crate::log_info(&crate::network::status::vsf_inspect(
+            crate::log_info(&crate::network::inspect::vsf_inspect(
                 &vsf_data,
-                "RX FGTW",
+                "FGTW",
+                "RX",
                 &format!("/avatar/{}", &storage_key[..8]),
             ));
             let _ = save_avatar_to_cache(handle, &vsf_data);
@@ -1581,9 +1584,10 @@ pub fn sync_avatar_bidirectional(
                     Err(e) => return AvatarSyncResult::Error(format!("Read body: {}", e)),
                 };
                 #[cfg(feature = "development")]
-                crate::log_info(&crate::network::status::vsf_inspect(
+                crate::log_info(&crate::network::inspect::vsf_inspect(
                     &vsf_data,
-                    "RX FGTW",
+                    "FGTW",
+                    "RX",
                     &format!("/avatar/{}", &storage_key[..8]),
                 ));
                 let _ = save_avatar_to_cache(handle, &vsf_data);
@@ -1616,9 +1620,10 @@ pub fn sync_avatar_bidirectional(
                 Err(e) => return AvatarSyncResult::Error(format!("Read body: {}", e)),
             };
             #[cfg(feature = "development")]
-            crate::log_info(&crate::network::status::vsf_inspect(
+            crate::log_info(&crate::network::inspect::vsf_inspect(
                 &vsf_data,
-                "RX FGTW",
+                "FGTW",
+                "RX",
                 &format!("/avatar/{}", &storage_key[..8]),
             ));
             let _ = save_avatar_to_cache(handle, &vsf_data);

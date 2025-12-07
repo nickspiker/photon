@@ -120,10 +120,7 @@ impl OutboundTransfer {
         if let Some(payload) = self.send_buffer.get_packet(ack.sequence) {
             let expected_hash = *blake3::hash(payload).as_bytes();
             if expected_hash != ack.chunk_hash {
-                crate::log_error(&format!(
-                    "PLTP: ACK hash mismatch for seq {}",
-                    ack.sequence
-                ));
+                crate::log_error(&format!("PLTP: ACK hash mismatch for seq {}", ack.sequence));
                 return false;
             }
         } else {
@@ -283,7 +280,10 @@ impl InboundTransfer {
             ));
         }
 
-        PLTPComplete { final_hash, success }
+        PLTPComplete {
+            final_hash,
+            success,
+        }
     }
 
     /// Get missing sequences for NAK

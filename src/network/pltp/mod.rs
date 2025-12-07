@@ -149,10 +149,7 @@ impl PLTPManager {
 
             let (acked, total) = transfer.send_buffer.progress();
             if acked % 50 == 0 || acked == total {
-                crate::log_info(&format!(
-                    "PLTP: ACK'd {}/{} to {}",
-                    acked, total, peer_addr
-                ));
+                crate::log_info(&format!("PLTP: ACK'd {}/{} to {}", acked, total, peer_addr));
             }
 
             // Send more packets if window allows
@@ -346,15 +343,13 @@ mod tests {
 
         // Parse SPEC and feed to receiver
         let spec_fields = parse_vsf_fields(&spec_bytes);
-        let spec = PLTPSpec::from_vsf_fields(&spec_fields)
-            .expect("Failed to parse SPEC");
+        let spec = PLTPSpec::from_vsf_fields(&spec_fields).expect("Failed to parse SPEC");
         let spec_ack = receiver.handle_spec(peer_addr, spec);
         assert!(!spec_ack.is_empty());
 
         // Parse SPEC ACK and feed to sender - it's a special ACK with seq=MAX
         let ack_fields = parse_vsf_fields(&spec_ack);
-        let ack = PLTPAck::from_vsf_fields(&ack_fields)
-            .expect("Failed to parse SPEC ACK");
+        let ack = PLTPAck::from_vsf_fields(&ack_fields).expect("Failed to parse SPEC ACK");
         assert_eq!(ack.sequence, u32::MAX); // SPEC ACK marker
 
         let mut data_packets = sender.handle_spec_ack(peer_addr);
@@ -365,13 +360,13 @@ mod tests {
             let mut new_packets = Vec::new();
 
             for data_bytes in &data_packets {
-                let data_pkt = PLTPData::from_bytes(data_bytes)
-                    .expect("Failed to parse DATA packet");
-                let ack_bytes = receiver.handle_data(peer_addr, data_pkt)
+                let data_pkt =
+                    PLTPData::from_bytes(data_bytes).expect("Failed to parse DATA packet");
+                let ack_bytes = receiver
+                    .handle_data(peer_addr, data_pkt)
                     .expect("Should get ACK for DATA");
                 let ack_fields = parse_vsf_fields(&ack_bytes);
-                let ack = PLTPAck::from_vsf_fields(&ack_fields)
-                    .expect("Failed to parse DATA ACK");
+                let ack = PLTPAck::from_vsf_fields(&ack_fields).expect("Failed to parse DATA ACK");
 
                 // handle_ack may return more packets to send as window grows
                 new_packets.extend(sender.handle_ack(peer_addr, ack));
@@ -389,18 +384,20 @@ mod tests {
         }
 
         // Check completion
-        let complete_bytes = receiver.check_inbound_complete(peer_addr)
+        let complete_bytes = receiver
+            .check_inbound_complete(peer_addr)
             .expect("Should have COMPLETE");
         let complete_fields = parse_vsf_fields(&complete_bytes);
-        let complete = PLTPComplete::from_vsf_fields(&complete_fields)
-            .expect("Failed to parse COMPLETE");
+        let complete =
+            PLTPComplete::from_vsf_fields(&complete_fields).expect("Failed to parse COMPLETE");
         assert!(complete.success);
 
         sender.handle_complete(peer_addr, complete);
         assert!(sender.is_outbound_complete(&peer_addr));
 
         // Get received data
-        let received = receiver.take_inbound_data(peer_addr)
+        let received = receiver
+            .take_inbound_data(peer_addr)
             .expect("Should have received data");
         assert_eq!(received, data);
     }

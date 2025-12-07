@@ -519,24 +519,24 @@ pub struct ClutchAllKeypairs {
     // Class 0: Classical EC (32B secrets, variable pubkeys)
     pub x25519_secret: [u8; 32],
     pub x25519_public: [u8; 32],
-    pub p384_secret: Vec<u8>,   // 48B
-    pub p384_public: Vec<u8>,   // 97B (uncompressed SEC1)
+    pub p384_secret: Vec<u8>,      // 48B
+    pub p384_public: Vec<u8>,      // 97B (uncompressed SEC1)
     pub secp256k1_secret: Vec<u8>, // 32B
     pub secp256k1_public: Vec<u8>, // 65B (uncompressed SEC1)
-    pub p256_secret: Vec<u8>,   // 32B
-    pub p256_public: Vec<u8>,   // 65B (uncompressed SEC1)
+    pub p256_secret: Vec<u8>,      // 32B
+    pub p256_public: Vec<u8>,      // 65B (uncompressed SEC1)
 
     // Class 1: Post-quantum lattice KEMs
-    pub frodo976_secret: Vec<u8>,  // 31296B
-    pub frodo976_public: Vec<u8>,  // 15632B
-    pub ntru701_secret: Vec<u8>,   // 1450B (HRSS-701)
-    pub ntru701_public: Vec<u8>,   // 1138B
+    pub frodo976_secret: Vec<u8>, // 31296B
+    pub frodo976_public: Vec<u8>, // 15632B
+    pub ntru701_secret: Vec<u8>,  // 1450B (HRSS-701)
+    pub ntru701_public: Vec<u8>,  // 1138B
 
     // Class 2: Post-quantum code-based KEMs
-    pub mceliece_secret: Vec<u8>,  // 13608B
-    pub mceliece_public: Vec<u8>,  // 524160B (~512KB)
-    pub hqc256_secret: Vec<u8>,    // 7317B
-    pub hqc256_public: Vec<u8>,    // 7285B
+    pub mceliece_secret: Vec<u8>, // 13608B
+    pub mceliece_public: Vec<u8>, // 524160B (~512KB)
+    pub hqc256_secret: Vec<u8>,   // 7317B
+    pub hqc256_public: Vec<u8>,   // 7285B
 }
 
 impl ClutchAllKeypairs {
@@ -1191,23 +1191,23 @@ pub struct ClutchSharedSecrets {
     // Class 0: Classical EC (same secret, labeled by party)
     pub low_x25519: [u8; 32],
     pub high_x25519: [u8; 32],
-    pub low_p384: Vec<u8>,    // 48B
+    pub low_p384: Vec<u8>, // 48B
     pub high_p384: Vec<u8>,
     pub low_secp256k1: Vec<u8>, // 32B
     pub high_secp256k1: Vec<u8>,
-    pub low_p256: Vec<u8>,    // 32B
+    pub low_p256: Vec<u8>, // 32B
     pub high_p256: Vec<u8>,
 
     // Class 1: Post-quantum lattice KEMs (different secrets per direction)
-    pub low_frodo: Vec<u8>,   // 24B
+    pub low_frodo: Vec<u8>, // 24B
     pub high_frodo: Vec<u8>,
-    pub low_ntru: Vec<u8>,    // 32B
+    pub low_ntru: Vec<u8>, // 32B
     pub high_ntru: Vec<u8>,
 
     // Class 2: Post-quantum code-based KEMs
     pub low_mceliece: Vec<u8>, // 32B
     pub high_mceliece: Vec<u8>,
-    pub low_hqc: Vec<u8>,     // 64B
+    pub low_hqc: Vec<u8>, // 64B
     pub high_hqc: Vec<u8>,
 }
 
@@ -1650,22 +1650,22 @@ mod tests {
             &bob_device,
             &alice_handle,
             &bob_handle,
-            &shared_32,           // low_x25519
-            &shared_32,           // high_x25519
-            &shared_48,           // low_p384
-            &shared_48,           // high_p384
-            &shared_32.to_vec(),  // low_secp256k1
-            &shared_32.to_vec(),  // high_secp256k1
-            &shared_24,           // low_frodo
-            &shared_24,           // high_frodo
-            &shared_32.to_vec(),  // low_ntru
-            &shared_32.to_vec(),  // high_ntru
-            &shared_32.to_vec(),  // low_mceliece
-            &shared_32.to_vec(),  // high_mceliece
-            &shared_64,           // low_hqc
-            &shared_64,           // high_hqc
-            &shared_32.to_vec(),  // low_p256
-            &shared_32.to_vec(),  // high_p256
+            &shared_32,          // low_x25519
+            &shared_32,          // high_x25519
+            &shared_48,          // low_p384
+            &shared_48,          // high_p384
+            &shared_32.to_vec(), // low_secp256k1
+            &shared_32.to_vec(), // high_secp256k1
+            &shared_24,          // low_frodo
+            &shared_24,          // high_frodo
+            &shared_32.to_vec(), // low_ntru
+            &shared_32.to_vec(), // high_ntru
+            &shared_32.to_vec(), // low_mceliece
+            &shared_32.to_vec(), // high_mceliece
+            &shared_64,          // low_hqc
+            &shared_64,          // high_hqc
+            &shared_32.to_vec(), // low_p256
+            &shared_32.to_vec(), // high_p256
         );
 
         // Even with same input bytes, domain separation should produce unique eggs
@@ -1702,8 +1702,10 @@ mod tests {
         assert_eq!(p384_shared, p384_shared_bob);
 
         // secp256k1
-        let secp256k1_shared = secp256k1_ecdh(&alice_keys.secp256k1_secret, &bob_keys.secp256k1_public);
-        let secp256k1_shared_bob = secp256k1_ecdh(&bob_keys.secp256k1_secret, &alice_keys.secp256k1_public);
+        let secp256k1_shared =
+            secp256k1_ecdh(&alice_keys.secp256k1_secret, &bob_keys.secp256k1_public);
+        let secp256k1_shared_bob =
+            secp256k1_ecdh(&bob_keys.secp256k1_secret, &alice_keys.secp256k1_public);
         assert_eq!(secp256k1_shared, secp256k1_shared_bob);
 
         // P-256
@@ -1714,10 +1716,13 @@ mod tests {
         // === KEM ALGORITHMS: Each encapsulates to peer, decapsulates own ===
 
         // FrodoKEM-976
-        let (frodo_ct_to_bob, frodo_ss_alice_encap) = frodo976_encapsulate(&bob_keys.frodo976_public);
-        let (frodo_ct_to_alice, frodo_ss_bob_encap) = frodo976_encapsulate(&alice_keys.frodo976_public);
+        let (frodo_ct_to_bob, frodo_ss_alice_encap) =
+            frodo976_encapsulate(&bob_keys.frodo976_public);
+        let (frodo_ct_to_alice, frodo_ss_bob_encap) =
+            frodo976_encapsulate(&alice_keys.frodo976_public);
         let frodo_ss_bob_decap = frodo976_decapsulate(&bob_keys.frodo976_secret, &frodo_ct_to_bob);
-        let frodo_ss_alice_decap = frodo976_decapsulate(&alice_keys.frodo976_secret, &frodo_ct_to_alice);
+        let frodo_ss_alice_decap =
+            frodo976_decapsulate(&alice_keys.frodo976_secret, &frodo_ct_to_alice);
         assert_eq!(frodo_ss_alice_encap, frodo_ss_bob_decap); // Alice→Bob direction
         assert_eq!(frodo_ss_bob_encap, frodo_ss_alice_decap); // Bob→Alice direction
 
@@ -1725,15 +1730,20 @@ mod tests {
         let (ntru_ct_to_bob, ntru_ss_alice_encap) = ntru701_encapsulate(&bob_keys.ntru701_public);
         let (ntru_ct_to_alice, ntru_ss_bob_encap) = ntru701_encapsulate(&alice_keys.ntru701_public);
         let ntru_ss_bob_decap = ntru701_decapsulate(&bob_keys.ntru701_secret, &ntru_ct_to_bob);
-        let ntru_ss_alice_decap = ntru701_decapsulate(&alice_keys.ntru701_secret, &ntru_ct_to_alice);
+        let ntru_ss_alice_decap =
+            ntru701_decapsulate(&alice_keys.ntru701_secret, &ntru_ct_to_alice);
         assert_eq!(ntru_ss_alice_encap, ntru_ss_bob_decap);
         assert_eq!(ntru_ss_bob_encap, ntru_ss_alice_decap);
 
         // McEliece-460896
-        let (mce_ct_to_bob, mce_ss_alice_encap) = mceliece460896_encapsulate(&bob_keys.mceliece_public);
-        let (mce_ct_to_alice, mce_ss_bob_encap) = mceliece460896_encapsulate(&alice_keys.mceliece_public);
-        let mce_ss_bob_decap = mceliece460896_decapsulate(&bob_keys.mceliece_secret, &mce_ct_to_bob);
-        let mce_ss_alice_decap = mceliece460896_decapsulate(&alice_keys.mceliece_secret, &mce_ct_to_alice);
+        let (mce_ct_to_bob, mce_ss_alice_encap) =
+            mceliece460896_encapsulate(&bob_keys.mceliece_public);
+        let (mce_ct_to_alice, mce_ss_bob_encap) =
+            mceliece460896_encapsulate(&alice_keys.mceliece_public);
+        let mce_ss_bob_decap =
+            mceliece460896_decapsulate(&bob_keys.mceliece_secret, &mce_ct_to_bob);
+        let mce_ss_alice_decap =
+            mceliece460896_decapsulate(&alice_keys.mceliece_secret, &mce_ct_to_alice);
         assert_eq!(mce_ss_alice_encap, mce_ss_bob_decap);
         assert_eq!(mce_ss_bob_encap, mce_ss_alice_decap);
 
@@ -1762,7 +1772,7 @@ mod tests {
             low_p256: p256_shared.clone(),
             high_p256: p256_shared.clone(),
             // KEM: directional
-            low_frodo: frodo_ss_alice_encap.clone(),  // Alice→Bob
+            low_frodo: frodo_ss_alice_encap.clone(), // Alice→Bob
             high_frodo: frodo_ss_alice_decap.clone(), // Bob→Alice (what Alice decapsulated)
             low_ntru: ntru_ss_alice_encap.clone(),
             high_ntru: ntru_ss_alice_decap.clone(),
@@ -1782,7 +1792,7 @@ mod tests {
             low_p256: p256_shared.clone(),
             high_p256: p256_shared.clone(),
             // KEM: Bob's view is symmetric to Alice's
-            low_frodo: frodo_ss_bob_decap.clone(),  // Alice→Bob (what Bob decapsulated)
+            low_frodo: frodo_ss_bob_decap.clone(), // Alice→Bob (what Bob decapsulated)
             high_frodo: frodo_ss_bob_encap.clone(), // Bob→Alice
             low_ntru: ntru_ss_bob_decap.clone(),
             high_ntru: ntru_ss_bob_encap.clone(),
@@ -1810,8 +1820,14 @@ mod tests {
         );
 
         // === THE CRITICAL ASSERTIONS ===
-        assert_eq!(alice_result.low_pad, bob_result.low_pad, "low_pad mismatch!");
-        assert_eq!(alice_result.high_pad, bob_result.high_pad, "high_pad mismatch!");
+        assert_eq!(
+            alice_result.low_pad, bob_result.low_pad,
+            "low_pad mismatch!"
+        );
+        assert_eq!(
+            alice_result.high_pad, bob_result.high_pad,
+            "high_pad mismatch!"
+        );
         assert_eq!(alice_result.proof, bob_result.proof, "proof mismatch!");
 
         // Verify proof

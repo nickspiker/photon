@@ -9,6 +9,7 @@
 //! - Signature covers the provenance_hash
 //! - Timestamp uses nanosecond precision (ef6) for uniqueness
 
+use super::udp;
 use crate::network::fgtw::FgtwMessage;
 use crate::network::fgtw::Keypair;
 use crate::network::pltp::{
@@ -16,7 +17,7 @@ use crate::network::pltp::{
     TcpTransport,
 };
 use crate::types::DevicePubkey;
-use std::net::{Ipv4Addr, SocketAddr, TcpListener, UdpSocket};
+use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -33,43 +34,6 @@ pub type ContactPubkeys = Arc<Mutex<Vec<DevicePubkey>>>;
 /// Get current Eagle Time as binary64 (seconds since Apollo 11 landing: July 20, 1969, 20:17:40 UTC)
 fn eagle_time_binary64() -> f64 {
     vsf::eagle_time_nanos()
-}
-
-/// Centralized UDP TX - logs via vsf_inspect then sends
-/// This is THE ONLY place UDP packets should be transmitted (except LAN broadcast)
-async fn udp_send(socket: &tokio::net::UdpSocket, data: &[u8], addr: SocketAddr) {
-    #[cfg(feature = "development")]
-    {
-        let msg = vsf_inspect(data, "TX", &addr.to_string());
-        if !msg.is_empty() {
-            crate::log_info(&msg);
-        }
-    }
-    let _ = socket.send_to(data, addr).await;
-}
-
-/// Synchronous version for non-async contexts (LAN broadcast uses std::net::UdpSocket)
-fn udp_send_sync(socket: &std::net::UdpSocket, data: &[u8], addr: SocketAddr) -> std::io::Result<usize> {
-    #[cfg(feature = "development")]
-    {
-        let msg = vsf_inspect(data, "TX", &addr.to_string());
-        if !msg.is_empty() {
-            crate::log_info(&msg);
-        }
-    }
-    socket.send_to(data, addr)
-}
-
-/// Get local LAN IP address by connecting to external address
-/// This finds which interface the OS would use to reach the internet
-fn get_local_ip() -> Option<Ipv4Addr> {
-    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
-    // Connect to Google DNS - doesn't actually send packets, just sets up routing
-    socket.connect("8.8.8.8:80").ok()?;
-    match socket.local_addr().ok()?.ip() {
-        std::net::IpAddr::V4(ip) => Some(ip),
-        _ => None,
-    }
 }
 
 /// Compute provenance hash = BLAKE3(sender_pubkey || timestamp_bytes)
@@ -307,7 +271,7 @@ impl StatusChecker {
 
         // Get local IP for TCP listener (and LAN discovery)
         // Use connect-to-external trick to find actual LAN IP (not 0.0.0.0)
-        let local_ip = get_local_ip().unwrap_or(Ipv4Addr::new(0, 0, 0, 0));
+        let local_ip = udp::get_local_ip().unwrap_or(Ipv4Addr::new(0, 0, 0, 0));
 
         thread::spawn(move || {
             crate::log_info("Status: Background thread started");
@@ -384,7 +348,7 @@ impl StatusChecker {
             .map_err(|e| format!("Failed to set non-blocking: {}", e))?;
 
         // Get local IP for TCP listener (and LAN discovery)
-        let local_ip = get_local_ip().unwrap_or(Ipv4Addr::new(0, 0, 0, 0));
+        let local_ip = udp::get_local_ip().unwrap_or(Ipv4Addr::new(0, 0, 0, 0));
 
         thread::spawn(move || {
             crate::log_info("Status: Background thread started");
@@ -560,7 +524,10 @@ async fn run_checker(
     // Skip on Android - tokio TcpListener has issues with accept() returning EINVAL
     #[cfg(not(target_os = "android"))]
     let tcp_listener = {
-        let udp_port = std_socket.local_addr().map(|a| a.port()).unwrap_or(PHOTON_PORT);
+        let udp_port = std_socket
+            .local_addr()
+            .map(|a| a.port())
+            .unwrap_or(PHOTON_PORT);
         let tcp_addr = SocketAddr::new(std::net::IpAddr::V4(local_ip), udp_port);
         match tokio::net::TcpListener::bind(tcp_addr).await {
             Ok(listener) => {
@@ -724,10 +691,10 @@ async fn run_checker(
                             };
                             // Now send responses (lock is dropped)
                             if let Some(ack) = ack_bytes {
-                                udp_send(&socket_recv, &ack, src_addr).await;
+                                udp::send(&socket_recv, &ack, src_addr).await;
                             }
                             if let Some(complete) = complete_bytes {
-                                udp_send(&socket_recv, &complete, src_addr).await;
+                                udp::send(&socket_recv, &complete, src_addr).await;
                                 if let Some(data) = received_data {
                                     crate::log_info(&format!(
                                         "PLTP: Transfer complete from {} ({} bytes)",
@@ -750,12 +717,7 @@ async fn run_checker(
 
                     // Centralized UDP RX logging - THE ONLY place incoming packets are logged
                     #[cfg(feature = "development")]
-                    {
-                        let msg = vsf_inspect(msg_bytes, "RX", &src_addr.to_string());
-                        if !msg.is_empty() {
-                            crate::log_info(&msg);
-                        }
-                    }
+                    udp::log_received(msg_bytes, &src_addr);
 
                     // Handle LAN discovery packets (same port as main socket now)
                     if let Some(lan_update) = parse_lan_discovery(msg_bytes, src_addr) {
@@ -831,7 +793,7 @@ async fn run_checker(
 
                                     let pong_bytes = pong.to_vsf_bytes();
                                     if !pong_bytes.is_empty() {
-                                        udp_send(&socket_recv, &pong_bytes, src_addr).await;
+                                        udp::send(&socket_recv, &pong_bytes, src_addr).await;
                                     }
                                 }
 
@@ -1149,7 +1111,7 @@ async fn run_checker(
                     });
                 }
 
-                udp_send(&socket, &msg_bytes, request.peer_addr).await;
+                udp::send(&socket, &msg_bytes, request.peer_addr).await;
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {
                 tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1296,7 +1258,7 @@ async fn run_checker(
 
             let msg_bytes = msg.to_vsf_bytes();
             if !msg_bytes.is_empty() {
-                udp_send(&socket, &msg_bytes, request.peer_addr).await;
+                udp::send(&socket, &msg_bytes, request.peer_addr).await;
             }
         }
 
@@ -1326,7 +1288,7 @@ async fn run_checker(
 
             let msg_bytes = msg.to_vsf_bytes();
             if !msg_bytes.is_empty() {
-                udp_send(&socket, &msg_bytes, request.peer_addr).await;
+                udp::send(&socket, &msg_bytes, request.peer_addr).await;
             }
         }
 
@@ -1362,7 +1324,7 @@ async fn run_checker(
 
             let msg_bytes = msg.to_vsf_bytes();
             if !msg_bytes.is_empty() {
-                udp_send(&socket, &msg_bytes, request.peer_addr).await;
+                udp::send(&socket, &msg_bytes, request.peer_addr).await;
             }
         }
 
@@ -1376,7 +1338,7 @@ async fn run_checker(
             let mut pltp_mgr = pltp.lock().unwrap();
             let spec_bytes = pltp_mgr.start_send(request.peer_addr, request.data);
             drop(pltp_mgr); // Drop lock before async call
-            udp_send(&socket, &spec_bytes, request.peer_addr).await;
+            udp::send(&socket, &spec_bytes, request.peer_addr).await;
         }
 
         // Process full CLUTCH offer requests (TCP fallback)
@@ -1455,27 +1417,7 @@ async fn run_checker(
 
         // Process LAN broadcast requests (NAT hairpinning workaround)
         while let Ok(request) = lan_broadcast_rx.try_recv() {
-            // Build broadcast packet as VSF
-            use vsf::VsfBuilder;
-            use vsf::VsfType;
-
-            let packet = VsfBuilder::new()
-                .add_section(
-                    "lan_discovery",
-                    vec![
-                        (
-                            "handle_proof".to_string(),
-                            VsfType::hb(request.our_handle_proof.to_vec()),
-                        ),
-                        ("port".to_string(), VsfType::u4(request.our_port)),
-                    ],
-                )
-                .build();
-
-            let packet = match packet {
-                Ok(p) => p,
-                Err(_) => continue,
-            };
+            let packet = udp::build_lan_discovery(request.our_handle_proof, request.our_port);
 
             // Send to broadcast address
             let broadcast_addr = SocketAddr::new(
@@ -1486,7 +1428,7 @@ async fn run_checker(
             // Create a separate socket for broadcast (main socket may not have SO_BROADCAST)
             if let Ok(broadcast_sock) = UdpSocket::bind("0.0.0.0:0") {
                 if broadcast_sock.set_broadcast(true).is_ok() {
-                    let _ = udp_send_sync(&broadcast_sock, &packet, broadcast_addr);
+                    let _ = udp::send_sync(&broadcast_sock, &packet, broadcast_addr);
                 }
             }
         }
@@ -1497,7 +1439,7 @@ async fn run_checker(
             let to_send = pltp_mgr.tick();
             drop(pltp_mgr); // Drop lock before async calls
             for (addr, pkt) in to_send {
-                udp_send(&socket, &pkt, addr).await;
+                udp::send(&socket, &pkt, addr).await;
             }
         }
     }
@@ -1575,92 +1517,6 @@ fn compute_ack_provenance(
     hasher.update(b"ack");
     *hasher.finalize().as_bytes()
 }
-
-/// Format a VSF packet as a human-readable inspection string (like vsfinfo)
-/// Public for use across network modules (FGTW transport, P2P, etc.)
-/// Returns empty string for noisy packets (ping/pong/lan_discovery) unless verbose-network is enabled
-#[cfg(feature = "development")]
-pub fn vsf_inspect(data: &[u8], direction: &str, addr: &str) -> String {
-    // Filter noisy packet types unless verbose-network is enabled
-    #[cfg(not(feature = "verbose-network"))]
-    {
-        if is_noisy_packet(data) {
-            return String::new();
-        }
-    }
-
-    let mut result = format!(
-        "═══ VSF {} {} ({} bytes) ═══\n",
-        direction,
-        addr,
-        data.len()
-    );
-
-    // Try to parse as VSF file first, then section, fall back to hex dump
-    match vsf::inspect::inspect_vsf(data) {
-        Ok(formatted) => result.push_str(&strip_ansi_if_needed(&formatted)),
-        Err(_) => {
-            // Not a complete VSF file - try section format
-            match vsf::inspect::inspect_section(data) {
-                Ok(formatted) => result.push_str(&strip_ansi_if_needed(&formatted)),
-                Err(_) => {
-                    // Fall back to hex dump
-                    result.push_str(&vsf::inspect::hex_dump(data));
-                }
-            }
-        }
-    }
-
-    result
-}
-
-/// Check if a VSF packet is a noisy type (ping/pong/lan_discovery) that should be filtered
-#[cfg(feature = "development")]
-fn is_noisy_packet(data: &[u8]) -> bool {
-    // Quick check for VSF section header - look for section type in first bytes
-    // VSF sections start with '[' followed by type field
-    if data.is_empty() || data[0] != b'[' {
-        return false;
-    }
-
-    // Parse just enough to get section type
-    let mut ptr = 0;
-    if let Ok(section) = vsf::VsfSection::parse(data, &mut ptr) {
-        return section.name == "status_ping"
-            || section.name == "status_pong"
-            || section.name == "lan_discovery";
-    }
-
-    false
-}
-
-/// Strip ANSI color codes on platforms that don't support them (Android)
-#[cfg(feature = "development")]
-fn strip_ansi_if_needed(s: &str) -> String {
-    #[cfg(target_os = "android")]
-    {
-        // Strip ANSI escape sequences on Android
-        let mut result = String::with_capacity(s.len());
-        let mut in_escape = false;
-        for c in s.chars() {
-            if c == '\x1b' {
-                in_escape = true;
-            } else if in_escape {
-                if c == 'm' {
-                    in_escape = false;
-                }
-            } else {
-                result.push(c);
-            }
-        }
-        result
-    }
-    #[cfg(not(target_os = "android"))]
-    {
-        s.to_string()
-    }
-}
-
 /// Handle PLTP VSF packets (SPEC, ACK, NAK, CONTROL, COMPLETE)
 /// Returns Some(true) if packet was handled, Some(false) if not a PLTP packet, None on error
 async fn handle_pltp_vsf_packet(
@@ -1695,7 +1551,7 @@ async fn handle_pltp_vsf_packet(
                     let mut pltp_mgr = pltp.lock().unwrap();
                     pltp_mgr.handle_spec(src_addr, spec)
                 };
-                udp_send(socket, &spec_ack, src_addr).await;
+                udp::send(socket, &spec_ack, src_addr).await;
                 return Some(true);
             }
         }
@@ -1711,7 +1567,7 @@ async fn handle_pltp_vsf_packet(
                     (packets, complete)
                 };
                 for pkt in response_packets {
-                    udp_send(socket, &pkt, src_addr).await;
+                    udp::send(socket, &pkt, src_addr).await;
                 }
                 if is_complete {
                     crate::log_info(&format!("PLTP: Outbound transfer to {} complete", src_addr));
@@ -1738,7 +1594,7 @@ async fn handle_pltp_vsf_packet(
                     pltp_mgr.handle_nak(src_addr, nak)
                 };
                 for pkt in response_packets {
-                    udp_send(socket, &pkt, src_addr).await;
+                    udp::send(socket, &pkt, src_addr).await;
                 }
                 return Some(true);
             }
@@ -1787,70 +1643,10 @@ async fn handle_pltp_vsf_packet(
 /// Parse LAN discovery packet from main UDP socket
 /// Returns StatusUpdate::LanPeerDiscovered if valid, None otherwise
 fn parse_lan_discovery(packet: &[u8], src_addr: SocketAddr) -> Option<StatusUpdate> {
-    use vsf::file_format::{VsfHeader, VsfSection};
-    use vsf::verification::is_original;
-    use vsf::VsfType;
-
-    // Verify VSF is unmodified original (integrity check)
-    if is_original(packet).is_err() {
-        return None;
-    }
-
-    // Parse header to find section start
-    let header_end = match VsfHeader::decode(packet) {
-        Ok((_, end)) => end,
-        Err(_) => return None,
-    };
-
-    // Parse section
-    let mut ptr = header_end;
-    let section = match VsfSection::parse(packet, &mut ptr) {
-        Ok(s) => s,
-        Err(_) => return None,
-    };
-
-    if section.name != "lan_discovery" {
-        return None;
-    }
-
-    // Extract handle_proof (hb = BLAKE3 hash, 32 bytes)
-    let handle_proof = match section.get_field("handle_proof") {
-        Some(field) => match field.values.first() {
-            Some(VsfType::hb(bytes)) if bytes.len() == 32 => {
-                let mut hp = [0u8; 32];
-                hp.copy_from_slice(bytes);
-                hp
-            }
-            _ => return None,
-        },
-        None => return None,
-    };
-
-    // Extract port (u4 = u16)
-    let port = match section.get_field("port") {
-        Some(field) => match field.values.first() {
-            Some(VsfType::u4(p)) => *p,
-            _ => return None,
-        },
-        None => return None,
-    };
-
-    // Handle both native IPv4 and IPv4-mapped IPv6 addresses (::ffff:x.x.x.x)
-    let src_ip = match src_addr.ip() {
-        std::net::IpAddr::V4(ip) => ip,
-        std::net::IpAddr::V6(ip6) => {
-            // Check for IPv4-mapped IPv6 address
-            if let Some(ip4) = ip6.to_ipv4_mapped() {
-                ip4
-            } else {
-                return None;
-            }
-        }
-    };
-
+    let (handle_proof, local_ip, port) = udp::parse_lan_discovery(packet, src_addr)?;
     Some(StatusUpdate::LanPeerDiscovered {
         handle_proof,
-        local_ip: src_ip,
+        local_ip,
         port,
     })
 }

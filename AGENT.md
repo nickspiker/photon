@@ -162,6 +162,49 @@ let bytes = VsfBuilder::new()
 
 **The library handles integrity hashing, header layout, section offsets - you just add content.**
 
+## VSF Transport Rule: COMPLETE FILES ONLY
+
+**ALL network transport and disk storage MUST use complete VSF files.**
+
+A complete VSF file has (bare minimum):
+- `RÅ<` magic header
+- Version (`z`) and backward compat (`y`)
+- Header length (`b`)
+- Creation timestamp (`ef5` or `ef6`)
+- Provenance hash (`hp`) - REQUIRED for integrity
+- Field count (`n`)
+- Header end marker (`>`)
+- Section structure with `[ ]` delimiters
+
+### FORBIDDEN: Raw VSF Types
+
+```rust
+// NO - raw VSF type without file wrapper (no integrity, no timestamp, no version)
+let bytes = VsfType::v(b'e', encrypted_data).flatten();
+Response::from_bytes(bytes)
+
+// NO - bare section without file header
+let bytes = section.encode();
+socket.send(&bytes);
+```
+
+### REQUIRED: Complete VSF Files
+
+```rust
+// YES - complete VSF file with proper header and provenance hash
+let bytes = VsfBuilder::new()
+    .creation_time_nanos(timestamp)
+    .provenance_only()
+    .add_section("encrypted_data", vec![
+        ("payload".to_string(), VsfType::v(b'e', encrypted_data)),
+    ])
+    .build()?;
+```
+
+**Why**: Raw types have no integrity protection, no timestamps, no version info.
+The provenance hash ensures data hasn't been tampered with in transit.
+Every VSF on the wire or disk can be inspected with `vsfinfo` and verified.
+
 ## Code Style
 
 ### Terminal Commands:

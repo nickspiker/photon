@@ -1549,8 +1549,6 @@ impl PhotonApp {
         let result = self.handle_query.as_ref().and_then(|hq| hq.try_recv());
         let Some(result) = result else { return false };
 
-        crate::log_info(&format!("UI: Received attestation result: {:?}", result));
-
         let (new_state, initial_peers) = match result {
             QueryResult::Success(peers) => {
                 crate::log_info("UI: Attestation SUCCESS - transitioning to Ready state");
@@ -2379,8 +2377,8 @@ impl PhotonApp {
                     sender_addr,
                 } => {
                     use crate::crypto::clutch::{
-                        ClutchFullOfferPayload, ClutchKemResponsePayload,
-                        generate_all_ephemeral_keypairs,
+                        generate_all_ephemeral_keypairs, ClutchFullOfferPayload,
+                        ClutchKemResponsePayload,
                     };
                     use crate::types::ClutchState;
 
@@ -2416,7 +2414,8 @@ impl PhotonApp {
                                         contact.handle
                                     ));
                                     let keypairs = generate_all_ephemeral_keypairs();
-                                    let our_offer = ClutchFullOfferPayload::from_keypairs(&keypairs);
+                                    let our_offer =
+                                        ClutchFullOfferPayload::from_keypairs(&keypairs);
                                     contact.clutch_our_keypairs = Some(keypairs);
                                     contact.clutch_state = ClutchState::OfferReceived;
                                     changed = true;
@@ -2457,7 +2456,8 @@ impl PhotonApp {
                                     contact.clutch_their_kem_secrets = None;
                                     // Re-process as Pending
                                     let keypairs = generate_all_ephemeral_keypairs();
-                                    let our_offer = ClutchFullOfferPayload::from_keypairs(&keypairs);
+                                    let our_offer =
+                                        ClutchFullOfferPayload::from_keypairs(&keypairs);
                                     contact.clutch_our_keypairs = Some(keypairs);
                                     contact.clutch_their_offer = Some(their_offer.clone());
                                     contact.clutch_state = ClutchState::OfferReceived;
@@ -2509,9 +2509,8 @@ impl PhotonApp {
                     sender_addr,
                 } => {
                     use crate::crypto::clutch::{
-                        ClutchKemResponsePayload, ClutchKemSharedSecrets,
-                        ClutchSharedSecrets, clutch_complete_full,
-                        x25519_ecdh, p384_ecdh, secp256k1_ecdh, p256_ecdh,
+                        clutch_complete_full, p256_ecdh, p384_ecdh, secp256k1_ecdh, x25519_ecdh,
+                        ClutchKemResponsePayload, ClutchKemSharedSecrets, ClutchSharedSecrets,
                     };
                     use crate::types::ClutchState;
 
@@ -2537,8 +2536,9 @@ impl PhotonApp {
 
                             // Decapsulate their KEM response using our secret keys
                             if let Some(ref our_keys) = contact.clutch_our_keypairs {
-                                let their_secrets =
-                                    ClutchKemSharedSecrets::decapsulate_from_peer(&their_kem, our_keys);
+                                let their_secrets = ClutchKemSharedSecrets::decapsulate_from_peer(
+                                    &their_kem, our_keys,
+                                );
                                 contact.clutch_their_kem_secrets = Some(their_secrets);
 
                                 match contact.clutch_state {
@@ -2673,10 +2673,14 @@ impl PhotonApp {
                                         }
                                         contact.clutch_our_keypairs = None;
                                         contact.clutch_their_offer = None;
-                                        if let Some(ref mut secrets) = contact.clutch_our_kem_secrets {
+                                        if let Some(ref mut secrets) =
+                                            contact.clutch_our_kem_secrets
+                                        {
                                             secrets.zeroize();
                                         }
-                                        if let Some(ref mut secrets) = contact.clutch_their_kem_secrets {
+                                        if let Some(ref mut secrets) =
+                                            contact.clutch_their_kem_secrets
+                                        {
                                             secrets.zeroize();
                                         }
                                         contact.clutch_our_kem_secrets = None;
@@ -2731,11 +2735,14 @@ impl PhotonApp {
                 // Prefer local_ip if we discovered them on LAN (avoids NAT hairpinning)
                 if let (Some(local_ip), Some(local_port)) = (contact.local_ip, contact.local_port) {
                     // Use local IP + port from LAN discovery
-                    let addr = std::net::SocketAddr::new(std::net::IpAddr::V4(local_ip), local_port);
-                    clutch_to_initiate = Some((idx, addr, contact.handle.as_str().to_string(), true));
+                    let addr =
+                        std::net::SocketAddr::new(std::net::IpAddr::V4(local_ip), local_port);
+                    clutch_to_initiate =
+                        Some((idx, addr, contact.handle.as_str().to_string(), true));
                     break;
                 } else if let Some(ip) = contact.ip {
-                    clutch_to_initiate = Some((idx, ip, contact.handle.as_str().to_string(), false));
+                    clutch_to_initiate =
+                        Some((idx, ip, contact.handle.as_str().to_string(), false));
                     break; // Only try one contact per frame
                 }
             }
@@ -2843,7 +2850,9 @@ impl PhotonApp {
             };
 
             // Prefer local_ip for same-LAN peers (NAT hairpinning workaround)
-            let ip = if let (Some(local_ip), Some(local_port)) = (contact.local_ip, contact.local_port) {
+            let ip = if let (Some(local_ip), Some(local_port)) =
+                (contact.local_ip, contact.local_port)
+            {
                 // Use local IP + port from LAN discovery
                 std::net::SocketAddr::new(std::net::IpAddr::V4(local_ip), local_port)
             } else {
@@ -3066,8 +3075,13 @@ impl PhotonApp {
         let mut pinged = 0;
         for contact in &self.contacts {
             // Prefer local_ip for same-LAN peers (NAT hairpinning workaround)
-            let addr = if let (Some(local_ip), Some(local_port)) = (contact.local_ip, contact.local_port) {
-                Some(std::net::SocketAddr::new(std::net::IpAddr::V4(local_ip), local_port))
+            let addr = if let (Some(local_ip), Some(local_port)) =
+                (contact.local_ip, contact.local_port)
+            {
+                Some(std::net::SocketAddr::new(
+                    std::net::IpAddr::V4(local_ip),
+                    local_port,
+                ))
             } else {
                 contact.ip
             };
@@ -3097,8 +3111,13 @@ impl PhotonApp {
         if contact_idx < self.contacts.len() {
             let contact = &self.contacts[contact_idx];
             // Prefer local_ip for same-LAN peers (NAT hairpinning workaround)
-            let addr = if let (Some(local_ip), Some(local_port)) = (contact.local_ip, contact.local_port) {
-                Some(std::net::SocketAddr::new(std::net::IpAddr::V4(local_ip), local_port))
+            let addr = if let (Some(local_ip), Some(local_port)) =
+                (contact.local_ip, contact.local_port)
+            {
+                Some(std::net::SocketAddr::new(
+                    std::net::IpAddr::V4(local_ip),
+                    local_port,
+                ))
             } else {
                 contact.ip
             };
