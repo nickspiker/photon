@@ -1,13 +1,14 @@
 // Hide console window on Windows
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
-use photon::debug_println;
-use photon::ui::PhotonApp;
+use photon_messenger::crypto::self_verify;
+use photon_messenger::debug_println;
+use photon_messenger::ui::{PhotonApp, PhotonEvent};
 
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
-    event_loop::{ActiveEventLoop, EventLoop},
+    event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy},
     window::{Window, WindowId},
 };
 
@@ -18,9 +19,10 @@ struct App {
     screen_height: u32,
     maximized_size: Option<(u32, u32)>, // Maximized dimensions (learned on first maximize)
     blinkey_blink_rate_ms: u64,         // System blinkey blink rate in milliseconds
+    event_proxy: EventLoopProxy<PhotonEvent>, // For cross-thread wake
 }
 
-impl ApplicationHandler for App {
+impl ApplicationHandler<PhotonEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_none() {
             // Get primary monitor size
@@ -39,12 +41,13 @@ impl ApplicationHandler for App {
 
             // Query monitor refresh rate and calculate target frame duration
             // Floor the value so 60Hz -> 16ms (slightly overshoots to avoid frame skips)
-            let target_frame_duration_ms: u64 = if let Some(refresh_millihertz) = monitor.refresh_rate_millihertz() {
-                let refresh_hz = refresh_millihertz / 1000;
-                (1000 / refresh_hz) as u64
-            } else {
-                16 // Default to 60 FPS if query fails
-            };
+            let target_frame_duration_ms: u64 =
+                if let Some(refresh_millihertz) = monitor.refresh_rate_millihertz() {
+                    let refresh_hz = refresh_millihertz / 1000;
+                    (1000 / refresh_hz) as u64
+                } else {
+                    16 // Default to 60 FPS if query fails
+                };
 
             // Calculate window dimensions: height = min(width, height/2), width = height/2
             let window_height = screen_width.min(screen_height) / 2;
@@ -75,28 +78,15 @@ impl ApplicationHandler for App {
                     }
                 }
 
-                #[cfg(target_os = "windows")]
-                {
-                    let mut app = PhotonApp::new(
-                        window,
-                        self.screen_width,
-                        self.screen_height,
-                        self.blinkey_blink_rate_ms,
-                        target_frame_duration_ms,
-                    );
-                    self.photon_app = Some(app);
-                    // Trigger redraw with correct fullscreen state
-                    window.request_redraw();
-                }
-
-                #[cfg(target_os = "linux")]
-                {
-                    let app =
-                        pollster::block_on(PhotonApp::new(window, self.blinkey_blink_rate_ms, target_frame_duration_ms));
-                    self.photon_app = Some(app);
-                    // Trigger redraw with correct fullscreen state
-                    window.request_redraw();
-                }
+                // Unified app creation for all desktop platforms
+                let app = PhotonApp::new(
+                    window,
+                    self.blinkey_blink_rate_ms,
+                    target_frame_duration_ms,
+                    self.event_proxy.clone(),
+                );
+                self.photon_app = Some(app);
+                window.request_redraw();
             }
         }
     }
@@ -162,9 +152,40 @@ impl ApplicationHandler for App {
                     }
                 }
             }
+            WindowEvent::MouseWheel { delta, .. } => {
+                if let (Some(window), Some(app)) = (&self.window, &mut self.photon_app) {
+                    if app.handle_mouse_wheel(delta) {
+                        window.request_redraw();
+                    }
+                }
+            }
             WindowEvent::CursorLeft { .. } => {
                 if let (Some(window), Some(app)) = (&self.window, &mut self.photon_app) {
                     app.handle_blinkey_left();
+                    window.request_redraw();
+                }
+            }
+            WindowEvent::HoveredFile(path) => {
+                if let (Some(window), Some(app)) = (&self.window, &mut self.photon_app) {
+                    app.handle_file_hover(&path);
+                    if app.window_dirty {
+                        window.request_redraw();
+                    }
+                }
+            }
+            WindowEvent::HoveredFileCancelled => {
+                if let (Some(window), Some(app)) = (&self.window, &mut self.photon_app) {
+                    app.handle_file_hover_cancelled();
+                    if app.window_dirty {
+                        window.request_redraw();
+                    }
+                }
+            }
+            WindowEvent::DroppedFile(path) => {
+                if let (Some(window), Some(app)) = (&self.window, &mut self.photon_app) {
+                    if let Err(e) = app.handle_dropped_file(&path) {
+                        eprintln!("Failed to load avatar: {}", e);
+                    }
                     window.request_redraw();
                 }
             }
@@ -188,23 +209,83 @@ impl ApplicationHandler for App {
                 return;
             }
 
-            // Check for query responses (non-blocking) - always check, regardless of focus
-            if app.check_query_response() {
-                // Query completed, redraw to update button
+            // Check for FGTW connectivity status (non-blocking)
+            app.check_fgtw_online();
+            if app.controls_dirty {
                 if let Some(window) = &self.window {
                     window.request_redraw();
                 }
             }
 
+            // Check for attestation responses (non-blocking) - always check, regardless of focus
+            if app.check_attestation_response() {
+                // Attestation completed, redraw to update button
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            }
+
+            // Check for search results (non-blocking)
+            if app.check_search_result() {
+                // Search completed, redraw to show result
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            }
+
+            // Check for contact status updates (non-blocking)
+            if app.check_status_updates() {
+                // Contact status or CLUTCH state changed, full redraw needed
+                app.window_dirty = true;
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            }
+
+            // Check for peer update notifications from FGTW WebSocket (non-blocking)
+            if app.check_peer_updates() {
+                // Peer IP changed, update cache and redraw
+                app.window_dirty = true;
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            }
+
+            // Check for completed avatar downloads (non-blocking)
+            if app.check_avatar_downloads() {
+                // Avatar loaded, redraw to show it
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            }
+
+            // Check for completed CLUTCH keypair generation (non-blocking)
+            if app.check_clutch_keygens() {
+                // Keypairs ready, may have sent offer, redraw
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            }
+
+            // Periodically ping contacts to check online status
+            app.maybe_ping_contacts();
+
+            // Periodically refresh FGTW to keep port info fresh
+            app.maybe_refresh_fgtw();
+
+            // Check for refresh results and update contact IPs
+            app.check_refresh_result();
+
             // Priority 2: If animating query, sync to display refresh rate
-            if app.handle_status == photon::ui::HandleStatus::Checking {
+            if app.should_animate() {
                 let now = std::time::Instant::now();
                 if now >= app.next_animation_frame {
                     if let Some(window) = &self.window {
                         window.request_redraw();
                     }
                     // Advance to next frame immediately to avoid busy-looping
-                    app.next_animation_frame = now + std::time::Duration::from_millis(app.target_frame_duration_ms);
+                    app.next_animation_frame =
+                        now + std::time::Duration::from_millis(app.target_frame_duration_ms);
                 }
                 event_loop.set_control_flow(ControlFlow::WaitUntil(app.next_animation_frame));
                 return;
@@ -216,11 +297,6 @@ impl ApplicationHandler for App {
                 let now = std::time::Instant::now();
 
                 if now >= app.next_blinkey_blink_time {
-                    let timestamp = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_millis();
-                    // Time to blink! Toggle blinkey and set next timer
                     let font_size = app.font_size() as usize;
                     PhotonApp::flip_blinkey(
                         &mut app.renderer,
@@ -233,13 +309,59 @@ impl ApplicationHandler for App {
                         app.is_mouse_selecting,
                     );
                     app.next_blinkey_blink_time = app.next_blink_wake_time();
-                    let delay_ms = app.next_blinkey_blink_time.duration_since(now).as_millis();
                 }
 
                 // Always set control flow (either new or same timer)
                 event_loop.set_control_flow(ControlFlow::WaitUntil(app.next_blinkey_blink_time));
             } else {
-                event_loop.set_control_flow(ControlFlow::Wait);
+                // No active textbox - poll every 250ms for network updates
+                // EventLoopProxy.send_event() should wake us immediately, but X11 can be unreliable
+                // This ensures we check for status updates, CLUTCH messages, etc. even if wake fails
+                event_loop.set_control_flow(ControlFlow::WaitUntil(
+                    std::time::Instant::now() + std::time::Duration::from_millis(250),
+                ));
+            }
+        }
+    }
+
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: PhotonEvent) {
+        match event {
+            PhotonEvent::ConnectivityChanged(online) => {
+                if let Some(app) = &mut self.photon_app {
+                    if online != app.fgtw_online {
+                        app.fgtw_online = online;
+                        app.controls_dirty = true;
+                        if let Some(window) = &self.window {
+                            window.request_redraw();
+                        }
+                    }
+                }
+            }
+            PhotonEvent::AttestationComplete => {
+                // Wake up event loop to check attestation result
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            }
+            PhotonEvent::MessageReceived => {
+                // Future: handle incoming messages
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            }
+            PhotonEvent::NetworkUpdate => {
+                // Network data available (status, CLUTCH, avatar, etc.)
+                // Just request a redraw to process the pending data
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            }
+            PhotonEvent::ClutchKeygenComplete => {
+                // Background CLUTCH keypair generation finished
+                // Request redraw to process the result
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
             }
         }
     }
@@ -304,6 +426,61 @@ fn get_system_blinkey_blink_rate() -> u64 {
 }
 
 fn main() {
+    // Check for --verify flag (used by install script to validate binary)
+    let verify_only = std::env::args().any(|arg| arg == "--verify");
+
+    // Verify binary signature matches fractaldecoder (Ed25519 cryptographic signature)
+    // Enabled by default, skip only with --features skip-sig for development
+    #[cfg(not(feature = "skip-sig"))]
+    {
+        let signature_hex = match self_verify::verify_binary_hash() {
+            Ok(sig) => sig,
+            Err(e) => {
+                eprintln!("BINARY INTEGRITY CHECK FAILED: {}", e);
+                eprintln!();
+                eprintln!("This usually means:");
+                eprintln!("  - Download was corrupted or incomplete");
+                eprintln!("  - Storage failure (bad sectors, bit flips)");
+                eprintln!("  - Binary was modified or tampered with");
+                eprintln!();
+                eprintln!("Try reinstalling from: https://holdmyoscilloscope.com/photon");
+                std::process::exit(1);
+            }
+        };
+
+        // If --verify flag, print result and exit successfully
+        if verify_only {
+            println!("OK");
+            std::process::exit(0);
+        }
+
+        eprintln!("SIGNATURE CHECK PASSED");
+        eprintln!("Ed25519 signature: {}", signature_hex);
+        eprintln!();
+    }
+
+    #[cfg(feature = "skip-sig")]
+    {
+        // If --verify flag on dev build, still exit cleanly
+        if verify_only {
+            eprintln!("SIGNATURE CHECK SKIPPED (development build)");
+            std::process::exit(0);
+        }
+        eprintln!("SIGNATURE CHECK SKIPPED (development build)");
+        eprintln!();
+    }
+
+    // Startup message
+    eprintln!("Photon Messenger - Built from first principles for true data sovereignty");
+    eprintln!("by Nick Spiker <fractaldecoder@proton.me>");
+    eprintln!();
+    eprintln!("I built this to give you the best damn secure messaging experience possible.");
+    eprintln!("Your data belongs to you—no servers, no tracking, no compromises.");
+    eprintln!();
+    eprintln!("Found a bug? Have feedback? Email me: fractaldecoder@proton.me");
+    eprintln!("(Photon messenger coming soon—for now there's only ~3 of us!)");
+    eprintln!();
+
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     // Set cursor size for Linux/X11 to match system cursor settings
@@ -327,7 +504,8 @@ fn main() {
         }
     }
 
-    let event_loop = EventLoop::new().unwrap();
+    let event_loop = EventLoop::<PhotonEvent>::with_user_event().build().unwrap();
+    let event_proxy = event_loop.create_proxy();
     let blinkey_blink_rate = get_system_blinkey_blink_rate();
     let mut app = App {
         window: None,
@@ -336,6 +514,7 @@ fn main() {
         screen_height: 0,
         maximized_size: None,
         blinkey_blink_rate_ms: blinkey_blink_rate,
+        event_proxy,
     };
 
     event_loop.run_app(&mut app).unwrap();

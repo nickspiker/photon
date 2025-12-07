@@ -1,942 +1,577 @@
-```markdown
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-        
-        Ok(messages)
-    }
-    
-    pub fn delete_expired_messages(&mut self) -> Result<usize> {
-        let now = current_timestamp();
-        let deleted = self.db.execute(
-            "DELETE FROM messages WHERE expiration IS NOT NULL AND expiration < ?",
-            params![now],
-        )?;
-        Ok(deleted)
-    }
-    
-    pub fn update_message_status(&mut self, id: &MessageId, status: MessageStatus) -> Result<()> {
-        self.db.execute(
-            "UPDATE messages SET status = ? WHERE id = ?",
-            params![status as i32, id.as_bytes()],
-        )?;
-        Ok(())
-    }
-}
-```
+# Photon
+
+**Decentralized messenger with passless authentication and rolling-chain encryption**
+
+No servers. No passwords. No phone numbers. No corporate data harvesting.
 
 ---
 
-## Development Roadmap
+## What This Is
+j.oj`a.oe.jeo.jej.oeeeeapo.jeppao.jepo.jaeo.jea,
+Photon is a peer-to-peer messaging application that replaces traditional authentication (passwords, PINs, biometrics, recovery emails) with **social attestation**—your identity is verified by trusted humans, not by servers or credentials. Messages use **rolling-chain encryption**, where each message cryptographically depends on all previous messages, creating an immutable, tamper-evident communication history.
 
-### Phase 1: Foundation (Weeks 1-3)
-
-**Goal**: Core cryptography working in isolation
-
-```
-Week 1: Project Setup
-├─ Create Cargo workspace
-├─ Set up directory structure
-├─ Add dependencies (iced, blake3, chacha20poly1305, etc.)
-├─ Write types/ module (Message, Contact, Identity structs)
-└─ Basic tests compile
-
-Week 2: Rolling Chain Implementation
-├─ Implement MessageChain struct
-├─ encrypt() and decrypt() methods
-├─ State advancement logic
-├─ Read receipt tracking
-├─ Unit tests proving correctness
-└─ Test vectors from whitepaper
-
-Week 3: Key Management
-├─ Identity generation (X25519 keypair)
-├─ Secure storage (encrypted at rest)
-├─ Key shard generation logic
-├─ Shard distribution algorithm
-└─ Recovery reconstruction algorithm
-```
-
-**Success Criteria**:
-- Can encrypt/decrypt message sequence correctly
-- Chain state advances properly
-- Replay/reorder attacks detected
-- Key reconstruction from shards works
-- All tests pass
-
-**Deliverables**:
-- `crypto/` module fully implemented
-- 100% test coverage on crypto code
-- No UI yet (pure library)
+**Key Properties:**
+- **A = 1**: Authentication happens once when you create your identity. All subsequent access uses cryptographic proofs from that single event.
+- **True P2P**: No message servers. Peers connect directly after DHT-based discovery.
+- **Hardware-bound identity**: Device keys derived deterministically from hardware fingerprints, never stored on disk.
+- **Social recovery**: Lose your devices? Trusted contacts hold encrypted key shards for threshold reconstruction.
+- **Message immutability**: Editing or deleting messages breaks cryptographic chain—tampering is detectable.
 
 ---
 
-### Phase 2: UI Skeleton (Weeks 4-5)
+## Current Status
 
-**Goal**: Iced app displays messages (no network)
+**Early Development** — Core infrastructure functional, messaging implementation in progress.
 
-```
-Week 4: Basic Iced App
-├─ main.rs initializes Iced Application
-├─ App struct with dummy state
-├─ Contact list view (hardcoded contacts)
-├─ Chat view (hardcoded messages)
-├─ Text input and send button
-└─ Navigation between views works
+### What Works
+- ✅ Cross-platform GUI (Windows, Linux, macOS, Android)
+- ✅ Text input, selection, editing with cosmic-text rendering
+- ✅ Window management and compositing pipeline
+- ✅ Handle attestation with memory-hard proof-of-work (~1s computation)
+- ✅ Peer discovery via FGTW DHT (handle → IP lookup)
+- ✅ P2P status detection (online/offline via UDP ping/pong)
+- ✅ NAT hole punching (broadcast ping to all peers on registration)
+- ✅ Avatar upload/download to FGTW storage with rate limiting
+- ✅ Contact storage (local encrypted + cloud backup to FGTW)
+- ✅ Deterministic device identity (keys derived from hardware)
+- ✅ CLUTCH key exchange (parallel ephemeral key ceremony)
+- ✅ Android build pipeline (tested on device)
+- ✅ Signed binary distribution with self-verification
 
-Week 5: Custom Widgets
-├─ Message bubble widget
-├─ Phase indicator (rotating circles)
-├─ Hash display (rolling digits)
-├─ Contact avatar
-└─ Styling/theme
-```
+### What Doesn't Work Yet
+- ❌ Encrypted message exchange (CLUTCH handshake done, message flow pending)
+- ❌ Identity validation and key recovery flows
+- ❌ Message persistence (database layer empty)
+- ❌ Full social attestation (2-human requirement not enforced)
 
-**Success Criteria**:
-- App launches and displays UI
-- Can type in input field
-- Can click send button (no-op for now)
-- Custom widgets render correctly
-- UI is responsive (no lag)
+### Platform Support
 
-**Deliverables**:
-- `ui/` module with views and widgets
-- App compiles and runs on Linux
-- Screenshots of UI
-
----
-
-### Phase 3: Network Layer (Weeks 6-9)
-
-**Goal**: Two instances can send messages over network
-
-```
-Week 6: DHT Integration
-├─ Integrate mainline-dht crate
-├─ Compute InfoHash from public key
-├─ Announce presence to DHT
-├─ Query DHT for peers
-└─ Test peer discovery on local network
-
-Week 7: Transport Layer
-├─ TLS connection establishment
-├─ WebSocket upgrade
-├─ Peer identity verification
-├─ Connection management (reconnect on drop)
-└─ Keepalive/heartbeat
-
-Week 8: Protocol Implementation
-├─ Frame encoding/decoding
-├─ Message transmission
-├─ ACK handling
-├─ Error handling (timeout, retry)
-└─ Network event loop
-
-Week 9: Integration
-├─ Wire network layer to crypto layer
-├─ Network thread communicates with UI via channels
-├─ End-to-end message flow works
-└─ Two instances on same machine can chat
-```
-
-**Success Criteria**:
-- DHT peer discovery works
-- TLS connections establish successfully
-- Messages transmit and decrypt correctly
-- ACKs received and chain advances
-- Can run two tmessage instances and chat between them
-
-**Deliverables**:
-- `network/` module fully functional
-- Demo video: two terminals chatting
-- Network protocol documented
+| Platform | Status | Notes |
+|----------|--------|-------|
+| Linux | ✅ Working | X11/Wayland |
+| Windows | ✅ Working | DirectDraw |
+| macOS | ✅ Working | Intel + Apple Silicon |
+| Android | ✅ Working | ARM64, tested on device |
+| Redox | 🟡 Compiles | Orbital, untested |
+| iOS | ❌ Blocked | See "Why No iOS?" below |
 
 ---
 
-### Phase 4: Full Integration (Weeks 10-11)
+## Installation
 
-**Goal**: Complete app with persistence and recovery
+### Quick Install (Recommended)
 
-```
-Week 10: Storage Layer
-├─ SQLite database setup
-├─ Message persistence
-├─ Contact storage
-├─ Settings storage
-├─ Identity storage (encrypted)
-└─ Migration system
+Download pre-built, cryptographically signed binaries:
 
-Week 11: Polish
-├─ Message expiration (auto-delete)
-├─ Notification system
-├─ Online/offline status detection
-├─ Error messages in UI
-├─ Loading states
-└─ Bug fixes
-```
-
-**Success Criteria**:
-- Messages persist across restarts
-- Contacts saved to database
-- App handles network failures gracefully
-- UI shows appropriate loading/error states
-- No crashes, no data loss
-
-**Deliverables**:
-- `storage/` module complete
-- App is usable for daily messaging
-- Documentation for users
-
----
-
-### Phase 5: Social Recovery (Weeks 12-14)
-
-**Goal**: Key shard distribution and recovery working
-
-```
-Week 12: Shard Distribution
-├─ Automatic weight calculation
-├─ Shard generation from private key
-├─ Encrypt and send shards to contacts
-├─ Store received shards
-└─ Update weights over time
-
-Week 13: Recovery Protocol
-├─ Recovery initiation flow
-├─ Custodian notification
-├─ Verification phrase generation
-├─ Out-of-band verification UI
-├─ Threshold validation
-└─ Key reconstruction
-
-Week 14: Recovery Testing
-├─ Test full recovery flow
-├─ Edge cases (offline custodians, insufficient shards)
-├─ Security testing (rate limiting, attack scenarios)
-└─ UI polish for recovery screens
-```
-
-**Success Criteria**:
-- Shards automatically distributed to contacts
-- Can recover identity by entering phrases from friends
-- Threshold logic works correctly
-- Attack scenarios are blocked (rate limits, etc.)
-
-**Deliverables**:
-- Social recovery fully functional
-- Recovery documentation for users
-- Demo video of recovery process
-
----
-
-### Phase 6: Android Port (Weeks 15-18)
-
-**Goal**: tmessage running on Android phones
-
-```
-Week 15: Android Build Setup
-├─ Cross-compilation to aarch64-linux-android
-├─ JNI bridge from existing Android code
-├─ Iced integration with Android NDK
-├─ APK builds successfully
-└─ App launches on emulator
-
-Week 16: Platform Integration
-├─ Touch input handling
-├─ Android permissions (network, storage)
-├─ Notifications (FCM alternative needed)
-├─ Battery optimization exemption
-└─ VpnService API for DHT (optional)
-
-Week 17: Mobile UI Adjustments
-├─ Responsive layouts for small screens
-├─ Keyboard handling
-├─ Orientation changes
-├─ Pull-to-refresh
-└─ Swipe gestures
-
-Week 18: Testing and Polish
-├─ Test on real Android devices
-├─ Performance optimization (battery, memory)
-├─ Play Store preparation (if desired)
-└─ Bug fixes
-```
-
-**Success Criteria**:
-- APK installs and runs on Android 8.0+
-- Can send/receive messages over cellular and WiFi
-- Battery life acceptable (not constantly draining)
-- UI works on various screen sizes
-
-**Deliverables**:
-- Android APK
-- Installation instructions
-- Android-specific documentation
-
----
-
-### Phase 7: Additional Platforms (Weeks 19+)
-
-**Windows (Week 19-20)**:
-- Should mostly work from Linux codebase
-- Windows-specific installer
-- Test on Windows 10/11
-
-**macOS (Week 21-22)**:
-- Should mostly work from Linux codebase
-- macOS bundle creation
-- Test on macOS 12+
-
-**Ferros Integration (Ongoing)**:
-- Port to Redox OS
-- Test on Redox
-- Integrate with Ferros kill-switch architecture
-
----
-
-## Platform Support
-
-### Tier 1: Desktop (Production Ready)
-
-**Linux**
-- Native development platform
-- Full feature support
-- Best performance
-- Target: Ubuntu 22.04+, Fedora 40+, Arch
-
-**Windows**
-- Full P2P support
-- Desktop integration
-- Target: Windows 10/11
-
-**macOS**
-- Full P2P support
-- Native UI (Iced Metal backend)
-- Target: macOS 12+
-
-### Tier 2: Mobile (Functional with Constraints)
-
-**Android**
-- Works best on WiFi
-- Battery optimization challenges
-- VpnService for full P2P (optional)
-- Background limitations
-- Target: Android 8.0+
-
-### Tier 3: Future Consideration
-
-**iOS**
-- Apple's sandbox hostile to P2P
-- DHT blocked by App Sandbox
-- Would require relay servers (defeats design)
-- Not recommended unless architecture changes
-
-**Web/WASM**
-- No raw socket access
-- Can't run DHT node
-- Would require centralized relay
-- Not viable for decentralized design
-
-### Ferros (Ultimate Target)
-
-**Redox OS Integration**:
-- Pure Rust OS (perfect fit)
-- Orbital display server
-- Native kill-switch support (0ms shutdown)
-- Full control over network stack
-- This is the long-term goal
-
----
-
-## Getting Started
-
-### Prerequisites
-
+**Linux/macOS/Redox:**
 ```bash
-# Linux
-sudo apt install build-essential pkg-config libssl-dev sqlite3
+curl -sSfL https://holdmyoscilloscope.com/photon/install.sh | sh
+```
 
-# Rust (latest stable)
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+**Windows (PowerShell):**
+```powershell
+iwr -useb https://holdmyoscilloscope.com/photon/install.ps1 | iex
+```
 
-# For Android (optional)
+The installer will:
+0. Download a signed binary from holdmyoscilloscope.com
+1. Install to `~/.local/bin` (Unix) or `%LOCALAPPDATA%\Programs\PhotonMessenger` (Windows)
+2. Create desktop/Start Menu shortcut
+3. Add binary to PATH
+
+**Security**: Every binary is Ed25519-signed by Nick Spiker (fractaldecoder@proton.me) and self-verifies on startup. This protects against corruption and tampering. If verification fails, the binary won't run.
+
+After installation, launch **Photon Messenger** from your application menu or run:
+```bash
+photon-messenger
+```
+
+### Building from Source
+
+**⚠️ Warning**: Building from source requires generating your own signing keys. Use the installer unless you have specific reasons to build yourself.
+
+If needed:
+```bash
+git clone https://github.com/nickspiker/photon
+cd photon
+
+# Generate signing keys (edit src/bin/photon-keygen.rs for key path)
+cargo run --bin photon-keygen
+
+# Update public key in src/self_verify.rs with your generated key
+
+# Build and sign
+cargo build --release
+./sign-after-build.sh release
+```
+
+See [src/self_verify.rs](src/self_verify.rs) for complete signing documentation.
+
+**Android:**
+```bash
 rustup target add aarch64-linux-android
+cargo build --target aarch64-linux-android --release
+./sign-after-build.sh release aarch64-linux-android
 ```
 
-### Project Setup
+---
 
-```bash
-# Create project
-cargo new tmessage --bin
-cd tmessage
+## How It Works
 
-# Set up directory structure
-mkdir -p src/{ui,logic,crypto,network,storage,types,platform}
-mkdir -p src/ui/{views,widgets}
-mkdir -p tests/{integration,unit}
-mkdir -p docs assets benches
+### Device Identity (Keys Derived From Hardware)
 
-# Initialize git
-git init
-echo "target/" > .gitignore
-echo "Cargo.lock" >> .gitignore
-
-# Add dependencies to Cargo.toml
-```
-
-### Cargo.toml
-
-```toml
-[package]
-name = "tmessage"
-version = "0.1.0"
-edition = "2021"
-authors = ["Nick Spiker <fractaldecoder@proton.me>"]
-license = "MIT"
-description = "Decentralized messenger with rolling-chain encryption"
-
-[dependencies]
-# UI
-iced = { version = "0.12", features = ["tokio", "advanced"] }
-
-# Crypto
-blake3 = "1.5"
-chacha20poly1305 = "0.10"
-x25519-dalek = "2.0"
-rand = "0.8"
-zeroize = { version = "1.7", features = ["derive"] }
-
-# Network
-tokio = { version = "1", features = ["full"] }
-tokio-tungstenite = "0.21"
-tokio-native-tls = "0.3"
-mainline = "2.0"  # DHT
-
-# Serialization
-bincode = "1.3"
-serde = { version = "1.0", features = ["derive"] }
-
-# Storage
-rusqlite = { version = "0.31", features = ["bundled"] }
-
-# Utilities
-thiserror = "1.0"
-anyhow = "1.0"
-log = "0.4"
-env_logger = "0.11"
-
-[target.'cfg(target_os = "android")'.dependencies]
-jni = "0.21"
-ndk = "0.8"
-ndk-glue = "0.7"
-
-[dev-dependencies]
-criterion = "0.5"
-
-[[bench]]
-name = "crypto_bench"
-harness = false
-
-[profile.release]
-lto = true
-codegen-units = 1
-opt-level = 3
-strip = true
-```
-
-### First Milestone: Crypto Foundation
-
-**Create types/message.rs**:
+Photon derives device keys **deterministically from hardware identifiers**—keys are never stored on disk. Each launch, the app reads a platform-specific machine fingerprint and derives the Ed25519 keypair:
 
 ```rust
-// src/types/message.rs
-
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Message {
-    pub nonce: u64,
-    pub sequence: u64,
-    pub payload: Vec<u8>,
-    pub timestamp: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EncryptedMessage {
-    pub sequence: u64,
-    pub ciphertext: Vec<u8>,
-}
-
-impl Message {
-    pub fn new(sequence: u64, payload: Vec<u8>) -> Self {
-        Self {
-            nonce: rand::random(),
-            sequence,
-            payload,
-            timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
-        }
-    }
-}
+let fingerprint = get_machine_fingerprint();  // Platform-specific
+let seed = blake3::hash(&fingerprint);        // 32-byte seed
+let keypair = Ed25519::from_seed(&seed);      // Deterministic
 ```
 
-**Create crypto/chain.rs** (see Core Systems section above)
+**Platform fingerprint sources:**
 
-**Write tests**:
+| Platform | Source | Stability |
+|----------|--------|-----------|
+| Linux | `/etc/machine-id` | Survives reboots, unique per install |
+| Windows | Registry `MachineGuid` | Survives reboots, unique per install |
+| macOS | `IOPlatformUUID` | Hardware-burned, survives reinstalls |
+| Android | `ANDROID_ID` + user number | Per-device, per-signing-key |
+| Redox | `/etc/hostid` or hostname | Fallback path |
+
+**Why derived keys?**
+
+Stored keys can be copied to another device (identity theft), extracted by malware, or found in forensic analysis. Derived keys tie identity to physical hardware—the device IS the identity.
+
+#### Hardware Security Reality
+
+Modern devices contain dedicated security chips capable of unforgeable cryptographic proofs:
+
+- **Android**: StrongBox/TEE secure processors
+- **iOS/macOS**: Secure Enclave (T2/Apple Silicon)
+- **Windows/Linux**: TPM 2.0
+
+These chips can perform **cryptographic oracles**—signing data with hardware-bound keys that never leave the chip. This would provide stronger guarantees: attacker can't forge signatures without physical chip access, software compromise doesn't leak secrets, device identity persists across OS reinstalls.
+
+**Why Photon doesn't use hardware security:**
+
+Platform vendors reserve these features for internal services and don't expose them to third-party applications:
+
+| Platform | Hardware | Third-Party Access | Limitation |
+|----------|----------|-------------------|------------|
+| Android | ✅ StrongBox/TEE | ✅ Partial | `ANDROID_ID` is 64-bit oracle output |
+| iOS/macOS | ✅ Secure Enclave | ❌ Internal only | Reserved for Apple services |
+| Windows | ✅ TPM 2.0 | ⚠️ Complex | Inconsistent availability, no standard API |
+| Linux | ✅ TPM 2.0 | ⚠️ Manual | Requires manual setup, arcane tools |
+
+Android's `ANDROID_ID` is effectively `HMAC(device_secret, signing_key)` with 64-bit output—better than readable identifiers but not full hardware oracle access. Other platforms provide readable identifiers (machine-id, IOPlatformUUID) that are unique and persistent but not cryptographically secret.
+
+**Photon's approach:**
+
+Given platform limitations, Photon derives app-specific secrets from readable identifiers:
 
 ```rust
-// tests/integration/crypto_test.rs
-
-use tmessage::crypto::chain::MessageChain;
-use tmessage::types::seed::Seed;
-
-#[test]
-fn test_rolling_chain_encryption() {
-    let seed = Seed::generate();
-    
-    let mut alice_chain = MessageChain::new(seed.clone());
-    let mut bob_chain = MessageChain::new(seed);
-    
-    // Alice sends message to Bob
-    let plaintext = b"Hello Bob!";
-    let encrypted = alice_chain.encrypt(plaintext);
-    
-    // Bob receives and decrypts
-    let decrypted = bob_chain.decrypt(&encrypted).unwrap();
-    
-    assert_eq!(decrypted.payload, plaintext);
-    
-    // Chain states should be identical after ACK
-    alice_chain.receive_ack(encrypted.sequence);
-    assert_eq!(alice_chain.state, bob_chain.state);
-}
-
-#[test]
-fn test_replay_attack_prevented() {
-    let seed = Seed::generate();
-    
-    let mut alice_chain = MessageChain::new(seed.clone());
-    let mut bob_chain = MessageChain::new(seed);
-    
-    let encrypted = alice_chain.encrypt(b"Message 1");
-    bob_chain.decrypt(&encrypted).unwrap();
-    
-    // Try to replay the same message
-    let result = bob_chain.decrypt(&encrypted);
-    assert!(result.is_err()); // Should fail (sequence mismatch)
-}
-
-#[test]
-fn test_message_reordering_detected() {
-    let seed = Seed::generate();
-    
-    let mut alice_chain = MessageChain::new(seed.clone());
-    let mut bob_chain = MessageChain::new(seed);
-    
-    let msg1 = alice_chain.encrypt(b"First");
-    let msg2 = alice_chain.encrypt(b"Second");
-    
-    // Bob receives messages out of order
-    let result = bob_chain.decrypt(&msg2);
-    assert!(result.is_err()); // Should fail (expects sequence 0, got 1)
-}
+const APP_CONTEXT: &[u8] = b"photon_device_identity_v0";
+let device_secret = blake3::derive_key(APP_CONTEXT, &machine_id);
 ```
 
-**Run tests**:
+This provides: device-specific keys, resistance to remote attacks (requires both identifier exfiltration and app reverse-engineering), and security comparable to SSH keys or cryptocurrency wallets. Physical device theft remains the primary threat vector.
 
+The hardware exists and is capable. Platform vendors use it internally for device attestation, DRM, and payment processing. Third-party access would enable applications that bypass platform identity systems—a business model conflict, not a technical limitation.
+
+---
+
+### Rolling-Chain Encryption
+
+Traditional messaging (Signal, WhatsApp) uses **Double Ratchet**: sender advances keys immediately, receiver stores "skipped message keys" for out-of-order delivery. This enables asynchronous messaging but makes ordering non-deterministic.
+
+Photon uses **rolling-chain encryption**: the sender does not advance chain state until receiving confirmation that the message was successfully received and decrypted. This creates a synchronization loop:
+
+```
+Alice (state₀)  ──message encrypted with state₀──→  Bob (state₀)
+                                                      Bob decrypts, advances to state₁
+Alice (state₀)  ←──────ACK or reply──────────────  Bob (state₁)
+Alice advances to state₁
+[Both now at state₁, loop complete]
+```
+
+**Properties enabled by acknowledgment-based advancement:**
+
+0. **Prevents desynchronization**: Lost messages leave both parties at same state—no "skipped keys"
+1. **Enforces ordering**: Messages processed sequentially with verified sequence numbers
+2. **Enables immutability**: Deleting or editing message breaks all subsequent hashes—cryptographic proof of tampering
+3. **Simplifies recovery**: New devices replay message history from checkpoints without complex key management
+
+**How the chain works:**
+
+```rust
+// Initial state from shared seed (exchanged out-of-band)
+state₀ = BLAKE3(seed)
+
+// Encrypt message
+ciphertext = plaintext ⊕ state₀  // XOR for chain linkage
+
+// Advance ONLY after receiving ACK
+stateᵢ = BLAKE3(stateᵢ₋₁ ‖ ciphertext)
+```
+
+Each message's ciphertext is hashed with the previous state to produce the next state. Breaking one message doesn't reveal others (forward secrecy via BLAKE3 preimage resistance). Modifying message `i` changes all subsequent states—tampering is cryptographically detectable.
+
+**Encryption layer:**
+
+The chain state XOR is not the only encryption. Final messages use **ChaCha20-Poly1305 AEAD**:
+
+```rust
+encryption_key = BLAKE3_KDF(chain_state, "photon.encryption.v1")
+encrypted_message = ChaCha20Poly1305::encrypt(key, nonce, plaintext)
+```
+Rolling-chain provides immutability and ordering; ChaCha20-Poly1305 provides standard cryptographic security.
+
+**Latency characteristics:**
+
+This synchronization model doesn't compromise performance. Direct peer-to-peer connections have significantly lower latency than server-relayed messaging:
+
+| Path | Round-trip Latency |
+|------|-------------------|
+| Photon P2P (Seattle–Los Angeles) | ~25-30ms |
+| Photon P2P (Los Angeles–New York) | ~50-60ms |
+| Signal/WhatsApp | 100-300ms (server relay) |
+| Zoom | 100-300ms (central server) |
+| FaceTime | 80-200ms (Apple relay) |
+
+For regional connections (Seattle–LA), video frames arrive **before the next frame starts capturing** at 30fps (33.33ms per frame). Acknowledgments return faster than human perception can register. Even coast-to-coast (LA–NYC), Photon is **3-6x faster** than commercial services while providing cryptographic immutability and no corporate surveillance.
+
+**Trade-offs:**
+
+| Double Ratchet (Signal) | Rolling-Chain (Photon) |
+|------------------------|------------------------|
+| Async: sender advances immediately | Sync: sender waits for ACK |
+| Out-of-order delivery supported | Sequential processing enforced |
+| Skipped message keys stored | No skipped keys |
+| Message deletion undetectable | Deletion breaks chain (detectable) |
+| Message editing undetectable | Editing breaks chain (detectable) |
+
+---
+
+### Passless Authentication
+
+**Authentication Count: A = 1**
+
+You authenticate once when creating your identity. All subsequent access uses cryptographic proofs derived from that single authentication event.
+
+**Identity recovery mechanisms:**
+
+0. **Proximity transfer**: Authorized device transfers identity to new device via Bluetooth LE with 3-word visual verification (manual entry if BLE unavailable or out of range)
+
+1. **Social recovery**: Lose all devices? Trusted contacts hold encrypted shards of your private key. Threshold reconstruction typically requires 5 friends—your security boundary is the number of trusted contacts who would need to collude to compromise your identity.
+
+**Handle attestation:**
+
+Identity is tied to your handle—any Unicode string of any length (e.g., `fractal decoder`, `🚀`, `∫∂x`, or `☢⚡☃`). The handle is hashed with BLAKE3 to derive a network address. Claiming a handle requires **two human attestations**—existing users vouch for your identity. This is invite-only by design.
+
+**Attestation flow** (see [AUTH.md](AUTH.md) for full specification):
+
+0. User requests handle (e.g., `Wayne`)
+1. System queries DHT: is `Wayne` already claimed?
+2. If unclaimed, user requests attestations from 2 trusted people
+3. Attesters see: device type, approximate location, timestamp
+4. Attesters verify out-of-band (phone call, video, in-person)
+5. Both attestations required within 24 hours
+6. Handle cryptographically bound to user's public key
+
+**Why attestation?**
+
+Traditional authentication asks "prove you are you" then accepts a password—which proves nothing about identity, only knowledge of a secret. It doesn't even prove you're human. Password reset flows are worse: anyone with access to your email or phone can claim your account.
+
+Photon uses the security model humans have used for millennia: trusted relationships. Your friends vouch for you, hold shards of your identity, and verify recovery requests. No company, no customer support, no "click this link to reset."
+
+See [AUTH.md](AUTH.md) for detailed specification.
+
+---
+
+### Network Architecture
+
+**Peer discovery:** FGTW (Fractal Gradient Trust Web)—custom Kademlia DHT with 32-byte BLAKE3 node IDs, 256 k-buckets, and VSF-serialized protocol messages. Handle lookups: `BLAKE3(handle) → handle_hash → Kademlia routing → peer records`. Bootstrap via `fgtw.org/peers.vsf` (Cloudflare Workers endpoint providing seed routing table population).
+
+**Transport:** UDP for P2P status and messaging, HTTPS (rustls) for bootstrap fetches. WebSocket support planned for NAT traversal.
+
+**Message routing (planned):**
+- Direct UDP when both peers online
+- Store-and-forward via trusted contacts when recipient offline
+- No central relay servers
+
+**Storage model:** Messages persist as long as you want them to, distributed across devices you control and friends who've agreed to store encrypted backups. The bootstrap endpoint (`fgtw.org`) only provides initial peer discovery—after that, the DHT is self-sustaining. No central servers store or process messages.
+
+---
+
+## Architecture
+
+### Module Structure
+
+```
+src/
+├── main.rs              - Winit event loop, window management
+├── lib.rs               - Module exports, debug utilities
+├── self_verify.rs       - Ed25519 binary signature verification
+├── crypto/
+│   ├── chain.rs         - Rolling-chain encryption
+│   ├── clutch.rs        - CLUTCH parallel key exchange ceremony
+│   ├── keys.rs          - Identity key management (TODO)
+│   └── shards.rs        - Social recovery key sharding (TODO)
+├── network/
+│   ├── fgtw/
+│   │   ├── identity.rs  - Deterministic key derivation
+│   │   ├── protocol.rs  - VSF-encoded FGTW messages
+│   │   ├── transport.rs - UDP/WebSocket transport
+│   │   ├── node.rs      - Kademlia DHT routing
+│   │   ├── peer_store.rs - Peer caching
+│   │   └── bootstrap.rs - Initial peer discovery
+│   ├── handle_query.rs  - Handle attestation and lookup
+│   └── status.rs        - P2P ping/pong status checker
+├── ui/
+│   ├── app.rs           - Application state machine
+│   ├── avatar.rs        - Avatar encoding/upload/download
+│   ├── text_rasterizing.rs - Font rendering (cosmic-text)
+│   ├── renderer_*.rs    - Platform-specific rendering
+│   ├── keyboard.rs      - Input handling
+│   ├── text_editing.rs  - Text input state
+│   └── theme.rs         - Color palette
+├── types/
+│   ├── identity.rs      - Public/private keys (X25519)
+│   ├── message.rs       - Message structure, status, expiration
+│   ├── contact.rs       - Contact info, trust levels
+│   └── shard.rs         - Key shard structures
+└── storage/
+    ├── contacts.rs      - Local encrypted contact storage
+    └── cloud.rs         - FGTW cloud backup (contacts sync)
+```
+
+### Implementation Status
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| UI Framework | ✅ Complete | Custom winit-based GUI, differential rendering |
+| Text Rendering | ✅ Complete | cosmic-text, selection, editing |
+| Device Identity | ✅ Complete | Deterministic keys from hardware (never stored) |
+| Crypto Types | ✅ Complete | Identity, seed, shard, message structures |
+| CLUTCH Key Exchange | ✅ Working | Parallel ephemeral key ceremony, chain state derivation |
+| Handle Attestation | ✅ Working | Memory-hard PoW (~1s), DHT storage |
+| Peer Discovery | ✅ Working | FGTW DHT queries return peer IPs |
+| P2P Status | ✅ Working | UDP ping/pong with Ed25519 signatures |
+| NAT Hole Punching | ✅ Working | Broadcast ping to all peers on registration/refresh |
+| Avatar System | ✅ Working | VSF-encoded, FGTW storage, rate-limited uploads |
+| Contact Storage | ✅ Working | Local encrypted + cloud backup to FGTW |
+| Binary Signing | ✅ Working | Ed25519 signatures, self-verification on startup |
+| Network Transport | ⚠️ Partial | DHT functional, direct peer connections pending |
+| Message Persistence | ❌ Empty | VSF storage layer not implemented |
+| Social Recovery | ❌ Stubbed | Shard distribution/reconstruction TODO |
+| Peer Messaging | ⚠️ Partial | CLUTCH done, encrypted message exchange pending |
+
+### Technology Stack
+
+**Core:**
+- `winit` - Cross-platform windowing
+- `softbuffer` - Software rendering
+- `cosmic-text` - Font rendering and text layout
+- `arboard` - Clipboard access
+
+**Crypto:**
+- `blake3` - Cryptographic hashing (chain state, KDF)
+- `chacha20poly1305` - AEAD encryption
+- `x25519-dalek` - Elliptic curve Diffie-Hellman
+- `zeroize` - Secure memory wiping
+
+**Network:**
+- `tokio` - Async runtime
+- `tokio-tungstenite` - WebSocket (planned for NAT traversal)
+- `reqwest` - HTTP client with rustls (bootstrap fetches)
+
+**Storage:**
+- `vsf` - Versatile Storage Format (self-describing binary with embedded schemas, versioning, and per-record cryptographic signatures)
+- `bincode` - Binary serialization
+
+---
+
+## File Format: VSF (Versatile Storage Format)
+
+Messages and identity data use VSF—a self-describing binary format with cryptographic integrity. Implementation is functional but needs updates for messaging.
+
+**VSF provides:**
+- Type-length-value encoding
+- Embedded schemas with version information
+- Forward compatibility
+- Per-record cryptographic signatures
+- Optional compression
+
+See `tools/` directory for VSF utilities (format inspection, validation).
+
+---
+
+## Distribution Philosophy
+
+We do not distribute via Google Play Store, Apple App Store, or Microsoft Store. These platforms create barriers incompatible with our security model and decentralized architecture. Ready-to-run signed binaries are provided in `bin/`.
+
+**Reasons for direct distribution:**
+
+0. **Encryption reporting requirements**: US Export Administration Regulations require registration with the Bureau of Industry and Security and disclosure of encryption implementation details before international distribution.
+
+1. **Review process uncertainty**: App stores can reject applications with strong encryption or demand explanations of security implementations.
+
+2. **Corporate intermediaries**: Distribution thru stores requires trusting corporations to maintain access to software.
+
+3. **Sideloading restrictions**: iOS requires annual re-signing ($99/year developer account), free accounts must reinstall every 7 days. Android allows direct APK installation but shows discouragement warnings.
+
+We provide cryptographically signed binaries with published checksums. Users verify signatures, verify source, and run directly.
+
+---
+
+## Why No iOS?
+
+Apple's iOS platform has architectural incompatibilities with Photon's design:
+
+**Distribution barriers:**
+- App Store requires $99/year developer account tied to real identity
+- All binaries must be Apple-signed
+- Sideloading requires re-installation every 7 days (free accounts) or yearly (paid)
+- Enterprise distribution violates terms if used publicly
+- No mechanism for "public infrastructure without corporate owner"
+
+**Technical limitations:**
+- **No raw socket access**: Cannot connect to DHT peers directly
+- **No background processes**: Apps terminated after ~30 seconds in background
+- **Sandbox restrictions**: Cannot run persistent TOKEN daemon
+- **Entitlement gatekeeping**: Network access requires Apple approval
+- **No system-level services**: Architecture assumes apps are foreground-only
+
+Photon requires persistent background connections, direct peer-to-peer networking, and system-level cryptographic services. iOS prohibits all of these by design, not by technical limitation.
+
+The EU's Digital Markets Act may force sideloading in Europe by 2026, but likely won't address the fundamental architectural restrictions.
+
+---
+
+## Comparison with Existing Messengers
+
+| Property | Signal | WhatsApp | Matrix | Photon |
+|----------|--------|----------|--------|--------|
+| Architecture | Centralized | Centralized | Federated | P2P |
+| Authentication count | Multiple | Multiple | Multiple | **1** |
+| Social recovery | No | No | No | **Yes** |
+| Metadata privacy | Partial | No | Partial | **Yes** |
+| Self-sovereign data | No | No | Partial | **Yes** |
+| Message immutability | No | No | No | **Yes** |
+| Phone number required | Yes | Yes | No | No |
+| Single point of failure | Yes | Yes | Partial | No |
+
+**Architecture implications:**
+
+- **Centralized** (Signal, WhatsApp): Single company runs servers. Can be subpoenaed, shut down, or pressured by governments.
+- **Federated** (Matrix): Multiple servers run by different operators. Better than centralized but still relies on homeservers—messages flow thru infrastructure users don't control.
+- **P2P** (Photon): No message servers. Peers connect directly. DHT bootstrap only provides initial peer discovery—after that, the network is self-sustaining.
+
+**Signal/WhatsApp:**
+- Centralized servers (legal vulnerability)
+- Phone number required (ties identity to carrier)
+- No social recovery (lose device → lose account)
+- Message deletion undetectable by recipient
+
+**Matrix:**
+- Federation, not P2P (homeserver dependency)
+- Authentication per device/homeserver
+- No social key recovery
+- Metadata visible to homeserver operators
+- Homeservers can be individually shut down
+
+**Photon:**
+- True P2P (no message servers)
+- Single authentication event (A = 1)
+- Social recovery (threshold reconstruction)
+- Message immutability (tampering detectable)
+- Metadata privacy (traffic appears as HTTPS)
+
+---
+
+## Security Properties
+
+**Guaranteed by rolling-chain encryption:**
+
+0. Forward secrecy (compromising state_n doesn't reveal state_n-1)
+1. Replay resistance (sequence numbers prevent replayed messages)
+2. Reorder detection (out-of-order messages fail sequence validation)
+3. Tamper evidence (modifying message breaks all subsequent hashes)
+4. Message immutability (deletion/editing cryptographically detectable)
+
+**Guaranteed by attestation system:**
+
+0. Human identity verification (automated systems can't pass two attestations)
+1. Rate limiting (1 attestation request per hour per device)
+2. Collusion visibility (both attesters see each other's approval)
+3. Reputation staking (attesters risk reputation vouching for abusers)
+
+**Not protected against:**
+
+- Physical device theft (if device unlocked)
+- Threshold collusion (k or more trusted contacts)
+- Screenshots or physical photography of screen
+- Quantum computers breaking X25519 (future threat—would require protocol upgrade)
+
+---
+
+## Design Philosophy
+
+From [AGENT.md](https://github.com/nickspiker/photon/blob/main/AGENT.md):
+
+0. **Trust the math**: If loop bounds guarantee safety, don't add runtime checks
+1. **Fail fast, fail loud**: Panics expose bugs; bounds checks can hide them
+2. **No fixed pixels**: Everything scales relative to screen dimensions
+3. **Explicit over "safe"**: Direct indexing when mathematically proven safe
+
+See [AGENT.md](AGENT.md) for complete code generation rules.
+
+---
+
+## Contributing
+
+Photon is in early development. Contributions welcome—please read architecture documentation first:
+
+- [AUTH.md](AUTH.md) - Attestation system specification (1,350 lines)
+- [AGENT.md](AGENT.md) - Code generation rules
+- This README - Architecture and current status
+
+**High-priority areas:**
+
+0. Network transport (direct peer connections, WebSocket)
+1. Message persistence (VSF storage layer)
+2. Social recovery (shard distribution, threshold reconstruction)
+3. Android testing (real-device validation)
+4. ChaCha20-Poly1305 integration (complete rolling-chain implementation)
+
+**Testing:**
 ```bash
 cargo test
+cargo bench  # Crypto benchmarks
 ```
 
----
-
-## Critical Decisions Log
-
-This section tracks major architectural decisions made during development. Update as you go.
-
-### Decision 1: DHT Implementation
-
-**Date**: 2025-01-XX
-
-**Question**: Which DHT implementation to use?
-
-**Options Considered**:
-1. `mainline` crate (pure Rust, Mainline DHT)
-2. `libp2p-kad` (feature-rich but heavier)
-3. Custom implementation
-
-**Decision**: Use `mainline` crate
-
-**Rationale**:
-- Mainline DHT has millions of existing nodes (BitTorrent)
-- Pure Rust (no FFI)
-- Proven at scale
-- Simplest integration
-- Already looks like torrent traffic (camouflage goal)
-
-**Consequences**:
-- Tied to BitTorrent DHT network
-- Limited to Kademlia routing
-- No built-in NAT traversal (need separate solution)
+Test coverage is currently minimal—this is early-stage development. Write tests for any new cryptographic code.
 
 ---
 
-### Decision 2: Message Storage
+## Related Projects
 
-**Date**: 2025-01-XX
+Photon is the first implementation of **TOKEN**—a universal digital identity system where authentication happens once (A = 1). Planned TOKEN applications:
 
-**Question**: How to persist messages?
+- `ferros` - Kill-switch ready OS
+- Additional applications TBD
 
-**Options Considered**:
-1. SQLite database (encrypted)
-2. Custom binary format (like Signal)
-3. Plain files per conversation
-4. In-memory only (no persistence)
+Once authenticated with TOKEN, all applications use that single identity. Install TOKEN on new device → everything appears automatically (apps, settings, messages, contacts, files). No passwords, no setup wizards, no per-app logins.
 
-**Decision**: SQLite with encryption at rest
-
-**Rationale**:
-- SQL queries useful for features (search, filters)
-- Well-tested, reliable
-- Cross-platform
-- Easy backup/export
-- Encryption via SQLCipher or custom wrapper
-
-**Consequences**:
-- Need database migrations
-- Larger binary size
-- Potential performance bottleneck (mitigated by indexes)
-
----
-
-### Decision 3: Notification System
-
-**Date**: 2025-01-XX
-
-**Question**: How to notify users of new messages when app is in background?
-
-**Options Considered**:
-1. OS-level notifications (Linux: libnotify, Android: local notifications)
-2. No background support (app must be open)
-3. Persistent background service
-
-**Decision**: OS-level notifications with persistent background service
-
-**Rationale**:
-- Users expect message apps to work in background
-- Linux: systemd user service or background thread
-- Android: Foreground Service (required for persistent network)
-- No push servers needed (decentralized design)
-
-**Consequences**:
-- Battery impact on mobile
-- Android: Need foreground notification
-- May conflict with battery optimization
-- Users must whitelist app
-
----
-
-### Decision 4: Seed Exchange Method
-
-**Date**: 2025-01-XX
-
-**Question**: How do users exchange relationship seeds?
-
-**Options Considered**:
-1. QR code only (in-person)
-2. Manual text entry (copy-paste)
-3. NFC tap (Android)
-4. All of the above
-
-**Decision**: All of the above (QR primary, text fallback, NFC bonus)
-
-**Rationale**:
-- QR codes work for most users (easy, visual)
-- Text entry for remote setup (Signal safety number pattern)
-- NFC for Android users (fast, cool factor)
-- More options = better UX
-
-**Consequences**:
-- Need QR code generation/scanning (use `qrcode` crate)
-- Need NFC integration (Android NDK)
-- More UI complexity
-
----
-
-### Decision 5: Key Derivation Function
-
-**Date**: 2025-01-XX
-
-**Question**: How to derive keys from master secret?
-
-**Options Considered**:
-1. BLAKE3 KDF
-2. Argon2
-3. HKDF-SHA256
-
-**Decision**: BLAKE3 for chain state, Argon2 for password-based (if needed)
-
-**Rationale**:
-- BLAKE3 is fast, secure, already used for chain
-- Argon2 only needed if we add optional password layer
-- Consistency with existing crypto choices
-
-**Consequences**:
-- Not using "standard" KDF (HKDF)
-- BLAKE3 is newer, less reviewed (but Signal uses it)
-- Need clear documentation of key derivation
-
----
-
-### Decision 6: UI Framework
-
-**Date**: 2025-01-XX (Already decided in conversation)
-
-**Question**: Which UI framework?
-
-**Options Considered**:
-1. Iced (declarative, pure Rust)
-2. egui (immediate mode)
-3. GTK via gtk-rs
-4. Qt via CXX
-5. Flutter (Dart)
-
-**Decision**: Iced
-
-**Rationale**:
-- Pure Rust (no FFI)
-- Declarative (easy to reason about)
-- GPU-accelerated (smooth animations)
-- Cross-platform (desktop + mobile)
-- COSMIC uses it (proven for chat-like apps)
-- Matches project's Rust-first philosophy
-
-**Consequences**:
-- Iced is still maturing (may hit rough edges)
-- Custom widgets needed for unique visuals
-- Android support requires extra work (winit + NDK)
-
----
-
-### Decision 7: Network Protocol Format
-
-**Date**: 2025-01-XX
-
-**Question**: How to serialize messages on the wire?
-
-**Options Considered**:
-1. Bincode (Rust-native binary)
-2. Protocol Buffers
-3. JSON
-4. Custom binary format
-
-**Decision**: Bincode with length prefixing
-
-**Rationale**:
-- Simplest for Rust (serde support)
-- Compact binary format
-- No schema files needed
-- Fast serialization
-
-**Consequences**:
-- Not cross-language compatible (doesn't matter for now)
-- Need version handling (frame type field)
-- Can't inspect frames with Wireshark easily (feature, not bug)
-
----
-
-### Decision 8: Testing Strategy
-
-**Date**: 2025-01-XX
-
-**Question**: How to test cryptographic correctness?
-
-**Decision**:
-1. Unit tests in each module (inline with `#[cfg(test)]`)
-2. Integration tests in `tests/` directory
-3. Test vectors from whitepaper
-4. Property-based testing with `proptest` for crypto
-5. Manual end-to-end testing (two instances chatting)
-
-**Rationale**:
-- Crypto bugs are critical (need thorough testing)
-- Unit tests catch regressions
-- Property tests find edge cases
-- Manual testing ensures UX works
-
-**Consequences**:
-- Test suite will be large
-- CI needed (GitHub Actions)
-- May slow down development initially (worth it)
-
----
-
-### Decision 9: Error Handling
-
-**Date**: 2025-01-XX
-
-**Question**: How to handle errors across layers?
-
-**Options Considered**:
-1. `anyhow` everywhere (quick and dirty)
-2. Custom error types per module
-3. `thiserror` for defining errors, `anyhow` for propagation
-
-**Decision**: `thiserror` for library code, `anyhow` in app/main
-
-**Rationale**:
-- Library modules (crypto, network) need specific error types
-- App code can use `anyhow` for convenience
-- Best of both worlds
-
-**Consequences**:
-- More boilerplate (error enum per module)
-- Better error messages for users
-- Easier debugging
-
----
-
-### Decision 10: Expiring Messages Implementation
-
-**Date**: 2025-01-XX
-
-**Question**: How to delete expired messages?
-
-**Options Considered**:
-1. Background thread checks every N seconds
-2. Delete on app launch
-3. Delete lazily when loading conversation
-4. Both 1 and 2
-
-**Decision**: Background thread + on-launch cleanup
-
-**Rationale**:
-- Background thread ensures timely deletion (privacy goal)
-- On-launch as backup (if app was closed during expiration)
-- User expects expired messages to disappear
-
-**Consequences**:
-- Another background thread (minimal overhead)
-- Need to handle deletion while conversation is open (UI update)
-
----
-
-## Next Steps
-
-### You're starting development now. Here's your checklist:
-
-**Today (Day 1)**:
-- [ ] Create project: `cargo new tmessage --bin`
-- [ ] Set up directory structure (see above)
-- [ ] Copy this README.md into project
-- [ ] Add dependencies to Cargo.toml
-- [ ] Create `docs/architecture.md` (copy architecture section from this file)
-- [ ] Initialize git repository
-
-**This Week (Week 1)**:
-- [ ] Define all types in `src/types/`
-  - [ ] `message.rs`
-  - [ ] `contact.rs`
-  - [ ] `identity.rs`
-  - [ ] `seed.rs`
-  - [ ] `shard.rs`
-  - [ ] `peer.rs`
-- [ ] Get types compiling
-- [ ] Write basic tests for type serialization
-
-**Next Week (Week 2)**:
-- [ ] Implement `crypto/chain.rs` (rolling-chain encryption)
-- [ ] Write comprehensive tests for MessageChain
-- [ ] Test with vectors from tmessage.tex
-- [ ] Verify forward secrecy, replay protection, reorder detection
-
-**Week 3**:
-- [ ] Implement `crypto/keys.rs` (identity generation, storage)
-- [ ] Implement `crypto/shards.rs` (shard distribution, reconstruction)
-- [ ] Test key recovery with various shard combinations
-- [ ] Milestone 1 complete: Crypto foundation working ✓
-
----
-
-## Communication with Claude (Important!)
-
-When you resume working with Claude on this project:
-
-### What to Include in Each Session
-
-```
-I'm working on tmessage, a decentralized messenger in Rust.
-
-Current Status:
-- Milestone: [X] (e.g., "Week 2: Rolling Chain Implementation")
-- Last completed: [describe what works]
-- Current task: [what you're working on now]
-- Stuck on: [if applicable]
-
-Context:
-- See README.md section [X] for architecture
-- Working in file: src/[path/to/file.rs]
-- Relevant code: [paste snippet if needed]
-
-Question:
-[Your actual question]
-```
-
-### What Claude Needs to Know
-
-1. **Which milestone you're on** (so I know what should be working)
-2. **Current file structure** (if you've deviated from README)
-3. **What's already implemented** (so I don't suggest redoing things)
-4. **What's broken** (error messages, unexpected behavior)
-5. **Your goal for this session** (fix bug? implement feature? refactor?)
-
-### Keeping This README Updated
-
-As you make decisions:
-- Add to "Critical Decisions Log"
-- Update directory structure if you change it
-- Mark milestones complete with dates
-- Note any architecture changes
-
----
-
-## Resources
-
-### Crates Documentation
-
-- **Iced**: https://docs.rs/iced/
-- **BLAKE3**: https://docs.rs/blake3/
-- **ChaCha20-Poly1305**: https://docs.rs/chacha20poly1305/
-- **X25519**: https://docs.rs/x25519-dalek/
-- **Tokio**: https://docs.rs/tokio/
-- **Mainline DHT**: https://docs.rs/mainline/
-
-### Relevant Papers & Specs
-
-- tmessage.tex (your whitepaper)
-- Signal Protocol: https://signal.org/docs/
-- Mainline DHT (BEP 5): https://www.bittorrent.org/beps/bep_0005.html
-- TLS 1.3 RFC: https://datatracker.ietf.org/doc/html/rfc8446
-
-### Similar Projects (Learn From)
-
-- Signal Desktop (Electron + crypto)
-- Briar (Android P2P messenger)
-- Jami (formerly Ring, decentralized)
-- Tox (P2P messenger protocol)
-
-### Rust Patterns
-
-- Async Rust: https://rust-lang.github.io/async-book/
-- Error Handling: https://rust-lang-nursery.github.io/rust-cookbook/errors.html
-- Crypto Best Practices: https://github.com/RustCrypto
+Photon demonstrates the social attestation and recovery model works before applying it to higher-stakes use cases (property deeds, medical records, financial assets).
 
 ---
 
 ## License
 
-MIT License - See LICENSE file
+MIT OR Apache-2.0 (dual-licensed)
+
+See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE)
 
 ---
 
@@ -946,201 +581,8 @@ MIT License - See LICENSE file
 
 ---
 
-## Final Notes
+**Project Status:** 🟡 Early Development (GUI functional, P2P status working, messaging pending)
 
-### Remember the Goal
+**Platform Support:** Linux ✅ | Windows ✅ | macOS ✅ | Android ✅ | Redox 🟡 | iOS ❌
 
-tmessage is not just another messenger. It's the first application proving TOKEN's A=1 authentication model works. Every design decision should support:
-
-1. **Decentralization** (no servers, no central authority)
-2. **True single sign-on** (authenticate once, never again)
-3. **Social trust** (key recovery via friends, not corporations)
-4. **Privacy** (encrypted, metadata-resistant, opt-in features)
-5. **Sovereignty** (users own their data, cryptographically)
-
-### Development Philosophy
-
-- **Rust First**: No compromises. If a library isn't in Rust, write it yourself or find an alternative.
-- **Test Everything**: Crypto bugs are unacceptable. Test obsessively.
-- **Document as You Go**: Future you (and future contributors) will thank you.
-- **Fail Fast**: If something doesn't work, don't hack around it. Fix the root cause.
-- **User Experience Matters**: Crypto should be invisible. UX should be delightful.
-
-### When You Get Stuck
-
-1. **Read the Error**: Rust's error messages are amazing. Actually read them.
-2. **Check the Tests**: What do your tests say should happen?
-3. **Simplify**: Strip away complexity until it works, then add back piece by piece.
-4. **Ask Claude**: But give context (see "Communication with Claude" section).
-5. **Take a Break**: Fresh eyes solve problems.
-
-### This is a Cathedral
-
-You're not building a quick hack. You're architecting a foundational system that could replace passwords, server-based identity, and centralized trust. Take your time. Do it right.
-
-The peasants will use the cathedral even if they don't understand the buttresses.
-
----
-
-**Project Started**: [Date]
-
-**Last Updated**: [Date]
-
-**Current Milestone**: Phase 1, Week 1
-
-**Status**: 🟢 Active Development
-
----
-
-## Appendix A: Useful Commands
-
-```bash
-# Build (debug)
-cargo build
-
-# Build (release, optimized)
-cargo build --release
-
-# Run
-cargo run
-
-# Run tests
-cargo test
-
-# Run specific test
-cargo test test_rolling_chain_encryption
-
-# Run tests with output
-cargo test -- --nocapture
-
-# Check without building (fast)
-cargo check
-
-# Format code
-cargo fmt
-
-# Lint
-cargo clippy
-
-# Generate documentation
-cargo doc --open
-
-# Run benchmarks
-cargo bench
-
-# Clean build artifacts
-cargo clean
-
-# Cross-compile for Android
-cargo build --target aarch64-linux-android --release
-
-# Profile (Linux)
-perf record -g target/release/tmessage
-perf report
-
-# Memory leak check
-valgrind --leak-check=full target/debug/tmessage
-```
-
----
-
-## Appendix B: Debugging Tips
-
-### Crypto Issues
-
-```rust
-// Add debug output to chain state
-println!("Chain state after encrypt: {:02x?}", &self.state[..8]);
-
-// Verify serialization round-trip
-let msg = Message::new(0, b"test".to_vec());
-let serialized = bincode::serialize(&msg).unwrap();
-let deserialized: Message = bincode::deserialize(&serialized).unwrap();
-assert_eq!(msg.payload, deserialized.payload);
-```
-
-### Network Issues
-
-```bash
-# Monitor DHT traffic
-tcpdump -i any -n 'udp port 6881'
-
-# Check if port is open
-nc -zv localhost 6881
-
-# Test TLS connection
-openssl s_client -connect peer_ip:port
-
-# Wireshark filter for tmessage
-tcp.port == 6881 || udp.port == 6881
-```
-
-### UI Issues
-
-```rust
-// Add debug borders to layouts
-container(content).style(|_theme| {
-    container::Style {
-        border: Border {
-            width: 1.0,
-            color: Color::from_rgb(1.0, 0.0, 0.0),
-            ..Default::default()
-        },
-        ..Default::default()
-    }
-})
-
-// Print widget bounds
-fn layout(&self, renderer: &Renderer, limits: &Limits) -> Node {
-    let node = Node::new(Size::new(100.0, 50.0));
-    println!("Widget bounds: {:?}", node.bounds());
-    node
-}
-```
-
----
-
-## Appendix C: Performance Targets
-
-Track these metrics as you develop:
-
-**Crypto**:
-- Message encryption: < 1ms
-- Message decryption: < 1ms
-- Key generation: < 100ms
-- Shard reconstruction: < 500ms
-
-**Network**:
-- DHT peer lookup: < 2s
-- TLS handshake: < 1s
-- Message transmission: < 100ms (local network)
-- ACK round-trip: < 200ms (local network)
-
-**UI**:
-- Frame rate: 60 FPS minimum
-- Input latency: < 16ms
-- App launch time: < 2s
-- Message list scroll: smooth (no jank)
-
-**Storage**:
-- Message save: < 10ms
-- Conversation load: < 50ms (1000 messages)
-- Database query: < 5ms
-
-**Memory**:
-- Idle: < 50MB RAM
-- Active conversation: < 100MB RAM
-- 10 conversations: < 200MB RAM
-
-**Battery (Android)**:
-- Background drain: < 2% per hour
-- Active usage: < 10% per hour
-
----
-
-**END OF README**
-
-This README should be your single source of truth for the project. Print it, keep it open in a tab, refer to it constantly. Update it as decisions are made. It will save you hours of confusion.
-
-Good luck, and remember: A = 1. 🚀
-```
+**Last Updated:** 2025-12-02

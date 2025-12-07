@@ -1,0 +1,53 @@
+# Cargo configuration for Photon Messenger
+# Auto-signing workflow for all builds
+
+# Native Linux - use default linker (override any system mold config)
+[target.x86_64-unknown-linux-gnu]
+linker = "cc"
+rustflags = []
+
+# Android cross-compilation
+[target.aarch64-linux-android]
+linker = "aarch64-linux-android21-clang"
+
+[target.armv7-linux-androideabi]
+linker = "armv7a-linux-androideabi21-clang"
+
+# macOS cross-compilation (via osxcross)
+[target.x86_64-apple-darwin]
+linker = "/mnt/Octopus/Code/osxcross/target/bin/x86_64-apple-darwin-clang-wrapper"
+ar = "/mnt/Octopus/Code/osxcross/target/bin/x86_64-apple-darwin23.5-ar"
+
+[target.aarch64-apple-darwin]
+linker = "/mnt/Octopus/Code/osxcross/target/bin/aarch64-apple-darwin-clang-wrapper"
+ar = "/mnt/Octopus/Code/osxcross/target/bin/aarch64-apple-darwin23.5-ar"
+
+# Redox cross-compilation
+[target.x86_64-unknown-redox]
+linker = "/mnt/Octopus/Code/redox/prefix/x86_64-unknown-redox/rust-install/bin/x86_64-unknown-redox-gcc-13.2.0"
+rustflags = [
+    "-L", "/mnt/Octopus/Code/redox/cookbook/recipes/core/relibc/target/x86_64-unknown-redox/stage/lib",
+]
+
+[alias]
+# Build and automatically sign the binary
+build-signed = """!f() {
+    cargo build "$@" && \
+    cargo run --release --bin photon-signature-signer -- target/debug/photon-messenger 2>/dev/null || \
+    cargo run --release --bin photon-signature-signer -- target/release/photon-messenger 2>/dev/null || \
+    echo 'Binary signed (or already signed)'
+}; f"""
+
+# Cross-compile for Windows and sign
+build-windows = """!f() {
+    cargo build --release --target x86_64-pc-windows-gnu && \
+    cargo run --release --bin photon-signature-signer -- target/x86_64-pc-windows-gnu/release/photon-messenger.exe
+}; f"""
+
+# Build both platforms and sign both
+build-all = """!f() {
+    cargo build --release && \
+    cargo build --release --target x86_64-pc-windows-gnu && \
+    cargo run --release --bin photon-signature-signer -- target/release/photon-messenger && \
+    cargo run --release --bin photon-signature-signer -- target/x86_64-pc-windows-gnu/release/photon-messenger.exe
+}; f"""

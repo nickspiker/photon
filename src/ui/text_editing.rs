@@ -1,5 +1,13 @@
 use crate::debug_println;
-use crate::ui::{app::*, renderer_linux::Renderer, text_rasterizing::TextRenderer, theme};
+#[cfg(target_os = "android")]
+use crate::ui::renderer_android::Renderer;
+#[cfg(any(target_os = "linux", target_os = "redox"))]
+use crate::ui::renderer_linux::Renderer;
+#[cfg(target_os = "macos")]
+use crate::ui::renderer_macos::Renderer;
+#[cfg(target_os = "windows")]
+use crate::ui::renderer_windows::Renderer;
+use crate::ui::{app::*, text_rasterizing::TextRenderer, theme};
 use rand::Rng;
 impl PhotonApp {
     /// Check if textbox is focused (for event loop control flow)
@@ -21,6 +29,20 @@ impl PhotonApp {
     /// Returns the textbox height
     pub fn textbox_height(&self) -> usize {
         self.min_dim / 8
+    }
+
+    /// Returns the textbox Y position (varies by app state)
+    pub fn textbox_y(&self) -> usize {
+        match &self.app_state {
+            // Search screen: textbox below avatar area
+            AppState::Ready | AppState::Searching => self.min_dim as usize * 5 / 8,
+            // Conversation: textbox at bottom
+            AppState::Conversation => {
+                let box_height = self.textbox_height();
+                self.height as usize - box_height * 3 / 2
+            }
+            _ => self.height as usize * 5 / 8, // Center for Launch
+        }
     }
 
     /// Recalculate all character widths (e.g., after font size change on resize)
@@ -54,8 +76,8 @@ impl PhotonApp {
         text_renderer: &mut TextRenderer,
         textbox_mask: &[u8],
         window_width: usize,
-        window_height: usize,
         min_dim: usize,
+        textbox_y: usize,
         colour: u32,
     ) {
         if text.chars.is_empty() {
@@ -65,7 +87,6 @@ impl PhotonApp {
         let margin = min_dim / 8;
         let box_width = window_width - margin * 2;
         let center_x = window_width / 2;
-        let center_y = window_height * 4 / 7;
 
         let text_half = (text.width / 2) as isize;
         let text_start_x = (center_x as f32 - text_half as f32 + text.scroll_offset) as f32;
@@ -73,7 +94,7 @@ impl PhotonApp {
         let textbox_right = (center_x + box_width / 2) as f32;
 
         let mut x_offset = text_start_x;
-        let font_size = min_dim as f32 / 16.0;
+        let font_size = min_dim as f32 / 16.;
 
         for (i, &ch) in text.chars.iter().enumerate() {
             let char_width = text.widths[i] as f32;
@@ -86,7 +107,7 @@ impl PhotonApp {
                     window_width,
                     ch,
                     x_offset,
-                    center_y as f32,
+                    textbox_y as f32,
                     font_size,
                     500,
                     theme::FONT_USER_CONTENT,
@@ -277,6 +298,47 @@ impl PhotonApp {
     pub fn get_selected_text(&self) -> Option<String> {
         self.get_selection_range()
             .map(|(start, end)| self.current_text_state.chars[start..end].iter().collect())
+    }
+
+    /// Paste text at current cursor position
+    pub fn paste_text(&mut self, text: &str) {
+        use super::app::{AppState, LaunchState};
+        use super::theme;
+
+        // Delete selection if it exists
+        if self.current_text_state.selection_anchor.is_some() {
+            self.delete_selection();
+        }
+
+        // Calculate widths for pasted text
+        let font_size = self.font_size();
+        let widths: Vec<usize> = text
+            .chars()
+            .map(|ch| {
+                self.text_renderer.measure_text_width(
+                    &ch.to_string(),
+                    font_size,
+                    theme::FONT_WEIGHT_USER_CONTENT,
+                    theme::FONT_USER_CONTENT,
+                ) as usize
+            })
+            .collect();
+
+        // Insert pasted text at blinkey
+        let insert_idx = self.current_text_state.blinkey_index;
+        self.current_text_state
+            .insert_str(insert_idx, text, &widths);
+        self.current_text_state.blinkey_index += widths.len();
+        if matches!(self.app_state, AppState::Launch(_)) {
+            self.set_launch_state(LaunchState::Fresh);
+        }
+        if self.search_result.is_some() {
+            self.window_dirty = true;
+        }
+        self.text_dirty = true;
+        self.glow_colour = theme::GLOW_DEFAULT;
+        self.search_result = None;
+        self.controls_dirty = true;
     }
 
     pub fn handle_blinkey_left(&mut self) {

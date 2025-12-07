@@ -1,6 +1,6 @@
 pub mod chain;
+pub mod clutch;
+pub mod handle_proof;
 pub mod keys;
+pub mod self_verify;
 pub mod shards;
-
-// Re-exports will be enabled when we start using these modules
-// pub use chain::*;

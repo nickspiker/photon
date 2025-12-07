@@ -1,5 +1,4 @@
 use blake3::Hasher;
-use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
@@ -45,24 +44,5 @@ impl Seed {
 impl std::fmt::Debug for Seed {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Seed").finish()
-    }
-}
-
-impl Serialize for Seed {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        self.0.serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for Seed {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let bytes = <[u8; 32]>::deserialize(deserializer)?;
-        Ok(Self(bytes))
     }
 }

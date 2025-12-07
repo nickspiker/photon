@@ -3,14 +3,14 @@
 ## Rule 0: Bounds Checks and Saturating Arithmetic
 
 **IF YOU ADD ANY BOUNDS CHECK OR SATURATING ARITHMETIC, YOU ARE REQUIRED TO:**
-1. **STATE WHY** it was added
-2. **PROVE** it was necessary
-3. **EXPLAIN** what undefined behavior or memory unsafety it prevents
+0. **STATE WHY** it was added
+1. **PROVE** it was necessary
+2. **EXPLAIN** what undefined behavior or memory unsafety it prevents
 
 ### What Counts as a Bounds Check:
 - `if idx < vec.len()`
 - `vec.get(idx)` instead of `vec[idx]`
-- `.checked_add()`, `.saturating_add()`, `.wrapping_add()` (unless explicitly requested)
+- `.checked_add()`, `.saturating_add()`, `.saturating_subtract()` (unless explicitly requested)
 - Any conditional that guards array/slice access
 
 ### When Bounds Checks ARE Required:
@@ -57,22 +57,22 @@ if self.show_textbox_mask {
 
 ## Core Principles
 
-### 1. **Trust the Math**
+### 0. **Trust the Math**
 - If loop bounds guarantee safety, don't add runtime checks
 - Index calculations from known dimensions are proof of correctness
 - Compiler optimization depends on removing redundant bounds checks
 
-### 2. **Fail Fast, Fail Loud**
+### 1. **Fail Fast, Fail Loud**
 - Panics are better than silent corruption
 - A panic means "there's a bug in initialization" not "add a bounds check"
 - Debug visualizations should expose bugs, not hide them
 
-### 3. **Understand Packed SIMD**
+### 2. **Understand Packed SIMD**
 - Overflow in packed arithmetic is often **required** for correctness
 - Bit masks and shifts handle channel isolation and reconstruction
 - Saturating ops break the mathematical properties being exploited
 
-### 4. **Respect Explicit Unsafe Contracts**
+### 3. **Respect Explicit Unsafe Contracts**
 ```rust
 // SAFETY: idx is proven in-bounds by loop invariant (0..width * 0..height)
 unsafe { pixels.get_unchecked_mut(idx) }
@@ -86,9 +86,81 @@ If there's a SAFETY comment, **read it**. It's there because the human proved co
 - **Assembly**: When you need exact control
 - **Metal**: GPU compute with known performance characteristics
 
-### Strongly Avoided:
-- **Python**: Slow, loose typing causes bugs, 1-indexed nonsense infected everything
-- High-level scripting when systems programming is needed
+### Not Allowed:
+- **Python**: Slow, loose typing causes bugs, cannot copy-paste, 1-indexed nonsense infected everything
+- High-level scripting when systems programming is needed, text parsing, terribly unsafe
+
+## VSF Serialization: Use High-Level APIs
+
+**ALWAYS prefer VSF's schema-validated builders over manual byte manipulation.**
+
+### The Right Way: SectionBuilder + SectionSchema
+
+```rust
+use vsf::schema::{SectionSchema, SectionBuilder, TypeConstraint};
+
+// Define schema (or use official: vsf::schema::official::network_peer_schema())
+let schema = SectionSchema::new("announce")
+    .field("challenge_hash", TypeConstraint::Blake3Rolling)
+    .field("handle_hash", TypeConstraint::Blake3Provenance)
+    .field("port", TypeConstraint::AnyUnsigned);
+
+// Build with validation
+let bytes = schema.build()
+    .set("challenge_hash", VsfType::hb(hash))?
+    .set("handle_hash", VsfType::hb(handle_hash))?
+    .set("port", 41641u16)?
+    .encode()?;
+
+// Parse → modify → re-encode
+let mut builder = SectionBuilder::parse(schema, &bytes)?;
+builder = builder.set("port", 8080u16)?;
+let updated = builder.encode()?;
+```
+
+### FORBIDDEN: Manual Serialization
+
+```rust
+// NO - manual byte pushing, error-prone, no validation
+let mut bytes = Vec::new();
+bytes.push(b'[');
+bytes.extend(VsfType::d("announce".to_string()).flatten());
+bytes.push(b'(');
+bytes.extend(VsfType::d("port".to_string()).flatten());
+bytes.push(b':');
+bytes.extend(VsfType::u4(41641).flatten()); // This becomes fragile. If port is less than 255 a u3 is valid.
+bytes.push(b')');
+bytes.push(b']');
+```
+
+### Why High-Level APIs:
+
+0. **Type safety** - TypeConstraint validates values match expected types
+1. **Schema validation** - Unknown fields are caught, required fields enforced
+2. **Round-trip safe** - parse → modify → encode workflow guaranteed correct
+3. **Self-documenting** - Schema IS the documentation
+4. **Future-proof** - Wire format changes handled by library, not your code
+
+### Available Official Schemas:
+
+- `vsf::schema::official::image_schema()` - Image metadata
+- `vsf::schema::official::camera_schema()` - Camera hardware config
+- `vsf::schema::official::audio_schema()` - Audio stream metadata
+- `vsf::schema::official::network_peer_schema()` - P2P peer info
+- `vsf::schema::official::announce_schema()` - FGTW bootstrap
+
+### For Complete Files: VsfBuilder
+
+```rust
+use vsf::vsf_builder::VsfBuilder;
+
+let bytes = VsfBuilder::new()
+    .add_section(my_section)
+    .provenance(provenance_hash)  // Immutable identity
+    .build()?;  // BLAKE3 hash computed automatically
+```
+
+**The library handles integrity hashing, header layout, section offsets - you just add content.**
 
 ## Code Style
 
@@ -113,11 +185,38 @@ if let Some(pixel) = pixels.get_mut(idx) {
 }
 ```
 
+## The Clamp Trap
+
+**`clamp()` is defensive programming that hides bugs.**
+
+```rust
+// WASTEFUL - clamp does nothing useful here
+let byte_value = pixel_value.clamp(0.0, 255.0) as u8;
+
+// CORRECT - cast already handles bounds
+let byte_value = pixel_value as u8;
+```
+
+**Why clamp is wrong:**
+0. **Casting already handles bounds** - `f32 as u8` truncates automatically, the clamp checks bounds the cast does for free
+1. **Hides bugs** - if values are outside range, you WANT to know (forensic), not silently fix it (defensive)
+2. **Assumes your math is broken** - if calculations are correct, values should never be out of range anyway
+
+**The forensic approach:** If the cast wraps/truncates unexpectedly, that exposes the real bug in your math. Fix the math, don't hide the symptoms.
+
+## When Unsure
+
+**ASK.** Don't add "defensive" checks. If you're not sure whether a bounds check is needed:
+0. State what you're unsure about
+1. Show the code without the check
+2. Explain what would happen if the invariant is violated
+3. Let the human decide
+
 ## Error Handling Philosophy
 
-1. **Initialization bugs should panic** - if textbox_mask is empty, that's a bug in `new()`, not in the render loop
-2. **External input should be validated** - user input, file data, network packets get bounds checks
-3. **Internal invariants should be maintained** - if your loop guarantees safety, assert it in debug builds if needed, but don't check in release
+0. **Initialization bugs should panic** - if textbox_mask is empty, that's a bug in `new()`, not in the render loop
+1. **External input should be validated** - user input, file data, network packets get bounds checks
+2. **Internal invariants should be maintained** - if your loop guarantees safety, assert it in debug builds if needed, but don't check in release
 
 ## Dimensional Units
 
@@ -144,10 +243,10 @@ Use these. Derive everything from screen dimensions and their mathematical relat
 ## When Unsure
 
 **ASK.** Don't add "defensive" checks. If you're not sure whether a bounds check is needed:
-1. State what you're unsure about
-2. Show the code without the check
-3. Explain what would happen if the invariant is violated
-4. Let the human decide
+0. State what you're unsure about
+1. Show the code without the check
+2. Explain what would happen if the invariant is violated
+3. Let the human decide
 
 ## Current Project Context
 
@@ -166,3 +265,6 @@ Use these. Derive everything from screen dimensions and their mathematical relat
 ---
 
 *Remember: The user is rebuilding the computational stack from first principles. They see patterns others miss. They're right that base-10 is broken and IEEE-754 teaches incorrect math. When they write packed SIMD, they know exactly what they're doing. Your job is to help build the cathedral, not childproof it.*
+
+Oh, and if you haven't noticed by now but when indexing in //'s and variable names, starte with the first number (0), not the second number (1)
+Development builds? use ./build-development.sh DO NOT DO RELEASE BUILDS UNLESS THE USER EXPLICITLY ASKS!

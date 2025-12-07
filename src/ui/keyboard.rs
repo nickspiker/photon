@@ -4,33 +4,18 @@ use crate::ui::theme;
 use crate::{debug_println, DEBUG_ENABLED};
 use std::sync::atomic::Ordering;
 
-use super::app::{HandleStatus, PhotonApp};
+use super::app::{AppState, LaunchState, PhotonApp};
 use rand::Rng;
-use unicode_normalization::UnicodeNormalization;
 use winit::{
     event::{ElementState, KeyEvent},
     keyboard::{Key, NamedKey},
 };
 
-/// Check if a character passes the NFC round-trip test
-/// Only rule: must round-trip cleanly through NFC normalization as a single char
-fn is_char_valid(ch: char) -> bool {
-    let normalized: String = ch.to_string().nfc().collect();
-
-    // Must produce exactly 1 char after normalization
-    if normalized.chars().count() != 1 {
-        return false;
-    }
-
-    // Must round-trip (input == normalized output)
-    let round_trip_char = normalized.chars().next().unwrap();
-    round_trip_char == ch
-}
-
 impl PhotonApp {
     pub fn handle_keyboard(&mut self, event: KeyEvent) {
         if event.state == ElementState::Pressed {
-            // Toggle debug visualizations with Ctrl shortcuts
+            // Toggle debug visualizations with Ctrl shortcuts (development builds only)
+            #[cfg(feature = "debug-keys")]
             if self.modifiers.control_key() {
                 if let Key::Character(ref c) = event.logical_key {
                     // Ctrl+D: Toggle debug mode (counters + debug_println!)
@@ -66,7 +51,12 @@ impl PhotonApp {
                         self.window_dirty = true; // Force redraw to show visualization
                         return; // Don't process as regular input
                     }
+                }
+            }
 
+            // Clipboard and text editing Ctrl shortcuts
+            if self.modifiers.control_key() {
+                if let Key::Character(ref c) = event.logical_key {
                     // Only process clipboard shortcuts if textbox is focused
                     if self.current_text_state.textbox_focused {
                         // Ctrl+A: Select all
@@ -82,6 +72,7 @@ impl PhotonApp {
                         }
 
                         // Ctrl+C: Copy
+                        #[cfg(not(target_os = "redox"))]
                         if c.eq_ignore_ascii_case("c") {
                             if let Some(selected_text) = self.get_selected_text() {
                                 if let Ok(mut clipboard) = arboard::Clipboard::new() {
@@ -92,6 +83,7 @@ impl PhotonApp {
                         }
 
                         // Ctrl+X: Cut
+                        #[cfg(not(target_os = "redox"))]
                         if c.eq_ignore_ascii_case("x") {
                             if let Some(selected_text) = self.get_selected_text() {
                                 // Try to copy to clipboard first
@@ -102,8 +94,15 @@ impl PhotonApp {
                                 // Only delete if clipboard succeeded (or you don't care about failures)
                                 if clipboard_ok {
                                     self.delete_selection();
-                                    self.handle_status = HandleStatus::Empty;
+                                    if matches!(self.app_state, AppState::Launch(_)) {
+                                        self.set_launch_state(LaunchState::Fresh);
+                                    }
+                                    if self.search_result.is_some() {
+                                        self.window_dirty = true;
+                                    }
                                     self.text_dirty = true;
+                                    self.glow_colour = theme::GLOW_DEFAULT; // Reset glow to white on text change
+                                    self.search_result = None; // Clear search result on text change
                                     self.selection_dirty = true;
                                     self.controls_dirty = true; // Cursor position changed
                                 } else {
@@ -115,36 +114,11 @@ impl PhotonApp {
                         }
 
                         // Ctrl+V: Paste
+                        #[cfg(not(target_os = "redox"))]
                         if c.eq_ignore_ascii_case("v") {
                             if let Ok(mut clipboard) = arboard::Clipboard::new() {
                                 if let Ok(text) = clipboard.get_text() {
-                                    // Delete selection if it exists
-                                    if self.current_text_state.selection_anchor.is_some() {
-                                        self.delete_selection();
-                                    }
-
-                                    // Calculate widths for pasted text
-                                    let font_size = self.font_size();
-                                    let widths: Vec<usize> = text
-                                        .chars()
-                                        .map(|ch| {
-                                            self.text_renderer.measure_text_width(
-                                                &ch.to_string(),
-                                                font_size,
-                                                theme::FONT_WEIGHT_USER_CONTENT,
-                                                theme::FONT_USER_CONTENT,
-                                            ) as usize
-                                        })
-                                        .collect();
-
-                                    // Insert pasted text at blinkey
-                                    let insert_idx = self.current_text_state.blinkey_index;
-                                    self.current_text_state
-                                        .insert_str(insert_idx, &text, &widths);
-                                    self.current_text_state.blinkey_index += widths.len();
-                                    self.handle_status = HandleStatus::Empty;
-                                    self.text_dirty = true;
-                                    self.controls_dirty = true;
+                                    self.paste_text(&text);
                                 }
                             }
                             return;
@@ -164,6 +138,18 @@ impl PhotonApp {
 
             match event.logical_key {
                 Key::Named(NamedKey::ArrowLeft) => {
+                    // If there's a selection and Shift not held, go to left edge of selection
+                    if let Some(anchor) = self.current_text_state.selection_anchor {
+                        if !shift_held {
+                            let left = anchor.min(self.current_text_state.blinkey_index);
+                            self.current_text_state.blinkey_index = left;
+                            self.current_text_state.selection_anchor = None;
+                            self.selection_dirty = true;
+                            self.controls_dirty = true;
+                            return;
+                        }
+                    }
+
                     if self.current_text_state.blinkey_index > 0 {
                         // Start selection if Shift held and no selection exists
                         if shift_held && self.current_text_state.selection_anchor.is_none() {
@@ -172,17 +158,24 @@ impl PhotonApp {
                         }
 
                         self.current_text_state.blinkey_index -= 1;
-
-                        // Clear selection if Shift not held
-                        if !shift_held {
-                            self.current_text_state.selection_anchor = None;
-                        }
                         self.selection_dirty = true;
                         self.controls_dirty = true;
                     }
                     return;
                 }
                 Key::Named(NamedKey::ArrowRight) => {
+                    // If there's a selection and Shift not held, go to right edge of selection
+                    if let Some(anchor) = self.current_text_state.selection_anchor {
+                        if !shift_held {
+                            let right = anchor.max(self.current_text_state.blinkey_index);
+                            self.current_text_state.blinkey_index = right;
+                            self.current_text_state.selection_anchor = None;
+                            self.selection_dirty = true;
+                            self.controls_dirty = true;
+                            return;
+                        }
+                    }
+
                     if self.current_text_state.blinkey_index < self.current_text_state.chars.len() {
                         // Start selection if Shift held and no selection exists
                         if shift_held && self.current_text_state.selection_anchor.is_none() {
@@ -191,11 +184,6 @@ impl PhotonApp {
                         }
 
                         self.current_text_state.blinkey_index += 1;
-
-                        // Clear selection if Shift not held
-                        if !shift_held {
-                            self.current_text_state.selection_anchor = None;
-                        }
                         self.selection_dirty = true;
                         self.controls_dirty = true;
                     }
@@ -245,11 +233,18 @@ impl PhotonApp {
                     if self.current_text_state.selection_anchor.is_some() {
                         debug_println!("BACKSPACE: deleting selection");
                         self.delete_selection();
-                        if self.handle_status != HandleStatus::Empty {
-                            self.window_dirty = true; // Force redraw to update button
+                        if matches!(self.app_state, AppState::Launch(_)) {
+                            if !matches!(self.app_state, AppState::Launch(LaunchState::Fresh)) {
+                                self.window_dirty = true; // Force redraw to update button
+                            }
+                            self.set_launch_state(LaunchState::Fresh);
                         }
-                        self.handle_status = HandleStatus::Empty;
+                        if self.search_result.is_some() {
+                            self.window_dirty = true;
+                        }
                         self.text_dirty = true;
+                        self.glow_colour = theme::GLOW_DEFAULT; // Reset glow to white on text change
+                        self.search_result = None; // Clear search result on text change
                         self.selection_dirty = true;
                     } else if self.current_text_state.blinkey_index > 0 {
                         let idx = self.current_text_state.blinkey_index - 1;
@@ -265,11 +260,18 @@ impl PhotonApp {
                         self.current_text_state.blinkey_index -= 1;
                         let text: String = self.current_text_state.chars.iter().collect();
                         debug_println!("  Text now: \"{}\" (len={})", text, text.len());
-                        if self.handle_status != HandleStatus::Empty {
-                            self.window_dirty = true; // Force redraw to update button
+                        if matches!(self.app_state, AppState::Launch(_)) {
+                            if !matches!(self.app_state, AppState::Launch(LaunchState::Fresh)) {
+                                self.window_dirty = true; // Force redraw to update button
+                            }
+                            self.set_launch_state(LaunchState::Fresh);
                         }
-                        self.handle_status = HandleStatus::Empty;
+                        if self.search_result.is_some() {
+                            self.window_dirty = true;
+                        }
                         self.text_dirty = true;
+                        self.glow_colour = theme::GLOW_DEFAULT; // Reset glow to white on text change
+                        self.search_result = None; // Clear search result on text change
                         self.selection_dirty = true;
                         self.controls_dirty = true;
                     }
@@ -279,22 +281,36 @@ impl PhotonApp {
                     // If selection exists, delete it; otherwise delete char at blinkey
                     if self.current_text_state.selection_anchor.is_some() {
                         self.delete_selection();
-                        if self.handle_status != HandleStatus::Empty {
-                            self.window_dirty = true; // Force redraw to update button
+                        if matches!(self.app_state, AppState::Launch(_)) {
+                            if !matches!(self.app_state, AppState::Launch(LaunchState::Fresh)) {
+                                self.window_dirty = true; // Force redraw to update button
+                            }
+                            self.set_launch_state(LaunchState::Fresh);
                         }
-                        self.handle_status = HandleStatus::Empty;
+                        if self.search_result.is_some() {
+                            self.window_dirty = true;
+                        }
                         self.text_dirty = true;
+                        self.glow_colour = theme::GLOW_DEFAULT; // Reset glow to white on text change
+                        self.search_result = None; // Clear search result on text change
                         self.selection_dirty = true;
                     } else if self.current_text_state.blinkey_index
                         < self.current_text_state.chars.len()
                     {
                         self.current_text_state
                             .remove(self.current_text_state.blinkey_index);
-                        if self.handle_status != HandleStatus::Empty {
-                            self.window_dirty = true; // Force redraw to update button
+                        if matches!(self.app_state, AppState::Launch(_)) {
+                            if !matches!(self.app_state, AppState::Launch(LaunchState::Fresh)) {
+                                self.window_dirty = true; // Force redraw to update button
+                            }
+                            self.set_launch_state(LaunchState::Fresh);
                         }
-                        self.handle_status = HandleStatus::Empty;
+                        if self.search_result.is_some() {
+                            self.window_dirty = true;
+                        }
                         self.text_dirty = true;
+                        self.glow_colour = theme::GLOW_DEFAULT; // Reset glow to white on text change
+                        self.search_result = None; // Clear search result on text change
                         self.selection_dirty = true;
                         self.controls_dirty = true;
                     }
@@ -302,11 +318,49 @@ impl PhotonApp {
                 }
                 Key::Named(NamedKey::Enter) => {
                     if !self.current_text_state.chars.is_empty() {
-                        self.submit_username();
+                        match &self.app_state {
+                            AppState::Launch(_) => {
+                                // In Launch state: attest this handle
+                                self.start_attestation();
+                            }
+                            AppState::Ready => {
+                                // In Ready state: search for this handle
+                                let handle: String = self.current_text_state.chars.iter().collect();
+                                self.start_handle_search(&handle);
+                            }
+                            AppState::Searching => {
+                                // Already searching, ignore Enter
+                            }
+                            AppState::Conversation => {
+                                // In Conversation state: send message
+                                let message: String =
+                                    self.current_text_state.chars.iter().collect();
+                                if self.send_message_to_selected_contact(&message) {
+                                    // Clear textbox after successful send
+                                    self.reset_textbox();
+                                    self.window_dirty = true;
+                                }
+                            }
+                            AppState::Connected { .. } => {
+                                // In Connected state: send message (TODO)
+                                // For now, do nothing
+                            }
+                        }
                     }
                     return;
                 }
                 Key::Named(NamedKey::Escape) => {
+                    // In Conversation view: go back to Ready view
+                    if matches!(self.app_state, AppState::Conversation) {
+                        // Trigger peer IP refresh when returning to contacts screen
+                        self.trigger_peer_refresh();
+
+                        self.app_state = AppState::Ready;
+                        self.selected_contact = None;
+                        self.window_dirty = true;
+                        self.reset_textbox();
+                        return;
+                    }
                     // Clear selection on Escape
                     if self.current_text_state.selection_anchor.is_some() {
                         self.current_text_state.selection_anchor = None;
@@ -327,11 +381,7 @@ impl PhotonApp {
 
                 let font_size = self.font_size();
                 for ch in text.chars() {
-                    // Validate character: must round-trip cleanly through NFC
-                    if !is_char_valid(ch) {
-                        // Silently reject invalid characters
-                        continue;
-                    }
+                    // VSF handles normalization, accept all chars
 
                     // Measure character width
                     let width = self.text_renderer.measure_text_width(
@@ -356,12 +406,21 @@ impl PhotonApp {
                     let text: String = self.current_text_state.chars.iter().collect();
                     debug_println!("  Text now: \"{}\" (len={})", text, text.len());
                 }
-                // Only trigger full redraw if status is changing (not already Empty)
-                if self.handle_status != HandleStatus::Empty {
-                    self.window_dirty = true; // Force redraw to update button
+                // Only reset to Fresh state if we're in Launch mode
+                // Don't touch app_state if we're in Ready or Connected
+                if matches!(self.app_state, AppState::Launch(_)) {
+                    if !matches!(self.app_state, AppState::Launch(LaunchState::Fresh)) {
+                        self.window_dirty = true; // Force redraw to update button
+                    }
+                    self.set_launch_state(LaunchState::Fresh);
                 }
-                self.handle_status = HandleStatus::Empty;
+                // Clear search result and force redraw if we had a result showing
+                if self.search_result.is_some() {
+                    self.window_dirty = true;
+                }
                 self.text_dirty = true;
+                self.glow_colour = theme::GLOW_DEFAULT; // Reset glow to white on text change
+                self.search_result = None; // Clear search result on text change
                 self.controls_dirty = true;
             }
         }

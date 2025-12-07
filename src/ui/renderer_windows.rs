@@ -8,6 +8,51 @@ use windows::Win32::UI::WindowsAndMessaging::{UpdateLayeredWindow, ULW_ALPHA};
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::Window;
 
+/// Wrapper to mimic softbuffer::Buffer API for Windows
+pub struct WindowsBuffer<'a> {
+    renderer: &'a mut Renderer,
+    u32_view: Vec<u32>,
+}
+
+impl<'a> WindowsBuffer<'a> {
+    fn new(renderer: &'a mut Renderer) -> Self {
+        // Create a u32 view of the pixel buffer
+        let mut u32_view = Vec::with_capacity((renderer.width * renderer.height) as usize);
+        for i in 0..(renderer.width * renderer.height) as usize {
+            let idx = i * 4;
+            let r = renderer.pixel_buffer[idx];
+            let g = renderer.pixel_buffer[idx + 1];
+            let b = renderer.pixel_buffer[idx + 2];
+            let a = renderer.pixel_buffer[idx + 3];
+            // ARGB format
+            let pixel = ((a as u32) << 24) | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32);
+            u32_view.push(pixel);
+        }
+
+        Self { renderer, u32_view }
+    }
+
+    pub fn as_mut(&mut self) -> &mut [u32] {
+        &mut self.u32_view
+    }
+
+    pub fn present(self) -> Result<(), ()> {
+        // Convert u32 view back to u8 pixel buffer
+        for i in 0..(self.renderer.width * self.renderer.height) as usize {
+            let pixel = self.u32_view[i];
+            let idx = i * 4;
+            self.renderer.pixel_buffer[idx] = ((pixel >> 16) & 0xFF) as u8; // R
+            self.renderer.pixel_buffer[idx + 1] = ((pixel >> 8) & 0xFF) as u8; // G
+            self.renderer.pixel_buffer[idx + 2] = (pixel & 0xFF) as u8; // B
+            self.renderer.pixel_buffer[idx + 3] = ((pixel >> 24) & 0xFF) as u8; // A
+        }
+
+        // Now call the actual Windows present to display on screen
+        self.renderer.present();
+        Ok(())
+    }
+}
+
 pub struct Renderer {
     hwnd: HWND,
     width: u32,
@@ -124,6 +169,11 @@ impl Renderer {
         &mut self.pixel_buffer
     }
 
+    /// Get a buffer wrapper that mimics softbuffer::Buffer API
+    pub fn lock_buffer(&mut self) -> WindowsBuffer<'_> {
+        WindowsBuffer::new(self)
+    }
+
     pub fn present(&mut self) {
         unsafe {
             // Copy pixel buffer to bitmap with pre-multiplied alpha
@@ -180,7 +230,7 @@ impl Renderer {
                 Some(&size),
                 self.hdc_mem,
                 Some(&pt_src),
-                None, // No color key
+                None, // No colour key
                 Some(&blend),
                 ULW_ALPHA,
             );

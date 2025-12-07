@@ -1,1 +1,31 @@
 /target
+
+# Android build artifacts
+android/.gradle/
+android/.idea/
+android/app/build/
+android/build/
+android/local.properties
+*.apk
+*.aab
+
+# Native libraries (built separately)
+android/app/src/main/jniLibs/
+*.so
+
+# Firebase/secrets (keep template, not actual config)
+android/app/google-services.json
+firebase/
+
+# Local data files
+peers.vsf
+*.vsf.bak
+
+# IDE
+.vscode/
+*.swp
+*.swo
+
+# Build outputs
+*.exe
+*.dll

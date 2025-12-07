@@ -4,12 +4,11 @@ use crate::debug_println;
 use crate::ui::app::HoveredButton;
 
 use super::app::{
-    HandleStatus, PhotonApp, ResizeEdge, HIT_CHALLENGE_BUTTON, HIT_CLOSE_BUTTON,
-    HIT_HANDLE_TEXTBOX, HIT_MAXIMIZE_BUTTON, HIT_MINIMIZE_BUTTON, HIT_NONE, HIT_PRIMARY_BUTTON,
-    HIT_RECOVER_BUTTON,
+    AppState, LaunchState, PhotonApp, ResizeEdge, HIT_AVATAR, HIT_BACK_HEADER, HIT_CLOSE_BUTTON,
+    HIT_CONTACT_BASE, HIT_HANDLE_TEXTBOX, HIT_MAXIMIZE_BUTTON, HIT_MINIMIZE_BUTTON, HIT_NONE,
+    HIT_PRIMARY_BUTTON,
 };
-use rand::Rng;
-use winit::event::{ElementState, MouseButton};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta};
 use winit::window::{CursorIcon, Window};
 
 impl PhotonApp {
@@ -23,10 +22,17 @@ impl PhotonApp {
             ElementState::Pressed => {
                 self.mouse_button_pressed = true;
 
-                // Check window control buttons using hitmap
+                // Clear avatar hint on any click
+                if self.show_avatar_hint {
+                    self.show_avatar_hint = false;
+                    self.window_dirty = true;
+                }
+
+                // Priority order: window controls > resize edges > other UI elements > window drag
                 let mouse_x = self.mouse_x as usize;
                 let mouse_y = self.mouse_y as usize;
 
+                // Check window control buttons FIRST (highest priority)
                 if mouse_x < self.width as usize && mouse_y < self.height as usize {
                     let hit_idx = mouse_y * self.width as usize + mouse_x;
                     let element_id = self.hit_test_map[hit_idx];
@@ -43,6 +49,35 @@ impl PhotonApp {
                             window.set_maximized(!window.is_maximized());
                             return;
                         }
+                        _ => {} // Not a window control, continue checking
+                    }
+                }
+
+                // Check resize edges SECOND (higher priority than other UI elements)
+                let edge = self.get_resize_edge(self.mouse_x, self.mouse_y);
+                if edge != ResizeEdge::None {
+                    self.is_dragging_resize = true;
+                    self.resize_edge = edge;
+                    self.drag_start_size = (self.width, self.height);
+
+                    // Store the window position and global blinkey position at drag start
+                    if let Some(window_pos) = window.outer_position().ok() {
+                        self.drag_start_window_pos = (window_pos.x, window_pos.y);
+
+                        // Calculate global blinkey position from window-relative position
+                        let blinkey_screen_x = window_pos.x as f64 + self.mouse_x as f64;
+                        let blinkey_screen_y = window_pos.y as f64 + self.mouse_y as f64;
+                        self.drag_start_blinkey_screen_pos = (blinkey_screen_x, blinkey_screen_y);
+                    }
+                    return;
+                }
+
+                // Check other UI elements (textbox, buttons, contacts, back header)
+                if mouse_x < self.width as usize && mouse_y < self.height as usize {
+                    let hit_idx = mouse_y * self.width as usize + mouse_x;
+                    let element_id = self.hit_test_map[hit_idx];
+
+                    match element_id {
                         HIT_HANDLE_TEXTBOX => {
                             let was_focused = self.current_text_state.textbox_focused;
 
@@ -72,46 +107,17 @@ impl PhotonApp {
                             }
 
                             // Calculate click position relative to text (sets blinkey_index)
-                            let old_blinkey_index = self.current_text_state.blinkey_index;
-                            if !self.current_text_state.chars.is_empty() {
-                                let center_x = self.width as usize / 2;
-                                let total_text_width: usize = self.current_text_state.width;
-                                let text_half = total_text_width / 2;
-                                let text_start_x = center_x as f32 - text_half as f32
-                                    + self.current_text_state.scroll_offset;
-
-                                // Find which character was clicked
-                                let click_x = mouse_x as f32;
-                                let mut x_offset = text_start_x;
-                                let mut found_position = false;
-
-                                for (i, &char_width) in
-                                    self.current_text_state.widths.iter().enumerate()
-                                {
-                                    let char_center = x_offset + char_width as f32 / 2.0;
-                                    if click_x < char_center {
-                                        self.current_text_state.blinkey_index = i;
-                                        found_position = true;
-                                        break;
-                                    }
-                                    x_offset += char_width as f32;
-                                }
-
-                                if !found_position {
-                                    self.current_text_state.blinkey_index =
-                                        self.current_text_state.chars.len();
-                                }
-                            } else {
-                                self.current_text_state.blinkey_index = 0;
+                            self.current_text_state.blinkey_index =
+                                self.blinkey_index_from_x(mouse_x as f32);
+                            if self.current_text_state.chars.is_empty() {
                                 self.current_text_state.scroll_offset = 0.0;
                             }
-
 
                             // Calculate blinkey pixel position (needed before drawing)
                             let box_width = self.textbox_width();
                             let box_height = self.textbox_height();
                             let center_x = self.width as usize / 2;
-                            let center_y = self.height as usize * 4 / 7;
+                            let textbox_y = self.textbox_y();
                             let font_size = self.font_size();
 
                             // Lock buffer for blinkey update (immediate-mode)
@@ -148,7 +154,7 @@ impl PhotonApp {
                                 + blinkey_pixel_offset as f32)
                                 as usize;
                             self.blinkey_pixel_y =
-                                (center_y as f32 - box_height as f32 * 0.25) as usize;
+                                (textbox_y as f32 - box_height as f32 * 0.25) as usize;
 
                             // Draw blinkey at NEW position (or start if first focus)
                             if !was_focused {
@@ -158,10 +164,11 @@ impl PhotonApp {
                                     pixels,
                                     &self.textbox_mask,
                                     self.width as usize,
-                                    center_y,
+                                    textbox_y,
                                     box_width,
                                     box_height,
                                     true,
+                                    self.glow_colour, // Use current glow colour (preserves status colour)
                                 );
 
                                 Self::start_blinkey(
@@ -194,6 +201,22 @@ impl PhotonApp {
 
                             return;
                         }
+                        HIT_BACK_HEADER => {
+                            // Back button in conversation header - return to contacts
+                            self.app_state = AppState::Ready;
+                            self.selected_contact = None;
+                            self.window_dirty = true;
+                            self.reset_textbox();
+
+                            // Clear hover states when transitioning screens
+                            // Set both current and prev to None to avoid differential rendering artifacts
+                            self.prev_hovered_button = HoveredButton::None;
+                            self.hovered_button = HoveredButton::None;
+                            self.prev_hovered_contact = None;
+                            self.hovered_contact = None;
+
+                            return;
+                        }
                         HIT_PRIMARY_BUTTON => {
                             // Primary button click: "Query", "Attest", or "Recover / Challenge"
 
@@ -204,7 +227,7 @@ impl PhotonApp {
                                 if self.blinkey_visible {
                                     let box_width = self.textbox_width();
                                     let box_height = self.textbox_height();
-                                    let center_y = self.height as usize * 4 / 7;
+                                    let textbox_y = self.textbox_y();
                                     let font_size = self.font_size();
                                     let mut buffer = self.renderer.lock_buffer();
                                     let pixels = buffer.as_mut();
@@ -213,10 +236,11 @@ impl PhotonApp {
                                         pixels,
                                         &self.textbox_mask,
                                         self.width as usize,
-                                        center_y,
+                                        textbox_y,
                                         box_width,
                                         box_height,
                                         false,
+                                        self.glow_colour, // Must match the colour that was added
                                     );
 
                                     Self::stop_blinkey(
@@ -232,116 +256,93 @@ impl PhotonApp {
                             }
 
                             let handle: String = self.current_text_state.chars.iter().collect();
-                            match self.handle_status {
-                                HandleStatus::Empty => {
-                                    // "Query" button clicked - start network query
+                            match &self.app_state {
+                                AppState::Launch(launch_state) => {
+                                    match launch_state {
+                                        LaunchState::Fresh => {
+                                            // "Attest" button clicked - start attestation
+                                            debug_println!("Attesting handle: {}", handle);
+                                            self.start_attestation();
+                                            self.window_dirty = true;
+                                        }
+                                        LaunchState::Attesting => {
+                                            // Attestation already in progress - ignore clicks
+                                            debug_println!(
+                                                "Attestation already in progress, ignoring click"
+                                            );
+                                        }
+                                        LaunchState::Error(_) => {
+                                            // Error state doesn't show button, shouldn't reach here
+                                            debug_println!("Primary button clicked in error state (unexpected)");
+                                        }
+                                    }
+                                }
+                                AppState::Ready => {
+                                    // "Query" button clicked - search for handle
                                     debug_println!("Querying handle: {}", handle);
-                                    self.query_handle();
+                                    self.start_handle_search(&handle);
                                     self.window_dirty = true;
                                 }
-                                HandleStatus::Checking => {
-                                    // Query already in progress - ignore clicks
-                                    debug_println!("Query already in progress, ignoring click");
-                                }
-                                HandleStatus::Unattested => {
-                                    // "Attest" button clicked
-                                    debug_println!("Attesting handle: {}", handle);
-                                    // TODO: Implement attestation logic (create new identity)
-                                }
-                                HandleStatus::AlreadyAttested => {
-                                    // "Recover / Challenge" button clicked - show dual choice screen
-                                    self.handle_status = HandleStatus::RecoverOrChallenge;
-                                    self.window_dirty = true;
-                                }
-                                _ => {
-                                    // Shouldn't happen (Checking or RecoverOrChallenge states don't show primary button)
-                                    debug_println!("Primary button clicked in unexpected state");
-                                }
+                                _ => {}
                             }
                             return;
                         }
-                        HIT_RECOVER_BUTTON => {
-                            // "Recover" button clicked (I'm recovering my own identity)
-
-                            // Defocus textbox on button click
-                            if self.current_text_state.textbox_focused {
-                                self.current_text_state.textbox_focused = false;
-
-                                if self.blinkey_visible {
-                                    let box_width = self.textbox_width();
-                                    let box_height = self.textbox_height();
-                                    let center_y = self.height as usize * 4 / 7;
-                                    let font_size = self.font_size();
-                                    let mut buffer = self.renderer.lock_buffer();
-                                    let pixels = buffer.as_mut();
-
-                                    Self::apply_textbox_glow(
-                                        pixels,
-                                        &self.textbox_mask,
-                                        self.width as usize,
-                                        center_y,
-                                        box_width,
-                                        box_height,
-                                        false,
-                                    );
-
-                                    Self::stop_blinkey(
-                                        pixels,
-                                        self.width as usize,
-                                        self.blinkey_pixel_x,
-                                        self.blinkey_pixel_y,
-                                        &mut self.blinkey_visible,
-                                        &mut self.blinkey_wave_top_bright,
-                                        font_size as usize,
-                                    );
-                                }
+                        HIT_AVATAR => {
+                            // Avatar clicked - show hint text
+                            if matches!(self.app_state, AppState::Ready | AppState::Searching) {
+                                debug_println!("Avatar clicked - showing upload hint");
+                                self.show_avatar_hint = true;
+                                self.window_dirty = true;
                             }
-
-                            let handle: String = self.current_text_state.chars.iter().collect();
-                            debug_println!("Recovering handle: {}", handle);
-                            // TODO: Implement recovery flow (reconstruct from trust circle)
                             return;
                         }
-                        HIT_CHALLENGE_BUTTON => {
-                            // "Challenge" button clicked (proving earlier attestation)
+                        id if id >= HIT_CONTACT_BASE => {
+                            // Contact clicked - enter conversation view
+                            let contact_idx = (id - HIT_CONTACT_BASE) as usize;
+                            if contact_idx < self.contacts.len() {
+                                debug_println!(
+                                    "Contact clicked: {} (index {})",
+                                    self.contacts[contact_idx].handle,
+                                    contact_idx
+                                );
 
-                            // Defocus textbox on button click
-                            if self.current_text_state.textbox_focused {
-                                self.current_text_state.textbox_focused = false;
+                                // Ping this specific contact when entering conversation
+                                self.ping_contact(contact_idx);
 
-                                if self.blinkey_visible {
-                                    let box_width = self.textbox_width();
-                                    let box_height = self.textbox_height();
-                                    let center_y = self.height as usize * 4 / 7;
-                                    let font_size = self.font_size();
-                                    let mut buffer = self.renderer.lock_buffer();
-                                    let pixels = buffer.as_mut();
-
-                                    Self::apply_textbox_glow(
-                                        pixels,
-                                        &self.textbox_mask,
-                                        self.width as usize,
-                                        center_y,
-                                        box_width,
-                                        box_height,
-                                        false,
+                                // Fetch avatar if we don't have it (don't require online status)
+                                if self.contacts[contact_idx].avatar_pixels.is_none() {
+                                    let handle =
+                                        self.contacts[contact_idx].handle.as_str().to_string();
+                                    eprintln!(
+                                        "Avatar: Entering conversation with {}, fetching avatar",
+                                        handle
                                     );
-
-                                    Self::stop_blinkey(
-                                        pixels,
-                                        self.width as usize,
-                                        self.blinkey_pixel_x,
-                                        self.blinkey_pixel_y,
-                                        &mut self.blinkey_visible,
-                                        &mut self.blinkey_wave_top_bright,
-                                        font_size as usize,
+                                    #[cfg(not(target_os = "android"))]
+                                    crate::avatar::download_avatar_background(
+                                        handle,
+                                        self.contact_avatar_tx.clone(),
+                                        Some(self.event_proxy.clone()),
+                                    );
+                                    #[cfg(target_os = "android")]
+                                    crate::avatar::download_avatar_background(
+                                        handle,
+                                        self.contact_avatar_tx.clone(),
+                                        None,
                                     );
                                 }
-                            }
 
-                            let handle: String = self.current_text_state.chars.iter().collect();
-                            debug_println!("Challenging attestation for handle: {}", handle);
-                            // TODO: Implement challenge flow (prove earlier attestation)
+                                self.selected_contact = Some(contact_idx);
+                                self.app_state = AppState::Conversation;
+                                self.window_dirty = true;
+                                self.reset_textbox();
+
+                                // Clear hover states when transitioning screens
+                                // Set both current and prev to None to avoid differential rendering artifacts
+                                self.prev_hovered_button = HoveredButton::None;
+                                self.hovered_button = HoveredButton::None;
+                                self.prev_hovered_contact = None;
+                                self.hovered_contact = None;
+                            }
                             return;
                         }
                         _ => {
@@ -353,7 +354,7 @@ impl PhotonApp {
                                 if self.blinkey_visible {
                                     let box_width = self.textbox_width();
                                     let box_height = self.textbox_height();
-                                    let center_y = self.height as usize * 4 / 7;
+                                    let textbox_y = self.textbox_y();
                                     let font_size = self.font_size();
                                     let mut buffer = self.renderer.lock_buffer();
                                     let pixels = buffer.as_mut();
@@ -364,10 +365,11 @@ impl PhotonApp {
                                         pixels,
                                         &self.textbox_mask,
                                         self.width as usize,
-                                        center_y,
+                                        textbox_y,
                                         box_width,
                                         box_height,
                                         false,
+                                        self.glow_colour, // Must match the colour that was added
                                     );
 
                                     Self::stop_blinkey(
@@ -387,38 +389,27 @@ impl PhotonApp {
                                     self.text_dirty = true;
                                 }
                             }
+
+                            // Hide avatar hint when clicking outside avatar
+                            if self.show_avatar_hint {
+                                self.show_avatar_hint = false;
+                                self.window_dirty = true;
+                            }
                         }
                     }
                 }
 
-                let edge = self.get_resize_edge(self.mouse_x, self.mouse_y);
-                if edge != ResizeEdge::None {
-                    self.is_dragging_resize = true;
-                    self.resize_edge = edge;
-                    self.drag_start_size = (self.width, self.height);
+                // Not on a resize edge or UI element, start window drag
+                self.is_dragging_move = true;
 
-                    // Store the window position and global blinkey position at drag start
-                    if let Some(window_pos) = window.outer_position().ok() {
-                        self.drag_start_window_pos = (window_pos.x, window_pos.y);
+                // Store the window position and global blinkey position at drag start
+                if let Some(window_pos) = window.outer_position().ok() {
+                    self.drag_start_window_pos = (window_pos.x, window_pos.y);
 
-                        // Calculate global blinkey position from window-relative position
-                        let blinkey_screen_x = window_pos.x as f64 + self.mouse_x as f64;
-                        let blinkey_screen_y = window_pos.y as f64 + self.mouse_y as f64;
-                        self.drag_start_blinkey_screen_pos = (blinkey_screen_x, blinkey_screen_y);
-                    }
-                } else {
-                    // Not on a resize edge, start window drag
-                    self.is_dragging_move = true;
-
-                    // Store the window position and global blinkey position at drag start
-                    if let Some(window_pos) = window.outer_position().ok() {
-                        self.drag_start_window_pos = (window_pos.x, window_pos.y);
-
-                        // Calculate global blinkey position from window-relative position
-                        let blinkey_screen_x = window_pos.x as f64 + self.mouse_x as f64;
-                        let blinkey_screen_y = window_pos.y as f64 + self.mouse_y as f64;
-                        self.drag_start_blinkey_screen_pos = (blinkey_screen_x, blinkey_screen_y);
-                    }
+                    // Calculate global blinkey position from window-relative position
+                    let blinkey_screen_x = window_pos.x as f64 + self.mouse_x as f64;
+                    let blinkey_screen_y = window_pos.y as f64 + self.mouse_y as f64;
+                    self.drag_start_blinkey_screen_pos = (blinkey_screen_x, blinkey_screen_y);
                 }
             }
             ElementState::Released => {
@@ -432,10 +423,10 @@ impl PhotonApp {
                     // State transition: blinkey OFF -> ON (immediate-mode)
                     if !self.blinkey_visible && self.current_text_state.textbox_focused {
                         // Recalculate blinkey position first
-                        let box_width = self.textbox_width();
+                        let _box_width = self.textbox_width();
                         let box_height = self.textbox_height();
                         let center_x = self.width as usize / 2;
-                        let center_y = self.height as usize * 4 / 7;
+                        let textbox_y = self.textbox_y();
                         let font_size = self.font_size();
 
                         let blinkey_pixel_offset: usize = if self.current_text_state.blinkey_index
@@ -454,7 +445,7 @@ impl PhotonApp {
                             + blinkey_pixel_offset as f32)
                             as usize;
                         self.blinkey_pixel_y =
-                            (center_y as f32 - box_height as f32 * 0.25) as usize;
+                            (textbox_y as f32 - box_height as f32 * 0.25) as usize;
 
                         let mut buffer = self.renderer.lock_buffer();
                         let pixels = buffer.as_mut();
@@ -644,35 +635,11 @@ impl PhotonApp {
                 let margin = self.min_dim / 8;
                 let box_left = margin;
                 let box_right = self.width as usize - margin;
-                let mouse_x = self.mouse_x as f32;
 
                 // Clamp mouse position to textbox bounds for blinkey calculation
-                let clamped_mouse_x = mouse_x.clamp(box_left as f32, box_right as f32) as usize;
+                let clamped_mouse_x = self.mouse_x.clamp(box_left as f32, box_right as f32);
 
-                // Find which character is at (clamped) mouse position
-                let center_x = self.width as usize / 2;
-                let total_text_width: usize = self.current_text_state.width;
-                let text_half = total_text_width / 2;
-                let text_start_x =
-                    center_x as f32 - text_half as f32 + self.current_text_state.scroll_offset;
-
-                let click_x = clamped_mouse_x as f32;
-                let mut x_offset = text_start_x;
-                let mut found_position = false;
-
-                for (i, &char_width) in self.current_text_state.widths.iter().enumerate() {
-                    let char_center = x_offset + char_width as f32 / 2.0;
-                    if click_x < char_center {
-                        self.current_text_state.blinkey_index = i;
-                        found_position = true;
-                        break;
-                    }
-                    x_offset += char_width as f32;
-                }
-
-                if !found_position {
-                    self.current_text_state.blinkey_index = self.current_text_state.chars.len();
-                }
+                self.current_text_state.blinkey_index = self.blinkey_index_from_x(clamped_mouse_x);
 
                 self.selection_dirty = true;
                 self.controls_dirty = true;
@@ -680,68 +647,153 @@ impl PhotonApp {
                 return true; // Request redraw
             }
 
-            // Check button hover state using hitmap
+            // Priority order: window controls > resize edges > other UI elements
             let old_hovered = self.hovered_button;
+            let old_hovered_contact = self.hovered_contact;
 
-            // Get hit test value at mouse position
             let mouse_x = self.mouse_x as usize;
             let mouse_y = self.mouse_y as usize;
+
+            // Check window control buttons FIRST (highest priority)
             let element_id = if mouse_x < self.width as usize && mouse_y < self.height as usize {
                 let hit_idx = mouse_y * self.width as usize + mouse_x;
-                let element_id = self.hit_test_map[hit_idx];
+                self.hit_test_map[hit_idx]
+            } else {
+                HIT_NONE
+            };
 
+            let is_window_control = matches!(
+                element_id,
+                HIT_CLOSE_BUTTON | HIT_MAXIMIZE_BUTTON | HIT_MINIMIZE_BUTTON
+            );
+
+            if is_window_control {
+                // On a window control - show hover and pointer cursor
                 self.hovered_button = match element_id {
                     HIT_CLOSE_BUTTON => HoveredButton::Close,
                     HIT_MAXIMIZE_BUTTON => HoveredButton::Maximize,
                     HIT_MINIMIZE_BUTTON => HoveredButton::Minimize,
-                    HIT_HANDLE_TEXTBOX => {
-                        // Don't hover textbox when it's focused (would interfere with blinkey)
-                        if self.current_text_state.textbox_focused {
-                            HoveredButton::None
-                        } else {
-                            HoveredButton::Textbox
-                        }
-                    }
-                    HIT_PRIMARY_BUTTON | HIT_RECOVER_BUTTON | HIT_CHALLENGE_BUTTON => {
-                        HoveredButton::QueryButton
-                    }
                     _ => HoveredButton::None,
                 };
-                element_id
+                self.hovered_contact = None;
+                window.set_cursor(CursorIcon::Pointer);
             } else {
-                self.hovered_button = HoveredButton::None;
-                HIT_NONE
-            };
-
-            // Update blinkey icon based on hover position
-            // Check what we're hovering over
-            let blinkey = if self.hovered_button != HoveredButton::None {
-                CursorIcon::Pointer
-            } else if element_id == HIT_PRIMARY_BUTTON
-                || element_id == HIT_RECOVER_BUTTON
-                || element_id == HIT_CHALLENGE_BUTTON
-            {
-                CursorIcon::Pointer
-            } else if element_id == HIT_HANDLE_TEXTBOX {
-                CursorIcon::Text
-            } else {
+                // Check resize edges SECOND (higher priority than other UI elements)
                 let edge = self.get_resize_edge(self.mouse_x, self.mouse_y);
-                match edge {
-                    ResizeEdge::None => CursorIcon::Default,
-                    ResizeEdge::Top | ResizeEdge::Bottom => CursorIcon::NsResize,
-                    ResizeEdge::Left | ResizeEdge::Right => CursorIcon::EwResize,
-                    ResizeEdge::TopLeft | ResizeEdge::BottomRight => CursorIcon::NwseResize,
-                    ResizeEdge::TopRight | ResizeEdge::BottomLeft => CursorIcon::NeswResize,
-                }
-            };
-            window.set_cursor(blinkey);
 
-            // Return true if hover state changed
-            if old_hovered != self.hovered_button {
+                if edge != ResizeEdge::None {
+                    // On a resize edge - clear hover states and show resize cursor
+                    self.hovered_button = HoveredButton::None;
+                    self.hovered_contact = None;
+
+                    let cursor = match edge {
+                        ResizeEdge::Top | ResizeEdge::Bottom => CursorIcon::NsResize,
+                        ResizeEdge::Left | ResizeEdge::Right => CursorIcon::EwResize,
+                        ResizeEdge::TopLeft | ResizeEdge::BottomRight => CursorIcon::NwseResize,
+                        ResizeEdge::TopRight | ResizeEdge::BottomLeft => CursorIcon::NeswResize,
+                        ResizeEdge::None => CursorIcon::Default, // Won't happen due to check above
+                    };
+                    window.set_cursor(cursor);
+                } else {
+                    // Check other UI elements (textbox, buttons, contacts, back header)
+                    self.hovered_button = match element_id {
+                        HIT_HANDLE_TEXTBOX => {
+                            // Don't hover textbox when it's focused (would interfere with blinkey)
+                            if self.current_text_state.textbox_focused {
+                                HoveredButton::None
+                            } else {
+                                HoveredButton::Textbox
+                            }
+                        }
+                        HIT_PRIMARY_BUTTON => HoveredButton::QueryButton,
+                        HIT_BACK_HEADER => HoveredButton::BackHeader,
+                        _ => HoveredButton::None,
+                    };
+
+                    // Check if hovering over a contact
+                    if element_id >= HIT_CONTACT_BASE {
+                        self.hovered_contact = Some((element_id - HIT_CONTACT_BASE) as usize);
+                    } else {
+                        self.hovered_contact = None;
+                    }
+
+                    // Update cursor icon based on hover position
+                    let cursor = if self.hovered_button != HoveredButton::None {
+                        CursorIcon::Pointer
+                    } else if element_id == HIT_PRIMARY_BUTTON {
+                        CursorIcon::Pointer
+                    } else if self.hovered_contact.is_some() {
+                        CursorIcon::Pointer
+                    } else if element_id == HIT_HANDLE_TEXTBOX {
+                        CursorIcon::Text
+                    } else {
+                        CursorIcon::Default
+                    };
+                    window.set_cursor(cursor);
+                }
+            }
+
+            // Return true if hover state changed (button or contact)
+            let hover_changed =
+                old_hovered != self.hovered_button || old_hovered_contact != self.hovered_contact;
+            if hover_changed {
                 self.controls_dirty = true;
             }
-            // Return true if hover state changed
-            old_hovered != self.hovered_button
+            hover_changed
         }
+    }
+
+    pub fn handle_mouse_wheel(&mut self, delta: MouseScrollDelta) -> bool {
+        // Only handle scrolling in conversation view
+        if self.app_state != AppState::Conversation {
+            return false;
+        }
+
+        let Some(contact_idx) = self.selected_contact else {
+            return false;
+        };
+
+        // Extract scroll amount (pixels or lines)
+        let scroll_pixels = match delta {
+            MouseScrollDelta::LineDelta(_x, y) => {
+                // Line scrolling: convert lines to pixels (assume ~20 pixels per line)
+                y * 20.0
+            }
+            MouseScrollDelta::PixelDelta(pos) => {
+                // Pixel scrolling: use y directly
+                pos.y as f32
+            }
+        };
+
+        // Calculate scroll bounds BEFORE mutable borrow
+        let line_height = (self.font_size() as f32 * 1.5) as usize;
+        let padding = self.min_dim / 32;
+        let box_height = self.textbox_height();
+        let center_y = self.height as usize / 2;
+        let textbox_y = center_y + (center_y / 4);
+        let message_area_top = (box_height as f32 * 1.5) as usize;
+        let message_area_bottom = textbox_y - (box_height as f32 * 0.6) as usize;
+        let visible_height = message_area_bottom - message_area_top;
+
+        // Apply scroll to contact's message area
+        if let Some(contact) = self.contacts.get_mut(contact_idx) {
+            // Positive scroll = scroll up (show older messages)
+            // Negative scroll = scroll down (show newer messages)
+            contact.message_scroll_offset += scroll_pixels;
+
+            let total_height = contact.messages.len() * line_height + padding * 2;
+
+            // Clamp scroll offset to valid range
+            // Max scroll up: 0 (no offset, messages at natural position)
+            // Max scroll down: -(total_height - visible_height) if content taller than viewport
+            let max_scroll_down = -((total_height as i32 - visible_height as i32).max(0) as f32);
+            contact.message_scroll_offset =
+                contact.message_scroll_offset.clamp(max_scroll_down, 0.0);
+
+            self.window_dirty = true;
+            return true;
+        }
+
+        false
     }
 }

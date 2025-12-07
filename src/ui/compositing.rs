@@ -9,14 +9,16 @@ impl PhotonApp {
         self.frame_counter += 1;
         // Calculate layout constants (needed by all rendering paths)
         let font_size = self.font_size();
-        let margin = self.min_dim / 8;
         let box_width = self.textbox_width();
         let box_height = self.textbox_height();
         let center_x = self.width as usize / 2;
-        let center_y = self.height as usize * 4 / 7;
+        let textbox_y = self.textbox_y();
 
-        // Update spectrum phase and speckle animation while querying
-        if self.handle_status == HandleStatus::Checking {
+        // Update spectrum phase and speckle animation while attesting or searching
+        if matches!(
+            self.app_state,
+            AppState::Launch(LaunchState::Attesting) | AppState::Searching
+        ) {
             let delta_time = now.duration_since(self.last_frame_time).as_secs_f32();
             debug_println!(
                 "Animating query: delta={:.3}s, phase={:.2}",
@@ -24,21 +26,28 @@ impl PhotonApp {
                 self.spectrum_phase
             );
             // Spectrum: 2 pi radians per second = 1 full cycle/sec
-            self.spectrum_phase += delta_time * std::f32::consts::PI * 2.0;
+            self.spectrum_phase += delta_time * std::f32::consts::PI * 2.;
             self.spectrum_phase %= std::f32::consts::TAU; // Wrap phase
-            // Speckles: high increment rate creates nice animated effect
+                                                          // Speckles: high increment rate creates nice animated effect
             self.speckle_counter += delta_time * (usize::MAX / 64) as f32;
+            // Hourglass: stochastic wobble (-12 to +13 degrees per frame)
+            use rand::Rng;
+            let wobble: f32 = rand::thread_rng().gen_range(-10.6..=15.);
+            self.hourglass_angle = (self.hourglass_angle + wobble) % 360.0;
             // Mark window dirty to trigger redraw of animated elements
             self.window_dirty = true;
         }
 
-        // Check if empty state changed (for button show/hide logic)
+        // Check if text became empty (button disappears, need full redraw to clear the area)
         let current_is_empty = self.current_text_state.chars.is_empty();
         let prev_is_empty = self.previous_text_state.is_empty;
-        if current_is_empty != prev_is_empty {
-            if current_is_empty {
-                // Non-empty → Empty: button needs to disappear, trigger full redraw
-                self.window_dirty = true;
+        if !prev_is_empty && current_is_empty {
+            match self.app_state {
+                AppState::Conversation | AppState::Ready | AppState::Launch(LaunchState::Fresh) => {
+                    // Non-empty → Empty: button disappears, need full redraw to clear the area
+                    self.window_dirty = true;
+                }
+                _ => {}
             }
         }
 
@@ -67,8 +76,19 @@ impl PhotonApp {
 
         if self.text_dirty || self.selection_dirty || self.window_dirty || self.controls_dirty {
             self.update_counter += 1;
+
+            // Pre-compute scaled avatar before locking buffer (to avoid borrow conflict)
+            if matches!(self.app_state, AppState::Ready | AppState::Searching) {
+                let avatar_radius = self.min_dim / 8;
+                self.update_avatar_scaled(avatar_radius * 2);
+            }
+
             let mut buffer = self.renderer.lock_buffer();
             let pixels = buffer.as_mut();
+
+            let indicator_radius = (self.min_dim / 80).max(1);
+            let indicator_x = (self.min_dim / 20).max(1);
+            let indicator_y = indicator_x;
 
             if self.window_dirty {
                 self.redraw_counter += 1;
@@ -82,8 +102,23 @@ impl PhotonApp {
                     self.width as usize,
                     self.height as usize,
                     self.speckle_counter as usize,
+                    self.is_fullscreen,
                 );
 
+                // Fill header with back button hit area BEFORE window controls
+                // so controls can overwrite their portion
+                if matches!(self.app_state, AppState::Conversation) {
+                    let header_height = self.min_dim as usize / 5;
+                    for y in 0..header_height {
+                        for x in 0..self.width as usize {
+                            let idx = y * self.width as usize + x;
+                            self.hit_test_map[idx] = HIT_BACK_HEADER;
+                        }
+                    }
+                }
+
+                // Window controls (minimize, maximize, close) - not needed on Android
+                #[cfg(not(target_os = "android"))]
                 let (start, edges, button_x_start, button_height) = Self::draw_window_controls(
                     pixels,
                     &mut self.hit_test_map,
@@ -91,84 +126,805 @@ impl PhotonApp {
                     self.height,
                 );
 
-                // Skip drawing window edges when fullscreen or maximized
-                if !self.is_fullscreen {
-                    Self::draw_window_edges_and_mask(
+                // Draw FGTW connectivity indicator (small circle in top-left)
+                // AA black base circle
+                Self::draw_black_circle(
+                    pixels,
+                    self.width as usize,
+                    indicator_x,
+                    indicator_y,
+                    indicator_radius,
+                );
+                // Add green if online, grey hairline if offline
+                if self.fgtw_online {
+                    Self::draw_filled_circle(
+                        pixels,
+                        self.width as usize,
+                        indicator_x,
+                        indicator_y,
+                        indicator_radius,
+                        theme::ONLINE_DOT,
+                        true,
+                    );
+                } else {
+                    Self::draw_indicator_hairline(
+                        pixels,
+                        self.width as usize,
+                        indicator_x,
+                        indicator_y,
+                        indicator_radius,
+                        theme::OFFLINE_DOT,
+                        true,
+                    );
+                }
+                self.prev_fgtw_online = self.fgtw_online;
+
+                // Show connectivity hint only on very first render
+                if !self.hint_was_shown && matches!(self.app_state, AppState::Launch(_)) {
+                    self.hint_was_shown = true;
+                    let hint_x = (indicator_x + indicator_radius * 2 + 4) as f32;
+                    let hint_y = indicator_y as f32 + indicator_radius as f32 * 0.5;
+                    let hint_size = font_size * 0.7;
+                    self.text_renderer.draw_text_left_u32(
+                        pixels,
+                        self.width as usize,
+                        "<- network",
+                        hint_x,
+                        hint_y,
+                        hint_size,
+                        300,                 // Light weight for hint text
+                        theme::LABEL_COLOUR, // Same as handle text on attest screen
+                        theme::FONT_UI,
+                    );
+                }
+
+                // Skip drawing window edges and button hairlines on Android (fullscreen only)
+                #[cfg(not(target_os = "android"))]
+                {
+                    // Skip drawing window edges when fullscreen or maximized
+                    if !self.is_fullscreen {
+                        Self::draw_window_edges_and_mask(
+                            pixels,
+                            &mut self.hit_test_map,
+                            self.width,
+                            self.height,
+                            start,
+                            &edges,
+                        );
+                    }
+
+                    Self::draw_button_hairlines(
                         pixels,
                         &mut self.hit_test_map,
                         self.width,
                         self.height,
+                        button_x_start,
+                        button_height,
                         start,
                         &edges,
                     );
                 }
 
-                Self::draw_button_hairlines(
-                    pixels,
-                    &mut self.hit_test_map,
-                    self.width,
-                    self.height,
-                    button_x_start,
-                    button_height,
-                    start,
-                    &edges,
-                );
-
-                // Draw spectrum and logo text
-                let logo_center_y = self.height as usize / 4; // Centered in top half
-                Self::draw_spectrum(
-                    pixels,
-                    self.width,
-                    self.height,
-                    logo_center_y - self.height.min(self.width) as usize / 8,
-                    self.spectrum_phase,
-                );
-                Self::draw_logo_text(
-                    pixels,
-                    &mut self.text_renderer,
-                    self.width,
-                    self.height,
-                    logo_center_y + self.height.min(self.width) as usize / 8,
-                );
-
-                // 2. Draw textbox (full width with min_dim/8 margins)
-                Self::draw_textbox(
-                    pixels,
-                    &mut self.hit_test_map,
-                    HIT_HANDLE_TEXTBOX,
-                    &mut self.textbox_mask,
-                    self.width as usize,
-                    center_x,
-                    center_y,
-                    box_width,
-                    box_height,
-                );
-
-                // Re-apply textbox glow if textbox is focused (restore after redraw)
-                if self.current_text_state.textbox_focused {
-                    Self::apply_textbox_glow(
+                // Different UI based on app state
+                if matches!(self.app_state, AppState::Launch(_)) {
+                    // Launch screen: spectrum, logo, handle entry
+                    let logo_center_y = self.height as usize / 4;
+                    Self::draw_spectrum(
                         pixels,
-                        &self.textbox_mask,
+                        self.width,
+                        self.height,
+                        logo_center_y - self.height.min(self.width) as usize / 8,
+                        self.spectrum_phase,
+                    );
+                    Self::draw_logo_text(
+                        pixels,
+                        &mut self.text_renderer,
+                        self.width,
+                        self.height,
+                        logo_center_y + self.height.min(self.width) as usize / 8,
+                    );
+
+                    // Handle textbox
+                    Self::draw_textbox(
+                        pixels,
+                        &mut self.hit_test_map,
+                        HIT_HANDLE_TEXTBOX,
+                        &mut self.textbox_mask,
                         self.width as usize,
-                        center_y,
+                        center_x,
+                        textbox_y,
                         box_width,
                         box_height,
-                        true,
                     );
-                }
 
-                // Label below the box
-                self.text_renderer.draw_text_center_u32(
-                    pixels,
-                    self.width as usize,
-                    "handle",
-                    center_x as f32,
-                    (center_y + box_height) as f32,
-                    font_size,
-                    300,
-                    theme::FONT_LABEL,
-                    theme::FONT_UI,
-                );
+                    // Always update glow_colour based on state (for correct subtract on defocus)
+                    self.glow_colour =
+                        if matches!(self.app_state, AppState::Launch(LaunchState::Attesting)) {
+                            theme::GLOW_ATTESTING // Yellow for attesting
+                        } else if matches!(self.app_state, AppState::Launch(LaunchState::Error(_)))
+                        {
+                            theme::GLOW_ERROR // Red for error
+                        } else {
+                            theme::GLOW_DEFAULT // White default
+                        };
+
+                    if self.current_text_state.textbox_focused {
+                        Self::apply_textbox_glow(
+                            pixels,
+                            &self.textbox_mask,
+                            self.width as usize,
+                            textbox_y,
+                            box_width,
+                            box_height,
+                            true,
+                            self.glow_colour,
+                        );
+                    }
+
+                    self.text_renderer.draw_text_center_u32(
+                        pixels,
+                        self.width as usize,
+                        "handle",
+                        center_x as f32,
+                        (textbox_y + box_height) as f32,
+                        font_size,
+                        300,
+                        theme::LABEL_COLOUR,
+                        theme::FONT_UI,
+                    );
+                } else if matches!(self.app_state, AppState::Ready | AppState::Searching) {
+                    // Ready/Searching screen: Draw avatar at top center
+                    let avatar_radius = self.min_dim / 8;
+                    let avatar_y = avatar_radius + self.min_dim / 16; // Slight padding from top
+
+                    Self::draw_avatar(
+                        pixels,
+                        &mut self.hit_test_map,
+                        self.width as usize,
+                        center_x,
+                        avatar_y,
+                        avatar_radius,
+                        self.avatar_scaled.as_deref(),
+                        self.file_hovering_avatar,
+                    );
+
+                    // Draw handle text below avatar
+                    if let Some(ref handle) = self.user_handle {
+                        let handle_y = avatar_y + avatar_radius + self.min_dim / 16;
+                        self.text_renderer.draw_text_center_u32(
+                            pixels,
+                            self.width as usize,
+                            handle,
+                            center_x as f32,
+                            handle_y as f32,
+                            font_size as f32 * 1.5,
+                            700,
+                            theme::TEXT_COLOUR,
+                            theme::FONT_USER_CONTENT,
+                        );
+                    }
+
+                    // Draw hint text if needed
+                    if self.show_avatar_hint {
+                        let hint_y = avatar_y + avatar_radius + self.min_dim / 20;
+                        let hint_y = if self.user_handle.is_some() {
+                            hint_y + (font_size as f32 * 0.6) as usize
+                        } else {
+                            hint_y
+                        };
+                        self.text_renderer.draw_text_center_u32(
+                            pixels,
+                            self.width as usize,
+                            "drag and drop an image to upload avatar",
+                            center_x as f32,
+                            hint_y as f32,
+                            font_size as f32 * 0.5, // Small hint text
+                            300,
+                            theme::LABEL_COLOUR,
+                            theme::FONT_UI,
+                        );
+                    }
+
+                    // Query friends textbox
+                    Self::draw_textbox(
+                        pixels,
+                        &mut self.hit_test_map,
+                        HIT_HANDLE_TEXTBOX,
+                        &mut self.textbox_mask,
+                        self.width as usize,
+                        center_x,
+                        textbox_y,
+                        box_width,
+                        box_height,
+                    );
+
+                    // Draw search button inset in bottom-right corner of textbox (like conversation send button)
+                    if !self.current_text_state.chars.is_empty() {
+                        let button_size = box_height * 7 / 8;
+                        let inset = box_height / 16;
+                        let button_center_x = center_x + box_width / 2 - inset - button_size / 2;
+                        let textbox_bottom = textbox_y + box_height / 2;
+                        let button_center_y = textbox_bottom - inset - button_size / 2;
+
+                        // Button colour based on search state
+                        let button_colour = if matches!(self.app_state, AppState::Searching) {
+                            theme::BUTTON_YELLOW
+                        } else {
+                            theme::BUTTON_BLUE
+                        };
+
+                        Self::draw_button(
+                            pixels,
+                            &mut self.hit_test_map,
+                            self.width as usize,
+                            self.height as usize,
+                            button_center_x,
+                            button_center_y,
+                            button_size,
+                            button_size,
+                            HIT_PRIMARY_BUTTON,
+                            button_colour,
+                            theme::BUTTON_LIGHT_EDGE,
+                            theme::BUTTON_SHADOW_EDGE,
+                        );
+
+                        // Draw magnifying glass or hourglass during search
+                        let (r, g, b, _a) = unpack_argb(theme::BUTTON_TEXT);
+                        if matches!(self.app_state, AppState::Searching) {
+                            Self::draw_hourglass_symbol(
+                                pixels,
+                                self.width as usize,
+                                button_center_x,
+                                button_center_y,
+                                button_size * 3 / 4,
+                                self.hourglass_angle,
+                                (r, g, b),
+                            );
+                        } else {
+                            Self::draw_magnify_symbol(
+                                pixels,
+                                self.width as usize,
+                                button_center_x,
+                                button_center_y,
+                                button_size * 3 / 4,
+                                (r, g, b),
+                            );
+                        }
+                    }
+
+                    // Glow colour: yellow during search, green/red based on result, white default
+                    self.glow_colour = if matches!(self.app_state, AppState::Searching) {
+                        theme::GLOW_ATTESTING // Yellow during search
+                    } else {
+                        match &self.search_result {
+                            Some(SearchResult::Found(_)) => theme::GLOW_SUCCESS, // Green for found
+                            Some(SearchResult::NotFound) => theme::GLOW_ERROR, // Red for not found
+                            Some(SearchResult::Error(_)) => theme::GLOW_ERROR, // Red for error
+                            None => theme::GLOW_DEFAULT,                       // White default
+                        }
+                    };
+
+                    // Apply glow when focused OR during search (textbox stays glowing during search)
+                    if self.current_text_state.textbox_focused
+                        || matches!(self.app_state, AppState::Searching)
+                    {
+                        Self::apply_textbox_glow(
+                            pixels,
+                            &self.textbox_mask,
+                            self.width as usize,
+                            textbox_y,
+                            box_width,
+                            box_height,
+                            true,
+                            self.glow_colour,
+                        );
+                    }
+
+                    // Show search result half line above textbox
+                    if let Some(ref result) = self.search_result {
+                        let result_y = textbox_y - box_height;
+                        let (text, colour) = match result {
+                            SearchResult::Found(peer) => {
+                                (format!("added {}", peer.handle), theme::SEARCH_RESULT_ADDED)
+                            }
+                            SearchResult::NotFound => {
+                                ("not found".to_string(), theme::SEARCH_RESULT_NOT_FOUND)
+                            }
+                            SearchResult::Error(e) => {
+                                (format!("error: {}", e), theme::SEARCH_RESULT_NOT_FOUND)
+                            }
+                        };
+                        self.text_renderer.draw_text_center_u32(
+                            pixels,
+                            self.width as usize,
+                            &text,
+                            center_x as f32,
+                            result_y as f32,
+                            font_size,
+                            500,
+                            colour,
+                            theme::FONT_USER_CONTENT,
+                        );
+                    }
+
+                    // Draw contacts list below textbox if we have any
+                    if !self.contacts.is_empty() {
+                        // Separator line below the textbox
+                        let separator_y = textbox_y + box_height;
+                        let separator_width = box_width / 2;
+                        let separator_x = center_x - separator_width / 2;
+
+                        // Add separator hairline (additive for reversibility)
+                        for x in separator_x..(separator_x + separator_width) {
+                            let idx = separator_y * self.width as usize + x;
+                            pixels[idx] = pixels[idx].wrapping_add(theme::CONTACT_BRIGHTEN_DELTA);
+                        }
+
+                        // Find widest handle to calculate list width
+                        let mut max_handle_width = 0.0f32;
+                        for contact in &self.contacts {
+                            let width = self.text_renderer.measure_text_width(
+                                contact.handle.as_str(),
+                                font_size,
+                                theme::FONT_WEIGHT_USER_CONTENT,
+                                theme::FONT_USER_CONTENT,
+                            );
+                            if width > max_handle_width {
+                                max_handle_width = width;
+                            }
+                        }
+
+                        // Indicator sizing (same as top-left connectivity indicator)
+                        let indicator_radius = (self.min_dim / 64).max(1);
+                        let indicator_spacing = indicator_radius * 3; // Space between dot and text
+
+                        // Total list width: dot + spacing + widest handle
+                        let list_width =
+                            (indicator_radius * 2 + indicator_spacing) as f32 + max_handle_width;
+                        let list_left = center_x as f32 - list_width / 2.0;
+
+                        // Draw contacts below separator
+                        let contact_start_y = separator_y + box_height / 2;
+                        let line_height = (font_size * 1.4) as usize;
+
+                        let avatar_diameter = indicator_radius * 2;
+
+                        for (i, contact) in self.contacts.iter_mut().enumerate() {
+                            let contact_y = contact_start_y + i * line_height;
+                            if contact_y > self.height as usize - line_height {
+                                break; // Don't draw off screen
+                            }
+
+                            // Avatar center position
+                            let avatar_cx = list_left as usize + indicator_radius / 2;
+                            let avatar_cy = contact_y;
+
+                            // Cache indicator position for differential updates
+                            contact.indicator_x = avatar_cx;
+                            contact.indicator_y = avatar_cy;
+
+                            // Scale contact avatar if needed
+                            if contact.avatar_pixels.is_some()
+                                && (contact.avatar_scaled.is_none()
+                                    || contact.avatar_scaled_diameter != avatar_diameter)
+                            {
+                                if let Some(scaled) = crate::avatar::scale_avatar(
+                                    contact.avatar_pixels.as_ref().unwrap(),
+                                    avatar_diameter,
+                                ) {
+                                    contact.avatar_scaled = Some(scaled);
+                                    contact.avatar_scaled_diameter = avatar_diameter;
+                                }
+                            }
+
+                            // Draw contact avatar with online/offline ring
+                            Self::draw_contact_avatar(
+                                pixels,
+                                self.width as usize,
+                                avatar_cx,
+                                avatar_cy,
+                                indicator_radius,
+                                contact.avatar_scaled.as_deref(),
+                                contact.is_online,
+                            );
+
+                            // Sync prev state after full draw to prevent differential double-apply
+                            contact.prev_is_online = contact.is_online;
+
+                            // Draw handle text (left-aligned)
+                            let text_x =
+                                list_left + (indicator_radius * 2 + indicator_spacing) as f32;
+                            let text_y = contact_y as f32;
+
+                            // Cache text position for differential hover updates
+                            contact.text_x = text_x;
+                            contact.text_y = text_y;
+
+                            // Use brighter text for hovered contact
+                            let is_hovered = self.hovered_contact == Some(i);
+                            let text_color = if is_hovered {
+                                theme::CONTACT_NAME
+                            } else {
+                                theme::CONTACT_NAME_UNHOVERED
+                            };
+
+                            self.text_renderer.draw_text_left_u32(
+                                pixels,
+                                self.width as usize,
+                                contact.handle.as_str(),
+                                text_x,
+                                contact_y as f32,
+                                font_size,
+                                theme::FONT_WEIGHT_USER_CONTENT,
+                                text_color,
+                                theme::FONT_USER_CONTENT,
+                            );
+
+                            // Add hit region for this contact (extended by half line height on each side)
+                            let hit_id = HIT_CONTACT_BASE.wrapping_add(i as u8);
+                            let handle_width = self.text_renderer.measure_text_width(
+                                contact.handle.as_str(),
+                                font_size,
+                                theme::FONT_WEIGHT_USER_CONTENT,
+                                theme::FONT_USER_CONTENT,
+                            );
+                            let hit_left = (list_left as usize).wrapping_sub(line_height / 4);
+                            let hit_right = (text_x + handle_width) as usize + line_height / 4;
+                            let hit_top = contact_y.wrapping_sub(line_height / 2);
+                            let hit_bottom = contact_y + line_height / 2;
+                            for hy in hit_top..hit_bottom.min(self.height as usize) {
+                                for hx in hit_left..hit_right.min(self.width as usize) {
+                                    self.hit_test_map[hy * self.width as usize + hx] = hit_id;
+                                }
+                            }
+                        }
+                        // Sync prev hovered state after full draw
+                        self.prev_hovered_contact = self.hovered_contact;
+                    }
+                } else if matches!(self.app_state, AppState::Conversation) {
+                    // Conversation view: header with contact name, message area, bottom textbox
+                    if let Some(contact_idx) = self.selected_contact {
+                        if let Some(contact) = self.contacts.get_mut(contact_idx) {
+                            // Layout constants
+                            let header_height = self.min_dim as usize / 5; // Contact name header area (1/5 from top)
+                            let message_area_top = header_height;
+                            let message_area_bottom = textbox_y - box_height;
+
+                            // Avatar circle to left of handle, aligned with "<" arrow
+                            let avatar_radius = box_height / 3;
+                            let avatar_diameter = avatar_radius * 2;
+                            // Position avatar right after the "<" with some spacing
+                            let arrow_width = box_height * 3 / 2; // Approximate width of "<" area
+                            let avatar_x = arrow_width + avatar_radius;
+                            let avatar_y = header_height / 2;
+
+                            // Scale contact avatar if needed
+                            if contact.avatar_pixels.is_some()
+                                && (contact.avatar_scaled.is_none()
+                                    || contact.avatar_scaled_diameter != avatar_diameter)
+                            {
+                                if let Some(scaled) = crate::avatar::scale_avatar(
+                                    contact.avatar_pixels.as_ref().unwrap(),
+                                    avatar_diameter,
+                                ) {
+                                    contact.avatar_scaled = Some(scaled);
+                                    contact.avatar_scaled_diameter = avatar_diameter;
+                                }
+                            }
+
+                            // Draw contact avatar with online/offline ring
+                            Self::draw_contact_avatar(
+                                pixels,
+                                self.width as usize,
+                                avatar_x,
+                                avatar_y,
+                                avatar_radius,
+                                contact.avatar_scaled.as_deref(),
+                                contact.is_online,
+                            );
+
+                            // Draw green "<" back arrow in top-left
+                            let arrow_x = box_height; // Inset from left
+                            let arrow_y = header_height / 2;
+                            self.text_renderer.draw_text_center_u32(
+                                pixels,
+                                self.width as usize,
+                                "<",
+                                arrow_x as f32,
+                                arrow_y as f32,
+                                font_size * 1.4,
+                                700,
+                                theme::CONTACT_ONLINE, // Green
+                                theme::FONT_UI,
+                            );
+
+                            // Draw header: contact handle left-aligned next to avatar
+                            let handle_x = avatar_x + avatar_radius + avatar_radius / 2; // Right of avatar with small gap
+                            self.text_renderer.draw_text_left_u32(
+                                pixels,
+                                self.width as usize,
+                                contact.handle.as_str(),
+                                handle_x as f32,
+                                (header_height / 2) as f32,
+                                font_size * 1.2,
+                                500,
+                                theme::CONTACT_NAME,
+                                theme::FONT_USER_CONTENT,
+                            );
+
+                            // Draw separator line below header (additive)
+                            let separator_width = box_width;
+                            let separator_x = center_x - separator_width / 2;
+                            for x in separator_x..(separator_x + separator_width) {
+                                let idx = header_height * self.width as usize + x;
+                                pixels[idx] =
+                                    pixels[idx].wrapping_add(theme::CONTACT_BRIGHTEN_DELTA);
+                            }
+
+                            // // Online indicator centered on divider line
+                            // let indicator_radius = (self.min_dim / 80).max(1);
+                            // let indicator_x = center_x;
+                            // let indicator_y = header_height; // On the divider
+
+                            // // Draw base (dark circle)
+                            // Self::draw_indicator_base(
+                            //     pixels,
+                            //     self.width as usize,
+                            //     indicator_x,
+                            //     indicator_y,
+                            //     indicator_radius,
+                            // );
+                            // if contact.is_online {
+                            //     // Online: add green fill
+                            //     Self::draw_indicator_colour(
+                            //         pixels,
+                            //         self.width as usize,
+                            //         indicator_x,
+                            //         indicator_y,
+                            //         indicator_radius,
+                            //         theme::ONLINE_DOT,
+                            //         true,
+                            //     );
+                            // } else {
+                            //     // Offline: draw hairline ring
+                            //     Self::draw_indicator_hairline(
+                            //         pixels,
+                            //         self.width as usize,
+                            //         indicator_x,
+                            //         indicator_y,
+                            //         indicator_radius,
+                            //         theme::CONTACT_OFFLINE,
+                            //         true,
+                            //     );
+                            // }
+
+                            // Draw message area based on CLUTCH state
+                            use crate::types::ClutchState;
+                            let msg_center_y = (message_area_top + message_area_bottom) / 2;
+
+                            match contact.clutch_state {
+                                ClutchState::Complete => {
+                                    // CLUTCH complete - can message
+                                    if contact.messages.is_empty() {
+                                        // Line 1: "no messages yet"
+                                        let line1_y = msg_center_y - (font_size as usize);
+                                        self.text_renderer.draw_text_center_u32(
+                                            pixels,
+                                            self.width as usize,
+                                            "no messages yet",
+                                            center_x as f32,
+                                            line1_y as f32,
+                                            font_size,
+                                            300,
+                                            theme::LABEL_COLOUR,
+                                            theme::FONT_UI,
+                                        );
+                                        // Line 2: Success message (green)
+                                        let line2_y = msg_center_y + (font_size as usize / 2);
+                                        self.text_renderer.draw_text_center_u32(
+                                            pixels,
+                                            self.width as usize,
+                                            "secure channel established",
+                                            center_x as f32,
+                                            line2_y as f32,
+                                            font_size * 0.8,
+                                            400,
+                                            theme::CONTACT_ONLINE, // Green
+                                            theme::FONT_UI,
+                                        );
+                                    } else {
+                                        // Draw messages
+                                        let line_height = (font_size as f32 * 1.5) as usize;
+                                        let padding = self.min_dim / 32;
+
+                                        // Calculate total height needed for all messages
+                                        let total_height =
+                                            contact.messages.len() * line_height + padding * 2;
+                                        let visible_height =
+                                            (message_area_bottom - message_area_top) as usize;
+
+                                        // Start from bottom (most recent messages)
+                                        let mut y = message_area_bottom as usize - padding;
+
+                                        // Iterate messages in reverse (newest first at bottom)
+                                        for msg in contact.messages.iter().rev() {
+                                            y = y.saturating_sub(line_height);
+
+                                            // Apply scroll offset
+                                            let scroll_y =
+                                                (y as f32 + contact.message_scroll_offset) as usize;
+
+                                            // Skip if above visible area
+                                            if scroll_y < message_area_top as usize {
+                                                continue;
+                                            }
+                                            // Stop if below visible area
+                                            if scroll_y > message_area_bottom as usize {
+                                                break;
+                                            }
+
+                                            // Align outgoing (right) vs incoming (left)
+                                            if msg.is_outgoing {
+                                                // Outgoing: align right with orange color
+                                                self.text_renderer.draw_text_right_u32(
+                                                    pixels,
+                                                    self.width as usize,
+                                                    &msg.content,
+                                                    (center_x + (box_width / 2) - padding) as f32,
+                                                    scroll_y as f32,
+                                                    font_size * 0.9,
+                                                    theme::FONT_WEIGHT_USER_CONTENT,
+                                                    theme::MESSAGE_SENT,
+                                                    theme::FONT_USER_CONTENT,
+                                                );
+
+                                                // Draw delivery indicator
+                                                let indicator =
+                                                    if msg.delivered { "✓" } else { "·" };
+                                                let indicator_color = if msg.delivered {
+                                                    theme::MESSAGE_INDICATOR_ACKD
+                                                } else {
+                                                    theme::MESSAGE_INDICATOR_SENT
+                                                };
+                                                self.text_renderer.draw_text_right_u32(
+                                                    pixels,
+                                                    self.width as usize,
+                                                    indicator,
+                                                    (center_x + (box_width / 2) - padding * 2)
+                                                        as f32,
+                                                    scroll_y as f32,
+                                                    font_size * 0.7,
+                                                    theme::FONT_WEIGHT_USER_CONTENT,
+                                                    indicator_color,
+                                                    theme::FONT_USER_CONTENT,
+                                                );
+                                            } else {
+                                                // Incoming: align left with cyan color
+                                                self.text_renderer.draw_text_left_u32(
+                                                    pixels,
+                                                    self.width as usize,
+                                                    &msg.content,
+                                                    (center_x - (box_width / 2) + padding) as f32,
+                                                    scroll_y as f32,
+                                                    font_size * 0.9,
+                                                    theme::FONT_WEIGHT_USER_CONTENT,
+                                                    theme::MESSAGE_RECEIVED,
+                                                    theme::FONT_USER_CONTENT,
+                                                );
+                                            }
+                                        }
+                                    }
+
+                                    // Draw bottom textbox for message input (full width, centered)
+                                    Self::draw_textbox(
+                                        pixels,
+                                        &mut self.hit_test_map,
+                                        HIT_HANDLE_TEXTBOX,
+                                        &mut self.textbox_mask,
+                                        self.width as usize,
+                                        center_x,
+                                        textbox_y,
+                                        box_width,
+                                        box_height,
+                                    );
+
+                                    // Draw send button inset in bottom-right corner of textbox (only if text entered)
+                                    if !self.current_text_state.chars.is_empty() {
+                                        let send_button_size = box_height * 7 / 8;
+                                        let inset = box_height / 16;
+                                        let button_center_x =
+                                            center_x + box_width / 2 - inset - send_button_size / 2;
+                                        let textbox_bottom = textbox_y + box_height / 2;
+                                        let button_center_y =
+                                            textbox_bottom - inset - send_button_size / 2;
+                                        Self::draw_button(
+                                            pixels,
+                                            &mut self.hit_test_map,
+                                            self.width as usize,
+                                            self.height as usize,
+                                            button_center_x,
+                                            button_center_y,
+                                            send_button_size,
+                                            send_button_size,
+                                            HIT_PRIMARY_BUTTON,
+                                            theme::BUTTON_BLUE,
+                                            theme::BUTTON_LIGHT_EDGE,
+                                            theme::BUTTON_SHADOW_EDGE,
+                                        );
+
+                                        // Draw ">" arrow on send button
+                                        self.text_renderer.draw_text_center_u32(
+                                            pixels,
+                                            self.width as usize,
+                                            ">",
+                                            button_center_x as f32,
+                                            button_center_y as f32,
+                                            font_size,
+                                            700,
+                                            theme::BUTTON_TEXT,
+                                            theme::FONT_UI,
+                                        );
+                                    }
+
+                                    // Glow if focused
+                                    self.glow_colour = theme::GLOW_DEFAULT;
+                                    if self.current_text_state.textbox_focused {
+                                        Self::apply_textbox_glow(
+                                            pixels,
+                                            &self.textbox_mask,
+                                            self.width as usize,
+                                            textbox_y,
+                                            box_width,
+                                            box_height,
+                                            true,
+                                            self.glow_colour,
+                                        );
+                                    }
+                                }
+                                _ => {
+                                    // CLUTCH in progress - show status, hide textbox
+                                    // Line 1: "clutch in progress"
+                                    let line1_y = msg_center_y - (font_size as usize / 2);
+                                    self.text_renderer.draw_text_center_u32(
+                                        pixels,
+                                        self.width as usize,
+                                        "clutch in progress",
+                                        center_x as f32,
+                                        line1_y as f32,
+                                        font_size,
+                                        400,
+                                        theme::STATUS_TEXT_ATTESTING, // Yellow with proper alpha
+                                        theme::FONT_UI,
+                                    );
+                                    // Line 2: Hint about what's happening
+                                    let hint = match contact.clutch_state {
+                                        ClutchState::Pending => "waiting for them to add you back",
+                                        ClutchState::KeysGenerated => "generating ephemeral keys...",
+                                        ClutchState::OfferSent => "sent keys, waiting for theirs...",
+                                        ClutchState::OfferReceived => "received their keys...",
+                                        ClutchState::OffersExchanged => "exchanging KEM secrets...",
+                                        ClutchState::KemSent => "sent KEM response, waiting...",
+                                        ClutchState::KemReceived => "received their KEM response...",
+                                        ClutchState::Complete => unreachable!(),
+                                    };
+                                    let line2_y = msg_center_y + (font_size as usize);
+                                    self.text_renderer.draw_text_center_u32(
+                                        pixels,
+                                        self.width as usize,
+                                        hint,
+                                        center_x as f32,
+                                        line2_y as f32,
+                                        font_size * 0.7,
+                                        300,
+                                        theme::LABEL_COLOUR,
+                                        theme::FONT_UI,
+                                    );
+                                    // No textbox drawn - can't message until CLUTCH complete
+                                }
+                            }
+                        }
+                    }
+                }
 
                 // Debug: overlay hit test map visualization with random colours
                 if self.debug_hit_test {
@@ -240,7 +996,7 @@ impl PhotonApp {
                                     box_width,
                                     font_size,
                                     center_x,
-                                    center_y,
+                                    textbox_y,
                                     &self.hit_test_map,
                                 );
                             }
@@ -256,36 +1012,85 @@ impl PhotonApp {
                                     &mut self.text_renderer,
                                     &self.textbox_mask,
                                     self.width as usize,
-                                    self.height as usize,
                                     self.min_dim,
+                                    textbox_y,
                                     theme::TEXT_COLOUR,
                                 );
-                            } else {
-                                if !self.previous_text_state.textbox_focused {
-                                    let char_width = self.text_renderer.measure_text_width(
-                                        "∞",
+                            } else if !self.previous_text_state.textbox_focused {
+                                // Show placeholder when textbox is empty and not focused
+                                let placeholder = match self.app_state {
+                                    AppState::Launch(_) => Some("∞"),
+                                    AppState::Ready | AppState::Searching => Some("find handle"),
+                                    _ => None,
+                                };
+                                if let Some(text) = placeholder {
+                                    let text_width = self.text_renderer.measure_text_width(
+                                        text,
                                         font_size,
                                         500,
                                         theme::FONT_USER_CONTENT,
                                     );
-
-                                    self.text_renderer.render_char_additive_u32(
+                                    self.text_renderer.draw_text_left_additive_u32(
                                         pixels,
                                         self.width as usize,
-                                        '∞',
-                                        center_x as f32 - char_width / 2.0,
-                                        center_y as f32,
+                                        text,
+                                        center_x as f32 - text_width / 2.0,
+                                        textbox_y as f32,
                                         font_size,
                                         500,
+                                        theme::PLACEHOLDER_TEXT,
                                         theme::FONT_USER_CONTENT,
-                                        0xFF808080,
-                                        &self.textbox_mask,
-                                        false,
+                                        false, // subtract
                                     );
                                 }
                             }
                         }
                     }
+                }
+
+                // Differential contact hover: add/subtract brightness delta
+                if self.hovered_contact != self.prev_hovered_contact {
+                    const HOVER_DELTA: u32 = theme::CONTACT_HOVER_DELTA; // 0xFF - 0xA0 = 0x5F per channel
+
+                    // Un-hover previous contact (subtract brightness)
+                    if let Some(prev_idx) = self.prev_hovered_contact {
+                        if prev_idx < self.contacts.len() {
+                            let contact = &self.contacts[prev_idx];
+                            self.text_renderer.draw_text_left_additive_u32(
+                                pixels,
+                                self.width as usize,
+                                contact.handle.as_str(),
+                                contact.text_x,
+                                contact.text_y,
+                                font_size,
+                                theme::FONT_WEIGHT_USER_CONTENT,
+                                HOVER_DELTA,
+                                theme::FONT_USER_CONTENT,
+                                false, // subtract
+                            );
+                        }
+                    }
+
+                    // Hover new contact (add brightness)
+                    if let Some(new_idx) = self.hovered_contact {
+                        if new_idx < self.contacts.len() {
+                            let contact = &self.contacts[new_idx];
+                            self.text_renderer.draw_text_left_additive_u32(
+                                pixels,
+                                self.width as usize,
+                                contact.handle.as_str(),
+                                contact.text_x,
+                                contact.text_y,
+                                font_size,
+                                theme::FONT_WEIGHT_USER_CONTENT,
+                                HOVER_DELTA,
+                                theme::FONT_USER_CONTENT,
+                                true, // add
+                            );
+                        }
+                    }
+
+                    self.prev_hovered_contact = self.hovered_contact;
                 }
             }
 
@@ -299,31 +1104,35 @@ impl PhotonApp {
                         &mut self.text_renderer,
                         &self.textbox_mask,
                         self.width as usize,
-                        self.height as usize,
                         self.min_dim,
+                        textbox_y,
                         theme::TEXT_COLOUR,
                     );
-                } else {
-                    if !self.current_text_state.textbox_focused {
-                        let char_width = self.text_renderer.measure_text_width(
-                            "∞",
+                } else if !self.current_text_state.textbox_focused {
+                    // Show placeholder when textbox is empty and not focused
+                    let placeholder = match self.app_state {
+                        AppState::Launch(_) => Some("∞"),
+                        AppState::Ready | AppState::Searching => Some("find handle"),
+                        _ => None,
+                    };
+                    if let Some(text) = placeholder {
+                        let text_width = self.text_renderer.measure_text_width(
+                            text,
                             font_size,
                             500,
                             theme::FONT_USER_CONTENT,
                         );
-
-                        self.text_renderer.render_char_additive_u32(
+                        self.text_renderer.draw_text_left_additive_u32(
                             pixels,
                             self.width as usize,
-                            '∞',
-                            center_x as f32 - char_width / 2.0,
-                            center_y as f32,
+                            text,
+                            center_x as f32 - text_width / 2.0,
+                            textbox_y as f32,
                             font_size,
                             500,
+                            theme::PLACEHOLDER_TEXT,
                             theme::FONT_USER_CONTENT,
-                            0xFF808080,
-                            &self.textbox_mask,
-                            true,
+                            true, // add
                         );
                     }
                 }
@@ -352,7 +1161,7 @@ impl PhotonApp {
                             box_width,
                             font_size,
                             center_x,
-                            center_y,
+                            textbox_y,
                             &self.hit_test_map,
                         );
                     }
@@ -376,7 +1185,7 @@ impl PhotonApp {
                 let blinkey_x = (center_x as f32 - text_half as f32
                     + self.current_text_state.scroll_offset
                     + blinkey_pixel_offset as f32) as usize;
-                let blinkey_y = (center_y as f32 - box_height as f32 * 0.25) as usize;
+                let blinkey_y = (textbox_y as f32 - box_height as f32 * 0.25) as usize;
 
                 self.blinkey_pixel_x = blinkey_x;
                 self.blinkey_pixel_y = blinkey_y;
@@ -389,6 +1198,99 @@ impl PhotonApp {
                     &mut self.blinkey_wave_top_bright,
                     font_size as usize,
                 );
+            }
+
+            // Draw/remove send button in Conversation view (differential rendering for button appearance)
+            if matches!(self.app_state, AppState::Conversation) {
+                let current_has_button = !self.current_text_state.chars.is_empty();
+                let prev_had_button = !self.previous_text_state.is_empty;
+
+                // Only draw/remove button if state changed OR if doing full redraw
+                if (current_has_button != prev_had_button || self.window_dirty)
+                    && current_has_button
+                {
+                    // Button should be visible - draw it
+                    let send_button_size = box_height * 7 / 8;
+                    let inset = box_height / 16;
+                    let button_center_x = center_x + box_width / 2 - inset - send_button_size / 2;
+                    let textbox_bottom = textbox_y + box_height / 2;
+                    let button_center_y = textbox_bottom - inset - send_button_size / 2;
+
+                    Self::draw_button(
+                        pixels,
+                        &mut self.hit_test_map,
+                        self.width as usize,
+                        self.height as usize,
+                        button_center_x,
+                        button_center_y,
+                        send_button_size,
+                        send_button_size,
+                        HIT_PRIMARY_BUTTON,
+                        theme::BUTTON_BLUE,
+                        theme::BUTTON_LIGHT_EDGE,
+                        theme::BUTTON_SHADOW_EDGE,
+                    );
+
+                    // Draw ">" arrow on send button
+                    self.text_renderer.draw_text_center_u32(
+                        pixels,
+                        self.width as usize,
+                        ">",
+                        button_center_x as f32,
+                        button_center_y as f32,
+                        font_size,
+                        700,
+                        theme::BUTTON_TEXT,
+                        theme::FONT_UI,
+                    );
+                }
+            }
+
+            // Draw/remove search button in Ready view (differential rendering for button appearance)
+            if matches!(self.app_state, AppState::Ready | AppState::Searching) {
+                let current_has_button = !self.current_text_state.chars.is_empty();
+                let prev_had_button = !self.previous_text_state.is_empty;
+
+                // Only draw button if state changed from no-button to button
+                if current_has_button && !prev_had_button {
+                    let button_size = box_height * 7 / 8;
+                    let inset = box_height / 16;
+                    let button_center_x = center_x + box_width / 2 - inset - button_size / 2;
+                    let textbox_bottom = textbox_y + box_height / 2;
+                    let button_center_y = textbox_bottom - inset - button_size / 2;
+
+                    let button_colour = if matches!(self.app_state, AppState::Searching) {
+                        theme::BUTTON_YELLOW
+                    } else {
+                        theme::BUTTON_BLUE
+                    };
+
+                    Self::draw_button(
+                        pixels,
+                        &mut self.hit_test_map,
+                        self.width as usize,
+                        self.height as usize,
+                        button_center_x,
+                        button_center_y,
+                        button_size,
+                        button_size,
+                        HIT_PRIMARY_BUTTON,
+                        button_colour,
+                        theme::BUTTON_LIGHT_EDGE,
+                        theme::BUTTON_SHADOW_EDGE,
+                    );
+
+                    // Draw magnifying glass on search button
+                    let (r, g, b, _a) = unpack_argb(theme::BUTTON_TEXT);
+                    Self::draw_magnify_symbol(
+                        pixels,
+                        self.width as usize,
+                        button_center_x,
+                        button_center_y,
+                        button_size * 3 / 4,
+                        (r, g, b),
+                    );
+                }
             }
 
             // Controls dirty - handle hover and focus transitions
@@ -465,7 +1367,7 @@ impl PhotonApp {
                                 self.width as usize,
                                 self.height as usize,
                                 center_x,
-                                center_y,
+                                textbox_y,
                                 HIT_HANDLE_TEXTBOX,
                                 false,
                                 theme::TEXTBOX_HOVER,
@@ -473,18 +1375,33 @@ impl PhotonApp {
                             );
                         }
                         HoveredButton::QueryButton => {
-                            let query_button_center_y = center_y + box_height + box_height;
+                            // Button is now inset in textbox bottom-right for all relevant states
+                            let send_size = box_height * 7 / 8;
+                            let inset = box_height / 16;
+                            let button_center_x = center_x + box_width / 2 - inset - send_size / 2;
+                            let textbox_bottom = textbox_y + box_height / 2;
+                            let query_button_center_y = textbox_bottom - inset - send_size / 2;
                             Self::draw_hover_centerpoint(
                                 pixels,
                                 &self.hit_test_map,
                                 self.width as usize,
                                 self.height as usize,
-                                center_x,
+                                button_center_x,
                                 query_button_center_y,
                                 HIT_PRIMARY_BUTTON,
                                 false,
                                 theme::QUERY_BUTTON_HOVER,
                                 self.debug,
+                            );
+                        }
+                        HoveredButton::BackHeader => {
+                            // Unhover: subtract header tint
+                            Self::apply_back_header_hover(
+                                pixels,
+                                &self.hit_test_map,
+                                self.width as usize,
+                                box_height * 2,
+                                false,
                             );
                         }
                         HoveredButton::None => {}
@@ -541,7 +1458,7 @@ impl PhotonApp {
                                 self.width as usize,
                                 self.height as usize,
                                 center_x,
-                                center_y,
+                                textbox_y,
                                 HIT_HANDLE_TEXTBOX,
                                 true,
                                 theme::TEXTBOX_HOVER,
@@ -549,13 +1466,18 @@ impl PhotonApp {
                             );
                         }
                         HoveredButton::QueryButton => {
-                            let query_button_center_y = center_y + box_height + box_height;
+                            // Button is now inset in textbox bottom-right for all relevant states
+                            let send_size = box_height * 7 / 8;
+                            let inset = box_height / 16;
+                            let button_center_x = center_x + box_width / 2 - inset - send_size / 2;
+                            let textbox_bottom = textbox_y + box_height / 2;
+                            let query_button_center_y = textbox_bottom - inset - send_size / 2;
                             Self::draw_hover_centerpoint(
                                 pixels,
                                 &self.hit_test_map,
                                 self.width as usize,
                                 self.height as usize,
-                                center_x,
+                                button_center_x,
                                 query_button_center_y,
                                 HIT_PRIMARY_BUTTON,
                                 true,
@@ -563,11 +1485,182 @@ impl PhotonApp {
                                 self.debug,
                             );
                         }
+                        HoveredButton::BackHeader => {
+                            // Hover: add header tint
+                            Self::apply_back_header_hover(
+                                pixels,
+                                &self.hit_test_map,
+                                self.width as usize,
+                                box_height * 2,
+                                true,
+                            );
+                        }
                         HoveredButton::None => {}
                     }
 
                     // Update prev state
                     self.prev_hovered_button = self.hovered_button;
+                }
+            }
+
+            // Differential update for FGTW connectivity indicator
+            if self.fgtw_online != self.prev_fgtw_online {
+                if self.fgtw_online {
+                    // Going online: subtract grey hairline, add green fill
+                    Self::draw_indicator_hairline(
+                        pixels,
+                        self.width as usize,
+                        indicator_x,
+                        indicator_y,
+                        indicator_radius,
+                        theme::OFFLINE_DOT,
+                        false,
+                    );
+                    Self::draw_filled_circle(
+                        pixels,
+                        self.width as usize,
+                        indicator_x,
+                        indicator_y,
+                        indicator_radius,
+                        theme::ONLINE_DOT,
+                        true,
+                    );
+                } else {
+                    // Going offline: subtract green fill, add grey hairline
+                    Self::draw_filled_circle(
+                        pixels,
+                        self.width as usize,
+                        indicator_x,
+                        indicator_y,
+                        indicator_radius,
+                        theme::ONLINE_DOT,
+                        false,
+                    );
+                    Self::draw_indicator_hairline(
+                        pixels,
+                        self.width as usize,
+                        indicator_x,
+                        indicator_y,
+                        indicator_radius,
+                        theme::OFFLINE_DOT,
+                        true,
+                    );
+                }
+                self.prev_fgtw_online = self.fgtw_online;
+            }
+
+            // Reapply current hover state after window_dirty redraws
+            // (full redraws clear the framebuffer, losing hover overlays)
+            // This runs OUTSIDE controls_dirty so it works during animation
+            if self.window_dirty && self.hovered_button != HoveredButton::None {
+                // Calculate button centers for centerpoint fill
+                let smaller_dim = self.width.min(self.height) as f32;
+                let button_height = (smaller_dim / 16.).ceil() as usize;
+                let button_width = button_height;
+                let total_width = button_width * 7 / 2;
+                let x_start = self.width as usize - total_width;
+                let y_start = 0;
+                let button_center_y = y_start + button_height / 2;
+
+                // Buttons are offset by button_width / 4 from x_start
+                let button_area_x_start = x_start + button_width / 4;
+
+                // Minimize: 1px left of left hairline
+                let minimize_center_x = button_area_x_start + button_width - 1;
+                // Maximize: center between the two hairlines
+                let maximize_center_x = button_area_x_start + button_width + button_width / 2;
+                // Close: 1px right of right hairline
+                let close_center_x = button_area_x_start + button_width * 2 + 1;
+
+                // Reapply current hover
+                match self.hovered_button {
+                    HoveredButton::Close => {
+                        Self::draw_hover_centerpoint(
+                            pixels,
+                            &self.hit_test_map,
+                            self.width as usize,
+                            self.height as usize,
+                            close_center_x,
+                            button_center_y,
+                            HIT_CLOSE_BUTTON,
+                            true,
+                            theme::CLOSE_HOVER,
+                            self.debug,
+                        );
+                    }
+                    HoveredButton::Maximize => {
+                        Self::draw_hover_centerpoint(
+                            pixels,
+                            &self.hit_test_map,
+                            self.width as usize,
+                            self.height as usize,
+                            maximize_center_x,
+                            button_center_y,
+                            HIT_MAXIMIZE_BUTTON,
+                            true,
+                            theme::MAXIMIZE_HOVER,
+                            self.debug,
+                        );
+                    }
+                    HoveredButton::Minimize => {
+                        Self::draw_hover_centerpoint(
+                            pixels,
+                            &self.hit_test_map,
+                            self.width as usize,
+                            self.height as usize,
+                            minimize_center_x,
+                            button_center_y,
+                            HIT_MINIMIZE_BUTTON,
+                            true,
+                            theme::MINIMIZE_HOVER,
+                            self.debug,
+                        );
+                    }
+                    HoveredButton::Textbox => {
+                        Self::draw_hover_centerpoint(
+                            pixels,
+                            &self.hit_test_map,
+                            self.width as usize,
+                            self.height as usize,
+                            center_x,
+                            textbox_y,
+                            HIT_HANDLE_TEXTBOX,
+                            true,
+                            theme::TEXTBOX_HOVER,
+                            self.debug,
+                        );
+                    }
+                    HoveredButton::QueryButton => {
+                        // Button is now inset in textbox bottom-right for all relevant states
+                        let send_size = box_height * 7 / 8;
+                        let inset = box_height / 16;
+                        let button_center_x = center_x + box_width / 2 - inset - send_size / 2;
+                        let textbox_bottom = textbox_y + box_height / 2;
+                        let query_button_center_y = textbox_bottom - inset - send_size / 2;
+                        Self::draw_hover_centerpoint(
+                            pixels,
+                            &self.hit_test_map,
+                            self.width as usize,
+                            self.height as usize,
+                            button_center_x,
+                            query_button_center_y,
+                            HIT_PRIMARY_BUTTON,
+                            true,
+                            theme::QUERY_BUTTON_HOVER,
+                            self.debug,
+                        );
+                    }
+                    HoveredButton::BackHeader => {
+                        // Reapply header hover after window redraw
+                        Self::apply_back_header_hover(
+                            pixels,
+                            &self.hit_test_map,
+                            self.width as usize,
+                            box_height * 2,
+                            true,
+                        );
+                    }
+                    HoveredButton::None => {}
                 }
             }
             if self.debug {
@@ -594,10 +1687,10 @@ impl PhotonApp {
                     self.width as usize,
                     &redraw_text,
                     counter_size,
-                    self.height as f32 - counter_size ,
+                    self.height as f32 - counter_size,
                     counter_size,
                     400,
-                    0xFFFFFFFF,
+                    theme::COUNTER_TEXT,
                     "Josefin Slab",
                 );
 
@@ -606,10 +1699,10 @@ impl PhotonApp {
                     self.width as usize,
                     &update_text,
                     self.width as f32 / 3.,
-                    self.height as f32 - counter_size ,
+                    self.height as f32 - counter_size,
                     counter_size,
                     400,
-                    0xFFFFFFFF,
+                    theme::COUNTER_TEXT,
                     "Josefin Slab",
                 );
 
@@ -619,10 +1712,10 @@ impl PhotonApp {
                     self.width as usize,
                     &frame_text,
                     self.width as f32 / 3. * 2.,
-                    self.height as f32 - counter_size ,
+                    self.height as f32 - counter_size,
                     counter_size,
                     400,
-                    0xFFFFFFFF,
+                    theme::COUNTER_TEXT,
                     "Josefin Slab",
                 );
 
@@ -632,10 +1725,10 @@ impl PhotonApp {
                     self.width as usize,
                     &fps_text,
                     self.width as f32 - counter_size,
-                    self.height as f32 - counter_size ,
+                    self.height as f32 - counter_size,
                     counter_size,
                     400,
-                    0xFFFFFFFF,
+                    theme::COUNTER_TEXT,
                     "Josefin Slab",
                 );
             }
@@ -644,263 +1737,74 @@ impl PhotonApp {
                 && !self.current_text_state.chars.is_empty()
                 || self.window_dirty && !self.current_text_state.chars.is_empty()
             {
-                let button_center_y = center_y + box_height + box_height;
+                let button_center_y = textbox_y + box_height + box_height;
                 let button_height = box_height;
 
-                match self.handle_status {
-                    HandleStatus::Empty => {
-                        // Show "Query" button with blue fill
-                        let button_width = box_width / 2;
-                        Self::draw_button(
-                            pixels,
-                            &mut self.hit_test_map,
-                            self.width as usize,
-                            self.height as usize,
-                            center_x,
-                            button_center_y,
-                            button_width,
-                            button_height,
-                            HIT_PRIMARY_BUTTON,
-                            theme::BUTTON_BLUE,
-                            theme::BUTTON_LIGHT_EDGE,
-                            theme::BUTTON_SHADOW_EDGE,
-                        );
+                match &self.app_state {
+                    AppState::Launch(launch_state) => match launch_state {
+                        LaunchState::Fresh => {
+                            // Show "Attest" button
+                            let button_width = box_width / 2;
+                            Self::draw_button(
+                                pixels,
+                                &mut self.hit_test_map,
+                                self.width as usize,
+                                self.height as usize,
+                                center_x,
+                                button_center_y,
+                                button_width,
+                                button_height,
+                                HIT_PRIMARY_BUTTON,
+                                theme::BUTTON_BLUE,
+                                theme::BUTTON_LIGHT_EDGE,
+                                theme::BUTTON_SHADOW_EDGE,
+                            );
 
-                        self.text_renderer.draw_text_center_u32(
-                            pixels,
-                            self.width as usize,
-                            "Query",
-                            center_x as f32,
-                            button_center_y as f32,
-                            font_size,
-                            500,
-                            0xFF_D0_D0_D0,
-                            theme::FONT_USER_CONTENT,
-                        );
+                            self.text_renderer.draw_text_center_u32(
+                                pixels,
+                                self.width as usize,
+                                "Attest",
+                                center_x as f32,
+                                button_center_y as f32,
+                                font_size,
+                                500,
+                                theme::BUTTON_TEXT,
+                                theme::FONT_USER_CONTENT,
+                            );
+                        }
+                        LaunchState::Attesting => {
+                            // Show "Attesting..." in message area (no button)
+                            self.text_renderer.draw_text_center_u32(
+                                pixels,
+                                self.width as usize,
+                                "Attesting...",
+                                center_x as f32,
+                                (textbox_y - box_height) as f32,
+                                font_size * 0.8,
+                                500,
+                                theme::STATUS_TEXT_ATTESTING, // Yellow text
+                                theme::FONT_USER_CONTENT,
+                            );
+                        }
+                        LaunchState::Error(ref msg) => {
+                            // Show error message above textbox (2/3 line height gap from top edge)
+                            self.text_renderer.draw_text_center_u32(
+                                pixels,
+                                self.width as usize,
+                                msg,
+                                center_x as f32,
+                                (textbox_y - box_height) as f32,
+                                font_size * 0.8,
+                                500,
+                                theme::STATUS_TEXT_ERROR,
+                                theme::FONT_USER_CONTENT,
+                            );
+                        }
+                    },
+                    AppState::Ready => {
+                        // Search button is now drawn inside textbox (above), no separate button needed
                     }
-                    HandleStatus::Checking => {
-                        // Show "Querying..." button with grey fill
-                        let button_width = box_width / 2;
-                        Self::draw_button(
-                            pixels,
-                            &mut self.hit_test_map,
-                            self.width as usize,
-                            self.height as usize,
-                            center_x,
-                            button_center_y,
-                            button_width,
-                            button_height,
-                            HIT_NONE,
-                            theme::BUTTON_BASE,
-                            theme::BUTTON_LIGHT_EDGE,
-                            theme::BUTTON_SHADOW_EDGE,
-                        );
-
-                        self.text_renderer.draw_text_center_u32(
-                            pixels,
-                            self.width as usize,
-                            "Querying...",
-                            center_x as f32,
-                            button_center_y as f32,
-                            font_size,
-                            500,
-                            0xFF_80_80_80,
-                            theme::FONT_USER_CONTENT,
-                        );
-                    }
-                    HandleStatus::Unattested => {
-                        // Show single "Attest" button with dark green fill
-                        let button_width = box_width / 2;
-                        Self::draw_button(
-                            pixels,
-                            &mut self.hit_test_map,
-                            self.width as usize,
-                            self.height as usize,
-                            center_x,
-                            button_center_y,
-                            button_width,
-                            button_height,
-                            HIT_PRIMARY_BUTTON,
-                            theme::BUTTON_GREEN,
-                            theme::BUTTON_LIGHT_EDGE,
-                            theme::BUTTON_SHADOW_EDGE,
-                        );
-
-                        self.text_renderer.draw_text_center_u32(
-                            pixels,
-                            self.width as usize,
-                            "Attest",
-                            center_x as f32,
-                            button_center_y as f32,
-                            font_size,
-                            500,
-                            0xFF_D0_D0_D0,
-                            theme::FONT_USER_CONTENT,
-                        );
-                    }
-                    HandleStatus::AlreadyAttested => {
-                        // Show single "Recover / Challenge" button with dark yellow fill
-                        let button_width = box_width / 2;
-                        Self::draw_button(
-                            pixels,
-                            &mut self.hit_test_map,
-                            self.width as usize,
-                            self.height as usize,
-                            center_x,
-                            button_center_y,
-                            button_width,
-                            button_height,
-                            HIT_PRIMARY_BUTTON,
-                            theme::BUTTON_YELLOW,
-                            theme::BUTTON_LIGHT_EDGE,
-                            theme::BUTTON_SHADOW_EDGE,
-                        );
-
-                        self.text_renderer.draw_text_center_u32(
-                            pixels,
-                            self.width as usize,
-                            "Recover / Challenge",
-                            center_x as f32,
-                            button_center_y as f32,
-                            font_size,
-                            500,
-                            0xFF_D0_D0_D0,
-                            theme::FONT_USER_CONTENT,
-                        );
-                    }
-                    HandleStatus::RecoverOrChallenge => {
-                        // Show explanation text
-                        let handle_text = self.current_text_state.chars.iter().collect::<String>();
-                        let explanation = format!("{} is already attested.", handle_text);
-
-                        let text_y = button_center_y - box_height * 2;
-                        self.text_renderer.draw_text_center_u32(
-                            pixels,
-                            self.width as usize,
-                            &explanation,
-                            center_x as f32,
-                            text_y as f32,
-                            font_size * 0.75,
-                            400,
-                            0xFF_B0_B0_B0,
-                            theme::FONT_USER_CONTENT,
-                        );
-
-                        let question_y = text_y + (box_height as f32 * 0.75) as usize;
-                        self.text_renderer.draw_text_center_u32(
-                            pixels,
-                            self.width as usize,
-                            "Are you recovering your own identity,",
-                            center_x as f32,
-                            question_y as f32,
-                            font_size * 0.75,
-                            400,
-                            0xFF_B0_B0_B0,
-                            theme::FONT_USER_CONTENT,
-                        );
-
-                        let question2_y = question_y + (box_height as f32 * 0.6) as usize;
-                        self.text_renderer.draw_text_center_u32(
-                            pixels,
-                            self.width as usize,
-                            "or challenging someone else's claim?",
-                            center_x as f32,
-                            question2_y as f32,
-                            font_size * 0.75,
-                            400,
-                            0xFF_B0_B0_B0,
-                            theme::FONT_USER_CONTENT,
-                        );
-
-                        // Draw two buttons side by side
-                        let button_width = box_width / 4;
-                        let spacing = box_width / 8;
-                        let recover_x = center_x - spacing - button_width / 2;
-                        let challenge_x = center_x + spacing + button_width / 2;
-
-                        // Left button: "Recover"
-                        Self::draw_button(
-                            pixels,
-                            &mut self.hit_test_map,
-                            self.width as usize,
-                            self.height as usize,
-                            recover_x,
-                            button_center_y,
-                            button_width,
-                            button_height,
-                            HIT_RECOVER_BUTTON,
-                            theme::BUTTON_GREEN,
-                            theme::BUTTON_LIGHT_EDGE,
-                            theme::BUTTON_SHADOW_EDGE,
-                        );
-
-                        self.text_renderer.draw_text_center_u32(
-                            pixels,
-                            self.width as usize,
-                            "Recover",
-                            recover_x as f32,
-                            button_center_y as f32,
-                            font_size * 0.85,
-                            500,
-                            0xFF_D0_D0_D0,
-                            theme::FONT_USER_CONTENT,
-                        );
-
-                        // Small subtitle under Recover button
-                        let subtitle_y = button_center_y + (box_height as f32 * 0.6) as usize;
-                        self.text_renderer.draw_text_center_u32(
-                            pixels,
-                            self.width as usize,
-                            "(I'm you)",
-                            recover_x as f32,
-                            subtitle_y as f32,
-                            font_size * 0.5,
-                            300,
-                            0xFF_80_80_80,
-                            theme::FONT_USER_CONTENT,
-                        );
-
-                        // Right button: "Challenge"
-                        Self::draw_button(
-                            pixels,
-                            &mut self.hit_test_map,
-                            self.width as usize,
-                            self.height as usize,
-                            challenge_x,
-                            button_center_y,
-                            button_width,
-                            button_height,
-                            HIT_CHALLENGE_BUTTON,
-                            theme::BUTTON_YELLOW,
-                            theme::BUTTON_LIGHT_EDGE,
-                            theme::BUTTON_SHADOW_EDGE,
-                        );
-
-                        self.text_renderer.draw_text_center_u32(
-                            pixels,
-                            self.width as usize,
-                            "Challenge",
-                            challenge_x as f32,
-                            button_center_y as f32,
-                            font_size * 0.85,
-                            500,
-                            0xFF_D0_D0_D0,
-                            theme::FONT_USER_CONTENT,
-                        );
-
-                        // Small subtitle under Challenge button
-                        self.text_renderer.draw_text_center_u32(
-                            pixels,
-                            self.width as usize,
-                            "(They stole this)",
-                            challenge_x as f32,
-                            subtitle_y as f32,
-                            font_size * 0.5,
-                            300,
-                            0xFF_80_80_80,
-                            theme::FONT_USER_CONTENT,
-                        );
-                    }
+                    _ => {}
                 }
             }
 
@@ -1514,6 +2418,264 @@ impl PhotonApp {
         }
     }
 
+    /// Draw magnifying glass icon (circle with diagonal handle)
+    pub fn draw_magnify_symbol(
+        pixels: &mut [u32],
+        width: usize,
+        cx: usize,
+        cy: usize,
+        size: usize,
+        stroke_colour: (u8, u8, u8),
+    ) {
+        // Geometry based on magnify.svg (1000x1000 viewbox):
+        // Circle center at ~(417, 417), radius 292, stroke 83
+        // Handle from (625, 625) to (875, 875)
+        // Normalize to our size parameter
+
+        let scale = size as f32 / 1000.0;
+        let stroke_width = 83.0 * scale;
+        let radius = stroke_width / 2.0;
+
+        // Circle parameters (offset from center towards top-left)
+        let circle_cx = cx as f32 - 125.0 * scale;
+        let circle_cy = cy as f32 - 125.0 * scale;
+        let circle_r = 292.0 * scale;
+
+        // Handle endpoints (45° diagonal from bottom-right of circle)
+        let handle_start_x = cx as f32 + 83.0 * scale;
+        let handle_start_y = cy as f32 + 83.0 * scale;
+        let handle_end_x = cx as f32 + 333.0 * scale;
+        let handle_end_y = cy as f32 + 333.0 * scale;
+
+        let stroke_packed = pack_argb(stroke_colour.0, stroke_colour.1, stroke_colour.2, 255);
+
+        // Bounding box
+        let half_size = (size / 2 + 2) as isize;
+        let min_x = (cx as isize - half_size) as usize;
+        let max_x = (cx as isize + half_size) as usize;
+        let min_y = (cy as isize - half_size) as usize;
+        let max_y = (cy as isize + half_size) as usize;
+
+        for py in min_y..max_y {
+            for px in min_x..max_x {
+                let px_f = px as f32 + 0.5;
+                let py_f = py as f32 + 0.5;
+
+                // Distance to circle ring (absolute distance to circle edge minus stroke radius)
+                let dx = px_f - circle_cx;
+                let dy = py_f - circle_cy;
+                let dist_to_center = (dx * dx + dy * dy).sqrt();
+                let dist_to_ring = (dist_to_center - circle_r).abs() - radius;
+
+                // Distance to handle capsule
+                let dist_to_handle = Self::distance_to_capsule(
+                    px_f,
+                    py_f,
+                    handle_start_x,
+                    handle_start_y,
+                    handle_end_x,
+                    handle_end_y,
+                    radius,
+                );
+
+                // Use minimum distance (union of shapes)
+                let dist = dist_to_ring.min(dist_to_handle);
+
+                // Antialiased rendering
+                let alpha_f = if dist < -0.5 {
+                    1.0
+                } else if dist < 0.5 {
+                    0.5 - dist
+                } else {
+                    0.0
+                };
+
+                if alpha_f > 0.0 {
+                    let idx = py * width + px;
+                    let alpha = (alpha_f * 256.0) as u64;
+                    let inv_alpha = 256 - alpha;
+
+                    let mut bg = pixels[idx] as u64;
+                    bg = (bg | (bg << 16)) & 0x0000FFFF0000FFFF;
+                    bg = (bg | (bg << 8)) & 0x00FF00FF00FF00FF;
+
+                    let mut stroke = stroke_packed as u64;
+                    stroke = (stroke | (stroke << 16)) & 0x0000FFFF0000FFFF;
+                    stroke = (stroke | (stroke << 8)) & 0x00FF00FF00FF00FF;
+
+                    let mut blended = bg * inv_alpha + stroke * alpha;
+                    blended = (blended >> 8) & 0x00FF00FF00FF00FF;
+                    blended = (blended | (blended >> 8)) & 0x0000FFFF0000FFFF;
+                    blended = blended | (blended >> 16);
+                    pixels[idx] = blended as u32;
+                }
+            }
+        }
+    }
+
+    /// Draw hourglass icon (two triangles meeting at center point)
+    /// angle_degrees: rotation angle in degrees (stochastic wobble during search)
+    pub fn draw_hourglass_symbol(
+        pixels: &mut [u32],
+        width: usize,
+        cx: usize,
+        cy: usize,
+        size: usize,
+        angle_degrees: f32,
+        stroke_colour: (u8, u8, u8),
+    ) {
+        let scale = size as f32 / 1000.0;
+        let stroke_width = 83.0 * scale;
+        let radius = stroke_width / 2.0;
+
+        let half_h = 400.0 * scale; // Half height of hourglass
+        let half_w = 300.0 * scale; // Half width at top/bottom
+
+        // Precompute rotation (inverse rotation for sample point transform)
+        let angle_rad = -angle_degrees.to_radians();
+        let cos_a = angle_rad.cos();
+        let sin_a = angle_rad.sin();
+        let cx_f = cx as f32;
+        let cy_f = cy as f32;
+
+        // Hourglass vertices in local coords (center at origin)
+        // Top triangle: apex at center, base at top
+        let top_apex = (0.0_f32, 0.0_f32);
+        let top_left = (-half_w, -half_h);
+        let top_right = (half_w, -half_h);
+        // Bottom triangle: apex at center, base at bottom
+        let bot_left = (-half_w, half_h);
+        let bot_right = (half_w, half_h);
+
+        let stroke_packed = pack_argb(stroke_colour.0, stroke_colour.1, stroke_colour.2, 255);
+
+        // Bounding box (expanded for rotation)
+        let half_size = (size / 2 + 2) as isize;
+        let min_x = (cx as isize - half_size).max(0) as usize;
+        let max_x = (cx as isize + half_size) as usize;
+        let min_y = (cy as isize - half_size).max(0) as usize;
+        let max_y = (cy as isize + half_size) as usize;
+
+        for py in min_y..max_y {
+            for px in min_x..max_x {
+                // Rotate sample point into hourglass local space (inverse rotation)
+                let dx = px as f32 + 0.5 - cx_f;
+                let dy = py as f32 + 0.5 - cy_f;
+                let lx = dx * cos_a - dy * sin_a;
+                let ly = dx * sin_a + dy * cos_a;
+
+                // Distance to each line segment of the hourglass (6 edges total)
+                // Top triangle edges
+                let d1 = Self::distance_to_capsule_local(
+                    lx,
+                    ly,
+                    top_left.0,
+                    top_left.1,
+                    top_right.0,
+                    top_right.1,
+                    radius,
+                );
+                let d2 = Self::distance_to_capsule_local(
+                    lx, ly, top_left.0, top_left.1, top_apex.0, top_apex.1, radius,
+                );
+                let d3 = Self::distance_to_capsule_local(
+                    lx,
+                    ly,
+                    top_right.0,
+                    top_right.1,
+                    top_apex.0,
+                    top_apex.1,
+                    radius,
+                );
+
+                // Bottom triangle edges
+                let d4 = Self::distance_to_capsule_local(
+                    lx,
+                    ly,
+                    bot_left.0,
+                    bot_left.1,
+                    bot_right.0,
+                    bot_right.1,
+                    radius,
+                );
+                let d5 = Self::distance_to_capsule_local(
+                    lx, ly, bot_left.0, bot_left.1, top_apex.0, top_apex.1, radius,
+                );
+                let d6 = Self::distance_to_capsule_local(
+                    lx,
+                    ly,
+                    bot_right.0,
+                    bot_right.1,
+                    top_apex.0,
+                    top_apex.1,
+                    radius,
+                );
+
+                // Minimum distance (union of all edges)
+                let dist = d1.min(d2).min(d3).min(d4).min(d5).min(d6);
+
+                // Antialiased rendering
+                let alpha_f = if dist < -0.5 {
+                    1.0
+                } else if dist < 0.5 {
+                    0.5 - dist
+                } else {
+                    0.0
+                };
+
+                if alpha_f > 0.0 {
+                    let idx = py * width + px;
+                    let alpha = (alpha_f * 256.0) as u64;
+                    let inv_alpha = 256 - alpha;
+
+                    let mut bg = pixels[idx] as u64;
+                    bg = (bg | (bg << 16)) & 0x0000FFFF0000FFFF;
+                    bg = (bg | (bg << 8)) & 0x00FF00FF00FF00FF;
+
+                    let mut stroke = stroke_packed as u64;
+                    stroke = (stroke | (stroke << 16)) & 0x0000FFFF0000FFFF;
+                    stroke = (stroke | (stroke << 8)) & 0x00FF00FF00FF00FF;
+
+                    let mut blended = bg * inv_alpha + stroke * alpha;
+                    blended = (blended >> 8) & 0x00FF00FF00FF00FF;
+                    blended = (blended | (blended >> 8)) & 0x0000FFFF0000FFFF;
+                    blended = blended | (blended >> 16);
+                    pixels[idx] = blended as u32;
+                }
+            }
+        }
+    }
+
+    // Helper: distance to capsule in local coords (no center offset needed)
+    #[inline]
+    fn distance_to_capsule_local(
+        px: f32,
+        py: f32,
+        x1: f32,
+        y1: f32,
+        x2: f32,
+        y2: f32,
+        radius: f32,
+    ) -> f32 {
+        let dx = x2 - x1;
+        let dy = y2 - y1;
+        let len_sq = dx * dx + dy * dy;
+
+        let t = if len_sq > 0.0 {
+            ((px - x1) * dx + (py - y1) * dy) / len_sq
+        } else {
+            0.0
+        };
+        let t = t.clamp(0.0, 1.0);
+
+        let closest_x = x1 + t * dx;
+        let closest_y = y1 + t * dy;
+        let dist_x = px - closest_x;
+        let dist_y = py - closest_y;
+
+        (dist_x * dist_x + dist_y * dist_y).sqrt() - radius
+    }
+
     // Helper function: distance from point to capsule (line segment with rounded ends)
     pub fn distance_to_capsule(
         px: f32,
@@ -1544,60 +2706,15 @@ impl PhotonApp {
     }
 
     // Motion triggered by network action, motion speed dependent on latency
+    // Delegates to shared drawing module
     pub fn draw_background_texture(
         pixels: &mut [u32],
         width: usize,
         height: usize,
         speckle: usize,
+        fullscreen: bool,
     ) {
-        use rayon::prelude::*;
-
-        let middle_rows = &mut pixels[width..(height - 1) * width];
-
-        middle_rows
-            .par_chunks_mut(width)
-            .enumerate()
-            .for_each(|(row_idx, row_pixels)| {
-                let mut rng: usize = (0xDEADBEEF01234567)
-                    ^ ((row_idx.wrapping_sub(height / 2)).wrapping_mul(0x9E3779B94517B397));
-                let mask = 0xFF0F071F; // ARGB
-                let alpha = 0xFF000000;
-                let ones = 0x00010101;
-                let base = 0xFF0C140E;
-                let mut colour = rng as u32 & mask | alpha;
-
-                // Right half: left-to-right
-                for x in width / 2..width - 1 {
-                    rng ^= rng.rotate_left(13).wrapping_add(12345678901);
-                    let adder = rng as u32 & ones;
-                    if rng + speckle < usize::MAX / 256 {
-                        colour = rng as u32 >> 8 & 0x00_3F_1F_7F | alpha;
-                    } else {
-                        colour = colour + adder & mask;
-                        let subtractor = (rng >> 5) as u32 & ones;
-                        colour = colour - subtractor & mask;
-                    }
-                    row_pixels[x] = colour + base | alpha;
-                }
-
-                // Left half: right-to-left (mirror)
-                rng = 0xDEADBEEF01234567
-                    ^ ((row_idx.wrapping_sub(height / 2)).wrapping_mul(0x9E3779B94517B397));
-                colour = rng as u32 & mask | alpha;
-
-                for x in (1..width / 2).rev() {
-                    rng ^= rng.rotate_left(13).wrapping_sub(12345678901);
-                    let adder = rng as u32 & ones;
-                    if rng + speckle < usize::MAX / 256 {
-                        colour = rng as u32 >> 8 & 0x00_3F_1F_7F | alpha;
-                    } else {
-                        colour = colour + adder & mask;
-                        let subtractor = (rng >> 5) as u32 & ones;
-                        colour = colour - subtractor & mask;
-                    }
-                    row_pixels[x] = colour + base | alpha;
-                }
-            });
+        super::drawing::draw_background_texture(pixels, width, height, speckle, fullscreen);
     }
 
     /// Draw window edge hairlines and apply squircle alpha mask
@@ -1849,36 +2966,24 @@ impl PhotonApp {
         hover: bool,
         button_type: HoveredButton,
     ) {
-        // Get the hover deltas for this button type
+        // Get the hover deltas for this button type (packed u32, already platform-adjusted via fmt())
         let hover_delta = match button_type {
             HoveredButton::Close => theme::CLOSE_HOVER,
             HoveredButton::Maximize => theme::MAXIMIZE_HOVER,
             HoveredButton::Minimize => theme::MINIMIZE_HOVER,
             HoveredButton::Textbox => theme::TEXTBOX_HOVER,
             HoveredButton::QueryButton => theme::QUERY_BUTTON_HOVER,
-            HoveredButton::None => [0, 0, 0, 0],
+            HoveredButton::BackHeader => theme::BACK_HEADER_HOVER,
+            HoveredButton::None => 0,
         };
 
-        // Apply deltas (positive for hover, negative for unhover)
-        let sign = if hover { 1 } else { -1 };
-        let r_delta = hover_delta[0] * sign;
-        let g_delta = hover_delta[1] * sign;
-        let b_delta = hover_delta[2] * sign;
-
-        // Iterate only over the cached pixels for this button
+        // Add/sub directly on packed u32 (deltas chosen to never overflow)
         for &hit_idx in pixel_list {
-            if hit_idx < pixels.len() {
-                // Unpack u32 pixel (ARGB format)
-                let (r, g, b, a) = unpack_argb(pixels[hit_idx]);
-
-                // Apply deltas with wrapping
-                let new_r = r.wrapping_add(r_delta as u8);
-                let new_g = g.wrapping_add(g_delta as u8);
-                let new_b = b.wrapping_add(b_delta as u8);
-
-                // Pack back to u32
-                pixels[hit_idx] = pack_argb(new_r, new_g, new_b, a);
-            }
+            pixels[hit_idx] = if hover {
+                pixels[hit_idx].wrapping_add(hover_delta)
+            } else {
+                pixels[hit_idx].wrapping_sub(hover_delta)
+            };
         }
     }
 
@@ -1893,23 +2998,15 @@ impl PhotonApp {
         center_y: usize,
         hit_id: u8,
         hover: bool,
-        hover_delta: [i8; 4],
+        hover_delta: u32,
         debug: bool,
     ) {
         // Debug: draw magenta pixel at centerpoint
         // Use alpha=254 so we can distinguish it from actual magenta UI elements
         if debug {
             let debug_idx = center_y * window_width + center_x;
-            if debug_idx < pixels.len() {
-                pixels[debug_idx] = 0xFE_FF_00_FF; // Magenta with alpha=254
-            }
+            pixels[debug_idx] = 0xFE_FF_00_FF; // Magenta with alpha=254
         }
-
-        // Apply deltas (positive for hover, negative for unhover)
-        let sign = if hover { 1 } else { -1 };
-        let r_delta = hover_delta[0] * sign;
-        let g_delta = hover_delta[1] * sign;
-        let b_delta = hover_delta[2] * sign;
 
         // 1. Find vertical extent by scanning up/down from center
         let mut top_y = center_y;
@@ -1964,22 +3061,45 @@ impl PhotonApp {
             // Apply hover effect to this row
             for x in left_x..=right_x {
                 let idx = row_start + x;
-                if idx < pixels.len() && hit_test_map[idx] == hit_id {
-                    // Skip debug pixels (magenta with alpha=254)
-                    if pixels[idx] == 0xFE_FF_00_FF {
-                        continue;
+                if hit_test_map[idx] == hit_id {
+                    if debug {
+                        if pixels[idx] == 0xFE_FF_00_FF {
+                            continue;
+                        }
                     }
 
-                    // Unpack u32 pixel (ARGB format)
-                    let (r, g, b, a) = unpack_argb(pixels[idx]);
+                    // Add/sub directly on packed u32 (deltas have 0xFF alpha to absorb RGB carry)
+                    pixels[idx] = if hover {
+                        pixels[idx].wrapping_add(hover_delta)
+                    } else {
+                        pixels[idx].wrapping_sub(hover_delta)
+                    };
+                }
+            }
+        }
+    }
 
-                    // Apply deltas with wrapping
-                    let new_r = r.wrapping_add(r_delta as u8);
-                    let new_g = g.wrapping_add(g_delta as u8);
-                    let new_b = b.wrapping_add(b_delta as u8);
+    /// Apply hover effect to conversation back header
+    /// Adds/subtracts brightness to header area
+    pub fn apply_back_header_hover(
+        pixels: &mut [u32],
+        hit_test_map: &[u8],
+        width: usize,
+        header_height: usize,
+        hover: bool,
+    ) {
+        // Add/sub directly on packed u32 (delta chosen to never overflow)
+        let delta = theme::BACK_HEADER_HOVER;
 
-                    // Pack back to u32
-                    pixels[idx] = pack_argb(new_r, new_g, new_b, a);
+        for y in 0..header_height {
+            for x in 0..width {
+                let idx = y * width + x;
+                if hit_test_map[idx] == HIT_BACK_HEADER {
+                    pixels[idx] = if hover {
+                        pixels[idx].wrapping_add(delta)
+                    } else {
+                        pixels[idx].wrapping_sub(delta)
+                    };
                 }
             }
         }
@@ -2376,6 +3496,7 @@ impl PhotonApp {
     }
 
     /// Generate textbox glow mask by blurring textbox_mask left/right and knocking out center
+    /// glow_colour is 0x00RRGGBB format (no alpha), or 0x00010101 for white/gray
     pub fn apply_textbox_glow(
         pixels: &mut [u32],
         textbox_mask: &[u8],
@@ -2384,6 +3505,7 @@ impl PhotonApp {
         box_width: usize,
         box_height: usize,
         add: bool,
+        glow_colour: u32,
     ) {
         // Blur radii (how far to blur in each direction)
         let blur_radius_horiz = 32;
@@ -2438,13 +3560,19 @@ impl PhotonApp {
                         adder += (textbox_mask[idx - 1] - textbox_mask[idx]) as u32;
                     }
                     adder = (adder * 15 >> 4).min(71);
-                    pixels[idx] += ((adder * (255 - textbox_mask[idx]) as u32) >> 8) * 0x00010101;
+                    let intensity = (adder * (255 - textbox_mask[idx]) as u32) >> 8;
+                    let r = ((glow_colour >> 16) & 0xFF) * intensity >> 8;
+                    let g = ((glow_colour >> 8) & 0xFF) * intensity >> 8;
+                    let b = (glow_colour & 0xFF) * intensity >> 8;
+                    pixels[idx] += (r << 16) | (g << 8) | b;
                 }
             }
 
             // Horizontal blur pass - left from left edge (with diagonal corner fill)
             for y in y_top..y_bottom {
                 adder = 0;
+                // PROOF saturating_sub: blur_radius_horiz could exceed x_left
+                // Prevents underflow when blurring near left edge, saturating at 0
                 for x in (x_left.saturating_sub(blur_radius_horiz)
                     ..=x_left
                         + (y_horiz_start as isize - y as isize).max(0) as usize
@@ -2456,7 +3584,11 @@ impl PhotonApp {
                         adder += (textbox_mask[idx + 1] - textbox_mask[idx]) as u32;
                     }
                     adder = (adder * 15 >> 4).min(71);
-                    pixels[idx] += ((adder * (255 - textbox_mask[idx]) as u32) >> 8) * 0x00010101;
+                    let intensity = (adder * (255 - textbox_mask[idx]) as u32) >> 8;
+                    let r = ((glow_colour >> 16) & 0xFF) * intensity >> 8;
+                    let g = ((glow_colour >> 8) & 0xFF) * intensity >> 8;
+                    let b = (glow_colour & 0xFF) * intensity >> 8;
+                    pixels[idx] += (r << 16) | (g << 8) | b;
                 }
             }
 
@@ -2476,13 +3608,19 @@ impl PhotonApp {
                         }
                     }
                     adder = (adder * 3 >> 2).min(70);
-                    pixels[idx] += ((adder * (255 - textbox_mask[idx]) as u32) >> 8) * 0x00010101;
+                    let intensity = (adder * (255 - textbox_mask[idx]) as u32) >> 8;
+                    let r = ((glow_colour >> 16) & 0xFF) * intensity >> 8;
+                    let g = ((glow_colour >> 8) & 0xFF) * intensity >> 8;
+                    let b = (glow_colour & 0xFF) * intensity >> 8;
+                    pixels[idx] += (r << 16) | (g << 8) | b;
                 }
             }
 
             // Vertical blur pass - up from top edge (with diagonal corner fill)
             for x in x_left..x_right {
                 adder = 0;
+                // PROOF saturating_sub: blur_radius_vert could exceed y_top
+                // Prevents underflow when blurring near top edge, saturating at 0
                 for y in (y_top.saturating_sub(blur_radius_vert)
                     ..=y_top
                         + (x_vert_start as isize - x as isize).max(0) as usize
@@ -2497,7 +3635,11 @@ impl PhotonApp {
                         }
                     }
                     adder = (adder * 3 >> 2).min(70);
-                    pixels[idx] += ((adder * (255 - textbox_mask[idx]) as u32) >> 8) * 0x00010101;
+                    let intensity = (adder * (255 - textbox_mask[idx]) as u32) >> 8;
+                    let r = ((glow_colour >> 16) & 0xFF) * intensity >> 8;
+                    let g = ((glow_colour >> 8) & 0xFF) * intensity >> 8;
+                    let b = (glow_colour & 0xFF) * intensity >> 8;
+                    pixels[idx] += (r << 16) | (g << 8) | b;
                 }
             }
         } else {
@@ -2514,13 +3656,19 @@ impl PhotonApp {
                         adder += (textbox_mask[idx - 1] - textbox_mask[idx]) as u32;
                     }
                     adder = (adder * 15 >> 4).min(71);
-                    pixels[idx] -= ((adder * (255 - textbox_mask[idx]) as u32) >> 8) * 0x00010101;
+                    let intensity = (adder * (255 - textbox_mask[idx]) as u32) >> 8;
+                    let r = ((glow_colour >> 16) & 0xFF) * intensity >> 8;
+                    let g = ((glow_colour >> 8) & 0xFF) * intensity >> 8;
+                    let b = (glow_colour & 0xFF) * intensity >> 8;
+                    pixels[idx] -= (r << 16) | (g << 8) | b;
                 }
             }
 
             // Horizontal blur pass - left from left edge (with diagonal corner fill)
             for y in y_top..y_bottom {
                 adder = 0;
+                // PROOF saturating_sub: blur_radius_horiz could exceed x_left
+                // Prevents underflow when blurring near left edge, saturating at 0
                 for x in (x_left.saturating_sub(blur_radius_horiz)
                     ..=x_left
                         + (y_horiz_start as isize - y as isize).max(0) as usize
@@ -2532,7 +3680,11 @@ impl PhotonApp {
                         adder += (textbox_mask[idx + 1] - textbox_mask[idx]) as u32;
                     }
                     adder = (adder * 15 >> 4).min(71);
-                    pixels[idx] -= ((adder * (255 - textbox_mask[idx]) as u32) >> 8) * 0x00010101;
+                    let intensity = (adder * (255 - textbox_mask[idx]) as u32) >> 8;
+                    let r = ((glow_colour >> 16) & 0xFF) * intensity >> 8;
+                    let g = ((glow_colour >> 8) & 0xFF) * intensity >> 8;
+                    let b = (glow_colour & 0xFF) * intensity >> 8;
+                    pixels[idx] -= (r << 16) | (g << 8) | b;
                 }
             }
 
@@ -2552,13 +3704,19 @@ impl PhotonApp {
                         }
                     }
                     adder = (adder * 3 >> 2).min(70);
-                    pixels[idx] -= ((adder * (255 - textbox_mask[idx]) as u32) >> 8) * 0x00010101;
+                    let intensity = (adder * (255 - textbox_mask[idx]) as u32) >> 8;
+                    let r = ((glow_colour >> 16) & 0xFF) * intensity >> 8;
+                    let g = ((glow_colour >> 8) & 0xFF) * intensity >> 8;
+                    let b = (glow_colour & 0xFF) * intensity >> 8;
+                    pixels[idx] -= (r << 16) | (g << 8) | b;
                 }
             }
 
             // Vertical blur pass - up from top edge (with diagonal corner fill)
             for x in x_left..x_right {
                 adder = 0;
+                // PROOF saturating_sub: blur_radius_vert could exceed y_top
+                // Prevents underflow when blurring near top edge, saturating at 0
                 for y in (y_top.saturating_sub(blur_radius_vert)
                     ..=y_top
                         + (x_vert_start as isize - x as isize).max(0) as usize
@@ -2573,7 +3731,11 @@ impl PhotonApp {
                         }
                     }
                     adder = (adder * 3 >> 2).min(70);
-                    pixels[idx] -= ((adder * (255 - textbox_mask[idx]) as u32) >> 8) * 0x00010101;
+                    let intensity = (adder * (255 - textbox_mask[idx]) as u32) >> 8;
+                    let r = ((glow_colour >> 16) & 0xFF) * intensity >> 8;
+                    let g = ((glow_colour >> 8) & 0xFF) * intensity >> 8;
+                    let b = (glow_colour & 0xFF) * intensity >> 8;
+                    pixels[idx] -= (r << 16) | (g << 8) | b;
                 }
             }
         }
@@ -2890,6 +4052,8 @@ impl PhotonApp {
 
         // Position horizontally centered, vertically at specified position
         let x_start: usize = (window_width - logo_width) / 2;
+        // PROOF saturating_sub: logo_height could exceed vertical_center_px
+        // Prevents underflow when logo is taller than vertical position, saturating at 0
         let y_offset = vertical_center_px.saturating_sub(logo_height);
 
         // Draw horizontal spectrum rainbow
@@ -2960,8 +4124,8 @@ impl PhotonApp {
         let text_size = smaller_dim / 8. * 1.18;
 
         // Virtual buffer region (only process where text lives with glow padding)
-        let text_height_estimate = (text_size * 1.5) as usize; // Text + glow padding
-        let start = (text_y as usize).saturating_sub(text_height_estimate);
+        let text_height_estimate = (text_size * 1.5) as usize;
+        let start = text_y as usize - text_height_estimate;
         let stop = (text_y as usize + text_height_estimate).min(window_height);
         let virtual_height = stop - start;
         let buffer_size = window_width * virtual_height;
@@ -3130,20 +4294,462 @@ impl PhotonApp {
             );
         }
     }
+
+    /// Draw an anti-aliased filled circle blending toward black
+    /// Used as the base layer for the connectivity indicator
+    fn draw_black_circle(pixels: &mut [u32], width: usize, cx: usize, cy: usize, radius: usize) {
+        let r_outer = radius as isize;
+        let r_outer2 = r_outer * r_outer;
+        let r_inner = (radius - 1) as isize;
+        let r_inner2 = r_inner * r_inner;
+        let edge_range = r_outer2 - r_inner2; // Width of the AA edge band
+
+        for dy in -r_outer..=r_outer {
+            let y = cy as isize + dy;
+            if y < 0 || y >= (pixels.len() / width) as isize {
+                continue;
+            }
+            let dy2 = dy * dy;
+
+            for dx in -r_outer..=r_outer {
+                let dist2 = dx * dx + dy2;
+                if dist2 > r_outer2 {
+                    continue;
+                }
+
+                let x = (cx as isize + dx) as usize;
+
+                let idx = y as usize * width + x;
+                // Calculate alpha: 255 inside (full darken), 0 at edge (no darken)
+                let inv_alpha = if dist2 <= r_inner2 {
+                    0
+                } else {
+                    // Linear gradient from inner edge (0) to outer edge (255)
+                    (((dist2 - r_inner2) << 8) / edge_range) as u32
+                };
+
+                let mut pixel = pixels[idx] as u64;
+                pixel = (pixel | (pixel << 16)) & 0x0000FFFF0000FFFF;
+                pixel = (pixel | (pixel << 8)) & 0x00FF00FF00FF00FF;
+                pixel *= inv_alpha as u64; // Multiply by inv_alpha, not alpha
+                pixel = (pixel >> 8) & 0x00FF00FF00FF00FF;
+                pixel = (pixel | (pixel >> 8)) & 0x0000FFFF0000FFFF;
+                pixel = pixel | (pixel >> 16);
+                pixels[idx] = (pixel as u32) | 0xFF000000;
+            }
+        }
+    }
+
+    /// Add or subtract colour from an anti-aliased circle region
+    /// Used for the green overlay on the connectivity indicator
+    fn draw_filled_circle(
+        pixels: &mut [u32],
+        width: usize,
+        cx: usize,
+        cy: usize,
+        radius: usize,
+        colour: u32,
+        add: bool,
+    ) {
+        let r_outer = radius as isize;
+        let r_outer2 = r_outer * r_outer;
+        let r_inner = (radius - 1) as isize;
+        let r_inner2 = r_inner * r_inner;
+        let edge_range = r_outer2 - r_inner2;
+
+        // Widen the color once
+        let mut colour_wide = colour as u64;
+        colour_wide = (colour_wide | (colour_wide << 16)) & 0x0000FFFF0000FFFF;
+        colour_wide = (colour_wide | (colour_wide << 8)) & 0x00FF00FF00FF00FF;
+
+        for dy in -r_outer..=r_outer {
+            let y = cy as isize + dy;
+            if y < 0 || y >= (pixels.len() / width) as isize {
+                continue;
+            }
+            let dy2 = dy * dy;
+
+            for dx in -r_outer..=r_outer {
+                let dist2 = dx * dx + dy2;
+                if dist2 > r_outer2 {
+                    continue;
+                }
+                let x = cx as isize + dx;
+                if x < 0 || x >= width as isize {
+                    continue;
+                }
+                let idx = y as usize * width + x as usize;
+                // Calculate alpha: 255 inside, 0 at edge
+                let alpha = if dist2 <= r_inner2 {
+                    255
+                } else {
+                    (((r_outer2 - dist2) << 8) / edge_range) as u32
+                };
+
+                // Scale the color by alpha
+                let mut scaled_colour = colour_wide * alpha as u64;
+                scaled_colour = (scaled_colour >> 8) & 0x00FF00FF00FF00FF;
+
+                // Narrow back to u32
+                scaled_colour = (scaled_colour | (scaled_colour >> 8)) & 0x0000FFFF0000FFFF;
+                scaled_colour = scaled_colour | (scaled_colour >> 16);
+                let scaled_colour_u32 = scaled_colour as u32;
+
+                // Add or subtract directly on u32
+                pixels[idx] = if add {
+                    pixels[idx].wrapping_add(scaled_colour_u32)
+                } else {
+                    pixels[idx].wrapping_sub(scaled_colour_u32)
+                };
+            }
+        }
+    }
+
+    /// Add or subtract a single-pixel hairline circle (anti-aliased ring)
+    /// Used for the grey outline on offline indicators
+    /// Draws at the outer edge of the circle (same edge as draw_indicator_base AA zone)
+    fn draw_indicator_hairline(
+        pixels: &mut [u32],
+        width: usize,
+        cx: usize,
+        cy: usize,
+        radius: usize,
+        colour: u32,
+        add: bool,
+    ) {
+        let r_outer = radius as isize;
+        let r_outer2 = r_outer * r_outer;
+        let r_inner = (radius - 2) as isize;
+        let r_inner2 = r_inner * r_inner;
+        let edge_range = r_outer2 - r_inner2;
+
+        // Widen the color once
+        let mut colour_wide = colour as u64;
+        colour_wide = (colour_wide | (colour_wide << 16)) & 0x0000FFFF0000FFFF;
+        colour_wide = (colour_wide | (colour_wide << 8)) & 0x00FF00FF00FF00FF;
+
+        for dy in -r_outer..=r_outer {
+            let y = cy as isize + dy;
+            if y < 0 || y >= (pixels.len() / width) as isize {
+                continue;
+            }
+            let dy2 = dy * dy;
+
+            for dx in -r_outer..=r_outer {
+                let dist2 = dx * dx + dy2;
+                if dist2 > r_outer2 {
+                    continue;
+                }
+                let x = cx as isize + dx;
+                if x < 0 || x >= width as isize {
+                    continue;
+                }
+                let idx = y as usize * width + x as usize;
+                // Calculate alpha: 255 inside, 0 at edge
+                let alpha = if dist2 <= r_inner2 {
+                    continue;
+                } else {
+                    ((r_outer2 - dist2).min(dist2 - r_inner2) << 9) / edge_range
+                };
+
+                // Scale the color by alpha
+                let mut scaled_colour = colour_wide * alpha as u64;
+                scaled_colour = (scaled_colour >> 8) & 0x00FF00FF00FF00FF;
+
+                // Narrow back to u32
+                scaled_colour = (scaled_colour | (scaled_colour >> 8)) & 0x0000FFFF0000FFFF;
+                scaled_colour = scaled_colour | (scaled_colour >> 16);
+                let scaled_colour_u32 = scaled_colour as u32;
+
+                // Add or subtract directly on u32
+                pixels[idx] = if add {
+                    pixels[idx].wrapping_add(scaled_colour_u32)
+                } else {
+                    pixels[idx].wrapping_sub(scaled_colour_u32)
+                };
+            }
+        }
+    }
+
+    /// Update cached scaled avatar if diameter changed
+    pub fn update_avatar_scaled(&mut self, diameter: usize) {
+        // Skip if no avatar or already at correct size
+        if self.avatar_pixels.is_none() {
+            return;
+        }
+        if self.avatar_scaled.is_some() && self.avatar_scaled_diameter == diameter {
+            return;
+        }
+
+        let src = self.avatar_pixels.as_ref().unwrap();
+        let src_size = crate::avatar::AVATAR_SIZE;
+
+        // Use resize crate with Mitchell filter on RGB8 data
+        use resize::Pixel::RGB8;
+        use resize::Type::Mitchell;
+
+        let mut resizer = resize::new(src_size, src_size, diameter, diameter, RGB8, Mitchell)
+            .expect("Failed to create resizer");
+
+        let mut dst = vec![0u8; diameter * diameter * 3];
+
+        // Convert slices to rgb::RGB<u8> slices
+        let src_rgb: &[rgb::RGB8] = unsafe {
+            std::slice::from_raw_parts(src.as_ptr() as *const rgb::RGB8, src_size * src_size)
+        };
+        let dst_rgb: &mut [rgb::RGB8] = unsafe {
+            std::slice::from_raw_parts_mut(dst.as_mut_ptr() as *mut rgb::RGB8, diameter * diameter)
+        };
+
+        resizer.resize(src_rgb, dst_rgb).expect("Resize failed");
+
+        self.avatar_scaled = Some(dst);
+        self.avatar_scaled_diameter = diameter;
+    }
+
+    /// Draw user avatar circle at top center of Ready screen
+    /// avatar_scaled: Pre-scaled RGB data at diameter×diameter resolution
+    pub fn draw_avatar(
+        pixels: &mut [u32],
+        hit_test_map: &mut [u8],
+        width: usize,
+        cx: usize,
+        cy: usize,
+        radius: usize,
+        avatar_scaled: Option<&[u8]>,
+        brighten: bool,
+    ) {
+        let r_outer = radius as isize;
+        let diameter = radius * 2;
+
+        // Clip circle: 2px smaller to trim edge artifacts
+        let r_clip = r_outer - 2;
+        let r_clip2 = r_clip * r_clip;
+        let r_inner2 = (r_clip - 1) * (r_clip - 1);
+        let diff = r_clip2 - r_inner2; // ≈ 2*r_clip - 1
+
+        for dy in -r_outer..r_outer {
+            let y = cy as isize + dy;
+            if y < 0 || y >= (pixels.len() / width) as isize {
+                continue;
+            }
+            let dy2 = dy * dy;
+
+            for dx in -r_outer..r_outer {
+                let x = (cx as isize + dx) as usize;
+                let idx = y as usize * width + x;
+
+                let dist2 = dx * dx + dy2;
+
+                // AA circle mask
+                let alpha = if dist2 <= r_inner2 {
+                    255
+                } else if dist2 < r_clip2 {
+                    (((r_clip2 - dist2) << 8) / diff) as u32
+                } else {
+                    0
+                };
+
+                if alpha == 0 {
+                    continue;
+                }
+
+                // Fill hit test map
+                hit_test_map[idx] = HIT_AVATAR;
+
+                // Draw avatar pixel if available, otherwise black
+                if let Some(avatar_data) = avatar_scaled {
+                    // 1:1 blit from pre-scaled buffer
+                    let tex_x = (dx + r_outer) as usize;
+                    let tex_y = (dy + r_outer) as usize;
+                    let tex_idx = (tex_y * diameter + tex_x) * 3;
+
+                    let mut r = avatar_data[tex_idx] as u32;
+                    let mut g = avatar_data[tex_idx + 1] as u32;
+                    let mut b = avatar_data[tex_idx + 2] as u32;
+
+                    // Brighten when file is hovering
+                    if brighten {
+                        r = (r * 3 / 2).min(255);
+                        g = (g * 3 / 2).min(255);
+                        b = (b * 3 / 2).min(255);
+                    }
+
+                    if alpha == 255 {
+                        pixels[idx] = 0xFF000000 | (r << 16) | (g << 8) | b;
+                    } else {
+                        // Blend with background
+                        let bg = pixels[idx];
+                        let inv_alpha = 255 - alpha;
+                        let bg_r = (bg >> 16) & 0xFF;
+                        let bg_g = (bg >> 8) & 0xFF;
+                        let bg_b = bg & 0xFF;
+                        let out_r = (r * alpha + bg_r * inv_alpha) >> 8;
+                        let out_g = (g * alpha + bg_g * inv_alpha) >> 8;
+                        let out_b = (b * alpha + bg_b * inv_alpha) >> 8;
+                        pixels[idx] = 0xFF000000 | (out_r << 16) | (out_g << 8) | out_b;
+                    }
+                } else {
+                    // No avatar loaded - draw black circle (brighten to dark grey when hovering)
+                    let fill = if brighten { 0x40u32 } else { 0u32 };
+                    if alpha == 255 {
+                        pixels[idx] = 0xFF000000 | (fill << 16) | (fill << 8) | fill;
+                    } else {
+                        let bg = pixels[idx];
+                        let inv_alpha = 255 - alpha;
+                        let bg_r = (bg >> 16) & 0xFF;
+                        let bg_g = (bg >> 8) & 0xFF;
+                        let bg_b = bg & 0xFF;
+                        let out_r = (fill * alpha + bg_r * inv_alpha) >> 8;
+                        let out_g = (fill * alpha + bg_g * inv_alpha) >> 8;
+                        let out_b = (fill * alpha + bg_b * inv_alpha) >> 8;
+                        pixels[idx] = 0xFF000000 | (out_r << 16) | (out_g << 8) | out_b;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Draw contact avatar with online/offline ring indicator
+    /// Similar to draw_avatar but without hit testing, with status ring
+    pub fn draw_contact_avatar(
+        pixels: &mut [u32],
+        width: usize,
+        cx: usize,
+        cy: usize,
+        radius: usize,
+        avatar_scaled: Option<&[u8]>,
+        is_online: bool,
+    ) {
+        // Avatar occupies the given radius
+        let r_avatar = radius as isize;
+        let r_avatar2 = r_avatar * r_avatar;
+        let r_avatar_inner = r_avatar - 1;
+        let r_avatar_inner2 = r_avatar_inner * r_avatar_inner;
+        let avatar_edge_range = r_avatar2 - r_avatar_inner2;
+        let diameter = radius * 2;
+
+        // Ring extends beyond avatar by 1/8
+        let r_outer = radius + radius / 16 + 1;
+        let r_outer_i = r_outer as isize;
+        let r_outer2 = r_outer_i * r_outer_i;
+        let r_inner = r_outer_i - 1;
+        let r_inner2 = r_inner * r_inner;
+        let ring_edge_range = r_outer2 - r_inner2;
+
+        let ring_colour = if is_online {
+            theme::CONTACT_ONLINE
+        } else {
+            theme::CONTACT_OFFLINE
+        };
+
+        for dy in -(r_outer_i)..=r_outer_i {
+            let y = cy as isize + dy;
+            let dy2 = dy * dy;
+
+            for dx in -(r_outer_i)..=r_outer_i {
+                let dist2 = dx * dx + dy2;
+                if dist2 > r_outer2 {
+                    continue;
+                }
+
+                let x = cx as isize + dx;
+                let idx = y as usize * width + x as usize;
+
+                // Get avatar colour (or fallback) - needed for blending in transition zone
+                let avatar_colour = if let Some(avatar_data) = avatar_scaled {
+                    let tex_x = (dx + r_avatar) as usize;
+                    let tex_y = (dy + r_avatar) as usize;
+                    if tex_x < diameter && tex_y < diameter {
+                        let tex_idx = (tex_y * diameter + tex_x) * 3;
+                        let av_r = avatar_data[tex_idx] as u32;
+                        let av_g = avatar_data[tex_idx + 1] as u32;
+                        let av_b = avatar_data[tex_idx + 2] as u32;
+                        (av_r << 16) | (av_g << 8) | av_b
+                    } else {
+                        0x202020
+                    }
+                } else {
+                    0x202020
+                };
+
+                // Determine what we're drawing and at what alpha
+                let (src_colour, alpha) = if dist2 <= r_avatar_inner2 {
+                    // Solid avatar zone - no blending needed
+                    (avatar_colour, 255u32)
+                } else if dist2 <= r_avatar2 {
+                    // Avatar-to-ring transition: blend avatar with ring
+                    let avatar_alpha = if avatar_edge_range > 0 {
+                        (((r_avatar2 - dist2) << 8) / avatar_edge_range) as u32
+                    } else {
+                        255
+                    };
+                    // Pre-blend avatar over ring, output as solid
+                    let blended = blend_rgb_only(
+                        ring_colour,
+                        avatar_colour,
+                        (255 - avatar_alpha) as u8,
+                        avatar_alpha as u8,
+                    );
+                    (blended & 0x00FFFFFF, 255u32)
+                } else if dist2 <= r_inner2 {
+                    // Solid ring zone
+                    (ring_colour, 255u32)
+                } else {
+                    // Ring-to-background transition: AA against background
+                    let ring_alpha = if ring_edge_range > 0 {
+                        (((r_outer2 - dist2) << 8) / ring_edge_range) as u32
+                    } else {
+                        255
+                    };
+                    (ring_colour, ring_alpha)
+                };
+
+                // Blend with background (only matters for ring outer edge)
+                if alpha == 255 {
+                    pixels[idx] = 0xFF000000 | src_colour;
+                } else {
+                    let bg = pixels[idx];
+                    let inv_alpha = (255 - alpha) as u8;
+                    pixels[idx] = blend_rgb_only(bg, src_colour, inv_alpha, alpha as u8);
+                }
+            }
+        }
+    }
 }
 
-// Helper functions for u32 packed pixel manipulation (ARGB format: 0xAARRGGBB)
+// Helper functions for u32 packed pixel manipulation
+// Desktop: ARGB format (0xAARRGGBB)
+// Android: ABGR format (0xAABBGGRR)
 #[inline]
+#[cfg(not(target_os = "android"))]
 fn pack_argb(r: u8, g: u8, b: u8, a: u8) -> u32 {
     ((a as u32) << 24) | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
 }
 
 #[inline]
+#[cfg(target_os = "android")]
+fn pack_argb(r: u8, g: u8, b: u8, a: u8) -> u32 {
+    ((a as u32) << 24) | ((b as u32) << 16) | ((g as u32) << 8) | (r as u32)
+}
+
+#[inline]
+#[cfg(not(target_os = "android"))]
 fn unpack_argb(pixel: u32) -> (u8, u8, u8, u8) {
     let a = (pixel >> 24) as u8;
     let r = (pixel >> 16) as u8;
     let g = (pixel >> 8) as u8;
     let b = pixel as u8;
+    (r, g, b, a)
+}
+
+#[inline]
+#[cfg(target_os = "android")]
+fn unpack_argb(pixel: u32) -> (u8, u8, u8, u8) {
+    let a = (pixel >> 24) as u8;
+    let b = (pixel >> 16) as u8;
+    let g = (pixel >> 8) as u8;
+    let r = pixel as u8;
     (r, g, b, a)
 }
 
