@@ -1,7 +1,7 @@
 //! Contact persistence with encrypted VSF storage.
 //!
 //! Storage layout:
-//! - ~/.config/photon/contacts/index.enc - contact list (identity data)
+//! - ~/.config/photon/contacts/index.vsf - contact list (identity data)
 //! - ~/.config/photon/contacts/{identity_seed_hex}/state.vsf - mutable state
 //! - ~/.config/photon/contacts/{identity_seed_hex}/{provenance}.vsf - messages
 //! - ~/.config/photon/contacts/{identity_seed_hex}/avatar.vsf - avatar
@@ -164,8 +164,9 @@ fn derive_state_key(
     *hasher.finalize().as_bytes()
 }
 
-/// Encrypt VSF bytes with ChaCha20-Poly1305
-fn encrypt_data(data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, StorageError> {
+/// Encrypt VSF section bytes with ChaCha20-Poly1305, wrapped in proper VSF file
+/// Output format: VSF file with encrypted_data section containing ve{nonce + ciphertext}
+fn encrypt_data(data: &[u8], key: &[u8; 32], section_name: &str) -> Result<Vec<u8>, StorageError> {
     let cipher = ChaCha20Poly1305::new_from_slice(key)
         .map_err(|e| StorageError::Encryption(e.to_string()))?;
 
@@ -177,15 +178,79 @@ fn encrypt_data(data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, StorageError> {
         .encrypt(&nonce, data)
         .map_err(|e| StorageError::Encryption(e.to_string()))?;
 
-    // Format: [12-byte nonce][ciphertext with 16-byte auth tag]
-    let mut result = Vec::with_capacity(12 + ciphertext.len());
-    result.extend_from_slice(&nonce_bytes);
-    result.extend_from_slice(&ciphertext);
-    Ok(result)
+    // Combine nonce + ciphertext for the encrypted payload
+    let mut encrypted_payload = Vec::with_capacity(12 + ciphertext.len());
+    encrypted_payload.extend_from_slice(&nonce_bytes);
+    encrypted_payload.extend_from_slice(&ciphertext);
+
+    // Wrap in proper VSF file with header, timestamp, hashes (hp + hb)
+    let vsf_bytes = vsf::VsfBuilder::new()
+        .add_section(section_name, vec![
+            ("data".to_string(), VsfType::v(b'e', encrypted_payload)),
+        ])
+        .build()
+        .map_err(|e| StorageError::Encryption(format!("VSF build: {}", e)))?;
+
+    Ok(vsf_bytes)
 }
 
-/// Decrypt data
-fn decrypt_data(encrypted: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, StorageError> {
+/// Decrypt data from VSF-wrapped encrypted file
+fn decrypt_data(vsf_bytes: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, StorageError> {
+    // Check for legacy format (raw nonce+ciphertext, no VSF header)
+    if vsf_bytes.len() >= 3 && &vsf_bytes[0..3] != b"VS\xc5" {
+        // Legacy format - try direct decryption
+        return decrypt_data_legacy(vsf_bytes, key);
+    }
+
+    // Parse VSF file to extract encrypted payload
+    let header = vsf::verification::parse_full_header(vsf_bytes)
+        .map_err(|e| StorageError::Decryption(format!("VSF parse: {}", e)))?;
+
+    // Find the section with encrypted data
+    let section_field = header.fields.first()
+        .ok_or_else(|| StorageError::Decryption("No sections in VSF".to_string()))?;
+
+    let offset = section_field.offset_bytes;
+    let size = section_field.size_bytes;
+
+    if offset + size > vsf_bytes.len() {
+        return Err(StorageError::Decryption("Section beyond file".to_string()));
+    }
+
+    // Parse the section to get the encrypted data field
+    let mut ptr = offset;
+    let section = VsfSection::parse(vsf_bytes, &mut ptr)
+        .map_err(|e| StorageError::Decryption(format!("Section parse: {}", e)))?;
+
+    let data_field = section.get_field("data")
+        .ok_or_else(|| StorageError::Decryption("No data field".to_string()))?;
+
+    let encrypted_payload = match data_field.values.first() {
+        Some(VsfType::v(b'e', payload)) => payload,
+        _ => return Err(StorageError::Decryption("Expected ve{} encrypted data".to_string())),
+    };
+
+    if encrypted_payload.len() < 12 + 16 {
+        return Err(StorageError::Decryption("Encrypted payload too short".to_string()));
+    }
+
+    let cipher = ChaCha20Poly1305::new_from_slice(key)
+        .map_err(|e| StorageError::Decryption(e.to_string()))?;
+
+    let nonce_bytes: [u8; 12] = encrypted_payload[..12]
+        .try_into()
+        .map_err(|_| StorageError::Decryption("Invalid nonce".to_string()))?;
+    let nonce: Nonce = nonce_bytes.into();
+    let ciphertext = &encrypted_payload[12..];
+
+    cipher
+        .decrypt(&nonce, ciphertext)
+        .map_err(|e| StorageError::Decryption(e.to_string()))
+}
+
+/// Decrypt legacy format (raw nonce+ciphertext, no VSF wrapper)
+/// For backwards compatibility with existing contact files
+fn decrypt_data_legacy(encrypted: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, StorageError> {
     if encrypted.len() < 12 + 16 {
         return Err(StorageError::Decryption("File too short".to_string()));
     }
@@ -222,7 +287,7 @@ pub fn save_contact_list(
     our_identity_seed: &[u8; 32],
     device_secret: &[u8; 32],
 ) -> Result<(), StorageError> {
-    let index_path = contacts_dir()?.join("index.enc");
+    let index_path = contacts_dir()?.join("index.vsf");
 
     let schema = contact_list_schema();
     let mut builder = schema.build();
@@ -242,8 +307,39 @@ pub fn save_contact_list(
     let vsf_bytes = builder
         .encode()
         .map_err(|e| StorageError::Parse(e.to_string()))?;
+
+    // Log VSF before encryption
+    #[cfg(feature = "development")]
+    {
+        let msg = crate::network::inspect::section_inspect(
+            &vsf_bytes,
+            "Disk",
+            "Write",
+            "contacts/index.vsf",
+        );
+        if !msg.is_empty() {
+            println!("{}", msg);
+        }
+    }
+
     let key = derive_list_key(our_identity_seed, device_secret);
-    let encrypted = encrypt_data(&vsf_bytes, &key)?;
+    let encrypted = encrypt_data(&vsf_bytes, &key, "encrypted_contact_list")?;
+
+    // Log the complete VSF file being written
+    #[cfg(feature = "development")]
+    {
+        if encrypted.len() < 1024 {
+            let msg = crate::network::inspect::vsf_inspect(
+                &encrypted,
+                "Disk",
+                "Write",
+                "contacts/index.vsf",
+            );
+            if !msg.is_empty() {
+                println!("{}", msg);
+            }
+        }
+    }
 
     fs::write(&index_path, &encrypted)?;
     Ok(())
@@ -254,15 +350,48 @@ pub fn load_contact_list(
     our_identity_seed: &[u8; 32],
     device_secret: &[u8; 32],
 ) -> Result<Vec<ContactIdentity>, StorageError> {
-    let index_path = contacts_dir()?.join("index.enc");
+    let index_path = contacts_dir()?.join("index.vsf");
 
     if !index_path.exists() {
         return Ok(Vec::new());
     }
 
     let encrypted = fs::read(&index_path)?;
+
+    // Log the VSF file being read
+    #[cfg(feature = "development")]
+    {
+        if encrypted.len() < 1024 {
+            let msg = crate::network::inspect::vsf_inspect(
+                &encrypted,
+                "Disk",
+                "Read",
+                "contacts/index.vsf",
+            );
+            if !msg.is_empty() {
+                println!("{}", msg);
+            }
+        }
+    }
+
     let key = derive_list_key(our_identity_seed, device_secret);
     let vsf_bytes = decrypt_data(&encrypted, &key)?;
+
+    // Log decrypted section
+    #[cfg(feature = "development")]
+    {
+        if vsf_bytes.len() < 1024 {
+            let msg = crate::network::inspect::section_inspect(
+                &vsf_bytes,
+                "Disk",
+                "Decrypted",
+                "contacts/index.vsf",
+            );
+            if !msg.is_empty() {
+                println!("{}", msg);
+            }
+        }
+    }
 
     let schema = contact_list_schema();
     let builder = SectionBuilder::parse(schema, &vsf_bytes)
@@ -300,8 +429,8 @@ fn contact_state_schema() -> SectionSchema {
         .field("clutch_state", TypeConstraint::AnyUnsigned)
         .field("trust_level", TypeConstraint::AnyUnsigned)
         .field("pubkey", TypeConstraint::Ed25519Key)
-        .field("added_timestamp", TypeConstraint::Any) // f64 Eagle Time
-        .field("contact_id", TypeConstraint::AnyHash)
+        .field("added", TypeConstraint::Any) // Eagle Time
+        .field("id", TypeConstraint::AnyHash)
         // Optional fields
         .field("ip", TypeConstraint::AnyString)
         .field("seed", TypeConstraint::AnyHash)
@@ -333,9 +462,9 @@ pub fn save_contact_state(
             contact.public_identity.to_vsf(), // Ed25519 (ke)
         )
         .map_err(|e| StorageError::Parse(e.to_string()))?
-        .set("added_timestamp", VsfType::f6(contact.added_timestamp))
+        .set("added", VsfType::e(vsf::types::EtType::f6(contact.added)))
         .map_err(|e| StorageError::Parse(e.to_string()))?
-        .set("contact_id", VsfType::hb(contact.id.as_bytes().to_vec()))
+        .set("id", VsfType::hb(contact.id.as_bytes().to_vec()))
         .map_err(|e| StorageError::Parse(e.to_string()))?;
 
     // Optional fields
@@ -366,15 +495,50 @@ pub fn save_contact_state(
     }
     if let Some(last_seen) = contact.last_seen {
         builder = builder
-            .set("last_seen", VsfType::f6(last_seen))
+            .set("last_seen", VsfType::e(vsf::types::EtType::f6(last_seen)))
             .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
 
     let vsf_bytes = builder
         .encode()
         .map_err(|e| StorageError::Parse(e.to_string()))?;
+
+    // Log plaintext section before encryption
+    #[cfg(feature = "development")]
+    {
+        if vsf_bytes.len() < 1024 {
+            let label = format!("contacts/{}/state.vsf", hex::encode(&identity_seed[..8]));
+            let msg = crate::network::inspect::section_inspect(
+                &vsf_bytes,
+                "Disk",
+                "Write",
+                &label,
+            );
+            if !msg.is_empty() {
+                println!("{}", msg);
+            }
+        }
+    }
+
     let key = derive_state_key(our_identity_seed, &identity_seed, device_secret);
-    let encrypted = encrypt_data(&vsf_bytes, &key)?;
+    let encrypted = encrypt_data(&vsf_bytes, &key, "encrypted_contact_state")?;
+
+    // Log the complete VSF file being written
+    #[cfg(feature = "development")]
+    {
+        if encrypted.len() < 1024 {
+            let label = format!("contacts/{}/state.vsf", hex::encode(&identity_seed[..8]));
+            let msg = crate::network::inspect::vsf_inspect(
+                &encrypted,
+                "Disk",
+                "Write",
+                &label,
+            );
+            if !msg.is_empty() {
+                println!("{}", msg);
+            }
+        }
+    }
 
     fs::write(&state_path, &encrypted)?;
     Ok(())
@@ -402,8 +566,43 @@ pub fn load_contact_state(
     }
 
     let encrypted = fs::read(&state_path)?;
+
+    // Log the VSF file being read
+    #[cfg(feature = "development")]
+    {
+        if encrypted.len() < 1024 {
+            let label = format!("contacts/{}/state.vsf", hex::encode(&their_identity_seed[..8]));
+            let msg = crate::network::inspect::vsf_inspect(
+                &encrypted,
+                "Disk",
+                "Read",
+                &label,
+            );
+            if !msg.is_empty() {
+                println!("{}", msg);
+            }
+        }
+    }
+
     let key = derive_state_key(our_identity_seed, &their_identity_seed, device_secret);
     let vsf_bytes = decrypt_data(&encrypted, &key)?;
+
+    // Log decrypted section
+    #[cfg(feature = "development")]
+    {
+        if vsf_bytes.len() < 1024 {
+            let label = format!("contacts/{}/state.vsf", hex::encode(&their_identity_seed[..8]));
+            let msg = crate::network::inspect::section_inspect(
+                &vsf_bytes,
+                "Disk",
+                "Decrypted",
+                &label,
+            );
+            if !msg.is_empty() {
+                println!("{}", msg);
+            }
+        }
+    }
 
     let mut ptr = 0;
     let section = VsfSection::parse(&vsf_bytes, &mut ptr)
@@ -425,7 +624,7 @@ pub fn load_contact_state(
         Some(VsfType::ke(v)) if v.len() == 32 => v.as_slice().try_into().unwrap(), // Ed25519
         _ => return Err(StorageError::Parse("Missing pubkey".into())),
     };
-    let added_timestamp = match get_val("added_timestamp") {
+    let added = match get_val("added") {
         Some(v) => EagleTime::new_from_vsf(v.clone()).to_f64(),
         None => 0.0,
     };
@@ -439,7 +638,7 @@ pub fn load_contact_state(
 
     contact.clutch_state = u8_to_clutch_state(clutch_u8);
     contact.trust_level = u8_to_trust_level(trust_u8);
-    contact.added_timestamp = added_timestamp;
+    contact.added = added;
 
     // Optional fields
     if let Some(VsfType::x(s) | VsfType::l(s) | VsfType::d(s)) = get_val("ip") {
@@ -468,8 +667,8 @@ pub fn load_contact_state(
     if let Some(v) = get_val("last_seen") {
         contact.last_seen = Some(EagleTime::new_from_vsf(v.clone()).to_f64());
     }
-    if let Some(VsfType::hb(v)) = get_val("contact_id") {
-        if v.len() == 16 {
+    if let Some(VsfType::hb(v)) = get_val("id") {
+        if v.len() == 32 {
             contact.id = ContactId::from_bytes(v.as_slice().try_into().unwrap());
         }
     }

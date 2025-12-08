@@ -4,6 +4,7 @@
 //! Used for: CLUTCH key exchange, attachments, large file transfers.
 //! Fallback when Photon Transport is unavailable.
 
+#[cfg(feature = "development")]
 use super::inspect::vsf_inspect;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};

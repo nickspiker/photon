@@ -50,7 +50,7 @@ pub struct CloudContact {
     pub handle: String,
     pub device_pubkey: [u8; 32],
     pub trust_level: u8,
-    pub added_timestamp: f64,
+    pub added: f64,
 }
 
 impl From<&Contact> for CloudContact {
@@ -60,7 +60,7 @@ impl From<&Contact> for CloudContact {
             handle: c.handle.as_str().to_string(),
             device_pubkey: *c.public_identity.as_bytes(),
             trust_level: trust_level_to_u8(c.trust_level),
-            added_timestamp: c.added_timestamp,
+            added: c.added,
         }
     }
 }
@@ -112,7 +112,7 @@ pub fn encode_contacts(
                     VsfType::x(c.handle.clone()),
                     VsfType::ke(c.device_pubkey.to_vec()),
                     VsfType::u3(c.trust_level),
-                    VsfType::f6(c.added_timestamp),
+                    VsfType::e(vsf::types::EtType::f6(c.added)),
                 ],
             )
             .map_err(|e| CloudError::Parse(e.to_string()))?;
@@ -155,8 +155,9 @@ pub fn decode_contacts(
                 VsfType::u3(v) => *v,
                 _ => 0,
             };
-            let added_timestamp = match &field.values[4] {
-                VsfType::f6(v) => *v,
+            let added = match &field.values[4] {
+                VsfType::e(et) => vsf::EagleTime::new_from_vsf(VsfType::e(et.clone())).to_f64(),
+                VsfType::f6(v) => *v, // Legacy
                 _ => 0.0,
             };
 
@@ -165,7 +166,7 @@ pub fn decode_contacts(
                 handle,
                 device_pubkey,
                 trust_level,
-                added_timestamp,
+                added,
             });
         }
     }
@@ -182,7 +183,7 @@ impl CloudContact {
             DevicePubkey::from_bytes(self.device_pubkey),
         );
         contact.trust_level = u8_to_trust_level(self.trust_level);
-        contact.added_timestamp = self.added_timestamp;
+        contact.added = self.added;
         contact
     }
 }
@@ -437,14 +438,14 @@ mod tests {
                 handle: "alice".to_string(),
                 device_pubkey: [2u8; 32],
                 trust_level: 1,
-                added_timestamp: 1234567890.0,
+                added: 1234567890.0,
             },
             CloudContact {
                 handle_proof: [3u8; 32],
                 handle: "bob".to_string(),
                 device_pubkey: [4u8; 32],
                 trust_level: 2,
-                added_timestamp: 1234567891.0,
+                added: 1234567891.0,
             },
         ];
 

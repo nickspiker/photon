@@ -1,7 +1,7 @@
 use super::{fingerprint::Keypair, PeerRecord};
 use crate::types::DevicePubkey;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use vsf::{parse, schema::FromVsfType, VsfHeader, VsfSection};
+use vsf::{schema::FromVsfType, VsfHeader, VsfSection};
 
 const FGTW_URL: &str = "https://fgtw.org";
 
@@ -403,7 +403,6 @@ fn build_announce_message(
     // 3. Build VSF using VsfBuilder with section metadata
     let meta = SectionMeta::new(
         VsfType::ke(device_key.public.to_bytes().to_vec()), // Ed25519 device public key
-        VsfType::v(b'e', vec![]),                           // Empty vec = metadata only
     );
 
     let unsigned_bytes = VsfBuilder::new()
@@ -457,33 +456,25 @@ fn parse_peer_list(bytes: &[u8], device_key: &Keypair) -> Result<Vec<PeerRecord>
         })
         .ok_or("Missing encrypted data field (v'e') in encrypted_peers section")?;
 
-    // 5. Decrypt to get inner VSF file with peers
+    // 5. Decrypt to get raw section data (just `[peers: ...]`, no VSF header)
     let plaintext_bytes = decrypt_from_fgtw(&encrypted_data, device_key)?;
 
-    // Log decrypted VSF with inspector
+    // Log decrypted section with inspector
     #[cfg(feature = "development")]
     {
-        let msg =
-            crate::network::inspect::vsf_inspect(&plaintext_bytes, "FGTW", "Decrypted", "peers");
+        let msg = crate::network::inspect::section_inspect(
+            &plaintext_bytes,
+            "FGTW",
+            "Decrypted",
+            "peers",
+        );
         if !msg.is_empty() {
             crate::log_info(&msg);
         }
     }
 
-    // 6. Parse inner VSF header
-    let (inner_header, _) = VsfHeader::decode(&plaintext_bytes)
-        .map_err(|e| format!("Parse inner VSF header: {}", e))?;
-
-    // 7. Find the "peers" section offset from inner header fields
-    let peers_offset = inner_header
-        .fields
-        .iter()
-        .find(|f| f.name == "peers")
-        .map(|f| f.offset_bytes)
-        .ok_or("Missing 'peers' section in decrypted peer list")?;
-
-    // 8. Parse the peers section
-    let mut ptr = peers_offset;
+    // 6. Parse the peers section directly (no header, just `[peers: ...]`)
+    let mut ptr = 0;
     let peers_section = VsfSection::parse(&plaintext_bytes, &mut ptr)
         .map_err(|e| format!("Parse peers section: {}", e))?;
 

@@ -4,6 +4,7 @@
 //! Used for: ping/pong, status updates, LAN discovery, small messages, streaming.
 //! Fallback when Photon Transport is unavailable.
 
+#[cfg(feature = "development")]
 use super::inspect::vsf_inspect;
 use std::net::SocketAddr;
 

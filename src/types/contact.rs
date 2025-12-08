@@ -100,7 +100,7 @@ pub struct Contact {
     pub clutch_their_ephemeral_pubkey: Option<[u8; 32]>, // Their ephemeral for CLUTCH
 
     pub trust_level: TrustLevel,
-    pub added_timestamp: f64,
+    pub added: f64,
     pub last_seen: Option<f64>,
     pub is_online: bool, // True when we have confirmed bidirectional comms
     pub messages: Vec<ChatMessage>, // Conversation history
@@ -117,8 +117,10 @@ pub struct Contact {
     pub avatar_scaled_diameter: usize,  // Diameter the scaled pixels were rendered for
 }
 
+/// Contact identifier - BLAKE3 hash of the contact's public identity key
+/// This provides deterministic, collision-resistant identification
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct ContactId([u8; 16]);
+pub struct ContactId([u8; 32]);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TrustLevel {
@@ -129,24 +131,17 @@ pub enum TrustLevel {
 }
 
 impl ContactId {
-    pub fn new() -> Self {
-        let mut id = [0u8; 16];
-        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut id);
-        Self(id)
+    /// Create ContactId from public identity key (deterministic)
+    pub fn from_pubkey(pubkey: &DevicePubkey) -> Self {
+        Self(*blake3::hash(pubkey.as_bytes()).as_bytes())
     }
 
-    pub fn from_bytes(bytes: [u8; 16]) -> Self {
+    pub fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
 
-    pub fn as_bytes(&self) -> &[u8; 16] {
+    pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0
-    }
-}
-
-impl Default for ContactId {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -160,7 +155,7 @@ impl Contact {
         let handle_hash = *blake3::hash(&vsf_bytes).as_bytes();
 
         Self {
-            id: ContactId::new(),
+            id: ContactId::from_pubkey(&public_identity),
             handle,
             handle_proof,
             handle_hash,
@@ -182,7 +177,7 @@ impl Contact {
             clutch_our_ephemeral_pubkey: None,
             clutch_their_ephemeral_pubkey: None,
             trust_level: TrustLevel::Stranger,
-            added_timestamp: vsf::eagle_time_nanos(),
+            added: vsf::eagle_time_nanos(),
             last_seen: None,
             is_online: false,           // Starts offline until we confirm comms
             messages: Vec::new(),       // No messages yet

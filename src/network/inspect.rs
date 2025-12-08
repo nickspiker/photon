@@ -65,6 +65,29 @@ pub fn is_noisy_packet(data: &[u8]) -> bool {
     false
 }
 
+/// Format a raw VSF section (no header) as a human-readable inspection string
+/// Used for decrypted section-only data like FGTW peer lists
+#[cfg(feature = "development")]
+pub fn section_inspect(data: &[u8], transport: &str, direction: &str, label: &str) -> String {
+    let mut result = format!(
+        "═══ VSF {} {} {} ({} bytes) ═══\n",
+        transport,
+        direction,
+        label,
+        data.len()
+    );
+
+    match vsf::inspect::inspect_section(data) {
+        Ok(formatted) => result.push_str(&strip_ansi_if_needed(&formatted)),
+        Err(_) => {
+            // Fall back to hex dump
+            result.push_str(&vsf::inspect::hex_dump(data));
+        }
+    }
+
+    result
+}
+
 /// Strip ANSI color codes on platforms that don't support them (Android)
 #[cfg(feature = "development")]
 fn strip_ansi_if_needed(s: &str) -> String {

@@ -1,24 +1,24 @@
 //! PLTP Transport Layer
 //!
-//! Primary: Raw IP protocol 254 (fast, minimal overhead)
-//! Fallback: TCP (works everywhere, handles reliability)
+//! Photon Transport over UDP - lean multicast TCP-like reliability
 //!
-//! Protocol 254 packets:
-//! - DATA: [4-byte seq][payload] - protocol number is the discriminator
+//! Transport priority:
+//! 1. UDP (primary - cross-platform, low latency, we handle reliability)
+//! 2. TCP (fallback if UDP blocked by network)
+//!
+//! UDP packets:
+//! - DATA: [4-byte seq][payload]
 //! - Control: VSF format (detected by VSF header magic)
 //!
 //! TCP fallback:
-//! - Just write entire payload in one shot
-//! - TCP handles fragmentation and reliability
-//! - Length-prefixed: [4-byte len][payload]
+//! - Length-prefixed streams: [4-byte len][payload]
 
 use std::io::{self, Read, Write};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
-use std::os::unix::io::{AsRawFd, RawFd};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::time::Duration;
 
-/// IP protocol number for Photon transfers
-pub const PROTOCOL_254: i32 = 254;
+/// Default port for UDP transport
+pub const UDP_PORT: u16 = 25401;
 
 /// Default port for TCP fallback
 pub const TCP_FALLBACK_PORT: u16 = 25400;
@@ -26,211 +26,39 @@ pub const TCP_FALLBACK_PORT: u16 = 25400;
 /// Transport mode
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TransportMode {
-    /// Raw IP protocol 254 (preferred)
-    Raw254,
-    /// TCP fallback (always works)
-    TcpFallback,
+    /// UDP (primary - cross-platform, low latency)
+    Udp,
+    /// TCP fallback (reliable, higher latency)
+    Tcp,
 }
 
-/// Result of transport detection
-pub struct TransportCapabilities {
-    /// Whether raw sockets are available
-    pub raw_available: bool,
-    /// Active transport mode
-    pub mode: TransportMode,
+/// UDP transport (cross-platform, primary)
+pub struct UdpTransport {
+    socket: UdpSocket,
 }
 
-impl TransportCapabilities {
-    /// Detect available transport capabilities
-    pub fn detect() -> Self {
-        let raw_available = Self::try_raw_socket().is_ok();
-        let mode = if raw_available {
-            TransportMode::Raw254
-        } else {
-            TransportMode::TcpFallback
-        };
-
-        if !raw_available {
-            crate::log_info("Raw sockets unavailable, using TCP fallback (slower)");
-        }
-
-        Self {
-            raw_available,
-            mode,
-        }
-    }
-
-    /// Try to create a raw socket to test availability
-    fn try_raw_socket() -> io::Result<()> {
-        // Try to create raw socket
-        let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_RAW, PROTOCOL_254) };
-        if fd < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        unsafe { libc::close(fd) };
-        Ok(())
-    }
-}
-
-/// Raw IP protocol 254 socket
-pub struct Raw254Socket {
-    fd: RawFd,
-    local_addr: Ipv4Addr,
-}
-
-impl Raw254Socket {
-    /// Create new raw socket bound to local address
+impl UdpTransport {
+    /// Create new UDP transport bound to local address
     pub fn new(local_addr: Ipv4Addr) -> io::Result<Self> {
-        let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_RAW, PROTOCOL_254) };
-        if fd < 0 {
-            return Err(io::Error::last_os_error());
-        }
-
-        // Set receive timeout
-        let timeout = libc::timeval {
-            tv_sec: 1,
-            tv_usec: 0,
-        };
-        unsafe {
-            libc::setsockopt(
-                fd,
-                libc::SOL_SOCKET,
-                libc::SO_RCVTIMEO,
-                &timeout as *const _ as *const libc::c_void,
-                std::mem::size_of::<libc::timeval>() as libc::socklen_t,
-            );
-        }
-
-        // Bind to local address (optional for raw sockets but good practice)
-        let addr = libc::sockaddr_in {
-            sin_family: libc::AF_INET as u16,
-            sin_port: 0,
-            sin_addr: libc::in_addr {
-                s_addr: u32::from_ne_bytes(local_addr.octets()),
-            },
-            sin_zero: [0; 8],
-        };
-
-        let result = unsafe {
-            libc::bind(
-                fd,
-                &addr as *const _ as *const libc::sockaddr,
-                std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
-            )
-        };
-
-        if result < 0 {
-            let err = io::Error::last_os_error();
-            unsafe { libc::close(fd) };
-            return Err(err);
-        }
-
-        Ok(Self { fd, local_addr })
+        let addr = SocketAddr::new(IpAddr::V4(local_addr), UDP_PORT);
+        let socket = UdpSocket::bind(addr)?;
+        socket.set_nonblocking(true)?;
+        Ok(Self { socket })
     }
 
     /// Send data to peer
-    pub fn send_to(&self, data: &[u8], peer: Ipv4Addr) -> io::Result<usize> {
-        let addr = libc::sockaddr_in {
-            sin_family: libc::AF_INET as u16,
-            sin_port: 0, // No port for raw IP
-            sin_addr: libc::in_addr {
-                s_addr: u32::from_ne_bytes(peer.octets()),
-            },
-            sin_zero: [0; 8],
-        };
-
-        let sent = unsafe {
-            libc::sendto(
-                self.fd,
-                data.as_ptr() as *const libc::c_void,
-                data.len(),
-                0,
-                &addr as *const _ as *const libc::sockaddr,
-                std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
-            )
-        };
-
-        if sent < 0 {
-            Err(io::Error::last_os_error())
-        } else {
-            Ok(sent as usize)
-        }
+    pub fn send_to(&self, data: &[u8], peer: SocketAddr) -> io::Result<usize> {
+        self.socket.send_to(data, peer)
     }
 
     /// Receive data from any peer
-    /// Returns (data, source_addr)
-    pub fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, Ipv4Addr)> {
-        let mut addr: libc::sockaddr_in = unsafe { std::mem::zeroed() };
-        let mut addr_len = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
-
-        let received = unsafe {
-            libc::recvfrom(
-                self.fd,
-                buf.as_mut_ptr() as *mut libc::c_void,
-                buf.len(),
-                0,
-                &mut addr as *mut _ as *mut libc::sockaddr,
-                &mut addr_len,
-            )
-        };
-
-        if received < 0 {
-            return Err(io::Error::last_os_error());
-        }
-
-        // Parse source address
-        let src_bytes = addr.sin_addr.s_addr.to_ne_bytes();
-        let src_addr = Ipv4Addr::new(src_bytes[0], src_bytes[1], src_bytes[2], src_bytes[3]);
-
-        // Raw sockets include IP header (20 bytes typically)
-        // Skip IP header to get our protocol data
-        let ip_header_len = if received >= 1 {
-            ((buf[0] & 0x0F) as usize) * 4
-        } else {
-            20
-        };
-
-        if (received as usize) <= ip_header_len {
-            return Ok((0, src_addr));
-        }
-
-        // Move payload to start of buffer
-        let payload_len = received as usize - ip_header_len;
-        buf.copy_within(ip_header_len..received as usize, 0);
-
-        Ok((payload_len, src_addr))
+    pub fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
+        self.socket.recv_from(buf)
     }
 
-    /// Set non-blocking mode
-    pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
-        let flags = unsafe { libc::fcntl(self.fd, libc::F_GETFL) };
-        if flags < 0 {
-            return Err(io::Error::last_os_error());
-        }
-
-        let new_flags = if nonblocking {
-            flags | libc::O_NONBLOCK
-        } else {
-            flags & !libc::O_NONBLOCK
-        };
-
-        if unsafe { libc::fcntl(self.fd, libc::F_SETFL, new_flags) } < 0 {
-            return Err(io::Error::last_os_error());
-        }
-
-        Ok(())
-    }
-}
-
-impl Drop for Raw254Socket {
-    fn drop(&mut self) {
-        unsafe { libc::close(self.fd) };
-    }
-}
-
-impl AsRawFd for Raw254Socket {
-    fn as_raw_fd(&self) -> RawFd {
-        self.fd
+    /// Get local address
+    pub fn local_addr(&self) -> io::Result<SocketAddr> {
+        self.socket.local_addr()
     }
 }
 
@@ -305,46 +133,40 @@ impl TcpTransport {
     }
 }
 
-/// Unified transport that uses raw254 or TCP as needed
+/// Unified transport that uses UDP or TCP
 pub struct PhotonTransport {
     /// Transport mode
     pub mode: TransportMode,
-    /// Raw socket (if available)
-    raw: Option<Raw254Socket>,
-    /// TCP transport (always available)
+    /// UDP transport (primary)
+    udp: Option<UdpTransport>,
+    /// TCP transport (fallback)
     tcp: TcpTransport,
     /// Local address
+    #[allow(dead_code)]
     local_addr: Ipv4Addr,
 }
 
 impl PhotonTransport {
-    /// Create new transport, detecting best available mode
+    /// Create new transport
     pub fn new(local_addr: Ipv4Addr) -> io::Result<Self> {
-        let caps = TransportCapabilities::detect();
-
-        let raw = if caps.raw_available {
-            match Raw254Socket::new(local_addr) {
-                Ok(sock) => {
-                    sock.set_nonblocking(true)?;
-                    Some(sock)
-                }
-                Err(e) => {
-                    crate::log_error(&format!("Failed to create raw socket: {}", e));
-                    None
-                }
+        // Create UDP transport (primary)
+        let udp = match UdpTransport::new(local_addr) {
+            Ok(u) => Some(u),
+            Err(e) => {
+                crate::log_error(&format!("Failed to create UDP transport: {}", e));
+                None
             }
-        } else {
-            None
         };
 
-        let mode = if raw.is_some() {
-            TransportMode::Raw254
+        let mode = if udp.is_some() {
+            TransportMode::Udp
         } else {
-            TransportMode::TcpFallback
+            crate::log_info("UDP unavailable, using TCP fallback");
+            TransportMode::Tcp
         };
 
+        // Create TCP transport as fallback
         let mut tcp = TcpTransport::new()?;
-        // Always listen on TCP fallback port
         let tcp_addr = SocketAddr::new(IpAddr::V4(local_addr), TCP_FALLBACK_PORT);
         if let Err(e) = tcp.listen(tcp_addr) {
             crate::log_error(&format!("Failed to bind TCP fallback: {}", e));
@@ -352,25 +174,19 @@ impl PhotonTransport {
 
         Ok(Self {
             mode,
-            raw,
+            udp,
             tcp,
             local_addr,
         })
     }
 
     /// Send large payload to peer
-    /// For raw254: uses windowed transfer (PLTP)
+    /// For UDP: uses windowed transfer (PLTP)
     /// For TCP: sends entire payload in one shot
     pub fn send_large(&mut self, peer: Ipv4Addr, data: &[u8]) -> io::Result<()> {
         match self.mode {
-            TransportMode::Raw254 => {
-                // Use PLTP windowed transfer over raw254
-                self.send_raw254_pltp(peer, data)
-            }
-            TransportMode::TcpFallback => {
-                // Just send everything over TCP
-                self.send_tcp(peer, data)
-            }
+            TransportMode::Udp => self.send_udp_pltp(peer, data),
+            TransportMode::Tcp => self.send_tcp(peer, data),
         }
     }
 
@@ -387,29 +203,30 @@ impl PhotonTransport {
         Ok(())
     }
 
-    /// Send via raw254 with PLTP windowing
-    fn send_raw254_pltp(&self, peer: Ipv4Addr, data: &[u8]) -> io::Result<()> {
-        let raw = self
-            .raw
+    /// Send via UDP with PLTP windowing
+    fn send_udp_pltp(&self, peer: Ipv4Addr, data: &[u8]) -> io::Result<()> {
+        let udp = self
+            .udp
             .as_ref()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Raw socket not available"))?;
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "UDP socket not available"))?;
 
-        // For raw254, we need to implement PLTP windowing
-        // DATA packet format: [4-byte seq][payload]
-        const PACKET_SIZE: usize = 1000;
+        // UDP MTU-safe packet size (typical MTU 1500 - IP/UDP headers)
+        const PACKET_SIZE: usize = 1400;
         let total_packets = (data.len() + PACKET_SIZE - 1) / PACKET_SIZE;
 
-        // Send SPEC first (VSF format)
+        let peer_addr = SocketAddr::new(IpAddr::V4(peer), UDP_PORT);
+
+        // Send SPEC first
         let data_hash = *blake3::hash(data).as_bytes();
-        let spec = Raw254Spec {
+        let spec = PlptSpec {
             total_packets: total_packets as u32,
             packet_size: PACKET_SIZE as u16,
             total_size: data.len() as u32,
             data_hash,
         };
-        raw.send_to(&spec.to_bytes(), peer)?;
+        udp.send_to(&spec.to_bytes(), peer_addr)?;
 
-        // Simple stop-and-wait for now (can upgrade to full windowing later)
+        // Simple stop-and-wait for now
         // TODO: Integrate with full PLTP windowing
         for seq in 0..total_packets {
             let start = seq * PACKET_SIZE;
@@ -420,7 +237,7 @@ impl PhotonTransport {
             packet.extend_from_slice(&(seq as u32).to_be_bytes());
             packet.extend_from_slice(payload);
 
-            raw.send_to(&packet, peer)?;
+            udp.send_to(&packet, peer_addr)?;
 
             // Brief pause to avoid overwhelming receiver
             if seq % 10 == 0 {
@@ -429,7 +246,7 @@ impl PhotonTransport {
         }
 
         crate::log_info(&format!(
-            "Sent {} bytes ({} packets) to {} via raw254",
+            "Sent {} bytes ({} packets) to {} via UDP",
             data.len(),
             total_packets,
             peer
@@ -454,15 +271,16 @@ impl PhotonTransport {
             }
         }
 
-        // Check raw socket
-        if let Some(ref raw) = self.raw {
+        // Check UDP socket
+        if let Some(ref udp) = self.udp {
             let mut buf = vec![0u8; 65536];
-            match raw.recv_from(&mut buf) {
+            match udp.recv_from(&mut buf) {
                 Ok((len, src)) if len > 0 => {
                     buf.truncate(len);
-                    // TODO: Reassemble PLTP packets
-                    // For now, return raw data
-                    return Ok(Some((buf, src)));
+                    if let IpAddr::V4(ipv4) = src.ip() {
+                        // TODO: Reassemble PLTP packets
+                        return Ok(Some((buf, ipv4)));
+                    }
                 }
                 Ok(_) => {}
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {}
@@ -477,24 +295,19 @@ impl PhotonTransport {
     pub fn mode(&self) -> TransportMode {
         self.mode
     }
-
-    /// Check if raw sockets are available
-    pub fn has_raw(&self) -> bool {
-        self.raw.is_some()
-    }
 }
 
-/// Simple SPEC packet for raw254 (VSF-encoded)
-struct Raw254Spec {
+/// Simple SPEC packet for PLTP transfers
+struct PlptSpec {
     total_packets: u32,
     packet_size: u16,
     total_size: u32,
     data_hash: [u8; 32],
 }
 
-impl Raw254Spec {
+impl PlptSpec {
     fn to_bytes(&self) -> Vec<u8> {
-        // Simple binary format for raw254 SPEC
+        // Simple binary format for PLTP SPEC
         // [magic:2][total_packets:4][packet_size:2][total_size:4][hash:32]
         let mut buf = Vec::with_capacity(44);
         buf.extend_from_slice(b"PS"); // Photon Spec magic
@@ -505,6 +318,7 @@ impl Raw254Spec {
         buf
     }
 
+    #[allow(dead_code)]
     fn from_bytes(data: &[u8]) -> Option<Self> {
         if data.len() < 44 {
             return None;
@@ -527,17 +341,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_transport_capabilities() {
-        let caps = TransportCapabilities::detect();
-        // This test just verifies detection doesn't crash
-        // Raw sockets likely won't be available in test environment
-        println!("Raw available: {}", caps.raw_available);
-        println!("Mode: {:?}", caps.mode);
-    }
-
-    #[test]
-    fn test_raw254_spec_roundtrip() {
-        let spec = Raw254Spec {
+    fn test_pltp_spec_roundtrip() {
+        let spec = PlptSpec {
             total_packets: 100,
             packet_size: 1000,
             total_size: 99500,
@@ -545,7 +350,7 @@ mod tests {
         };
 
         let bytes = spec.to_bytes();
-        let parsed = Raw254Spec::from_bytes(&bytes).expect("Should parse");
+        let parsed = PlptSpec::from_bytes(&bytes).expect("Should parse");
 
         assert_eq!(parsed.total_packets, 100);
         assert_eq!(parsed.packet_size, 1000);
