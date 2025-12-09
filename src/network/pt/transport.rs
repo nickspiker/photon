@@ -1,4 +1,4 @@
-//! PLTP Transport Layer
+//! PT Transport Layer
 //!
 //! Photon Transport over UDP - lean multicast TCP-like reliability
 //!
@@ -181,11 +181,11 @@ impl PhotonTransport {
     }
 
     /// Send large payload to peer
-    /// For UDP: uses windowed transfer (PLTP)
+    /// For UDP: uses windowed transfer (PT)
     /// For TCP: sends entire payload in one shot
     pub fn send_large(&mut self, peer: Ipv4Addr, data: &[u8]) -> io::Result<()> {
         match self.mode {
-            TransportMode::Udp => self.send_udp_pltp(peer, data),
+            TransportMode::Udp => self.send_udp_pt(peer, data),
             TransportMode::Tcp => self.send_tcp(peer, data),
         }
     }
@@ -203,8 +203,8 @@ impl PhotonTransport {
         Ok(())
     }
 
-    /// Send via UDP with PLTP windowing
-    fn send_udp_pltp(&self, peer: Ipv4Addr, data: &[u8]) -> io::Result<()> {
+    /// Send via UDP with PT windowing
+    fn send_udp_pt(&self, peer: Ipv4Addr, data: &[u8]) -> io::Result<()> {
         let udp = self
             .udp
             .as_ref()
@@ -227,7 +227,7 @@ impl PhotonTransport {
         udp.send_to(&spec.to_bytes(), peer_addr)?;
 
         // Simple stop-and-wait for now
-        // TODO: Integrate with full PLTP windowing
+        // TODO: Integrate with full PT windowing
         for seq in 0..total_packets {
             let start = seq * PACKET_SIZE;
             let end = ((seq + 1) * PACKET_SIZE).min(data.len());
@@ -278,7 +278,7 @@ impl PhotonTransport {
                 Ok((len, src)) if len > 0 => {
                     buf.truncate(len);
                     if let IpAddr::V4(ipv4) = src.ip() {
-                        // TODO: Reassemble PLTP packets
+                        // TODO: Reassemble PT packets
                         return Ok(Some((buf, ipv4)));
                     }
                 }
@@ -297,7 +297,7 @@ impl PhotonTransport {
     }
 }
 
-/// Simple SPEC packet for PLTP transfers
+/// Simple SPEC packet for PT transfers
 struct PlptSpec {
     total_packets: u32,
     packet_size: u16,
@@ -307,7 +307,7 @@ struct PlptSpec {
 
 impl PlptSpec {
     fn to_bytes(&self) -> Vec<u8> {
-        // Simple binary format for PLTP SPEC
+        // Simple binary format for PT SPEC
         // [magic:2][total_packets:4][packet_size:2][total_size:4][hash:32]
         let mut buf = Vec::with_capacity(44);
         buf.extend_from_slice(b"PS"); // Photon Spec magic
@@ -341,11 +341,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_pltp_spec_roundtrip() {
+    fn test_pt_spec_roundtrip() {
         let spec = PlptSpec {
             total_packets: 100,
-            packet_size: 1000,
-            total_size: 99500,
+            packet_size: 1024,
+            total_size: 102400,
             data_hash: [0xAB; 32],
         };
 
@@ -353,8 +353,8 @@ mod tests {
         let parsed = PlptSpec::from_bytes(&bytes).expect("Should parse");
 
         assert_eq!(parsed.total_packets, 100);
-        assert_eq!(parsed.packet_size, 1000);
-        assert_eq!(parsed.total_size, 99500);
+        assert_eq!(parsed.packet_size, 1024);
+        assert_eq!(parsed.total_size, 102400);
         assert_eq!(parsed.data_hash, [0xAB; 32]);
     }
 }

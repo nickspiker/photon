@@ -1,4 +1,4 @@
-use super::{DevicePubkey, Seed};
+use super::{CeremonyId, DevicePubkey, FriendshipId, Seed};
 use crate::crypto::clutch::{ClutchAllKeypairs, ClutchFullOfferPayload, ClutchKemSharedSecrets};
 use std::net::{Ipv4Addr, SocketAddr};
 
@@ -84,8 +84,7 @@ pub struct Contact {
     pub local_ip: Option<Ipv4Addr>, // LAN IP discovered via broadcast (for hairpin NAT workaround)
     pub local_port: Option<u16>, // LAN port discovered via broadcast
     pub relationship_seed: Option<Seed>,
-    pub send_pad: Option<Vec<u8>>, // 1MB rolling pad for sending messages
-    pub recv_pad: Option<Vec<u8>>, // 1MB rolling pad for receiving messages
+    pub friendship_id: Option<FriendshipId>, // Links to friendship storage (chains live there)
     pub clutch_state: ClutchState,
 
     // Full 8-algorithm CLUTCH state
@@ -93,11 +92,9 @@ pub struct Contact {
     pub clutch_their_offer: Option<ClutchFullOfferPayload>, // Their 8 public keys (~548KB)
     pub clutch_our_kem_secrets: Option<ClutchKemSharedSecrets>, // Secrets from our encapsulations (we→them)
     pub clutch_their_kem_secrets: Option<ClutchKemSharedSecrets>, // Secrets from their encapsulations (them→us)
-
-    // Legacy X25519-only fields (kept for backward compat with existing contacts)
-    pub clutch_our_ephemeral_secret: Option<[u8; 32]>, // Our ephemeral X25519 secret (zeroize after use)
-    pub clutch_our_ephemeral_pubkey: Option<[u8; 32]>, // Our ephemeral X25519 pubkey (needed for parallel seed derivation)
-    pub clutch_their_ephemeral_pubkey: Option<[u8; 32]>, // Their ephemeral for CLUTCH
+    /// Cached ceremony_id - computed once during keygen (memory-hard ~1s)
+    /// Deterministic from sorted handle_hashes, so both parties compute same value
+    pub ceremony_id: Option<[u8; 32]>,
 
     pub trust_level: TrustLevel,
     pub added: f64,
@@ -164,18 +161,14 @@ impl Contact {
             local_ip: None,   // Discovered via LAN broadcast
             local_port: None, // Discovered via LAN broadcast
             relationship_seed: None,
-            send_pad: None, // Generated from CLUTCH after ceremony
-            recv_pad: None, // Generated from CLUTCH after ceremony
+            friendship_id: None, // Set after CLUTCH ceremony completes
             clutch_state: ClutchState::Pending,
             // Full 8-algorithm CLUTCH fields
             clutch_our_keypairs: None,
             clutch_their_offer: None,
             clutch_our_kem_secrets: None,
             clutch_their_kem_secrets: None,
-            // Legacy X25519-only fields
-            clutch_our_ephemeral_secret: None,
-            clutch_our_ephemeral_pubkey: None,
-            clutch_their_ephemeral_pubkey: None,
+            ceremony_id: None, // Cached after keygen (memory-hard ~1s)
             trust_level: TrustLevel::Stranger,
             added: vsf::eagle_time_nanos(),
             last_seen: None,
@@ -214,5 +207,14 @@ impl Contact {
 
     pub fn can_be_custodian(&self) -> bool {
         matches!(self.trust_level, TrustLevel::Trusted | TrustLevel::Inner)
+    }
+
+    /// Get the cached ceremony ID for CLUTCH with this contact.
+    ///
+    /// The ceremony_id is computed once during background keygen and cached.
+    /// It's deterministic from sorted handle_hashes, so both parties compute same value.
+    /// Returns None if keygen hasn't completed yet.
+    pub fn get_ceremony_id(&self) -> Option<CeremonyId> {
+        self.ceremony_id.map(CeremonyId::from_bytes)
     }
 }

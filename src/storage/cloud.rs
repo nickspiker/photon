@@ -467,7 +467,7 @@ mod tests {
             handle: "alice".to_string(),
             device_pubkey: [2u8; 32],
             trust_level: 1,
-            added_timestamp: 1234567890.0,
+            added: 1234567890.0,
         }];
 
         let key1 = [42u8; 32];

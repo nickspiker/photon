@@ -1,4 +1,4 @@
-//! PLTP Receive Buffer
+//! PT Receive Buffer
 //!
 //! Manages reassembly of incoming DATA packets:
 //! - Pre-allocates buffer based on SPEC

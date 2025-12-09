@@ -1,4 +1,4 @@
-//! PLTP - Photon Large Transfer Protocol
+//! PT - Photon Large Transfer Protocol
 //!
 //! Transport for large data transfers (CLUTCH key exchange, etc.)
 //!
@@ -35,8 +35,8 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
-/// PLTP Manager - coordinates transfers for all peers
-pub struct PLTPManager {
+/// PT Manager - coordinates transfers for all peers
+pub struct PTManager {
     /// Outbound transfers (we're sending)
     outbound: HashMap<SocketAddr, OutboundTransfer>,
     /// Inbound transfers (we're receiving)
@@ -47,8 +47,8 @@ pub struct PLTPManager {
     stale_timeout: Duration,
 }
 
-impl PLTPManager {
-    /// Create new PLTP manager
+impl PTManager {
+    /// Create new PT manager
     pub fn new(keypair: Keypair) -> Self {
         Self {
             outbound: HashMap::new(),
@@ -61,7 +61,7 @@ impl PLTPManager {
     /// Start sending data to peer
     pub fn start_send(&mut self, peer_addr: SocketAddr, data: Vec<u8>) -> Vec<u8> {
         crate::log_info(&format!(
-            "PLTP: Starting outbound transfer to {} ({} bytes)",
+            "PT: Starting outbound transfer to {} ({} bytes)",
             peer_addr,
             data.len()
         ));
@@ -76,9 +76,9 @@ impl PLTPManager {
     }
 
     /// Handle received SPEC (start receiving)
-    pub fn handle_spec(&mut self, peer_addr: SocketAddr, spec: PLTPSpec) -> Vec<u8> {
+    pub fn handle_spec(&mut self, peer_addr: SocketAddr, spec: PTSpec) -> Vec<u8> {
         crate::log_info(&format!(
-            "PLTP: Received SPEC from {} - {} packets, {} bytes",
+            "PT: Received SPEC from {} - {} packets, {} bytes",
             peer_addr, spec.total_packets, spec.total_size
         ));
 
@@ -86,7 +86,7 @@ impl PLTPManager {
         self.inbound.insert(peer_addr, transfer);
 
         // Send SPEC ACK (just an ACK with seq=0, special marker)
-        let ack = PLTPAck {
+        let ack = PTAck {
             sequence: u32::MAX, // Special "SPEC ACK" marker
             chunk_hash: spec.data_hash,
             buffer_percent: 0,
@@ -104,7 +104,7 @@ impl PLTPManager {
             transfer.last_activity = Instant::now();
 
             crate::log_info(&format!(
-                "PLTP: SPEC ACK received from {}, starting DATA transfer",
+                "PT: SPEC ACK received from {}, starting DATA transfer",
                 peer_addr
             ));
 
@@ -118,13 +118,13 @@ impl PLTPManager {
     }
 
     /// Handle received DATA packet
-    pub fn handle_data(&mut self, peer_addr: SocketAddr, data: PLTPData) -> Option<Vec<u8>> {
+    pub fn handle_data(&mut self, peer_addr: SocketAddr, data: PTData) -> Option<Vec<u8>> {
         if let Some(transfer) = self.inbound.get_mut(&peer_addr) {
             if let Some(ack) = transfer.handle_data(&data) {
                 let (recv, total) = transfer.progress();
                 if recv % 50 == 0 || recv == total {
                     crate::log_info(&format!(
-                        "PLTP: Received {}/{} from {}",
+                        "PT: Received {}/{} from {}",
                         recv, total, peer_addr
                     ));
                 }
@@ -136,7 +136,7 @@ impl PLTPManager {
     }
 
     /// Handle received ACK
-    pub fn handle_ack(&mut self, peer_addr: SocketAddr, ack: PLTPAck) -> Vec<Vec<u8>> {
+    pub fn handle_ack(&mut self, peer_addr: SocketAddr, ack: PTAck) -> Vec<Vec<u8>> {
         let mut packets = Vec::new();
 
         // Check for SPEC ACK (seq = MAX)
@@ -149,7 +149,7 @@ impl PLTPManager {
 
             let (acked, total) = transfer.send_buffer.progress();
             if acked % 50 == 0 || acked == total {
-                crate::log_info(&format!("PLTP: ACK'd {}/{} to {}", acked, total, peer_addr));
+                crate::log_info(&format!("PT: ACK'd {}/{} to {}", acked, total, peer_addr));
             }
 
             // Send more packets if window allows
@@ -162,12 +162,12 @@ impl PLTPManager {
     }
 
     /// Handle received NAK
-    pub fn handle_nak(&mut self, peer_addr: SocketAddr, nak: PLTPNak) -> Vec<Vec<u8>> {
+    pub fn handle_nak(&mut self, peer_addr: SocketAddr, nak: PTNak) -> Vec<Vec<u8>> {
         let mut packets = Vec::new();
 
         if let Some(transfer) = self.outbound.get_mut(&peer_addr) {
             crate::log_info(&format!(
-                "PLTP: NAK received from {} - retransmitting {} packets",
+                "PT: NAK received from {} - retransmitting {} packets",
                 peer_addr,
                 nak.missing_sequences.len()
             ));
@@ -181,42 +181,47 @@ impl PLTPManager {
     }
 
     /// Handle received CONTROL
-    pub fn handle_control(&mut self, peer_addr: SocketAddr, control: PLTPControl) {
+    pub fn handle_control(&mut self, peer_addr: SocketAddr, control: PTControl) {
         match control.command {
             ControlCommand::Abort => {
-                crate::log_info(&format!("PLTP: Peer {} aborted transfer", peer_addr));
+                crate::log_info(&format!("PT: Peer {} aborted transfer", peer_addr));
                 self.outbound.remove(&peer_addr);
                 self.inbound.remove(&peer_addr);
             }
             ControlCommand::Pause => {
                 // Could pause sending, but for now just log
-                crate::log_info(&format!("PLTP: Peer {} requested pause", peer_addr));
+                crate::log_info(&format!("PT: Peer {} requested pause", peer_addr));
             }
             ControlCommand::Resume => {
-                crate::log_info(&format!("PLTP: Peer {} requested resume", peer_addr));
+                crate::log_info(&format!("PT: Peer {} requested resume", peer_addr));
             }
             ControlCommand::SlowDown => {
                 if let Some(transfer) = self.outbound.get_mut(&peer_addr) {
                     transfer.window.on_buffer_pressure();
-                    crate::log_info(&format!("PLTP: Slowing down to {}", peer_addr));
+                    crate::log_info(&format!("PT: Slowing down to {}", peer_addr));
                 }
             }
         }
     }
 
     /// Handle received COMPLETE
-    pub fn handle_complete(&mut self, peer_addr: SocketAddr, complete: PLTPComplete) {
+    pub fn handle_complete(&mut self, peer_addr: SocketAddr, complete: PTComplete) {
         if let Some(transfer) = self.outbound.get_mut(&peer_addr) {
+            let (packets, bytes, retransmits, duration_ms) = transfer.stats();
             transfer.handle_complete(&complete);
 
             if complete.success {
                 crate::log_info(&format!(
-                    "PLTP: Transfer to {} completed successfully!",
-                    peer_addr
+                    "PT: Transfer to {} complete: {} packets, {} bytes, {} retransmits, {:.1}s",
+                    peer_addr,
+                    packets,
+                    bytes,
+                    retransmits,
+                    duration_ms as f64 / 1000.0
                 ));
             } else {
                 crate::log_error(&format!(
-                    "PLTP: Transfer to {} failed verification",
+                    "PT: Transfer to {} failed verification",
                     peer_addr
                 ));
             }
@@ -266,7 +271,7 @@ impl PLTPManager {
         // Check outbound timeouts
         for (addr, transfer) in &mut self.outbound {
             if transfer.is_stale(self.stale_timeout) {
-                crate::log_error(&format!("PLTP: Outbound transfer to {} timed out", addr));
+                crate::log_error(&format!("PT: Outbound transfer to {} timed out", addr));
                 to_remove.push(*addr);
                 continue;
             }
@@ -280,7 +285,7 @@ impl PLTPManager {
         // Check inbound timeouts
         for (addr, transfer) in &self.inbound {
             if transfer.is_stale(self.stale_timeout) {
-                crate::log_error(&format!("PLTP: Inbound transfer from {} timed out", addr));
+                crate::log_error(&format!("PT: Inbound transfer from {} timed out", addr));
                 to_remove.push(*addr);
             }
         }
@@ -310,8 +315,8 @@ impl PLTPManager {
     }
 }
 
-/// Check if bytes are a PLTP DATA packet (starts with 'd')
-pub fn is_pltp_data(bytes: &[u8]) -> bool {
+/// Check if bytes are a PT DATA packet (starts with 'd')
+pub fn is_pt_data(bytes: &[u8]) -> bool {
     !bytes.is_empty() && bytes[0] == b'd'
 }
 
@@ -331,8 +336,8 @@ mod tests {
         let sender_keypair = test_keypair();
         let receiver_keypair = test_keypair();
 
-        let mut sender = PLTPManager::new(sender_keypair);
-        let mut receiver = PLTPManager::new(receiver_keypair);
+        let mut sender = PTManager::new(sender_keypair);
+        let mut receiver = PTManager::new(receiver_keypair);
 
         let peer_addr: SocketAddr = "127.0.0.1:12345".parse().unwrap();
         let data = vec![0xAB; 3000]; // 3 packets
@@ -342,14 +347,14 @@ mod tests {
         assert!(!spec_bytes.is_empty());
 
         // Parse SPEC and feed to receiver
-        let spec_fields = parse_vsf_fields(&spec_bytes);
-        let spec = PLTPSpec::from_vsf_fields(&spec_fields).expect("Failed to parse SPEC");
+        let spec_fields = parse_vsf_section_fields(&spec_bytes);
+        let spec = PTSpec::from_vsf_fields(&spec_fields).expect("Failed to parse SPEC");
         let spec_ack = receiver.handle_spec(peer_addr, spec);
         assert!(!spec_ack.is_empty());
 
-        // Parse SPEC ACK and feed to sender - it's a special ACK with seq=MAX
-        let ack_fields = parse_vsf_fields(&spec_ack);
-        let ack = PLTPAck::from_vsf_fields(&ack_fields).expect("Failed to parse SPEC ACK");
+        // Parse SPEC ACK - it's now header-only format
+        let (provenance, values) = parse_pt_header_field(&spec_ack).expect("Failed to parse SPEC ACK header");
+        let ack = PTAck::from_vsf_header(provenance, &values).expect("Failed to parse SPEC ACK");
         assert_eq!(ack.sequence, u32::MAX); // SPEC ACK marker
 
         let mut data_packets = sender.handle_spec_ack(peer_addr);
@@ -361,12 +366,14 @@ mod tests {
 
             for data_bytes in &data_packets {
                 let data_pkt =
-                    PLTPData::from_bytes(data_bytes).expect("Failed to parse DATA packet");
+                    PTData::from_bytes(data_bytes).expect("Failed to parse DATA packet");
                 let ack_bytes = receiver
                     .handle_data(peer_addr, data_pkt)
                     .expect("Should get ACK for DATA");
-                let ack_fields = parse_vsf_fields(&ack_bytes);
-                let ack = PLTPAck::from_vsf_fields(&ack_fields).expect("Failed to parse DATA ACK");
+
+                // Parse ACK - header-only format
+                let (provenance, values) = parse_pt_header_field(&ack_bytes).expect("Failed to parse DATA ACK header");
+                let ack = PTAck::from_vsf_header(provenance, &values).expect("Failed to parse DATA ACK");
 
                 // handle_ack may return more packets to send as window grows
                 new_packets.extend(sender.handle_ack(peer_addr, ack));
@@ -383,13 +390,12 @@ mod tests {
             data_packets = new_packets;
         }
 
-        // Check completion
+        // Check completion - header-only format
         let complete_bytes = receiver
             .check_inbound_complete(peer_addr)
             .expect("Should have COMPLETE");
-        let complete_fields = parse_vsf_fields(&complete_bytes);
-        let complete =
-            PLTPComplete::from_vsf_fields(&complete_fields).expect("Failed to parse COMPLETE");
+        let (provenance, values) = parse_pt_header_field(&complete_bytes).expect("Failed to parse COMPLETE header");
+        let complete = PTComplete::from_vsf_header(provenance, &values).expect("Failed to parse COMPLETE");
         assert!(complete.success);
 
         sender.handle_complete(peer_addr, complete);
@@ -402,8 +408,8 @@ mod tests {
         assert_eq!(received, data);
     }
 
-    // Helper to parse VSF fields (simplified for tests)
-    fn parse_vsf_fields(bytes: &[u8]) -> Vec<(String, vsf::VsfType)> {
+    // Helper to parse VSF section fields (for legacy format like pt_spec)
+    fn parse_vsf_section_fields(bytes: &[u8]) -> Vec<(String, vsf::VsfType)> {
         use vsf::file_format::VsfHeader;
         use vsf::parse;
 
@@ -446,5 +452,86 @@ mod tests {
         }
 
         fields
+    }
+
+    // Helper to parse header-only PT packet fields
+    // Returns (provenance_hash, values) for the pt_* header field
+    fn parse_pt_header_field(bytes: &[u8]) -> Option<([u8; 32], Vec<vsf::VsfType>)> {
+        use vsf::file_format::VsfHeader;
+        use vsf::parse;
+
+        let (header, _) = VsfHeader::decode(bytes).ok()?;
+
+        // Extract provenance hash
+        let provenance_hash = match &header.provenance_hash {
+            vsf::VsfType::hp(hash) if hash.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(hash);
+                arr
+            }
+            _ => return None,
+        };
+
+        // Find pt_* header field and extract its values
+        for field in &header.fields {
+            if field.name.starts_with("pt_") && field.offset_bytes == 0 && field.size_bytes == 0 {
+                // Parse inline values from the raw bytes
+                // Skip magic "RÅ<"
+                if bytes.len() < 4 || &bytes[0..3] != "RÅ".as_bytes() || bytes[3] != b'<' {
+                    return None;
+                }
+
+                let mut ptr = 4;
+
+                // Find the inline field
+                while ptr < bytes.len() && bytes[ptr] != b'>' {
+                    if bytes[ptr] == b'(' {
+                        ptr += 1;
+
+                        let field_name = match parse(bytes, &mut ptr) {
+                            Ok(vsf::VsfType::d(name)) => name,
+                            _ => continue,
+                        };
+
+                        if field_name == field.name {
+                            // Found it! Parse values after ':'
+                            let mut values = Vec::new();
+                            if ptr < bytes.len() && bytes[ptr] == b':' {
+                                ptr += 1;
+                                loop {
+                                    if ptr >= bytes.len() || bytes[ptr] == b')' {
+                                        break;
+                                    }
+                                    if let Ok(value) = parse(bytes, &mut ptr) {
+                                        values.push(value);
+                                    } else {
+                                        break;
+                                    }
+                                    if ptr < bytes.len() && bytes[ptr] == b',' {
+                                        ptr += 1;
+                                    }
+                                }
+                            }
+                            return Some((provenance_hash, values));
+                        }
+
+                        // Skip to end of this field
+                        while ptr < bytes.len() && bytes[ptr] != b')' {
+                            let _ = parse(bytes, &mut ptr);
+                            if ptr < bytes.len() && bytes[ptr] == b',' {
+                                ptr += 1;
+                            }
+                        }
+                        if ptr < bytes.len() && bytes[ptr] == b')' {
+                            ptr += 1;
+                        }
+                    } else {
+                        let _ = parse(bytes, &mut ptr);
+                    }
+                }
+            }
+        }
+
+        None
     }
 }

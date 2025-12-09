@@ -1141,3 +1141,601 @@ fn compute_ack_provenance(
     hasher.update(b"ack");
     *hasher.finalize().as_bytes()
 }
+
+// =============================================================================
+// VSF-WRAPPED CLUTCH MESSAGES (Full 8-Algorithm CLUTCH)
+// =============================================================================
+
+use crate::crypto::clutch::{ClutchFullOfferPayload, ClutchKemResponsePayload};
+
+// NOTE: ceremony_id is now computed deterministically via CeremonyId::derive()
+// from sorted participant handle_hashes. No memory-hard hashing needed.
+// See src/types/friendship.rs for the implementation.
+
+/// Build a signed VSF ClutchFullOffer message (~548KB).
+///
+/// Uses VSF native key types for all 8 algorithms:
+/// - kx: X25519 (32B)
+/// - kp: P-384 (97B) and P-256 (65B) - size disambiguates
+/// - kk: secp256k1 (33B compressed or 65B uncompressed)
+/// - kf: FrodoKEM-976 (15632B)
+/// - kn: NTRU-HRSS-701 (1138B)
+/// - kl: Classic McEliece-460896 (~512KB)
+/// - kh: HQC-256 (7285B)
+///
+/// The ceremony_id is deterministic from CeremonyId::derive(&[handle_hashes]).
+/// Both parties compute the same value independently - no echo needed.
+///
+/// Returns signed VSF bytes ready for transmission.
+pub fn build_clutch_full_offer_vsf(
+    our_handle_proof: &[u8; 32],
+    their_handle_proof: &[u8; 32],
+    ceremony_id: &[u8; 32],
+    payload: &ClutchFullOfferPayload,
+    device_pubkey: &[u8; 32],
+    device_secret: &[u8; 32],
+) -> Result<Vec<u8>, String> {
+    use vsf::VsfBuilder;
+
+    // Canonical ordering for handle proofs (lower first)
+    let (lower_proof, higher_proof) = if our_handle_proof < their_handle_proof {
+        (our_handle_proof, their_handle_proof)
+    } else {
+        (their_handle_proof, our_handle_proof)
+    };
+
+    // Build unsigned VSF with signature placeholder
+    let unsigned = VsfBuilder::new()
+        .creation_time_nanos(vsf::eagle_time_nanos())
+        .provenance_hash(*ceremony_id)
+        .signature_ed25519(*device_pubkey, [0u8; 64])
+        .add_section(
+            "clutch_full_offer",
+            vec![
+                ("lower".to_string(), VsfType::hb(lower_proof.to_vec())),
+                ("higher".to_string(), VsfType::hb(higher_proof.to_vec())),
+                ("x25519".to_string(), VsfType::kx(payload.x25519_public.to_vec())),
+                ("p384".to_string(), VsfType::kp(payload.p384_public.clone())),
+                ("secp256k1".to_string(), VsfType::kk(payload.secp256k1_public.clone())),
+                ("p256".to_string(), VsfType::kp(payload.p256_public.clone())),
+                ("frodo".to_string(), VsfType::kf(payload.frodo976_public.clone())),
+                ("ntru".to_string(), VsfType::kn(payload.ntru701_public.clone())),
+                ("mceliece".to_string(), VsfType::kl(payload.mceliece_public.clone())),
+                ("hqc".to_string(), VsfType::kh(payload.hqc256_public.clone())),
+            ],
+        )
+        .build()
+        .map_err(|e| format!("Failed to build ClutchFullOffer VSF: {}", e))?;
+
+    // Sign the file (computes file hash, signs it, patches ge)
+    vsf::verification::sign_file(unsigned, device_secret)
+}
+
+/// Parse and verify a VSF ClutchFullOffer message.
+///
+/// Verifies:
+/// 1. VSF format and magic bytes
+/// 2. Ed25519 signature (header-level)
+/// 3. We are one of the handle_proofs (lower or higher)
+///
+/// Returns (payload, sender_pubkey, ceremony_id, lower_proof, higher_proof)
+pub fn parse_clutch_full_offer_vsf(
+    vsf_bytes: &[u8],
+    our_handle_proof: &[u8; 32],
+) -> Result<(ClutchFullOfferPayload, [u8; 32], [u8; 32], [u8; 32], [u8; 32]), String> {
+    // Verify signature first
+    if !vsf::verification::verify_file_signature(vsf_bytes)? {
+        return Err("Invalid signature on ClutchFullOffer".to_string());
+    }
+
+    // Extract signer pubkey
+    let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
+
+    // Parse header for ceremony_id (provenance hash)
+    use vsf::file_format::VsfHeader;
+    let (header, header_end) = VsfHeader::decode(vsf_bytes)
+        .map_err(|e| format!("Failed to parse header: {}", e))?;
+
+    let ceremony_id = extract_header_provenance(&header)?;
+
+    // Parse section
+    let mut ptr = header_end;
+    if ptr >= vsf_bytes.len() || vsf_bytes[ptr] != b'[' {
+        return Err("No section body in ClutchFullOffer".to_string());
+    }
+    ptr += 1;
+
+    // Parse section name
+    let section_name = match vsf::parse(vsf_bytes, &mut ptr) {
+        Ok(VsfType::d(name)) => name,
+        _ => return Err("Invalid section name".to_string()),
+    };
+
+    if section_name != "clutch_full_offer" {
+        return Err(format!("Expected 'clutch_full_offer' section, got '{}'", section_name));
+    }
+
+    // Parse fields
+    let mut fields: Vec<(String, VsfType)> = Vec::new();
+    while ptr < vsf_bytes.len() && vsf_bytes[ptr] != b']' {
+        if vsf_bytes[ptr] != b'(' {
+            return Err("Expected field start '('".to_string());
+        }
+        ptr += 1;
+        let field_name = match vsf::parse(vsf_bytes, &mut ptr) {
+            Ok(VsfType::d(name)) => name,
+            _ => return Err("Invalid field name".to_string()),
+        };
+        if ptr < vsf_bytes.len() && vsf_bytes[ptr] == b':' {
+            ptr += 1;
+            let value = vsf::parse(vsf_bytes, &mut ptr)
+                .map_err(|e| format!("Parse field value: {}", e))?;
+            fields.push((field_name, value));
+        }
+        if ptr >= vsf_bytes.len() || vsf_bytes[ptr] != b')' {
+            return Err("Expected field end ')'".to_string());
+        }
+        ptr += 1;
+    }
+
+    // Extract handle proofs
+    let lower_proof = extract_hash(&fields, "lower")?;
+    let higher_proof = extract_hash(&fields, "higher")?;
+
+    // Verify we are one of the parties
+    if our_handle_proof != &lower_proof && our_handle_proof != &higher_proof {
+        return Err("ClutchFullOffer not addressed to us".to_string());
+    }
+
+    // Extract all public keys using native VSF types
+    let x25519_public = extract_kx(&fields, "x25519")?;
+    let p384_public = extract_kp(&fields, "p384")?;
+    let secp256k1_public = extract_kk(&fields, "secp256k1")?;
+    let p256_public = extract_kp(&fields, "p256")?;
+    let frodo976_public = extract_kf(&fields, "frodo")?;
+    let ntru701_public = extract_kn(&fields, "ntru")?;
+    let mceliece_public = extract_kl(&fields, "mceliece")?;
+    let hqc256_public = extract_kh(&fields, "hqc")?;
+
+    let payload = ClutchFullOfferPayload {
+        x25519_public,
+        p384_public,
+        secp256k1_public,
+        p256_public,
+        frodo976_public,
+        ntru701_public,
+        mceliece_public,
+        hqc256_public,
+    };
+
+    #[cfg(feature = "development")]
+    {
+        let id_hex: String = ceremony_id.iter().take(8).map(|b| format!("{:02x}", b)).collect();
+        crate::log_info(&format!(
+            "CLUTCH: Received offer ({} bytes) ceremony_id={}...",
+            vsf_bytes.len(),
+            id_hex
+        ));
+        crate::log_info(&format!(
+            "CLUTCH: Offer pubkeys (X25519: {}B, P-384: {}B, secp256k1: {}B, P-256: {}B, Frodo: {}B, NTRU: {}B, McEliece: {}B, HQC: {}B)",
+            payload.x25519_public.len(),
+            payload.p384_public.len(),
+            payload.secp256k1_public.len(),
+            payload.p256_public.len(),
+            payload.frodo976_public.len(),
+            payload.ntru701_public.len(),
+            payload.mceliece_public.len(),
+            payload.hqc256_public.len()
+        ));
+    }
+
+    Ok((payload, sender_pubkey, ceremony_id, lower_proof, higher_proof))
+}
+
+/// Build a signed VSF ClutchKemResponse message (~31KB).
+///
+/// Uses VSF v() wrapped type for KEM ciphertexts:
+/// - v(b'f', ...): FrodoKEM ciphertext
+/// - v(b'n', ...): NTRU ciphertext
+/// - v(b'l', ...): Classic McEliece ciphertext
+/// - v(b'h', ...): HQC ciphertext
+///
+/// The ceremony_id is deterministic - both parties compute the same value.
+pub fn build_clutch_kem_response_vsf(
+    our_handle_proof: &[u8; 32],
+    their_handle_proof: &[u8; 32],
+    ceremony_id: &[u8; 32],
+    payload: &ClutchKemResponsePayload,
+    device_pubkey: &[u8; 32],
+    device_secret: &[u8; 32],
+) -> Result<Vec<u8>, String> {
+    use vsf::VsfBuilder;
+
+    // Canonical ordering for handle proofs (lower first)
+    let (lower_proof, higher_proof) = if our_handle_proof < their_handle_proof {
+        (our_handle_proof, their_handle_proof)
+    } else {
+        (their_handle_proof, our_handle_proof)
+    };
+
+    // Build unsigned VSF with signature placeholder
+    let unsigned = VsfBuilder::new()
+        .creation_time_nanos(vsf::eagle_time_nanos())
+        .provenance_hash(*ceremony_id)
+        .signature_ed25519(*device_pubkey, [0u8; 64])
+        .add_section(
+            "clutch_kem_response",
+            vec![
+                ("lower".to_string(), VsfType::hb(lower_proof.to_vec())),
+                ("higher".to_string(), VsfType::hb(higher_proof.to_vec())),
+                ("frodo_ct".to_string(), VsfType::v(b'f', payload.frodo976_ciphertext.clone())),
+                ("ntru_ct".to_string(), VsfType::v(b'n', payload.ntru701_ciphertext.clone())),
+                ("mceliece_ct".to_string(), VsfType::v(b'l', payload.mceliece_ciphertext.clone())),
+                ("hqc_ct".to_string(), VsfType::v(b'h', payload.hqc256_ciphertext.clone())),
+            ],
+        )
+        .build()
+        .map_err(|e| format!("Failed to build ClutchKemResponse VSF: {}", e))?;
+
+    // Sign the file
+    vsf::verification::sign_file(unsigned, device_secret)
+}
+
+/// Parse and verify a VSF ClutchKemResponse message.
+///
+/// Verifies:
+/// 1. VSF format and magic bytes
+/// 2. Ed25519 signature (header-level)
+/// 3. We are one of the handle_proofs
+///
+/// Returns (payload, sender_pubkey, ceremony_id, lower_proof, higher_proof)
+pub fn parse_clutch_kem_response_vsf(
+    vsf_bytes: &[u8],
+    our_handle_proof: &[u8; 32],
+) -> Result<(ClutchKemResponsePayload, [u8; 32], [u8; 32], [u8; 32], [u8; 32]), String> {
+    // Verify signature first
+    if !vsf::verification::verify_file_signature(vsf_bytes)? {
+        return Err("Invalid signature on ClutchKemResponse".to_string());
+    }
+
+    // Extract signer pubkey
+    let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
+
+    // Parse header for ceremony_id
+    use vsf::file_format::VsfHeader;
+    let (header, header_end) = VsfHeader::decode(vsf_bytes)
+        .map_err(|e| format!("Failed to parse header: {}", e))?;
+
+    let ceremony_id = extract_header_provenance(&header)?;
+
+    // Parse section
+    let mut ptr = header_end;
+    if ptr >= vsf_bytes.len() || vsf_bytes[ptr] != b'[' {
+        return Err("No section body in ClutchKemResponse".to_string());
+    }
+    ptr += 1;
+
+    // Parse section name
+    let section_name = match vsf::parse(vsf_bytes, &mut ptr) {
+        Ok(VsfType::d(name)) => name,
+        _ => return Err("Invalid section name".to_string()),
+    };
+
+    if section_name != "clutch_kem_response" {
+        return Err(format!("Expected 'clutch_kem_response' section, got '{}'", section_name));
+    }
+
+    // Parse fields
+    let mut fields: Vec<(String, VsfType)> = Vec::new();
+    while ptr < vsf_bytes.len() && vsf_bytes[ptr] != b']' {
+        if vsf_bytes[ptr] != b'(' {
+            return Err("Expected field start '('".to_string());
+        }
+        ptr += 1;
+        let field_name = match vsf::parse(vsf_bytes, &mut ptr) {
+            Ok(VsfType::d(name)) => name,
+            _ => return Err("Invalid field name".to_string()),
+        };
+        if ptr < vsf_bytes.len() && vsf_bytes[ptr] == b':' {
+            ptr += 1;
+            let value = vsf::parse(vsf_bytes, &mut ptr)
+                .map_err(|e| format!("Parse field value: {}", e))?;
+            fields.push((field_name, value));
+        }
+        if ptr >= vsf_bytes.len() || vsf_bytes[ptr] != b')' {
+            return Err("Expected field end ')'".to_string());
+        }
+        ptr += 1;
+    }
+
+    // Extract handle proofs
+    let lower_proof = extract_hash(&fields, "lower")?;
+    let higher_proof = extract_hash(&fields, "higher")?;
+
+    // Verify we are one of the parties
+    if our_handle_proof != &lower_proof && our_handle_proof != &higher_proof {
+        return Err("ClutchKemResponse not addressed to us".to_string());
+    }
+
+    // Extract ciphertexts using VSF v() wrapped type
+    let frodo976_ciphertext = extract_v(&fields, "frodo_ct", b'f')?;
+    let ntru701_ciphertext = extract_v(&fields, "ntru_ct", b'n')?;
+    let mceliece_ciphertext = extract_v(&fields, "mceliece_ct", b'l')?;
+    let hqc256_ciphertext = extract_v(&fields, "hqc_ct", b'h')?;
+
+    let payload = ClutchKemResponsePayload {
+        frodo976_ciphertext,
+        ntru701_ciphertext,
+        mceliece_ciphertext,
+        hqc256_ciphertext,
+    };
+
+    #[cfg(feature = "development")]
+    {
+        let hp_hex: String = ceremony_id.iter().take(8).map(|b| format!("{:02x}", b)).collect();
+        crate::log_info(&format!(
+            "CLUTCH: Received KEM response ({} bytes) ceremony_id={}...",
+            vsf_bytes.len(),
+            hp_hex
+        ));
+        crate::log_info(&format!(
+            "CLUTCH: KEM ciphertexts (Frodo: {}B, NTRU: {}B, McEliece: {}B, HQC: {}B)",
+            payload.frodo976_ciphertext.len(),
+            payload.ntru701_ciphertext.len(),
+            payload.mceliece_ciphertext.len(),
+            payload.hqc256_ciphertext.len()
+        ));
+    }
+
+    Ok((payload, sender_pubkey, ceremony_id, lower_proof, higher_proof))
+}
+
+/// Parse and verify a VSF ClutchFullOffer message WITHOUT recipient check.
+///
+/// This variant is used by the TCP receiver which doesn't know our handle_proof.
+/// The caller (app.rs) is responsible for verifying the message is addressed to them.
+///
+/// Verifies:
+/// 1. VSF format and magic bytes
+/// 2. Ed25519 signature (header-level)
+///
+/// Returns (payload, sender_pubkey, ceremony_id, lower_proof, higher_proof)
+pub fn parse_clutch_full_offer_vsf_without_recipient_check(
+    vsf_bytes: &[u8],
+) -> Result<(ClutchFullOfferPayload, [u8; 32], [u8; 32], [u8; 32], [u8; 32]), String> {
+    // Verify signature first
+    if !vsf::verification::verify_file_signature(vsf_bytes)? {
+        return Err("Invalid signature on ClutchFullOffer".to_string());
+    }
+
+    // Extract signer pubkey
+    let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
+
+    // Parse header for ceremony_id
+    use vsf::file_format::VsfHeader;
+    let (header, header_end) = VsfHeader::decode(vsf_bytes)
+        .map_err(|e| format!("Failed to parse header: {}", e))?;
+
+    let ceremony_id = extract_header_provenance(&header)?;
+
+    // Parse section
+    let mut ptr = header_end;
+    if ptr >= vsf_bytes.len() || vsf_bytes[ptr] != b'[' {
+        return Err("No section body in ClutchFullOffer".to_string());
+    }
+    ptr += 1;
+
+    // Parse section name
+    let section_name = match vsf::parse(vsf_bytes, &mut ptr) {
+        Ok(VsfType::d(name)) => name,
+        _ => return Err("Invalid section name".to_string()),
+    };
+
+    if section_name != "clutch_full_offer" {
+        return Err(format!("Expected 'clutch_full_offer' section, got '{}'", section_name));
+    }
+
+    // Parse fields
+    let mut fields: Vec<(String, VsfType)> = Vec::new();
+    while ptr < vsf_bytes.len() && vsf_bytes[ptr] != b']' {
+        if vsf_bytes[ptr] != b'(' {
+            return Err("Expected field start '('".to_string());
+        }
+        ptr += 1;
+        let field_name = match vsf::parse(vsf_bytes, &mut ptr) {
+            Ok(VsfType::d(name)) => name,
+            _ => return Err("Invalid field name".to_string()),
+        };
+        if ptr < vsf_bytes.len() && vsf_bytes[ptr] == b':' {
+            ptr += 1;
+            let value = vsf::parse(vsf_bytes, &mut ptr)
+                .map_err(|e| format!("Parse field value: {}", e))?;
+            fields.push((field_name, value));
+        }
+        if ptr >= vsf_bytes.len() || vsf_bytes[ptr] != b')' {
+            return Err("Expected field end ')'".to_string());
+        }
+        ptr += 1;
+    }
+
+    // Extract handle proofs (NO recipient check - caller verifies)
+    let lower_proof = extract_hash(&fields, "lower")?;
+    let higher_proof = extract_hash(&fields, "higher")?;
+
+    // Extract all public keys using native VSF types
+    let x25519_public = extract_kx(&fields, "x25519")?;
+    let p384_public = extract_kp(&fields, "p384")?;
+    let secp256k1_public = extract_kk(&fields, "secp256k1")?;
+    let p256_public = extract_kp(&fields, "p256")?;
+    let frodo976_public = extract_kf(&fields, "frodo")?;
+    let ntru701_public = extract_kn(&fields, "ntru")?;
+    let mceliece_public = extract_kl(&fields, "mceliece")?;
+    let hqc256_public = extract_kh(&fields, "hqc")?;
+
+    let payload = ClutchFullOfferPayload {
+        x25519_public,
+        p384_public,
+        secp256k1_public,
+        p256_public,
+        frodo976_public,
+        ntru701_public,
+        mceliece_public,
+        hqc256_public,
+    };
+
+    Ok((payload, sender_pubkey, ceremony_id, lower_proof, higher_proof))
+}
+
+/// Parse and verify a VSF ClutchKemResponse message WITHOUT recipient check.
+///
+/// This variant is used by the TCP receiver which doesn't know our handle_proof.
+/// The caller (app.rs) is responsible for verifying the message is addressed to them.
+///
+/// Verifies:
+/// 1. VSF format and magic bytes
+/// 2. Ed25519 signature (header-level)
+///
+/// Returns (payload, sender_pubkey, ceremony_id, lower_proof, higher_proof)
+pub fn parse_clutch_kem_response_vsf_without_recipient_check(
+    vsf_bytes: &[u8],
+) -> Result<(ClutchKemResponsePayload, [u8; 32], [u8; 32], [u8; 32], [u8; 32]), String> {
+    // Verify signature first
+    if !vsf::verification::verify_file_signature(vsf_bytes)? {
+        return Err("Invalid signature on ClutchKemResponse".to_string());
+    }
+
+    // Extract signer pubkey
+    let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
+
+    // Parse header for ceremony_id
+    use vsf::file_format::VsfHeader;
+    let (header, header_end) = VsfHeader::decode(vsf_bytes)
+        .map_err(|e| format!("Failed to parse header: {}", e))?;
+
+    let ceremony_id = extract_header_provenance(&header)?;
+
+    // Parse section
+    let mut ptr = header_end;
+    if ptr >= vsf_bytes.len() || vsf_bytes[ptr] != b'[' {
+        return Err("No section body in ClutchKemResponse".to_string());
+    }
+    ptr += 1;
+
+    // Parse section name
+    let section_name = match vsf::parse(vsf_bytes, &mut ptr) {
+        Ok(VsfType::d(name)) => name,
+        _ => return Err("Invalid section name".to_string()),
+    };
+
+    if section_name != "clutch_kem_response" {
+        return Err(format!("Expected 'clutch_kem_response' section, got '{}'", section_name));
+    }
+
+    // Parse fields
+    let mut fields: Vec<(String, VsfType)> = Vec::new();
+    while ptr < vsf_bytes.len() && vsf_bytes[ptr] != b']' {
+        if vsf_bytes[ptr] != b'(' {
+            return Err("Expected field start '('".to_string());
+        }
+        ptr += 1;
+        let field_name = match vsf::parse(vsf_bytes, &mut ptr) {
+            Ok(VsfType::d(name)) => name,
+            _ => return Err("Invalid field name".to_string()),
+        };
+        if ptr < vsf_bytes.len() && vsf_bytes[ptr] == b':' {
+            ptr += 1;
+            let value = vsf::parse(vsf_bytes, &mut ptr)
+                .map_err(|e| format!("Parse field value: {}", e))?;
+            fields.push((field_name, value));
+        }
+        if ptr >= vsf_bytes.len() || vsf_bytes[ptr] != b')' {
+            return Err("Expected field end ')'".to_string());
+        }
+        ptr += 1;
+    }
+
+    // Extract handle proofs (NO recipient check - caller verifies)
+    let lower_proof = extract_hash(&fields, "lower")?;
+    let higher_proof = extract_hash(&fields, "higher")?;
+
+    // Extract ciphertexts using VSF v() wrapped type
+    let frodo976_ciphertext = extract_v(&fields, "frodo_ct", b'f')?;
+    let ntru701_ciphertext = extract_v(&fields, "ntru_ct", b'n')?;
+    let mceliece_ciphertext = extract_v(&fields, "mceliece_ct", b'l')?;
+    let hqc256_ciphertext = extract_v(&fields, "hqc_ct", b'h')?;
+
+    let payload = ClutchKemResponsePayload {
+        frodo976_ciphertext,
+        ntru701_ciphertext,
+        mceliece_ciphertext,
+        hqc256_ciphertext,
+    };
+
+    Ok((payload, sender_pubkey, ceremony_id, lower_proof, higher_proof))
+}
+
+// Helper functions for extracting VSF key types
+
+fn extract_kx(fields: &[(String, VsfType)], key: &str) -> Result<[u8; 32], String> {
+    match get_field(fields, key) {
+        Some(VsfType::kx(bytes)) if bytes.len() == 32 => {
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(bytes);
+            Ok(arr)
+        }
+        _ => Err(format!("Missing or invalid kx field: {}", key)),
+    }
+}
+
+fn extract_kp(fields: &[(String, VsfType)], key: &str) -> Result<Vec<u8>, String> {
+    match get_field(fields, key) {
+        Some(VsfType::kp(bytes)) => Ok(bytes.clone()),
+        _ => Err(format!("Missing or invalid kp field: {}", key)),
+    }
+}
+
+fn extract_kk(fields: &[(String, VsfType)], key: &str) -> Result<Vec<u8>, String> {
+    match get_field(fields, key) {
+        Some(VsfType::kk(bytes)) => Ok(bytes.clone()),
+        _ => Err(format!("Missing or invalid kk field: {}", key)),
+    }
+}
+
+fn extract_kf(fields: &[(String, VsfType)], key: &str) -> Result<Vec<u8>, String> {
+    match get_field(fields, key) {
+        Some(VsfType::kf(bytes)) => Ok(bytes.clone()),
+        _ => Err(format!("Missing or invalid kf field: {}", key)),
+    }
+}
+
+fn extract_kn(fields: &[(String, VsfType)], key: &str) -> Result<Vec<u8>, String> {
+    match get_field(fields, key) {
+        Some(VsfType::kn(bytes)) => Ok(bytes.clone()),
+        _ => Err(format!("Missing or invalid kn field: {}", key)),
+    }
+}
+
+fn extract_kl(fields: &[(String, VsfType)], key: &str) -> Result<Vec<u8>, String> {
+    match get_field(fields, key) {
+        Some(VsfType::kl(bytes)) => Ok(bytes.clone()),
+        _ => Err(format!("Missing or invalid kl field: {}", key)),
+    }
+}
+
+fn extract_kh(fields: &[(String, VsfType)], key: &str) -> Result<Vec<u8>, String> {
+    match get_field(fields, key) {
+        Some(VsfType::kh(bytes)) => Ok(bytes.clone()),
+        _ => Err(format!("Missing or invalid kh field: {}", key)),
+    }
+}
+
+fn extract_v(fields: &[(String, VsfType)], key: &str, expected_tag: u8) -> Result<Vec<u8>, String> {
+    match get_field(fields, key) {
+        Some(VsfType::v(tag, bytes)) if *tag == expected_tag => Ok(bytes.clone()),
+        Some(VsfType::v(tag, _)) => Err(format!(
+            "Wrong tag for {}: expected '{}', got '{}'",
+            key, expected_tag as char, *tag as char
+        )),
+        _ => Err(format!("Missing or invalid v field: {}", key)),
+    }
+}

@@ -1,6 +1,6 @@
-//! PLTP Packet Types
+//! PT Packet Types
 //!
-//! Photon Large Transfer Protocol - reliable UDP-based large transfers.
+//! Photon Transfer - reliable UDP-based large transfers.
 //!
 //! Packet types:
 //! - SPEC: VSF packet initiating transfer (total_packets, packet_size, data_hash)
@@ -14,23 +14,23 @@ use crate::network::fgtw::Keypair;
 
 /// SPEC packet - initiates a large transfer
 ///
-/// VSF section "pltp_spec" containing:
+/// VSF section "pt_spec" containing:
 /// - total_packets: number of DATA packets (VSF variable uint)
 /// - packet_size: payload bytes per DATA packet (typically 1000)
 /// - total_size: total transfer size in bytes
 /// - data_hash: BLAKE3 hash of complete data for verification
 /// - signature in header proves sender identity
 #[derive(Clone, Debug)]
-pub struct PLTPSpec {
+pub struct PTSpec {
     pub total_packets: u32,
     pub packet_size: u16,
     pub total_size: u32,
     pub data_hash: [u8; 32],
 }
 
-impl PLTPSpec {
-    /// Default payload size per DATA packet
-    pub const DEFAULT_PACKET_SIZE: u16 = 1000;
+impl PTSpec {
+    /// Default payload size per DATA packet (1KB aligned for memory efficiency)
+    pub const DEFAULT_PACKET_SIZE: u16 = 1024;
 
     /// Create SPEC for given data
     pub fn new(data: &[u8]) -> Self {
@@ -60,7 +60,7 @@ impl PLTPSpec {
             .provenance_hash(provenance)
             .signature_ed25519(*keypair.public.as_bytes(), sig_bytes)
             .add_section(
-                "pltp_spec",
+                "pt_spec",
                 vec![
                     (
                         "count".to_string(),
@@ -140,7 +140,7 @@ impl PLTPSpec {
 
     fn compute_provenance(&self) -> [u8; 32] {
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"PLTP_SPEC_v1");
+        hasher.update(b"PT_SPEC_v1");
         hasher.update(&self.total_packets.to_le_bytes());
         hasher.update(&self.packet_size.to_le_bytes());
         hasher.update(&self.total_size.to_le_bytes());
@@ -169,12 +169,12 @@ impl PLTPSpec {
 /// - seq_vsf: VSF-style variable-length sequence number
 /// - payload: raw data bytes (up to packet_size from SPEC)
 #[derive(Clone, Debug)]
-pub struct PLTPData {
+pub struct PTData {
     pub sequence: u32,
     pub payload: Vec<u8>,
 }
 
-impl PLTPData {
+impl PTData {
     /// Serialize to wire format
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(1 + 4 + self.payload.len());
@@ -202,18 +202,18 @@ impl PLTPData {
 
 /// ACK packet - acknowledge receipt of DATA packet
 ///
-/// VSF section "pltp_ack" containing:
-/// - seq: sequence number being acknowledged
-/// - chunk_hash: BLAKE3 of the received payload (proves correct receipt)
-/// - buffer_pct: receiver buffer utilization 0-100 (for flow control)
+/// Header-only VSF format:
+/// - provenance_hash = chunk_hash (BLAKE3 of received payload - IS the integrity proof)
+/// - inline field: (pt_ack:u#{seq},u#{buf})
+/// - No signature needed - provenance hash provides integrity
 #[derive(Clone, Debug)]
-pub struct PLTPAck {
+pub struct PTAck {
     pub sequence: u32,
     pub chunk_hash: [u8; 32],
     pub buffer_percent: u8,
 }
 
-impl PLTPAck {
+impl PTAck {
     /// Create ACK for received data
     pub fn new(sequence: u32, payload: &[u8], buffer_percent: u8) -> Self {
         Self {
@@ -223,31 +223,64 @@ impl PLTPAck {
         }
     }
 
-    /// Serialize to VSF bytes
-    pub fn to_vsf_bytes(&self, keypair: &Keypair) -> Vec<u8> {
+    /// Serialize to VSF bytes (header-only, ~55 bytes vs 187 bytes before)
+    ///
+    /// Format: RÅ< ... hp[chunk_hash] n1 (pt_ack:u#{seq},u#{buf}) >
+    /// The provenance hash IS the chunk hash - proving correct receipt.
+    #[allow(dead_code)]
+    pub fn to_vsf_bytes(&self, _keypair: &Keypair) -> Vec<u8> {
         use vsf::{VsfBuilder, VsfType};
 
-        let provenance = self.compute_provenance();
-        let sig = keypair.sign(&provenance);
-        let mut sig_bytes = [0u8; 64];
-        sig_bytes.copy_from_slice(&sig.to_bytes());
-
+        // Provenance hash IS the chunk hash - the integrity proof
         VsfBuilder::new()
-            .provenance_hash(provenance)
-            .signature_ed25519(*keypair.public.as_bytes(), sig_bytes)
-            .add_section(
-                "pltp_ack",
+            .provenance_hash(self.chunk_hash)
+            .provenance_only() // No signature - provenance hash provides integrity
+            .add_inline_field(
+                "pt_ack",
                 vec![
-                    ("seq".to_string(), VsfType::u(self.sequence as usize, false)),
-                    ("hash".to_string(), VsfType::hb(self.chunk_hash.to_vec())),
-                    ("buf".to_string(), VsfType::u3(self.buffer_percent)),
+                    VsfType::u(self.sequence as usize, false),
+                    VsfType::u3(self.buffer_percent),
                 ],
             )
             .build()
             .unwrap_or_default()
     }
 
-    /// Parse from VSF fields
+    /// Parse from VSF header (inline field format)
+    ///
+    /// Expects header with provenance_hash (= chunk_hash) and inline field:
+    /// (pt_ack:u#{seq},u#{buf})
+    pub fn from_vsf_header(
+        provenance_hash: [u8; 32],
+        field_values: &[vsf::VsfType],
+    ) -> Option<Self> {
+        use vsf::VsfType;
+
+        // First value is sequence
+        let sequence = match field_values.first()? {
+            VsfType::u(n, _) => *n as u32,
+            VsfType::u3(n) => *n as u32,
+            VsfType::u4(n) => *n as u32,
+            VsfType::u5(n) => *n as u32,
+            VsfType::u6(n) => *n as u32,
+            _ => return None,
+        };
+
+        // Second value is buffer percent
+        let buffer_percent = match field_values.get(1) {
+            Some(VsfType::u3(n)) => *n,
+            Some(VsfType::u(n, _)) => *n as u8,
+            _ => 0,
+        };
+
+        Some(Self {
+            sequence,
+            chunk_hash: provenance_hash, // Provenance IS the chunk hash
+            buffer_percent,
+        })
+    }
+
+    /// Parse from VSF fields (legacy section format for backwards compat)
     pub fn from_vsf_fields(fields: &[(String, vsf::VsfType)]) -> Option<Self> {
         use vsf::VsfType;
 
@@ -291,57 +324,69 @@ impl PLTPAck {
             buffer_percent,
         })
     }
-
-    fn compute_provenance(&self) -> [u8; 32] {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(b"PLTP_ACK_v1");
-        hasher.update(&self.sequence.to_le_bytes());
-        hasher.update(&self.chunk_hash);
-        *hasher.finalize().as_bytes()
-    }
 }
 
 /// NAK packet - request retransmission of missing sequences
 ///
-/// VSF section "pltp_nak" containing:
-/// - seqs: list of missing sequence numbers
+/// Header-only VSF format:
+/// - provenance_hash = hash of missing sequences (integrity proof)
+/// - inline field: (pt_nak:u#{seq1},u#{seq2},...)
+/// - No signature needed - provenance hash provides integrity
 #[derive(Clone, Debug)]
-pub struct PLTPNak {
+pub struct PTNak {
     pub missing_sequences: Vec<u32>,
 }
 
-impl PLTPNak {
-    /// Serialize to VSF bytes
-    pub fn to_vsf_bytes(&self, keypair: &Keypair) -> Vec<u8> {
-        use vsf::{Tensor, VsfBuilder, VsfType};
+impl PTNak {
+    /// Serialize to VSF bytes (header-only, compact)
+    #[allow(dead_code)]
+    pub fn to_vsf_bytes(&self, _keypair: &Keypair) -> Vec<u8> {
+        use vsf::{VsfBuilder, VsfType};
 
         let provenance = self.compute_provenance();
-        let sig = keypair.sign(&provenance);
-        let mut sig_bytes = [0u8; 64];
-        sig_bytes.copy_from_slice(&sig.to_bytes());
 
-        // Encode sequences as bytes (4 bytes each, little-endian)
-        let seq_bytes: Vec<u8> = self
+        // Encode each missing sequence as a VsfType::u
+        let values: Vec<VsfType> = self
             .missing_sequences
             .iter()
-            .flat_map(|s| s.to_le_bytes())
+            .map(|&seq| VsfType::u(seq as usize, false))
             .collect();
 
         VsfBuilder::new()
             .provenance_hash(provenance)
-            .signature_ed25519(*keypair.public.as_bytes(), sig_bytes)
-            .add_section(
-                "pltp_nak",
-                vec![(
-                    "seqs".to_string(),
-                    VsfType::t_u3(Tensor::new(vec![seq_bytes.len()], seq_bytes)),
-                )],
-            )
+            .provenance_only() // No signature - provenance hash provides integrity
+            .add_inline_field("pt_nak", values)
             .build()
             .unwrap_or_default()
     }
 
-    /// Parse from VSF fields
+    /// Parse from VSF header (inline field format)
+    ///
+    /// Expects header with provenance_hash and inline field:
+    /// (pt_nak:u#{seq1},u#{seq2},...)
+    pub fn from_vsf_header(field_values: &[vsf::VsfType]) -> Option<Self> {
+        use vsf::VsfType;
+
+        let missing_sequences: Vec<u32> = field_values
+            .iter()
+            .filter_map(|v| match v {
+                VsfType::u(n, _) => Some(*n as u32),
+                VsfType::u3(n) => Some(*n as u32),
+                VsfType::u4(n) => Some(*n as u32),
+                VsfType::u5(n) => Some(*n as u32),
+                VsfType::u6(n) => Some(*n as u32),
+                _ => None,
+            })
+            .collect();
+
+        if missing_sequences.is_empty() {
+            return None;
+        }
+
+        Some(Self { missing_sequences })
+    }
+
+    /// Parse from VSF fields (legacy section format for backwards compat)
     pub fn from_vsf_fields(fields: &[(String, vsf::VsfType)]) -> Option<Self> {
         use vsf::VsfType;
 
@@ -364,7 +409,7 @@ impl PLTPNak {
 
     fn compute_provenance(&self) -> [u8; 32] {
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"PLTP_NAK_v1");
+        hasher.update(b"PT_NAK_v1");
         for seq in &self.missing_sequences {
             hasher.update(&seq.to_le_bytes());
         }
@@ -396,35 +441,48 @@ impl ControlCommand {
 
 /// CONTROL packet - flow control signals
 ///
-/// VSF section "pltp_ctrl" containing:
-/// - cmd: control command (0=pause, 1=resume, 2=slow_down, 3=abort)
+/// Header-only VSF format:
+/// - provenance_hash = hash of command (integrity proof)
+/// - inline field: (pt_ctrl:u#{cmd})
+/// - No signature needed - provenance hash provides integrity
 #[derive(Clone, Debug)]
-pub struct PLTPControl {
+pub struct PTControl {
     pub command: ControlCommand,
 }
 
-impl PLTPControl {
-    /// Serialize to VSF bytes
-    pub fn to_vsf_bytes(&self, keypair: &Keypair) -> Vec<u8> {
+impl PTControl {
+    /// Serialize to VSF bytes (header-only, ~45 bytes vs 180+ before)
+    #[allow(dead_code)]
+    pub fn to_vsf_bytes(&self, _keypair: &Keypair) -> Vec<u8> {
         use vsf::{VsfBuilder, VsfType};
 
         let provenance = self.compute_provenance();
-        let sig = keypair.sign(&provenance);
-        let mut sig_bytes = [0u8; 64];
-        sig_bytes.copy_from_slice(&sig.to_bytes());
 
         VsfBuilder::new()
             .provenance_hash(provenance)
-            .signature_ed25519(*keypair.public.as_bytes(), sig_bytes)
-            .add_section(
-                "pltp_ctrl",
-                vec![("cmd".to_string(), VsfType::u3(self.command as u8))],
-            )
+            .provenance_only() // No signature - provenance hash provides integrity
+            .add_inline_field("pt_ctrl", vec![VsfType::u3(self.command as u8)])
             .build()
             .unwrap_or_default()
     }
 
-    /// Parse from VSF fields
+    /// Parse from VSF header (inline field format)
+    ///
+    /// Expects header with provenance_hash and inline field:
+    /// (pt_ctrl:u#{cmd})
+    pub fn from_vsf_header(field_values: &[vsf::VsfType]) -> Option<Self> {
+        use vsf::VsfType;
+
+        let cmd = field_values.first().and_then(|v| match v {
+            VsfType::u3(n) => ControlCommand::from_u8(*n),
+            VsfType::u(n, _) => ControlCommand::from_u8(*n as u8),
+            _ => None,
+        })?;
+
+        Some(Self { command: cmd })
+    }
+
+    /// Parse from VSF fields (legacy section format for backwards compat)
     pub fn from_vsf_fields(fields: &[(String, vsf::VsfType)]) -> Option<Self> {
         use vsf::VsfType;
 
@@ -442,7 +500,7 @@ impl PLTPControl {
 
     fn compute_provenance(&self) -> [u8; 32] {
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"PLTP_CTRL_v1");
+        hasher.update(b"PT_CTRL_v1");
         hasher.update(&[self.command as u8]);
         *hasher.finalize().as_bytes()
     }
@@ -450,43 +508,59 @@ impl PLTPControl {
 
 /// COMPLETE packet - final transfer verification
 ///
-/// VSF section "pltp_done" containing:
-/// - final_hash: BLAKE3 of reassembled data
-/// - success: whether hash matched expected
+/// Header-only VSF format:
+/// - provenance_hash = final_hash (BLAKE3 of reassembled data - IS the verification)
+/// - inline field: (pt_done:u#{ok}) where ok=1 for success, 0 for failure
+/// - No signature needed - provenance hash provides integrity
 #[derive(Clone, Debug)]
-pub struct PLTPComplete {
+pub struct PTComplete {
     pub final_hash: [u8; 32],
     pub success: bool,
 }
 
-impl PLTPComplete {
-    /// Serialize to VSF bytes
-    pub fn to_vsf_bytes(&self, keypair: &Keypair) -> Vec<u8> {
+impl PTComplete {
+    /// Serialize to VSF bytes (header-only, ~50 bytes vs 220+ before)
+    ///
+    /// The provenance hash IS the final_hash - proving the complete data hash.
+    #[allow(dead_code)]
+    pub fn to_vsf_bytes(&self, _keypair: &Keypair) -> Vec<u8> {
         use vsf::{VsfBuilder, VsfType};
 
-        let provenance = self.compute_provenance();
-        let sig = keypair.sign(&provenance);
-        let mut sig_bytes = [0u8; 64];
-        sig_bytes.copy_from_slice(&sig.to_bytes());
-
+        // Provenance hash IS the final hash - the verification proof
         VsfBuilder::new()
-            .provenance_hash(provenance)
-            .signature_ed25519(*keypair.public.as_bytes(), sig_bytes)
-            .add_section(
-                "pltp_done",
-                vec![
-                    ("hash".to_string(), VsfType::hb(self.final_hash.to_vec())),
-                    (
-                        "ok".to_string(),
-                        VsfType::u3(if self.success { 1 } else { 0 }),
-                    ),
-                ],
+            .provenance_hash(self.final_hash)
+            .provenance_only() // No signature - provenance hash provides integrity
+            .add_inline_field(
+                "pt_done",
+                vec![VsfType::u3(if self.success { 1 } else { 0 })],
             )
             .build()
             .unwrap_or_default()
     }
 
-    /// Parse from VSF fields
+    /// Parse from VSF header (inline field format)
+    ///
+    /// Expects header with provenance_hash (= final_hash) and inline field:
+    /// (pt_done:u#{ok})
+    pub fn from_vsf_header(
+        provenance_hash: [u8; 32],
+        field_values: &[vsf::VsfType],
+    ) -> Option<Self> {
+        use vsf::VsfType;
+
+        let success = field_values.first().map(|v| match v {
+            VsfType::u3(n) => *n != 0,
+            VsfType::u(n, _) => *n != 0,
+            _ => false,
+        }).unwrap_or(false);
+
+        Some(Self {
+            final_hash: provenance_hash, // Provenance IS the final hash
+            success,
+        })
+    }
+
+    /// Parse from VSF fields (legacy section format for backwards compat)
     pub fn from_vsf_fields(fields: &[(String, vsf::VsfType)]) -> Option<Self> {
         use vsf::VsfType;
 
@@ -516,14 +590,6 @@ impl PLTPComplete {
             final_hash,
             success,
         })
-    }
-
-    fn compute_provenance(&self) -> [u8; 32] {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(b"PLTP_DONE_v1");
-        hasher.update(&self.final_hash);
-        hasher.update(&[if self.success { 1 } else { 0 }]);
-        *hasher.finalize().as_bytes()
     }
 }
 
@@ -602,7 +668,7 @@ mod tests {
 
     #[test]
     fn test_data_packet_roundtrip() {
-        let data = PLTPData {
+        let data = PTData {
             sequence: 42,
             payload: vec![0xAB; 1000],
         };
@@ -610,14 +676,14 @@ mod tests {
         let bytes = data.to_bytes();
         assert_eq!(bytes[0], b'd');
 
-        let parsed = PLTPData::from_bytes(&bytes).unwrap();
+        let parsed = PTData::from_bytes(&bytes).unwrap();
         assert_eq!(parsed.sequence, 42);
         assert_eq!(parsed.payload.len(), 1000);
     }
 
     #[test]
     fn test_data_packet_large_sequence() {
-        let data = PLTPData {
+        let data = PTData {
             sequence: 548, // Typical for CLUTCH full offer
             payload: vec![0xCD; 100],
         };
@@ -626,14 +692,14 @@ mod tests {
         // 'd' + 2-byte seq + payload
         assert_eq!(bytes.len(), 1 + 2 + 100);
 
-        let parsed = PLTPData::from_bytes(&bytes).unwrap();
+        let parsed = PTData::from_bytes(&bytes).unwrap();
         assert_eq!(parsed.sequence, 548);
     }
 
     #[test]
     fn test_spec_seq_bytes() {
         // Small transfer: 17 packets (KEM response) = 1 byte seq
-        let spec = PLTPSpec {
+        let spec = PTSpec {
             total_packets: 17,
             packet_size: 1000,
             total_size: 17000,
@@ -642,7 +708,7 @@ mod tests {
         assert_eq!(spec.seq_bytes(), 1);
 
         // Large transfer: 548 packets (CLUTCH full offer) = 2 byte seq
-        let spec = PLTPSpec {
+        let spec = PTSpec {
             total_packets: 548,
             packet_size: 1000,
             total_size: 548000,

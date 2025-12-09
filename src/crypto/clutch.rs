@@ -557,41 +557,11 @@ impl ClutchAllKeypairs {
 // CLUTCH PAYLOAD STRUCTS FOR NETWORK TRANSFER
 // =============================================================================
 
-// Fixed sizes for all public keys (protocol constants)
-pub const X25519_PUBKEY_SIZE: usize = 32;
-pub const P384_PUBKEY_SIZE: usize = 97;
-pub const SECP256K1_PUBKEY_SIZE: usize = 65;
-pub const P256_PUBKEY_SIZE: usize = 65;
-pub const FRODO976_PUBKEY_SIZE: usize = 15632;
-pub const NTRU701_PUBKEY_SIZE: usize = 1138;
-pub const MCELIECE_PUBKEY_SIZE: usize = 524160;
-pub const HQC256_PUBKEY_SIZE: usize = 7285;
-
-// Fixed sizes for KEM ciphertexts
-pub const FRODO976_CT_SIZE: usize = 15744;
-pub const NTRU701_CT_SIZE: usize = 1138;
-pub const MCELIECE_CT_SIZE: usize = 188;
-pub const HQC256_CT_SIZE: usize = 14469;
-
-/// Total size of ClutchFullOfferPayload
-pub const CLUTCH_FULL_OFFER_SIZE: usize = X25519_PUBKEY_SIZE
-    + P384_PUBKEY_SIZE
-    + SECP256K1_PUBKEY_SIZE
-    + P256_PUBKEY_SIZE
-    + FRODO976_PUBKEY_SIZE
-    + NTRU701_PUBKEY_SIZE
-    + MCELIECE_PUBKEY_SIZE
-    + HQC256_PUBKEY_SIZE;
-
-/// Total size of ClutchKemResponsePayload
-pub const CLUTCH_KEM_RESPONSE_SIZE: usize =
-    FRODO976_CT_SIZE + NTRU701_CT_SIZE + MCELIECE_CT_SIZE + HQC256_CT_SIZE;
-
 /// Full offer with all 8 public keys (~548KB).
 /// Sent by both parties at start of CLUTCH ceremony.
 ///
-/// Wire format (no length prefixes - sizes are protocol-fixed):
-/// [x25519:32][p384:97][secp256k1:65][p256:65][frodo:15632][ntru:1138][mceliece:524160][hqc:7285]
+/// For network serialization, use the VSF-wrapped functions in protocol.rs:
+/// - build_clutch_full_offer_vsf() / parse_clutch_full_offer_vsf()
 #[derive(Clone, Debug)]
 pub struct ClutchFullOfferPayload {
     pub x25519_public: [u8; 32],
@@ -614,75 +584,19 @@ impl ClutchFullOfferPayload {
             p256_public: keys.p256_public.clone(),
             frodo976_public: keys.frodo976_public.clone(),
             ntru701_public: keys.ntru701_public.clone(),
-            mceliece_public: keys.mceliece_public.clone(),
+            // TODO: Re-enable McEliece once PT transfer is stable
+            // McEliece public key is ~512KB, makes testing painful
+            mceliece_public: vec![], // keys.mceliece_public.clone(),
             hqc256_public: keys.hqc256_public.clone(),
         }
     }
-
-    /// Serialize to bytes (no length prefixes - fixed sizes)
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(CLUTCH_FULL_OFFER_SIZE);
-        out.extend_from_slice(&self.x25519_public);
-        out.extend_from_slice(&self.p384_public);
-        out.extend_from_slice(&self.secp256k1_public);
-        out.extend_from_slice(&self.p256_public);
-        out.extend_from_slice(&self.frodo976_public);
-        out.extend_from_slice(&self.ntru701_public);
-        out.extend_from_slice(&self.mceliece_public);
-        out.extend_from_slice(&self.hqc256_public);
-        out
-    }
-
-    /// Parse from bytes
-    pub fn from_bytes(data: &[u8]) -> Option<Self> {
-        if data.len() != CLUTCH_FULL_OFFER_SIZE {
-            return None;
-        }
-
-        let mut pos = 0;
-
-        let mut x25519_public = [0u8; 32];
-        x25519_public.copy_from_slice(&data[pos..pos + X25519_PUBKEY_SIZE]);
-        pos += X25519_PUBKEY_SIZE;
-
-        let p384_public = data[pos..pos + P384_PUBKEY_SIZE].to_vec();
-        pos += P384_PUBKEY_SIZE;
-
-        let secp256k1_public = data[pos..pos + SECP256K1_PUBKEY_SIZE].to_vec();
-        pos += SECP256K1_PUBKEY_SIZE;
-
-        let p256_public = data[pos..pos + P256_PUBKEY_SIZE].to_vec();
-        pos += P256_PUBKEY_SIZE;
-
-        let frodo976_public = data[pos..pos + FRODO976_PUBKEY_SIZE].to_vec();
-        pos += FRODO976_PUBKEY_SIZE;
-
-        let ntru701_public = data[pos..pos + NTRU701_PUBKEY_SIZE].to_vec();
-        pos += NTRU701_PUBKEY_SIZE;
-
-        let mceliece_public = data[pos..pos + MCELIECE_PUBKEY_SIZE].to_vec();
-        pos += MCELIECE_PUBKEY_SIZE;
-
-        let hqc256_public = data[pos..pos + HQC256_PUBKEY_SIZE].to_vec();
-
-        Some(Self {
-            x25519_public,
-            p384_public,
-            secp256k1_public,
-            p256_public,
-            frodo976_public,
-            ntru701_public,
-            mceliece_public,
-            hqc256_public,
-        })
-    }
 }
 
-/// KEM response with 4 ciphertexts (~17KB).
+/// KEM response with 4 ciphertexts (~31KB).
 /// Sent by both parties after receiving peer's full offer.
 ///
-/// Wire format (no length prefixes - sizes are protocol-fixed):
-/// [frodo_ct:15744][ntru_ct:1138][mceliece_ct:188][hqc_ct:14469]
+/// For network serialization, use the VSF-wrapped functions in protocol.rs:
+/// - build_clutch_kem_response_vsf() / parse_clutch_kem_response_vsf()
 #[derive(Clone, Debug)]
 pub struct ClutchKemResponsePayload {
     pub frodo976_ciphertext: Vec<u8>,
@@ -692,54 +606,33 @@ pub struct ClutchKemResponsePayload {
 }
 
 impl ClutchKemResponsePayload {
-    /// Serialize to bytes (no length prefixes - fixed sizes)
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(CLUTCH_KEM_RESPONSE_SIZE);
-        out.extend_from_slice(&self.frodo976_ciphertext);
-        out.extend_from_slice(&self.ntru701_ciphertext);
-        out.extend_from_slice(&self.mceliece_ciphertext);
-        out.extend_from_slice(&self.hqc256_ciphertext);
-        out
-    }
-
-    /// Parse from bytes
-    pub fn from_bytes(data: &[u8]) -> Option<Self> {
-        if data.len() != CLUTCH_KEM_RESPONSE_SIZE {
-            return None;
-        }
-
-        let mut pos = 0;
-
-        let frodo976_ciphertext = data[pos..pos + FRODO976_CT_SIZE].to_vec();
-        pos += FRODO976_CT_SIZE;
-
-        let ntru701_ciphertext = data[pos..pos + NTRU701_CT_SIZE].to_vec();
-        pos += NTRU701_CT_SIZE;
-
-        let mceliece_ciphertext = data[pos..pos + MCELIECE_CT_SIZE].to_vec();
-        pos += MCELIECE_CT_SIZE;
-
-        let hqc256_ciphertext = data[pos..pos + HQC256_CT_SIZE].to_vec();
-
-        Some(Self {
-            frodo976_ciphertext,
-            ntru701_ciphertext,
-            mceliece_ciphertext,
-            hqc256_ciphertext,
-        })
-    }
-
     /// Perform KEM encapsulations to peer's public keys.
     /// Returns (payload, shared_secrets) where shared_secrets are our encapsulated secrets.
     pub fn encapsulate_to_peer(
         their_offer: &ClutchFullOfferPayload,
     ) -> (Self, ClutchKemSharedSecrets) {
+        #[cfg(feature = "development")]
+        crate::log_info("CLUTCH: Encapsulating to peer's public keys...");
+
         // Encapsulate to each KEM public key
         let (frodo976_ciphertext, frodo_ss) = frodo976_encapsulate(&their_offer.frodo976_public);
         let (ntru701_ciphertext, ntru_ss) = ntru701_encapsulate(&their_offer.ntru701_public);
-        let (mceliece_ciphertext, mceliece_ss) =
-            mceliece460896_encapsulate(&their_offer.mceliece_public);
+        // TODO: Re-enable McEliece once PT transfer is stable
+        let (mceliece_ciphertext, mceliece_ss) = if their_offer.mceliece_public.is_empty() {
+            (vec![], vec![0u8; 32]) // Placeholder shared secret
+        } else {
+            mceliece460896_encapsulate(&their_offer.mceliece_public)
+        };
         let (hqc256_ciphertext, hqc_ss) = hqc256_encapsulate(&their_offer.hqc256_public);
+
+        #[cfg(feature = "development")]
+        crate::log_info(&format!(
+            "CLUTCH: KEM ciphertexts ready (Frodo: {}B, NTRU: {}B, McEliece: {}B, HQC: {}B)",
+            frodo976_ciphertext.len(),
+            ntru701_ciphertext.len(),
+            mceliece_ciphertext.len(),
+            hqc256_ciphertext.len()
+        ));
 
         let payload = Self {
             frodo976_ciphertext,
@@ -774,11 +667,32 @@ impl ClutchKemSharedSecrets {
         response: &ClutchKemResponsePayload,
         our_keys: &ClutchAllKeypairs,
     ) -> Self {
+        #[cfg(feature = "development")]
+        crate::log_info("CLUTCH: Decapsulating from peer's ciphertexts...");
+
         let frodo = frodo976_decapsulate(&our_keys.frodo976_secret, &response.frodo976_ciphertext);
+        #[cfg(feature = "development")]
+        crate::log_info(&format!("CLUTCH: ✓ Frodo976 decap OK ({}B shared secret)", frodo.len()));
+
         let ntru = ntru701_decapsulate(&our_keys.ntru701_secret, &response.ntru701_ciphertext);
-        let mceliece =
-            mceliece460896_decapsulate(&our_keys.mceliece_secret, &response.mceliece_ciphertext);
+        #[cfg(feature = "development")]
+        crate::log_info(&format!("CLUTCH: ✓ NTRU701 decap OK ({}B shared secret)", ntru.len()));
+
+        // TODO: Re-enable McEliece once PT transfer is stable
+        let mceliece = if response.mceliece_ciphertext.is_empty() {
+            #[cfg(feature = "development")]
+            crate::log_info("CLUTCH: - McEliece skipped (empty ciphertext)");
+            vec![0u8; 32] // Placeholder shared secret
+        } else {
+            let ss = mceliece460896_decapsulate(&our_keys.mceliece_secret, &response.mceliece_ciphertext);
+            #[cfg(feature = "development")]
+            crate::log_info(&format!("CLUTCH: ✓ McEliece decap OK ({}B shared secret)", ss.len()));
+            ss
+        };
+
         let hqc = hqc256_decapsulate(&our_keys.hqc256_secret, &response.hqc256_ciphertext);
+        #[cfg(feature = "development")]
+        crate::log_info(&format!("CLUTCH: ✓ HQC256 decap OK ({}B shared secret)", hqc.len()));
 
         Self {
             frodo,
@@ -801,6 +715,9 @@ impl ClutchKemSharedSecrets {
 /// WARNING: This generates ~512KB of public key material (mostly McEliece).
 /// Caller MUST call zeroize() on the result when done!
 pub fn generate_all_ephemeral_keypairs() -> ClutchAllKeypairs {
+    #[cfg(feature = "development")]
+    crate::log_info("CLUTCH: Generating 8 ephemeral keypairs...");
+
     // Class 0: Classical EC
     let (x25519_secret, x25519_public) = generate_x25519_ephemeral();
     let (p384_secret, p384_public) = generate_p384_ephemeral();
@@ -814,6 +731,19 @@ pub fn generate_all_ephemeral_keypairs() -> ClutchAllKeypairs {
     // Class 2: Post-quantum code-based KEMs
     let (mceliece_secret, mceliece_public) = generate_mceliece460896_keypair();
     let (hqc256_secret, hqc256_public) = generate_hqc256_keypair();
+
+    #[cfg(feature = "development")]
+    crate::log_info(&format!(
+        "CLUTCH: Keypairs ready (X25519: {}B, P-384: {}B, secp256k1: {}B, P-256: {}B, Frodo: {}B, NTRU: {}B, McEliece: {}B, HQC: {}B)",
+        x25519_public.len(),
+        p384_public.len(),
+        secp256k1_public.len(),
+        p256_public.len(),
+        frodo976_public.len(),
+        ntru701_public.len(),
+        mceliece_public.len(),
+        hqc256_public.len()
+    ));
 
     ClutchAllKeypairs {
         x25519_secret,
@@ -838,7 +768,7 @@ pub fn generate_all_ephemeral_keypairs() -> ClutchAllKeypairs {
 /// All shared secrets from 20 cryptographic eggs.
 /// Each "egg" is a labeled BLAKE3 hash for domain separation.
 pub struct ClutchEggs {
-    pub eggs: Vec<Vec<u8>>,
+    pub eggs: Vec<[u8; 32]>,
 }
 
 impl ClutchEggs {
@@ -852,7 +782,12 @@ impl ClutchEggs {
         hasher.update(b"clutch EGG v4 ");
         hasher.update(label.as_bytes());
         hasher.update(shared_secret);
-        self.eggs.push(hasher.finalize().as_bytes().to_vec());
+        self.eggs.push(*hasher.finalize().as_bytes());
+    }
+
+    /// Get eggs as slice of 32-byte arrays (for FriendshipChains::from_clutch)
+    pub fn as_slice(&self) -> &[[u8; 32]] {
+        &self.eggs
     }
 }
 
@@ -954,6 +889,13 @@ pub fn collect_clutch_eggs(
 pub fn avalanche_hash_eggs(eggs: &ClutchEggs) -> (Vec<u8>, Vec<u8>) {
     use i256::U256;
 
+    #[cfg(feature = "development")]
+    crate::log_info(&format!(
+        "CLUTCH: Collecting {} eggs for avalanche ({} bytes input)...",
+        eggs.eggs.len(),
+        eggs.eggs.len() * 32
+    ));
+
     const MIN_SIZE: usize = 1_048_576; // 1MB ish
     const TOTAL_SIZE: usize = MIN_SIZE * 2; // 2MB
     let max_size = TOTAL_SIZE * 2; // Allow expansion up to 4MB
@@ -963,6 +905,9 @@ pub fn avalanche_hash_eggs(eggs: &ClutchEggs) -> (Vec<u8>, Vec<u8>) {
     for egg in &eggs.eggs {
         omelette.extend_from_slice(egg);
     }
+
+    #[cfg(feature = "development")]
+    crate::log_info("CLUTCH: Avalanche hashing to 2MB...");
 
     let mut target_hasher = Hasher::new();
     target_hasher.update(b"target");
@@ -1096,9 +1041,19 @@ pub fn avalanche_hash_eggs(eggs: &ClutchEggs) -> (Vec<u8>, Vec<u8>) {
     // Step 5: Trim to exactly 2MB
     omelette.truncate(TOTAL_SIZE);
 
-    // Step 6: Split into two 1MB pads
+    // Step 6: Split into two 1MB pads (legacy, for backwards compat logging only)
     let low_pad = omelette[0..MIN_SIZE].to_vec();
     let high_pad = omelette[MIN_SIZE..TOTAL_SIZE].to_vec();
+
+    #[cfg(feature = "development")]
+    {
+        // Show first 64 bytes of each pad for comparison
+        let low_preview: String = low_pad[..64].iter().map(|b| format!("{:02x}", b)).collect();
+        let high_preview: String = high_pad[..64].iter().map(|b| format!("{:02x}", b)).collect();
+
+        crate::log_info(&format!("CLUTCH: low_pad[0..64]  = {}", low_preview));
+        crate::log_info(&format!("CLUTCH: high_pad[0..64] = {}", high_preview));
+    }
 
     (low_pad, high_pad)
 }
@@ -1168,13 +1123,11 @@ pub fn clutch_complete_parallel(
     ClutchResult { seed, proof }
 }
 
-/// Full CLUTCH result with dual 1MB pads for bidirectional encryption.
+/// Full CLUTCH result with eggs for chain derivation.
 pub struct ClutchFullResult {
-    /// 1MB pad for low handle party's messages
-    pub low_pad: Vec<u8>,
-    /// 1MB pad for high handle party's messages
-    pub high_pad: Vec<u8>,
-    /// Proof hash for verification (BLAKE3 of combined pads)
+    /// 20 cryptographic eggs from the ceremony (for FriendshipChains)
+    pub eggs: ClutchEggs,
+    /// Proof hash for verification
     pub proof: [u8; 32],
 }
 
@@ -1280,37 +1233,27 @@ pub fn clutch_complete_full(
         &secrets.high_p256,
     );
 
-    // Avalanche hash to get dual pads
-    let (low_pad, high_pad) = avalanche_hash_eggs(&eggs);
+    // Compute proof from eggs (deterministic - same eggs = same proof)
+    let proof = compute_eggs_proof(&eggs);
 
-    // Compute proof from pads
-    let mut hasher = Hasher::new();
-    hasher.update(b"CLUTCH_FULL_v1_proof");
-    hasher.update(&low_pad);
-    hasher.update(&high_pad);
-    let proof = *hasher.finalize().as_bytes();
-
-    ClutchFullResult {
-        low_pad,
-        high_pad,
-        proof,
-    }
+    ClutchFullResult { eggs, proof }
 }
 
-/// Compute proof hash for full CLUTCH verification.
-/// Used by both parties to verify they derived identical pads.
-pub fn compute_full_clutch_proof(low_pad: &[u8], high_pad: &[u8]) -> [u8; 32] {
+/// Compute proof hash for CLUTCH verification from eggs.
+/// Used by both parties to verify they collected identical eggs.
+pub fn compute_eggs_proof(eggs: &ClutchEggs) -> [u8; 32] {
     let mut hasher = Hasher::new();
-    hasher.update(b"CLUTCH_FULL_v1_proof");
-    hasher.update(low_pad);
-    hasher.update(high_pad);
+    hasher.update(b"CLUTCH_EGGS_v1_proof");
+    for egg in &eggs.eggs {
+        hasher.update(egg);
+    }
     *hasher.finalize().as_bytes()
 }
 
-/// Verify full CLUTCH proof matches our derived pads.
-pub fn verify_full_clutch_proof(low_pad: &[u8], high_pad: &[u8], proof: &[u8; 32]) -> bool {
+/// Verify CLUTCH proof matches our eggs.
+pub fn verify_eggs_proof(eggs: &ClutchEggs, proof: &[u8; 32]) -> bool {
     use subtle::ConstantTimeEq;
-    let expected = compute_full_clutch_proof(low_pad, high_pad);
+    let expected = compute_eggs_proof(eggs);
     expected.ct_eq(proof).into()
 }
 
@@ -1669,7 +1612,7 @@ mod tests {
         );
 
         // Even with same input bytes, domain separation should produce unique eggs
-        let unique_eggs: std::collections::HashSet<Vec<u8>> = eggs.eggs.into_iter().collect();
+        let unique_eggs: std::collections::HashSet<[u8; 32]> = eggs.eggs.into_iter().collect();
         assert_eq!(unique_eggs.len(), 20);
     }
 
@@ -1820,22 +1763,25 @@ mod tests {
         );
 
         // === THE CRITICAL ASSERTIONS ===
+        // Both parties should collect identical eggs
         assert_eq!(
-            alice_result.low_pad, bob_result.low_pad,
-            "low_pad mismatch!"
+            alice_result.eggs.eggs.len(),
+            bob_result.eggs.eggs.len(),
+            "egg count mismatch!"
         );
-        assert_eq!(
-            alice_result.high_pad, bob_result.high_pad,
-            "high_pad mismatch!"
-        );
+        for (i, (a, b)) in alice_result
+            .eggs
+            .eggs
+            .iter()
+            .zip(bob_result.eggs.eggs.iter())
+            .enumerate()
+        {
+            assert_eq!(a, b, "egg {} mismatch!", i);
+        }
         assert_eq!(alice_result.proof, bob_result.proof, "proof mismatch!");
 
         // Verify proof
-        assert!(verify_full_clutch_proof(
-            &alice_result.low_pad,
-            &alice_result.high_pad,
-            &bob_result.proof
-        ));
+        assert!(verify_eggs_proof(&alice_result.eggs, &bob_result.proof));
 
         // Cleanup
         alice_keys.zeroize();

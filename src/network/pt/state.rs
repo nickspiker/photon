@@ -1,4 +1,4 @@
-//! PLTP Transfer State Machine
+//! PT Transfer State Machine
 //!
 //! Manages the lifecycle of a single transfer (send or receive).
 
@@ -32,9 +32,9 @@ pub enum TransferState {
     Failed,
 }
 
-/// Error types for PLTP transfers
+/// Error types for PT transfers
 #[derive(Clone, Debug)]
-pub enum PLTPError {
+pub enum PTError {
     /// Peer timed out (no response)
     Timeout,
     /// Hash verification failed
@@ -59,6 +59,7 @@ pub struct OutboundTransfer {
     pub spec_acked: bool,
     pub complete_received: bool,
     pub retries: u32,
+    pub retransmits: u32, // Count of retransmitted packets
     pub last_activity: Instant,
     pub created_at: Instant,
 }
@@ -69,7 +70,7 @@ impl OutboundTransfer {
         Self {
             peer_addr,
             state: TransferState::AwaitingSpec,
-            send_buffer: SendBuffer::new(data, PLTPSpec::DEFAULT_PACKET_SIZE),
+            send_buffer: SendBuffer::new(data, PTSpec::DEFAULT_PACKET_SIZE),
             window: WindowController::new(),
             rtt: RTTEstimator::new(),
             flight: FlightTracker::new(),
@@ -77,14 +78,15 @@ impl OutboundTransfer {
             spec_acked: false,
             complete_received: false,
             retries: 0,
+            retransmits: 0,
             last_activity: Instant::now(),
             created_at: Instant::now(),
         }
     }
 
     /// Build SPEC packet for this transfer
-    pub fn build_spec(&self) -> PLTPSpec {
-        PLTPSpec {
+    pub fn build_spec(&self) -> PTSpec {
+        PTSpec {
             total_packets: self.send_buffer.total_packets(),
             packet_size: self.send_buffer.packet_size(),
             total_size: self.send_buffer.total_size(),
@@ -93,14 +95,14 @@ impl OutboundTransfer {
     }
 
     /// Get next packets to send based on window
-    pub fn packets_to_send(&mut self) -> Vec<PLTPData> {
+    pub fn packets_to_send(&mut self) -> Vec<PTData> {
         let mut packets = Vec::new();
 
         // First, send any new packets up to window
         while self.flight.can_send(self.window.window()) {
             if let Some(seq) = self.send_buffer.next_to_send() {
                 if let Some(payload) = self.send_buffer.get_packet(seq) {
-                    packets.push(PLTPData {
+                    packets.push(PTData {
                         sequence: seq,
                         payload: payload.to_vec(),
                     });
@@ -115,12 +117,12 @@ impl OutboundTransfer {
     }
 
     /// Handle ACK received
-    pub fn handle_ack(&mut self, ack: &PLTPAck) -> bool {
+    pub fn handle_ack(&mut self, ack: &PTAck) -> bool {
         // Verify chunk hash matches what we sent
         if let Some(payload) = self.send_buffer.get_packet(ack.sequence) {
             let expected_hash = *blake3::hash(payload).as_bytes();
             if expected_hash != ack.chunk_hash {
-                crate::log_error(&format!("PLTP: ACK hash mismatch for seq {}", ack.sequence));
+                crate::log_error(&format!("PT: ACK hash mismatch for seq {}", ack.sequence));
                 return false;
             }
         } else {
@@ -152,25 +154,26 @@ impl OutboundTransfer {
     }
 
     /// Handle NAK received - queue retransmits
-    pub fn handle_nak(&mut self, nak: &PLTPNak) -> Vec<PLTPData> {
+    pub fn handle_nak(&mut self, nak: &PTNak) -> Vec<PTData> {
         self.window.on_loss();
         self.last_activity = Instant::now();
 
         let mut packets = Vec::new();
         for &seq in &nak.missing_sequences {
             if let Some(payload) = self.send_buffer.get_packet(seq) {
-                packets.push(PLTPData {
+                packets.push(PTData {
                     sequence: seq,
                     payload: payload.to_vec(),
                 });
                 self.flight.sent(seq);
+                self.retransmits += 1;
             }
         }
         packets
     }
 
     /// Handle COMPLETE received
-    pub fn handle_complete(&mut self, complete: &PLTPComplete) -> bool {
+    pub fn handle_complete(&mut self, complete: &PTComplete) -> bool {
         self.last_activity = Instant::now();
 
         if complete.success && complete.final_hash == self.send_buffer.data_hash() {
@@ -178,14 +181,25 @@ impl OutboundTransfer {
             self.complete_received = true;
             true
         } else {
-            crate::log_error("PLTP: COMPLETE verification failed");
+            crate::log_error("PT: COMPLETE verification failed");
             self.state = TransferState::Failed;
             false
         }
     }
 
+    /// Get transfer statistics (total_packets, bytes, retransmits, duration_ms)
+    pub fn stats(&self) -> (u32, u32, u32, u64) {
+        let duration_ms = self.created_at.elapsed().as_millis() as u64;
+        (
+            self.send_buffer.total_packets(),
+            self.send_buffer.total_size(),
+            self.retransmits,
+            duration_ms,
+        )
+    }
+
     /// Check for timed out packets
-    pub fn check_timeouts(&mut self) -> Vec<PLTPData> {
+    pub fn check_timeouts(&mut self) -> Vec<PTData> {
         let timed_out = self.flight.timed_out(self.rtt.rto());
 
         if !timed_out.is_empty() {
@@ -197,7 +211,7 @@ impl OutboundTransfer {
         let mut packets = Vec::new();
         for seq in timed_out {
             if let Some(payload) = self.send_buffer.get_packet(seq) {
-                packets.push(PLTPData {
+                packets.push(PTData {
                     sequence: seq,
                     payload: payload.to_vec(),
                 });
@@ -224,7 +238,7 @@ pub struct InboundTransfer {
 
 impl InboundTransfer {
     /// Create from received SPEC
-    pub fn new(peer_addr: SocketAddr, spec: &PLTPSpec) -> Self {
+    pub fn new(peer_addr: SocketAddr, spec: &PTSpec) -> Self {
         Self {
             peer_addr,
             state: TransferState::Transferring,
@@ -240,19 +254,19 @@ impl InboundTransfer {
     }
 
     /// Handle DATA packet received, returns ACK to send
-    pub fn handle_data(&mut self, data: &PLTPData) -> Option<PLTPAck> {
+    pub fn handle_data(&mut self, data: &PTData) -> Option<PTAck> {
         self.last_activity = Instant::now();
 
         if self.receive_buffer.insert(data.sequence, &data.payload) {
             // New packet - send ACK
-            Some(PLTPAck::new(
+            Some(PTAck::new(
                 data.sequence,
                 &data.payload,
                 self.receive_buffer.buffer_percent(),
             ))
         } else {
             // Duplicate - still ACK to prevent sender retransmit
-            Some(PLTPAck::new(
+            Some(PTAck::new(
                 data.sequence,
                 &data.payload,
                 self.receive_buffer.buffer_percent(),
@@ -266,21 +280,21 @@ impl InboundTransfer {
     }
 
     /// Verify and build COMPLETE packet
-    pub fn build_complete(&self) -> PLTPComplete {
+    pub fn build_complete(&self) -> PTComplete {
         let final_hash = self.receive_buffer.compute_hash();
         let success = self.receive_buffer.verify();
 
         if success {
-            crate::log_info("PLTP: Transfer verified successfully");
+            crate::log_info("PT: Transfer verified successfully");
         } else {
             crate::log_error(&format!(
-                "PLTP: Hash mismatch - expected {:?}, got {:?}",
+                "PT: Hash mismatch - expected {:?}, got {:?}",
                 hex::encode(&self.receive_buffer.expected_hash()[..8]),
                 hex::encode(&final_hash[..8])
             ));
         }
 
-        PLTPComplete {
+        PTComplete {
             final_hash,
             success,
         }
@@ -313,7 +327,7 @@ mod tests {
 
     #[test]
     fn test_outbound_transfer_basic() {
-        let data = vec![0xAB; 3000]; // 3 packets
+        let data = vec![0xAB; 3072]; // 3 packets of 1024 bytes
         let peer = "127.0.0.1:12345".parse().unwrap();
 
         let mut transfer = OutboundTransfer::new(peer, data.clone());
@@ -324,20 +338,20 @@ mod tests {
         // Build spec
         let spec = transfer.build_spec();
         assert_eq!(spec.total_packets, 3);
-        assert_eq!(spec.packet_size, 1000);
-        assert_eq!(spec.total_size, 3000);
+        assert_eq!(spec.packet_size, 1024);
+        assert_eq!(spec.total_size, 3072);
     }
 
     #[test]
     fn test_inbound_transfer_basic() {
-        let data = vec![0xCD; 2500]; // 3 packets
+        let data = vec![0xCD; 2560]; // 3 packets (1024+1024+512)
         let hash = *blake3::hash(&data).as_bytes();
         let peer = "127.0.0.1:12345".parse().unwrap();
 
-        let spec = PLTPSpec {
+        let spec = PTSpec {
             total_packets: 3,
-            packet_size: 1000,
-            total_size: 2500,
+            packet_size: 1024,
+            total_size: 2560,
             data_hash: hash,
         };
 
@@ -346,23 +360,23 @@ mod tests {
         assert_eq!(transfer.state, TransferState::Transferring);
 
         // Receive packets
-        let ack0 = transfer.handle_data(&PLTPData {
+        let ack0 = transfer.handle_data(&PTData {
             sequence: 0,
-            payload: data[0..1000].to_vec(),
+            payload: data[0..1024].to_vec(),
         });
         assert!(ack0.is_some());
 
-        let ack1 = transfer.handle_data(&PLTPData {
+        let ack1 = transfer.handle_data(&PTData {
             sequence: 1,
-            payload: data[1000..2000].to_vec(),
+            payload: data[1024..2048].to_vec(),
         });
         assert!(ack1.is_some());
 
         assert!(!transfer.is_complete());
 
-        let ack2 = transfer.handle_data(&PLTPData {
+        let ack2 = transfer.handle_data(&PTData {
             sequence: 2,
-            payload: data[2000..2500].to_vec(),
+            payload: data[2048..2560].to_vec(),
         });
         assert!(ack2.is_some());
 

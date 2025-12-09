@@ -1,4 +1,4 @@
-//! PLTP Adaptive Windowing and RTT Estimation
+//! PT Adaptive Windowing and RTT Estimation
 //!
 //! Implements TCP-like congestion control:
 //! - Slow start: exponential growth until loss or ssthresh

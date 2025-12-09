@@ -7,7 +7,7 @@ No servers. No passwords. No phone numbers. No corporate data harvesting.
 ---
 
 ## What This Is
-j.oj`a.oe.jeo.jej.oeeeeapo.jeppao.jepo.jaeo.jea,
+
 Photon is a peer-to-peer messaging application that replaces traditional authentication (passwords, PINs, biometrics, recovery emails) with **social attestation**—your identity is verified by trusted humans, not by servers or credentials. Messages use **rolling-chain encryption**, where each message cryptographically depends on all previous messages, creating an immutable, tamper-evident communication history.
 
 **Key Properties:**
@@ -34,12 +34,14 @@ Photon is a peer-to-peer messaging application that replaces traditional authent
 - ✅ Avatar upload/download to FGTW storage with rate limiting
 - ✅ Contact storage (local encrypted + cloud backup to FGTW)
 - ✅ Deterministic device identity (keys derived from hardware)
-- ✅ CLUTCH key exchange (parallel ephemeral key ceremony)
+- ✅ CLUTCH key exchange (8-algorithm parallel ceremony with deterministic ceremony ID)
+- ✅ Friendship-based chain encryption (256-link chains, 8KB per participant)
+- ✅ LAN peer discovery (NAT hairpinning workaround via broadcast)
 - ✅ Android build pipeline (tested on device)
 - ✅ Signed binary distribution with self-verification
 
 ### What Doesn't Work Yet
-- ❌ Encrypted message exchange (CLUTCH handshake done, message flow pending)
+- ❌ Encrypted message exchange (chains derived, message flow pending)
 - ❌ Identity validation and key recovery flows
 - ❌ Message persistence (database layer empty)
 - ❌ Full social attestation (2-human requirement not enforced)
@@ -203,18 +205,40 @@ Alice advances to state₁
 
 **How the chain works:**
 
+Each participant has a 256-link chain (8KB) derived from CLUTCH shared secrets. The chain uses rolling rotation to achieve BLAKE3 avalanche optimization:
+
 ```rust
-// Initial state from shared seed (exchanged out-of-band)
-state₀ = BLAKE3(seed)
+/// 256-link chain (8KB) - one per participant
+pub struct Chain {
+    links: [[u8; 32]; 256],
+}
 
-// Encrypt message
-ciphertext = plaintext ⊕ state₀  // XOR for chain linkage
+impl Chain {
+    /// Current encryption key is always link[0]
+    pub fn current_key(&self) -> &[u8; 32] {
+        &self.links[0]
+    }
 
-// Advance ONLY after receiving ACK
-stateᵢ = BLAKE3(stateᵢ₋₁ ‖ ciphertext)
+    /// Advance chain after ACK: rotate all links, derive new link[0]
+    pub fn advance(&mut self, plaintext_hash: &[u8; 32]) {
+        let old_top = self.links[0];
+        // Rotate all links down (forces full 8KB through BLAKE3)
+        for i in (1..256).rev() {
+            self.links[i] = self.links[i - 1];
+        }
+        // New link[0] = BLAKE3(old_top || plaintext_hash || full_chain)
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(&old_top);
+        hasher.update(plaintext_hash);
+        hasher.update(self.links.as_flattened()); // Full 8KB avalanche
+        self.links[0] = *hasher.finalize().as_bytes();
+    }
+}
 ```
 
-Each message's ciphertext is hashed with the previous state to produce the next state. Breaking one message doesn't reveal others (forward secrecy via BLAKE3 preimage resistance). Modifying message `i` changes all subsequent states—tampering is cryptographically detectable.
+**Why 256 links?** Fits in L1 cache (8KB), provides reasonable recovery window, and the rotation forces full avalanche on every advance. Each participant only advances their own chain—no race conditions in N-party conversations.
+
+Breaking one message doesn't reveal others (forward secrecy via BLAKE3 preimage resistance). Modifying message `i` changes all subsequent states—tampering is cryptographically detectable.
 
 **Encryption layer:**
 
@@ -313,20 +337,23 @@ src/
 ├── lib.rs               - Module exports, debug utilities
 ├── self_verify.rs       - Ed25519 binary signature verification
 ├── crypto/
-│   ├── chain.rs         - Rolling-chain encryption
-│   ├── clutch.rs        - CLUTCH parallel key exchange ceremony
+│   ├── chain.rs         - 256-link rolling chains (8KB per participant)
+│   ├── clutch.rs        - 8-algorithm parallel key ceremony
+│   ├── handle_proof.rs  - Memory-hard handle attestation (~1s)
 │   ├── keys.rs          - Identity key management (TODO)
 │   └── shards.rs        - Social recovery key sharding (TODO)
 ├── network/
 │   ├── fgtw/
 │   │   ├── identity.rs  - Deterministic key derivation
-│   │   ├── protocol.rs  - VSF-encoded FGTW messages
-│   │   ├── transport.rs - UDP/WebSocket transport
+│   │   ├── protocol.rs  - VSF-encoded FGTW + CLUTCH messages
 │   │   ├── node.rs      - Kademlia DHT routing
 │   │   ├── peer_store.rs - Peer caching
 │   │   └── bootstrap.rs - Initial peer discovery
+│   ├── pt/              - PT (Photon Transfer) large message transport
 │   ├── handle_query.rs  - Handle attestation and lookup
-│   └── status.rs        - P2P ping/pong status checker
+│   ├── status.rs        - P2P ping/pong, CLUTCH ceremony orchestration
+│   ├── udp.rs           - UDP socket utilities
+│   └── tcp.rs           - TCP fallback for large payloads
 ├── ui/
 │   ├── app.rs           - Application state machine
 │   ├── avatar.rs        - Avatar encoding/upload/download
@@ -336,12 +363,13 @@ src/
 │   ├── text_editing.rs  - Text input state
 │   └── theme.rs         - Color palette
 ├── types/
-│   ├── identity.rs      - Public/private keys (X25519)
+│   ├── contact.rs       - Contact info, CLUTCH state, trust levels
+│   ├── friendship.rs    - FriendshipId, CeremonyId, FriendshipChains
 │   ├── message.rs       - Message structure, status, expiration
-│   ├── contact.rs       - Contact info, trust levels
 │   └── shard.rs         - Key shard structures
 └── storage/
     ├── contacts.rs      - Local encrypted contact storage
+    ├── friendship.rs    - Per-friendship chain persistence
     └── cloud.rs         - FGTW cloud backup (contacts sync)
 ```
 
@@ -353,18 +381,18 @@ src/
 | Text Rendering | ✅ Complete | cosmic-text, selection, editing |
 | Device Identity | ✅ Complete | Deterministic keys from hardware (never stored) |
 | Crypto Types | ✅ Complete | Identity, seed, shard, message structures |
-| CLUTCH Key Exchange | ✅ Working | Parallel ephemeral key ceremony, chain state derivation |
+| CLUTCH Key Exchange | ✅ Working | 8-algorithm ceremony, deterministic ceremony_id |
+| Friendship Chains | ✅ Working | 256-link chains (8KB), per-participant advancement |
 | Handle Attestation | ✅ Working | Memory-hard PoW (~1s), DHT storage |
-| Peer Discovery | ✅ Working | FGTW DHT queries return peer IPs |
-| P2P Status | ✅ Working | UDP ping/pong with Ed25519 signatures |
-| NAT Hole Punching | ✅ Working | Broadcast ping to all peers on registration/refresh |
+| Peer Discovery | ✅ Working | FGTW DHT + LAN broadcast (hairpin NAT workaround) |
+| P2P Status | ✅ Working | UDP ping/pong with Ed25519 signatures, hysteresis |
 | Avatar System | ✅ Working | VSF-encoded, FGTW storage, rate-limited uploads |
 | Contact Storage | ✅ Working | Local encrypted + cloud backup to FGTW |
 | Binary Signing | ✅ Working | Ed25519 signatures, self-verification on startup |
-| Network Transport | ⚠️ Partial | DHT functional, direct peer connections pending |
+| Network Transport | ✅ Working | UDP + TCP fallback + PT for large payloads |
 | Message Persistence | ❌ Empty | VSF storage layer not implemented |
 | Social Recovery | ❌ Stubbed | Shard distribution/reconstruction TODO |
-| Peer Messaging | ⚠️ Partial | CLUTCH done, encrypted message exchange pending |
+| Peer Messaging | ⚠️ Partial | Chains derived, encrypted message flow pending |
 
 ### Technology Stack
 
@@ -585,4 +613,4 @@ See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE)
 
 **Platform Support:** Linux ✅ | Windows ✅ | macOS ✅ | Android ✅ | Redox 🟡 | iOS ❌
 
-**Last Updated:** 2025-12-02
+**Last Updated:** 2025-12-09

@@ -11,6 +11,17 @@
 /// Section names come from the VSF data itself (shown in parsed output below title)
 #[cfg(feature = "development")]
 pub fn vsf_inspect(data: &[u8], transport: &str, direction: &str, addr: &str) -> String {
+    // PT DATA packets: 'd' + varint seq + payload - show compact one-liner
+    if data.len() > 1 && data[0] == b'd' {
+        if let Some((seq, seq_len)) = decode_vsf_varint(&data[1..]) {
+            let payload_len = data.len() - 1 - seq_len;
+            return format!(
+                "═══ PT DATA {} {} seq={} ({} bytes) ═══",
+                direction, addr, seq, payload_len
+            );
+        }
+    }
+
     // Filter noisy packet types unless verbose-network is enabled
     #[cfg(not(feature = "verbose-network"))]
     {
@@ -43,6 +54,28 @@ pub fn vsf_inspect(data: &[u8], transport: &str, direction: &str, addr: &str) ->
     }
 
     result
+}
+
+/// Decode VSF variable-length uint (for PT DATA sequence numbers)
+#[cfg(feature = "development")]
+fn decode_vsf_varint(bytes: &[u8]) -> Option<(usize, usize)> {
+    let mut value: usize = 0;
+    let mut shift = 0;
+
+    for (i, &byte) in bytes.iter().enumerate() {
+        value |= ((byte & 0x7F) as usize) << shift;
+        shift += 7;
+
+        if byte & 0x80 == 0 {
+            return Some((value, i + 1));
+        }
+
+        if shift >= 32 {
+            return None;
+        }
+    }
+
+    None
 }
 
 /// Check if a VSF packet is a noisy type (ping/pong/lan_discovery) that should be filtered

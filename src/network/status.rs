@@ -12,8 +12,8 @@
 use super::udp;
 use crate::network::fgtw::FgtwMessage;
 use crate::network::fgtw::Keypair;
-use crate::network::pltp::{
-    is_pltp_data, PLTPAck, PLTPComplete, PLTPControl, PLTPData, PLTPManager, PLTPNak, PLTPSpec,
+use crate::network::pt::{
+    is_pt_data, PTAck, PTComplete, PTControl, PTData, PTManager, PTNak, PTSpec,
     TcpTransport,
 };
 use crate::types::DevicePubkey;
@@ -94,27 +94,41 @@ pub struct AckRequest {
     pub our_last_acked_hash: [u8; 32],
 }
 
-/// Request to start a PLTP large transfer (e.g., full CLUTCH offer with all 8 pubkeys)
+/// Request to start a PT large transfer (e.g., full CLUTCH offer with all 8 pubkeys)
 #[derive(Clone)]
-pub struct PLTPSendRequest {
+pub struct PTSendRequest {
     pub peer_addr: SocketAddr,
     pub data: Vec<u8>,
 }
 
 /// Request to send full CLUTCH offer (~548KB) via TCP fallback
+///
+/// Uses VSF format with proper signing and verification.
+/// See protocol.rs build_clutch_full_offer_vsf() for format details.
 #[derive(Clone)]
 pub struct ClutchFullOfferRequest {
     pub peer_addr: SocketAddr, // Port comes from FGTW (peer's photon_port)
     pub our_handle_proof: [u8; 32],
-    pub payload: Vec<u8>, // ClutchFullOfferPayload.to_bytes()
+    pub their_handle_proof: [u8; 32],
+    pub ceremony_id: [u8; 32], // Deterministic: BLAKE3("PHOTON_CEREMONY_v1" || sorted_handle_hashes)
+    pub payload: crate::crypto::clutch::ClutchFullOfferPayload,
+    pub device_pubkey: [u8; 32],
+    pub device_secret: [u8; 32], // For signing (zeroize after use)
 }
 
-/// Request to send CLUTCH KEM response (~17KB) via TCP fallback
+/// Request to send CLUTCH KEM response (~31KB) via TCP fallback
+///
+/// Uses VSF format with proper signing and verification.
+/// See protocol.rs build_clutch_kem_response_vsf() for format details.
 #[derive(Clone)]
 pub struct ClutchKemResponseRequest {
     pub peer_addr: SocketAddr, // Port comes from FGTW (peer's photon_port)
     pub our_handle_proof: [u8; 32],
-    pub payload: Vec<u8>, // ClutchKemResponsePayload.to_bytes()
+    pub their_handle_proof: [u8; 32],
+    pub ceremony_id: [u8; 32], // Deterministic: BLAKE3("PHOTON_CEREMONY_v1" || sorted_handle_hashes)
+    pub payload: crate::crypto::clutch::ClutchKemResponsePayload,
+    pub device_pubkey: [u8; 32],
+    pub device_secret: [u8; 32], // For signing (zeroize after use)
 }
 
 /// Request to broadcast presence on LAN for local peer discovery
@@ -179,23 +193,31 @@ pub enum StatusUpdate {
         /// Hash of their most recent message we ACK'd - bidirectional weave binding
         sender_last_acked: [u8; 32],
     },
-    /// PLTP large transfer completed - received data from peer
-    PLTPReceived {
+    /// PT large transfer completed - received data from peer
+    PTReceived {
         peer_addr: SocketAddr,
         data: Vec<u8>,
     },
-    /// PLTP outbound transfer completed successfully
-    PLTPSendComplete { peer_addr: SocketAddr },
+    /// PT outbound transfer completed successfully
+    PTSendComplete { peer_addr: SocketAddr },
     /// Full CLUTCH offer received (~548KB with all 8 pubkeys)
+    /// Payload is already verified and parsed from VSF format.
     ClutchFullOfferReceived {
         from_handle_proof: [u8; 32],
-        payload: Vec<u8>,
+        to_handle_proof: [u8; 32],      // Us (lower or higher)
+        ceremony_id: [u8; 32],           // Deterministic from sorted handle_hashes (verified by receiver)
+        sender_pubkey: [u8; 32],         // Device pubkey (verified via signature)
+        payload: crate::crypto::clutch::ClutchFullOfferPayload,
         sender_addr: SocketAddr,
     },
-    /// CLUTCH KEM response received (~17KB with 4 ciphertexts)
+    /// CLUTCH KEM response received (~31KB with 4 ciphertexts)
+    /// Payload is already verified and parsed from VSF format.
     ClutchKemResponseReceived {
         from_handle_proof: [u8; 32],
-        payload: Vec<u8>,
+        to_handle_proof: [u8; 32],      // Us (lower or higher)
+        ceremony_id: [u8; 32],           // Deterministic - should match locally computed value
+        sender_pubkey: [u8; 32],         // Device pubkey (verified via signature)
+        payload: crate::crypto::clutch::ClutchKemResponsePayload,
         sender_addr: SocketAddr,
     },
     /// LAN peer discovered via broadcast (NAT hairpinning workaround)
@@ -223,7 +245,7 @@ pub struct StatusChecker {
     clutch_sender: Sender<ClutchRequest>,
     message_sender: Sender<MessageRequest>,
     ack_sender: Sender<AckRequest>,
-    pltp_sender: Sender<PLTPSendRequest>,
+    pt_sender: Sender<PTSendRequest>,
     full_offer_sender: Sender<ClutchFullOfferRequest>,
     kem_response_sender: Sender<ClutchKemResponseRequest>,
     lan_broadcast_sender: Sender<LanBroadcastRequest>,
@@ -248,7 +270,7 @@ impl StatusChecker {
         let (clutch_tx, clutch_rx) = channel::<ClutchRequest>();
         let (message_tx, message_rx) = channel::<MessageRequest>();
         let (ack_tx, ack_rx) = channel::<AckRequest>();
-        let (pltp_tx, pltp_rx) = channel::<PLTPSendRequest>();
+        let (pt_tx, pt_rx) = channel::<PTSendRequest>();
         let (full_offer_tx, full_offer_rx) = channel::<ClutchFullOfferRequest>();
         let (kem_response_tx, kem_response_rx) = channel::<ClutchKemResponseRequest>();
         let (lan_broadcast_tx, lan_broadcast_rx) = channel::<LanBroadcastRequest>();
@@ -290,7 +312,7 @@ impl StatusChecker {
                     clutch_rx,
                     message_rx,
                     ack_rx,
-                    pltp_rx,
+                    pt_rx,
                     full_offer_rx,
                     kem_response_rx,
                     lan_broadcast_rx,
@@ -307,7 +329,7 @@ impl StatusChecker {
             clutch_sender: clutch_tx,
             message_sender: message_tx,
             ack_sender: ack_tx,
-            pltp_sender: pltp_tx,
+            pt_sender: pt_tx,
             full_offer_sender: full_offer_tx,
             kem_response_sender: kem_response_tx,
             lan_broadcast_sender: lan_broadcast_tx,
@@ -326,7 +348,7 @@ impl StatusChecker {
         let (clutch_tx, clutch_rx) = channel::<ClutchRequest>();
         let (message_tx, message_rx) = channel::<MessageRequest>();
         let (ack_tx, ack_rx) = channel::<AckRequest>();
-        let (pltp_tx, pltp_rx) = channel::<PLTPSendRequest>();
+        let (pt_tx, pt_rx) = channel::<PTSendRequest>();
         let (full_offer_tx, full_offer_rx) = channel::<ClutchFullOfferRequest>();
         let (kem_response_tx, kem_response_rx) = channel::<ClutchKemResponseRequest>();
         let (lan_broadcast_tx, lan_broadcast_rx) = channel::<LanBroadcastRequest>();
@@ -367,7 +389,7 @@ impl StatusChecker {
                     clutch_rx,
                     message_rx,
                     ack_rx,
-                    pltp_rx,
+                    pt_rx,
                     full_offer_rx,
                     kem_response_rx,
                     lan_broadcast_rx,
@@ -384,7 +406,7 @@ impl StatusChecker {
             clutch_sender: clutch_tx,
             message_sender: message_tx,
             ack_sender: ack_tx,
-            pltp_sender: pltp_tx,
+            pt_sender: pt_tx,
             full_offer_sender: full_offer_tx,
             kem_response_sender: kem_response_tx,
             lan_broadcast_sender: lan_broadcast_tx,
@@ -415,37 +437,25 @@ impl StatusChecker {
         let _ = self.ack_sender.send(request);
     }
 
-    /// Start a PLTP large transfer (non-blocking)
-    pub fn send_pltp(&self, peer_addr: SocketAddr, data: Vec<u8>) {
-        let _ = self.pltp_sender.send(PLTPSendRequest { peer_addr, data });
+    /// Start a PT large transfer (non-blocking)
+    pub fn send_pt(&self, peer_addr: SocketAddr, data: Vec<u8>) {
+        let _ = self.pt_sender.send(PTSendRequest { peer_addr, data });
     }
 
     /// Send full CLUTCH offer (~548KB) via TCP fallback (non-blocking)
-    pub fn send_full_offer(
-        &self,
-        peer_addr: SocketAddr,
-        our_handle_proof: [u8; 32],
-        payload: Vec<u8>,
-    ) {
-        let _ = self.full_offer_sender.send(ClutchFullOfferRequest {
-            peer_addr,
-            our_handle_proof,
-            payload,
-        });
+    ///
+    /// Uses VSF format with proper signing. Requires:
+    /// - ceremony_id: Deterministic from sorted handle_hashes (same on both sides)
+    /// - device keys: For Ed25519 signing of the VSF message
+    pub fn send_full_offer(&self, request: ClutchFullOfferRequest) {
+        let _ = self.full_offer_sender.send(request);
     }
 
-    /// Send CLUTCH KEM response (~17KB) via TCP fallback (non-blocking)
-    pub fn send_kem_response(
-        &self,
-        peer_addr: SocketAddr,
-        our_handle_proof: [u8; 32],
-        payload: Vec<u8>,
-    ) {
-        let _ = self.kem_response_sender.send(ClutchKemResponseRequest {
-            peer_addr,
-            our_handle_proof,
-            payload,
-        });
+    /// Send CLUTCH KEM response (~31KB) via TCP fallback (non-blocking)
+    ///
+    /// Uses VSF format with proper signing. Uses same deterministic ceremony_id.
+    pub fn send_kem_response(&self, request: ClutchKemResponseRequest) {
+        let _ = self.kem_response_sender.send(request);
     }
 
     /// Broadcast presence on LAN for local peer discovery (non-blocking)
@@ -494,7 +504,7 @@ async fn run_checker(
     clutch_rx: Receiver<ClutchRequest>,
     message_rx: Receiver<MessageRequest>,
     ack_rx: Receiver<AckRequest>,
-    pltp_rx: Receiver<PLTPSendRequest>,
+    pt_rx: Receiver<PTSendRequest>,
     full_offer_rx: Receiver<ClutchFullOfferRequest>,
     kem_response_rx: Receiver<ClutchKemResponseRequest>,
     lan_broadcast_rx: Receiver<LanBroadcastRequest>,
@@ -521,6 +531,7 @@ async fn run_checker(
     };
 
     // Start TCP listener for CLUTCH large payloads (same port as UDP)
+    // Try IPv6 first (dual-stack), fall back to IPv4
     // Skip on Android - tokio TcpListener has issues with accept() returning EINVAL
     #[cfg(not(target_os = "android"))]
     let tcp_listener = {
@@ -528,15 +539,26 @@ async fn run_checker(
             .local_addr()
             .map(|a| a.port())
             .unwrap_or(PHOTON_PORT);
-        let tcp_addr = SocketAddr::new(std::net::IpAddr::V4(local_ip), udp_port);
-        match tokio::net::TcpListener::bind(tcp_addr).await {
+        // Try IPv6 dual-stack first (accepts both IPv4 and IPv6 on most systems)
+        let tcp_addr_v6 = SocketAddr::new(std::net::IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED), udp_port);
+        match tokio::net::TcpListener::bind(tcp_addr_v6).await {
             Ok(listener) => {
-                crate::log_info(&format!("Status: TCP fallback listening on {}", tcp_addr));
+                crate::log_info(&format!("Status: TCP listening on [::]:{}  (dual-stack)", udp_port));
                 Some(listener)
             }
-            Err(e) => {
-                crate::log_error(&format!("Status: Failed to bind TCP fallback: {}", e));
-                None
+            Err(_) => {
+                // Fall back to IPv4 only
+                let tcp_addr_v4 = SocketAddr::new(std::net::IpAddr::V4(local_ip), udp_port);
+                match tokio::net::TcpListener::bind(tcp_addr_v4).await {
+                    Ok(listener) => {
+                        crate::log_info(&format!("Status: TCP listening on {} (IPv4 only)", tcp_addr_v4));
+                        Some(listener)
+                    }
+                    Err(e) => {
+                        crate::log_error(&format!("Status: Failed to bind TCP: {}", e));
+                        None
+                    }
+                }
             }
         }
     };
@@ -546,8 +568,14 @@ async fn run_checker(
     // Pending pings - just a Vec, ~10 contacts max
     let pending: Arc<Mutex<Vec<PendingPing>>> = Arc::new(Mutex::new(Vec::new()));
 
-    // PLTP manager for large transfers - shared with receiver task
-    let pltp: Arc<Mutex<PLTPManager>> = Arc::new(Mutex::new(PLTPManager::new(keypair.clone())));
+    // Track consecutive failed pings per contact (for hysteresis - don't flip offline on 1 lost packet)
+    // Key: DevicePubkey bytes, Value: consecutive failure count
+    let failed_pings: Arc<Mutex<std::collections::HashMap<[u8; 32], u8>>> =
+        Arc::new(Mutex::new(std::collections::HashMap::new()));
+    const OFFLINE_THRESHOLD: u8 = 3; // Require 3 consecutive failures before marking offline
+
+    // PT manager for large transfers - shared with receiver task
+    let pt: Arc<Mutex<PTManager>> = Arc::new(Mutex::new(PTManager::new(keypair.clone())));
 
     let socket_recv = socket.clone();
     let pending_recv = pending.clone();
@@ -556,12 +584,13 @@ async fn run_checker(
     let status_tx_recv = status_tx.clone();
     let contacts_recv = contacts.clone();
     let event_proxy_recv = event_proxy.clone();
-    let pltp_recv = pltp.clone();
+    let pt_recv = pt.clone();
+    let failed_pings_recv = failed_pings.clone();
 
     // LAN discovery packets are now handled in the main UDP receiver (parse_lan_discovery)
     // No separate listener needed - all traffic on PHOTON_PORT
 
-    // Spawn TCP receiver task for large CLUTCH payloads
+    // Spawn TCP receiver task for large CLUTCH payloads (VSF format)
     if let Some(listener) = tcp_listener {
         let status_tx_tcp = status_tx.clone();
         let event_proxy_tcp = event_proxy.clone();
@@ -584,60 +613,69 @@ async fn run_checker(
                                             data.len(),
                                             src_addr
                                         ));
-                                        // Parse the payload type from first byte
-                                        if data.len() > 33 {
-                                            let payload_type = data[0];
-                                            let handle_proof: [u8; 32] =
-                                                data[1..33].try_into().unwrap_or([0; 32]);
-                                            let payload = data[33..].to_vec();
 
-                                            let src_ipv4 = match src_addr.ip() {
-                                                std::net::IpAddr::V4(ip) => ip,
-                                                _ => Ipv4Addr::new(0, 0, 0, 0),
-                                            };
-                                            let sender_addr = SocketAddr::new(
-                                                std::net::IpAddr::V4(src_ipv4),
-                                                src_addr.port(),
-                                            );
-
-                                            match payload_type {
-                                                0x01 => {
-                                                    // Full CLUTCH offer
-                                                    crate::log_info(
-                                                        "Status: Received ClutchFullOffer via TCP",
-                                                    );
-                                                    send_status_update(
-                                                        &status_tx_tcp,
-                                                        StatusUpdate::ClutchFullOfferReceived {
-                                                            from_handle_proof: handle_proof,
-                                                            payload,
-                                                            sender_addr,
-                                                        },
-                                                        &event_proxy_tcp,
-                                                    );
-                                                }
-                                                0x02 => {
-                                                    // KEM response
-                                                    crate::log_info(
-                                                        "Status: Received ClutchKemResponse via TCP",
-                                                    );
-                                                    send_status_update(
-                                                        &status_tx_tcp,
-                                                        StatusUpdate::ClutchKemResponseReceived {
-                                                            from_handle_proof: handle_proof,
-                                                            payload,
-                                                            sender_addr,
-                                                        },
-                                                        &event_proxy_tcp,
-                                                    );
-                                                }
-                                                _ => {
-                                                    crate::log_error(&format!(
-                                                        "Status: Unknown TCP payload type: 0x{:02x}",
-                                                        payload_type
-                                                    ));
-                                                }
+                                        // VSF inspection for development builds
+                                        #[cfg(feature = "development")]
+                                        {
+                                            if let Ok(inspection) = vsf::inspect::inspect_vsf(&data) {
+                                                crate::log_info(&format!("Status: Received TCP VSF:\n{}", inspection));
                                             }
+                                        }
+
+                                        // Check for VSF magic bytes (RÅ< = 0x52 0xC3 0x85 0x3C)
+                                        if data.len() >= 4 && &data[0..3] == b"R\xC3\x85" && data[3] == b'<' {
+                                            // Parse VSF header to determine message type
+                                            // Try parsing as ClutchFullOffer first
+                                            use crate::network::fgtw::protocol::{
+                                                parse_clutch_full_offer_vsf_without_recipient_check,
+                                                parse_clutch_kem_response_vsf_without_recipient_check,
+                                            };
+
+                                            // Try full offer first (has clutch_full_offer section)
+                                            if let Ok((payload, sender_pubkey, ceremony_id, lower_proof, higher_proof)) =
+                                                parse_clutch_full_offer_vsf_without_recipient_check(&data)
+                                            {
+                                                crate::log_info("Status: Received ClutchFullOffer via TCP (VSF verified)");
+                                                send_status_update(
+                                                    &status_tx_tcp,
+                                                    StatusUpdate::ClutchFullOfferReceived {
+                                                        from_handle_proof: lower_proof,  // App.rs determines which is "from"
+                                                        to_handle_proof: higher_proof,
+                                                        ceremony_id,
+                                                        sender_pubkey,
+                                                        payload,
+                                                        sender_addr: src_addr,
+                                                    },
+                                                    &event_proxy_tcp,
+                                                );
+                                            }
+                                            // Try KEM response
+                                            else if let Ok((payload, sender_pubkey, ceremony_id, lower_proof, higher_proof)) =
+                                                parse_clutch_kem_response_vsf_without_recipient_check(&data)
+                                            {
+                                                crate::log_info("Status: Received ClutchKemResponse via TCP (VSF verified)");
+                                                send_status_update(
+                                                    &status_tx_tcp,
+                                                    StatusUpdate::ClutchKemResponseReceived {
+                                                        from_handle_proof: lower_proof,
+                                                        to_handle_proof: higher_proof,
+                                                        ceremony_id,
+                                                        sender_pubkey,
+                                                        payload,
+                                                        sender_addr: src_addr,
+                                                    },
+                                                    &event_proxy_tcp,
+                                                );
+                                            }
+                                            else {
+                                                crate::log_error("Status: Failed to parse TCP VSF as CLUTCH message");
+                                            }
+                                        } else {
+                                            crate::log_error(&format!(
+                                                "Status: TCP payload is not VSF format (len={}, magic={:02x?})",
+                                                data.len(),
+                                                if data.len() >= 4 { &data[0..4] } else { &data[..] }
+                                            ));
                                         }
                                     }
                                     Err(e) => {
@@ -670,20 +708,20 @@ async fn run_checker(
                 Ok((len, src_addr)) => {
                     let msg_bytes = &buf[..len];
 
-                    // Check for PLTP DATA packets first (start with 'd')
-                    if is_pltp_data(msg_bytes) {
-                        if let Some(data) = PLTPData::from_bytes(msg_bytes) {
+                    // Check for PT DATA packets first (start with 'd')
+                    if is_pt_data(msg_bytes) {
+                        if let Some(data) = PTData::from_bytes(msg_bytes) {
                             crate::log_info(&format!(
-                                "PLTP: DATA packet seq {} from {}",
+                                "PT: DATA packet seq {} from {}",
                                 data.sequence, src_addr
                             ));
                             // Handle data and collect responses (must drop lock before await)
                             let (ack_bytes, complete_bytes, received_data) = {
-                                let mut pltp_mgr = pltp_recv.lock().unwrap();
-                                let ack = pltp_mgr.handle_data(src_addr, data);
-                                let complete = pltp_mgr.check_inbound_complete(src_addr);
+                                let mut pt_mgr = pt_recv.lock().unwrap();
+                                let ack = pt_mgr.handle_data(src_addr, data);
+                                let complete = pt_mgr.check_inbound_complete(src_addr);
                                 let data = if complete.is_some() {
-                                    pltp_mgr.take_inbound_data(src_addr)
+                                    pt_mgr.take_inbound_data(src_addr)
                                 } else {
                                     None
                                 };
@@ -697,18 +735,68 @@ async fn run_checker(
                                 udp::send(&socket_recv, &complete, src_addr).await;
                                 if let Some(data) = received_data {
                                     crate::log_info(&format!(
-                                        "PLTP: Transfer complete from {} ({} bytes)",
+                                        "PT: Transfer complete from {} ({} bytes)",
                                         src_addr,
                                         data.len()
                                     ));
-                                    send_status_update(
-                                        &status_tx_recv,
-                                        StatusUpdate::PLTPReceived {
-                                            peer_addr: src_addr,
-                                            data,
-                                        },
-                                        &event_proxy_recv,
-                                    );
+
+                                    // Parse PT data as CLUTCH message and emit appropriate event
+                                    use crate::network::fgtw::protocol::{
+                                        parse_clutch_full_offer_vsf_without_recipient_check,
+                                        parse_clutch_kem_response_vsf_without_recipient_check,
+                                    };
+
+                                    // Try to parse as ClutchFullOffer
+                                    if let Ok((payload, sender_pubkey, ceremony_id, lower_proof, higher_proof)) =
+                                        parse_clutch_full_offer_vsf_without_recipient_check(&data)
+                                    {
+                                        crate::log_info("PT: Parsed as ClutchFullOffer (VSF verified)");
+                                        send_status_update(
+                                            &status_tx_recv,
+                                            StatusUpdate::ClutchFullOfferReceived {
+                                                from_handle_proof: lower_proof,
+                                                to_handle_proof: higher_proof,
+                                                ceremony_id,
+                                                sender_pubkey,
+                                                payload,
+                                                sender_addr: src_addr,
+                                            },
+                                            &event_proxy_recv,
+                                        );
+                                    }
+                                    // Try to parse as ClutchKemResponse
+                                    else if let Ok((payload, sender_pubkey, ceremony_id, lower_proof, higher_proof)) =
+                                        parse_clutch_kem_response_vsf_without_recipient_check(&data)
+                                    {
+                                        crate::log_info("PT: Parsed as ClutchKemResponse (VSF verified)");
+                                        send_status_update(
+                                            &status_tx_recv,
+                                            StatusUpdate::ClutchKemResponseReceived {
+                                                from_handle_proof: lower_proof,
+                                                to_handle_proof: higher_proof,
+                                                ceremony_id,
+                                                sender_pubkey,
+                                                payload,
+                                                sender_addr: src_addr,
+                                            },
+                                            &event_proxy_recv,
+                                        );
+                                    }
+                                    else {
+                                        // Unknown PT data - emit generic event for debugging
+                                        crate::log_error(&format!(
+                                            "PT: Failed to parse {} bytes as CLUTCH message",
+                                            data.len()
+                                        ));
+                                        send_status_update(
+                                            &status_tx_recv,
+                                            StatusUpdate::PTReceived {
+                                                peer_addr: src_addr,
+                                                data,
+                                            },
+                                            &event_proxy_recv,
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -725,18 +813,18 @@ async fn run_checker(
                         continue;
                     }
 
-                    // Try to parse as PLTP VSF packets (SPEC, ACK, NAK, CONTROL, COMPLETE)
-                    if let Some(pltp_handled) = handle_pltp_vsf_packet(
+                    // Try to parse as PT VSF packets (SPEC, ACK, NAK, CONTROL, COMPLETE)
+                    if let Some(pt_handled) = handle_pt_vsf_packet(
                         msg_bytes,
                         src_addr,
-                        &pltp_recv,
+                        &pt_recv,
                         &socket_recv,
                         &status_tx_recv,
                         &event_proxy_recv,
                     )
                     .await
                     {
-                        if pltp_handled {
+                        if pt_handled {
                             continue;
                         }
                     }
@@ -766,6 +854,12 @@ async fn run_checker(
                                         &signature,
                                     ) {
                                         continue;
+                                    }
+
+                                    // Reset failure counter - they're clearly online if they're pinging us
+                                    {
+                                        let mut failures = failed_pings_recv.lock().unwrap();
+                                        failures.remove(sender_pubkey.as_bytes());
                                     }
 
                                     // Mark sender as online (they pinged us, so they're online!)
@@ -833,6 +927,12 @@ async fn run_checker(
                                         &signature,
                                     ) {
                                         continue;
+                                    }
+
+                                    // Reset failure counter on successful pong (prevents bouncing)
+                                    {
+                                        let mut failures = failed_pings_recv.lock().unwrap();
+                                        failures.remove(responder_pubkey.as_bytes());
                                     }
 
                                     // Send status update (avatar fetched by handle, not in ping/pong)
@@ -1064,7 +1164,15 @@ async fn run_checker(
                             }
                         }
                         Err(e) => {
-                            crate::log_info(&format!("Status: Parse error: {}", e));
+                            // Log first 32 bytes for debugging
+                            let preview: String = msg_bytes.iter().take(32)
+                                .map(|b| format!("{:02x}", b))
+                                .collect::<Vec<_>>()
+                                .join(" ");
+                            crate::log_info(&format!(
+                                "Status: Parse error: {} (len={}, first 32 bytes: {})",
+                                e, msg_bytes.len(), preview
+                            ));
                         }
                     }
                 }
@@ -1072,6 +1180,11 @@ async fn run_checker(
             }
         }
     });
+
+    // Track pending PT sends for TCP fallback (addr -> (start_time, vsf_bytes))
+    let mut pending_pt_sends: std::collections::HashMap<SocketAddr, (Instant, Vec<u8>)> =
+        std::collections::HashMap::new();
+    const PT_TIMEOUT: Duration = Duration::from_secs(30);
 
     // Process ping requests from UI
     loop {
@@ -1119,13 +1232,15 @@ async fn run_checker(
             Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
         }
 
-        // Cleanup stale pending pings (older than 5 seconds) and mark as offline
+        // Cleanup stale pending pings (older than 5 seconds)
+        // Use hysteresis: only mark offline after OFFLINE_THRESHOLD consecutive failures
         {
             let mut list = pending.lock().unwrap();
+            let mut failures = failed_pings.lock().unwrap();
             let now = Instant::now();
             let timeout = Duration::from_secs(5);
 
-            // Find expired pings and send offline status for each
+            // Find expired pings and increment failure counters
             let expired: Vec<_> = list
                 .iter()
                 .filter(|ping| now.duration_since(ping.sent_at) >= timeout)
@@ -1133,19 +1248,35 @@ async fn run_checker(
                 .collect();
 
             for pubkey in expired {
-                crate::log_info(&format!(
-                    "Status: TIMEOUT - {} marked offline",
-                    hex::encode(&pubkey.as_bytes()[..8])
-                ));
-                send_status_update(
-                    &status_tx,
-                    StatusUpdate::Online {
-                        peer_pubkey: pubkey,
-                        is_online: false,
-                        peer_addr: None, // No address for offline
-                    },
-                    &event_proxy,
-                );
+                let pubkey_bytes = *pubkey.as_bytes();
+                let count = failures.entry(pubkey_bytes).or_insert(0);
+                *count = count.saturating_add(1);
+
+                if *count >= OFFLINE_THRESHOLD {
+                    // Enough consecutive failures - mark offline
+                    crate::log_info(&format!(
+                        "Status: TIMEOUT ({} consecutive) - {} marked offline",
+                        count,
+                        hex::encode(&pubkey_bytes[..8])
+                    ));
+                    send_status_update(
+                        &status_tx,
+                        StatusUpdate::Online {
+                            peer_pubkey: pubkey,
+                            is_online: false,
+                            peer_addr: None, // No address for offline
+                        },
+                        &event_proxy,
+                    );
+                    // Reset counter after marking offline (so we can detect coming back online)
+                    failures.remove(&pubkey_bytes);
+                } else {
+                    crate::log_info(&format!(
+                        "Status: TIMEOUT ({}/{}) - {} (waiting for more failures before offline)",
+                        count, OFFLINE_THRESHOLD,
+                        hex::encode(&pubkey_bytes[..8])
+                    ));
+                }
             }
 
             list.retain(|ping| now.duration_since(ping.sent_at) < timeout);
@@ -1328,91 +1459,105 @@ async fn run_checker(
             }
         }
 
-        // Process PLTP send requests (large transfers)
-        while let Ok(request) = pltp_rx.try_recv() {
+        // Process PT send requests (large transfers)
+        while let Ok(request) = pt_rx.try_recv() {
             crate::log_info(&format!(
-                "PLTP: Starting outbound transfer to {} ({} bytes)",
+                "PT: Starting outbound transfer to {} ({} bytes)",
                 request.peer_addr,
                 request.data.len()
             ));
-            let mut pltp_mgr = pltp.lock().unwrap();
-            let spec_bytes = pltp_mgr.start_send(request.peer_addr, request.data);
-            drop(pltp_mgr); // Drop lock before async call
+            let mut pt_mgr = pt.lock().unwrap();
+            let spec_bytes = pt_mgr.start_send(request.peer_addr, request.data);
+            drop(pt_mgr); // Drop lock before async call
             udp::send(&socket, &spec_bytes, request.peer_addr).await;
         }
 
-        // Process full CLUTCH offer requests (TCP fallback)
+        // Process full CLUTCH offer requests (PT/UDP primary, TCP fallback)
+        // Uses VSF format with Ed25519 signature for verification
         while let Ok(request) = full_offer_rx.try_recv() {
-            crate::log_info(&format!(
-                "Status: Sending ClutchFullOffer to {} ({} bytes) via TCP",
-                request.peer_addr,
-                request.payload.len()
-            ));
-            // Build TCP payload: [type:1][handle_proof:32][payload]
-            let mut tcp_data = Vec::with_capacity(1 + 32 + request.payload.len());
-            tcp_data.push(0x01); // Type: full offer
-            tcp_data.extend_from_slice(&request.our_handle_proof);
-            tcp_data.extend_from_slice(&request.payload);
+            use crate::network::fgtw::protocol::build_clutch_full_offer_vsf;
 
-            // Send via TCP - use peer_addr directly (port comes from FGTW)
-            match TcpTransport::connect(request.peer_addr, Duration::from_secs(10)) {
-                Ok(mut stream) => {
-                    if let Err(e) = TcpTransport::send_payload(&mut stream, &tcp_data) {
-                        crate::log_error(&format!(
-                            "Status: Failed to send ClutchFullOffer to {}: {}",
-                            request.peer_addr, e
-                        ));
-                    } else {
-                        crate::log_info(&format!(
-                            "Status: ClutchFullOffer sent to {} successfully",
-                            request.peer_addr
-                        ));
-                    }
-                }
+            // Build signed VSF message
+            let vsf_bytes = match build_clutch_full_offer_vsf(
+                &request.our_handle_proof,
+                &request.their_handle_proof,
+                &request.ceremony_id,
+                &request.payload,
+                &request.device_pubkey,
+                &request.device_secret,
+            ) {
+                Ok(bytes) => bytes,
                 Err(e) => {
-                    crate::log_error(&format!(
-                        "Status: Failed to connect to {} for ClutchFullOffer: {}",
-                        request.peer_addr, e
-                    ));
+                    crate::log_error(&format!("Status: Failed to build ClutchFullOffer VSF: {}", e));
+                    continue;
+                }
+            };
+
+            crate::log_info(&format!(
+                "Status: Sending ClutchFullOffer to {} ({} bytes VSF) via PT/UDP",
+                request.peer_addr,
+                vsf_bytes.len()
+            ));
+
+            // VSF inspection for development builds
+            #[cfg(feature = "development")]
+            {
+                if let Ok(inspection) = vsf::inspect::inspect_vsf(&vsf_bytes) {
+                    crate::log_info(&format!("Status: ClutchFullOffer VSF:\n{}", inspection));
                 }
             }
+
+            // Send via PT/UDP (primary) - track for TCP fallback on timeout
+            let spec_bytes = {
+                let mut pt_mgr = pt.lock().unwrap();
+                pt_mgr.start_send(request.peer_addr, vsf_bytes.clone())
+            };
+            udp::send(&socket, &spec_bytes, request.peer_addr).await;
+            pending_pt_sends.insert(request.peer_addr, (Instant::now(), vsf_bytes));
         }
 
-        // Process CLUTCH KEM response requests (TCP fallback)
+        // Process CLUTCH KEM response requests (PT/UDP primary, TCP fallback)
+        // Uses VSF format with Ed25519 signature for verification
         while let Ok(request) = kem_response_rx.try_recv() {
-            crate::log_info(&format!(
-                "Status: Sending ClutchKemResponse to {} ({} bytes) via TCP",
-                request.peer_addr,
-                request.payload.len()
-            ));
-            // Build TCP payload: [type:1][handle_proof:32][payload]
-            let mut tcp_data = Vec::with_capacity(1 + 32 + request.payload.len());
-            tcp_data.push(0x02); // Type: KEM response
-            tcp_data.extend_from_slice(&request.our_handle_proof);
-            tcp_data.extend_from_slice(&request.payload);
+            use crate::network::fgtw::protocol::build_clutch_kem_response_vsf;
 
-            // Send via TCP - use peer_addr directly (port comes from FGTW)
-            match TcpTransport::connect(request.peer_addr, Duration::from_secs(10)) {
-                Ok(mut stream) => {
-                    if let Err(e) = TcpTransport::send_payload(&mut stream, &tcp_data) {
-                        crate::log_error(&format!(
-                            "Status: Failed to send ClutchKemResponse to {}: {}",
-                            request.peer_addr, e
-                        ));
-                    } else {
-                        crate::log_info(&format!(
-                            "Status: ClutchKemResponse sent to {} successfully",
-                            request.peer_addr
-                        ));
-                    }
-                }
+            // Build signed VSF message
+            let vsf_bytes = match build_clutch_kem_response_vsf(
+                &request.our_handle_proof,
+                &request.their_handle_proof,
+                &request.ceremony_id,
+                &request.payload,
+                &request.device_pubkey,
+                &request.device_secret,
+            ) {
+                Ok(bytes) => bytes,
                 Err(e) => {
-                    crate::log_error(&format!(
-                        "Status: Failed to connect to {} for ClutchKemResponse: {}",
-                        request.peer_addr, e
-                    ));
+                    crate::log_error(&format!("Status: Failed to build ClutchKemResponse VSF: {}", e));
+                    continue;
+                }
+            };
+
+            crate::log_info(&format!(
+                "Status: Sending ClutchKemResponse to {} ({} bytes VSF) via PT/UDP",
+                request.peer_addr,
+                vsf_bytes.len()
+            ));
+
+            // VSF inspection for development builds
+            #[cfg(feature = "development")]
+            {
+                if let Ok(inspection) = vsf::inspect::inspect_vsf(&vsf_bytes) {
+                    crate::log_info(&format!("Status: ClutchKemResponse VSF:\n{}", inspection));
                 }
             }
+
+            // Send via PT/UDP (primary) - track for TCP fallback on timeout
+            let spec_bytes = {
+                let mut pt_mgr = pt.lock().unwrap();
+                pt_mgr.start_send(request.peer_addr, vsf_bytes.clone())
+            };
+            udp::send(&socket, &spec_bytes, request.peer_addr).await;
+            pending_pt_sends.insert(request.peer_addr, (Instant::now(), vsf_bytes));
         }
 
         // Process LAN broadcast requests (NAT hairpinning workaround)
@@ -1429,17 +1574,78 @@ async fn run_checker(
             if let Ok(broadcast_sock) = UdpSocket::bind("0.0.0.0:0") {
                 if broadcast_sock.set_broadcast(true).is_ok() {
                     let _ = udp::send_sync(&broadcast_sock, &packet, broadcast_addr);
+                    crate::log_info(&format!(
+                        "LAN: Broadcast {} bytes to {}",
+                        packet.len(),
+                        broadcast_addr
+                    ));
                 }
             }
         }
 
-        // PLTP periodic tick - check timeouts and retransmit
+        // PT periodic tick - check timeouts and retransmit
         {
-            let mut pltp_mgr = pltp.lock().unwrap();
-            let to_send = pltp_mgr.tick();
-            drop(pltp_mgr); // Drop lock before async calls
+            let mut pt_mgr = pt.lock().unwrap();
+            let to_send = pt_mgr.tick();
+            drop(pt_mgr); // Drop lock before async calls
             for (addr, pkt) in to_send {
                 udp::send(&socket, &pkt, addr).await;
+            }
+        }
+
+        // Check for completed PT sends - remove from pending
+        {
+            let pt_mgr = pt.lock().unwrap();
+            let completed: Vec<SocketAddr> = pending_pt_sends
+                .keys()
+                .filter(|addr| pt_mgr.is_outbound_complete(addr))
+                .cloned()
+                .collect();
+            drop(pt_mgr);
+            for addr in completed {
+                pending_pt_sends.remove(&addr);
+                crate::log_info(&format!("PT: Transfer to {} completed, removed from pending", addr));
+            }
+        }
+
+        // Check for PT timeouts - fall back to TCP
+        {
+            let now = Instant::now();
+            let timed_out: Vec<(SocketAddr, Vec<u8>)> = pending_pt_sends
+                .iter()
+                .filter(|(_, (start, _))| now.duration_since(*start) > PT_TIMEOUT)
+                .map(|(addr, (_, vsf))| (*addr, vsf.clone()))
+                .collect();
+
+            for (addr, vsf_bytes) in timed_out {
+                pending_pt_sends.remove(&addr);
+                crate::log_info(&format!(
+                    "PT: Transfer to {} timed out after {}s, falling back to TCP",
+                    addr, PT_TIMEOUT.as_secs()
+                ));
+
+                // Try TCP fallback
+                match TcpTransport::connect(addr, Duration::from_secs(10)) {
+                    Ok(mut stream) => {
+                        if let Err(e) = TcpTransport::send_payload(&mut stream, &vsf_bytes) {
+                            crate::log_error(&format!(
+                                "Status: TCP fallback failed to send to {}: {}",
+                                addr, e
+                            ));
+                        } else {
+                            crate::log_info(&format!(
+                                "Status: TCP fallback sent {} bytes to {} successfully",
+                                vsf_bytes.len(), addr
+                            ));
+                        }
+                    }
+                    Err(e) => {
+                        crate::log_error(&format!(
+                            "Status: TCP fallback failed to connect to {}: {}",
+                            addr, e
+                        ));
+                    }
+                }
             }
         }
     }
@@ -1517,124 +1723,219 @@ fn compute_ack_provenance(
     hasher.update(b"ack");
     *hasher.finalize().as_bytes()
 }
-/// Handle PLTP VSF packets (SPEC, ACK, NAK, CONTROL, COMPLETE)
-/// Returns Some(true) if packet was handled, Some(false) if not a PLTP packet, None on error
-async fn handle_pltp_vsf_packet(
+/// Handle PT VSF packets (SPEC, ACK, NAK, CONTROL, COMPLETE)
+/// Returns Some(true) if packet was handled, Some(false) if not a PT packet, None on error
+async fn handle_pt_vsf_packet(
     msg_bytes: &[u8],
     src_addr: SocketAddr,
-    pltp: &Arc<Mutex<PLTPManager>>,
+    pt: &Arc<Mutex<PTManager>>,
     socket: &Arc<tokio::net::UdpSocket>,
     status_tx: &Sender<StatusUpdate>,
     event_proxy: &OptionalEventProxy,
 ) -> Option<bool> {
-    // Try to parse VSF fields to determine packet type
-    let fields = parse_pltp_vsf_fields(msg_bytes)?;
-    if fields.is_empty() {
-        return Some(false);
-    }
+    // Try to parse as PT packet (supports both header-only and section formats)
+    let parsed = parse_pt_packet(msg_bytes)?;
 
-    // Look for packet type field
-    let packet_type = fields.iter().find(|(name, _)| name == "type")?;
-    let type_str = match &packet_type.1 {
-        vsf::VsfType::d(s) => s.as_str(),
-        _ => return Some(false),
-    };
+    match parsed {
+        // Header-only format (new compact format)
+        ParsedPtPacket::HeaderOnly {
+            name,
+            provenance_hash,
+            values,
+        } => {
+            match name.as_str() {
+                "pt_ack" => {
+                    if let Some(ack) = PTAck::from_vsf_header(provenance_hash, &values) {
+                        let (response_packets, is_complete) = {
+                            let mut pt_mgr = pt.lock().unwrap();
+                            let packets = pt_mgr.handle_ack(src_addr, ack);
+                            let complete = pt_mgr.is_outbound_complete(&src_addr);
+                            if complete {
+                                pt_mgr.remove_outbound(&src_addr);
+                            }
+                            (packets, complete)
+                        };
+                        for pkt in response_packets {
+                            udp::send(socket, &pkt, src_addr).await;
+                        }
+                        if is_complete {
+                            crate::log_info(&format!(
+                                "PT: Outbound transfer to {} complete",
+                                src_addr
+                            ));
+                            send_status_update(
+                                status_tx,
+                                StatusUpdate::PTSendComplete {
+                                    peer_addr: src_addr,
+                                },
+                                event_proxy,
+                            );
+                        }
+                        return Some(true);
+                    }
+                }
+                "pt_nak" => {
+                    if let Some(nak) = PTNak::from_vsf_header(&values) {
+                        crate::log_info(&format!(
+                            "PT: NAK received from {} - {} missing",
+                            src_addr,
+                            nak.missing_sequences.len()
+                        ));
+                        let response_packets = {
+                            let mut pt_mgr = pt.lock().unwrap();
+                            pt_mgr.handle_nak(src_addr, nak)
+                        };
+                        for pkt in response_packets {
+                            udp::send(socket, &pkt, src_addr).await;
+                        }
+                        return Some(true);
+                    }
+                }
+                "pt_ctrl" => {
+                    if let Some(control) = PTControl::from_vsf_header(&values) {
+                        crate::log_info(&format!("PT: CONTROL received from {}", src_addr));
+                        let mut pt_mgr = pt.lock().unwrap();
+                        pt_mgr.handle_control(src_addr, control);
+                        return Some(true);
+                    }
+                }
+                "pt_done" => {
+                    if let Some(complete) = PTComplete::from_vsf_header(provenance_hash, &values) {
+                        crate::log_info(&format!(
+                            "PT: COMPLETE received from {} - success={}",
+                            src_addr, complete.success
+                        ));
+                        let is_complete = {
+                            let mut pt_mgr = pt.lock().unwrap();
+                            pt_mgr.handle_complete(src_addr, complete);
+                            let complete = pt_mgr.is_outbound_complete(&src_addr);
+                            if complete {
+                                pt_mgr.remove_outbound(&src_addr);
+                            }
+                            complete
+                        };
+                        if is_complete {
+                            send_status_update(
+                                status_tx,
+                                StatusUpdate::PTSendComplete {
+                                    peer_addr: src_addr,
+                                },
+                                event_proxy,
+                            );
+                        }
+                        return Some(true);
+                    }
+                }
+                _ => {}
+            }
+        }
 
-    match type_str {
-        "pltp_spec" => {
-            if let Some(spec) = PLTPSpec::from_vsf_fields(&fields) {
-                crate::log_info(&format!(
-                    "PLTP: SPEC received from {} - {} packets, {} bytes",
-                    src_addr, spec.total_packets, spec.total_size
-                ));
-                let spec_ack = {
-                    let mut pltp_mgr = pltp.lock().unwrap();
-                    pltp_mgr.handle_spec(src_addr, spec)
-                };
-                udp::send(socket, &spec_ack, src_addr).await;
-                return Some(true);
-            }
-        }
-        "pltp_ack" => {
-            if let Some(ack) = PLTPAck::from_vsf_fields(&fields) {
-                let (response_packets, is_complete) = {
-                    let mut pltp_mgr = pltp.lock().unwrap();
-                    let packets = pltp_mgr.handle_ack(src_addr, ack);
-                    let complete = pltp_mgr.is_outbound_complete(&src_addr);
-                    if complete {
-                        pltp_mgr.remove_outbound(&src_addr);
+        // Legacy section format
+        ParsedPtPacket::Section { name, fields } => {
+            match name.as_str() {
+                "pt_spec" => {
+                    if let Some(spec) = PTSpec::from_vsf_fields(&fields) {
+                        crate::log_info(&format!(
+                            "PT: SPEC received from {} - {} packets, {} bytes",
+                            src_addr, spec.total_packets, spec.total_size
+                        ));
+                        let spec_ack = {
+                            let mut pt_mgr = pt.lock().unwrap();
+                            pt_mgr.handle_spec(src_addr, spec)
+                        };
+                        udp::send(socket, &spec_ack, src_addr).await;
+                        return Some(true);
                     }
-                    (packets, complete)
-                };
-                for pkt in response_packets {
-                    udp::send(socket, &pkt, src_addr).await;
                 }
-                if is_complete {
-                    crate::log_info(&format!("PLTP: Outbound transfer to {} complete", src_addr));
-                    send_status_update(
-                        status_tx,
-                        StatusUpdate::PLTPSendComplete {
-                            peer_addr: src_addr,
-                        },
-                        event_proxy,
-                    );
-                }
-                return Some(true);
-            }
-        }
-        "pltp_nak" => {
-            if let Some(nak) = PLTPNak::from_vsf_fields(&fields) {
-                crate::log_info(&format!(
-                    "PLTP: NAK received from {} - {} missing",
-                    src_addr,
-                    nak.missing_sequences.len()
-                ));
-                let response_packets = {
-                    let mut pltp_mgr = pltp.lock().unwrap();
-                    pltp_mgr.handle_nak(src_addr, nak)
-                };
-                for pkt in response_packets {
-                    udp::send(socket, &pkt, src_addr).await;
-                }
-                return Some(true);
-            }
-        }
-        "pltp_control" => {
-            if let Some(control) = PLTPControl::from_vsf_fields(&fields) {
-                crate::log_info(&format!("PLTP: CONTROL received from {}", src_addr));
-                let mut pltp_mgr = pltp.lock().unwrap();
-                pltp_mgr.handle_control(src_addr, control);
-                return Some(true);
-            }
-        }
-        "pltp_complete" => {
-            if let Some(complete) = PLTPComplete::from_vsf_fields(&fields) {
-                crate::log_info(&format!(
-                    "PLTP: COMPLETE received from {} - success={}",
-                    src_addr, complete.success
-                ));
-                let is_complete = {
-                    let mut pltp_mgr = pltp.lock().unwrap();
-                    pltp_mgr.handle_complete(src_addr, complete);
-                    let complete = pltp_mgr.is_outbound_complete(&src_addr);
-                    if complete {
-                        pltp_mgr.remove_outbound(&src_addr);
+                "pt_ack" => {
+                    // Legacy section format fallback
+                    if let Some(ack) = PTAck::from_vsf_fields(&fields) {
+                        let (response_packets, is_complete) = {
+                            let mut pt_mgr = pt.lock().unwrap();
+                            let packets = pt_mgr.handle_ack(src_addr, ack);
+                            let complete = pt_mgr.is_outbound_complete(&src_addr);
+                            if complete {
+                                pt_mgr.remove_outbound(&src_addr);
+                            }
+                            (packets, complete)
+                        };
+                        for pkt in response_packets {
+                            udp::send(socket, &pkt, src_addr).await;
+                        }
+                        if is_complete {
+                            crate::log_info(&format!(
+                                "PT: Outbound transfer to {} complete",
+                                src_addr
+                            ));
+                            send_status_update(
+                                status_tx,
+                                StatusUpdate::PTSendComplete {
+                                    peer_addr: src_addr,
+                                },
+                                event_proxy,
+                            );
+                        }
+                        return Some(true);
                     }
-                    complete
-                };
-                if is_complete {
-                    send_status_update(
-                        status_tx,
-                        StatusUpdate::PLTPSendComplete {
-                            peer_addr: src_addr,
-                        },
-                        event_proxy,
-                    );
                 }
-                return Some(true);
+                "pt_nak" => {
+                    // Legacy section format fallback
+                    if let Some(nak) = PTNak::from_vsf_fields(&fields) {
+                        crate::log_info(&format!(
+                            "PT: NAK received from {} - {} missing",
+                            src_addr,
+                            nak.missing_sequences.len()
+                        ));
+                        let response_packets = {
+                            let mut pt_mgr = pt.lock().unwrap();
+                            pt_mgr.handle_nak(src_addr, nak)
+                        };
+                        for pkt in response_packets {
+                            udp::send(socket, &pkt, src_addr).await;
+                        }
+                        return Some(true);
+                    }
+                }
+                "pt_ctrl" => {
+                    // Legacy section format fallback
+                    if let Some(control) = PTControl::from_vsf_fields(&fields) {
+                        crate::log_info(&format!("PT: CONTROL received from {}", src_addr));
+                        let mut pt_mgr = pt.lock().unwrap();
+                        pt_mgr.handle_control(src_addr, control);
+                        return Some(true);
+                    }
+                }
+                "pt_done" => {
+                    // Legacy section format fallback
+                    if let Some(complete) = PTComplete::from_vsf_fields(&fields) {
+                        crate::log_info(&format!(
+                            "PT: COMPLETE received from {} - success={}",
+                            src_addr, complete.success
+                        ));
+                        let is_complete = {
+                            let mut pt_mgr = pt.lock().unwrap();
+                            pt_mgr.handle_complete(src_addr, complete);
+                            let complete = pt_mgr.is_outbound_complete(&src_addr);
+                            if complete {
+                                pt_mgr.remove_outbound(&src_addr);
+                            }
+                            complete
+                        };
+                        if is_complete {
+                            send_status_update(
+                                status_tx,
+                                StatusUpdate::PTSendComplete {
+                                    peer_addr: src_addr,
+                                },
+                                event_proxy,
+                            );
+                        }
+                        return Some(true);
+                    }
+                }
+                _ => {}
             }
         }
-        _ => {}
     }
 
     Some(false)
@@ -1644,6 +1945,12 @@ async fn handle_pltp_vsf_packet(
 /// Returns StatusUpdate::LanPeerDiscovered if valid, None otherwise
 fn parse_lan_discovery(packet: &[u8], src_addr: SocketAddr) -> Option<StatusUpdate> {
     let (handle_proof, local_ip, port) = udp::parse_lan_discovery(packet, src_addr)?;
+    crate::log_info(&format!(
+        "LAN: Received discovery from {} (handle_proof: {}..., port: {})",
+        src_addr,
+        hex::encode(&handle_proof[..4]),
+        port
+    ));
     Some(StatusUpdate::LanPeerDiscovered {
         handle_proof,
         local_ip,
@@ -1651,21 +1958,66 @@ fn parse_lan_discovery(packet: &[u8], src_addr: SocketAddr) -> Option<StatusUpda
     })
 }
 
-/// Parse VSF fields from bytes (simplified for PLTP packet detection)
-fn parse_pltp_vsf_fields(bytes: &[u8]) -> Option<Vec<(String, vsf::VsfType)>> {
+/// Parsed PT packet info - either from header inline field or section body
+enum ParsedPtPacket {
+    /// Header-only format: (pt_name:value1,value2,...) with provenance hash
+    HeaderOnly {
+        name: String,
+        provenance_hash: [u8; 32],
+        values: Vec<vsf::VsfType>,
+    },
+    /// Legacy section format: [pt_name (field:value)...]
+    Section {
+        name: String,
+        fields: Vec<(String, vsf::VsfType)>,
+    },
+}
+
+/// Parse VSF PT packet - supports both header-only and section formats
+fn parse_pt_packet(bytes: &[u8]) -> Option<ParsedPtPacket> {
     use vsf::file_format::VsfHeader;
     use vsf::parse;
 
-    let (_, header_end) = VsfHeader::decode(bytes).ok()?;
+    let (header, header_end) = VsfHeader::decode(bytes).ok()?;
 
+    // Extract provenance hash from header
+    let provenance_hash = match &header.provenance_hash {
+        vsf::VsfType::hp(hash) if hash.len() == 32 => {
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(hash);
+            arr
+        }
+        _ => return None,
+    };
+
+    // Check for header-only format first (inline fields like pt_ack, pt_nak, pt_ctrl, pt_done)
+    // These have fields with values directly in the header, no section body
+    for field in &header.fields {
+        if field.name.starts_with("pt_") && field.offset_bytes == 0 && field.size_bytes == 0 {
+            // This is a header-only field with inline values
+            // We need to re-parse to get the actual values
+            if let Some(values) = parse_header_inline_values(bytes, &field.name) {
+                return Some(ParsedPtPacket::HeaderOnly {
+                    name: field.name.clone(),
+                    provenance_hash,
+                    values,
+                });
+            }
+        }
+    }
+
+    // Fall back to section body parsing
     let mut ptr = header_end;
     if ptr >= bytes.len() || bytes[ptr] != b'[' {
         return None;
     }
     ptr += 1;
 
-    // Parse section name
-    let _ = parse(bytes, &mut ptr).ok()?;
+    // Parse section name (this identifies packet type: pt_spec, pt_ack, etc.)
+    let section_name = match parse(bytes, &mut ptr).ok()? {
+        vsf::VsfType::d(name) => name,
+        _ => return None,
+    };
 
     let mut fields = Vec::new();
     while ptr < bytes.len() && bytes[ptr] != b']' {
@@ -1691,5 +2043,84 @@ fn parse_pltp_vsf_fields(bytes: &[u8]) -> Option<Vec<(String, vsf::VsfType)>> {
         }
     }
 
-    Some(fields)
+    Some(ParsedPtPacket::Section {
+        name: section_name,
+        fields,
+    })
+}
+
+/// Parse inline values from a header field by name
+/// Returns the values for (name:val1,val2,...) format
+fn parse_header_inline_values(bytes: &[u8], target_name: &str) -> Option<Vec<vsf::VsfType>> {
+    use vsf::parse;
+
+    // Skip magic "RÅ<"
+    if bytes.len() < 4 || &bytes[0..3] != "RÅ".as_bytes() || bytes[3] != b'<' {
+        return None;
+    }
+
+    let mut ptr = 4;
+
+    // Skip header fields until we hit '>' or find our field
+    while ptr < bytes.len() && bytes[ptr] != b'>' {
+        if bytes[ptr] == b'(' {
+            ptr += 1;
+
+            // Parse field name
+            let field_name = match parse(bytes, &mut ptr) {
+                Ok(vsf::VsfType::d(name)) => name,
+                _ => continue,
+            };
+
+            if field_name == target_name {
+                // Found it! Parse values after ':'
+                let mut values = Vec::new();
+                if ptr < bytes.len() && bytes[ptr] == b':' {
+                    ptr += 1;
+                    // Parse comma-separated values until ')'
+                    loop {
+                        if ptr >= bytes.len() || bytes[ptr] == b')' {
+                            break;
+                        }
+                        if let Ok(value) = parse(bytes, &mut ptr) {
+                            values.push(value);
+                        } else {
+                            break;
+                        }
+                        // Skip comma separator
+                        if ptr < bytes.len() && bytes[ptr] == b',' {
+                            ptr += 1;
+                        }
+                    }
+                }
+                return Some(values);
+            }
+
+            // Skip to end of this field
+            while ptr < bytes.len() && bytes[ptr] != b')' {
+                let _ = parse(bytes, &mut ptr);
+                if ptr < bytes.len() && bytes[ptr] == b',' {
+                    ptr += 1;
+                }
+            }
+            if ptr < bytes.len() && bytes[ptr] == b')' {
+                ptr += 1;
+            }
+        } else {
+            // Skip non-field elements in header
+            let _ = parse(bytes, &mut ptr);
+        }
+    }
+
+    None
+}
+
+/// Parse VSF fields from bytes (legacy section-only format)
+/// Parse a PT VSF packet, returns (section_name, fields)
+#[allow(dead_code)]
+fn parse_pt_vsf_fields(bytes: &[u8]) -> Option<(String, Vec<(String, vsf::VsfType)>)> {
+    match parse_pt_packet(bytes)? {
+        ParsedPtPacket::Section { name, fields } => Some((name, fields)),
+        ParsedPtPacket::HeaderOnly { .. } => None, // Can't convert header-only to named fields
+    }
 }

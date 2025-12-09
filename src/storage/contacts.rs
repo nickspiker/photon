@@ -30,7 +30,7 @@
 //!
 //! Encrypted with ChaCha20-Poly1305 using key derived from our identity_seed.
 
-use crate::types::{ClutchState, Contact, ContactId, DevicePubkey, HandleText, Seed, TrustLevel};
+use crate::types::{ClutchState, Contact, ContactId, DevicePubkey, FriendshipId, HandleText, Seed, TrustLevel};
 use blake3::Hasher;
 use chacha20poly1305::{
     aead::{Aead, KeyInit},
@@ -434,9 +434,7 @@ fn contact_state_schema() -> SectionSchema {
         // Optional fields
         .field("ip", TypeConstraint::AnyString)
         .field("seed", TypeConstraint::AnyHash)
-        .field("ephemeral_secret", TypeConstraint::AnyHash)
-        .field("ephemeral_pubkey", TypeConstraint::X25519Key)
-        .field("ephemeral_their", TypeConstraint::X25519Key)
+        .field("friendship_id", TypeConstraint::AnyHash) // Links to friendship storage
         .field("last_seen", TypeConstraint::Any) // f64 Eagle Time
 }
 
@@ -478,19 +476,9 @@ pub fn save_contact_state(
             .set("seed", VsfType::hb(seed.as_bytes().to_vec()))
             .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
-    if let Some(secret) = &contact.clutch_our_ephemeral_secret {
+    if let Some(friendship_id) = &contact.friendship_id {
         builder = builder
-            .set("ephemeral_secret", VsfType::hb(secret.to_vec()))
-            .map_err(|e| StorageError::Parse(e.to_string()))?;
-    }
-    if let Some(pubkey) = &contact.clutch_our_ephemeral_pubkey {
-        builder = builder
-            .set("ephemeral_pubkey", VsfType::kx(pubkey.to_vec()))
-            .map_err(|e| StorageError::Parse(e.to_string()))?;
-    }
-    if let Some(pubkey) = &contact.clutch_their_ephemeral_pubkey {
-        builder = builder
-            .set("ephemeral_their", VsfType::kx(pubkey.to_vec()))
+            .set("friendship_id", VsfType::hb(friendship_id.as_bytes().to_vec()))
             .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
     if let Some(last_seen) = contact.last_seen {
@@ -649,19 +637,9 @@ pub fn load_contact_state(
             contact.relationship_seed = Some(Seed::from_bytes(v.as_slice().try_into().unwrap()));
         }
     }
-    if let Some(VsfType::hb(v)) = get_val("ephemeral_secret") {
+    if let Some(VsfType::hb(v)) = get_val("friendship_id") {
         if v.len() == 32 {
-            contact.clutch_our_ephemeral_secret = Some(v.as_slice().try_into().unwrap());
-        }
-    }
-    if let Some(VsfType::kx(v)) = get_val("ephemeral_pubkey") {
-        if v.len() == 32 {
-            contact.clutch_our_ephemeral_pubkey = Some(v.as_slice().try_into().unwrap());
-        }
-    }
-    if let Some(VsfType::kx(v)) = get_val("ephemeral_their") {
-        if v.len() == 32 {
-            contact.clutch_their_ephemeral_pubkey = Some(v.as_slice().try_into().unwrap());
+            contact.friendship_id = Some(FriendshipId::from_bytes(v.as_slice().try_into().unwrap()));
         }
     }
     if let Some(v) = get_val("last_seen") {

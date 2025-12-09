@@ -59,49 +59,36 @@ pub fn get_local_ip() -> Option<std::net::Ipv4Addr> {
 }
 
 /// Parse LAN discovery packet
-/// Returns (handle_proof, port) if valid, None otherwise
+/// Returns (handle_proof, ip, port) if valid, None otherwise
+/// handle_proof is extracted from the VSF header's provenance hash (hp)
 pub fn parse_lan_discovery(
     packet: &[u8],
     src_addr: SocketAddr,
 ) -> Option<([u8; 32], std::net::Ipv4Addr, u16)> {
     use vsf::file_format::{VsfHeader, VsfSection};
-    use vsf::verification::is_original;
     use vsf::VsfType;
 
-    // Verify VSF is unmodified original (integrity check)
-    if is_original(packet).is_err() {
-        return None;
-    }
+    // Parse header to get provenance hash (sender identity) and find section start
+    // Note: No is_original() check - LAN discovery is a simple unsigned broadcast
+    let (header, header_end) = VsfHeader::decode(packet).ok()?;
 
-    // Parse header to find section start
-    let header_end = match VsfHeader::decode(packet) {
-        Ok((_, end)) => end,
-        Err(_) => return None,
+    // Extract handle_proof from header provenance hash
+    let handle_proof = match header.provenance_hash {
+        VsfType::hp(bytes) if bytes.len() == 32 => {
+            let mut hp = [0u8; 32];
+            hp.copy_from_slice(&bytes);
+            hp
+        }
+        _ => return None,
     };
 
     // Parse section
     let mut ptr = header_end;
-    let section = match VsfSection::parse(packet, &mut ptr) {
-        Ok(s) => s,
-        Err(_) => return None,
-    };
+    let section = VsfSection::parse(packet, &mut ptr).ok()?;
 
     if section.name != "lan_discovery" {
         return None;
     }
-
-    // Extract handle_proof (hb = BLAKE3 hash, 32 bytes)
-    let handle_proof = match section.get_field("handle_proof") {
-        Some(field) => match field.values.first() {
-            Some(VsfType::hb(bytes)) if bytes.len() == 32 => {
-                let mut hp = [0u8; 32];
-                hp.copy_from_slice(bytes);
-                hp
-            }
-            _ => return None,
-        },
-        None => return None,
-    };
 
     // Extract port (u4 = u16)
     let port = match section.get_field("port") {
@@ -112,29 +99,26 @@ pub fn parse_lan_discovery(
         None => return None,
     };
 
-    // Handle both native IPv4 and IPv4-mapped IPv6 addresses (::ffff:x.x.x.x)
+    // Handle both native IPv4 and IPv4-mapped IPv6 addresses
     let src_ip = match src_addr.ip() {
         std::net::IpAddr::V4(ip) => ip,
-        std::net::IpAddr::V6(ip6) => {
-            // Check for IPv4-mapped IPv6 address
-            if let Some(ip4) = ip6.to_ipv4_mapped() {
-                ip4
-            } else {
-                return None;
-            }
-        }
+        std::net::IpAddr::V6(ip6) => ip6.to_ipv4_mapped()?,
     };
 
     Some((handle_proof, src_ip, port))
 }
 
 /// Build LAN discovery broadcast packet
+/// handle_proof is stored in VSF header as provenance hash (hp) for identity
 pub fn build_lan_discovery(handle_proof: [u8; 32], port: u16) -> Vec<u8> {
-    use vsf::{VsfSection, VsfType};
+    use vsf::{VsfBuilder, VsfType};
 
-    let mut section = VsfSection::new("lan_discovery");
-    section.add_field("handle_proof", VsfType::hb(handle_proof.to_vec()));
-    section.add_field("port", VsfType::u4(port));
-
-    section.encode()
+    VsfBuilder::new()
+        .provenance_hash(handle_proof) // Identity in header - no registry lookup needed
+        .add_section(
+            "lan_discovery",
+            vec![("port".to_string(), VsfType::u4(port))],
+        )
+        .build()
+        .unwrap_or_default()
 }
