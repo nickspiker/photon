@@ -236,12 +236,11 @@ pub fn load_friendship_chains(
 }
 
 /// Load all friendships from disk
-/// Returns HashMap of FriendshipId -> FriendshipChains
 pub fn load_all_friendships(
     identity_seed: &[u8; 32],
     device_secret: &[u8; 32],
-) -> std::collections::HashMap<FriendshipId, FriendshipChains> {
-    let mut result = std::collections::HashMap::new();
+) -> Vec<(FriendshipId, FriendshipChains)> {
+    let mut result = Vec::new();
     let dir = friendships_dir();
 
     if !dir.exists() {
@@ -256,7 +255,7 @@ pub fn load_all_friendships(
                     if let Some(friendship_id) = FriendshipId::from_base64(name) {
                         match load_friendship_chains(&friendship_id, identity_seed, device_secret) {
                             Ok(chains) => {
-                                result.insert(friendship_id, chains);
+                                result.push((friendship_id, chains));
                             }
                             Err(e) => {
                                 crate::log_error(&format!(

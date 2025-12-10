@@ -1,0 +1,679 @@
+nick@fedora:/mnt/Octopus/Code/photon$ ./target/debug/photon-messenger
+SIGNATURE CHECK SKIPPED (development build)
+
+Photon Messenger - Built from first principles for true data sovereignty
+by Nick Spiker <fractaldecoder@proton.me>
+
+I built this to give you the best damn secure messaging experience possible.
+Your data belongs to you—no servers, no tracking, no compromises.
+
+Found a bug? Have feedback? Email me: fractaldecoder@proton.me
+(Photon messenger coming soon—for now there's only ~3 of us!)
+
+Device pubkey: 90e571bf906abc29b271ecd8e11b1589de39636e0d7e89e427a0d9d785cd28c8
+Network: Bound to PHOTON_PORT 4383 (UDP+TCP)
+Network: Using port 4383 for all traffic
+Network: Query worker initialized
+Network: Search worker initialized
+Network: Refresh worker initialized
+Network: Querying handle 'fractal decoder'...
+═══ VSF FGTW RX /challenge (132 bytes) ═══
+Versatile Storage Format
+132 Bytes (132 Bytes)
+
+<
+ Version 5
+ Backward compat 5
+ Created 2025-DEC-09 10:16:16.313 PM
+ Header size: 132 Bytes
+ 32-Byte BLAKE3 provenance hash hex
+    2FFB1A5C1517D8F5BDC7A6744703449C
+    AEFAE41D9B8D68FFE884B14A09413132
+ 64-Byte Ed25519 signature hex
+    807E3A117F99D70BA61605B6F08BA426
+    014A9067831C889E6D3A6B25CB68CACB
+    DF13F4414D874B4507D49C3B42EE1960
+    05CEB96ADB793173F99C9123E27E4703
+ 0 labels
+>
+
+Valid
+
+═══ VSF FGTW TX /announce (398 bytes) ═══
+Versatile Storage Format
+398 Bytes (398 Bytes)
+
+<
+ Version 5
+ Backward compat 5
+ Created 2025-DEC-09 10:16:16.329 PM
+ Header size: 195 Bytes
+ 32-Byte BLAKE3 provenance hash hex
+    71A081EF6BA6889C9EE53365D232014B
+    705A77DF90B168F420E49A2DC2C90FBC
+ 1 labels
+ (announce @195 203 Bytes 1 field)
+   32-Byte Ed25519 pubkey hex
+       90E571BF906ABC29B271ECD8E11B1589
+       DE39636E0D7E89E427A0D9D785CD28C8
+   64-Byte Ed25519 signature hex
+       DA9167BEEA32121C6B13A9C821FA0687
+       F829AC609D55EA15C80298B1B8C907C4
+       508566B4E871155DA9B847B4898C22FC
+       1490F9533B5CF852A72C7B58B4847B03
+>┓
+ ┗━[
+   ┗━ (d3{7}payload : ve{172}0x
+          7CD58899F1D23164E2664C72DABDB671
+          071FFCD1A7641DD41F4268244A3A1709
+          CEB569484C81836F7DFAD3688689C2CA
+          DB39B9FA24D7733D50CA3B8A9E756D93...)
+   ]
+
+Valid
+
+═══ VSF FGTW RX /announce (455 bytes) ═══
+Versatile Storage Format
+455 Bytes (455 Bytes)
+
+<
+ Version 5
+ Backward compat 5
+ Created 2025-DEC-09 10:16:16.437 PM
+ Header size: 97 Bytes
+ 32-Byte BLAKE3 provenance hash hex
+    680F6B412F4084BCF8291D6347478F90
+    0850C737F12AC180E54A0968A49E2020
+ 1 labels
+ (encrypted_peers @97 358 Bytes 1 field)
+>┓
+ ┗━[
+   ┗━ (d3{4}data : ve{323}0x
+          6513556A9A7B9C517CC7B288D6FB3656
+          06456F28EBF52E8F92439D0C57773759
+          F7C52ACD15DED8928C5E4096AFD09845
+          9C699B92EB6A8E6187B1F666411488D2...)
+   ]
+
+Valid
+
+═══ VSF FGTW Decrypted peers (263 bytes) ═══
+[peers 263 Bytes 2 fields
+  ┣━ (d3{4}peer : hb{32}0x
+  ┃     646B83DF847EE0AABDF0FFFF88C9AE8D
+  ┃     F54A520D13A1CBEB8000CC90CB137029,
+  ┃   ke{32}0x
+  ┃     4BD30E9042BC02BE0A82A0F9E01F43F2
+  ┃     F91A0799C8CCD98C1193E097AB459228,
+  ┃   t_u3{2600:100F:B034:627B:FDB5:4D6C:DDEE:C94E},
+  ┃   u4{4383},
+  ┃   e{2025-DEC-09 9:04:11.417 PM}
+  ┃  )
+  ┗━ (d3{4}peer : hb{32}0x
+         7583B495579FC20C693E942BEA1B283D
+         5ED5075E6CA298A3603D259B0781F1C2,
+       ke{32}0x
+         90E571BF906ABC29B271ECD8E11B1589
+         DE39636E0D7E89E427A0D9D785CD28C8,
+       t_u3{2600:100F:B034:627B:B680:61D4:BDD0:79B9},
+       u4{4383},
+       e{2025-DEC-09 9:04:48.081 PM}
+      )
+]
+  ✓
+
+FGTW: Received 2 peer(s)
+Network: Added 2 peer(s) to store
+Network: Handle 'fractal decoder' registered to this device
+UI: Attestation SUCCESS - transitioning to Ready state
+Network: Handle proof stored for periodic refresh
+UI: Stored handle_proof and identity_seed for refresh/CLUTCH/storage
+UI: Starting bidirectional avatar sync with FGTW
+UI: Checking cloud contacts sync
+Avatar: Looking for local cache at "/home/nick/.config/photon/avatars/FffRVFtn47I8YvR7JiWvvVVQP2jdP71m0008cZm7boM.vsf"
+Avatar: No local cache: No such file or directory (os error 2)
+Avatar sync: No avatar to sync
+FGTW: Downloaded blob (171 bytes)
+Cloud: Downloaded contacts blob (171 bytes)
+Cloud: Decoded 1 contacts
+Cloud: 1 contacts (local: 0)
+═══ VSF Disk Write contacts/abba0dff5296f2d6/state.vsf (173 bytes) ═══
+[contact_state
+  ┣━ (d3{12}clutch_state : u3{0}
+  ┃  )
+  ┣━ (d3{11}trust_level : u3{0}
+  ┃  )
+  ┣━ (d3{6}pubkey : ke{32}0x
+  ┃     4BD30E9042BC02BE0A82A0F9E01F43F2
+  ┃     F91A0799C8CCD98C1193E097AB459228
+  ┃  )
+  ┣━ (d3{5}added : e{2025-DEC-09 9:05:34.597 PM}
+  ┃  )
+  ┗━ (d3{2}id : hb{32}0x
+         984720CEA9AA153CC12B208CF2D1BDB2
+         725D7A412158004BBE879E9F27FF047B
+      )
+]
+
+═══ VSF Disk Write contacts/abba0dff5296f2d6/state.vsf (380 bytes) ═══
+Versatile Storage Format
+380 Bytes (380 Bytes)
+
+<
+ Version 5
+ Backward compat 5
+ Created 2025-DEC-09 10:17:08.000 PM
+ Header size: 136 Bytes
+ 32-Byte BLAKE3 provenance hash hex
+    5880FF4BC8A20CA1FCF6FFDA77EB6D3B
+    FCE2D015D75BB64A5B4E127904186BFA
+ 32-Byte BLAKE3 rolling hash hex
+    F23874CFBEF061DCCE294E303565CDE9
+    458D89F0B9331BF57ADFA61780F1D77A
+ Verification: PASS
+ 1 labels
+ (encrypted_contact_state @136 244 Bytes 1 field)
+>┓
+ ┗━[
+   ┗━ (d3{4}data : ve{201}0x
+          5F196993C7D510055CD42F27F09576B1
+          44162E585DB39F3FEA94AA31774F2C20
+          EF30EF6EAF379C1AC60B465CA884557A
+          208F1E513697CA60236D15848903A959...)
+   ]
+
+Valid
+
+═══ VSF Disk Write contacts/index.vsf (72 bytes) ═══
+[contact_list
+  ┗━ (d3{7}contact : hb{32}0x
+         646B83DF847EE0AABDF0FFFF88C9AE8D
+         F54A520D13A1CBEB8000CC90CB137029,
+       x3{3}nem
+      )
+]
+
+═══ VSF Disk Write contacts/index.vsf (277 bytes) ═══
+Versatile Storage Format
+277 Bytes (277 Bytes)
+
+<
+ Version 5
+ Backward compat 5
+ Created 2025-DEC-09 10:17:08.000 PM
+ Header size: 135 Bytes
+ 32-Byte BLAKE3 provenance hash hex
+    67CD8DBF32D094CC7148228E6BFD241A
+    640854BEE000CD1260C2FDECB6C9A53D
+ 32-Byte BLAKE3 rolling hash hex
+    0886DFED85C765BE28E98B4CD12674C3
+    F12A55A4638C4B13E09BD933665084D3
+ Verification: PASS
+ 1 labels
+ (encrypted_contact_list @135 142 Bytes 1 field)
+>┓
+ ┗━[
+   ┗━ (d3{4}data : ve{100}0x
+          5E3062F6A3E21686216DE478E3A69449
+          ACAFC0224427EFB1A91161E7675D5E27
+          92DEA33AC3DCF43AACA69376C77CB53D
+          4A2C79B4499C78C42548B55D622290A7...)
+   ]
+
+Valid
+
+Cloud: Added 1 contacts from cloud
+Status: Using socket on port 4383
+CLUTCH: Background keypair generation started...
+CLUTCH: Generating 8 ephemeral keypairs...
+Avatar: Fetching nem from FGTW (ZsPVUsyW...)
+UI: Status checker initialized after attestation
+UI: PeerUpdateClient started for real-time IP updates
+Network: Initial broadcast ping to 2 peer(s)
+UI: Attestation complete, window marked dirty for redraw
+Status: Background thread started
+PeerUpdate: Connecting to wss://fgtw.org/ws
+Status: TCP listening on [::]:4383  (dual-stack)
+Status: TCP receiver task started
+Status: Receiver task started, waiting for UDP packets...
+LAN: Broadcast 158 bytes to 255.255.255.255:4383
+Status: Updated nem IP from ping/pong: None -> [2600:100f:b034:627b:fdb5:4d6c:ddee:c94e]:4383
+Status: nem is now ONLINE
+PT: SPEC received from [2600:100f:b034:627b:fdb5:4d6c:ddee:c94e]:4383 - 536 packets, 548846 bytes
+PT: Received SPEC from [2600:100f:b034:627b:fdb5:4d6c:ddee:c94e]:4383 - stream 'a', 536 packets, 548846 bytes, hash e0e8849f
+PT: Received 50/536 from [2600:100f:b034:627b:fdb5:4d6c:ddee:c94e]:4383 stream 'a'
+PT: Received 100/536 from [2600:100f:b034:627b:fdb5:4d6c:ddee:c94e]:4383 stream 'a'
+PT: Received 150/536 from [2600:100f:b034:627b:fdb5:4d6c:ddee:c94e]:4383 stream 'a'
+PT: Received 200/536 from [2600:100f:b034:627b:fdb5:4d6c:ddee:c94e]:4383 stream 'a'
+PT: Received 250/536 from [2600:100f:b034:627b:fdb5:4d6c:ddee:c94e]:4383 stream 'a'
+PT: Received 300/536 from [2600:100f:b034:627b:fdb5:4d6c:ddee:c94e]:4383 stream 'a'
+PT: Received 350/536 from [2600:100f:b034:627b:fdb5:4d6c:ddee:c94e]:4383 stream 'a'
+PT: Received 400/536 from [2600:100f:b034:627b:fdb5:4d6c:ddee:c94e]:4383 stream 'a'
+PT: Received 450/536 from [2600:100f:b034:627b:fdb5:4d6c:ddee:c94e]:4383 stream 'a'
+PT: Received 500/536 from [2600:100f:b034:627b:fdb5:4d6c:ddee:c94e]:4383 stream 'a'
+PT: Received 536/536 from [2600:100f:b034:627b:fdb5:4d6c:ddee:c94e]:4383 stream 'a'
+PT: Transfer verified successfully
+PT: ← [2600:100f:b034:627b:fdb5:4d6c:ddee:c94e]:4383 OK | 118.7 Mbps | 0.0s | 536 pkts | 100% util (1 dups)
+PT: Received VSF (548846 bytes):
+Versatile Storage Format
+536.0 KB (548 846 Bytes)
+
+<
+ Version 5
+ Backward compat 5
+ Created 2025-DEC-09 10:15:49.701 PM
+ Header size: 205 Bytes
+ 32-Byte BLAKE3 provenance hash hex
+    82AE1C67818266263DEF6E9A8FFE7922
+    E142FD02A6DB08BD9ACE8607273E0D1C
+ 32-Byte Ed25519 signer pubkey hex
+    4BD30E9042BC02BE0A82A0F9E01F43F2
+    F91A0799C8CCD98C1193E097AB459228
+ 64-Byte Ed25519 signature hex
+    8D81550687C84CE9848454AA520C7DBC
+    3B8B7520C8148D5A218D9B17C7F96A5D
+    D7B11D5F8C1C5DA3984CEACC0683480F
+    504B73AC20D276518C589FF2B27AC50F
+ 1 labels
+ (clutch_full_offer @205 548641 Bytes 9 fields)
+>┓
+ ┗━[
+   ┣━ (d3{13}handle_hashes : vh{64}0x
+   ┃      4F7F5A5C8F58D10FBEECA0B10D9D3BC9
+   ┃      387F8603B7E4584BBAC60914EF227AB2
+   ┃      ABBA0DFF5296F2D6F05365076DC6780C
+   ┃      69B4D81336A3C19962DC643C4C6E3BAE)
+   ┣━ (d3{6}x25519 : kx{32}0x
+   ┃      4296D005300ABEF45B386C7192A91CFF
+   ┃      2A3465FDA3A3B4C1EE0F5495D38C861A)
+   ┣━ (d3{4}p384 : kp{97}0x
+   ┃      04359DB6943FF786F923022D2FE16ACB
+   ┃      4F3E0F74E0B3B2837376DB98E9E6D6B9
+   ┃      4348673467EB681E3A10BFDB61237123
+   ┃      963CA252319889FA507B69405612575F...)
+   ┣━ (d3{9}secp256k1 : kk{33}0x
+   ┃      02754BAB639D2A8C2B74464CB9458B97
+   ┃      E97CCE8FAF153B24B972125359B5F9B5
+   ┃      7A)
+   ┣━ (d3{4}p256 : kp{65}0x
+   ┃      04B7A932DF519ACAF5DC1C447B647843
+   ┃      9B83C7EFCE50ABDDF154B9E02312EC55
+   ┃      7389E946658763D9AEA911C781E4C1A6
+   ┃      20599D7CE3D7D11F8167AB38CF03E97E...)
+   ┣━ (d3{5}frodo : kf{15632}0x
+   ┃      85C0AB79235907B80DF6E444371E9C77
+   ┃      D521FD824701589300EE73CFF219BE4A
+   ┃      265C913B0E4B55E98AFB46A4E7133FB4
+   ┃      FD090B93672B2202BF2DCA87BB34813A...)
+   ┣━ (d3{4}ntru : kn{1138}0x
+   ┃      5A858C08592D59A2A85B677030147650
+   ┃      F96563367554E75D7BB83C1DDE2109B9
+   ┃      EC75A19D3CF78DC999EACED4DFF63672
+   ┃      90A64E262ED5BB8FD35ABF70ECEBD676...)
+   ┣━ (d3{8}mceliece : kl{524160}0x
+   ┃      2E1F3880D2570E3043E495AE1D0E3EC9
+   ┃      59983D48CDD6F370F72B430DA183CFA9
+   ┃      697D5E7230802E4B9268AC09ED9D79ED
+   ┃      BD285A064B2F7EDC4E42188DAF70325B...)
+   ┗━ (d3{3}hqc : kh{7245}0x
+          BB2BD70317598A3209B116EE6C42D31B
+          B648B3E698881121D8004368CAA18AD5
+          BB2DF268ABD6371DB34AA9E3A6007498
+          C198A0D30738BB6D85448D35DD9D9314...)
+   ]
+
+Valid
+
+PT: Parsed as ClutchFullOffer (VSF verified)
+CLUTCH: Received full offer (VSF verified) from [2600:100f:b034:627b:fdb5:4d6c:ddee:c94e]:4383 (2 parties)
+CLUTCH: Stored offer from nem in slot
+Avatar: FGTW returned 404 Not Found
+Avatar: nem download failed
+PeerUpdate: Connected to FGTW WebSocket
+Status: Pinged nem on conversation enter
+Avatar: Entering conversation with nem, fetching avatar
+Avatar: Fetching nem from FGTW (ZsPVUsyW...)
+Avatar: FGTW returned 404 Not Found
+Avatar: nem download failed
+CLUTCH: Keypairs ready (X25519: 32B, P-384: 97B, secp256k1: 33B, P-256: 65B, Frodo: 15632B, NTRU: 1138B, McEliece: 524160B, HQC: 7245B)
+CLUTCH: Keypairs ready, computing ceremony_id (memory-hard ~1s)...
+CLUTCH: Background generation complete
+CLUTCH: Processing keygen result for contact_id 984720ce...
+CLUTCH: Keypairs ready for nem (had their offer) - sending offer + KEM
+CLUTCH: Sent offer to nem
+CLUTCH: Encapsulating to peer's public keys...
+CLUTCH: KEM ciphertexts ready (Frodo: 15792B, NTRU: 1138B, McEliece: 156B, HQC: 14421B)
+CLUTCH: Sent KEM response to nem
+Status: Sending ClutchFullOffer to [2600:100f:b034:627b:fdb5:4d6c:ddee:c94e]:4383 (548846 bytes VSF) via PT/UDP
+Status: ClutchFullOffer VSF:
+Versatile Storage Format
+536.0 KB (548 846 Bytes)
+
+<
+ Version 5
+ Backward compat 5
+ Created 2025-DEC-09 10:16:20.928 PM
+ Header size: 205 Bytes
+ 32-Byte BLAKE3 provenance hash hex
+    82AE1C67818266263DEF6E9A8FFE7922
+    E142FD02A6DB08BD9ACE8607273E0D1C
+ 32-Byte Ed25519 signer pubkey hex
+    90E571BF906ABC29B271ECD8E11B1589
+    DE39636E0D7E89E427A0D9D785CD28C8
+ 64-Byte Ed25519 signature hex
+    CFDC411132F6FA8DE5B7A745FEF87942
+    9D347025CFFDA4FFC89450829CA8A2C8
+    228B941BA0604D69B1F0238286F06F18
+    C07B579FFC3722710E1C4CE6B01D2101
+ 1 labels
+ (clutch_full_offer @205 548641 Bytes 9 fields)
+>┓
+ ┗━[
+   ┣━ (d3{13}handle_hashes : vh{64}0x
+   ┃      4F7F5A5C8F58D10FBEECA0B10D9D3BC9
+   ┃      387F8603B7E4584BBAC60914EF227AB2
+   ┃      ABBA0DFF5296F2D6F05365076DC6780C
+   ┃      69B4D81336A3C19962DC643C4C6E3BAE)
+   ┣━ (d3{6}x25519 : kx{32}0x
+   ┃      AB41A4F29A09A3333A00EBAFD287D233
+   ┃      EBE348F0DAAF0BABA0C389A1D4713D4E)
+   ┣━ (d3{4}p384 : kp{97}0x
+   ┃      044E4A260918DA16C33998317B896969
+   ┃      7C0FC09B641BC95F1AE7D14425BF22DC
+   ┃      5E191926E393D952BA3494039EB1AB80
+   ┃      033D516B7F99998A03BD91367A8C9C7E...)
+   ┣━ (d3{9}secp256k1 : kk{33}0x
+   ┃      03CBC638CA428719503FD158E24B1396
+   ┃      D84FF741FDCE3BB47B3197067FDC9400
+   ┃      81)
+   ┣━ (d3{4}p256 : kp{65}0x
+   ┃      04D1C83EFCB639B052F244226A8A8868
+   ┃      88F8C40B60BB8BE3EA90DEFF45741AE6
+   ┃      75AB7EFB662599CF7EE682380EACB2C2
+   ┃      36B0563E8D17BCADABB1342698C13720...)
+   ┣━ (d3{5}frodo : kf{15632}0x
+   ┃      2E1754D02C850DD8378A2A6303350428
+   ┃      3EEE3360F0E1A259E133CAAA54A161DA
+   ┃      3C9F8F20C98A3AAD817BF30EDE24069C
+   ┃      B00B0A737ACBEF4FF870E30D5CD7574D...)
+   ┣━ (d3{4}ntru : kn{1138}0x
+   ┃      F51738AF5C98B760C61AF1790548BCD4
+   ┃      5223084557FA709B14BA6A48CB27B699
+   ┃      CFC2D033231E189436C3FB01A2909B2B
+   ┃      DCABA0B3FE8B73C61BE41F3229C76B78...)
+   ┣━ (d3{8}mceliece : kl{524160}0x
+   ┃      E9624BC606A66C7919B7991224FDE0DE
+   ┃      7A98340860C3D941F4B32468ACEC37C5
+   ┃      B0EDB0A5562FDAD9CE31B93C9243B73C
+   ┃      14A648A2E2C3387352FD9F08D07A53C1...)
+   ┗━ (d3{3}hqc : kh{7245}0x
+          C7E15C52B71CFC73748DE30709F3C529
+          0056C900947D2F0E6CFECAC6B5346772
+          20F11118D0719A1067A14B478CBA9BC5
+          F40E98CB52BF773E48F5534FCF7FA1B9...)
+   ]
+
+Valid
+
+PT: Starting outbound transfer to [2600:100f:b034:627b:fdb5:4d6c:ddee:c94e]:4383 (548846 bytes, stream 'a', hash 8877b872)
+Status: Sending ClutchKemResponse to [2600:100f:b034:627b:fdb5:4d6c:ddee:c94e]:4383 (31904 bytes VSF) via PT/UDP
+Status: ClutchKemResponse VSF:
+Versatile Storage Format
+31.16 KB (31 904 Bytes)
+
+<
+ Version 5
+ Backward compat 5
+ Created 2025-DEC-09 10:16:20.929 PM
+ Header size: 205 Bytes
+ 32-Byte BLAKE3 provenance hash hex
+    82AE1C67818266263DEF6E9A8FFE7922
+    E142FD02A6DB08BD9ACE8607273E0D1C
+ 32-Byte Ed25519 signer pubkey hex
+    90E571BF906ABC29B271ECD8E11B1589
+    DE39636E0D7E89E427A0D9D785CD28C8
+ 64-Byte Ed25519 signature hex
+    D4B2C7A00C1D4B8FD490307C7931555B
+    2EB54687EE67EE3138A8FD5C3210C680
+    42EDBAEE51048F1732E30843021CB85F
+    0F4A964F3F86BD037504BFFA00B94304
+ 1 labels
+ (clutch_kem_response @205 31699 Bytes 5 fields)
+>┓
+ ┗━[
+   ┣━ (d3{13}handle_hashes : vh{64}0x
+   ┃      4F7F5A5C8F58D10FBEECA0B10D9D3BC9
+   ┃      387F8603B7E4584BBAC60914EF227AB2
+   ┃      ABBA0DFF5296F2D6F05365076DC6780C
+   ┃      69B4D81336A3C19962DC643C4C6E3BAE)
+   ┣━ (d3{8}frodo_ct : vf{15792}0x
+   ┃      3409E56C981428192BF566828143C194
+   ┃      210D8896FD1D0D0D697E9369EAC5CE4F
+   ┃      D3C2884DBDD02A2FFDE10F2BB29DF391
+   ┃      7E942A1C950BE931D94FCE64A05DC48C...)
+   ┣━ (d3{7}ntru_ct : vn{1138}0x
+   ┃      520A77FB1B70C2D87CFA2E6DAE6C1E10
+   ┃      9D764ECEA68E3E976314D71CF38F8567
+   ┃      4030D0E1009BFA0BD8AF3C98F863C7CA
+   ┃      D703F6311E980F3E92A28551AAC64B6F...)
+   ┣━ (d3{11}mceliece_ct : vl{156}0x
+   ┃      E3AEB760D4372A15B1BD028018B78CD4
+   ┃      82DDB49004661F1CE0FCEF914954CB41
+   ┃      2F191CF3DD4FDC964D57DE95C45FE2F4
+   ┃      B0B1A34F5690FB49393C24C4C81A7CD6...)
+   ┗━ (d3{6}hqc_ct : vc{14421}0x
+          58CF8C7FFE06B3701D72A5DC94BE84A0
+          AF2F32EE2F42AE890886FBE6964AA52E
+          D08F9E828B2DE55B1204AB37CFF2389C
+          D8C2B43F7EACA49FA05BD2764F64F50B...)
+   ]
+
+Valid
+
+PT: Starting outbound transfer to [2600:100f:b034:627b:fdb5:4d6c:ddee:c94e]:4383 (31904 bytes, stream 'b', hash 49fc58d4)
+PT: SPEC ACK received from [2600:100f:b034:627b:fdb5:4d6c:ddee:c94e]:4383 for stream 'a', starting DATA transfer
+PT: SPEC ACK received from [2600:100f:b034:627b:fdb5:4d6c:ddee:c94e]:4383 for stream 'b', starting DATA transfer
+PT: Progress 100/536 to [2600:100f:b034:627b:fdb5:4d6c:ddee:c94e]:4383 stream 'a'
+PT: Progress 200/536 to [2600:100f:b034:627b:fdb5:4d6c:ddee:c94e]:4383 stream 'a'
+PT: Progress 300/536 to [2600:100f:b034:627b:fdb5:4d6c:ddee:c94e]:4383 stream 'a'
+PT: Progress 400/536 to [2600:100f:b034:627b:fdb5:4d6c:ddee:c94e]:4383 stream 'a'
+PT: Progress 500/536 to [2600:100f:b034:627b:fdb5:4d6c:ddee:c94e]:4383 stream 'a'
+PT: All 536/536 ACK'd to [2600:100f:b034:627b:fdb5:4d6c:ddee:c94e]:4383 stream 'a'
+PT: → [2600:100f:b034:627b:fdb5:4d6c:ddee:c94e]:4383 OK | 5.6 Mbps | 0.8s | 1024B pkt | win 219 | RTT 4ms | 100% util (0 retx)
+PT: Outbound transfer to [2600:100f:b034:627b:fdb5:4d6c:ddee:c94e]:4383 completed
+PT: All 32/32 ACK'd to [2600:100f:b034:627b:fdb5:4d6c:ddee:c94e]:4383 stream 'b'
+PT: → [2600:100f:b034:627b:fdb5:4d6c:ddee:c94e]:4383 OK | 327 kbps | 0.8s | 1024B pkt | win 173 | RTT 18ms | 100% util (0 retx)
+PT: Outbound transfer to [2600:100f:b034:627b:fdb5:4d6c:ddee:c94e]:4383 completed
+PT: SPEC received from [2600:100f:b034:627b:fdb5:4d6c:ddee:c94e]:4383 - 32 packets, 31904 bytes
+PT: Received SPEC from [2600:100f:b034:627b:fdb5:4d6c:ddee:c94e]:4383 - stream 'b', 32 packets, 31904 bytes, hash f29fb7cf
+PT: Received 32/32 from [2600:100f:b034:627b:fdb5:4d6c:ddee:c94e]:4383 stream 'b'
+PT: Transfer verified successfully
+PT: ← [2600:100f:b034:627b:fdb5:4d6c:ddee:c94e]:4383 OK | 51.0 Mbps | 0.0s | 32 pkts | 100% util (0 dups)
+PT: Received VSF (31904 bytes):
+Versatile Storage Format
+31.16 KB (31 904 Bytes)
+
+<
+ Version 5
+ Backward compat 5
+ Created 2025-DEC-09 10:15:53.152 PM
+ Header size: 205 Bytes
+ 32-Byte BLAKE3 provenance hash hex
+    82AE1C67818266263DEF6E9A8FFE7922
+    E142FD02A6DB08BD9ACE8607273E0D1C
+ 32-Byte Ed25519 signer pubkey hex
+    4BD30E9042BC02BE0A82A0F9E01F43F2
+    F91A0799C8CCD98C1193E097AB459228
+ 64-Byte Ed25519 signature hex
+    69818B52F57A04938B1C597CF6CD10DA
+    DC20F39ECA8D6C5710E38E5C488DA9BF
+    F1E3E93187C13ED00D95983D54B3C477
+    30A1C9978BA630C79756FC072CA71803
+ 1 labels
+ (clutch_kem_response @205 31699 Bytes 5 fields)
+>┓
+ ┗━[
+   ┣━ (d3{13}handle_hashes : vh{64}0x
+   ┃      4F7F5A5C8F58D10FBEECA0B10D9D3BC9
+   ┃      387F8603B7E4584BBAC60914EF227AB2
+   ┃      ABBA0DFF5296F2D6F05365076DC6780C
+   ┃      69B4D81336A3C19962DC643C4C6E3BAE)
+   ┣━ (d3{8}frodo_ct : vf{15792}0x
+   ┃      3061DF62B267E181E826DED0EFD8638C
+   ┃      35E5F2E1AAE419FE6BFAE5748E6E1E93
+   ┃      4FEDAB19AA3C33538D8165078AABA573
+   ┃      5D8EE27E02D8781DA6ADAA8424CACBBC...)
+   ┣━ (d3{7}ntru_ct : vn{1138}0x
+   ┃      441987375147CD12DBB2A9A57FABA255
+   ┃      CF781D0C3151A1089F00118CB43BDC8A
+   ┃      BE0C45894E90691C8AE1043E77F60CA4
+   ┃      57DF2B696E7962BB620512F11E94F270...)
+   ┣━ (d3{11}mceliece_ct : vl{156}0x
+   ┃      D1CD3CFD0A1694EF081C5BC8EA14475A
+   ┃      75BA5E06055246F2569DB6D842A160D9
+   ┃      F4B70FFBFFBE4BBE9BA461ED81981E18
+   ┃      833E1DE98B81DC2A8A74A6F9D39F5EF7...)
+   ┗━ (d3{6}hqc_ct : vc{14421}0x
+          1A57125E9C2333A4C0F94D53A25CD067
+          FF9471AA00FA871FDE141C2F6CE2C1D9
+          C64EA8505CC67A5C8D64DCE20C8C8A3A
+          7694E2A7A94583D7A5E9214EC20AFB2B...)
+   ]
+
+Valid
+
+PT: Parsed as ClutchKemResponse (VSF verified)
+CLUTCH: Received KEM response (VSF verified) from [2600:100f:b034:627b:fdb5:4d6c:ddee:c94e]:4383 (2 parties)
+CLUTCH: Decapsulating from peer's ciphertexts...
+CLUTCH: ✓ Frodo976 decap OK (24B shared secret)
+CLUTCH: ✓ NTRU701 decap OK (32B shared secret)
+CLUTCH: ✓ McEliece decap OK (32B shared secret)
+CLUTCH: ✓ HQC256 decap OK (64B shared secret)
+CLUTCH: Decapsulated KEM from nem - stored in slot
+CLUTCH: Completing full 8-algorithm ceremony with nem
+CLUTCH: Ceremony complete with nem! (proof: 06c1c5ded28907c9...)
+═══ VSF Disk Write contacts/abba0dff5296f2d6/state.vsf (286 bytes) ═══
+[contact_state
+  ┣━ (d3{12}clutch_state : u3{1}
+  ┃  )
+  ┣━ (d3{11}trust_level : u3{0}
+  ┃  )
+  ┣━ (d3{6}pubkey : ke{32}0x
+  ┃     4BD30E9042BC02BE0A82A0F9E01F43F2
+  ┃     F91A0799C8CCD98C1193E097AB459228
+  ┃  )
+  ┣━ (d3{5}added : e{2025-DEC-09 9:05:34.597 PM}
+  ┃  )
+  ┣━ (d3{2}id : hb{32}0x
+  ┃     984720CEA9AA153CC12B208CF2D1BDB2
+  ┃     725D7A412158004BBE879E9F27FF047B
+  ┃  )
+  ┣━ (d3{2}ip : x3{46}[2600:100f:b034:627b:fdb5:4d6c:ddee:c94e]:4383
+  ┃  )
+  ┗━ (d3{13}friendship_id : hb{32}0x
+         B4ED1A616948C8E824ECA6B78B171EDA
+         5EE088A16062D35DAD6C18D7ABB965FD
+      )
+]
+
+═══ VSF Disk Write contacts/abba0dff5296f2d6/state.vsf (494 bytes) ═══
+Versatile Storage Format
+494 Bytes (494 Bytes)
+
+<
+ Version 5
+ Backward compat 5
+ Created 2025-DEC-09 10:17:08.000 PM
+ Header size: 137 Bytes
+ 32-Byte BLAKE3 provenance hash hex
+    FD3C7C25712264050553996F355AD2BA
+    D3C337DFFE28300C459FE84C1DC1319B
+ 32-Byte BLAKE3 rolling hash hex
+    46EB4E7CA546C840858F7F86556BC847
+    3F47662A85D48BFF8F33B3CE2B4DF70D
+ Verification: PASS
+ 1 labels
+ (encrypted_contact_state @137 357 Bytes 1 field)
+>┓
+ ┗━[
+   ┗━ (d3{4}data : ve{314}0x
+          6D35699ADEF947E345C90F14C1154748
+          C3CD9C21AF70B0DFAAC60666F6B923FD
+          AC032A5239D116D55AC7702A2819D298
+          6F6718DAD20EE765A80429C8E2A29C5F...)
+   ]
+
+Valid
+
+═══ VSF Disk Read contacts/index.vsf (277 bytes) ═══
+Versatile Storage Format
+277 Bytes (277 Bytes)
+
+<
+ Version 5
+ Backward compat 5
+ Created 2025-DEC-09 10:17:08.000 PM
+ Header size: 135 Bytes
+ 32-Byte BLAKE3 provenance hash hex
+    67CD8DBF32D094CC7148228E6BFD241A
+    640854BEE000CD1260C2FDECB6C9A53D
+ 32-Byte BLAKE3 rolling hash hex
+    0886DFED85C765BE28E98B4CD12674C3
+    F12A55A4638C4B13E09BD933665084D3
+ Verification: PASS
+ 1 labels
+ (encrypted_contact_list @135 142 Bytes 1 field)
+>┓
+ ┗━[
+   ┗━ (d3{4}data : ve{100}0x
+          5E3062F6A3E21686216DE478E3A69449
+          ACAFC0224427EFB1A91161E7675D5E27
+          92DEA33AC3DCF43AACA69376C77CB53D
+          4A2C79B4499C78C42548B55D622290A7...)
+   ]
+
+Valid
+
+═══ VSF Disk Write contacts/index.vsf (72 bytes) ═══
+[contact_list
+  ┗━ (d3{7}contact : hb{32}0x
+         646B83DF847EE0AABDF0FFFF88C9AE8D
+         F54A520D13A1CBEB8000CC90CB137029,
+       x3{3}nem
+      )
+]
+
+═══ VSF Disk Write contacts/index.vsf (277 bytes) ═══
+Versatile Storage Format
+277 Bytes (277 Bytes)
+
+<
+ Version 5
+ Backward compat 5
+ Created 2025-DEC-09 10:17:08.000 PM
+ Header size: 135 Bytes
+ 32-Byte BLAKE3 provenance hash hex
+    1A9F34212E05ACE1BE75446583B388AD
+    DA68D9715A1F0F28BBBB2AB980C15667
+ 32-Byte BLAKE3 rolling hash hex
+    09EB84C5AA17121A582E8CE1FE8B887B
+    455F8B5E0BFE677DFD7CBF98A9D0B801
+ Verification: PASS
+ 1 labels
+ (encrypted_contact_list @135 142 Bytes 1 field)
+>┓
+ ┗━[
+   ┗━ (d3{4}data : ve{100}0x
+          4727D7976036997C018A509CC4ABAA0F
+          D3416B09ED44530D57E78C5299659A24
+          2887151CAD739D6F51219DC7F2241881
+          002141DD78A9FBACBCBCF1990F2E92AB...)
+   ]
+
+Valid
+
+CLUTCH: Saved nem state to disk
+Status: TIMEOUT (1/3) - 90e571bf906abc29 (waiting for more failures before offline)
+Status: Pinged 1 contact(s)
+LAN: Broadcast 158 bytes to 255.255.255.255:4383
+

@@ -897,21 +897,24 @@ impl PhotonApp {
                                         theme::FONT_UI,
                                     );
                                     // Line 2: Hint about what's happening
-                                    let hint = match contact.clutch_state {
-                                        ClutchState::Pending => "waiting for them to add you back",
-                                        ClutchState::KeysGenerated => {
-                                            "generating ephemeral keys..."
+                                    // Slot-based: only Pending and Complete states
+                                    let hint = if contact.clutch_our_keypairs.is_none() {
+                                        "generating ephemeral keys..."
+                                    } else if !contact.clutch_offer_sent {
+                                        "waiting for network..."
+                                    } else if contact.clutch_slots.is_empty() {
+                                        "waiting for them to add you back"
+                                    } else {
+                                        // Count filled slots for progress
+                                        let total = contact.clutch_slots.len();
+                                        let filled = contact.clutch_slots.iter()
+                                            .filter(|s| s.is_complete())
+                                            .count();
+                                        if filled == 0 {
+                                            "exchanging key material..."
+                                        } else {
+                                            "completing ceremony..."
                                         }
-                                        ClutchState::OfferSent => {
-                                            "sent keys, waiting for theirs..."
-                                        }
-                                        ClutchState::OfferReceived => "received their keys...",
-                                        ClutchState::OffersExchanged => "exchanging KEM secrets...",
-                                        ClutchState::KemSent => "sent KEM response, waiting...",
-                                        ClutchState::KemReceived => {
-                                            "received their KEM response..."
-                                        }
-                                        ClutchState::Complete => unreachable!(),
                                     };
                                     let line2_y = msg_center_y + (font_size as usize);
                                     self.text_renderer.draw_text_center_u32(

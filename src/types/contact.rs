@@ -1,6 +1,41 @@
 use super::{CeremonyId, DevicePubkey, FriendshipId, Seed};
-use crate::crypto::clutch::{ClutchAllKeypairs, ClutchFullOfferPayload, ClutchKemSharedSecrets};
+use crate::crypto::clutch::{ClutchAllKeypairs, ClutchFullOfferPayload, ClutchKemResponsePayload, ClutchKemSharedSecrets};
 use std::net::{Ipv4Addr, SocketAddr};
+
+/// A slot in the CLUTCH ceremony, indexed by sorted handle_hash position.
+/// Same indexing on all devices in the ceremony.
+#[derive(Clone, Debug)]
+pub struct PartySlot {
+    /// Handle hash identifying this party (sorted position determines slot index)
+    pub handle_hash: [u8; 32],
+    /// Their 8 public keys from ClutchFullOffer (None for our own slot until we generate)
+    pub offer: Option<ClutchFullOfferPayload>,
+    /// Secrets from their KEM response (they encapsulated to us, we decapsulated)
+    pub kem_secrets_from_them: Option<ClutchKemSharedSecrets>,
+    /// Secrets from our KEM response to them (we encapsulated to their pubkeys)
+    pub kem_secrets_to_them: Option<ClutchKemSharedSecrets>,
+}
+
+impl PartySlot {
+    /// Create empty slot for a party
+    pub fn new(handle_hash: [u8; 32]) -> Self {
+        Self {
+            handle_hash,
+            offer: None,
+            kem_secrets_from_them: None,
+            kem_secrets_to_them: None,
+        }
+    }
+
+    /// Check if this slot has all required data for ceremony completion
+    /// Each slot needs offer + ONE kem contribution (either direction):
+    /// - Our slot: kem_secrets_to_them (we encapsulated)
+    /// - Their slot: kem_secrets_from_them (they encapsulated)
+    pub fn is_complete(&self) -> bool {
+        self.offer.is_some()
+            && (self.kem_secrets_from_them.is_some() || self.kem_secrets_to_them.is_some())
+    }
+}
 
 /// A chat message in a conversation (UI-level representation)
 #[derive(Clone, Debug)]
@@ -51,26 +86,13 @@ impl std::fmt::Display for HandleText {
 
 /// State of the CLUTCH key ceremony for a contact
 ///
-/// Full 8-algorithm CLUTCH flow:
-/// 1. Pending: Contact added, no ceremony started yet
-/// 2. KeysGenerated: All 8 ephemeral keypairs generated (~548KB pubkeys)
-/// 3. OfferSent: We sent our full offer, waiting for theirs
-/// 4. OfferReceived: We received their offer, sending ours
-/// 5. OffersExchanged: Both offers exchanged, generating KEM response
-/// 6. KemSent: We sent our KEM response, waiting for theirs
-/// 7. KemReceived: We received their KEM response
-/// 8. Complete: Both KEM responses exchanged, pads derived, can message
+/// Slot-based design: each party has a slot indexed by sorted handle_hash position.
+/// Ceremony completes when all slots have both offer and kem_secrets filled.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum ClutchState {
     #[default]
-    Pending, // Contact added, no ceremony started
-    KeysGenerated,   // All 8 ephemeral keypairs generated
-    OfferSent,       // We sent our full offer (~548KB)
-    OfferReceived,   // We received their full offer
-    OffersExchanged, // Both offers exchanged
-    KemSent,         // We sent our KEM response (~17KB)
-    KemReceived,     // We received their KEM response
-    Complete,        // CLUTCH done, can message
+    Pending,  // Slots not all filled yet
+    Complete, // All slots filled, seed derived
 }
 
 #[derive(Clone, Debug)]
@@ -87,14 +109,20 @@ pub struct Contact {
     pub friendship_id: Option<FriendshipId>, // Links to friendship storage (chains live there)
     pub clutch_state: ClutchState,
 
-    // Full 8-algorithm CLUTCH state
-    pub clutch_our_keypairs: Option<ClutchAllKeypairs>, // Our 8 ephemeral keypairs (~512KB secret keys)
-    pub clutch_their_offer: Option<ClutchFullOfferPayload>, // Their 8 public keys (~548KB)
-    pub clutch_our_kem_secrets: Option<ClutchKemSharedSecrets>, // Secrets from our encapsulations (we→them)
-    pub clutch_their_kem_secrets: Option<ClutchKemSharedSecrets>, // Secrets from their encapsulations (them→us)
+    // Slot-based CLUTCH state (N-party support)
+    /// Our 8 ephemeral keypairs (~512KB secret keys) - generated once per ceremony
+    pub clutch_our_keypairs: Option<ClutchAllKeypairs>,
+    /// Party slots indexed by sorted handle_hash position
+    /// Each slot contains offer + kem_secrets for one party (including self)
+    pub clutch_slots: Vec<PartySlot>,
     /// Cached ceremony_id - computed once during keygen (memory-hard ~1s)
-    /// Deterministic from sorted handle_hashes, so both parties compute same value
+    /// Deterministic from sorted handle_hashes, so all parties compute same value
     pub ceremony_id: Option<[u8; 32]>,
+    /// Pending KEM response received before our keygen completed
+    /// Stored here and processed when ceremony_id becomes available
+    pub clutch_pending_kem: Option<ClutchKemResponsePayload>,
+    /// Track if we've sent our offer (to avoid resending)
+    pub clutch_offer_sent: bool,
 
     pub trust_level: TrustLevel,
     pub added: f64,
@@ -163,12 +191,12 @@ impl Contact {
             relationship_seed: None,
             friendship_id: None, // Set after CLUTCH ceremony completes
             clutch_state: ClutchState::Pending,
-            // Full 8-algorithm CLUTCH fields
+            // Slot-based CLUTCH fields
             clutch_our_keypairs: None,
-            clutch_their_offer: None,
-            clutch_our_kem_secrets: None,
-            clutch_their_kem_secrets: None,
-            ceremony_id: None, // Cached after keygen (memory-hard ~1s)
+            clutch_slots: Vec::new(), // Initialized when ceremony starts
+            ceremony_id: None,        // Cached after keygen (memory-hard ~1s)
+            clutch_pending_kem: None, // KEM response received before keygen completed
+            clutch_offer_sent: false, // Track if we've sent our offer
             trust_level: TrustLevel::Stranger,
             added: vsf::eagle_time_nanos(),
             last_seen: None,
@@ -216,5 +244,36 @@ impl Contact {
     /// Returns None if keygen hasn't completed yet.
     pub fn get_ceremony_id(&self) -> Option<CeremonyId> {
         self.ceremony_id.map(CeremonyId::from_bytes)
+    }
+
+    /// Initialize CLUTCH slots for a 2-party ceremony.
+    /// Slots are indexed by sorted handle_hash position.
+    pub fn init_clutch_slots(&mut self, our_handle_hash: [u8; 32]) {
+        let mut hashes = vec![our_handle_hash, self.handle_hash];
+        hashes.sort();
+
+        self.clutch_slots = hashes.into_iter().map(PartySlot::new).collect();
+    }
+
+    /// Get the slot index for a given handle_hash.
+    /// Returns None if the handle_hash is not in the ceremony.
+    pub fn get_slot_index(&self, handle_hash: &[u8; 32]) -> Option<usize> {
+        self.clutch_slots.iter().position(|s| &s.handle_hash == handle_hash)
+    }
+
+    /// Get mutable reference to the slot for a given handle_hash.
+    pub fn get_slot_mut(&mut self, handle_hash: &[u8; 32]) -> Option<&mut PartySlot> {
+        self.clutch_slots.iter_mut().find(|s| &s.handle_hash == handle_hash)
+    }
+
+    /// Get reference to the slot for a given handle_hash.
+    pub fn get_slot(&self, handle_hash: &[u8; 32]) -> Option<&PartySlot> {
+        self.clutch_slots.iter().find(|s| &s.handle_hash == handle_hash)
+    }
+
+    /// Check if all slots are complete (ceremony can finish).
+    /// For 2-party: both slots have offer + both KEM secret directions.
+    pub fn all_slots_complete(&self) -> bool {
+        !self.clutch_slots.is_empty() && self.clutch_slots.iter().all(|s| s.is_complete())
     }
 }

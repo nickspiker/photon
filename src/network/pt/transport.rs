@@ -1,4 +1,4 @@
-//! PT Transport Layer
+//! PT Layer
 //!
 //! Photon Transport over UDP - lean multicast TCP-like reliability
 //!

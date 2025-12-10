@@ -721,27 +721,14 @@ pub fn delete_contact(identity_seed: &[u8; 32]) -> Result<(), StorageError> {
 fn clutch_state_to_u8(state: ClutchState) -> u8 {
     match state {
         ClutchState::Pending => 0,
-        ClutchState::KeysGenerated => 1,
-        ClutchState::OfferSent => 2,
-        ClutchState::OfferReceived => 3,
-        ClutchState::OffersExchanged => 4,
-        ClutchState::KemSent => 5,
-        ClutchState::KemReceived => 6,
-        ClutchState::Complete => 7,
+        ClutchState::Complete => 1,
     }
 }
 
 fn u8_to_clutch_state(v: u8) -> ClutchState {
     match v {
-        0 => ClutchState::Pending,
-        1 => ClutchState::KeysGenerated,
-        2 => ClutchState::OfferSent,
-        3 => ClutchState::OfferReceived,
-        4 => ClutchState::OffersExchanged,
-        5 => ClutchState::KemSent,
-        6 => ClutchState::KemReceived,
-        7 => ClutchState::Complete,
-        _ => ClutchState::Pending,
+        1 => ClutchState::Complete,
+        _ => ClutchState::Pending, // All old intermediate states map to Pending
     }
 }
 

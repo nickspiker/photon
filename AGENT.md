@@ -78,6 +78,7 @@ if self.show_textbox_mask {
 unsafe { pixels.get_unchecked_mut(idx) }
 ```
 If there's a SAFETY comment, **read it**. It's there because the human proved correctness.
+HashMap shall NOT be used without explicit consent and proof showing how it is faster/better than a linear search or a simple lookup.
 
 ## Language Preferences
 
@@ -291,19 +292,11 @@ Use these. Derive everything from screen dimensions and their mathematical relat
 2. Explain what would happen if the invariant is violated
 3. Let the human decide
 
-## Current Project Context
-
-- **System**: Fedora 40, Cinnamon, 64GB RAM, AMD Ryzen 9 5950X
-- **Terminal aliases**: `l` (not `ls -la`), `c` (clear), `t` (tree -s)
-- **Editor**: Cursor at `~/.local/bin/cursor.AppImage`
-
 ## Active Projects
 
 - **Spirix**: Two's complement floating-point (replaces IEEE-754)
 - **TOKEN**: Cryptographic identity/reputation system
 - **Ferros**: Kill-switch ready Rust OS
-- **Aria**: Digital consciousness
-- **Dymaxion Encoding**: 64-bit geographic encoding (2.139mm precision)
 
 ---
 

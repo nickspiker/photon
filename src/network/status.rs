@@ -52,26 +52,10 @@ pub struct PingRequest {
     pub peer_pubkey: DevicePubkey,
 }
 
-/// Request to initiate or continue CLUTCH ceremony
-#[derive(Clone)]
-pub struct ClutchRequest {
-    pub peer_addr: SocketAddr,
-    pub our_handle_proof: [u8; 32],
-    pub their_handle_proof: [u8; 32],
-    pub message: ClutchRequestType,
-}
-
-#[derive(Clone)]
-pub enum ClutchRequestType {
-    /// Send ClutchOffer with our ephemeral pubkey (parallel v2)
-    Offer { ephemeral_pubkey: [u8; 32] },
-    /// Send ClutchInit with our ephemeral pubkey (v1 legacy)
-    Init { ephemeral_pubkey: [u8; 32] },
-    /// Send ClutchResponse with our ephemeral pubkey (v1 legacy)
-    Response { ephemeral_pubkey: [u8; 32] },
-    /// Send ClutchComplete with proof
-    Complete { proof: [u8; 32] },
-}
+// NOTE: ClutchRequest and ClutchRequestType REMOVED
+// Full 8-primitive CLUTCH uses ClutchFullOfferRequest and ClutchKemResponseRequest
+// which are handled via build_clutch_full_offer_vsf() and build_clutch_kem_response_vsf()
+// See CLUTCH.md Section 4.2 for the slot-based ceremony protocol.
 
 /// Request to send an encrypted message
 #[derive(Clone)]
@@ -108,9 +92,8 @@ pub struct PTSendRequest {
 #[derive(Clone)]
 pub struct ClutchFullOfferRequest {
     pub peer_addr: SocketAddr, // Port comes from FGTW (peer's photon_port)
-    pub our_handle_proof: [u8; 32],
-    pub their_handle_proof: [u8; 32],
-    pub ceremony_id: [u8; 32], // Deterministic: BLAKE3("PHOTON_CEREMONY_v1" || sorted_handle_hashes)
+    pub handle_hashes: Vec<[u8; 32]>, // N-party sorted handle hashes (BLAKE3(handle))
+    pub ceremony_id: [u8; 32], // Deterministic from sorted handle_hashes
     pub payload: crate::crypto::clutch::ClutchFullOfferPayload,
     pub device_pubkey: [u8; 32],
     pub device_secret: [u8; 32], // For signing (zeroize after use)
@@ -123,9 +106,8 @@ pub struct ClutchFullOfferRequest {
 #[derive(Clone)]
 pub struct ClutchKemResponseRequest {
     pub peer_addr: SocketAddr, // Port comes from FGTW (peer's photon_port)
-    pub our_handle_proof: [u8; 32],
-    pub their_handle_proof: [u8; 32],
-    pub ceremony_id: [u8; 32], // Deterministic: BLAKE3("PHOTON_CEREMONY_v1" || sorted_handle_hashes)
+    pub handle_hashes: Vec<[u8; 32]>, // N-party sorted handle hashes (BLAKE3(handle))
+    pub ceremony_id: [u8; 32], // Deterministic from sorted handle_hashes
     pub payload: crate::crypto::clutch::ClutchKemResponsePayload,
     pub device_pubkey: [u8; 32],
     pub device_secret: [u8; 32], // For signing (zeroize after use)
@@ -151,32 +133,10 @@ pub enum StatusUpdate {
         is_online: bool,
         peer_addr: Option<std::net::SocketAddr>,
     },
-    /// CLUTCH ceremony message received (parallel v2)
-    ClutchOffer {
-        from_handle_proof: [u8; 32],
-        to_handle_proof: [u8; 32],
-        ephemeral_pubkey: [u8; 32],
-        sender_addr: SocketAddr,
-    },
-    /// CLUTCH Init (v1 legacy)
-    ClutchInit {
-        from_handle_proof: [u8; 32],
-        to_handle_proof: [u8; 32],
-        ephemeral_pubkey: [u8; 32],
-        sender_addr: SocketAddr,
-    },
-    /// CLUTCH Response (v1 legacy)
-    ClutchResponse {
-        from_handle_proof: [u8; 32],
-        to_handle_proof: [u8; 32],
-        ephemeral_pubkey: [u8; 32],
-        sender_addr: SocketAddr,
-    },
-    ClutchComplete {
-        from_handle_proof: [u8; 32],
-        to_handle_proof: [u8; 32],
-        proof: [u8; 32],
-    },
+    // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete REMOVED
+    // Full 8-primitive CLUTCH uses ClutchFullOfferReceived and ClutchKemResponseReceived
+    // See CLUTCH.md Section 4.2 for the slot-based ceremony protocol.
+
     /// Encrypted chat message received
     ChatMessage {
         from_handle_proof: [u8; 32],
@@ -203,8 +163,7 @@ pub enum StatusUpdate {
     /// Full CLUTCH offer received (~548KB with all 8 pubkeys)
     /// Payload is already verified and parsed from VSF format.
     ClutchFullOfferReceived {
-        from_handle_proof: [u8; 32],
-        to_handle_proof: [u8; 32],      // Us (lower or higher)
+        handle_hashes: Vec<[u8; 32]>,    // N-party sorted handle hashes (includes ours)
         ceremony_id: [u8; 32],           // Deterministic from sorted handle_hashes (verified by receiver)
         sender_pubkey: [u8; 32],         // Device pubkey (verified via signature)
         payload: crate::crypto::clutch::ClutchFullOfferPayload,
@@ -213,8 +172,7 @@ pub enum StatusUpdate {
     /// CLUTCH KEM response received (~31KB with 4 ciphertexts)
     /// Payload is already verified and parsed from VSF format.
     ClutchKemResponseReceived {
-        from_handle_proof: [u8; 32],
-        to_handle_proof: [u8; 32],      // Us (lower or higher)
+        handle_hashes: Vec<[u8; 32]>,    // N-party sorted handle hashes (includes ours)
         ceremony_id: [u8; 32],           // Deterministic - should match locally computed value
         sender_pubkey: [u8; 32],         // Device pubkey (verified via signature)
         payload: crate::crypto::clutch::ClutchKemResponsePayload,
@@ -242,7 +200,7 @@ struct PendingPing {
 /// For large CLUTCH payloads, uses TCP fallback (raw254 not yet implemented).
 pub struct StatusChecker {
     ping_sender: Sender<PingRequest>,
-    clutch_sender: Sender<ClutchRequest>,
+    // NOTE: clutch_sender removed - legacy v1 CLUTCH no longer used
     message_sender: Sender<MessageRequest>,
     ack_sender: Sender<AckRequest>,
     pt_sender: Sender<PTSendRequest>,
@@ -267,7 +225,6 @@ impl StatusChecker {
         event_proxy: EventLoopProxy<PhotonEvent>,
     ) -> Result<Self, String> {
         let (ping_tx, ping_rx) = channel::<PingRequest>();
-        let (clutch_tx, clutch_rx) = channel::<ClutchRequest>();
         let (message_tx, message_rx) = channel::<MessageRequest>();
         let (ack_tx, ack_rx) = channel::<AckRequest>();
         let (pt_tx, pt_rx) = channel::<PTSendRequest>();
@@ -309,7 +266,6 @@ impl StatusChecker {
                     our_pubkey,
                     local_ip,
                     ping_rx,
-                    clutch_rx,
                     message_rx,
                     ack_rx,
                     pt_rx,
@@ -326,7 +282,6 @@ impl StatusChecker {
 
         Ok(Self {
             ping_sender: ping_tx,
-            clutch_sender: clutch_tx,
             message_sender: message_tx,
             ack_sender: ack_tx,
             pt_sender: pt_tx,
@@ -345,7 +300,6 @@ impl StatusChecker {
         contacts: ContactPubkeys,
     ) -> Result<Self, String> {
         let (ping_tx, ping_rx) = channel::<PingRequest>();
-        let (clutch_tx, clutch_rx) = channel::<ClutchRequest>();
         let (message_tx, message_rx) = channel::<MessageRequest>();
         let (ack_tx, ack_rx) = channel::<AckRequest>();
         let (pt_tx, pt_rx) = channel::<PTSendRequest>();
@@ -386,7 +340,6 @@ impl StatusChecker {
                     our_pubkey,
                     local_ip,
                     ping_rx,
-                    clutch_rx,
                     message_rx,
                     ack_rx,
                     pt_rx,
@@ -403,7 +356,6 @@ impl StatusChecker {
 
         Ok(Self {
             ping_sender: ping_tx,
-            clutch_sender: clutch_tx,
             message_sender: message_tx,
             ack_sender: ack_tx,
             pt_sender: pt_tx,
@@ -422,10 +374,7 @@ impl StatusChecker {
         });
     }
 
-    /// Send a CLUTCH ceremony message (non-blocking)
-    pub fn send_clutch(&self, request: ClutchRequest) {
-        let _ = self.clutch_sender.send(request);
-    }
+    // NOTE: send_clutch() removed - legacy v1 CLUTCH no longer used
 
     /// Send an encrypted message (non-blocking)
     pub fn send_message(&self, request: MessageRequest) {
@@ -501,7 +450,7 @@ async fn run_checker(
     our_pubkey: DevicePubkey,
     local_ip: Ipv4Addr,
     ping_rx: Receiver<PingRequest>,
-    clutch_rx: Receiver<ClutchRequest>,
+    // NOTE: clutch_rx removed - legacy v1 CLUTCH no longer used
     message_rx: Receiver<MessageRequest>,
     ack_rx: Receiver<AckRequest>,
     pt_rx: Receiver<PTSendRequest>,
@@ -565,14 +514,11 @@ async fn run_checker(
     #[cfg(target_os = "android")]
     let tcp_listener: Option<tokio::net::TcpListener> = None;
 
-    // Pending pings - just a Vec, ~10 contacts max
     let pending: Arc<Mutex<Vec<PendingPing>>> = Arc::new(Mutex::new(Vec::new()));
 
-    // Track consecutive failed pings per contact (for hysteresis - don't flip offline on 1 lost packet)
-    // Key: DevicePubkey bytes, Value: consecutive failure count
-    let failed_pings: Arc<Mutex<std::collections::HashMap<[u8; 32], u8>>> =
-        Arc::new(Mutex::new(std::collections::HashMap::new()));
-    const OFFLINE_THRESHOLD: u8 = 3; // Require 3 consecutive failures before marking offline
+    // Track consecutive failed pings per contact (hysteresis - don't flip offline on 1 lost packet)
+    let failed_pings: Arc<Mutex<Vec<([u8; 32], u8)>>> = Arc::new(Mutex::new(Vec::new()));
+    const OFFLINE_THRESHOLD: u8 = 3;
 
     // PT manager for large transfers - shared with receiver task
     let pt: Arc<Mutex<PTManager>> = Arc::new(Mutex::new(PTManager::new(keypair.clone())));
@@ -632,15 +578,14 @@ async fn run_checker(
                                             };
 
                                             // Try full offer first (has clutch_full_offer section)
-                                            if let Ok((payload, sender_pubkey, ceremony_id, lower_proof, higher_proof)) =
+                                            if let Ok((payload, sender_pubkey, ceremony_id, handle_hashes)) =
                                                 parse_clutch_full_offer_vsf_without_recipient_check(&data)
                                             {
                                                 crate::log_info("Status: Received ClutchFullOffer via TCP (VSF verified)");
                                                 send_status_update(
                                                     &status_tx_tcp,
                                                     StatusUpdate::ClutchFullOfferReceived {
-                                                        from_handle_proof: lower_proof,  // App.rs determines which is "from"
-                                                        to_handle_proof: higher_proof,
+                                                        handle_hashes,
                                                         ceremony_id,
                                                         sender_pubkey,
                                                         payload,
@@ -650,15 +595,14 @@ async fn run_checker(
                                                 );
                                             }
                                             // Try KEM response
-                                            else if let Ok((payload, sender_pubkey, ceremony_id, lower_proof, higher_proof)) =
+                                            else if let Ok((payload, sender_pubkey, ceremony_id, handle_hashes)) =
                                                 parse_clutch_kem_response_vsf_without_recipient_check(&data)
                                             {
                                                 crate::log_info("Status: Received ClutchKemResponse via TCP (VSF verified)");
                                                 send_status_update(
                                                     &status_tx_tcp,
                                                     StatusUpdate::ClutchKemResponseReceived {
-                                                        from_handle_proof: lower_proof,
-                                                        to_handle_proof: higher_proof,
+                                                        handle_hashes,
                                                         ceremony_id,
                                                         sender_pubkey,
                                                         payload,
@@ -709,23 +653,21 @@ async fn run_checker(
                     let msg_bytes = &buf[..len];
 
                     // Check for PT DATA packets first (start with 'd')
+                    // NOTE: Individual DATA packets not logged - only completion/failure
                     if is_pt_data(msg_bytes) {
                         if let Some(data) = PTData::from_bytes(msg_bytes) {
-                            crate::log_info(&format!(
-                                "PT: DATA packet seq {} from {}",
-                                data.sequence, src_addr
-                            ));
                             // Handle data and collect responses (must drop lock before await)
-                            let (ack_bytes, complete_bytes, received_data) = {
+                            let (ack_bytes, complete_bytes, received_data, inbound_stats) = {
                                 let mut pt_mgr = pt_recv.lock().unwrap();
                                 let ack = pt_mgr.handle_data(src_addr, data);
                                 let complete = pt_mgr.check_inbound_complete(src_addr);
+                                let stats = pt_mgr.inbound_stats(&src_addr);
                                 let data = if complete.is_some() {
                                     pt_mgr.take_inbound_data(src_addr)
                                 } else {
                                     None
                                 };
-                                (ack, complete, data)
+                                (ack, complete, data, stats)
                             };
                             // Now send responses (lock is dropped)
                             if let Some(ack) = ack_bytes {
@@ -734,11 +676,54 @@ async fn run_checker(
                             if let Some(complete) = complete_bytes {
                                 udp::send(&socket_recv, &complete, src_addr).await;
                                 if let Some(data) = received_data {
-                                    crate::log_info(&format!(
-                                        "PT: Transfer complete from {} ({} bytes)",
-                                        src_addr,
-                                        data.len()
-                                    ));
+                                    // Log utilization summary
+                                    if let Some((packets, bytes, duplicates, duration_ms)) = inbound_stats {
+                                        let total_recv = packets + duplicates;
+                                        let utilization = if total_recv > 0 {
+                                            (packets as f64 / total_recv as f64) * 100.0
+                                        } else {
+                                            100.0
+                                        };
+                                        let throughput_kbps = if duration_ms > 0 {
+                                            (bytes as f64 * 8.0) / (duration_ms as f64)
+                                        } else {
+                                            0.0
+                                        };
+                                        let throughput_str = if throughput_kbps >= 1000.0 {
+                                            format!("{:.1} Mbps", throughput_kbps / 1000.0)
+                                        } else {
+                                            format!("{:.0} kbps", throughput_kbps)
+                                        };
+                                        crate::log_info(&format!(
+                                            "PT: ← {} OK | {} | {:.1}s | {} pkts | {:.0}% util ({} dups)",
+                                            src_addr,
+                                            throughput_str,
+                                            duration_ms as f64 / 1000.0,
+                                            packets,
+                                            utilization,
+                                            duplicates,
+                                        ));
+                                    } else {
+                                        crate::log_info(&format!(
+                                            "PT: ← {} OK | {} bytes",
+                                            src_addr,
+                                            data.len()
+                                        ));
+                                    }
+
+                                    // Inspect completed PT data with VSF inspector
+                                    if let Ok(inspection) = vsf::inspect::inspect_vsf(&data) {
+                                        crate::log_info(&format!(
+                                            "PT: Received VSF ({} bytes):\n{}",
+                                            data.len(),
+                                            inspection
+                                        ));
+                                    } else {
+                                        crate::log_error(&format!(
+                                            "PT: Received {} bytes - NOT valid VSF",
+                                            data.len()
+                                        ));
+                                    }
 
                                     // Parse PT data as CLUTCH message and emit appropriate event
                                     use crate::network::fgtw::protocol::{
@@ -747,15 +732,14 @@ async fn run_checker(
                                     };
 
                                     // Try to parse as ClutchFullOffer
-                                    if let Ok((payload, sender_pubkey, ceremony_id, lower_proof, higher_proof)) =
+                                    if let Ok((payload, sender_pubkey, ceremony_id, handle_hashes)) =
                                         parse_clutch_full_offer_vsf_without_recipient_check(&data)
                                     {
                                         crate::log_info("PT: Parsed as ClutchFullOffer (VSF verified)");
                                         send_status_update(
                                             &status_tx_recv,
                                             StatusUpdate::ClutchFullOfferReceived {
-                                                from_handle_proof: lower_proof,
-                                                to_handle_proof: higher_proof,
+                                                handle_hashes,
                                                 ceremony_id,
                                                 sender_pubkey,
                                                 payload,
@@ -765,15 +749,14 @@ async fn run_checker(
                                         );
                                     }
                                     // Try to parse as ClutchKemResponse
-                                    else if let Ok((payload, sender_pubkey, ceremony_id, lower_proof, higher_proof)) =
+                                    else if let Ok((payload, sender_pubkey, ceremony_id, handle_hashes)) =
                                         parse_clutch_kem_response_vsf_without_recipient_check(&data)
                                     {
                                         crate::log_info("PT: Parsed as ClutchKemResponse (VSF verified)");
                                         send_status_update(
                                             &status_tx_recv,
                                             StatusUpdate::ClutchKemResponseReceived {
-                                                from_handle_proof: lower_proof,
-                                                to_handle_proof: higher_proof,
+                                                handle_hashes,
                                                 ceremony_id,
                                                 sender_pubkey,
                                                 payload,
@@ -859,7 +842,7 @@ async fn run_checker(
                                     // Reset failure counter - they're clearly online if they're pinging us
                                     {
                                         let mut failures = failed_pings_recv.lock().unwrap();
-                                        failures.remove(sender_pubkey.as_bytes());
+                                        failures.retain(|(k, _)| k != sender_pubkey.as_bytes());
                                     }
 
                                     // Mark sender as online (they pinged us, so they're online!)
@@ -932,7 +915,7 @@ async fn run_checker(
                                     // Reset failure counter on successful pong (prevents bouncing)
                                     {
                                         let mut failures = failed_pings_recv.lock().unwrap();
-                                        failures.remove(responder_pubkey.as_bytes());
+                                        failures.retain(|(k, _)| k != responder_pubkey.as_bytes());
                                     }
 
                                     // Send status update (avatar fetched by handle, not in ping/pong)
@@ -947,142 +930,9 @@ async fn run_checker(
                                     );
                                 }
 
-                                // CLUTCH ceremony messages
-
-                                // ClutchOffer - parallel v2
-                                FgtwMessage::ClutchOffer {
-                                    timestamp: _,
-                                    from_handle_proof,
-                                    to_handle_proof,
-                                    ephemeral_x25519,
-                                    sender_pubkey,
-                                    signature,
-                                } => {
-                                    let provenance = compute_clutch_provenance(
-                                        &from_handle_proof,
-                                        &to_handle_proof,
-                                        &ephemeral_x25519,
-                                    );
-                                    if !verify_provenance_signature(
-                                        &provenance,
-                                        &sender_pubkey,
-                                        &signature,
-                                    ) {
-                                        continue;
-                                    }
-
-                                    send_status_update(
-                                        &status_tx_recv,
-                                        StatusUpdate::ClutchOffer {
-                                            from_handle_proof,
-                                            to_handle_proof,
-                                            ephemeral_pubkey: ephemeral_x25519,
-                                            sender_addr: src_addr,
-                                        },
-                                        &event_proxy_recv,
-                                    );
-                                }
-
-                                // ClutchInit - v1 legacy
-                                FgtwMessage::ClutchInit {
-                                    timestamp: _,
-                                    from_handle_proof,
-                                    to_handle_proof,
-                                    ephemeral_x25519,
-                                    sender_pubkey,
-                                    signature,
-                                } => {
-                                    // Verify signature over provenance
-                                    let provenance = compute_clutch_provenance(
-                                        &from_handle_proof,
-                                        &to_handle_proof,
-                                        &ephemeral_x25519,
-                                    );
-                                    if !verify_provenance_signature(
-                                        &provenance,
-                                        &sender_pubkey,
-                                        &signature,
-                                    ) {
-                                        continue;
-                                    }
-
-                                    // Forward to UI for processing
-                                    send_status_update(
-                                        &status_tx_recv,
-                                        StatusUpdate::ClutchInit {
-                                            from_handle_proof,
-                                            to_handle_proof,
-                                            ephemeral_pubkey: ephemeral_x25519,
-                                            sender_addr: src_addr,
-                                        },
-                                        &event_proxy_recv,
-                                    );
-                                }
-
-                                FgtwMessage::ClutchResponse {
-                                    timestamp: _,
-                                    from_handle_proof,
-                                    to_handle_proof,
-                                    ephemeral_x25519,
-                                    sender_pubkey,
-                                    signature,
-                                } => {
-                                    let provenance = compute_clutch_provenance(
-                                        &from_handle_proof,
-                                        &to_handle_proof,
-                                        &ephemeral_x25519,
-                                    );
-                                    if !verify_provenance_signature(
-                                        &provenance,
-                                        &sender_pubkey,
-                                        &signature,
-                                    ) {
-                                        continue;
-                                    }
-
-                                    send_status_update(
-                                        &status_tx_recv,
-                                        StatusUpdate::ClutchResponse {
-                                            from_handle_proof,
-                                            to_handle_proof,
-                                            ephemeral_pubkey: ephemeral_x25519,
-                                            sender_addr: src_addr,
-                                        },
-                                        &event_proxy_recv,
-                                    );
-                                }
-
-                                FgtwMessage::ClutchComplete {
-                                    timestamp: _,
-                                    from_handle_proof,
-                                    to_handle_proof,
-                                    proof,
-                                    sender_pubkey,
-                                    signature,
-                                } => {
-                                    let provenance = compute_clutch_complete_provenance(
-                                        &from_handle_proof,
-                                        &to_handle_proof,
-                                        &proof,
-                                    );
-                                    if !verify_provenance_signature(
-                                        &provenance,
-                                        &sender_pubkey,
-                                        &signature,
-                                    ) {
-                                        continue;
-                                    }
-
-                                    send_status_update(
-                                        &status_tx_recv,
-                                        StatusUpdate::ClutchComplete {
-                                            from_handle_proof,
-                                            to_handle_proof,
-                                            proof,
-                                        },
-                                        &event_proxy_recv,
-                                    );
-                                }
+                                // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete handlers REMOVED
+                                // Full 8-primitive CLUTCH uses TCP with ClutchFullOfferReceived and ClutchKemResponseReceived
+                                // See CLUTCH.md Section 4.2 for the slot-based ceremony protocol.
 
                                 FgtwMessage::ChatMessage {
                                     timestamp: _,
@@ -1181,9 +1031,8 @@ async fn run_checker(
         }
     });
 
-    // Track pending PT sends for TCP fallback (addr -> (start_time, vsf_bytes))
-    let mut pending_pt_sends: std::collections::HashMap<SocketAddr, (Instant, Vec<u8>)> =
-        std::collections::HashMap::new();
+    // Track pending PT sends for TCP fallback
+    let mut pending_pt_sends: Vec<(SocketAddr, Instant, Vec<u8>)> = Vec::new();
     const PT_TIMEOUT: Duration = Duration::from_secs(30);
 
     // Process ping requests from UI
@@ -1249,10 +1098,16 @@ async fn run_checker(
 
             for pubkey in expired {
                 let pubkey_bytes = *pubkey.as_bytes();
-                let count = failures.entry(pubkey_bytes).or_insert(0);
-                *count = count.saturating_add(1);
+                // Find or insert entry with linear search
+                let count = if let Some(entry) = failures.iter_mut().find(|(k, _)| *k == pubkey_bytes) {
+                    entry.1 = entry.1.saturating_add(1);
+                    entry.1
+                } else {
+                    failures.push((pubkey_bytes, 1));
+                    1
+                };
 
-                if *count >= OFFLINE_THRESHOLD {
+                if count >= OFFLINE_THRESHOLD {
                     // Enough consecutive failures - mark offline
                     crate::log_info(&format!(
                         "Status: TIMEOUT ({} consecutive) - {} marked offline",
@@ -1269,7 +1124,7 @@ async fn run_checker(
                         &event_proxy,
                     );
                     // Reset counter after marking offline (so we can detect coming back online)
-                    failures.remove(&pubkey_bytes);
+                    failures.retain(|(k, _)| *k != pubkey_bytes);
                 } else {
                     crate::log_info(&format!(
                         "Status: TIMEOUT ({}/{}) - {} (waiting for more failures before offline)",
@@ -1282,116 +1137,9 @@ async fn run_checker(
             list.retain(|ping| now.duration_since(ping.sent_at) < timeout);
         }
 
-        // Process CLUTCH requests
-        while let Ok(request) = clutch_rx.try_recv() {
-            let timestamp = eagle_time_binary64();
-
-            let msg = match request.message {
-                ClutchRequestType::Offer { ephemeral_pubkey } => {
-                    // Parallel v2 offer
-                    let provenance = compute_clutch_provenance(
-                        &request.our_handle_proof,
-                        &request.their_handle_proof,
-                        &ephemeral_pubkey,
-                    );
-                    let sig = keypair.sign(&provenance);
-                    let mut sig_bytes = [0u8; 64];
-                    sig_bytes.copy_from_slice(&sig.to_bytes());
-
-                    crate::log_info(&format!(
-                        "Status: Sending CLUTCH_OFFER to {}",
-                        request.peer_addr
-                    ));
-
-                    FgtwMessage::ClutchOffer {
-                        timestamp,
-                        from_handle_proof: request.our_handle_proof,
-                        to_handle_proof: request.their_handle_proof,
-                        ephemeral_x25519: ephemeral_pubkey,
-                        sender_pubkey: our_pubkey.clone(),
-                        signature: sig_bytes,
-                    }
-                }
-                ClutchRequestType::Init { ephemeral_pubkey } => {
-                    // v1 legacy init
-                    let provenance = compute_clutch_provenance(
-                        &request.our_handle_proof,
-                        &request.their_handle_proof,
-                        &ephemeral_pubkey,
-                    );
-                    let sig = keypair.sign(&provenance);
-                    let mut sig_bytes = [0u8; 64];
-                    sig_bytes.copy_from_slice(&sig.to_bytes());
-
-                    crate::log_info(&format!(
-                        "Status: Sending CLUTCH_INIT to {}",
-                        request.peer_addr
-                    ));
-
-                    FgtwMessage::ClutchInit {
-                        timestamp,
-                        from_handle_proof: request.our_handle_proof,
-                        to_handle_proof: request.their_handle_proof,
-                        ephemeral_x25519: ephemeral_pubkey,
-                        sender_pubkey: our_pubkey.clone(),
-                        signature: sig_bytes,
-                    }
-                }
-                ClutchRequestType::Response { ephemeral_pubkey } => {
-                    let provenance = compute_clutch_provenance(
-                        &request.our_handle_proof,
-                        &request.their_handle_proof,
-                        &ephemeral_pubkey,
-                    );
-                    let sig = keypair.sign(&provenance);
-                    let mut sig_bytes = [0u8; 64];
-                    sig_bytes.copy_from_slice(&sig.to_bytes());
-
-                    crate::log_info(&format!(
-                        "Status: Sending CLUTCH_RESPONSE to {}",
-                        request.peer_addr
-                    ));
-
-                    FgtwMessage::ClutchResponse {
-                        timestamp,
-                        from_handle_proof: request.our_handle_proof,
-                        to_handle_proof: request.their_handle_proof,
-                        ephemeral_x25519: ephemeral_pubkey,
-                        sender_pubkey: our_pubkey.clone(),
-                        signature: sig_bytes,
-                    }
-                }
-                ClutchRequestType::Complete { proof } => {
-                    let provenance = compute_clutch_complete_provenance(
-                        &request.our_handle_proof,
-                        &request.their_handle_proof,
-                        &proof,
-                    );
-                    let sig = keypair.sign(&provenance);
-                    let mut sig_bytes = [0u8; 64];
-                    sig_bytes.copy_from_slice(&sig.to_bytes());
-
-                    crate::log_info(&format!(
-                        "Status: Sending CLUTCH_COMPLETE to {}",
-                        request.peer_addr
-                    ));
-
-                    FgtwMessage::ClutchComplete {
-                        timestamp,
-                        from_handle_proof: request.our_handle_proof,
-                        to_handle_proof: request.their_handle_proof,
-                        proof,
-                        sender_pubkey: our_pubkey.clone(),
-                        signature: sig_bytes,
-                    }
-                }
-            };
-
-            let msg_bytes = msg.to_vsf_bytes();
-            if !msg_bytes.is_empty() {
-                udp::send(&socket, &msg_bytes, request.peer_addr).await;
-            }
-        }
+        // NOTE: "Process CLUTCH requests" block REMOVED
+        // Full 8-primitive CLUTCH uses ClutchFullOfferRequest and ClutchKemResponseRequest
+        // which are processed below using TCP/PT transport.
 
         // Process message requests (encrypted chat messages)
         while let Ok(request) = message_rx.try_recv() {
@@ -1479,8 +1227,7 @@ async fn run_checker(
 
             // Build signed VSF message
             let vsf_bytes = match build_clutch_full_offer_vsf(
-                &request.our_handle_proof,
-                &request.their_handle_proof,
+                &request.handle_hashes,
                 &request.ceremony_id,
                 &request.payload,
                 &request.device_pubkey,
@@ -1513,7 +1260,7 @@ async fn run_checker(
                 pt_mgr.start_send(request.peer_addr, vsf_bytes.clone())
             };
             udp::send(&socket, &spec_bytes, request.peer_addr).await;
-            pending_pt_sends.insert(request.peer_addr, (Instant::now(), vsf_bytes));
+            pending_pt_sends.push((request.peer_addr, Instant::now(), vsf_bytes));
         }
 
         // Process CLUTCH KEM response requests (PT/UDP primary, TCP fallback)
@@ -1523,8 +1270,7 @@ async fn run_checker(
 
             // Build signed VSF message
             let vsf_bytes = match build_clutch_kem_response_vsf(
-                &request.our_handle_proof,
-                &request.their_handle_proof,
+                &request.handle_hashes,
                 &request.ceremony_id,
                 &request.payload,
                 &request.device_pubkey,
@@ -1557,7 +1303,7 @@ async fn run_checker(
                 pt_mgr.start_send(request.peer_addr, vsf_bytes.clone())
             };
             udp::send(&socket, &spec_bytes, request.peer_addr).await;
-            pending_pt_sends.insert(request.peer_addr, (Instant::now(), vsf_bytes));
+            pending_pt_sends.push((request.peer_addr, Instant::now(), vsf_bytes));
         }
 
         // Process LAN broadcast requests (NAT hairpinning workaround)
@@ -1597,13 +1343,13 @@ async fn run_checker(
         {
             let pt_mgr = pt.lock().unwrap();
             let completed: Vec<SocketAddr> = pending_pt_sends
-                .keys()
-                .filter(|addr| pt_mgr.is_outbound_complete(addr))
-                .cloned()
+                .iter()
+                .filter(|(addr, _, _)| pt_mgr.is_outbound_complete(addr))
+                .map(|(addr, _, _)| *addr)
                 .collect();
             drop(pt_mgr);
             for addr in completed {
-                pending_pt_sends.remove(&addr);
+                pending_pt_sends.retain(|(a, _, _)| *a != addr);
                 crate::log_info(&format!("PT: Transfer to {} completed, removed from pending", addr));
             }
         }
@@ -1613,12 +1359,12 @@ async fn run_checker(
             let now = Instant::now();
             let timed_out: Vec<(SocketAddr, Vec<u8>)> = pending_pt_sends
                 .iter()
-                .filter(|(_, (start, _))| now.duration_since(*start) > PT_TIMEOUT)
-                .map(|(addr, (_, vsf))| (*addr, vsf.clone()))
+                .filter(|(_, start, _)| now.duration_since(*start) > PT_TIMEOUT)
+                .map(|(addr, _, vsf)| (*addr, vsf.clone()))
                 .collect();
 
             for (addr, vsf_bytes) in timed_out {
-                pending_pt_sends.remove(&addr);
+                pending_pt_sends.retain(|(a, _, _)| *a != addr);
                 crate::log_info(&format!(
                     "PT: Transfer to {} timed out after {}s, falling back to TCP",
                     addr, PT_TIMEOUT.as_secs()
@@ -1668,33 +1414,9 @@ fn verify_provenance_signature(
     verifying_key.verify(provenance_hash, &sig).is_ok()
 }
 
-/// Compute provenance hash for CLUTCH init/response messages
-fn compute_clutch_provenance(
-    from_handle_proof: &[u8; 32],
-    to_handle_proof: &[u8; 32],
-    ephemeral_pubkey: &[u8; 32],
-) -> [u8; 32] {
-    use blake3::Hasher;
-    let mut hasher = Hasher::new();
-    hasher.update(from_handle_proof);
-    hasher.update(to_handle_proof);
-    hasher.update(ephemeral_pubkey);
-    *hasher.finalize().as_bytes()
-}
-
-/// Compute provenance hash for CLUTCH complete message
-fn compute_clutch_complete_provenance(
-    from_handle_proof: &[u8; 32],
-    to_handle_proof: &[u8; 32],
-    proof: &[u8; 32],
-) -> [u8; 32] {
-    use blake3::Hasher;
-    let mut hasher = Hasher::new();
-    hasher.update(from_handle_proof);
-    hasher.update(to_handle_proof);
-    hasher.update(proof);
-    *hasher.finalize().as_bytes()
-}
+// NOTE: compute_clutch_provenance and compute_clutch_complete_provenance REMOVED
+// They were only used by the legacy v1 ClutchOffer/ClutchInit/ClutchResponse/ClutchComplete
+// Full 8-primitive CLUTCH uses different provenance via build_clutch_full_offer_vsf()
 
 /// Compute provenance hash for encrypted message
 /// provenance = BLAKE3(from_handle_proof || sequence)
@@ -1776,11 +1498,7 @@ async fn handle_pt_vsf_packet(
                 }
                 "pt_nak" => {
                     if let Some(nak) = PTNak::from_vsf_header(&values) {
-                        crate::log_info(&format!(
-                            "PT: NAK received from {} - {} missing",
-                            src_addr,
-                            nak.missing_sequences.len()
-                        ));
+                        // NOTE: NAK not logged individually - handled silently
                         let response_packets = {
                             let mut pt_mgr = pt.lock().unwrap();
                             pt_mgr.handle_nak(src_addr, nak)
@@ -1793,7 +1511,7 @@ async fn handle_pt_vsf_packet(
                 }
                 "pt_ctrl" => {
                     if let Some(control) = PTControl::from_vsf_header(&values) {
-                        crate::log_info(&format!("PT: CONTROL received from {}", src_addr));
+                        // NOTE: CONTROL not logged - handled silently
                         let mut pt_mgr = pt.lock().unwrap();
                         pt_mgr.handle_control(src_addr, control);
                         return Some(true);
@@ -1801,10 +1519,10 @@ async fn handle_pt_vsf_packet(
                 }
                 "pt_done" => {
                     if let Some(complete) = PTComplete::from_vsf_header(provenance_hash, &values) {
-                        crate::log_info(&format!(
-                            "PT: COMPLETE received from {} - success={}",
-                            src_addr, complete.success
-                        ));
+                        // Log completion (success or failure)
+                        if !complete.success {
+                            crate::log_error(&format!("PT: Transfer FAILED from {}", src_addr));
+                        }
                         let is_complete = {
                             let mut pt_mgr = pt.lock().unwrap();
                             pt_mgr.handle_complete(src_addr, complete);
@@ -1830,110 +1548,21 @@ async fn handle_pt_vsf_packet(
             }
         }
 
-        // Legacy section format
+        // Section format (SPEC uses full section, not header-only)
         ParsedPtPacket::Section { name, fields } => {
-            match name.as_str() {
-                "pt_spec" => {
-                    if let Some(spec) = PTSpec::from_vsf_fields(&fields) {
-                        crate::log_info(&format!(
-                            "PT: SPEC received from {} - {} packets, {} bytes",
-                            src_addr, spec.total_packets, spec.total_size
-                        ));
-                        let spec_ack = {
-                            let mut pt_mgr = pt.lock().unwrap();
-                            pt_mgr.handle_spec(src_addr, spec)
-                        };
-                        udp::send(socket, &spec_ack, src_addr).await;
-                        return Some(true);
-                    }
-                }
-                "pt_ack" => {
-                    // Legacy section format fallback
-                    if let Some(ack) = PTAck::from_vsf_fields(&fields) {
-                        let (response_packets, is_complete) = {
-                            let mut pt_mgr = pt.lock().unwrap();
-                            let packets = pt_mgr.handle_ack(src_addr, ack);
-                            let complete = pt_mgr.is_outbound_complete(&src_addr);
-                            if complete {
-                                pt_mgr.remove_outbound(&src_addr);
-                            }
-                            (packets, complete)
-                        };
-                        for pkt in response_packets {
-                            udp::send(socket, &pkt, src_addr).await;
-                        }
-                        if is_complete {
-                            crate::log_info(&format!(
-                                "PT: Outbound transfer to {} complete",
-                                src_addr
-                            ));
-                            send_status_update(
-                                status_tx,
-                                StatusUpdate::PTSendComplete {
-                                    peer_addr: src_addr,
-                                },
-                                event_proxy,
-                            );
-                        }
-                        return Some(true);
-                    }
-                }
-                "pt_nak" => {
-                    // Legacy section format fallback
-                    if let Some(nak) = PTNak::from_vsf_fields(&fields) {
-                        crate::log_info(&format!(
-                            "PT: NAK received from {} - {} missing",
-                            src_addr,
-                            nak.missing_sequences.len()
-                        ));
-                        let response_packets = {
-                            let mut pt_mgr = pt.lock().unwrap();
-                            pt_mgr.handle_nak(src_addr, nak)
-                        };
-                        for pkt in response_packets {
-                            udp::send(socket, &pkt, src_addr).await;
-                        }
-                        return Some(true);
-                    }
-                }
-                "pt_ctrl" => {
-                    // Legacy section format fallback
-                    if let Some(control) = PTControl::from_vsf_fields(&fields) {
-                        crate::log_info(&format!("PT: CONTROL received from {}", src_addr));
+            if name == "pt_spec" {
+                if let Some(spec) = PTSpec::from_vsf_fields(&fields) {
+                    crate::log_info(&format!(
+                        "PT: SPEC received from {} - {} packets, {} bytes",
+                        src_addr, spec.total_packets, spec.total_size
+                    ));
+                    let spec_ack = {
                         let mut pt_mgr = pt.lock().unwrap();
-                        pt_mgr.handle_control(src_addr, control);
-                        return Some(true);
-                    }
+                        pt_mgr.handle_spec(src_addr, spec)
+                    };
+                    udp::send(socket, &spec_ack, src_addr).await;
+                    return Some(true);
                 }
-                "pt_done" => {
-                    // Legacy section format fallback
-                    if let Some(complete) = PTComplete::from_vsf_fields(&fields) {
-                        crate::log_info(&format!(
-                            "PT: COMPLETE received from {} - success={}",
-                            src_addr, complete.success
-                        ));
-                        let is_complete = {
-                            let mut pt_mgr = pt.lock().unwrap();
-                            pt_mgr.handle_complete(src_addr, complete);
-                            let complete = pt_mgr.is_outbound_complete(&src_addr);
-                            if complete {
-                                pt_mgr.remove_outbound(&src_addr);
-                            }
-                            complete
-                        };
-                        if is_complete {
-                            send_status_update(
-                                status_tx,
-                                StatusUpdate::PTSendComplete {
-                                    peer_addr: src_addr,
-                                },
-                                event_proxy,
-                            );
-                        }
-                        return Some(true);
-                    }
-                }
-                _ => {}
             }
         }
     }

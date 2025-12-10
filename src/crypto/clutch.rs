@@ -1,7 +1,45 @@
 use crate::types::Seed;
 use blake3::Hasher;
+use sha2::{Sha512, Digest as Sha2Digest};
+use sha3::{Sha3_256, Digest as Sha3Digest};
 use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::Zeroize;
+
+/// Multi-algorithm hash smear for defense-in-depth.
+///
+/// XORs outputs from three fundamentally different hash constructions:
+/// - BLAKE3: Merkle tree of ChaCha-based compression (modern, fast)
+/// - SHA3-256: Keccak sponge construction (NIST standard, permutation-based)
+/// - SHA-512: Merkle-Damgård with ARX rounds (battle-tested, truncated to 32 bytes)
+///
+/// If ANY algorithm survives cryptanalysis, the output remains secure.
+/// An attacker must break ALL THREE simultaneously to compromise the result.
+///
+/// Not memory-hard - that's not the goal. The input is already high-entropy
+/// from the avalanche mixing. This adds hash algorithm diversity.
+pub fn smear_hash(data: &[u8]) -> [u8; 32] {
+    // BLAKE3 - Merkle tree of ChaCha-based compression
+    let blake3_out = *blake3::hash(data).as_bytes();
+
+    // SHA3-256 - Keccak sponge (completely different construction)
+    let mut sha3 = Sha3_256::new();
+    sha3.update(data);
+    let sha3_out: [u8; 32] = sha3.finalize().into();
+
+    // SHA-512 truncated to 32 bytes - Merkle-Damgård ARX
+    let mut sha512 = Sha512::new();
+    sha512.update(data);
+    let sha512_full: [u8; 64] = sha512.finalize().into();
+    let mut sha512_out = [0u8; 32];
+    sha512_out.copy_from_slice(&sha512_full[..32]);
+
+    // XOR all three - output is secure if ANY one survives
+    let mut result = [0u8; 32];
+    for i in 0..32 {
+        result[i] = blake3_out[i] ^ sha3_out[i] ^ sha512_out[i];
+    }
+    result
+}
 
 /// Determine who initiates clutch ceremony.
 /// Lower handle_proof = initiator (sends ephemeral pubkeys first)
@@ -584,9 +622,7 @@ impl ClutchFullOfferPayload {
             p256_public: keys.p256_public.clone(),
             frodo976_public: keys.frodo976_public.clone(),
             ntru701_public: keys.ntru701_public.clone(),
-            // TODO: Re-enable McEliece once PT transfer is stable
-            // McEliece public key is ~512KB, makes testing painful
-            mceliece_public: vec![], // keys.mceliece_public.clone(),
+            mceliece_public: keys.mceliece_public.clone(), // ~512KB - PT transfer handles this
             hqc256_public: keys.hqc256_public.clone(),
         }
     }
@@ -614,15 +650,10 @@ impl ClutchKemResponsePayload {
         #[cfg(feature = "development")]
         crate::log_info("CLUTCH: Encapsulating to peer's public keys...");
 
-        // Encapsulate to each KEM public key
+        // Encapsulate to each KEM public key (all 4 PQC primitives)
         let (frodo976_ciphertext, frodo_ss) = frodo976_encapsulate(&their_offer.frodo976_public);
         let (ntru701_ciphertext, ntru_ss) = ntru701_encapsulate(&their_offer.ntru701_public);
-        // TODO: Re-enable McEliece once PT transfer is stable
-        let (mceliece_ciphertext, mceliece_ss) = if their_offer.mceliece_public.is_empty() {
-            (vec![], vec![0u8; 32]) // Placeholder shared secret
-        } else {
-            mceliece460896_encapsulate(&their_offer.mceliece_public)
-        };
+        let (mceliece_ciphertext, mceliece_ss) = mceliece460896_encapsulate(&their_offer.mceliece_public);
         let (hqc256_ciphertext, hqc_ss) = hqc256_encapsulate(&their_offer.hqc256_public);
 
         #[cfg(feature = "development")]

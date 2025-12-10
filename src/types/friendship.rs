@@ -159,8 +159,12 @@ pub struct FriendshipChains {
 impl FriendshipChains {
     /// Initialize chains from CLUTCH shared secrets.
     ///
-    /// Uses BLAKE3 XOF to expand eggs into N × 8KB of chain material.
+    /// Uses parallel XOF expansion with BLAKE3 and SHA3-SHAKE256, then XORs
+    /// the results for hash algorithm diversity. If either construction survives
+    /// cryptanalysis, the chain material remains secure.
     pub fn from_clutch(participants: &[[u8; 32]], eggs: &[[u8; 32]]) -> Self {
+        use sha3::{Shake256, digest::{Update, ExtendableOutput, XofReader}};
+
         // Sort participants for canonical ordering
         let mut sorted_participants = participants.to_vec();
         sorted_participants.sort();
@@ -172,16 +176,29 @@ impl FriendshipChains {
         let chain_count = sorted_participants.len();
         let total_bytes = CHAIN_SIZE * chain_count;
 
-        // Use BLAKE3 XOF to expand eggs into chain material
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(b"PHOTON_CHAIN_INIT_v1");
+        // BLAKE3 XOF expansion
+        let mut blake3_hasher = blake3::Hasher::new();
+        blake3_hasher.update(b"PHOTON_CHAIN_INIT_v1_BLAKE3");
         for egg in eggs {
-            hasher.update(egg);
+            blake3_hasher.update(egg);
         }
+        let mut blake3_bytes = vec![0u8; total_bytes];
+        blake3_hasher.finalize_xof().fill(&mut blake3_bytes);
 
-        // Expand to needed size
+        // SHA3-SHAKE256 XOF expansion (completely different sponge construction)
+        let mut shake_hasher = Shake256::default();
+        shake_hasher.update(b"PHOTON_CHAIN_INIT_v1_SHAKE256");
+        for egg in eggs {
+            shake_hasher.update(egg);
+        }
+        let mut shake_bytes = vec![0u8; total_bytes];
+        shake_hasher.finalize_xof().read(&mut shake_bytes);
+
+        // XOR both expansions - secure if EITHER algorithm survives
         let mut chain_bytes = vec![0u8; total_bytes];
-        hasher.finalize_xof().fill(&mut chain_bytes);
+        for i in 0..total_bytes {
+            chain_bytes[i] = blake3_bytes[i] ^ shake_bytes[i];
+        }
 
         // Split into per-participant chains
         let mut chains = Vec::with_capacity(chain_count);

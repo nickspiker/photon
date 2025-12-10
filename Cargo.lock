@@ -778,7 +778,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "62a9b6d27e553269a76625911aa8cf6afaa8659f1b0c85b410cb5f51a87183d9"
 dependencies = [
  "rand 0.8.5",
- "sha3",
+ "sha3 0.10.8",
  "zeroize",
 ]
 
@@ -1425,7 +1425,7 @@ dependencies = [
  "rand 0.8.5",
  "rand_chacha 0.3.1",
  "rand_distr",
- "sha3",
+ "sha3 0.10.8",
 ]
 
 [[package]]
@@ -1576,7 +1576,7 @@ dependencies = [
  "rand_core 0.9.3",
  "serde",
  "serdect",
- "sha3",
+ "sha3 0.10.8",
  "subtle",
  "thiserror 2.0.17",
  "zeroize",
@@ -2307,6 +2307,15 @@ name = "keccak"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ecc2af9a1119c51f12a14607e783cb977bde58bc069ff0c3da1095e635d70654"
+dependencies = [
+ "cpufeatures",
+]
+
+[[package]]
+name = "keccak"
+version = "0.2.0-rc.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3d546793a04a1d3049bd192856f804cfe96356e2cf36b54b4e575155babe9f41"
 dependencies = [
  "cpufeatures",
 ]
@@ -3153,6 +3162,7 @@ dependencies = [
  "resize",
  "rgb",
  "sha2 0.10.9",
+ "sha3 0.11.0-rc.3",
  "softbuffer",
  "subtle",
  "thiserror 2.0.17",
@@ -4236,7 +4246,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75872d278a8f37ef87fa0ddbda7802605cb18344497949862c0d4dcb291eba60"
 dependencies = [
  "digest 0.10.7",
- "keccak",
+ "keccak 0.1.5",
+]
+
+[[package]]
+name = "sha3"
+version = "0.11.0-rc.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2103ca0e6f4e9505eae906de5e5883e06fc3b2232fb5d6914890c7bbcb62f478"
+dependencies = [
+ "digest 0.11.0-rc.4",
+ "keccak 0.2.0-rc.0",
 ]
 
 [[package]]
