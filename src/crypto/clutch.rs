@@ -41,6 +41,298 @@ pub fn smear_hash(data: &[u8]) -> [u8; 32] {
     result
 }
 
+// ============================================================================
+// SPAGHETTIFY: Rube Goldberg mixing with U256 chunks and f64 bit chaos
+// ============================================================================
+
+use i256::U256;
+
+/// Bootstrap seed - BLAKE3("LAVARAND_SEED") expanded to 64 bytes for two U256s
+const LAVA_SEED_256: [u8; 64] = [
+    0x4a, 0xf3, 0x81, 0x2d, 0x96, 0xc7, 0x5e, 0xb4,
+    0x1f, 0x83, 0xd2, 0x6a, 0xe9, 0x47, 0xbc, 0x05,
+    0x7d, 0x34, 0xa8, 0x6f, 0xc1, 0x59, 0xe2, 0x8b,
+    0x13, 0x9a, 0xf6, 0x42, 0xd5, 0x7e, 0x0c, 0xb9,
+    // Second half: BLAKE3("LAVARAND_SEED_2")
+    0x8e, 0x27, 0xb3, 0x5c, 0xf1, 0x94, 0x6d, 0xa0,
+    0x3b, 0xe8, 0x72, 0x1f, 0xc6, 0x4a, 0x95, 0xd3,
+    0x58, 0x0e, 0xab, 0x67, 0x2c, 0xf9, 0x84, 0x31,
+    0xbe, 0x5a, 0x17, 0xe3, 0x90, 0x4c, 0xd8, 0x65,
+];
+
+// Constants for U256 - use from_be_bytes with const arrays
+const U256_ZERO: U256 = U256::from_be_bytes([0u8; 32]);
+const U256_ONE: U256 = U256::from_be_bytes([
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+]);
+
+/// Integer square root for U256 using Newton-Raphson
+fn sqrt_u256(n: U256) -> U256 {
+    if n == U256_ZERO { return U256_ZERO; }
+    if n == U256_ONE { return U256_ONE; }
+
+    // Start with a rough estimate: n >> (leading_zeros / 2)
+    // For U256, we approximate by checking high bits
+    let mut x = n >> 128;  // Start smaller
+    if x == U256_ZERO { x = n >> 64; }
+    if x == U256_ZERO { x = n >> 32; }
+    if x == U256_ZERO { x = n; }
+
+    // Newton-Raphson: x_new = (x + n/x) / 2
+    loop {
+        if x == U256_ZERO { return U256_ZERO; }
+        let x_new = (x + n / x) >> 1;
+        if x_new >= x {
+            return x;
+        }
+        x = x_new;
+    }
+}
+
+/// Convert U256 to 4 f64s by direct bit reinterpretation (chaos mode!)
+/// Random bit patterns become random IEEE754 values: NaN, Inf, denormals, whatever
+fn u256_to_f64x4(n: U256) -> [f64; 4] {
+    let bytes = n.to_be_bytes();
+    [
+        f64::from_be_bytes(bytes[0..8].try_into().unwrap()),
+        f64::from_be_bytes(bytes[8..16].try_into().unwrap()),
+        f64::from_be_bytes(bytes[16..24].try_into().unwrap()),
+        f64::from_be_bytes(bytes[24..32].try_into().unwrap()),
+    ]
+}
+
+/// Convert 4 f64s back to U256 by direct bit reinterpretation
+fn f64x4_to_u256(floats: [f64; 4]) -> U256 {
+    let mut bytes = [0u8; 32];
+    bytes[0..8].copy_from_slice(&floats[0].to_be_bytes());
+    bytes[8..16].copy_from_slice(&floats[1].to_be_bytes());
+    bytes[16..24].copy_from_slice(&floats[2].to_be_bytes());
+    bytes[24..32].copy_from_slice(&floats[3].to_be_bytes());
+    U256::from_be_bytes(bytes)
+}
+
+/// Apply sin to U256 via f64 bit-literal reinterpretation
+/// NaN stays NaN, Inf might become NaN, normal values get sin'd
+fn chaos_sin(n: U256) -> U256 {
+    let floats = u256_to_f64x4(n);
+    f64x4_to_u256([floats[0].sin(), floats[1].sin(), floats[2].sin(), floats[3].sin()])
+}
+
+/// Apply cos to U256 via f64 bit-literal reinterpretation
+fn chaos_cos(n: U256) -> U256 {
+    let floats = u256_to_f64x4(n);
+    f64x4_to_u256([floats[0].cos(), floats[1].cos(), floats[2].cos(), floats[3].cos()])
+}
+
+/// Apply ln (natural log) to U256 - negative/zero inputs become NaN
+fn chaos_ln(n: U256) -> U256 {
+    let floats = u256_to_f64x4(n);
+    f64x4_to_u256([floats[0].ln(), floats[1].ln(), floats[2].ln(), floats[3].ln()])
+}
+
+/// Apply exp to U256 - large values overflow to Inf
+fn chaos_exp(n: U256) -> U256 {
+    let floats = u256_to_f64x4(n);
+    f64x4_to_u256([floats[0].exp(), floats[1].exp(), floats[2].exp(), floats[3].exp()])
+}
+
+/// Apply tan to U256 - near-90° values explode
+fn chaos_tan(n: U256) -> U256 {
+    let floats = u256_to_f64x4(n);
+    f64x4_to_u256([floats[0].tan(), floats[1].tan(), floats[2].tan(), floats[3].tan()])
+}
+
+/// Apply atan to U256 - compresses everything to [-π/2, π/2]
+fn chaos_atan(n: U256) -> U256 {
+    let floats = u256_to_f64x4(n);
+    f64x4_to_u256([floats[0].atan(), floats[1].atan(), floats[2].atan(), floats[3].atan()])
+}
+
+/// f64 addition: Inf + Inf = Inf, Inf + (-Inf) = NaN, overflow → Inf
+fn chaos_add(a: U256, b: U256) -> U256 {
+    let fa = u256_to_f64x4(a);
+    let fb = u256_to_f64x4(b);
+    f64x4_to_u256([fa[0] + fb[0], fa[1] + fb[1], fa[2] + fb[2], fa[3] + fb[3]])
+}
+
+/// f64 subtraction: Inf - Inf = NaN, underflow → denormals
+fn chaos_sub(a: U256, b: U256) -> U256 {
+    let fa = u256_to_f64x4(a);
+    let fb = u256_to_f64x4(b);
+    f64x4_to_u256([fa[0] - fb[0], fa[1] - fb[1], fa[2] - fb[2], fa[3] - fb[3]])
+}
+
+/// f64 multiplication: 0 * Inf = NaN, overflow → Inf, underflow → 0
+fn chaos_mul(a: U256, b: U256) -> U256 {
+    let fa = u256_to_f64x4(a);
+    let fb = u256_to_f64x4(b);
+    f64x4_to_u256([fa[0] * fb[0], fa[1] * fb[1], fa[2] * fb[2], fa[3] * fb[3]])
+}
+
+/// f64 division: x/0 = ±Inf, 0/0 = NaN, Inf/Inf = NaN
+fn chaos_div(a: U256, b: U256) -> U256 {
+    let fa = u256_to_f64x4(a);
+    let fb = u256_to_f64x4(b);
+    f64x4_to_u256([fa[0] / fb[0], fa[1] / fb[1], fa[2] / fb[2], fa[3] / fb[3]])
+}
+
+/// f64 power: 0^0=1, negative^fractional=NaN, large^large=Inf
+fn chaos_pow(a: U256, b: U256) -> U256 {
+    let fa = u256_to_f64x4(a);
+    let fb = u256_to_f64x4(b);
+    f64x4_to_u256([fa[0].powf(fb[0]), fa[1].powf(fb[1]), fa[2].powf(fb[2]), fa[3].powf(fb[3])])
+}
+
+/// f64 hypot: sqrt(a² + b²) - always positive, can overflow to Inf
+fn chaos_hypot(a: U256, b: U256) -> U256 {
+    let fa = u256_to_f64x4(a);
+    let fb = u256_to_f64x4(b);
+    f64x4_to_u256([fa[0].hypot(fb[0]), fa[1].hypot(fb[1]), fa[2].hypot(fb[2]), fa[3].hypot(fb[3])])
+}
+
+/// Spaghettify: Rube Goldberg mixing with U256 chunks and f64 bit chaos.
+///
+/// A general-purpose mixing function that is deterministic but practically
+/// irreversible due to information destruction and astronomical path explosion.
+///
+/// Key properties:
+/// - **53 buckets** (prime) of U256 each = 1696 bytes (~1.7KB)
+/// - **23 operations** (prime) - each bucket's value selects which op
+/// - **Variable rounds (11-23)** - data determines how much work
+/// - **f64 bit chaos** - reinterpret U256 as 4 f64s, apply trig/log/exp/arithmetic, get NaNs and Infs
+/// - **Information destruction** - sqrt, saturating ops, f64 lossy conversions
+/// - **Path explosion** - 23^53 possible sequences per round
+///
+/// NOT memory-hard - that's not the goal. Maximum weirdness is the goal.
+///
+/// # Arguments
+/// * `input` - Arbitrary length byte slice (0 to any size)
+///
+/// # Returns
+/// 32 bytes of maximally entangled chaos (via smear_hash)
+pub fn spaghettify(input: &[u8]) -> [u8; 32] {
+    const BUCKETS: usize = 53;   // Prime, 53 * 32 = 1696 bytes
+    const CROSS: usize = 29;     // Prime offset for cross-contamination (changed from 23)
+    const OPS: usize = 23;       // Prime number of operations
+
+    let mut buckets: [U256; BUCKETS] = [U256_ZERO; BUCKETS];
+
+    // Phase 1: Create input-modified seed
+    // Start with LAVA_SEED, then mix input into it
+    let mut seed = [
+        U256::from_be_bytes(LAVA_SEED_256[0..32].try_into().unwrap()),
+        U256::from_be_bytes(LAVA_SEED_256[32..64].try_into().unwrap()),
+    ];
+
+    // Mix each 32-byte chunk of input into seed
+    for (chunk_idx, chunk) in input.chunks(32).enumerate() {
+        let mut chunk_bytes = [0u8; 32];
+        chunk_bytes[..chunk.len()].copy_from_slice(chunk);
+        let chunk_val = U256::from_be_bytes(chunk_bytes);
+
+        // XOR and rotate into both seed values
+        seed[0] = seed[0] ^ chunk_val;
+        seed[1] = seed[1].wrapping_add(chunk_val);
+        seed[0] = (seed[0] << 7) | (seed[0] >> 249);  // Rotate left 7
+        seed[1] = seed[1] ^ (chunk_val >> (chunk_idx % 128));
+    }
+
+    // Also mix in input length to differentiate padding scenarios
+    seed[0] = seed[0].wrapping_add(U256::from(input.len() as u128));
+
+    // Expand modified seed into all 53 buckets
+    for i in 0..BUCKETS {
+        // Derive bucket from both seed values with position mixing
+        let s0_rot = (seed[0] << (i % 128)) | (seed[0] >> (256 - (i % 128)));
+        let s1_rot = (seed[1] >> (i % 64)) | (seed[1] << (256 - (i % 64)));
+        buckets[i] = s0_rot ^ s1_rot;
+        buckets[i] = buckets[i].wrapping_add(U256::from((i as u128) * 89));
+    }
+
+    // Pre-round mixing: cascade differences across neighbors
+    for i in 0..BUCKETS {
+        let next = (i + 1) % BUCKETS;
+        buckets[next] = buckets[next] ^ buckets[i].wrapping_add(U256::from(i as u128));
+    }
+
+    // Phase 2: Determine round count from initial state (11-23, both prime)
+    let state_sum: u128 = buckets.iter().map(|b| b.as_u128()).sum();
+    let rounds = 11 + (state_sum % 13) as usize;  // Variable work: 11..=23
+
+    // Phase 3: Spaghettification - the chaos engine with U256 ops
+    for round in 0..rounds {
+        // Round-dependent constant from seed
+        let round_const = seed[round % 2].wrapping_add(U256::from(round as u128));
+
+        for i in 0..BUCKETS {
+            let val = buckets[i];
+            let op = (val.as_u128() as usize) % OPS;  // Which operation (17 choices)
+
+            // Data-dependent target
+            let target = (i + (val.as_u128() as usize) + round * 31) % BUCKETS;  // 31 is prime
+            let secondary = (target + CROSS) % BUCKETS;
+
+            // Position-dependent constant prevents convergence to fixed point
+            let pos_const = round_const.wrapping_add(U256::from((i as u128) * 89));
+
+            let op_result = match op {
+                // f64 bit-chaos unary ops (information destruction via IEEE754 weirdness):
+                0  => chaos_sin(val),                              // NaN-producing chaos
+                1  => chaos_cos(val),                              // More NaN chaos
+                2  => chaos_ln(val),                               // Negative → NaN
+                3  => chaos_exp(val),                              // Overflow → Inf
+                4  => chaos_tan(val),                              // Near-90° → ±Inf
+                5  => chaos_atan(val),                             // Compresses range
+
+                // f64 bit-chaos binary ops (the four basic IEEE754 arithmetic ops):
+                6  => chaos_add(val, buckets[secondary]),          // Inf + (-Inf) = NaN
+                7  => chaos_sub(val, buckets[secondary]),          // Inf - Inf = NaN
+                8  => chaos_mul(val, buckets[secondary]),          // 0 * Inf = NaN
+                9  => chaos_div(val, buckets[secondary]),          // 0/0 = NaN, x/0 = Inf
+                10 => chaos_pow(val, buckets[secondary]),          // neg^frac = NaN
+                11 => chaos_hypot(val, buckets[secondary]),        // sqrt(a² + b²)
+
+                // U256 arithmetic ops:
+                12 => sqrt_u256(val),                              // Lossy: 2^256 → 2^128 outputs
+                13 => buckets[target].saturating_add(val),         // Stuck at MAX
+                14 => buckets[target].saturating_sub(val),         // Stuck at 0
+                15 => buckets[target] & val,                       // Bits destroyed
+                16 => buckets[target] | val,                       // Bits forced on
+                17 => U256::from(val.count_ones() as u128),        // 256 bits → 0-256
+
+                // Reversible but path-dependent:
+                18 => buckets[target] ^ val,                       // XOR mixing
+                19 => (val << (val.as_u128() % 256)) | (val >> (256 - val.as_u128() % 256)), // Data-dep rotate
+                20 => buckets[target].wrapping_mul(val | U256_ONE), // |1 avoids *0
+                21 => {
+                    // Conditional swap - branch creates path explosion
+                    if val > buckets[secondary] {
+                        buckets.swap(target, secondary);
+                    }
+                    buckets[target]
+                }
+                _  => val.wrapping_add(buckets[secondary]),        // Cross-bucket mixing (op 22)
+            };
+
+            // Mix in position constant to prevent fixed point convergence
+            buckets[target] = op_result ^ pos_const;
+        }
+    }
+
+    // Phase 4: Collapse 53 U256 buckets → bytes, append input, then smear_hash
+    // Defense in depth: if spaghettify has unknown weaknesses, original input
+    // is still mixed in. Output is secure if ANY layer survives (like CLUTCH).
+    let mut state_bytes = Vec::with_capacity(BUCKETS * 32 + input.len());
+    for bucket in &buckets {
+        state_bytes.extend_from_slice(&bucket.to_be_bytes());
+    }
+    state_bytes.extend_from_slice(input);  // Append original input
+
+    // Use smear_hash to collapse to 32 bytes with hash algorithm diversity
+    smear_hash(&state_bytes)
+}
+
 /// Determine who initiates clutch ceremony.
 /// Lower handle_proof = initiator (sends ephemeral pubkeys first)
 /// Higher handle_proof = responder (waits, then responds)
@@ -1817,5 +2109,90 @@ mod tests {
         // Cleanup
         alice_keys.zeroize();
         bob_keys.zeroize();
+    }
+
+    // ========================================================================
+    // SPAGHETTIFY TESTS
+    // ========================================================================
+
+    #[test]
+    fn test_spaghettify_deterministic() {
+        // Same input MUST produce same output
+        let input = b"Hello, spaghetti world!";
+        let output1 = spaghettify(input);
+        let output2 = spaghettify(input);
+        assert_eq!(output1, output2, "spaghettify must be deterministic");
+    }
+
+    #[test]
+    fn test_spaghettify_empty_input() {
+        // Empty input should produce valid output from LAVA_SEED
+        let output = spaghettify(&[]);
+        assert_ne!(output, [0u8; 32], "empty input should not produce all zeros");
+
+        // Should also be deterministic
+        let output2 = spaghettify(&[]);
+        assert_eq!(output, output2, "empty input should be deterministic");
+    }
+
+    #[test]
+    fn test_spaghettify_different_inputs() {
+        // Different inputs should produce different outputs
+        let output1 = spaghettify(b"input one");
+        let output2 = spaghettify(b"input two");
+        assert_ne!(output1, output2, "different inputs should produce different outputs");
+    }
+
+    #[test]
+    fn test_spaghettify_avalanche() {
+        // Flip one bit, should change ~50% of output bits
+        let input1 = [0u8; 32];
+        let mut input2 = [0u8; 32];
+        input2[0] = 1; // Flip one bit
+
+        let output1 = spaghettify(&input1);
+        let output2 = spaghettify(&input2);
+
+        // Count differing bits
+        let mut diff_bits = 0;
+        for (a, b) in output1.iter().zip(output2.iter()) {
+            diff_bits += (a ^ b).count_ones();
+        }
+
+        // Should change roughly half the bits (128 ± 32 is reasonable)
+        assert!(diff_bits > 64, "avalanche too weak: only {} bits changed", diff_bits);
+        assert!(diff_bits < 192, "avalanche too strong: {} bits changed", diff_bits);
+    }
+
+    #[test]
+    fn test_spaghettify_variable_rounds() {
+        // Different inputs should trigger different round counts
+        // We can't directly verify round count, but we can verify different
+        // inputs produce different timing characteristics (not tested here)
+        // and that both produce valid outputs
+
+        let short = spaghettify(&[0u8]);
+        let long = spaghettify(&[255u8; 1000]);
+
+        // Both should be valid 32-byte outputs
+        assert_eq!(short.len(), 32);
+        assert_eq!(long.len(), 32);
+        // And different
+        assert_ne!(short, long);
+    }
+
+    #[test]
+    fn test_spaghettify_large_input() {
+        // Should handle large inputs gracefully
+        let large_input = vec![0xAB; 100_000]; // 100KB
+        let output = spaghettify(&large_input);
+
+        // Should produce valid output
+        assert_eq!(output.len(), 32);
+        assert_ne!(output, [0u8; 32]);
+
+        // Should be deterministic
+        let output2 = spaghettify(&large_input);
+        assert_eq!(output, output2);
     }
 }
