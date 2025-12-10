@@ -1,6 +1,7 @@
 # CLUTCH Protocol Specification v3.0
 
-**Protocol:** CLUTCH (Device-Bound Parallel Key Ceremony) + Rolling Chain Encryption
+**Protocol:** CLUTCH (Device-Bound Parallel Key Ceremony)
+**Related:** CHAIN.md (Rolling Chain Encryption)
 **Author:** Nick Spiker
 **Status:** Draft
 **License:** MIT OR Apache-2.0
@@ -10,9 +11,9 @@
 
 ## 0. Abstract
 
-CLUTCH is a one-time, device-bound key generation ceremony combining eight independent cryptographic primitives across diverse mathematical foundations into a single shared seed. This seed bootstraps a rolling-chain encrypted relationship between two parties for text, voice, and video communication.
+CLUTCH is a one-time, device-bound key generation ceremony combining eight independent cryptographic primitives across diverse mathematical foundations into a single 256-byte shared seed. This seed bootstraps the CHAIN protocol (see CHAIN.md) for text, voice, and video communication.
 
-CLUTCH is not a handshake protocol. It is a **key generation ceremony** performed once per relationship per device pair. Relationship seeds are encrypted at rest using the device's private key, ensuring seeds cannot be extracted even if storage is compromised. All subsequent communication is authenticated by the rolling chain itself—successful decryption *is* authentication.
+CLUTCH is not a handshake protocol. It is a **key generation ceremony** performed once per relationship per device pair. Relationship seeds are encrypted at rest using the device's private key, ensuring seeds are difficult to extract even if storage is compromised. All subsequent communication uses the CHAIN protocol—successful decryption *is* authentication.
 
 ---
 
@@ -20,15 +21,15 @@ CLUTCH is not a handshake protocol. It is a **key generation ceremony** performe
 
 ### 1.0 Defense in Parallel
 
-Traditional cryptographic diversity uses fallback schemes—if one breaks, switch to another. CLUTCH instead **combines all schemes simultaneously**. An attacker must break every primitive to derive the shared seed. If any single primitive holds, the seed remains secure.
+Traditional cryptographic diversity uses fallback schemes—if one breaks, the system is compromised. CLUTCH instead **combines all schemes simultaneously**. An attacker must break every primitive to derive the shared seed. If any single primitive holds, the seed remains secure.
 
 ### 1.1 Pre-Shared Secret Integration
 
-Both parties know each other's handles before the ceremony. Handles are never transmitted over the wire. The handles themselves become a pre-shared secret component mixed into the seed derivation, creating a dependency that cannot be satisfied by cryptanalysis alone.
+All parties know each other's handles before the ceremony. Handles are never transmitted over the wire. The handles themselves become a pre-shared secret component mixed into the seed derivation, creating a dependency that cannot be satisfied by cryptanalysis alone.
 
 ### 1.2 Self-Authenticating Communication
 
-After CLUTCH completes, no further handshakes or identity proofs are required. The rolling chain state is known only to the two participants. Successful decryption proves possession of the chain state, which proves continuous participation since the ceremony.
+After CLUTCH completes, no further handshakes or identity proofs are required. The CHAIN protocol state is known only to the two participants. Successful decryption proves possession of the chain state, which proves continuous participation since the ceremony. See CHAIN.md for rolling encryption details.
 
 ### 1.3 Pure P2P with Optional Infrastructure
 
@@ -88,6 +89,8 @@ CLUTCH employs eight key exchange primitives spanning four mathematical families
 
 ### 2.5 Rolling Chain Primitives (per-message)
 
+See CHAIN.md for full specification. Summary:
+
 | Primitive | Purpose | Family |
 |-----------|---------|--------|
 | BLAKE3 | Hash/KDF | Hash function |
@@ -96,7 +99,68 @@ CLUTCH employs eight key exchange primitives spanning four mathematical families
 | ChaCha20Rng | PRNG salt source 0 | CSPRNG |
 | Pcg64 | PRNG salt source 1 | Fast PRNG |
 
-**Total: 13 independent cryptographic elements** (8 in CLUTCH + 5 in rolling chain)
+**Total: 14 cryptographic elements** (8 in CLUTCH + 1 handle PSK + 5 in CHAIN)
+
+### 2.6 Hardware-Attested Contextual KDF (HAC-KDF)
+
+Device-bound key derivation without storing secrets on disk:
+
+```rust
+fn hac_kdf(input: &[u8]) -> [u8; 32]
+```
+
+**Ideal (TPM-backed):**
+```rust
+output = BLAKE3(
+    app_signing_pubkey ||
+    tpm_secret ||           // Hardware-unique, changes on factory reset
+    user_number ||          // OS user profile ID
+    input
+)
+```
+
+**Current Android Workaround:**
+```rust
+let android_id = get_android_id();  // 64-bit, scoped to app signing key
+let user_num = get_user_number();   // Android multi-user profile ID
+output = BLAKE3(android_id || user_num || input)
+```
+
+**Properties:**
+- **Hardware-bound:** Keys derivable only on specific device
+- **App-scoped:** Different apps get different outputs
+- **User-isolated:** Different OS users get different outputs
+- **Reset boundary:** Factory reset generates new `tpm_secret`
+- **Deterministic:** Same inputs always produce same output
+- **Non-extractable** (ideal): Secret never leaves TPM hardware
+
+**Purpose:** Derive device-specific cryptographic material for:
+0. Device identity (Ed25519 keypair per device)
+1. Multi-device federation (each device has independent keys)
+2. Device Quorum (collective authorization across user's devices)
+
+**Limitations (Android Workaround):**
+- `ANDROID_ID` is 64-bit (reduced entropy vs 256-bit ideal)
+- Software-stored (root can extract vs hardware-isolated)
+
+**Security Model:**
+- ✅ Remote attacks (requires physical device access)
+- ✅ App cloning (different signing key → different output)
+- ✅ Cross-user leakage (user_number scoping)
+- ⚠️ Root access (workaround only - ideal TPM resists)
+- ❌ Physical device theft while unlocked or unencrypted filesystem
+
+**Potential Integration with TOKEN Device Quorum:**
+```rust
+// Device initialization
+let seed = hac_kdf(b"photon_device_identity_v0");
+let keypair = Ed25519::from_seed(&seed);
+
+// Device Quorum revocation (threshold vote from other devices)
+if watch.vote_revoke(phone) && car.vote_revoke(phone) {
+    publish_revocation(phone.pubkey, vec![watch.sig, car.sig]);
+}
+```
 
 ---
 
@@ -113,15 +177,29 @@ A handle is a human-readable identifier cryptographically bound to a public key 
 - **Never transmitted:** Handles are exchanged out-of-band only, NEVER over the wire
 - **Deterministic proof:** Same handle → same handle proof (enables decentralized verification)
 
-### 3.2 Handle Secret
+### 3.2 Handle Identity Terms
 
-The handle secret is the seed from which all keypairs are derived:
-- **Never stored** on any device
-- **Never transmitted** over any wire  
-- Regenerated from user memory or social recovery when needed
-- Protected by memory-hard proof-of-work (~1 second computation)
+CLUTCH distinguishes between three levels of handle identity:
 
-### 3.3 Handle Proof
+| Term | Formula | Visibility | Purpose |
+|------|---------|------------|---------|
+| **handle** | User-chosen text | Out-of-band only | Human reference |
+| **handle_hash** | `BLAKE3(handle)` | CLUTCH messages only | Private identity seed |
+| **handle_proof** | `memory_hard(handle_hash)` | Public (FGTW) | Anti-squatting, verification |
+
+**handle_hash** is the PRIVATE identity seed:
+- Computed instantly: `BLAKE3(VsfType::x(handle).flatten())`
+- Only known to parties who know the plaintext handle
+- Used for ceremony_id derivation and CLUTCH offer matching
+- Sent in CLUTCH messages but only matchable by contacts who know you
+
+**handle_proof** is the PUBLIC identity:
+- Expensive to compute (~1 second memory-hard)
+- Announced to FGTW for presence/lookup
+- Anyone can verify by recomputing from handle
+- Not used in CLUTCH messages (too slow, public anyway)
+
+### 3.3 Handle Proof Computation
 
 ```rust
 const SIZE: usize = 24_873_856; // 24MB scratch buffer
@@ -155,6 +233,59 @@ pub fn handle_proof(handle_hash: &blake3::Hash) -> blake3::Hash {
 - Deterministic: Same handle always produces same proof
 - Verifiable: Anyone can recompute to verify ownership
 
+### 3.4 Ceremony Identity (ceremony_id)
+
+The **ceremony_id** is a deterministic identifier for a specific CLUTCH ceremony between parties.
+All parties compute the identical ceremony_id independently, enabling offer matching without
+prior coordination.
+
+```rust
+/// Compute deterministic ceremony identity from sorted handle_hashes
+/// Uses memory-hard function to slow brute-force matching attacks
+pub fn compute_ceremony_id(handle_hashes: &[[u8; 32]]) -> [u8; 32] {
+    // Sort handle_hashes lexicographically (canonical ordering)
+    let mut sorted = handle_hashes.to_vec();
+    sorted.sort();
+
+    // Domain separation + concatenated sorted hashes
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"PHOTON_CEREMONY_v1");
+    for hash in &sorted {
+        hasher.update(hash);
+    }
+    let combined = hasher.finalize();
+
+    // Harden with memory-hard function (~1 second)
+    // This prevents brute-force matching by MITM attackers
+    *handle_proof(combined.as_bytes()).as_bytes()
+}
+```
+
+**Properties:**
+- **Deterministic:** Same parties → same ceremony_id (no negotiation needed)
+- **Scalable:** Works for 2+ party ceremonies (future group CLUTCH)
+- **MITM-resistant:** Memory-hard computation prevents brute-force matching
+- **Privacy-preserving:** ceremony_id reveals nothing about handles without prior knowledge
+
+**Example (2-party):**
+```
+Alice's handle_hash: 0x646B83DF...
+Bob's handle_hash:   0x7583B495...
+
+Sorted: [0x646B83DF..., 0x7583B495...]
+Combined: BLAKE3("PHOTON_CEREMONY_v1" || sorted_hashes)
+ceremony_id: handle_proof(combined) // ~1 second
+```
+
+**Example (5-party group):**
+```
+handle_hashes: [0x1A..., 0x3F..., 0x7B..., 0x8C..., 0xE2...]  // Already sorted
+Combined: BLAKE3("PHOTON_CEREMONY_v1" || all 5 hashes)
+ceremony_id: handle_proof(combined) // Same ~1 second regardless of party count
+```
+
+All parties compute identical ceremony_id independently from their shared knowledge of handles.
+
 ---
 
 ## 4. CLUTCH Ceremony
@@ -164,498 +295,263 @@ pub fn handle_proof(handle_hash: &blake3::Hash) -> blake3::Hash {
 Before CLUTCH:
 0. Alice knows Bob's handle (obtained out-of-band)
 1. Bob knows Alice's handle (obtained out-of-band)
-2. Both parties possess their own handle secrets
-3. Both have computed their own handle proofs
+2. All parties have computed each other's handle_hash (from known handles)
+3. All have computed the shared ceremony_id (from sorted handle_hashes)
 
-### 4.1 Initiator Determination
+### 4.1 Slot-Based Ceremony (No Initiator)
 
-Deterministic, no negotiation required:
+There is no "initiator" in CLUTCH. The ceremony has N slots (one per handle_hash in sorted order).
+Each party fills their slot when ready. Order of arrival doesn't matter—ceremony completes
+when all slots are filled.
 
 ```rust
-fn is_initiator(
-    our_handle_proof: &[u8; 32], 
-    their_handle_proof: &[u8; 32]
-) -> bool {
-    our_handle_proof < their_handle_proof  // Lexicographic
+struct CeremonyState {
+    ceremony_id: [u8; 32],
+    slots: Vec<Option<PartyMaterial>>,  // Indexed by sorted handle_hash position
+}
+
+struct PartyMaterial {
+    handle_hash: [u8; 32],
+    offer: ClutchFullOffer,       // Their 8 pubkeys
+    response: Option<ClutchKemResponse>,  // Their KEM ciphertexts to us
 }
 ```
 
-Lower handle proof = initiator. Both parties compute same result independently.
+**Completion condition:** All N slots have offers AND all N slots have responses addressed to us.
 
-### 4.2 Message Exchange (P2P UDP)
+### 4.2 Message Exchange (TCP + PT/UDP)
 
-CLUTCH v3 uses **parallel key exchange** where both parties generate and send ephemeral
-keys simultaneously. Both parties' ephemeral pubkeys contribute entropy to the final seed.
-The protocol is device-bound—seeds are encrypted at rest with the device's private key.
+CLUTCH uses **organic slot-filling** where parties generate and broadcast ephemeral keys
+whenever ready. No coordination, no initiator, no linear flow. All parties' ephemeral
+pubkeys contribute entropy to the final seed.
 
-**Parallel Exchange Flow:**
+**Transport:** Full offers are ~550KB, too large for UDP. We use:
+- **Primary:** PT (Photon Transport) - reliable UDP with acknowledgments
+- **Fallback:** TCP direct connection to peer's PHOTON_PORT
+
+**Organic Slot-Filling (2-party example):**
 
 ```
 Alice                              Bob
-  | generate ephemeral              | generate ephemeral
-  |--- ClutchOffer (alice_pub) --->|
-  |<-- ClutchOffer (bob_pub) ------|  (simultaneous)
+  | compute ceremony_id             | compute ceremony_id
+  | generate ephemeral keys         |
+  |--- ClutchFullOffer ----------->|  (fills Alice's slot)
+  |                                 | generate ephemeral keys
+  |<-- ClutchFullOffer ------------|  (fills Bob's slot)
+  |                                 |  (Bob sees Alice's offer, encapsulates)
+  |<-- ClutchKemResponse ----------|  (Bob's response to Alice)
+  | (Alice sees Bob's offer)        |
+  |--- ClutchKemResponse --------->|  (Alice's response to Bob)
   |                                 |
-  | Both compute same seed:
-  | Seed = BLAKE3(sorted_handles || sorted_pubkeys || device_secrets || ECDH_shared)
-  |                                 |
-  |--- ClutchComplete (proof) ---->|  (lower handle_proof sends)
+  | All slots filled → derive shared_seed
 ```
 
-**Message 0 & 1: ClutchOffer** (Both parties, parallel)
+**N-party example (5 people):**
+```
+ceremony_id = hash(sorted [A, B, C, D, E])
+Slots: [_, _, _, _, _]  (5 empty slots)
+
+C comes online first:  [_, _, C, _, _]
+A and E join:          [A, _, C, _, E]
+D joins:               [A, _, C, D, E]
+B finally joins:       [A, B, C, D, E]  ← All offers received
+
+Now each party sends KemResponses to all others.
+Ceremony completes when each party has responses from all others.
+```
+
+**No ordering dependency.** Parties can join in any order, go offline and rejoin,
+or have asymmetric network conditions. The ceremony state is just a set of slots.
+
+**Message 0..N-1: ClutchFullOffer** (All parties, ~550KB each)
+
+VSF-formatted message with Ed25519 signature:
 
 ```rust
-struct ClutchOffer {
-    from_handle_proof: [u8; 32],
-    to_handle_proof: [u8; 32],
-    ephemeral_pubkeys: EphemeralBundle,
-    signature: [u8; 64],  // Ed25519(provenance_hash)
-}
+// VSF section: "clutch_full_offer"
+// Header provenance (hp): ceremony_id
+struct ClutchFullOffer {
+    // Sorted list of all handle_hashes in ceremony (1 to N parties)
+    handle_hashes: Vec<[u8; 32]>,  // v(b'h') - sorted lexicographically
 
-struct EphemeralBundle {
-    x25519: [u8; 32],           // 0
-    p384: [u8; 97],             // 1
-    secp256k1: [u8; 33],        // 2
-    ml_kem_1024: [u8; 1568],    // 3
-    ntru: [u8; 1230],           // 4
-    frodo: [u8; 15632],         // 5
-    hqc: [u8; 7245],            // 6
-    mceliece: [u8; 524160],     // 7
+    // Sender's public keys for all 8 primitives
+    x25519: [u8; 32],         // kx - X25519 public key
+    p384: [u8; 97],           // kp - P-384 public key
+    secp256k1: [u8; 33],      // kk - secp256k1 public key
+    p256: [u8; 65],           // kp - P-256 public key (for iOS interop)
+    frodo: [u8; 15632],       // kf - FrodoKEM-976 public key
+    ntru: [u8; 1230],         // kn - NTRU-HPS-4096-821 public key
+    mceliece: [u8; 524160],   // kl - McEliece-460896 public key
+    hqc: [u8; 7245],          // kh - HQC-256 public key
 }
-// Total: ~550KB per offer
+// Total: ~550KB (McEliece dominates)
+// handle_hashes overhead: 32 bytes per party (negligible vs McEliece)
 ```
 
-Both parties send ClutchOffer as soon as they come online. No initiator/responder
-distinction for the key exchange itself - both generate and send immediately.
+**Contact matching:** Receiver checks if ALL handle_hashes are in their contact list.
+A ceremony only proceeds if every party knows every other party's handle.
 
-**Message 2: ClutchComplete** (Lower handle_proof party)
+**Message N..2N-1: ClutchKemResponse** (All parties, ~31KB each)
+
+After receiving all other parties' offers, encapsulate to each party's public keys:
 
 ```rust
-struct ClutchComplete {
-    from_handle_proof: [u8; 32],
-    to_handle_proof: [u8; 32],
-    proof: [u8; 32],  // BLAKE3(shared_seed || "CLUTCH_v1_complete")
+// VSF section: "clutch_kem_response"
+// Header provenance (hp): ceremony_id (must match offers)
+struct ClutchKemResponse {
+    handle_hashes: Vec<[u8; 32]>,  // v(b'h') - same sorted list
+
+    // KEM ciphertexts for each recipient (indexed by sorted handle_hash position)
+    // Each recipient gets their own set of 4 ciphertexts
+    kem_responses: Vec<KemCiphertexts>,  // v(b'k') - one per other party
 }
+
+struct KemCiphertexts {
+    recipient_hash: [u8; 32],     // hb - which party this is for
+    frodo_ct: Vec<u8>,            // v(b'f') - FrodoKEM ciphertext
+    ntru_ct: Vec<u8>,             // v(b'n') - NTRU ciphertext
+    mceliece_ct: Vec<u8>,         // v(b'l') - McEliece ciphertext
+    hqc_ct: Vec<u8>,              // v(b'h') - HQC ciphertext
+}
+// Total: ~31KB per recipient
 ```
 
-The party with the lower handle_proof sends ClutchComplete to confirm the ceremony.
-The other party verifies the proof matches their derived seed.
-
-### 4.2.1 Legacy v1 Protocol (Backwards Compatibility)
-
-The sequential v1 protocol is still supported for interoperability:
-
-```
-Alice (initiator)                  Bob (responder)
-     |                                  |
-     |--- ClutchInit (alice_pub) --->   |
-     |                                  | generate bob_pub
-     |<-- ClutchResponse (bob_pub) -----|
-     |--- ClutchComplete (proof) --->   |
-```
-
-Clients receiving ClutchInit respond with ClutchResponse and use v1 seed derivation.
-New clients prefer ClutchOffer for parallel exchange.
+Each party decapsulates the KEM responses addressed to them, yielding shared secrets
+with every other party. Final seed combines ALL pairwise shared secrets.
 
 ### 4.3 Shared Seed Derivation
 
-Both parties compute identical 256-byte seed (2048 bits of entropy).
+All parties compute identical 256-byte seed (2048 bits of entropy).
 
-**Parallel v2 derivation** (both pubkeys contribute entropy):
+**N-party seed derivation:**
 
 ```rust
-fn derive_clutch_seed_parallel(
-    our_handle_hash: &[u8; 32],    // BLAKE3(handle) - PRIVATE
-    their_handle_hash: &[u8; 32],
-    our_ephemeral_pub: &[u8; 32],
-    their_ephemeral_pub: &[u8; 32],
-    shared_secrets: &SharedSecrets,  // All 8 ECDH/KEM results
+/// Pairwise shared secrets with one other party (8 KEM/ECDH results)
+struct PairwiseSecrets {
+    peer_hash: [u8; 32],          // Who these secrets are with
+    x25519: [u8; 32],
+    p384: [u8; 48],
+    secp256k1: [u8; 32],
+    ml_kem: [u8; 32],
+    ntru: [u8; 32],
+    frodo: [u8; 24],
+    hqc: [u8; 64],
+    mceliece: [u8; 32],
+}
+
+fn derive_clutch_seed(
+    handle_hashes: &[[u8; 32]],           // All parties, sorted
+    ephemeral_pubkeys: &[[u8; 32]],       // All X25519 pubkeys, sorted by handle_hash
+    pairwise_secrets: &[PairwiseSecrets], // Our secrets with each other party
 ) -> [u8; 256] {
-    // Sort handles canonically (lower first)
-    let (first_handle, second_handle) = sort_pair(our_handle_hash, their_handle_hash);
-
-    // Sort ephemeral pubkeys canonically (both contribute entropy!)
-    let (first_pub, second_pub) = sort_pair(our_ephemeral_pub, their_ephemeral_pub);
-
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"CLUTCH_v2_parallel");
-    hasher.update(first_handle);              // Out-of-band secret
-    hasher.update(second_handle);
-    hasher.update(first_pub);                 // Both parties' randomness
-    hasher.update(second_pub);
-    hasher.update(&shared_secrets.x25519);    // 32 B
-    hasher.update(&shared_secrets.p384);      // 48 B
-    hasher.update(&shared_secrets.secp256k1); // 32 B
-    hasher.update(&shared_secrets.ml_kem);    // 32 B
-    hasher.update(&shared_secrets.ntru);      // 32 B
-    hasher.update(&shared_secrets.frodo);     // 24 B
-    hasher.update(&shared_secrets.hqc);       // 64 B
-    hasher.update(&shared_secrets.mceliece);  // 32 B
+    hasher.update(b"CLUTCH_v3_nparty");
+
+    // All handle_hashes (already sorted)
+    for hash in handle_hashes {
+        hasher.update(hash);
+    }
+
+    // All ephemeral pubkeys (sorted same order as handle_hashes)
+    for pubkey in ephemeral_pubkeys {
+        hasher.update(pubkey);
+    }
+
+    // All pairwise shared secrets (sorted by peer_hash for determinism)
+    let mut sorted_secrets = pairwise_secrets.to_vec();
+    sorted_secrets.sort_by_key(|s| s.peer_hash);
+
+    for secrets in &sorted_secrets {
+        hasher.update(&secrets.peer_hash);
+        hasher.update(&secrets.x25519);
+        hasher.update(&secrets.p384);
+        hasher.update(&secrets.secp256k1);
+        hasher.update(&secrets.ml_kem);
+        hasher.update(&secrets.ntru);
+        hasher.update(&secrets.frodo);
+        hasher.update(&secrets.hqc);
+        hasher.update(&secrets.mceliece);
+    }
 
     // BLAKE3 XOF: extend output to 256 bytes
     let mut output = [0u8; 256];
     hasher.finalize_xof().fill(&mut output);
     output
 }
+```
 
-fn sort_pair<'a>(a: &'a [u8; 32], b: &'a [u8; 32]) -> (&'a [u8; 32], &'a [u8; 32]) {
-    if a < b { (a, b) } else { (b, a) }
-}
+**Example (3-party: Alice, Bob, Carol):**
+```
+handle_hashes: [A, B, C]  (sorted)
+ephemeral_pubkeys: [pk_A, pk_B, pk_C]  (same order)
+
+Alice computes secrets with: Bob (8 values), Carol (8 values)
+Bob computes secrets with: Alice (8 values), Carol (8 values)
+Carol computes secrets with: Alice (8 values), Bob (8 values)
+
+All three hash the same:
+  - 3 handle_hashes
+  - 3 ephemeral pubkeys
+  - 2 sets of 8 pairwise secrets each (sorted by peer)
+
+Result: Identical 256-byte seed for all parties
 ```
 
 **Security note:** Uses private `handle_hash = BLAKE3(handle)`, NOT the public `handle_proof`.
 The handle_proof is publicly announced to FGTW; handle_hash is only known to parties who
 know the plaintext handle (the out-of-band shared secret).
 
-**Performance:** ~100-500ms total (acceptable for one-time ceremony)
+**Performance:** ~100-5,000ms total (acceptable for one-time ceremony)
 
 ---
 
-## 5. Rolling Chain Initialization
+## 5. Post-Ceremony: CHAIN Protocol
 
-### 5.0 Initial Chain State
+After CLUTCH ceremony completes successfully, each party has identical 256-byte seeds. All subsequent communication uses the CHAIN protocol (see **CHAIN.md** for full specification).
 
-Upon CLUTCH completion:
-
-```rust
-fn init_chain_state(clutch_seed: &[u8; 32]) -> ChainState {
-    let state_0 = blake3::hash(&[
-        clutch_seed,
-        b"PHOTON_v0_chain_init"
-    ].concat());
-    
-    ChainState {
-        current: *state_0.as_bytes(),
-        sequence: 0,
-        prng: None,  // Initialized on first message
-    }
-}
-```
-
-### 5.1 Dual PRNG Initialization
-
-Triggered by **first message** in either direction:
-
-```rust
-struct DualPRNG {
-    chacha_rng: ChaCha20Rng,  // CSPRNG
-    pcg_rng: Pcg64,           // Fast, different structure
-}
-
-fn init_dual_prng(
-    clutch_seed: &[u8; 32], 
-    first_message_hash: &[u8; 32]
-) -> DualPRNG {
-    // Separate seeds for each PRNG
-    let chacha_seed = blake3::hash(&[
-        clutch_seed,
-        first_message_hash,
-        b"chacha_rng_seed"
-    ].concat());
-    
-    let pcg_seed = blake3::hash(&[
-        clutch_seed,
-        first_message_hash,
-        b"pcg_rng_seed"
-    ].concat());
-    
-    DualPRNG {
-        chacha_rng: ChaCha20Rng::from_seed(*chacha_seed.as_bytes()),
-        pcg_rng: Pcg64::from_seed(
-            u64::from_le_bytes(pcg_seed.as_bytes()[0..8].try_into().unwrap())
-        ),
-    }
-}
-```
-
-Both parties compute identical PRNG states deterministically.
+**Summary:**
+- Rolling chain state advances with every message (forward secrecy)
+- Memory-hard L1 scratch generation (32KB, 1-10ms precomputed)
+- Diverse PRNG salt (ChaCha20Rng + Pcg64)
+- ChaCha20-Poly1305 AEAD encryption
+- 0ms perceived latency (scratch precomputed in background)
+- Media uses 1-second batched chain advancement
 
 ---
 
-## 6. Message Encryption (Text)
+## 6. Network Architecture
 
-### 6.0 L1 Memory-Hard Scratch Generation
-
-Background precomputation for chain advancement:
-
-```rust
-const L1_SIZE: usize = 32_768;  // 32KB - fits in L1 cache
-const ROUNDS: usize = 3;        // ~1-10ms total
-
-fn generate_l1_scratch(
-    chain_state: &[u8; 32], 
-    size: usize, 
-    rounds: usize
-) -> Vec<u8> {
-    let mut scratch = vec![0u8; size];
-    scratch[..32].copy_from_slice(chain_state);
-    
-    for round in 0..rounds {
-        for i in (32..size).step_by(32) {
-            // Data-dependent read (cache-hostile)
-            let prev_hash = blake3::hash(&scratch[i-32..i]);
-            let read_pos = (
-                u32::from_le_bytes(
-                    prev_hash.as_bytes()[0..4].try_into().unwrap()
-                ) as usize % i
-            );
-            
-            // Hash from random earlier position
-            let chunk_hash = blake3::hash(&scratch[read_pos..read_pos+32]);
-            
-            // Mix with round and position
-            let mixed = blake3::hash(&[
-                chunk_hash.as_bytes(),
-                &(round as u64).to_le_bytes(),
-                &(i as u64).to_le_bytes()
-            ].concat());
-            
-            scratch[i..i+32].copy_from_slice(mixed.as_bytes());
-        }
-    }
-    
-    scratch
-}
-```
-
-### 6.1 Send Flow
-
-```rust
-fn send_message(plaintext: &[u8], state: &mut ChainState) -> Vec<u8> {
-    // 0. Generate memory-hard scratch (precomputed in background)
-    let scratch = generate_l1_scratch(&state.current, L1_SIZE, ROUNDS);
-    
-    // 1. Derive message key from scratch
-    let message_key = blake3::hash(&[
-        &scratch,
-        &state.sequence.to_le_bytes(),
-        b"message key"
-    ].concat());
-    
-    // 2. Generate dual PRNG salt (64 bytes total)
-    let salt = if let Some(ref mut prng) = state.prng {
-        generate_dual_salt(prng)
-    } else {
-        // First message: initialize PRNGs
-        let msg_hash = blake3::hash(plaintext);
-        state.prng = Some(init_dual_prng(&state.clutch_seed, msg_hash.as_bytes()));
-        generate_dual_salt(state.prng.as_mut().unwrap())
-    };
-    
-    // 3. Derive encryption key with salt
-    let encryption_key = blake3::hash(&[
-        message_key.as_bytes(),
-        &salt,
-        b"encryption"
-    ].concat());
-    
-    // 4. Encrypt with ChaCha20-Poly1305
-    let cipher = ChaCha20Poly1305::new(Key::from_slice(&encryption_key[..32]));
-    let nonce = Nonce::from_slice(&state.sequence.to_le_bytes()[..12]);
-    let ciphertext = cipher.encrypt(nonce, plaintext).expect("encryption");
-    
-    // 5. Advance chain state
-    let message_hash = blake3::hash(plaintext);
-    state.current = blake3::hash(&[
-        &state.current,
-        message_hash.as_bytes(),
-        blake3::hash(&scratch).as_bytes()
-    ].concat());
-    state.sequence += 1;
-    
-    // 6. Encode for wire (VSF format)
-    EncryptedMessage {
-        sequence: state.sequence - 1,
-        salt,
-        ciphertext,
-    }.to_vsf()
-}
-
-fn generate_dual_salt(prng: &mut DualPRNG) -> [u8; 64] {
-    let mut salt = [0u8; 64];
-    prng.chacha_rng.fill_bytes(&mut salt[..32]);  // Bytes 0-31
-    prng.pcg_rng.fill_bytes(&mut salt[32..]);     // Bytes 32-63
-    salt
-}
-```
-
-### 6.2 Receive Flow
-
-```rust
-fn receive_message(
-    encrypted: &EncryptedMessage, 
-    state: &mut ChainState
-) -> Result<Vec<u8>, Error> {
-    // 0. Verify sequence
-    if encrypted.sequence != state.sequence {
-        return Err(Error::SequenceMismatch);
-    }
-    
-    // 1. Generate same scratch (deterministic from chain state)
-    let scratch = generate_l1_scratch(&state.current, L1_SIZE, ROUNDS);
-    
-    // 2. Derive message key
-    let message_key = blake3::hash(&[
-        &scratch,
-        &state.sequence.to_le_bytes(),
-        b"message_key"
-    ].concat());
-    
-    // 3. Derive encryption key with received salt
-    let encryption_key = blake3::hash(&[
-        message_key.as_bytes(),
-        &encrypted.salt,
-        b"encryption"
-    ].concat());
-    
-    // 4. Decrypt
-    let cipher = ChaCha20Poly1305::new(Key::from_slice(&encryption_key[..32]));
-    let nonce = Nonce::from_slice(&state.sequence.to_le_bytes()[..12]);
-    let plaintext = cipher.decrypt(nonce, &encrypted.ciphertext)
-        .map_err(|_| Error::DecryptionFailed)?;
-    
-    // 5. Advance chain (identical to sender)
-    let message_hash = blake3::hash(&plaintext);
-    state.current = blake3::hash(&[
-        &state.current,
-        message_hash.as_bytes(),
-        blake3::hash(&scratch).as_bytes()
-    ].concat());
-    state.sequence += 1;
-    
-    // 6. Advance PRNG to maintain sync
-    if let Some(ref mut prng) = state.prng {
-        let _ = generate_dual_salt(prng);
-    } else {
-        // First message received: initialize PRNGs
-        state.prng = Some(init_dual_prng(&state.clutch_seed, message_hash.as_bytes()));
-    }
-    
-    Ok(plaintext)
-}
-```
-
-**Latency:** 0ms perceived (scratch precomputed, XOR instant)
-
----
-
-## 7. Video Encryption
-
-### 7.0 Codec Selection
-
-**Recommended: H.264 with x264, zerolatency preset**
-
-```rust
-// x264 configuration for real-time P2P
-x264_param_default_preset(&mut params, "ultrafast", "zerolatency");
-
-// Key settings:
-params.b_repeat_headers = 1;     // SPS/PPS in every keyframe
-params.b_vfr_input = 0;           // Constant frame rate
-params.rc.i_rc_method = X264_RC_ABR;  // Average bitrate
-params.rc.i_bitrate = 3000;       // 3 Mbps for 1080p
-params.i_keyint_max = 60;         // Keyframe every 2 seconds
-params.i_bframe = 0;              // No B-frames (low latency)
-params.i_slice_count = 4;         // Enable partial frame sending
-```
-
-**Rationale:**
-- 10-30ms encode latency with zerolatency tune
-- Hardware support everywhere (phones, laptops, embedded)
-- Mature tooling (x264 extremely well-optimized)
-- Better packet loss recovery than VP8/VP9
-- Patent concerns mostly resolved (expired in many regions)
-
-**Quality expectations:**
-- Good conditions (WiFi): 720p-1080p @ 30fps
-- Typical cellular: 480p @ 24-30fps  
-- Bad conditions: 360p @ 15-24fps or audio-only
-
-### 7.1 Video Chain Advancement
-
-Video uses batched advancement (1 second intervals):
-
-```rust
-fn video_chain_advancement(
-    frames: &[VideoFrame],  // ~30-60 frames
-    state: &mut ChainState
-) {
-    // 0. Hash all frames in this batch
-    let frame_hashes: Vec<[u8; 32]> = frames
-        .iter()
-        .map(|f| *blake3::hash(&f.data).as_bytes())
-        .collect();
-    
-    // 1. Combine frame hashes
-    let batch_hash = blake3::hash(&frame_hashes.concat());
-    
-    // 2. Generate scratch (has 1 second to compute)
-    let scratch = generate_l1_scratch(&state.current, L1_SIZE, ROUNDS);
-    
-    // 3. Advance chain once per second
-    state.current = blake3::hash(&[
-        &state.current,
-        batch_hash.as_bytes(),
-        blake3::hash(&scratch).as_bytes()
-    ].concat());
-    state.sequence += 1;
-}
-```
-
-**Performance:** ~1% overhead (10ms advancement per 1 second of video)
-
-### 7.2 Video Frame Encryption
-
-```rust
-fn encrypt_video_frame(
-    frame: &VideoFrame,
-    pad: &[u8]  // Precomputed from chain state
-) -> Vec<u8> {
-    // XOR encryption (instant, wire-speed)
-    frame.data
-        .iter()
-        .zip(pad.iter())
-        .map(|(a, b)| a ^ b)
-        .collect()
-}
-```
-
-**Latency:** Microseconds (ChaCha20 runs at 4-8 GB/s, video is 3-5 Mbps)
-
----
-
-## 8. Network Architecture
-
-### 8.0 Pure P2P Default
+### 6.0 Pure P2P Default
 
 All communication is direct peer-to-peer UDP:
 - No central servers
 - No relay infrastructure
 - No metadata collection
 - IP changes drop connection (explicit reconnect required)
+- Seeds to find initial peers are hardcoded into client
 
-### 8.1 Optional FGTW Call Forwarding
+### 6.1 Optional FGTW Call Forwarding
 
 **User consent required. Off by default.**
 
 ```
 Settings:
   ☐ Allow call forwarding
-    Use FGTW signaling for seamless IP changes during calls.
+    Use FGTW signaling for invisible IP changes during calls.
     Prevents dropped calls when switching networks.
-    
+
     Metadata shared with FGTW:
     - Your IP address when it changes
-    - Timestamp of IP changes
-    - Handle proofs of both parties in call
-    
+    - Eagle Timestamp of IP changes
+    - Device pubkeys of all parties in call
+
     FGTW cannot:
     - Read message content (rolling chain encrypted)
-    - Impersonate you (requires handle signatures)
-    - Access your handle secret
+    - Impersonate you (requires device signatures)
+    - Link device pubkey to your handle
 ```
 
-### 8.2 FGTW Signaling Protocol
+### 6.2 FGTW Signaling Protocol
 
 When enabled:
 
@@ -666,25 +562,31 @@ fn handle_ip_change(
     call_state: &CallState,
     fgtw_endpoint: &str
 ) {
-    // 0. Sign IP update with our handle
+    // 0. Sign IP update with our device key (from HAC-KDF)
     let update = IpUpdate {
-        handle_proof: our_handle_proof(),
-        peer_handle_proof: call_state.peer_handle_proof,
+        ceremony_id: call_state.ceremony_id,     // Registry lookup key
+        device_pubkey: our_device_pubkey(),      // Ed25519 from HAC-KDF
         new_ip,
         timestamp: now(),
-        signature: sign_with_handle(&update_bytes),
+        signature: sign_with_device_key(&update_bytes),
     };
-    
+
     // 1. Send to FGTW (Cloudflare Worker, Rust)
     send_to_fgtw(fgtw_endpoint, &update);
-    
-    // 2. FGTW forwards to peer's current IP
-    // 3. Peer updates UDP destination
+
+    // 2. FGTW broadcasts to all peers in registry
+    // 3. Peers update UDP destination
     // 4. Call continues
-    
+
     // Total interruption: <16ms (sub-frame)
 }
 ```
+
+**Why device identity, not handle:**
+- A user may have multiple devices in the same conversation
+- Each device has a unique IP address
+- FGTW broadcasts to all devices in the call registry
+- Device pubkey from HAC-KDF is already unique per-device
 
 **FGTW Worker (edge.fgtw.org):**
 
@@ -693,39 +595,43 @@ fn handle_ip_change(
 async fn handle_ip_update(req: Request, env: Env) -> Result<Response> {
     // 0. Parse and verify signature
     let update: IpUpdate = req.json().await?;
-    verify_handle_signature(&update)?;
-    
-    // 1. Look up peer's current IP (KV store)
-    let peer_ip = env.kv("IP_MAPPINGS")
-        .get(&update.peer_handle_proof)
+    verify_device_signature(&update)?;
+
+    // 1. Get all devices in this call registry
+    let registry_key = &update.ceremony_id;
+    let devices: Vec<DeviceEntry> = env.kv("CALL_REGISTRY")
+        .get(registry_key)
         .await?;
-    
-    // 2. Forward notification to peer
+
+    // 2. Broadcast IP change to all other devices
     let notification = IpChangeNotification {
-        peer_handle_proof: update.handle_proof,
+        device_pubkey: update.device_pubkey,
         new_ip: update.new_ip,
     };
-    send_udp_to(peer_ip, &notification)?;
-    
-    // 3. Update our mapping
-    env.kv("IP_MAPPINGS")
-        .put(&update.handle_proof, &update.new_ip)
-        .await?;
-    
-    Ok(Response::ok("forwarded"))
+    for device in devices {
+        if device.device_pubkey != update.device_pubkey {
+            send_udp_to(device.ip, &notification)?;
+        }
+    }
+
+    // 3. Update our entry in registry
+    update_registry_entry(registry_key, &update.device_pubkey, &update.new_ip).await?;
+
+    Ok(Response::ok("broadcasted"))
     // < 5ms total latency
 }
 ```
 
 **Security properties:**
-- FGTW learns: Two handles are in call, IPs, timing
-- FGTW cannot: Read content, impersonate users, access handles
+- FGTW learns: Which devices are in call, their IPs, timing
+- FGTW cannot: Read content, impersonate devices, link device to user
+- Device pubkeys are ephemeral per-CLUTCH (not persistent identity)
 - User explicitly consents to metadata tradeoff
 - Fallback: If FGTW unavailable, call drops (same as default behavior)
 
 ---
 
-## 9. Wire Format (VSF)
+## 7. Wire Format (VSF)
 
 All messages encoded with VSF (Versatile Storage Format):
 
@@ -742,9 +648,9 @@ EncryptedMessage (VSF):
 
 ---
 
-## 10. Security Analysis
+## 8. Security Analysis
 
-### 10.0 Break-in Requirements
+### 8.0 Break-in Requirements
 
 An attacker must compromise **ALL** of:
 
@@ -782,11 +688,11 @@ An attacker must compromise **ALL** of:
 
 **Total: Minimum 3 independent compromises required** (CLUTCH + chain + network position)
 
-### 10.1 Primitives Summary
+### 8.1 Primitives Summary
 
 **Foundation (one-time ceremony):**
 - 8 key exchange primitives (CLUTCH bundle)
-- 2 handle proofs (pre-shared secret, memory-hard)
+- Plaintext handles as pre-shared secret (user types "Joe Walker", we hash it)
 
 **Ongoing (per-message):**
 - BLAKE3 (hash/KDF)
@@ -795,12 +701,12 @@ An attacker must compromise **ALL** of:
 - ChaCha20Rng (PRNG salt source 0)
 - Pcg64 (PRNG salt source 1)
 
-**Total: 13 independent cryptographic elements**
+**Total: 14 cryptographic elements** (8 CLUTCH + 1 handle PSK + 5 CHAIN)
 
-### 10.2 Known Limitations
+### 8.2 Known Limitations
 
 **Not defended against:**
-- Physical device compromise (mitigated by Ferros 0ms kill-switch)
+- Physical device compromise
 - Side-channel attacks on implementation
 - Social engineering for handles
 - Targeted malware with keylogger
@@ -812,13 +718,13 @@ An attacker must compromise **ALL** of:
 
 ---
 
-## 11. Performance Targets
+## 9. Performance Targets
 
 | Operation | Target | Actual |
 |-----------|--------|--------|
-| CLUTCH ceremony | <500ms | 100-500ms |
+| CLUTCH ceremony | <500ms | 100-5,000ms |
 | Handle proof generation | ~1s | ~1s (17 rounds, 24MB) |
-| L1 scratch generation | <10ms | 1-10ms (3 rounds, 32KB) |
+| L1 scratch generation | <10ms | 1-100ms (3 rounds, 32KB) |
 | Message encryption | =0ms | =0ms (XOR with precomputed pad) |
 | Message send latency | 0ms perceived | 0ms (precomputed ready) |
 | Video frame encryption | <100μs | ~50μs (ChaCha20 at GB/s) |
@@ -827,38 +733,38 @@ An attacker must compromise **ALL** of:
 
 ---
 
-## 12. Implementation Status
+## 10. Implementation Status
 
 **Working:**
-- ✅ CLUTCH ceremony (X25519-only MVP)
+- ✅ Full 8-primitive CLUTCH ceremony (all algorithms)
+- ✅ ClutchFullOffer VSF messages (~550KB with all pubkeys)
+- ✅ ClutchKemResponse VSF messages (~31KB with ciphertexts)
+- ✅ Contact matching by handle_hash (PRIVATE identity)
+- ✅ PT (Photon Transport) for reliable large transfers
+- ✅ TCP fallback for CLUTCH messages
 - ✅ Rolling chain encryption (text messages)
 - ✅ L1 memory-hard scratch
-- ✅ Dual PRNG salt generation
 - ✅ P2P UDP communication
 - ✅ One-frame UI load
-- ✅ Zero-latency send (precomputed pads)
-- ✅ Video streaming with H.264
+
+**Needs Migration (wire format uses 2-party lower/higher, should use N-party handle_hashes vector):**
+- 🔄 Wire format: lower/higher fields → handle_hashes: Vec<[u8; 32]>
+- 🔄 StatusUpdate enums: from_handle_hash/to_handle_hash → handle_hashes vector
+- 🔄 ceremony_id derivation uses sorted handle_hashes internally, but wire format doesn't match
 
 **In Development:**
-- 🚧 Full multi-primitive CLUTCH (12 primitives across 4 classes)
-  - ✅ Egg collection structure (ClutchEggs with domain separation)
-  - ✅ Function stubs for all 12 primitives
-  - ✅ Test infrastructure (15 eggs: 6 context + 9 KEMs)
-  - ⏳ Real implementations (currently placeholder stubs)
-  - ⏳ Wire format extension for ~550KB ClutchOffer
-  - ⏳ Performance optimization (<500ms target)
-- 🚧 FGTW call forwarding (optional)
-- 🚧 VSF wire format (currently using interim format)
+- 🚧 Friendship-based ceremony chains (friendship.rs scaffolded)
+- 🚧 Contact persistence (contacts disappear on FGTW reset)
+- 🚧 FGTW call forwarding (optional, requires consent)
 
 **Future:**
-- ⏳ Avalanche shuffle (prepend hashes, generate 1MB cascade)
-- ⏳ Ferros OS integration
+- ⏳ ferros OS integration
 - ⏳ Hardware encoder optimization (mobile)
 - ⏳ Social key recovery for handles
 
 ---
 
-## 13. License
+## 11. License
 
 MIT OR Apache-2.0 (dual licensed)
 
@@ -867,7 +773,7 @@ MIT OR Apache-2.0 (dual licensed)
 ## Appendix A: Zero-Index Philosophy
 
 This specification uses zero-indexing throughout:
-- Sections: 0-13
+- Sections: 0-11
 - Phases: 0-N
 - Array indices: 0-N
 - Primitives in bundle: 0-7

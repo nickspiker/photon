@@ -1,9 +1,13 @@
 //! PT Adaptive Windowing and RTT Estimation
 //!
-//! Implements TCP-like congestion control:
-//! - Slow start: exponential growth until loss or ssthresh
-//! - Congestion avoidance: linear growth after ssthresh
-//! - RTT estimation: exponential moving average with variance tracking
+//! Implements blast-256 congestion control:
+//! - Initial blast: send up to INITIAL_BLAST packets immediately
+//! - Send ratio: send multiple packets per ACK (default 2.0)
+//! - Loss adaptation: adjust ratio based on observed loss rate
+//! - No artificial window cap - naturally fills available BDP
+//!
+//! This is NOT TCP - we intentionally overshoot to saturate the link,
+//! then clean up gaps in sweep cycles after all data is sent.
 
 use std::time::{Duration, Instant};
 
@@ -94,75 +98,127 @@ impl Default for RTTEstimator {
     }
 }
 
-/// Adaptive window controller
+/// Initial blast size - send this many packets immediately
+pub const INITIAL_BLAST: u32 = 256;
+
+/// Blast-256 window controller
 ///
-/// Implements TCP-like congestion control:
-/// - Slow start: double window on each ACK until ssthresh or loss
-/// - Congestion avoidance: add 1/window on each ACK (linear growth)
-/// - On loss: set ssthresh = window/2, window = 1, enter slow start
+/// Implements aggressive link saturation:
+/// - Initial blast: send INITIAL_BLAST packets immediately (no slow start)
+/// - Send ratio: for each ACK, send floor(send_ratio) new packets
+/// - Loss adaptation: rolling EMA updated per-ACK
+/// - No artificial max_window - BDP naturally limits in-flight
+///
+/// Philosophy: saturate first, clean up gaps later
 pub struct WindowController {
-    /// Current congestion window size (in packets)
-    window_size: u32,
-    /// Slow start threshold
-    ssthresh: u32,
-    /// Maximum window size
-    max_window: u32,
-    /// Number of ACKs received in current RTT (for congestion avoidance)
-    ack_count: u32,
+    /// Send ratio - packets to send per ACK received (always > 1.0)
+    send_ratio: f32,
+    /// Rolling loss rate EMA (0.0 to 1.0)
+    loss_rate: f32,
+    /// Whether we're still in initial blast phase
+    in_blast_phase: bool,
+    /// Packets remaining in initial blast
+    blast_remaining: u32,
+    /// Fractional packet accumulator (for non-integer ratios)
+    fractional_accum: f32,
 }
 
 impl WindowController {
     /// Create new window controller
     pub fn new() -> Self {
         Self {
-            window_size: 1,
-            ssthresh: 64,
-            max_window: 256,
-            ack_count: 0,
+            send_ratio: 2.0,      // Start aggressive: 2 packets per ACK
+            loss_rate: 0.0,
+            in_blast_phase: true,
+            blast_remaining: INITIAL_BLAST,
+            fractional_accum: 0.0,
         }
     }
 
-    /// Get current window size
+    /// Get current window size (for compatibility with FlightTracker)
+    /// In blast phase, return blast_remaining
+    /// After blast, this is effectively unlimited (we use send_ratio instead)
     pub fn window(&self) -> u32 {
-        self.window_size
+        if self.in_blast_phase {
+            self.blast_remaining.max(1)
+        } else {
+            // After blast, allow large in-flight count
+            // Real limit is send_ratio controlling new sends
+            65536
+        }
     }
 
-    /// Called on successful ACK
-    pub fn on_ack(&mut self) {
-        if self.window_size < self.ssthresh {
-            // Slow start: exponential growth
-            self.window_size = self.window_size.saturating_add(1);
-        } else {
-            // Congestion avoidance: linear growth (add 1 per RTT)
-            self.ack_count += 1;
-            if self.ack_count >= self.window_size {
-                self.window_size = self.window_size.saturating_add(1);
-                self.ack_count = 0;
-            }
+    /// Get number of packets to send for this ACK
+    /// Returns 0 if we shouldn't send (during sweep phase)
+    pub fn packets_per_ack(&mut self) -> u32 {
+        if self.in_blast_phase {
+            return 0; // Blast phase doesn't use per-ACK sending
         }
 
-        // Cap at max window
-        self.window_size = self.window_size.min(self.max_window);
+        // Add ratio to accumulator
+        self.fractional_accum += self.send_ratio;
+
+        // Extract integer part
+        let to_send = self.fractional_accum as u32;
+        self.fractional_accum -= to_send as f32;
+
+        to_send
+    }
+
+    /// Called on successful ACK - update rolling loss rate and adapt ratio
+    pub fn on_ack(&mut self) {
+        // EMA update: successful ACK = 0 loss for this sample
+        // α = 0.02 gives ~50 packet smoothing window
+        self.loss_rate = 0.98 * self.loss_rate;
+
+        // Adapt ratio based on current loss rate
+        if self.loss_rate > 0.10 {
+            // >10% loss - back off
+            self.send_ratio = (self.send_ratio * 0.995).max(1.1);
+        } else if self.loss_rate < 0.01 {
+            // <1% loss - push harder
+            self.send_ratio = (self.send_ratio * 1.001).min(4.0);
+        }
+        // 1-10% loss - hold steady
     }
 
     /// Called on packet loss (timeout or NAK)
     pub fn on_loss(&mut self) {
-        // Multiplicative decrease
-        self.ssthresh = (self.window_size / 2).max(2);
-        self.window_size = 1;
-        self.ack_count = 0;
+        // EMA update: loss = 1.0 for this sample
+        self.loss_rate = 0.98 * self.loss_rate + 0.02;
+
+        // Immediate backoff on loss
+        self.send_ratio = (self.send_ratio * 0.95).max(1.1);
     }
 
-    /// Called when receiver signals buffer pressure (buffer_pct > 75%)
-    pub fn on_buffer_pressure(&mut self) {
-        // Gentle slowdown - halve window but don't reset to 1
-        self.window_size = (self.window_size / 2).max(1);
-        self.ack_count = 0;
+    /// Consume one blast packet (call when sending during blast phase)
+    pub fn consume_blast(&mut self) {
+        if self.blast_remaining > 0 {
+            self.blast_remaining -= 1;
+            if self.blast_remaining == 0 {
+                self.in_blast_phase = false;
+            }
+        }
     }
 
-    /// Check if we're in slow start phase
+    /// Check if we're in initial blast phase
+    pub fn in_blast_phase(&self) -> bool {
+        self.in_blast_phase
+    }
+
+    /// Check if we're in slow start phase (compatibility - always false for blast)
     pub fn in_slow_start(&self) -> bool {
-        self.window_size < self.ssthresh
+        self.in_blast_phase
+    }
+
+    /// Get current send ratio (for stats/logging)
+    pub fn send_ratio(&self) -> f32 {
+        self.send_ratio
+    }
+
+    /// Get current loss rate (for stats/logging)
+    pub fn loss_rate(&self) -> f32 {
+        self.loss_rate
     }
 }
 
@@ -267,38 +323,57 @@ mod tests {
     }
 
     #[test]
-    fn test_window_slow_start() {
+    fn test_window_blast_phase() {
         let mut window = WindowController::new();
 
-        assert_eq!(window.window(), 1);
-        assert!(window.in_slow_start());
+        // Should start in blast phase with INITIAL_BLAST remaining
+        assert!(window.in_blast_phase());
+        assert_eq!(window.window(), INITIAL_BLAST);
 
-        // Slow start: should grow by 1 per ACK (exponential when all ACKs come)
-        window.on_ack();
-        assert_eq!(window.window(), 2);
+        // Consume some blast
+        for _ in 0..10 {
+            window.consume_blast();
+        }
+        assert!(window.in_blast_phase());
+        assert_eq!(window.window(), INITIAL_BLAST - 10);
 
-        window.on_ack();
-        assert_eq!(window.window(), 3);
+        // Consume all remaining
+        for _ in 0..(INITIAL_BLAST - 10) {
+            window.consume_blast();
+        }
+        assert!(!window.in_blast_phase());
     }
 
     #[test]
-    fn test_window_loss_recovery() {
+    fn test_window_send_ratio() {
         let mut window = WindowController::new();
 
-        // Grow window
-        for _ in 0..20 {
-            window.on_ack();
+        // Exit blast phase
+        for _ in 0..INITIAL_BLAST {
+            window.consume_blast();
         }
-        let before_loss = window.window();
-        assert!(before_loss > 10);
+        assert!(!window.in_blast_phase());
 
-        // Loss event
+        // Default ratio is 2.0, so should send 2 packets per ACK
+        let to_send = window.packets_per_ack();
+        assert_eq!(to_send, 2);
+    }
+
+    #[test]
+    fn test_window_loss_backoff() {
+        let mut window = WindowController::new();
+
+        // Exit blast phase
+        for _ in 0..INITIAL_BLAST {
+            window.consume_blast();
+        }
+
+        let initial_ratio = window.send_ratio();
+
+        // Loss should reduce ratio
         window.on_loss();
-        assert_eq!(window.window(), 1);
-        assert!(window.in_slow_start());
-
-        // ssthresh should be half of previous window
-        // We can verify by growing back - slow start should end at ssthresh
+        assert!(window.send_ratio() < initial_ratio);
+        assert!(window.send_ratio() >= 1.1); // Never below 1.1
     }
 
     #[test]

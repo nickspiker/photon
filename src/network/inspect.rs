@@ -11,15 +11,10 @@
 /// Section names come from the VSF data itself (shown in parsed output below title)
 #[cfg(feature = "development")]
 pub fn vsf_inspect(data: &[u8], transport: &str, direction: &str, addr: &str) -> String {
-    // PT DATA packets: 'd' + varint seq + payload - show compact one-liner
-    if data.len() > 1 && data[0] == b'd' {
-        if let Some((seq, seq_len)) = decode_vsf_varint(&data[1..]) {
-            let payload_len = data.len() - 1 - seq_len;
-            return format!(
-                "═══ PT DATA {} {} seq={} ({} bytes) ═══",
-                direction, addr, seq, payload_len
-            );
-        }
+    // PT DATA packets: stream_id ('a'-'z') + varint seq + payload - filter unless verbose-network
+    #[cfg(not(feature = "verbose-network"))]
+    if data.len() > 1 && (b'a'..=b'z').contains(&data[0]) {
+        return String::new();
     }
 
     // Filter noisy packet types unless verbose-network is enabled
@@ -78,21 +73,53 @@ fn decode_vsf_varint(bytes: &[u8]) -> Option<(usize, usize)> {
     None
 }
 
-/// Check if a VSF packet is a noisy type (ping/pong/lan_discovery) that should be filtered
+/// Noisy packet types that should be filtered from inspection logs
+/// These match VSF header label names (e.g., `(ping)`) and section names
+const NOISY_SECTION_NAMES: &[&str] = &[
+    "ping",
+    "pong",
+    "lan_discovery",
+    "pt_spec",
+    "pt_ack",
+    "pt_nak",
+    "pt_ctrl",
+    "pt_done",
+];
+
+/// Check if a VSF packet is a noisy type that should be filtered
+/// Filters: ping/pong, lan_discovery, PT control packets (ack/nak/ctrl/done/spec)
 #[cfg(feature = "development")]
 pub fn is_noisy_packet(data: &[u8]) -> bool {
-    // Quick check for VSF section header - look for section type in first bytes
-    // VSF sections start with '[' followed by type field
-    if data.is_empty() || data[0] != b'[' {
+    if data.is_empty() {
         return false;
     }
 
-    // Parse just enough to get section type
-    let mut ptr = 0;
-    if let Ok(section) = vsf::VsfSection::parse(data, &mut ptr) {
-        return section.name == "status_ping"
-            || section.name == "status_pong"
-            || section.name == "lan_discovery";
+    // PT DATA packets start with stream_id 'a'-'z' - already handled separately, but filter here too
+    if (b'a'..=b'z').contains(&data[0]) {
+        return true;
+    }
+
+    // Check for VSF file format with header (starts with "RÅ<" magic)
+    if data.len() > 10 && &data[0..3] == "RÅ".as_bytes() && data[3] == b'<' {
+        // Parse the VSF header to get field names
+        if let Ok((header, _)) = vsf::VsfHeader::decode(data) {
+            // Check if any header field name is noisy
+            for field in &header.fields {
+                if NOISY_SECTION_NAMES.contains(&field.name.as_str()) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    // Check for VSF section format - starts with '['
+    if data[0] == b'[' {
+        // Parse just enough to get section type
+        let mut ptr = 0;
+        if let Ok(section) = vsf::VsfSection::parse(data, &mut ptr) {
+            return NOISY_SECTION_NAMES.contains(&section.name.as_str());
+        }
     }
 
     false

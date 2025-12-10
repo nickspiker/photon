@@ -99,15 +99,6 @@ impl ReceiveBuffer {
         self.total_packets - self.received_count
     }
 
-    /// Get buffer utilization as percentage (0-100)
-    pub fn buffer_percent(&self) -> u8 {
-        if self.total_packets == 0 {
-            0
-        } else {
-            ((self.received_count as u64 * 100) / self.total_packets as u64) as u8
-        }
-    }
-
     /// Verify final hash matches expected
     pub fn verify(&self) -> bool {
         if !self.is_complete() {
@@ -138,6 +129,16 @@ impl ReceiveBuffer {
     /// Get progress as (received, total)
     pub fn progress(&self) -> (u32, u32) {
         (self.received_count, self.total_packets)
+    }
+
+    /// Get total expected size in bytes
+    pub fn total_size(&self) -> u32 {
+        self.total_size
+    }
+
+    /// Get total expected packets
+    pub fn total_packets(&self) -> u32 {
+        self.total_packets
     }
 }
 
@@ -307,7 +308,6 @@ mod tests {
         buf.insert(2, &data[2000..3000]);
 
         assert_eq!(buf.missing_sequences(), vec![1, 3]);
-        assert_eq!(buf.buffer_percent(), 60); // 3/5 = 60%
 
         buf.insert(1, &data[1000..2000]);
         buf.insert(3, &data[3000..4000]);

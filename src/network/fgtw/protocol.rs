@@ -67,57 +67,11 @@ pub enum FgtwMessage {
         provenance_hash: [u8; 32],      // Same hash from ping (proves we received it)
         signature: [u8; 64],            // Ed25519 signature of provenance_hash
     },
-    /// CLUTCH Offer - parallel key exchange (v2)
-    ///
-    /// Both parties send this simultaneously. Each party's ephemeral
-    /// pubkey contributes entropy to the final seed.
-    ///
-    /// Format: section "clutch_offer" with handle proofs and ephemeral key
-    /// - from_handle_proof: sender's handle proof
-    /// - to_handle_proof: recipient's handle proof
-    /// - ephemeral_x25519: sender's ephemeral public key for ECDH
-    /// - signature: Ed25519 over provenance hash
-    ClutchOffer {
-        timestamp: f64,
-        from_handle_proof: [u8; 32],
-        to_handle_proof: [u8; 32],
-        ephemeral_x25519: [u8; 32],
-        sender_pubkey: DevicePubkey,
-        signature: [u8; 64],
-    },
-    /// CLUTCH Init - initiator sends their ephemeral pubkey to start ceremony (v1 legacy)
-    ///
-    /// Format: header-only with clutch_init section name
-    /// - from_handle_proof: initiator's handle proof
-    /// - to_handle_proof: responder's handle proof
-    /// - ephemeral_x25519: ephemeral public key for ECDH
-    /// - signature: Ed25519 over (from || to || ephemeral)
-    ClutchInit {
-        timestamp: f64,
-        from_handle_proof: [u8; 32],
-        to_handle_proof: [u8; 32],
-        ephemeral_x25519: [u8; 32],
-        sender_pubkey: DevicePubkey, // For signature verification
-        signature: [u8; 64],
-    },
-    /// CLUTCH Response - responder sends their ephemeral pubkey back (v1 legacy)
-    ClutchResponse {
-        timestamp: f64,
-        from_handle_proof: [u8; 32],
-        to_handle_proof: [u8; 32],
-        ephemeral_x25519: [u8; 32],
-        sender_pubkey: DevicePubkey,
-        signature: [u8; 64],
-    },
-    /// CLUTCH Complete - initiator confirms they derived the same seed
-    ClutchComplete {
-        timestamp: f64,
-        from_handle_proof: [u8; 32],
-        to_handle_proof: [u8; 32],
-        proof: [u8; 32], // BLAKE3(shared_seed || "CLUTCH_v1_complete")
-        sender_pubkey: DevicePubkey,
-        signature: [u8; 64],
-    },
+    // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete REMOVED
+    // Full 8-primitive CLUTCH uses ClutchFullOffer and ClutchKemResponse
+    // which are handled via build_clutch_full_offer_vsf() and parse_clutch_full_offer_vsf()
+    // See CLUTCH.md Section 4.2 for the slot-based ceremony protocol.
+
     /// Encrypted chat message
     ///
     /// Format: section "msg" with encrypted payload
@@ -396,113 +350,9 @@ impl FgtwMessage {
                     .add_section("pong", vec![])
                     .build()
             }
-            FgtwMessage::ClutchOffer {
-                timestamp,
-                from_handle_proof,
-                to_handle_proof,
-                ephemeral_x25519,
-                sender_pubkey,
-                signature,
-            } => {
-                // CLUTCH offer: parallel exchange - both parties send this
-                let provenance =
-                    compute_clutch_provenance(from_handle_proof, to_handle_proof, ephemeral_x25519);
-                builder
-                    .creation_time_nanos(*timestamp)
-                    .provenance_hash(provenance)
-                    .signature_ed25519(*sender_pubkey.as_bytes(), *signature)
-                    .add_section(
-                        "clutch_offer",
-                        vec![
-                            ("from".to_string(), VsfType::hb(from_handle_proof.to_vec())),
-                            ("to".to_string(), VsfType::hb(to_handle_proof.to_vec())),
-                            (
-                                "ephemeral".to_string(),
-                                VsfType::kx(ephemeral_x25519.to_vec()),
-                            ),
-                        ],
-                    )
-                    .build()
-            }
-            FgtwMessage::ClutchInit {
-                timestamp,
-                from_handle_proof,
-                to_handle_proof,
-                ephemeral_x25519,
-                sender_pubkey,
-                signature,
-            } => {
-                // CLUTCH init (v1 legacy): use section body for handle proofs and ephemeral key
-                let provenance =
-                    compute_clutch_provenance(from_handle_proof, to_handle_proof, ephemeral_x25519);
-                builder
-                    .creation_time_nanos(*timestamp)
-                    .provenance_hash(provenance)
-                    .signature_ed25519(*sender_pubkey.as_bytes(), *signature)
-                    .add_section(
-                        "clutch_init",
-                        vec![
-                            ("from".to_string(), VsfType::hb(from_handle_proof.to_vec())),
-                            ("to".to_string(), VsfType::hb(to_handle_proof.to_vec())),
-                            (
-                                "ephemeral".to_string(),
-                                VsfType::kx(ephemeral_x25519.to_vec()),
-                            ),
-                        ],
-                    )
-                    .build()
-            }
-            FgtwMessage::ClutchResponse {
-                timestamp,
-                from_handle_proof,
-                to_handle_proof,
-                ephemeral_x25519,
-                sender_pubkey,
-                signature,
-            } => {
-                let provenance =
-                    compute_clutch_provenance(from_handle_proof, to_handle_proof, ephemeral_x25519);
-                builder
-                    .creation_time_nanos(*timestamp)
-                    .provenance_hash(provenance)
-                    .signature_ed25519(*sender_pubkey.as_bytes(), *signature)
-                    .add_section(
-                        "clutch_resp",
-                        vec![
-                            ("from".to_string(), VsfType::hb(from_handle_proof.to_vec())),
-                            ("to".to_string(), VsfType::hb(to_handle_proof.to_vec())),
-                            (
-                                "ephemeral".to_string(),
-                                VsfType::kx(ephemeral_x25519.to_vec()),
-                            ),
-                        ],
-                    )
-                    .build()
-            }
-            FgtwMessage::ClutchComplete {
-                timestamp,
-                from_handle_proof,
-                to_handle_proof,
-                proof,
-                sender_pubkey,
-                signature,
-            } => {
-                let provenance =
-                    compute_clutch_complete_provenance(from_handle_proof, to_handle_proof, proof);
-                builder
-                    .creation_time_nanos(*timestamp)
-                    .provenance_hash(provenance)
-                    .signature_ed25519(*sender_pubkey.as_bytes(), *signature)
-                    .add_section(
-                        "clutch_done",
-                        vec![
-                            ("from".to_string(), VsfType::hb(from_handle_proof.to_vec())),
-                            ("to".to_string(), VsfType::hb(to_handle_proof.to_vec())),
-                            ("proof".to_string(), VsfType::hb(proof.to_vec())),
-                        ],
-                    )
-                    .build()
-            }
+            // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete serialization REMOVED
+            // Full CLUTCH uses build_clutch_full_offer_vsf() and build_clutch_kem_response_vsf()
+
             FgtwMessage::ChatMessage {
                 timestamp,
                 from_handle_proof,
@@ -659,88 +509,9 @@ impl FgtwMessage {
             }
         }
 
-        // Handle CLUTCH messages (clutch_offer, clutch_init, clutch_resp, clutch_done)
-        if section_name == "clutch_offer"
-            || section_name == "clutch_init"
-            || section_name == "clutch_resp"
-            || section_name == "clutch_done"
-        {
-            let timestamp = extract_header_timestamp(&header)?;
-            let sender_pubkey = extract_header_pubkey(&header)?;
-            let signature = extract_header_signature(&header)?;
-
-            // Parse section fields
-            let mut fields: Vec<(String, VsfType)> = Vec::new();
-            while ptr < bytes.len() && bytes[ptr] != b']' {
-                if bytes[ptr] != b'(' {
-                    return Err("Expected field start '('".to_string());
-                }
-                ptr += 1;
-                let field_name = match parse(bytes, &mut ptr) {
-                    Ok(VsfType::d(name)) => name,
-                    _ => return Err("Invalid CLUTCH field name".to_string()),
-                };
-                if ptr < bytes.len() && bytes[ptr] == b':' {
-                    ptr += 1;
-                    let value =
-                        parse(bytes, &mut ptr).map_err(|e| format!("Parse CLUTCH field: {}", e))?;
-                    fields.push((field_name, value));
-                }
-                if ptr >= bytes.len() || bytes[ptr] != b')' {
-                    return Err("Expected field end ')'".to_string());
-                }
-                ptr += 1;
-            }
-
-            let from_handle_proof = extract_hash(&fields, "from")?;
-            let to_handle_proof = extract_hash(&fields, "to")?;
-
-            if section_name == "clutch_offer" {
-                // Parallel v2 offer
-                let ephemeral = extract_clutch_ephemeral(&fields)?;
-                return Ok(FgtwMessage::ClutchOffer {
-                    timestamp,
-                    from_handle_proof,
-                    to_handle_proof,
-                    ephemeral_x25519: ephemeral,
-                    sender_pubkey,
-                    signature,
-                });
-            } else if section_name == "clutch_init" {
-                // Legacy v1 init
-                let ephemeral = extract_clutch_ephemeral(&fields)?;
-                return Ok(FgtwMessage::ClutchInit {
-                    timestamp,
-                    from_handle_proof,
-                    to_handle_proof,
-                    ephemeral_x25519: ephemeral,
-                    sender_pubkey,
-                    signature,
-                });
-            } else if section_name == "clutch_resp" {
-                // Legacy v1 response
-                let ephemeral = extract_clutch_ephemeral(&fields)?;
-                return Ok(FgtwMessage::ClutchResponse {
-                    timestamp,
-                    from_handle_proof,
-                    to_handle_proof,
-                    ephemeral_x25519: ephemeral,
-                    sender_pubkey,
-                    signature,
-                });
-            } else {
-                // clutch_done
-                let proof = extract_hash(&fields, "proof")?;
-                return Ok(FgtwMessage::ClutchComplete {
-                    timestamp,
-                    from_handle_proof,
-                    to_handle_proof,
-                    proof,
-                    sender_pubkey,
-                    signature,
-                });
-            }
-        }
+        // NOTE: clutch_offer, clutch_init, clutch_resp, clutch_done deserialization REMOVED
+        // Full CLUTCH uses parse_clutch_full_offer_vsf() and parse_clutch_kem_response_vsf()
+        // which handle "clutch_full_offer" and "clutch_kem_response" sections
 
         // Handle msg (encrypted chat message) and ack (acknowledgment)
         if section_name == "msg" || section_name == "ack" {
@@ -922,7 +693,6 @@ impl PeerRecord {
     }
 }
 
-// Helper to get field from Vec (linear scan, faster than HashMap for small N)
 fn get_field<'a>(fields: &'a [(String, VsfType)], key: &str) -> Option<&'a VsfType> {
     fields.iter().find(|(k, _)| k == key).map(|(_, v)| v)
 }
@@ -941,6 +711,35 @@ fn extract_hash(fields: &[(String, VsfType)], key: &str) -> Result<[u8; 32], Str
     Ok(arr)
 }
 
+/// Extract N-party handle_hashes vector from v(b'h', ...) field.
+/// Each handle_hash is 32 bytes, concatenated in sorted order.
+fn extract_handle_hashes_vector(
+    fields: &[(String, VsfType)],
+    key: &str,
+) -> Result<Vec<[u8; 32]>, String> {
+    let bytes = match get_field(fields, key) {
+        Some(VsfType::v(tag, data)) if *tag == b'h' => data,
+        _ => return Err(format!("Missing or invalid handle_hashes: {}", key)),
+    };
+
+    if bytes.len() % 32 != 0 {
+        return Err(format!(
+            "handle_hashes length {} not divisible by 32",
+            bytes.len()
+        ));
+    }
+
+    let count = bytes.len() / 32;
+    let mut hashes = Vec::with_capacity(count);
+    for i in 0..count {
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&bytes[i * 32..(i + 1) * 32]);
+        hashes.push(arr);
+    }
+
+    Ok(hashes)
+}
+
 fn extract_pubkey(fields: &[(String, VsfType)], key: &str) -> Result<DevicePubkey, String> {
     // DevicePubkey is Ed25519 (ke), not X25519 (kx)
     let pubkey_bytes = match get_field(fields, key) {
@@ -955,18 +754,7 @@ fn extract_pubkey(fields: &[(String, VsfType)], key: &str) -> Result<DevicePubke
     Ok(DevicePubkey::from_bytes(pubkey_arr))
 }
 
-fn extract_clutch_ephemeral(fields: &[(String, VsfType)]) -> Result<[u8; 32], String> {
-    let ephemeral_bytes = match get_field(fields, "ephemeral") {
-        Some(VsfType::kx(bytes)) => bytes,
-        _ => return Err("Missing or invalid ephemeral key".to_string()),
-    };
-    let mut arr = [0u8; 32];
-    if ephemeral_bytes.len() != 32 {
-        return Err("Ephemeral key must be 32 bytes".to_string());
-    }
-    arr.copy_from_slice(ephemeral_bytes);
-    Ok(arr)
-}
+// NOTE: extract_clutch_ephemeral removed - was only used by legacy ClutchOffer/Init/Response
 
 fn extract_sequence(fields: &[(String, VsfType)], key: &str) -> Result<u64, String> {
     match get_field(fields, key) {
@@ -1088,33 +876,9 @@ fn extract_header_signature(header: &vsf::file_format::VsfHeader) -> Result<[u8;
 // Note: extract_header_avatar_id removed - avatar is now fetched by handle
 // Storage key = BLAKE3(BLAKE3(handle) || "avatar")
 
-/// Compute provenance hash for CLUTCH init/response messages
-/// provenance = BLAKE3(from_handle_proof || to_handle_proof || ephemeral_pubkey)
-fn compute_clutch_provenance(
-    from_handle_proof: &[u8; 32],
-    to_handle_proof: &[u8; 32],
-    ephemeral_pubkey: &[u8; 32],
-) -> [u8; 32] {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(from_handle_proof);
-    hasher.update(to_handle_proof);
-    hasher.update(ephemeral_pubkey);
-    *hasher.finalize().as_bytes()
-}
-
-/// Compute provenance hash for CLUTCH complete message
-/// provenance = BLAKE3(from_handle_proof || to_handle_proof || proof)
-fn compute_clutch_complete_provenance(
-    from_handle_proof: &[u8; 32],
-    to_handle_proof: &[u8; 32],
-    proof: &[u8; 32],
-) -> [u8; 32] {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(from_handle_proof);
-    hasher.update(to_handle_proof);
-    hasher.update(proof);
-    *hasher.finalize().as_bytes()
-}
+// NOTE: compute_clutch_provenance and compute_clutch_complete_provenance REMOVED
+// They were only used by the legacy ClutchOffer/ClutchInit/ClutchResponse/ClutchComplete
+// Full CLUTCH uses ceremony_id as provenance (deterministic from handle_hashes)
 
 /// Compute provenance hash for encrypted message
 /// provenance = BLAKE3(from_handle_proof || sequence)
@@ -1167,9 +931,11 @@ use crate::crypto::clutch::{ClutchFullOfferPayload, ClutchKemResponsePayload};
 /// Both parties compute the same value independently - no echo needed.
 ///
 /// Returns signed VSF bytes ready for transmission.
+///
+/// handle_hashes: N-party sorted vector of all participants' handle hashes.
+/// For 2-party, this is [lower_hash, higher_hash] sorted lexicographically.
 pub fn build_clutch_full_offer_vsf(
-    our_handle_proof: &[u8; 32],
-    their_handle_proof: &[u8; 32],
+    handle_hashes: &[[u8; 32]],
     ceremony_id: &[u8; 32],
     payload: &ClutchFullOfferPayload,
     device_pubkey: &[u8; 32],
@@ -1177,12 +943,12 @@ pub fn build_clutch_full_offer_vsf(
 ) -> Result<Vec<u8>, String> {
     use vsf::VsfBuilder;
 
-    // Canonical ordering for handle proofs (lower first)
-    let (lower_proof, higher_proof) = if our_handle_proof < their_handle_proof {
-        (our_handle_proof, their_handle_proof)
-    } else {
-        (their_handle_proof, our_handle_proof)
-    };
+    // Sort handle_hashes lexicographically for canonical ordering
+    let mut sorted_hashes = handle_hashes.to_vec();
+    sorted_hashes.sort();
+
+    // Flatten sorted hashes into a single byte vector for VSF v(b'h', ...) type
+    let hashes_bytes: Vec<u8> = sorted_hashes.iter().flat_map(|h| h.iter().copied()).collect();
 
     // Build unsigned VSF with signature placeholder
     let unsigned = VsfBuilder::new()
@@ -1192,8 +958,7 @@ pub fn build_clutch_full_offer_vsf(
         .add_section(
             "clutch_full_offer",
             vec![
-                ("lower".to_string(), VsfType::hb(lower_proof.to_vec())),
-                ("higher".to_string(), VsfType::hb(higher_proof.to_vec())),
+                ("handle_hashes".to_string(), VsfType::v(b'h', hashes_bytes)),
                 ("x25519".to_string(), VsfType::kx(payload.x25519_public.to_vec())),
                 ("p384".to_string(), VsfType::kp(payload.p384_public.clone())),
                 ("secp256k1".to_string(), VsfType::kk(payload.secp256k1_public.clone())),
@@ -1216,13 +981,14 @@ pub fn build_clutch_full_offer_vsf(
 /// Verifies:
 /// 1. VSF format and magic bytes
 /// 2. Ed25519 signature (header-level)
-/// 3. We are one of the handle_proofs (lower or higher)
+/// 3. We are one of the handle_hashes
 ///
-/// Returns (payload, sender_pubkey, ceremony_id, lower_proof, higher_proof)
+/// Returns (payload, sender_pubkey, ceremony_id, handle_hashes)
+/// handle_hashes is the sorted vector of all participants' handle hashes.
 pub fn parse_clutch_full_offer_vsf(
     vsf_bytes: &[u8],
-    our_handle_proof: &[u8; 32],
-) -> Result<(ClutchFullOfferPayload, [u8; 32], [u8; 32], [u8; 32], [u8; 32]), String> {
+    our_handle_hash: &[u8; 32],
+) -> Result<(ClutchFullOfferPayload, [u8; 32], [u8; 32], Vec<[u8; 32]>), String> {
     // Verify signature first
     if !vsf::verification::verify_file_signature(vsf_bytes)? {
         return Err("Invalid signature on ClutchFullOffer".to_string());
@@ -1278,12 +1044,11 @@ pub fn parse_clutch_full_offer_vsf(
         ptr += 1;
     }
 
-    // Extract handle proofs
-    let lower_proof = extract_hash(&fields, "lower")?;
-    let higher_proof = extract_hash(&fields, "higher")?;
+    // Extract handle_hashes as N-party sorted vector
+    let handle_hashes = extract_handle_hashes_vector(&fields, "handle_hashes")?;
 
     // Verify we are one of the parties
-    if our_handle_proof != &lower_proof && our_handle_proof != &higher_proof {
+    if !handle_hashes.contains(our_handle_hash) {
         return Err("ClutchFullOffer not addressed to us".to_string());
     }
 
@@ -1312,9 +1077,10 @@ pub fn parse_clutch_full_offer_vsf(
     {
         let id_hex: String = ceremony_id.iter().take(8).map(|b| format!("{:02x}", b)).collect();
         crate::log_info(&format!(
-            "CLUTCH: Received offer ({} bytes) ceremony_id={}...",
+            "CLUTCH: Received offer ({} bytes) ceremony_id={}... ({} parties)",
             vsf_bytes.len(),
-            id_hex
+            id_hex,
+            handle_hashes.len()
         ));
         crate::log_info(&format!(
             "CLUTCH: Offer pubkeys (X25519: {}B, P-384: {}B, secp256k1: {}B, P-256: {}B, Frodo: {}B, NTRU: {}B, McEliece: {}B, HQC: {}B)",
@@ -1329,7 +1095,7 @@ pub fn parse_clutch_full_offer_vsf(
         ));
     }
 
-    Ok((payload, sender_pubkey, ceremony_id, lower_proof, higher_proof))
+    Ok((payload, sender_pubkey, ceremony_id, handle_hashes))
 }
 
 /// Build a signed VSF ClutchKemResponse message (~31KB).
@@ -1338,12 +1104,13 @@ pub fn parse_clutch_full_offer_vsf(
 /// - v(b'f', ...): FrodoKEM ciphertext
 /// - v(b'n', ...): NTRU ciphertext
 /// - v(b'l', ...): Classic McEliece ciphertext
-/// - v(b'h', ...): HQC ciphertext
+/// - v(b'c', ...): HQC ciphertext (note: b'h' is used for handle_hashes)
 ///
 /// The ceremony_id is deterministic - both parties compute the same value.
+///
+/// handle_hashes: N-party sorted vector of all participants' handle hashes.
 pub fn build_clutch_kem_response_vsf(
-    our_handle_proof: &[u8; 32],
-    their_handle_proof: &[u8; 32],
+    handle_hashes: &[[u8; 32]],
     ceremony_id: &[u8; 32],
     payload: &ClutchKemResponsePayload,
     device_pubkey: &[u8; 32],
@@ -1351,12 +1118,12 @@ pub fn build_clutch_kem_response_vsf(
 ) -> Result<Vec<u8>, String> {
     use vsf::VsfBuilder;
 
-    // Canonical ordering for handle proofs (lower first)
-    let (lower_proof, higher_proof) = if our_handle_proof < their_handle_proof {
-        (our_handle_proof, their_handle_proof)
-    } else {
-        (their_handle_proof, our_handle_proof)
-    };
+    // Sort handle_hashes lexicographically for canonical ordering
+    let mut sorted_hashes = handle_hashes.to_vec();
+    sorted_hashes.sort();
+
+    // Flatten sorted hashes into a single byte vector for VSF v(b'h', ...) type
+    let hashes_bytes: Vec<u8> = sorted_hashes.iter().flat_map(|h| h.iter().copied()).collect();
 
     // Build unsigned VSF with signature placeholder
     let unsigned = VsfBuilder::new()
@@ -1366,12 +1133,11 @@ pub fn build_clutch_kem_response_vsf(
         .add_section(
             "clutch_kem_response",
             vec![
-                ("lower".to_string(), VsfType::hb(lower_proof.to_vec())),
-                ("higher".to_string(), VsfType::hb(higher_proof.to_vec())),
+                ("handle_hashes".to_string(), VsfType::v(b'h', hashes_bytes)),
                 ("frodo_ct".to_string(), VsfType::v(b'f', payload.frodo976_ciphertext.clone())),
                 ("ntru_ct".to_string(), VsfType::v(b'n', payload.ntru701_ciphertext.clone())),
                 ("mceliece_ct".to_string(), VsfType::v(b'l', payload.mceliece_ciphertext.clone())),
-                ("hqc_ct".to_string(), VsfType::v(b'h', payload.hqc256_ciphertext.clone())),
+                ("hqc_ct".to_string(), VsfType::v(b'c', payload.hqc256_ciphertext.clone())),
             ],
         )
         .build()
@@ -1386,13 +1152,14 @@ pub fn build_clutch_kem_response_vsf(
 /// Verifies:
 /// 1. VSF format and magic bytes
 /// 2. Ed25519 signature (header-level)
-/// 3. We are one of the handle_proofs
+/// 3. We are one of the handle_hashes
 ///
-/// Returns (payload, sender_pubkey, ceremony_id, lower_proof, higher_proof)
+/// Returns (payload, sender_pubkey, ceremony_id, handle_hashes)
+/// handle_hashes is the sorted vector of all participants' handle hashes.
 pub fn parse_clutch_kem_response_vsf(
     vsf_bytes: &[u8],
-    our_handle_proof: &[u8; 32],
-) -> Result<(ClutchKemResponsePayload, [u8; 32], [u8; 32], [u8; 32], [u8; 32]), String> {
+    our_handle_hash: &[u8; 32],
+) -> Result<(ClutchKemResponsePayload, [u8; 32], [u8; 32], Vec<[u8; 32]>), String> {
     // Verify signature first
     if !vsf::verification::verify_file_signature(vsf_bytes)? {
         return Err("Invalid signature on ClutchKemResponse".to_string());
@@ -1448,20 +1215,20 @@ pub fn parse_clutch_kem_response_vsf(
         ptr += 1;
     }
 
-    // Extract handle proofs
-    let lower_proof = extract_hash(&fields, "lower")?;
-    let higher_proof = extract_hash(&fields, "higher")?;
+    // Extract handle_hashes as N-party sorted vector
+    let handle_hashes = extract_handle_hashes_vector(&fields, "handle_hashes")?;
 
     // Verify we are one of the parties
-    if our_handle_proof != &lower_proof && our_handle_proof != &higher_proof {
+    if !handle_hashes.contains(our_handle_hash) {
         return Err("ClutchKemResponse not addressed to us".to_string());
     }
 
     // Extract ciphertexts using VSF v() wrapped type
+    // Note: HQC uses b'c' since b'h' is used for handle_hashes
     let frodo976_ciphertext = extract_v(&fields, "frodo_ct", b'f')?;
     let ntru701_ciphertext = extract_v(&fields, "ntru_ct", b'n')?;
     let mceliece_ciphertext = extract_v(&fields, "mceliece_ct", b'l')?;
-    let hqc256_ciphertext = extract_v(&fields, "hqc_ct", b'h')?;
+    let hqc256_ciphertext = extract_v(&fields, "hqc_ct", b'c')?;
 
     let payload = ClutchKemResponsePayload {
         frodo976_ciphertext,
@@ -1474,9 +1241,10 @@ pub fn parse_clutch_kem_response_vsf(
     {
         let hp_hex: String = ceremony_id.iter().take(8).map(|b| format!("{:02x}", b)).collect();
         crate::log_info(&format!(
-            "CLUTCH: Received KEM response ({} bytes) ceremony_id={}...",
+            "CLUTCH: Received KEM response ({} bytes) ceremony_id={}... ({} parties)",
             vsf_bytes.len(),
-            hp_hex
+            hp_hex,
+            handle_hashes.len()
         ));
         crate::log_info(&format!(
             "CLUTCH: KEM ciphertexts (Frodo: {}B, NTRU: {}B, McEliece: {}B, HQC: {}B)",
@@ -1487,22 +1255,22 @@ pub fn parse_clutch_kem_response_vsf(
         ));
     }
 
-    Ok((payload, sender_pubkey, ceremony_id, lower_proof, higher_proof))
+    Ok((payload, sender_pubkey, ceremony_id, handle_hashes))
 }
 
 /// Parse and verify a VSF ClutchFullOffer message WITHOUT recipient check.
 ///
-/// This variant is used by the TCP receiver which doesn't know our handle_proof.
+/// This variant is used by the TCP receiver which doesn't know our handle_hash.
 /// The caller (app.rs) is responsible for verifying the message is addressed to them.
 ///
 /// Verifies:
 /// 1. VSF format and magic bytes
 /// 2. Ed25519 signature (header-level)
 ///
-/// Returns (payload, sender_pubkey, ceremony_id, lower_proof, higher_proof)
+/// Returns (payload, sender_pubkey, ceremony_id, handle_hashes)
 pub fn parse_clutch_full_offer_vsf_without_recipient_check(
     vsf_bytes: &[u8],
-) -> Result<(ClutchFullOfferPayload, [u8; 32], [u8; 32], [u8; 32], [u8; 32]), String> {
+) -> Result<(ClutchFullOfferPayload, [u8; 32], [u8; 32], Vec<[u8; 32]>), String> {
     // Verify signature first
     if !vsf::verification::verify_file_signature(vsf_bytes)? {
         return Err("Invalid signature on ClutchFullOffer".to_string());
@@ -1558,9 +1326,8 @@ pub fn parse_clutch_full_offer_vsf_without_recipient_check(
         ptr += 1;
     }
 
-    // Extract handle proofs (NO recipient check - caller verifies)
-    let lower_proof = extract_hash(&fields, "lower")?;
-    let higher_proof = extract_hash(&fields, "higher")?;
+    // Extract handle_hashes (NO recipient check - caller verifies)
+    let handle_hashes = extract_handle_hashes_vector(&fields, "handle_hashes")?;
 
     // Extract all public keys using native VSF types
     let x25519_public = extract_kx(&fields, "x25519")?;
@@ -1583,22 +1350,22 @@ pub fn parse_clutch_full_offer_vsf_without_recipient_check(
         hqc256_public,
     };
 
-    Ok((payload, sender_pubkey, ceremony_id, lower_proof, higher_proof))
+    Ok((payload, sender_pubkey, ceremony_id, handle_hashes))
 }
 
 /// Parse and verify a VSF ClutchKemResponse message WITHOUT recipient check.
 ///
-/// This variant is used by the TCP receiver which doesn't know our handle_proof.
+/// This variant is used by the TCP receiver which doesn't know our handle_hash.
 /// The caller (app.rs) is responsible for verifying the message is addressed to them.
 ///
 /// Verifies:
 /// 1. VSF format and magic bytes
 /// 2. Ed25519 signature (header-level)
 ///
-/// Returns (payload, sender_pubkey, ceremony_id, lower_proof, higher_proof)
+/// Returns (payload, sender_pubkey, ceremony_id, handle_hashes)
 pub fn parse_clutch_kem_response_vsf_without_recipient_check(
     vsf_bytes: &[u8],
-) -> Result<(ClutchKemResponsePayload, [u8; 32], [u8; 32], [u8; 32], [u8; 32]), String> {
+) -> Result<(ClutchKemResponsePayload, [u8; 32], [u8; 32], Vec<[u8; 32]>), String> {
     // Verify signature first
     if !vsf::verification::verify_file_signature(vsf_bytes)? {
         return Err("Invalid signature on ClutchKemResponse".to_string());
@@ -1654,15 +1421,15 @@ pub fn parse_clutch_kem_response_vsf_without_recipient_check(
         ptr += 1;
     }
 
-    // Extract handle proofs (NO recipient check - caller verifies)
-    let lower_proof = extract_hash(&fields, "lower")?;
-    let higher_proof = extract_hash(&fields, "higher")?;
+    // Extract handle_hashes (NO recipient check - caller verifies)
+    let handle_hashes = extract_handle_hashes_vector(&fields, "handle_hashes")?;
 
     // Extract ciphertexts using VSF v() wrapped type
+    // Note: HQC uses b'c' since b'h' is used for handle_hashes
     let frodo976_ciphertext = extract_v(&fields, "frodo_ct", b'f')?;
     let ntru701_ciphertext = extract_v(&fields, "ntru_ct", b'n')?;
     let mceliece_ciphertext = extract_v(&fields, "mceliece_ct", b'l')?;
-    let hqc256_ciphertext = extract_v(&fields, "hqc_ct", b'h')?;
+    let hqc256_ciphertext = extract_v(&fields, "hqc_ct", b'c')?;
 
     let payload = ClutchKemResponsePayload {
         frodo976_ciphertext,
@@ -1671,7 +1438,7 @@ pub fn parse_clutch_kem_response_vsf_without_recipient_check(
         hqc256_ciphertext,
     };
 
-    Ok((payload, sender_pubkey, ceremony_id, lower_proof, higher_proof))
+    Ok((payload, sender_pubkey, ceremony_id, handle_hashes))
 }
 
 // Helper functions for extracting VSF key types

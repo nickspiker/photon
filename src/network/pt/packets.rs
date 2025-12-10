@@ -15,13 +15,15 @@ use crate::network::fgtw::Keypair;
 /// SPEC packet - initiates a large transfer
 ///
 /// VSF section "pt_spec" containing:
+/// - stream_id: single byte 'a'-'z' identifying this transfer stream
 /// - total_packets: number of DATA packets (VSF variable uint)
-/// - packet_size: payload bytes per DATA packet (typically 1000)
+/// - packet_size: payload bytes per DATA packet (typically 1024)
 /// - total_size: total transfer size in bytes
 /// - data_hash: BLAKE3 hash of complete data for verification
 /// - signature in header proves sender identity
 #[derive(Clone, Debug)]
 pub struct PTSpec {
+    pub stream_id: u8,       // 'a'-'z' for concurrent transfer routing
     pub total_packets: u32,
     pub packet_size: u16,
     pub total_size: u32,
@@ -32,14 +34,15 @@ impl PTSpec {
     /// Default payload size per DATA packet (1KB aligned for memory efficiency)
     pub const DEFAULT_PACKET_SIZE: u16 = 1024;
 
-    /// Create SPEC for given data
-    pub fn new(data: &[u8]) -> Self {
+    /// Create SPEC for given data with stream_id
+    pub fn new(data: &[u8], stream_id: u8) -> Self {
         let total_size = data.len() as u32;
         let packet_size = Self::DEFAULT_PACKET_SIZE;
         let total_packets = (total_size as usize + packet_size as usize - 1) / packet_size as usize;
         let data_hash = *blake3::hash(data).as_bytes();
 
         Self {
+            stream_id,
             total_packets: total_packets as u32,
             packet_size,
             total_size,
@@ -63,6 +66,10 @@ impl PTSpec {
                 "pt_spec",
                 vec![
                     (
+                        "sid".to_string(),
+                        VsfType::u3(self.stream_id),
+                    ),
+                    (
                         "count".to_string(),
                         VsfType::u(self.total_packets as usize, false),
                     ),
@@ -84,6 +91,15 @@ impl PTSpec {
     /// Parse from VSF bytes
     pub fn from_vsf_fields(fields: &[(String, vsf::VsfType)]) -> Option<Self> {
         use vsf::VsfType;
+
+        let stream_id = fields
+            .iter()
+            .find(|(k, _)| k == "sid")
+            .and_then(|(_, v)| match v {
+                VsfType::u3(n) => Some(*n),
+                VsfType::u(n, _) => Some(*n as u8),
+                _ => None,
+            })?;
 
         let total_packets =
             fields
@@ -131,6 +147,7 @@ impl PTSpec {
             })?;
 
         Some(Self {
+            stream_id,
             total_packets,
             packet_size,
             total_size,
@@ -164,12 +181,13 @@ impl PTSpec {
 
 /// DATA packet - minimal header for maximum throughput
 ///
-/// Format: ['d', seq_vsf, ...payload]
-/// - 'd' (1 byte): packet type marker
+/// Format: [stream_id, seq_vsf, ...payload]
+/// - stream_id (1 byte): 'a'-'z' identifying which transfer stream
 /// - seq_vsf: VSF-style variable-length sequence number
 /// - payload: raw data bytes (up to packet_size from SPEC)
 #[derive(Clone, Debug)]
 pub struct PTData {
+    pub stream_id: u8,   // 'a'-'z' for routing
     pub sequence: u32,
     pub payload: Vec<u8>,
 }
@@ -178,15 +196,21 @@ impl PTData {
     /// Serialize to wire format
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(1 + 4 + self.payload.len());
-        bytes.push(b'd');
+        bytes.push(self.stream_id);
         bytes.extend_from_slice(&encode_vsf_uint(self.sequence));
         bytes.extend_from_slice(&self.payload);
         bytes
     }
 
-    /// Parse from wire format, using expected seq_bytes from SPEC
+    /// Parse from wire format - stream_id is first byte
     pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
-        if bytes.is_empty() || bytes[0] != b'd' {
+        if bytes.is_empty() {
+            return None;
+        }
+
+        let stream_id = bytes[0];
+        // Valid stream_ids are 'a'-'z'
+        if !(b'a'..=b'z').contains(&stream_id) {
             return None;
         }
 
@@ -194,6 +218,7 @@ impl PTData {
         let payload = bytes[1 + seq_len..].to_vec();
 
         Some(Self {
+            stream_id,
             sequence: sequence as u32,
             payload,
         })
@@ -204,28 +229,28 @@ impl PTData {
 ///
 /// Header-only VSF format:
 /// - provenance_hash = chunk_hash (BLAKE3 of received payload - IS the integrity proof)
-/// - inline field: (pt_ack:u#{seq},u#{buf})
+/// - inline field: (pt_ack:u#{stream_id},u#{seq})
 /// - No signature needed - provenance hash provides integrity
 #[derive(Clone, Debug)]
 pub struct PTAck {
+    pub stream_id: u8,       // 'a'-'z' for routing back to correct transfer
     pub sequence: u32,
     pub chunk_hash: [u8; 32],
-    pub buffer_percent: u8,
 }
 
 impl PTAck {
     /// Create ACK for received data
-    pub fn new(sequence: u32, payload: &[u8], buffer_percent: u8) -> Self {
+    pub fn new(stream_id: u8, sequence: u32, payload: &[u8]) -> Self {
         Self {
+            stream_id,
             sequence,
             chunk_hash: *blake3::hash(payload).as_bytes(),
-            buffer_percent,
         }
     }
 
-    /// Serialize to VSF bytes (header-only, ~55 bytes vs 187 bytes before)
+    /// Serialize to VSF bytes (header-only, ~50 bytes)
     ///
-    /// Format: RÅ< ... hp[chunk_hash] n1 (pt_ack:u#{seq},u#{buf}) >
+    /// Format: RÅ< ... hp[chunk_hash] n1 (pt_ack:u#{sid},u#{seq}) >
     /// The provenance hash IS the chunk hash - proving correct receipt.
     #[allow(dead_code)]
     pub fn to_vsf_bytes(&self, _keypair: &Keypair) -> Vec<u8> {
@@ -238,8 +263,8 @@ impl PTAck {
             .add_inline_field(
                 "pt_ack",
                 vec![
+                    VsfType::u3(self.stream_id),
                     VsfType::u(self.sequence as usize, false),
-                    VsfType::u3(self.buffer_percent),
                 ],
             )
             .build()
@@ -249,15 +274,25 @@ impl PTAck {
     /// Parse from VSF header (inline field format)
     ///
     /// Expects header with provenance_hash (= chunk_hash) and inline field:
-    /// (pt_ack:u#{seq},u#{buf})
+    /// (pt_ack:u#{sid},u#{seq})
     pub fn from_vsf_header(
         provenance_hash: [u8; 32],
         field_values: &[vsf::VsfType],
     ) -> Option<Self> {
         use vsf::VsfType;
 
-        // First value is sequence
-        let sequence = match field_values.first()? {
+        // Requires 2 values: stream_id, sequence
+        if field_values.len() < 2 {
+            return None;
+        }
+
+        let stream_id = match field_values.first()? {
+            VsfType::u3(n) => *n,
+            VsfType::u(n, _) => *n as u8,
+            _ => return None,
+        };
+
+        let sequence = match field_values.get(1)? {
             VsfType::u(n, _) => *n as u32,
             VsfType::u3(n) => *n as u32,
             VsfType::u4(n) => *n as u32,
@@ -266,64 +301,13 @@ impl PTAck {
             _ => return None,
         };
 
-        // Second value is buffer percent
-        let buffer_percent = match field_values.get(1) {
-            Some(VsfType::u3(n)) => *n,
-            Some(VsfType::u(n, _)) => *n as u8,
-            _ => 0,
-        };
-
         Some(Self {
+            stream_id,
             sequence,
-            chunk_hash: provenance_hash, // Provenance IS the chunk hash
-            buffer_percent,
+            chunk_hash: provenance_hash,
         })
     }
 
-    /// Parse from VSF fields (legacy section format for backwards compat)
-    pub fn from_vsf_fields(fields: &[(String, vsf::VsfType)]) -> Option<Self> {
-        use vsf::VsfType;
-
-        let sequence = fields
-            .iter()
-            .find(|(k, _)| k == "seq")
-            .and_then(|(_, v)| match v {
-                VsfType::u(n, _) => Some(*n as u32),
-                VsfType::u3(n) => Some(*n as u32),
-                VsfType::u4(n) => Some(*n as u32),
-                VsfType::u5(n) => Some(*n as u32),
-                VsfType::u6(n) => Some(*n as u32),
-                _ => None,
-            })?;
-
-        let chunk_hash = fields
-            .iter()
-            .find(|(k, _)| k == "hash")
-            .and_then(|(_, v)| match v {
-                VsfType::hb(bytes) if bytes.len() == 32 => {
-                    let mut arr = [0u8; 32];
-                    arr.copy_from_slice(bytes);
-                    Some(arr)
-                }
-                _ => None,
-            })?;
-
-        let buffer_percent = fields
-            .iter()
-            .find(|(k, _)| k == "buf")
-            .and_then(|(_, v)| match v {
-                VsfType::u3(n) => Some(*n),
-                VsfType::u(n, _) => Some(*n as u8),
-                _ => None,
-            })
-            .unwrap_or(0);
-
-        Some(Self {
-            sequence,
-            chunk_hash,
-            buffer_percent,
-        })
-    }
 }
 
 /// NAK packet - request retransmission of missing sequences
@@ -382,27 +366,6 @@ impl PTNak {
         if missing_sequences.is_empty() {
             return None;
         }
-
-        Some(Self { missing_sequences })
-    }
-
-    /// Parse from VSF fields (legacy section format for backwards compat)
-    pub fn from_vsf_fields(fields: &[(String, vsf::VsfType)]) -> Option<Self> {
-        use vsf::VsfType;
-
-        let seq_bytes = fields
-            .iter()
-            .find(|(k, _)| k == "seqs")
-            .and_then(|(_, v)| match v {
-                VsfType::t_u3(tensor) => Some(tensor.data.clone()),
-                _ => None,
-            })?;
-
-        // Decode sequences (4 bytes each)
-        let missing_sequences: Vec<u32> = seq_bytes
-            .chunks_exact(4)
-            .map(|chunk| u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-            .collect();
 
         Some(Self { missing_sequences })
     }
@@ -482,22 +445,6 @@ impl PTControl {
         Some(Self { command: cmd })
     }
 
-    /// Parse from VSF fields (legacy section format for backwards compat)
-    pub fn from_vsf_fields(fields: &[(String, vsf::VsfType)]) -> Option<Self> {
-        use vsf::VsfType;
-
-        let cmd = fields
-            .iter()
-            .find(|(k, _)| k == "cmd")
-            .and_then(|(_, v)| match v {
-                VsfType::u3(n) => ControlCommand::from_u8(*n),
-                VsfType::u(n, _) => ControlCommand::from_u8(*n as u8),
-                _ => None,
-            })?;
-
-        Some(Self { command: cmd })
-    }
-
     fn compute_provenance(&self) -> [u8; 32] {
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"PT_CTRL_v1");
@@ -556,38 +503,6 @@ impl PTComplete {
 
         Some(Self {
             final_hash: provenance_hash, // Provenance IS the final hash
-            success,
-        })
-    }
-
-    /// Parse from VSF fields (legacy section format for backwards compat)
-    pub fn from_vsf_fields(fields: &[(String, vsf::VsfType)]) -> Option<Self> {
-        use vsf::VsfType;
-
-        let final_hash = fields
-            .iter()
-            .find(|(k, _)| k == "hash")
-            .and_then(|(_, v)| match v {
-                VsfType::hb(bytes) if bytes.len() == 32 => {
-                    let mut arr = [0u8; 32];
-                    arr.copy_from_slice(bytes);
-                    Some(arr)
-                }
-                _ => None,
-            })?;
-
-        let success = fields
-            .iter()
-            .find(|(k, _)| k == "ok")
-            .map(|(_, v)| match v {
-                VsfType::u3(n) => *n != 0,
-                VsfType::u(n, _) => *n != 0,
-                _ => false,
-            })
-            .unwrap_or(false);
-
-        Some(Self {
-            final_hash,
             success,
         })
     }
@@ -669,30 +584,53 @@ mod tests {
     #[test]
     fn test_data_packet_roundtrip() {
         let data = PTData {
+            stream_id: b'a',
             sequence: 42,
             payload: vec![0xAB; 1000],
         };
 
         let bytes = data.to_bytes();
-        assert_eq!(bytes[0], b'd');
+        assert_eq!(bytes[0], b'a');
 
         let parsed = PTData::from_bytes(&bytes).unwrap();
+        assert_eq!(parsed.stream_id, b'a');
         assert_eq!(parsed.sequence, 42);
         assert_eq!(parsed.payload.len(), 1000);
     }
 
     #[test]
+    fn test_data_packet_different_streams() {
+        // Test multiple stream_ids
+        for stream_id in b'a'..=b'z' {
+            let data = PTData {
+                stream_id,
+                sequence: 100,
+                payload: vec![0xEF; 50],
+            };
+
+            let bytes = data.to_bytes();
+            assert_eq!(bytes[0], stream_id);
+
+            let parsed = PTData::from_bytes(&bytes).unwrap();
+            assert_eq!(parsed.stream_id, stream_id);
+            assert_eq!(parsed.sequence, 100);
+        }
+    }
+
+    #[test]
     fn test_data_packet_large_sequence() {
         let data = PTData {
+            stream_id: b'b',
             sequence: 548, // Typical for CLUTCH full offer
             payload: vec![0xCD; 100],
         };
 
         let bytes = data.to_bytes();
-        // 'd' + 2-byte seq + payload
+        // stream_id + 2-byte seq + payload
         assert_eq!(bytes.len(), 1 + 2 + 100);
 
         let parsed = PTData::from_bytes(&bytes).unwrap();
+        assert_eq!(parsed.stream_id, b'b');
         assert_eq!(parsed.sequence, 548);
     }
 
@@ -700,6 +638,7 @@ mod tests {
     fn test_spec_seq_bytes() {
         // Small transfer: 17 packets (KEM response) = 1 byte seq
         let spec = PTSpec {
+            stream_id: b'a',
             total_packets: 17,
             packet_size: 1000,
             total_size: 17000,
@@ -709,6 +648,7 @@ mod tests {
 
         // Large transfer: 548 packets (CLUTCH full offer) = 2 byte seq
         let spec = PTSpec {
+            stream_id: b'b',
             total_packets: 548,
             packet_size: 1000,
             total_size: 548000,
