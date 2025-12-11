@@ -613,4 +613,4 @@ See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE)
 
 **Platform Support:** Linux ✅ | Windows ✅ | macOS ✅ | Android ✅ | Redox 🟡 | iOS ❌
 
-**Last Updated:** 2025-12-09
+**Last Updated:** 2025-12-10

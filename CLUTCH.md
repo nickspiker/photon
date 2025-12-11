@@ -746,6 +746,8 @@ An attacker must compromise **ALL** of:
 - ✅ L1 memory-hard scratch
 - ✅ P2P UDP communication
 - ✅ One-frame UI load
+- ✅ CLUTCH state persistence (Complete state survives app restart)
+- ✅ Keygen race condition guard (prevents parallel keypair generation)
 
 **Needs Migration (wire format uses 2-party lower/higher, should use N-party handle_hashes vector):**
 - 🔄 Wire format: lower/higher fields → handle_hashes: Vec<[u8; 32]>
@@ -754,7 +756,6 @@ An attacker must compromise **ALL** of:
 
 **In Development:**
 - 🚧 Friendship-based ceremony chains (friendship.rs scaffolded)
-- 🚧 Contact persistence (contacts disappear on FGTW reset)
 - 🚧 FGTW call forwarding (optional, requires consent)
 
 **Future:**

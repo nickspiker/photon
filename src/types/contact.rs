@@ -87,12 +87,14 @@ impl std::fmt::Display for HandleText {
 /// State of the CLUTCH key ceremony for a contact
 ///
 /// Slot-based design: each party has a slot indexed by sorted handle_hash position.
-/// Ceremony completes when all slots have both offer and kem_secrets filled.
+/// Ceremony completes when all slots have both offer and kem_secrets filled,
+/// AND both parties have exchanged matching eggs_proof values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum ClutchState {
     #[default]
-    Pending,  // Slots not all filled yet
-    Complete, // All slots filled, seed derived
+    Pending,       // Slots not all filled yet
+    AwaitingProof, // Eggs computed, sent our proof, waiting for peer's proof
+    Complete,      // Proofs exchanged and verified
 }
 
 #[derive(Clone, Debug)]
@@ -123,6 +125,12 @@ pub struct Contact {
     pub clutch_pending_kem: Option<ClutchKemResponsePayload>,
     /// Track if we've sent our offer (to avoid resending)
     pub clutch_offer_sent: bool,
+    /// Our computed eggs_proof (stored while awaiting peer's proof for verification)
+    pub clutch_our_eggs_proof: Option<[u8; 32]>,
+    /// Peer's eggs_proof if received before we computed ours
+    pub clutch_their_eggs_proof: Option<[u8; 32]>,
+    /// Flag to prevent multiple concurrent keygens (race condition guard)
+    pub clutch_keygen_in_progress: bool,
 
     pub trust_level: TrustLevel,
     pub added: f64,
@@ -197,6 +205,9 @@ impl Contact {
             ceremony_id: None,        // Cached after keygen (memory-hard ~1s)
             clutch_pending_kem: None, // KEM response received before keygen completed
             clutch_offer_sent: false, // Track if we've sent our offer
+            clutch_our_eggs_proof: None,   // Our proof (stored while awaiting peer's)
+            clutch_their_eggs_proof: None, // Peer's proof (if received early)
+            clutch_keygen_in_progress: false, // No keygen running yet
             trust_level: TrustLevel::Stranger,
             added: vsf::eagle_time_nanos(),
             last_seen: None,
