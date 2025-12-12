@@ -176,12 +176,23 @@ impl Chain {
     /// 1. Left-shift all links (oldest history at [0] drops off)
     /// 2. Old [256] (oldest active) becomes [255] (newest history)
     /// 3. Derive new link at [511] via spaghettify
-    pub fn advance(&mut self, eagle_time: &EagleTime, plaintext_hash: &[u8; 32]) {
+    ///
+    /// Bidirectional entropy: if `their_plaintext` is provided, it's mixed into
+    /// the fresh link derivation. This means the other party's message content
+    /// contributes entropy to our chain advancement.
+    pub fn advance(
+        &mut self,
+        eagle_time: &EagleTime,
+        plaintext_hash: &[u8; 32],
+        their_plaintext: Option<&[u8]>,
+    ) {
         // Left-shift: everything moves left, oldest drops off [0]
         self.links.copy_within(1..CHAIN_LINKS, 0);
 
         // Derive fresh link via spaghettify (computationally chaotic)
-        let fresh_link = derive_fresh_link(&eagle_time, plaintext_hash, &self.links);
+        // With bidirectional entropy mixing if their_plaintext is provided
+        let fresh_link =
+            derive_fresh_link(&eagle_time, plaintext_hash, their_plaintext, &self.links);
 
         // Append at rightmost position
         self.links[CURRENT_KEY_INDEX] = fresh_link;
@@ -318,9 +329,15 @@ pub fn verify_ack_proof(
 ///
 /// Uses spaghettify for computational chaos (data-dependent ops, IEEE754 weirdness).
 /// NOT memory-hard (~1.7KB state) - fast enough for per-message use.
+///
+/// Bidirectional entropy: if `their_plaintext` is provided, it's mixed into
+/// the hash before spaghettify. This incorporates the other party's message
+/// content as entropy, providing stronger forward secrecy than unidirectional
+/// schemes - an attacker would need BOTH parties' plaintext history to predict keys.
 fn derive_fresh_link(
     eagle_time: &EagleTime,
     plaintext_hash: &[u8; 32],
+    their_plaintext: Option<&[u8]>,
     chain: &[[u8; 32]; CHAIN_LINKS],
 ) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
@@ -330,6 +347,13 @@ fn derive_fresh_link(
     // Note: after copy_within(1.., 0), old [257..512] is now at [256..511]
     hasher.update(chain[HISTORY_LINKS..CURRENT_KEY_INDEX].as_flattened());
     hasher.update(plaintext_hash);
+
+    // Bidirectional entropy: mix in their plaintext if available
+    // This creates a dependency on the other party's message content
+    if let Some(their_pt) = their_plaintext {
+        hasher.update(b"THEIR_ENTROPY");
+        hasher.update(their_pt);
+    }
 
     spaghettify(hasher.finalize().as_bytes())
 }
@@ -522,10 +546,10 @@ mod tests {
         let original_key = *chain.current_key();
         let original_link256 = *chain.link(256).unwrap();
 
-        // Advance
+        // Advance (no bidirectional entropy)
         let eagle_time = vsf::datetime_to_eagle_time(chrono::Utc::now());
         let plaintext_hash = [0xAA; 32];
-        chain.advance(&eagle_time, &plaintext_hash);
+        chain.advance(&eagle_time, &plaintext_hash, None);
 
         // Key should change (new derived value)
         assert_ne!(chain.current_key(), &original_key);
@@ -542,9 +566,50 @@ mod tests {
         let eagle_time = vsf::datetime_to_eagle_time(chrono::Utc::now());
         let plaintext_hash = [42u8; 32];
 
-        chain1.advance(&eagle_time, &plaintext_hash);
-        chain2.advance(&eagle_time, &plaintext_hash);
+        chain1.advance(&eagle_time, &plaintext_hash, None);
+        chain2.advance(&eagle_time, &plaintext_hash, None);
 
+        assert_eq!(chain1.current_key(), chain2.current_key());
+        assert_eq!(chain1.to_bytes(), chain2.to_bytes());
+    }
+
+    #[test]
+    fn test_chain_advance_bidirectional_entropy() {
+        let mut chain1 = make_test_chain();
+        let mut chain2 = make_test_chain();
+        let mut chain3 = make_test_chain();
+
+        let eagle_time = vsf::datetime_to_eagle_time(chrono::Utc::now());
+        let plaintext_hash = [42u8; 32];
+
+        // Advance without their_plaintext
+        chain1.advance(&eagle_time, &plaintext_hash, None);
+
+        // Advance with their_plaintext
+        chain2.advance(&eagle_time, &plaintext_hash, Some(b"their message content"));
+
+        // Advance with different their_plaintext
+        chain3.advance(&eagle_time, &plaintext_hash, Some(b"different message"));
+
+        // All three should produce different keys
+        assert_ne!(chain1.current_key(), chain2.current_key());
+        assert_ne!(chain1.current_key(), chain3.current_key());
+        assert_ne!(chain2.current_key(), chain3.current_key());
+    }
+
+    #[test]
+    fn test_chain_advance_bidirectional_deterministic() {
+        let mut chain1 = make_test_chain();
+        let mut chain2 = make_test_chain();
+
+        let eagle_time = vsf::datetime_to_eagle_time(chrono::Utc::now());
+        let plaintext_hash = [42u8; 32];
+        let their_plaintext = b"their message for entropy";
+
+        chain1.advance(&eagle_time, &plaintext_hash, Some(their_plaintext));
+        chain2.advance(&eagle_time, &plaintext_hash, Some(their_plaintext));
+
+        // Same inputs = same output (deterministic)
         assert_eq!(chain1.current_key(), chain2.current_key());
         assert_eq!(chain1.to_bytes(), chain2.to_bytes());
     }
@@ -675,9 +740,9 @@ mod tests {
             // Compute plaintext hash for ACK
             let plaintext_hash = *blake3::hash(&decrypted).as_bytes();
 
-            // Both advance
-            sender.advance(&eagle_time, &plaintext_hash);
-            receiver.advance(&eagle_time, &plaintext_hash);
+            // Both advance (no bidirectional entropy in this test)
+            sender.advance(&eagle_time, &plaintext_hash, None);
+            receiver.advance(&eagle_time, &plaintext_hash, None);
 
             // Update prev_plaintext for next iteration
             prev_plaintext = decrypted;

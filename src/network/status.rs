@@ -10,6 +10,7 @@
 //! - Timestamp uses nanosecond precision (ef6) for uniqueness
 
 use super::udp;
+use crate::network::fgtw::protocol::SyncRecord;
 use crate::network::fgtw::FgtwMessage;
 use crate::network::fgtw::Keypair;
 use crate::network::pt::{
@@ -30,6 +31,10 @@ use winit::event_loop::EventLoopProxy;
 
 /// Shared contact list - UI updates this, background thread reads it
 pub type ContactPubkeys = Arc<Mutex<Vec<DevicePubkey>>>;
+
+/// Shared sync records - UI updates this, background thread reads it for pong responses
+/// Maps conversation_token to last_received_ef6 (when we last received a message)
+pub type SyncRecordsProvider = Arc<Mutex<Vec<SyncRecord>>>;
 
 /// Get current Eagle Time as binary64 (seconds since Apollo 11 landing: July 20, 1969, 20:17:40 UTC)
 fn eagle_time_binary64() -> f64 {
@@ -161,6 +166,9 @@ pub enum StatusUpdate {
         peer_pubkey: DevicePubkey,
         is_online: bool,
         peer_addr: Option<std::net::SocketAddr>,
+        /// Sync records from pong: (conversation_token, last_received_ef6)
+        /// Tells us which messages the peer has received, for retransmit logic
+        sync_records: Vec<SyncRecord>,
     },
     // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete REMOVED
     // Full 8-primitive CLUTCH uses ClutchFullOfferReceived and ClutchKemResponseReceived
@@ -262,12 +270,14 @@ impl StatusChecker {
     /// `socket` is the shared UDP socket from HandleQuery (same port announced to FGTW).
     /// `keypair` is the device keypair (same one used for FGTW registration).
     /// `contacts` is shared with UI - only respond to pings from pubkeys in this list.
+    /// `sync_records` is shared with UI - provides last_received_ef6 for each conversation
     /// `event_proxy` is used to wake the event loop when network data arrives.
     #[cfg(not(target_os = "android"))]
     pub fn new(
         socket: Arc<UdpSocket>,
         keypair: Keypair,
         contacts: ContactPubkeys,
+        sync_records: SyncRecordsProvider,
         event_proxy: EventLoopProxy<PhotonEvent>,
     ) -> Result<Self, String> {
         let (ping_tx, ping_rx) = channel::<PingRequest>();
@@ -324,6 +334,7 @@ impl StatusChecker {
                     clear_pt_rx,
                     status_tx,
                     contacts,
+                    sync_records,
                     Some(event_proxy),
                 )
                 .await;
@@ -350,6 +361,7 @@ impl StatusChecker {
         socket: Arc<UdpSocket>,
         keypair: Keypair,
         contacts: ContactPubkeys,
+        sync_records: SyncRecordsProvider,
     ) -> Result<Self, String> {
         let (ping_tx, ping_rx) = channel::<PingRequest>();
         let (message_tx, message_rx) = channel::<MessageRequest>();
@@ -404,6 +416,7 @@ impl StatusChecker {
                     clear_pt_rx,
                     status_tx,
                     contacts,
+                    sync_records,
                     None,
                 )
                 .await;
@@ -533,6 +546,7 @@ async fn run_checker(
     clear_pt_rx: Receiver<ClearPtSendsRequest>,
     status_tx: Sender<StatusUpdate>,
     contacts: ContactPubkeys,
+    sync_records_provider: SyncRecordsProvider,
     event_proxy: OptionalEventProxy,
 ) {
     use tokio::net::UdpSocket as TokioUdpSocket;
@@ -603,6 +617,7 @@ async fn run_checker(
     let keypair_recv = keypair.clone();
     let status_tx_recv = status_tx.clone();
     let contacts_recv = contacts.clone();
+    let sync_records_recv = sync_records_provider.clone();
     let event_proxy_recv = event_proxy.clone();
     let pt_recv = pt.clone();
     let failed_pings_recv = failed_pings.clone();
@@ -1048,12 +1063,14 @@ async fn run_checker(
                                     }
 
                                     // Mark sender as online (they pinged us, so they're online!)
+                                    // No sync_records from ping - we'll send our sync info in pong
                                     send_status_update(
                                         &status_tx_recv,
                                         StatusUpdate::Online {
                                             peer_pubkey: sender_pubkey.clone(),
                                             is_online: true,
                                             peer_addr: Some(src_addr),
+                                            sync_records: vec![],
                                         },
                                         &event_proxy_recv,
                                     );
@@ -1063,11 +1080,18 @@ async fn run_checker(
                                     let mut sig_bytes = [0u8; 64];
                                     sig_bytes.copy_from_slice(&sig.to_bytes());
 
+                                    // Get sync records from the provider (populated by app.rs)
+                                    let sync_records = {
+                                        let records = sync_records_recv.lock().unwrap();
+                                        records.clone()
+                                    };
+
                                     let pong = FgtwMessage::StatusPong {
                                         timestamp: eagle_time_binary64(),
                                         responder_pubkey: our_pubkey_recv.clone(),
                                         provenance_hash,
                                         signature: sig_bytes,
+                                        sync_records,
                                     };
 
                                     let pong_bytes = pong.to_vsf_bytes();
@@ -1081,6 +1105,7 @@ async fn run_checker(
                                     responder_pubkey,
                                     provenance_hash,
                                     signature,
+                                    sync_records,
                                 } => {
                                     // Find and remove matching pending ping
                                     let pending_ping = {
@@ -1120,13 +1145,14 @@ async fn run_checker(
                                         failures.retain(|(k, _)| k != responder_pubkey.as_bytes());
                                     }
 
-                                    // Send status update (avatar fetched by handle, not in ping/pong)
+                                    // Send status update with sync_records for retransmit handling
                                     send_status_update(
                                         &status_tx_recv,
                                         StatusUpdate::Online {
                                             peer_pubkey: responder_pubkey,
                                             is_online: true,
                                             peer_addr: Some(src_addr),
+                                            sync_records,
                                         },
                                         &event_proxy_recv,
                                     );
@@ -1326,6 +1352,7 @@ async fn run_checker(
                             peer_pubkey: pubkey,
                             is_online: false,
                             peer_addr: None, // No address for offline
+                            sync_records: vec![], // No sync for offline
                         },
                         &event_proxy,
                     );

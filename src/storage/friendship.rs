@@ -135,6 +135,14 @@ fn chains_schema() -> SectionSchema {
         .field("pending_prev_msg_hp", TypeConstraint::AnyHash) // hp
         .field("pending_msg_hp", TypeConstraint::AnyHash) // hp
         .field("pending_ciphertext", TypeConstraint::AnyHash) // hb
+        // Bidirectional entropy state (v3)
+        .field("last_received_weave", TypeConstraint::AnyHash) // hp: derived weave hash (32 bytes)
+        .field("last_sent_weave", TypeConstraint::AnyHash) // hp: what we sent (what they received)
+        .field("last_incorporated_hp", TypeConstraint::AnyHash) // hp: which of theirs we mixed in
+        // Last plaintexts (v4) - needed for salt derivation after restart
+        .field("last_plaintext", TypeConstraint::AnyHash) // hb: one per participant
+        // Last received times (v5) - for duplicate detection after restart
+        .field("last_received_time", TypeConstraint::AnyFloat) // f6: one per participant
 }
 
 /// Save FriendshipChains to disk
@@ -151,7 +159,7 @@ pub fn save_friendship_chains(
     let schema = chains_schema();
     let mut builder = schema
         .build()
-        .set("version", 2u8) // v2: includes hash chain state and pending messages
+        .set("version", 5u8) // v5: includes last_received_times for duplicate detection after restart
         .map_err(|e| FriendshipStorageError::Parse(e.to_string()))?
         .set(
             "friendship_id",
@@ -205,6 +213,44 @@ pub fn save_friendship_chains(
             .append_multi("pending_msg_hp", vec![VsfType::hp(pending.msg_hp.to_vec())])
             .map_err(|e| FriendshipStorageError::Parse(e.to_string()))?
             .append_multi("pending_ciphertext", vec![VsfType::hb(pending.ciphertext.clone())])
+            .map_err(|e| FriendshipStorageError::Parse(e.to_string()))?;
+    }
+
+    // === Bidirectional entropy state (v3) ===
+
+    // last_received_weave - derived weave hash for mixing (32 bytes)
+    if let Some(weave) = chains.last_received_weave() {
+        builder = builder
+            .set("last_received_weave", VsfType::hp(weave.to_vec()))
+            .map_err(|e| FriendshipStorageError::Parse(e.to_string()))?;
+    }
+
+    // last_sent_weave - what we sent (what they received) for their chain advancement
+    if let Some(weave) = chains.last_sent_weave() {
+        builder = builder
+            .set("last_sent_weave", VsfType::hp(weave.to_vec()))
+            .map_err(|e| FriendshipStorageError::Parse(e.to_string()))?;
+    }
+
+    // last_incorporated_hp - which of their messages we mixed in
+    if let Some(hp) = chains.last_incorporated_hp() {
+        builder = builder
+            .set("last_incorporated_hp", VsfType::hp(hp.to_vec()))
+            .map_err(|e| FriendshipStorageError::Parse(e.to_string()))?;
+    }
+
+    // === Last plaintexts (v4) - one per participant ===
+    for plaintext in chains.last_plaintexts() {
+        builder = builder
+            .append_multi("last_plaintext", vec![VsfType::hb(plaintext.clone())])
+            .map_err(|e| FriendshipStorageError::Parse(e.to_string()))?;
+    }
+
+    // === Last received times (v5) - one per participant, for duplicate detection ===
+    for time_opt in chains.last_received_times() {
+        let time_val = time_opt.unwrap_or(0.0); // 0.0 means no messages received yet
+        builder = builder
+            .append_multi("last_received_time", vec![VsfType::f6(time_val)])
             .map_err(|e| FriendshipStorageError::Parse(e.to_string()))?;
     }
 
@@ -404,14 +450,83 @@ pub fn load_friendship_chains(
         })
         .collect();
 
-    // Reconstruct chains with hash chain state
-    FriendshipChains::from_storage_v2(
+    // === Bidirectional entropy state (v3) ===
+
+    // last_received_weave - derived weave hash for mixing (32 bytes)
+    let last_received_weave: Option<[u8; 32]> = section
+        .get_field("last_received_weave")
+        .and_then(|f| f.values.first())
+        .and_then(|v| match v {
+            VsfType::hp(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(bytes);
+                Some(arr)
+            }
+            _ => None,
+        });
+
+    // last_sent_weave - what we sent (what they received)
+    let last_sent_weave: Option<[u8; 32]> = section
+        .get_field("last_sent_weave")
+        .and_then(|f| f.values.first())
+        .and_then(|v| match v {
+            VsfType::hp(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(bytes);
+                Some(arr)
+            }
+            _ => None,
+        });
+
+    // last_incorporated_hp - which of their messages we mixed in
+    let last_incorporated_hp: Option<[u8; 32]> = section
+        .get_field("last_incorporated_hp")
+        .and_then(|f| f.values.first())
+        .and_then(|v| match v {
+            VsfType::hp(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(bytes);
+                Some(arr)
+            }
+            _ => None,
+        });
+
+    // === Last plaintexts (v4) - one per participant ===
+    let last_plaintexts: Vec<Vec<u8>> = section
+        .get_fields("last_plaintext")
+        .iter()
+        .filter_map(|f| f.values.first())
+        .filter_map(|v| match v {
+            VsfType::hb(b) => Some(b.clone()),
+            _ => None,
+        })
+        .collect();
+
+    // === Last received times (v5) - one per participant ===
+    let last_received_times: Vec<Option<f64>> = section
+        .get_fields("last_received_time")
+        .iter()
+        .filter_map(|f| f.values.first())
+        .map(|v| match v {
+            VsfType::f6(t) if *t == 0.0 => None, // 0.0 means no messages received yet
+            VsfType::f6(t) => Some(*t),
+            _ => None,
+        })
+        .collect();
+
+    // Reconstruct chains with full v5 state
+    FriendshipChains::from_storage_v5(
         *friendship_id,
         participants,
         &chain_bytes,
         last_sent_hash,
         last_received_hashes,
         pending_messages,
+        last_received_weave,
+        last_sent_weave,
+        last_incorporated_hp,
+        last_plaintexts,
+        last_received_times,
     ).ok_or_else(|| {
         FriendshipStorageError::InvalidChains("Failed to reconstruct chains".to_string())
     })

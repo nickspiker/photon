@@ -212,13 +212,6 @@ fn encrypt_data(data: &[u8], key: &[u8; 32], section_name: &str) -> Result<Vec<u
 
 /// Decrypt data from VSF-wrapped encrypted file
 fn decrypt_data(vsf_bytes: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, StorageError> {
-    // Check for legacy format (raw nonce+ciphertext, no VSF header)
-    // VSF magic is "RÅ<" = 0x52 0xC3 0x85 0x3C
-    if vsf_bytes.len() >= 4 && &vsf_bytes[0..4] != b"R\xc3\x85<" {
-        // Legacy format - try direct decryption
-        return decrypt_data_legacy(vsf_bytes, key);
-    }
-
     // Parse VSF file to extract encrypted payload
     let header = vsf::verification::parse_full_header(vsf_bytes)
         .map_err(|e| StorageError::Decryption(format!("VSF parse: {}", e)))?;
@@ -267,27 +260,6 @@ fn decrypt_data(vsf_bytes: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, StorageErro
         .map_err(|_| StorageError::Decryption("Invalid nonce".to_string()))?;
     let nonce: Nonce = nonce_bytes.into();
     let ciphertext = &encrypted_payload[12..];
-
-    cipher
-        .decrypt(&nonce, ciphertext)
-        .map_err(|e| StorageError::Decryption(e.to_string()))
-}
-
-/// Decrypt legacy format (raw nonce+ciphertext, no VSF wrapper)
-/// For backwards compatibility with existing contact files
-fn decrypt_data_legacy(encrypted: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, StorageError> {
-    if encrypted.len() < 12 + 16 {
-        return Err(StorageError::Decryption("File too short".to_string()));
-    }
-
-    let cipher = ChaCha20Poly1305::new_from_slice(key)
-        .map_err(|e| StorageError::Decryption(e.to_string()))?;
-
-    let nonce_bytes: [u8; 12] = encrypted[..12]
-        .try_into()
-        .map_err(|_| StorageError::Decryption("Invalid nonce length".to_string()))?;
-    let nonce: Nonce = nonce_bytes.into();
-    let ciphertext = &encrypted[12..];
 
     cipher
         .decrypt(&nonce, ciphertext)
@@ -920,6 +892,12 @@ pub fn load_messages(
             });
         }
     }
+
+    // Sort messages by timestamp (ascending) to ensure correct chronological order
+    // This handles messages that may have been saved before sorted-insert was implemented
+    contact.messages.sort_by(|a, b| {
+        a.timestamp.partial_cmp(&b.timestamp).unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     #[cfg(feature = "development")]
     crate::log_info(&format!(

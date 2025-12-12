@@ -58,8 +58,9 @@ cp target/aarch64-apple-darwin/release/photon-messenger /mnt/Chiton/MEGA/holdmyo
 cp android/app/build/outputs/apk/release/app-release.apk /mnt/Chiton/MEGA/holdmyoscilloscope/photon/photon-messenger.apk
 cp install.sh /mnt/Chiton/MEGA/holdmyoscilloscope/photon/install.sh
 cp install.ps1 /mnt/Chiton/MEGA/holdmyoscilloscope/photon/install.ps1
+cp assets/icon-1024.png /mnt/Chiton/MEGA/holdmyoscilloscope/photon/icon-1024.png
 
 echo ""
-echo "✓ Linux, Windows, Redox, macOS Intel, macOS ARM64, Android binaries, and install script deployed"
+echo "✓ Linux, Windows, Redox, macOS Intel, macOS ARM64, Android binaries, icon, and install scripts deployed"
 
 wrangler pages deploy /mnt/Chiton/MEGA/holdmyoscilloscope --project-name=oscilloscope

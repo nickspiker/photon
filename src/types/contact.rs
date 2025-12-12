@@ -55,6 +55,16 @@ impl ChatMessage {
             delivered: false,
         }
     }
+
+    /// Create a message with a specific timestamp (for received messages with known eagle_time)
+    pub fn new_with_timestamp(content: String, is_outgoing: bool, timestamp: f64) -> Self {
+        Self {
+            content,
+            timestamp,
+            is_outgoing,
+            delivered: false,
+        }
+    }
 }
 
 /// A handle name stored as VSF text (normalized Unicode, unambiguous)
@@ -292,5 +302,15 @@ impl Contact {
     /// For 2-party: both slots have offer + both KEM secret directions.
     pub fn all_slots_complete(&self) -> bool {
         !self.clutch_slots.is_empty() && self.clutch_slots.iter().all(|s| s.is_complete())
+    }
+
+    /// Insert a message in sorted order by timestamp (oldest first).
+    /// Uses binary search for O(log n) position finding.
+    pub fn insert_message_sorted(&mut self, msg: ChatMessage) {
+        // Binary search for insertion point (maintains ascending timestamp order)
+        let pos = self.messages
+            .binary_search_by(|m| m.timestamp.partial_cmp(&msg.timestamp).unwrap_or(std::cmp::Ordering::Equal))
+            .unwrap_or_else(|pos| pos);
+        self.messages.insert(pos, msg);
     }
 }

@@ -262,6 +262,8 @@ pub struct PhotonApp {
     pub contacts: Vec<Contact>,
     // Shared pubkey list for StatusChecker (synced with contacts)
     pub contact_pubkeys: crate::network::status::ContactPubkeys,
+    // Shared sync records for pong responses (last_received_ef6 per conversation)
+    pub sync_records_provider: crate::network::status::SyncRecordsProvider,
     // Currently hovered contact index (None if not hovering any)
     pub hovered_contact: Option<usize>,
     pub prev_hovered_contact: Option<usize>,
@@ -451,6 +453,7 @@ impl PhotonApp {
             is_fullscreen,
             contacts: Vec::new(),
             contact_pubkeys: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            sync_records_provider: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             hovered_contact: None,
             prev_hovered_contact: None,
             selected_contact: None,
@@ -569,6 +572,7 @@ impl PhotonApp {
             is_fullscreen: true, // Android is always fullscreen
             contacts: Vec::new(),
             contact_pubkeys: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            sync_records_provider: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             hovered_contact: None,
             prev_hovered_contact: None,
             selected_contact: None,
@@ -598,6 +602,36 @@ impl PhotonApp {
         if self.is_fullscreen != is_fullscreen {
             self.is_fullscreen = is_fullscreen;
         }
+    }
+
+    /// Update sync_records_provider from friendship_chains.
+    /// Called when chains change to keep pong responses up-to-date.
+    pub fn update_sync_records(&mut self) {
+        use crate::network::fgtw::protocol::SyncRecord;
+
+        let mut records = Vec::new();
+        for (_fid, chains) in &self.friendship_chains {
+            // Get the max last_received_time across all participants
+            // This is when we last received ANY message in this conversation
+            let max_time = chains
+                .last_received_times()
+                .iter()
+                .filter_map(|t| *t)
+                .fold(None, |acc: Option<f64>, t| {
+                    Some(acc.map_or(t, |a| if t > a { t } else { a }))
+                });
+
+            if let Some(last_received_ef6) = max_time {
+                records.push(SyncRecord {
+                    conversation_token: chains.conversation_token,
+                    last_received_ef6,
+                });
+            }
+        }
+
+        // Update the shared provider
+        let mut provider = self.sync_records_provider.lock().unwrap();
+        *provider = records;
     }
 
     /// Reset textbox state when changing screens
@@ -1639,6 +1673,7 @@ impl PhotonApp {
                     }
                     // Already a Vec, just extend
                     self.friendship_chains.extend(loaded_friendships);
+                    // Note: sync records updated when StatusChecker is created below
                 } else {
                     crate::log_info("UI: No friendship chains found on disk");
                 }
@@ -1860,6 +1895,9 @@ impl PhotonApp {
 
             // Initialize status checker for P2P contact pinging
             if self.user_handle.is_some() {
+                // Populate sync_records_provider before creating StatusChecker
+                self.update_sync_records();
+
                 if let Some(hq) = &self.handle_query {
                     #[cfg(not(target_os = "android"))]
                     {
@@ -1867,6 +1905,7 @@ impl PhotonApp {
                             hq.socket().clone(),
                             self.device_keypair.clone(),
                             self.contact_pubkeys.clone(),
+                            self.sync_records_provider.clone(),
                             self.event_proxy.clone(),
                         )
                         .ok();
@@ -1877,6 +1916,7 @@ impl PhotonApp {
                             hq.socket().clone(),
                             self.device_keypair.clone(),
                             self.contact_pubkeys.clone(),
+                            self.sync_records_provider.clone(),
                         )
                         .ok();
                     }
@@ -1892,14 +1932,21 @@ impl PhotonApp {
                     }
 
                     // Broadcast StatusPing to all peers so they learn our IP (NAT hole punching)
-                    if !initial_peers.is_empty() {
+                    // Filter out our own pubkey - FGTW returns all peers including ourselves
+                    let our_pubkey_bytes = self.device_keypair.public.to_bytes();
+                    let other_peers: Vec<_> = initial_peers
+                        .iter()
+                        .filter(|p| p.device_pubkey.as_bytes() != &our_pubkey_bytes)
+                        .collect();
+
+                    if !other_peers.is_empty() {
                         if let Some(ref checker) = self.status_checker {
-                            for peer in &initial_peers {
+                            for peer in &other_peers {
                                 checker.ping(peer.ip, peer.device_pubkey.clone());
                             }
                             crate::log_info(&format!(
                                 "Network: Initial broadcast ping to {} peer(s)",
-                                initial_peers.len()
+                                other_peers.len()
                             ));
                         }
                     }
@@ -1976,6 +2023,11 @@ impl PhotonApp {
 
         let mut changed = false;
         let mut ceremony_completions: Vec<usize> = Vec::new(); // Contact indices to complete after loop
+        // Collect pending message retransmit requests (friendship_id, ip, handle, last_received_ef6) to process after loop
+        // last_received_ef6 from pong tells us what they already have - only retransmit newer
+        let mut retransmit_requests: Vec<(crate::types::FriendshipId, std::net::SocketAddr, String, Option<f64>)> = Vec::new();
+        // Flag to update sync records after the loop (when borrows are released)
+        let mut need_sync_update = false;
 
         while let Some(update) = checker.try_recv() {
             match update {
@@ -1983,6 +2035,7 @@ impl PhotonApp {
                     peer_pubkey,
                     is_online,
                     peer_addr,
+                    sync_records,
                 } => {
                     // Find matching contact and update status
                     for contact in &mut self.contacts {
@@ -2043,6 +2096,22 @@ impl PhotonApp {
                                     }
                                 }
                             }
+
+                            // Queue retransmit of pending messages when contact comes online
+                            if is_online {
+                                if let (Some(fid), Some(ip)) = (contact.friendship_id, contact.ip) {
+                                    // Look up sync record for this friendship's conversation_token
+                                    let last_received = if let Some((_, chains)) = self.friendship_chains.iter().find(|(id, _)| *id == fid) {
+                                        sync_records.iter()
+                                            .find(|r| r.conversation_token == chains.conversation_token)
+                                            .map(|r| r.last_received_ef6)
+                                    } else {
+                                        None
+                                    };
+                                    retransmit_requests.push((fid, ip, contact.handle.as_str().to_string(), last_received));
+                                }
+                            }
+
                             break;
                         }
                     }
@@ -2071,6 +2140,7 @@ impl PhotonApp {
                     let chains_result = self.friendship_chains.iter_mut()
                         .find(|(_, c)| c.conversation_token == conversation_token);
 
+                    let mut need_sync_records_update = false;
                     if let Some((fid, chains)) = chains_result {
                         // For 2-party chats, infer sender as the "other" participant
                         let from_handle_hash = match chains.other_participant(&our_handle_hash) {
@@ -2103,6 +2173,7 @@ impl PhotonApp {
 
                         // Deduplication: skip if we've already processed this exact message
                         // (UDP duplicates have identical eagle_time)
+                        // Note: Sender learns our state via last_received_hp in ping/pong - no ACK needed for dupes
                         if chains.is_duplicate(&from_handle_hash, timestamp) {
                             crate::log_info(&format!(
                                 "CHAT: Skipping duplicate message from {} (eagle_time {})",
@@ -2196,40 +2267,61 @@ impl PhotonApp {
                         // Compute plaintext hash for ACK
                         let plaintext_hash = *blake3::hash(&plaintext).as_bytes();
 
+                        // Derive this message's hash pointer (for bidirectional tracking)
+                        use crate::types::friendship::derive_msg_hp;
+                        let msg_hp = derive_msg_hp(&prev_msg_hp, &plaintext_hash, timestamp);
+
                         // Update their last_plaintext for next message's salt
                         chains.set_last_plaintext(&from_handle_hash, plaintext.clone());
 
+                        // Update bidirectional entropy state (derive weave hash from full message context)
+                        chains.update_received_for_mixing(timestamp, msg_hp, &plaintext);
+
                         // Advance their chain (receiver advances sender's chain after decrypt)
+                        // TEMPORARILY: Pass None for bidir entropy until wire protocol has their_incorporated_hp
+                        // This prevents desync when messages cross in flight
                         let eagle_time_for_advance = vsf::EagleTime::new(vsf::types::EtType::f6(timestamp));
-                        chains.advance(&from_handle_hash, &eagle_time_for_advance, &plaintext_hash);
+                        chains.advance(&from_handle_hash, &eagle_time_for_advance, &plaintext_hash, None);
 
                         // Mark as received for deduplication (protects against UDP duplicates)
                         chains.mark_received(&from_handle_hash, timestamp);
 
-                        // Send ACK with conversation_token (privacy-preserving)
-                        if let Some(ref checker) = self.status_checker {
-                            checker.send_ack(AckRequest {
-                                peer_addr: sender_addr,
-                                conversation_token,
-                                acked_eagle_time: timestamp,
-                                plaintext_hash,
-                            });
-                            crate::log_info(&format!(
-                                "CHAT: Sent ACK to {} (eagle_time {}, hash {}...)",
-                                handle, timestamp, hex::encode(&plaintext_hash[..8])
-                            ));
+                        // Update hash chain state for next message verification
+                        chains.update_received_hash(&from_handle_hash, msg_hp);
+                        crate::log_info(&format!(
+                            "CHAT: Updated hash chain for {} - msg_hp={}...",
+                            handle,
+                            hex::encode(&msg_hp[..8])
+                        ));
+
+                        // CRASH SAFETY: Persist to disk BEFORE sending ACK
+                        // If we crash after ACK but before disk, sender thinks we have it but we don't.
+                        // Disk write is the commit point - ACK is just notification.
+                        if let Some(ref identity_seed) = self.user_identity_seed {
+                            let device_secret = self.device_keypair.secret.as_bytes();
+                            if let Err(e) = crate::storage::friendship::save_friendship_chains(
+                                chains,
+                                identity_seed,
+                                device_secret,
+                            ) {
+                                crate::log_error(&format!("STORAGE: Failed to save chains after recv: {}", e));
+                            }
+                            // Flag to update sync records after borrow ends
+                            need_sync_records_update = true;
                         }
 
                         // Add message to contact's message list and persist
                         if let Some(contact) = self.contacts.get_mut(contact_idx) {
-                            contact.messages.push(ChatMessage::new(
+                            // Use actual eagle_time and sorted insert for correct chronological order
+                            contact.insert_message_sorted(ChatMessage::new_with_timestamp(
                                 message_text,
                                 false, // is_outgoing = false (received)
+                                timestamp, // Use message's actual eagle_time, not current time
                             ));
                             contact.message_scroll_offset = 0.0; // Scroll to show new message
                             changed = true;
 
-                            // Persist immediately (AGENT.md: every change hits disk)
+                            // Persist messages for UI
                             if let Some(ref identity_seed) = self.user_identity_seed {
                                 let device_secret = self.device_keypair.secret.as_bytes();
                                 if let Err(e) = crate::storage::contacts::save_messages(
@@ -2242,26 +2334,18 @@ impl PhotonApp {
                             }
                         }
 
-                        // Update hash chain state: compute msg_hp and store for next verification
-                        use crate::types::friendship::derive_msg_hp;
-                        let msg_hp = derive_msg_hp(&prev_msg_hp, &plaintext_hash, timestamp);
-                        chains.update_received_hash(&from_handle_hash, msg_hp);
-                        crate::log_info(&format!(
-                            "CHAT: Updated hash chain for {} - msg_hp={}...",
-                            handle,
-                            hex::encode(&msg_hp[..8])
-                        ));
-
-                        // Persist chains (AGENT.md: every change hits disk)
-                        if let Some(ref identity_seed) = self.user_identity_seed {
-                            let device_secret = self.device_keypair.secret.as_bytes();
-                            if let Err(e) = crate::storage::friendship::save_friendship_chains(
-                                chains,
-                                identity_seed,
-                                device_secret,
-                            ) {
-                                crate::log_error(&format!("STORAGE: Failed to save chains after recv: {}", e));
-                            }
+                        // *** THEN send ACK - if we crash here, sender will resend, we can dedup ***
+                        if let Some(ref checker) = self.status_checker {
+                            checker.send_ack(AckRequest {
+                                peer_addr: sender_addr,
+                                conversation_token,
+                                acked_eagle_time: timestamp,
+                                plaintext_hash,
+                            });
+                            crate::log_info(&format!(
+                                "CHAT: Sent ACK to {} (eagle_time {}, hash {}...)",
+                                handle, timestamp, hex::encode(&plaintext_hash[..8])
+                            ));
                         }
                         let _ = fid; // We looked up by token, fid is available if needed
                     } else {
@@ -2269,6 +2353,11 @@ impl PhotonApp {
                             "CHAT: No friendship found for conversation_token {}...",
                             hex::encode(&conversation_token[..8])
                         ));
+                    }
+
+                    // Flag to update sync records after outer loop (checker borrow must end first)
+                    if need_sync_records_update {
+                        need_sync_update = true;
                     }
                 }
                 StatusUpdate::MessageAck {
@@ -2354,13 +2443,29 @@ impl PhotonApp {
                         // Mark message as delivered in UI
                         if let Some(contact) = self.contacts.get_mut(contact_idx) {
                             // Find message by matching eagle_time (within tolerance)
+                            let mut found_msg = false;
                             for msg in contact.messages.iter_mut().rev() {
                                 if msg.is_outgoing && !msg.delivered {
                                     // Match by eagle_time (same tolerance as process_ack)
                                     if (msg.timestamp - acked_eagle_time).abs() < 0.001 {
                                         msg.delivered = true;
+                                        found_msg = true;
                                         changed = true;
                                         break;
+                                    }
+                                }
+                            }
+
+                            // Persist delivered status (AGENT.md: every change hits disk)
+                            if found_msg {
+                                if let Some(ref identity_seed) = self.user_identity_seed {
+                                    let device_secret = self.device_keypair.secret.as_bytes();
+                                    if let Err(e) = crate::storage::contacts::save_messages(
+                                        contact,
+                                        identity_seed,
+                                        device_secret,
+                                    ) {
+                                        crate::log_error(&format!("STORAGE: Failed to save delivered status: {}", e));
                                     }
                                 }
                             }
@@ -2809,6 +2914,21 @@ impl PhotonApp {
                                 if contact.all_slots_complete() {
                                     ceremony_completions.push(idx);
                                     changed = true;
+                                } else {
+                                    // Debug: why isn't ceremony complete after KEM response?
+                                    crate::log_info(&format!(
+                                        "CLUTCH: Slots not complete after KEM response for {} - checking state:",
+                                        contact.handle
+                                    ));
+                                    for (i, slot) in contact.clutch_slots.iter().enumerate() {
+                                        crate::log_info(&format!(
+                                            "  Slot {}: offer={} from_them={} to_them={}",
+                                            i,
+                                            slot.offer.is_some(),
+                                            slot.kem_secrets_from_them.is_some(),
+                                            slot.kem_secrets_to_them.is_some()
+                                        ));
+                                    }
                                 }
                             } else {
                                 crate::log_error(&format!(
@@ -3013,11 +3133,68 @@ impl PhotonApp {
             changed = true;
         }
 
+        // Retransmit pending messages to contacts that just came online
+        // Use last_received_ef6 from pong to only retransmit messages they don't have
+        for (fid, peer_addr, handle, last_received_ef6) in retransmit_requests {
+            if let Some((_, chains)) = self.friendship_chains.iter().find(|(id, _)| *id == fid) {
+                let pending = chains.pending_messages();
+                if !pending.is_empty() {
+                    // Filter to only messages newer than what peer has received
+                    let to_retransmit: Vec<_> = pending.iter()
+                        .filter(|msg| {
+                            if let Some(their_last) = last_received_ef6 {
+                                msg.eagle_time > their_last
+                            } else {
+                                // No sync info from peer - retransmit all
+                                true
+                            }
+                        })
+                        .collect();
+
+                    if !to_retransmit.is_empty() {
+                        crate::log_info(&format!(
+                            "CHAT: Retransmitting {} of {} pending message(s) to {} (came online, last_received={:?})",
+                            to_retransmit.len(),
+                            pending.len(),
+                            handle,
+                            last_received_ef6
+                        ));
+                        let conversation_token = chains.conversation_token;
+                        for msg in to_retransmit {
+                            if let Some(ref checker) = self.status_checker {
+                                checker.send_message(crate::network::status::MessageRequest {
+                                    peer_addr,
+                                    conversation_token,
+                                    prev_msg_hp: msg.prev_msg_hp,
+                                    ciphertext: msg.ciphertext.clone(),
+                                    eagle_time: msg.eagle_time,
+                                });
+                                crate::log_info(&format!(
+                                    "CHAT: Retransmitted msg with eagle_time {} to {}",
+                                    msg.eagle_time, handle
+                                ));
+                            }
+                        }
+                    } else if !pending.is_empty() {
+                        crate::log_info(&format!(
+                            "CHAT: {} pending messages but peer already has them (last_received={:?})",
+                            pending.len(), last_received_ef6
+                        ));
+                    }
+                }
+            }
+        }
+
         // NOTE: Proactive CLUTCH initiation is now handled via background keygen:
         // 1. spawn_clutch_keygen() is called when contact is added (background thread)
         // 2. check_clutch_keygens() processes results, stores keypairs + ceremony_id
         // 3. Offers are sent from check_clutch_keygens or the KeysGenerated handler above
         // This avoids UI freeze from synchronous McEliece keygen (~100ms) and handle_proof (~1s)
+
+        // Update sync records if any messages were received (for pong responses)
+        if need_sync_update {
+            self.update_sync_records();
+        }
 
         changed
     }
@@ -3146,45 +3323,62 @@ impl PhotonApp {
         use crate::types::friendship::derive_msg_hp;
         let msg_hp = derive_msg_hp(&prev_msg_hp, &plaintext_hash, eagle_time.to_f64());
 
-        // Send via StatusChecker
+        // Capture conversation_token before mutable borrow
+        let conversation_token = chains.conversation_token;
+
+        // CRASH SAFETY: Persist to disk BEFORE sending to network
+        // If we crash after network but before disk, we desync permanently.
+        // Disk write is the commit point - network is just notification.
+
+        // Track pending message for ACK matching and resync capability
+        if let Some((_, chains_mut)) = self.friendship_chains.iter_mut().find(|(id, _)| *id == friendship_id) {
+            chains_mut.add_pending(
+                eagle_time.to_f64(),
+                payload.to_vec(),
+                plaintext_hash,
+                prev_msg_hp,
+                msg_hp,
+                ciphertext.clone(),
+            );
+
+            // Track sent weave for bidirectional entropy (receiver uses this to advance our chain)
+            chains_mut.update_sent_for_mixing(eagle_time.to_f64(), msg_hp, payload);
+
+            // Advance our chain immediately after sending (chain advances every message, not on ACK)
+            // TEMPORARILY: Pass None for bidir entropy until wire protocol has their_incorporated_hp
+            // This prevents desync when messages cross in flight
+            chains_mut.advance(&our_identity_seed, &eagle_time, &plaintext_hash, None);
+
+            // *** PERSIST to disk FIRST - this is the commit point ***
+            if let Some(ref identity_seed) = self.user_identity_seed {
+                let device_secret = self.device_keypair.secret.as_bytes();
+                if let Err(e) = crate::storage::friendship::save_friendship_chains(
+                    chains_mut,
+                    identity_seed,
+                    device_secret,
+                ) {
+                    crate::log_error(&format!("STORAGE: Failed to save chains after send: {}", e));
+                }
+            }
+        }
+
+        // *** THEN send via network - if we crash here, we can retransmit on restart ***
         if let Some(ref checker) = self.status_checker {
             checker.send_message(MessageRequest {
                 peer_addr: ip,
-                conversation_token: chains.conversation_token,
+                conversation_token,
                 prev_msg_hp,
                 ciphertext: ciphertext.clone(),
                 eagle_time: eagle_time.to_f64(),
             });
 
-            // Track pending message for ACK matching and resync capability
-            if let Some((_, chains_mut)) = self.friendship_chains.iter_mut().find(|(id, _)| *id == friendship_id) {
-                chains_mut.add_pending(
-                    eagle_time.to_f64(),
-                    payload.to_vec(),
-                    plaintext_hash,
-                    prev_msg_hp,
-                    msg_hp,
-                    ciphertext,
-                );
-
-                // Persist chains (AGENT.md: every change hits disk)
-                if let Some(ref identity_seed) = self.user_identity_seed {
-                    let device_secret = self.device_keypair.secret.as_bytes();
-                    if let Err(e) = crate::storage::friendship::save_friendship_chains(
-                        chains_mut,
-                        identity_seed,
-                        device_secret,
-                    ) {
-                        crate::log_error(&format!("STORAGE: Failed to save chains after send: {}", e));
-                    }
-                }
-            }
-
             // Add to contact's message list and persist
             if let Some(contact) = self.contacts.get_mut(contact_idx) {
-                contact.messages.push(ChatMessage::new(
+                // Use actual eagle_time and sorted insert for correct chronological order
+                contact.insert_message_sorted(ChatMessage::new_with_timestamp(
                     message_text.to_string(),
                     true, // is_outgoing
+                    eagle_time.to_f64(), // Use message's actual eagle_time
                 ));
                 // Auto-scroll to bottom to show new message
                 contact.message_scroll_offset = 0.0;
@@ -3320,6 +3514,7 @@ impl PhotonApp {
         use crate::network::status::{ClutchFullOfferRequest, ClutchKemResponseRequest};
 
         let mut changed = false;
+        let mut ceremony_completions: Vec<usize> = Vec::new();
 
         // Get our handle_hash for CLUTCH (PRIVATE identity seed)
         let our_handle_hash = match self.user_identity_seed {
@@ -3337,7 +3532,7 @@ impl PhotonApp {
             ));
 
             let mut found = false;
-            for contact in &mut self.contacts {
+            for (idx, contact) in self.contacts.iter_mut().enumerate() {
                 if contact.id == result.contact_id {
                     found = true;
 
@@ -3367,6 +3562,15 @@ impl PhotonApp {
                         let our_offer = ClutchFullOfferPayload::from_keypairs(keypairs);
                         if let Some(our_slot) = contact.get_slot_mut(&our_handle_hash) {
                             our_slot.offer = Some(our_offer);
+                            crate::log_info(&format!(
+                                "CLUTCH: Stored OUR offer in our slot for {}",
+                                contact.handle
+                            ));
+                        } else {
+                            crate::log_error(&format!(
+                                "CLUTCH: Could not find our slot for {} - our_handle_hash mismatch?",
+                                contact.handle
+                            ));
                         }
                     }
 
@@ -3476,10 +3680,10 @@ impl PhotonApp {
                     // Check if ceremony can complete
                     if contact.all_slots_complete() {
                         crate::log_info(&format!(
-                            "CLUTCH: All slots complete for {} - ready for ceremony completion",
+                            "CLUTCH: All slots complete for {} after keygen - triggering ceremony completion",
                             contact.handle
                         ));
-                        // Completion is handled by status checker polling or next event
+                        ceremony_completions.push(idx);
                     }
 
                     break;
@@ -3492,6 +3696,12 @@ impl PhotonApp {
                     result_id_hex
                 ));
             }
+        }
+
+        // Process deferred ceremony completions (after releasing contacts borrow)
+        for idx in ceremony_completions {
+            self.complete_clutch_ceremony_by_idx(idx, our_handle_hash);
+            changed = true;
         }
 
         if changed {
@@ -3656,6 +3866,9 @@ impl PhotonApp {
         } else {
             self.friendship_chains.push((friendship_id, friendship_chains));
         }
+
+        // Update sync records for new friendship
+        self.update_sync_records();
 
         // Now update the contact (mutable borrow)
         if let Some(contact) = self.contacts.get_mut(contact_idx) {

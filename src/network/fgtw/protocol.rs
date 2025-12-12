@@ -52,12 +52,15 @@ pub enum FgtwMessage {
     },
     /// P2P status pong - "yes I'm online"
     ///
-    /// Simplified header-only format:
+    /// Format:
     /// RÅ< z4 y2 ef6[timestamp] hp[SAME provenance] ke[pubkey] ge[signature] n1 (pong) >
+    /// [pong (sync_count: N) (sync_0_tok: hb) (sync_0_ef6: f6) ...]
     ///
     /// - Echoes same provenance_hash from ping (proves we saw it)
     /// - ke = responder's Ed25519 public key (for signature verification)
     /// - ge = signature of provenance_hash (proves we processed it)
+    /// - sync records: Per-conversation last_received_ef6 for efficient resync
+    ///   Peer can retransmit everything after that timestamp
     ///
     /// Note: Avatar is fetched by handle, not exchanged in ping/pong.
     /// Storage key = BLAKE3(BLAKE3(handle) || "avatar")
@@ -66,6 +69,10 @@ pub enum FgtwMessage {
         responder_pubkey: DevicePubkey, // Who is responding
         provenance_hash: [u8; 32],      // Same hash from ping (proves we received it)
         signature: [u8; 64],            // Ed25519 signature of provenance_hash
+        /// Per-conversation sync records: (conversation_token, last_received_ef6)
+        /// Tells peer: "For this conversation, your last message I received was at time X"
+        /// Peer retransmits any pending messages with eagle_time > X
+        sync_records: Vec<SyncRecord>,
     },
     // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete REMOVED
     // Full 8-primitive CLUTCH uses ClutchFullOffer and ClutchKemResponse
@@ -113,6 +120,17 @@ pub struct PeerRecord {
     pub device_pubkey: DevicePubkey, // Device's X25519 public key (used as device identifier)
     pub ip: SocketAddr,         // Where to reach this device
     pub last_seen: f64,         // Timestamp (f64, serializes as VSF type f6)
+}
+
+/// Sync record for pong - tells peer our last received message timestamp per conversation
+/// Used for efficient resync: peer retransmits pending messages with eagle_time > last_received_ef6
+#[derive(Debug, Clone)]
+pub struct SyncRecord {
+    /// Privacy-preserving conversation token (smear_hash of sorted participant seeds)
+    pub conversation_token: [u8; 32],
+    /// Eagle time of last message received from peer in this conversation
+    /// Peer should retransmit any pending messages with eagle_time > this value
+    pub last_received_ef6: f64,
 }
 
 /// Convert SocketAddr to binary format for VSF
@@ -340,15 +358,28 @@ impl FgtwMessage {
                 responder_pubkey,
                 provenance_hash,
                 signature,
+                sync_records,
             } => {
-                // Simplified header-only format: RÅ< ... ke[pubkey] ge[sig] n1 (pong) >
-                // All crypto is in header, section just identifies message type
-                // Avatar is NOT included - fetched by handle instead
+                // Pong with sync records for efficient resync
+                // Format: RÅ< ... ke[pubkey] ge[sig] > [pong (sync_count: N) (sync_0_tok: hb) (sync_0_ef6: f6) ...]
+                let mut fields = vec![
+                    ("sync_count".to_string(), VsfType::u(sync_records.len(), false)),
+                ];
+                for (i, record) in sync_records.iter().enumerate() {
+                    fields.push((
+                        format!("sync_{}_tok", i),
+                        VsfType::hb(record.conversation_token.to_vec()),
+                    ));
+                    fields.push((
+                        format!("sync_{}_ef6", i),
+                        VsfType::f6(record.last_received_ef6),
+                    ));
+                }
                 builder
                     .creation_time_nanos(*timestamp)
                     .provenance_hash(*provenance_hash)
                     .signature_ed25519(*responder_pubkey.as_bytes(), *signature)
-                    .add_section("pong", vec![])
+                    .add_section("pong", fields)
                     .build()
             }
             // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete serialization REMOVED
@@ -465,11 +496,13 @@ impl FgtwMessage {
                         signature,
                     });
                 } else {
+                    // Old header-only pong format - no sync records (backwards compat)
                     return Ok(FgtwMessage::StatusPong {
                         timestamp,
                         responder_pubkey: pubkey,
                         provenance_hash,
                         signature,
+                        sync_records: vec![],
                     });
                 }
             }
@@ -484,7 +517,7 @@ impl FgtwMessage {
             _ => return Err("Invalid section name".to_string()),
         };
 
-        // Handle simplified ping/pong format (section name is ping/pong) - legacy path
+        // Handle ping/pong format
         if section_name == "ping" || section_name == "pong" {
             // Extract from header: timestamp, pubkey, provenance_hash, signature
             let timestamp = extract_header_timestamp(&header)?;
@@ -500,11 +533,38 @@ impl FgtwMessage {
                     signature,
                 });
             } else {
+                // Pong - parse sync records from section body
+                let mut fields: Vec<(String, VsfType)> = Vec::new();
+                while ptr < bytes.len() && bytes[ptr] != b']' {
+                    if bytes[ptr] != b'(' {
+                        return Err("Expected field start '('".to_string());
+                    }
+                    ptr += 1;
+                    let field_name = match parse(bytes, &mut ptr) {
+                        Ok(VsfType::d(name)) => name,
+                        _ => return Err("Invalid pong field name".to_string()),
+                    };
+                    if ptr < bytes.len() && bytes[ptr] == b':' {
+                        ptr += 1;
+                        let value = parse(bytes, &mut ptr)
+                            .map_err(|e| format!("Parse pong field: {}", e))?;
+                        fields.push((field_name, value));
+                    }
+                    if ptr >= bytes.len() || bytes[ptr] != b')' {
+                        return Err("Expected field end ')'".to_string());
+                    }
+                    ptr += 1;
+                }
+
+                // Extract sync records
+                let sync_records = extract_sync_records(&fields)?;
+
                 return Ok(FgtwMessage::StatusPong {
                     timestamp,
                     responder_pubkey: pubkey,
                     provenance_hash,
                     signature,
+                    sync_records,
                 });
             }
         }
@@ -805,6 +865,37 @@ fn extract_peer_list(
     }
 
     Ok(peers)
+}
+
+/// Extract sync records from pong message fields
+/// Format: sync_count, sync_0_tok, sync_0_ef6, sync_1_tok, sync_1_ef6, ...
+fn extract_sync_records(fields: &[(String, VsfType)]) -> Result<Vec<SyncRecord>, String> {
+    // Get count (optional for backwards compat - default to 0)
+    let count = match get_field(fields, "sync_count") {
+        Some(vsf_val) => {
+            usize::from_vsf_type(vsf_val).map_err(|e| format!("Invalid sync_count: {}", e))?
+        }
+        None => return Ok(vec![]), // No sync records (old format)
+    };
+
+    let mut records = Vec::with_capacity(count);
+    for i in 0..count {
+        let tok_key = format!("sync_{}_tok", i);
+        let ef6_key = format!("sync_{}_ef6", i);
+
+        let conversation_token = extract_hash(fields, &tok_key)?;
+        let last_received_ef6 = match get_field(fields, &ef6_key) {
+            Some(VsfType::f6(v)) => *v,
+            _ => return Err(format!("Missing or invalid {}", ef6_key)),
+        };
+
+        records.push(SyncRecord {
+            conversation_token,
+            last_received_ef6,
+        });
+    }
+
+    Ok(records)
 }
 
 // Helper functions to extract from VsfHeader for simplified ping/pong format

@@ -24,6 +24,8 @@ case "$OS" in
         fi
         BINARY_NAME="photon-messenger"
         INSTALL_DIR="$HOME/.local/bin"
+        APP_DIR="$HOME/Applications"
+        APP_NAME="Photon Messenger.app"
         ;;
     *)
         echo "Error: Unsupported operating system: $OS"
@@ -57,9 +59,9 @@ fi
 # Make it executable
 chmod +x "$TMP_BINARY"
 
-# Remove quarantine flag on macOS
-if [ "$PLATFORM" = "macos" ]; then
-    xattr -d com.apple.quarantine "$TMP_BINARY" 2>/dev/null || true
+# Remove ALL extended attributes on macOS (quarantine, etc) - must happen BEFORE signature check
+if [ "$OS" = "Darwin" ]; then
+    xattr -c "$TMP_BINARY" 2>/dev/null || true
 fi
 
 # Run binary once to self-verify signature
@@ -80,29 +82,124 @@ echo "Installing to $INSTALL_DIR..."
 mkdir -p "$INSTALL_DIR"
 mv "$TMP_BINARY" "$INSTALL_DIR/$BINARY_NAME"
 
+# Clear all extended attributes from installed binary (macOS)
+if [ "$OS" = "Darwin" ]; then
+    xattr -c "$INSTALL_DIR/$BINARY_NAME" 2>/dev/null || true
+fi
+
 echo "✓ Binary installed"
 echo ""
 
-# Add to PATH if not already there
-SHELL_RC=""
-if [ -n "$BASH_VERSION" ]; then
-    SHELL_RC="$HOME/.bashrc"
-elif [ -n "$ZSH_VERSION" ]; then
-    SHELL_RC="$HOME/.zshrc"
-else
-    # Try to detect shell from $SHELL
-    case "$SHELL" in
-        */bash) SHELL_RC="$HOME/.bashrc" ;;
-        */zsh) SHELL_RC="$HOME/.zshrc" ;;
-        */fish) SHELL_RC="$HOME/.config/fish/config.fish" ;;
-    esac
+# Create macOS .app bundle for Finder/Dock/Launchpad
+if [ "$OS" = "Darwin" ]; then
+    echo "Creating macOS app bundle..."
+
+    # Create bundle structure
+    mkdir -p "$APP_DIR/$APP_NAME/Contents/MacOS"
+    mkdir -p "$APP_DIR/$APP_NAME/Contents/Resources"
+
+    # Copy binary into bundle
+    cp "$INSTALL_DIR/$BINARY_NAME" "$APP_DIR/$APP_NAME/Contents/MacOS/$BINARY_NAME"
+    chmod +x "$APP_DIR/$APP_NAME/Contents/MacOS/$BINARY_NAME"
+
+    # Download icon and convert to icns (macOS has iconutil built-in)
+    ICON_URL="https://holdmyoscilloscope.com/photon/icon-1024.png"
+    TMP_ICON="/tmp/photon-icon-$$"
+    mkdir -p "$TMP_ICON.iconset"
+
+    if curl -sSfL "$ICON_URL" -o "$TMP_ICON.png" 2>/dev/null; then
+        # Create iconset with multiple sizes (sips is built into macOS)
+        sips -z 16 16     "$TMP_ICON.png" --out "$TMP_ICON.iconset/icon_16x16.png" 2>/dev/null || true
+        sips -z 32 32     "$TMP_ICON.png" --out "$TMP_ICON.iconset/icon_16x16@2x.png" 2>/dev/null || true
+        sips -z 32 32     "$TMP_ICON.png" --out "$TMP_ICON.iconset/icon_32x32.png" 2>/dev/null || true
+        sips -z 64 64     "$TMP_ICON.png" --out "$TMP_ICON.iconset/icon_32x32@2x.png" 2>/dev/null || true
+        sips -z 128 128   "$TMP_ICON.png" --out "$TMP_ICON.iconset/icon_128x128.png" 2>/dev/null || true
+        sips -z 256 256   "$TMP_ICON.png" --out "$TMP_ICON.iconset/icon_128x128@2x.png" 2>/dev/null || true
+        sips -z 256 256   "$TMP_ICON.png" --out "$TMP_ICON.iconset/icon_256x256.png" 2>/dev/null || true
+        sips -z 512 512   "$TMP_ICON.png" --out "$TMP_ICON.iconset/icon_256x256@2x.png" 2>/dev/null || true
+        sips -z 512 512   "$TMP_ICON.png" --out "$TMP_ICON.iconset/icon_512x512.png" 2>/dev/null || true
+        sips -z 1024 1024 "$TMP_ICON.png" --out "$TMP_ICON.iconset/icon_512x512@2x.png" 2>/dev/null || true
+
+        # Convert iconset to icns
+        iconutil -c icns "$TMP_ICON.iconset" -o "$APP_DIR/$APP_NAME/Contents/Resources/AppIcon.icns" 2>/dev/null || true
+
+        # Cleanup
+        rm -rf "$TMP_ICON.png" "$TMP_ICON.iconset"
+    fi
+
+    # Create Info.plist
+    cat > "$APP_DIR/$APP_NAME/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>
+    <string>photon-messenger</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.photon.messenger</string>
+    <key>CFBundleName</key>
+    <string>Photon Messenger</string>
+    <key>CFBundleDisplayName</key>
+    <string>Photon Messenger</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleVersion</key>
+    <string>1.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>10.13</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSSupportsAutomaticGraphicsSwitching</key>
+    <true/>
+</dict>
+</plist>
+PLIST
+
+    # Remove quarantine from entire app bundle
+    xattr -cr "$APP_DIR/$APP_NAME" 2>/dev/null || true
+
+    echo "✓ App bundle created at $APP_DIR/$APP_NAME"
+    echo ""
 fi
 
-if [ -n "$SHELL_RC" ] && [ -f "$SHELL_RC" ]; then
+# Add to PATH - handle macOS bash vs zsh properly
+# macOS uses .bash_profile for login shells (Terminal.app), not .bashrc
+# Modern macOS defaults to zsh which uses .zshrc
+SHELL_RC=""
+PATH_UPDATED=""
+
+case "$SHELL" in
+    */zsh)
+        SHELL_RC="$HOME/.zshrc"
+        ;;
+    */bash)
+        if [ "$OS" = "Darwin" ]; then
+            # macOS bash uses .bash_profile for Terminal.app login shells
+            SHELL_RC="$HOME/.bash_profile"
+        else
+            SHELL_RC="$HOME/.bashrc"
+        fi
+        ;;
+    */fish)
+        SHELL_RC="$HOME/.config/fish/config.fish"
+        ;;
+esac
+
+# Create the rc file if it doesn't exist (common on fresh macOS)
+if [ -n "$SHELL_RC" ]; then
+    if [ ! -f "$SHELL_RC" ]; then
+        touch "$SHELL_RC"
+    fi
+
     if ! grep -q "$INSTALL_DIR" "$SHELL_RC" 2>/dev/null; then
         echo "" >> "$SHELL_RC"
         echo "# Added by Photon Messenger installer" >> "$SHELL_RC"
         echo "export PATH=\"\$PATH:$INSTALL_DIR\"" >> "$SHELL_RC"
+        PATH_UPDATED="$SHELL_RC"
         echo "✓ Added to PATH in $SHELL_RC"
     fi
 fi
@@ -161,11 +258,29 @@ echo "=========================================="
 echo "✓ Photon Messenger installed successfully!"
 echo "=========================================="
 echo ""
-echo "Run 'photon-messenger' to start."
-if [ "$PLATFORM" = "linux" ]; then
+
+if [ "$OS" = "Darwin" ]; then
+    # macOS-specific instructions
+    echo "You can now:"
+    echo ""
+    echo "  1. Open from Finder: ~/Applications/Photon Messenger"
+    echo "     (or search 'Photon' in Spotlight/Launchpad)"
+    echo ""
+    echo "  2. Drag to Dock for quick access"
+    echo ""
+    echo "  3. Run from terminal: photon-messenger"
+    if [ -n "$PATH_UPDATED" ]; then
+        echo "     (restart terminal or: source $PATH_UPDATED)"
+    fi
+    echo ""
+else
+    # Linux instructions
+    echo "Run 'photon-messenger' to start."
     echo "Or find 'Photon Messenger' in your application menu."
+    echo ""
+    if [ -n "$PATH_UPDATED" ]; then
+        echo "Note: You may need to restart your terminal"
+        echo "      or run: source $PATH_UPDATED"
+        echo ""
+    fi
 fi
-echo ""
-echo "Note: You may need to restart your terminal"
-echo "      or run: export PATH=\"\$PATH:$INSTALL_DIR\""
-echo ""
