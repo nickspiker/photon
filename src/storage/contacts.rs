@@ -146,7 +146,15 @@ fn derive_list_key(our_identity_seed: &[u8; 32], device_secret: &[u8; 32]) -> [u
     hasher.update(b"photon_contact_list_v3"); // v3: now includes device_secret
     hasher.update(our_identity_seed);
     hasher.update(device_secret);
-    *hasher.finalize().as_bytes()
+    let key = *hasher.finalize().as_bytes();
+    #[cfg(feature = "development")]
+    crate::log_info(&format!(
+        "STORAGE: derive_list_key: seed[..8]={} dev[..8]={} → key[..8]={}",
+        hex::encode(&our_identity_seed[..8]),
+        hex::encode(&device_secret[..8]),
+        hex::encode(&key[..8])
+    ));
+    key
 }
 
 /// Derive encryption key for per-contact state
@@ -183,6 +191,14 @@ fn encrypt_data(data: &[u8], key: &[u8; 32], section_name: &str) -> Result<Vec<u
     encrypted_payload.extend_from_slice(&nonce_bytes);
     encrypted_payload.extend_from_slice(&ciphertext);
 
+    #[cfg(feature = "development")]
+    crate::log_info(&format!(
+        "STORAGE: encrypt: plaintext_len={} nonce[..8]={} ct[..8]={}",
+        data.len(),
+        hex::encode(&nonce_bytes[..8]),
+        hex::encode(&ciphertext[..8.min(ciphertext.len())])
+    ));
+
     // Wrap in proper VSF file with header, timestamp, hashes (hp + hb)
     let vsf_bytes = vsf::VsfBuilder::new()
         .add_section(section_name, vec![
@@ -197,7 +213,8 @@ fn encrypt_data(data: &[u8], key: &[u8; 32], section_name: &str) -> Result<Vec<u
 /// Decrypt data from VSF-wrapped encrypted file
 fn decrypt_data(vsf_bytes: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, StorageError> {
     // Check for legacy format (raw nonce+ciphertext, no VSF header)
-    if vsf_bytes.len() >= 3 && &vsf_bytes[0..3] != b"VS\xc5" {
+    // VSF magic is "RÅ<" = 0x52 0xC3 0x85 0x3C
+    if vsf_bytes.len() >= 4 && &vsf_bytes[0..4] != b"R\xc3\x85<" {
         // Legacy format - try direct decryption
         return decrypt_data_legacy(vsf_bytes, key);
     }
@@ -229,6 +246,14 @@ fn decrypt_data(vsf_bytes: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, StorageErro
         Some(VsfType::v(b'e', payload)) => payload,
         _ => return Err(StorageError::Decryption("Expected ve{} encrypted data".to_string())),
     };
+
+    #[cfg(feature = "development")]
+    crate::log_info(&format!(
+        "STORAGE: decrypt: payload_len={} nonce[..8]={} ct[..8]={}",
+        encrypted_payload.len(),
+        hex::encode(&encrypted_payload[..8.min(encrypted_payload.len())]),
+        hex::encode(&encrypted_payload[12..20.min(encrypted_payload.len())])
+    ));
 
     if encrypted_payload.len() < 12 + 16 {
         return Err(StorageError::Decryption("Encrypted payload too short".to_string()));
@@ -341,6 +366,13 @@ pub fn save_contact_list(
         }
     }
 
+    #[cfg(feature = "development")]
+    crate::log_info(&format!(
+        "STORAGE: save_contact_list: file_len={} raw[..32]={}",
+        encrypted.len(),
+        hex::encode(&encrypted[..32.min(encrypted.len())])
+    ));
+
     fs::write(&index_path, &encrypted)?;
     Ok(())
 }
@@ -357,6 +389,13 @@ pub fn load_contact_list(
     }
 
     let encrypted = fs::read(&index_path)?;
+
+    #[cfg(feature = "development")]
+    crate::log_info(&format!(
+        "STORAGE: load_contact_list: file_len={} raw[..32]={}",
+        encrypted.len(),
+        hex::encode(&encrypted[..32.min(encrypted.len())])
+    ));
 
     // Log the VSF file being read
     #[cfg(feature = "development")]
@@ -436,6 +475,7 @@ fn contact_state_schema() -> SectionSchema {
         .field("seed", TypeConstraint::AnyHash)
         .field("friendship_id", TypeConstraint::AnyHash) // Links to friendship storage
         .field("last_seen", TypeConstraint::Any) // f64 Eagle Time
+        .field("completed_their_hqc_prefix", TypeConstraint::AnyHash) // Detects stale offers (8 bytes)
 }
 
 /// Save contact state (mutable data) to per-contact file with schema validation
@@ -484,6 +524,11 @@ pub fn save_contact_state(
     if let Some(last_seen) = contact.last_seen {
         builder = builder
             .set("last_seen", VsfType::e(vsf::types::EtType::f6(last_seen)))
+            .map_err(|e| StorageError::Parse(e.to_string()))?;
+    }
+    if let Some(hqc_prefix) = &contact.completed_their_hqc_prefix {
+        builder = builder
+            .set("completed_their_hqc_prefix", VsfType::hb(hqc_prefix.to_vec()))
             .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
 
@@ -650,6 +695,11 @@ pub fn load_contact_state(
             contact.id = ContactId::from_bytes(v.as_slice().try_into().unwrap());
         }
     }
+    if let Some(VsfType::hb(v)) = get_val("completed_their_hqc_prefix") {
+        if v.len() == 8 {
+            contact.completed_their_hqc_prefix = Some(v.as_slice().try_into().unwrap());
+        }
+    }
 
     Ok(contact)
 }
@@ -719,16 +769,20 @@ pub fn delete_contact(identity_seed: &[u8; 32]) -> Result<(), StorageError> {
 }
 
 fn clutch_state_to_u8(state: ClutchState) -> u8 {
+    // Match enum discriminant order: Pending=0, AwaitingProof=1, Complete=2
     match state {
         ClutchState::Pending => 0,
-        ClutchState::Complete => 1,
+        ClutchState::AwaitingProof => 1,
+        ClutchState::Complete => 2,
     }
 }
 
 fn u8_to_clutch_state(v: u8) -> ClutchState {
+    // Match enum discriminant order: Pending=0, AwaitingProof=1, Complete=2
     match v {
-        1 => ClutchState::Complete,
-        _ => ClutchState::Pending, // All old intermediate states map to Pending
+        1 => ClutchState::AwaitingProof,
+        2 => ClutchState::Complete,
+        _ => ClutchState::Pending,
     }
 }
 
@@ -749,6 +803,132 @@ fn u8_to_trust_level(v: u8) -> TrustLevel {
         3 => TrustLevel::Inner,
         _ => TrustLevel::Stranger,
     }
+}
+
+// ============================================================================
+// Message Storage
+// ============================================================================
+
+use crate::types::ChatMessage;
+
+/// Derive encryption key for messages
+fn derive_messages_key(
+    our_identity_seed: &[u8; 32],
+    their_identity_seed: &[u8; 32],
+    device_secret: &[u8; 32],
+) -> [u8; 32] {
+    let mut hasher = Hasher::new();
+    hasher.update(b"photon_messages_v1");
+    hasher.update(our_identity_seed);
+    hasher.update(their_identity_seed);
+    hasher.update(device_secret);
+    *hasher.finalize().as_bytes()
+}
+
+/// Save messages for a contact
+pub fn save_messages(
+    contact: &Contact,
+    our_identity_seed: &[u8; 32],
+    device_secret: &[u8; 32],
+) -> Result<(), StorageError> {
+    if contact.messages.is_empty() {
+        return Ok(()); // Nothing to save
+    }
+
+    let their_identity_seed = derive_identity_seed(contact.handle.as_str());
+    let dir = contact_dir_from_seed(&their_identity_seed)?;
+    let messages_path = dir.join("messages.vsf");
+
+    // Build VSF section with messages
+    let mut section = VsfSection::new("messages");
+    for msg in &contact.messages {
+        // Each message: (content: x, timestamp: e, is_outgoing: u3, delivered: u3)
+        section.add_field_multi(
+            "msg",
+            vec![
+                VsfType::x(msg.content.clone()),
+                VsfType::e(vsf::types::EtType::f6(msg.timestamp)),
+                VsfType::u3(if msg.is_outgoing { 1 } else { 0 }),
+                VsfType::u3(if msg.delivered { 1 } else { 0 }),
+            ],
+        );
+    }
+
+    let vsf_bytes = section.encode();
+
+    let key = derive_messages_key(our_identity_seed, &their_identity_seed, device_secret);
+    let encrypted = encrypt_data(&vsf_bytes, &key, "encrypted_messages")?;
+
+    fs::write(&messages_path, &encrypted)?;
+
+    #[cfg(feature = "development")]
+    crate::log_info(&format!(
+        "STORAGE: Saved {} messages for {}",
+        contact.messages.len(),
+        contact.handle.as_str()
+    ));
+
+    Ok(())
+}
+
+/// Load messages for a contact
+pub fn load_messages(
+    contact: &mut Contact,
+    our_identity_seed: &[u8; 32],
+    device_secret: &[u8; 32],
+) -> Result<(), StorageError> {
+    let their_identity_seed = derive_identity_seed(contact.handle.as_str());
+    let dir = contact_dir_from_seed(&their_identity_seed)?;
+    let messages_path = dir.join("messages.vsf");
+
+    if !messages_path.exists() {
+        return Ok(()); // No messages yet
+    }
+
+    let encrypted = fs::read(&messages_path)?;
+    let key = derive_messages_key(our_identity_seed, &their_identity_seed, device_secret);
+    let vsf_bytes = decrypt_data(&encrypted, &key)?;
+
+    let mut ptr = 0;
+    let section = VsfSection::parse(&vsf_bytes, &mut ptr)
+        .map_err(|e| StorageError::Parse(format!("Messages parse: {}", e)))?;
+
+    contact.messages.clear();
+    for field in section.get_fields("msg") {
+        if field.values.len() >= 4 {
+            let content = match &field.values[0] {
+                VsfType::x(s) => s.clone(),
+                _ => continue,
+            };
+            let timestamp = match &field.values[1] {
+                v => EagleTime::new_from_vsf(v.clone()).to_f64(),
+            };
+            let is_outgoing = match &field.values[2] {
+                VsfType::u3(v) => *v != 0,
+                _ => false,
+            };
+            let delivered = match &field.values[3] {
+                VsfType::u3(v) => *v != 0,
+                _ => false,
+            };
+
+            contact.messages.push(ChatMessage {
+                content,
+                timestamp,
+                is_outgoing,
+                delivered,
+            });
+        }
+    }
+
+    #[cfg(feature = "development")]
+    crate::log_info(&format!(
+        "STORAGE: Loaded {} messages for {}",
+        contact.messages.len(),
+        contact.handle.as_str()
+    ));
+
+    Ok(())
 }
 
 #[cfg(test)]

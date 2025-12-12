@@ -139,31 +139,162 @@ impl std::fmt::Display for FriendshipId {
     }
 }
 
+// Domain separation for hash chain pointers
+const DOMAIN_MSG_HP: &[u8] = b"PHOTON_MSG_HP_v1";
+const DOMAIN_ANCHOR: &[u8] = b"PHOTON_ANCHOR_v1";
+
 /// Per-participant encryption chains for a friendship.
 ///
-/// Each participant has their own chain (8KB). When sending, use sender's chain.
+/// Each participant has their own chain (16KB). When sending, use sender's chain.
 /// When receiving ACK, advance sender's chain. This prevents race conditions
 /// in simultaneous sends and scales to N-party conversations.
+///
+/// ## Hash Chain Protocol
+///
+/// Every message includes `prev_msg_hp` - a hash pointer to the previous message.
+/// This creates a cryptographic chain that:
+/// - Provides message ordering (can detect missing/out-of-order)
+/// - Enables resync (request messages after known hash)
+/// - Prevents replay (each message uniquely identified)
+///
+/// The hash chain is separate from encryption chain advancement:
+/// - **Hash chain**: Links messages for ordering/integrity
+/// - **Encryption chain**: Advances on ACK for forward secrecy
 #[derive(Clone)]
 pub struct FriendshipChains {
     /// Friendship ID (derived from sorted handle_hashes)
     pub friendship_id: FriendshipId,
+
+    /// Privacy-preserving conversation token for wire format.
+    /// Derived via smear_hash(sorted_participant_seeds) - only participants can compute.
+    /// Replaces cleartext handle_hashes in messages.
+    pub conversation_token: [u8; 32],
 
     /// One chain per participant (sorted by handle_hash)
     chains: Vec<Chain>,
 
     /// Participant handle_hashes (sorted) - index matches chain index
     participants: Vec<[u8; 32]>,
+
+    /// Last plaintext per chain (for salt derivation).
+    /// Index matches chain index. Empty Vec = first message on that chain.
+    /// Used to derive salt: `derive_salt(prev_plaintext, chain)`
+    last_plaintexts: Vec<Vec<u8>>,
+
+    /// Pending sent messages awaiting ACK (for our chain only).
+    /// When we send, we store plaintext here. On ACK, we advance and clear.
+    /// Vec because we can send multiple messages before receiving ACKs.
+    pub pending_messages: Vec<PendingMessage>,
+
+    /// Last received message time per participant (for duplicate detection).
+    /// Index matches chain index. None = no message received yet from that sender.
+    /// If incoming message has eagle_time <= this value, it's a duplicate (skip).
+    last_received_times: Vec<Option<f64>>,
+
+    // ==================== HASH CHAIN STATE ====================
+
+    /// First message anchor per participant (deterministic starting point).
+    /// Derived from: BLAKE3(DOMAIN_ANCHOR || participant_handle_hash || chain_fingerprint)
+    /// where chain_fingerprint = BLAKE3(chain[256..512]).
+    /// Both parties compute identical anchors from CLUTCH ceremony.
+    first_message_anchors: Vec<[u8; 32]>,
+
+    /// Last received message hash per participant (for hash chain verification).
+    /// Index matches chain index. None = no message received yet → expect anchor.
+    /// On receive: verify prev_msg_hp == this value (or anchor if None).
+    /// After successful decrypt: update to msg_hp of received message.
+    last_received_hashes: Vec<Option<[u8; 32]>>,
+
+    /// Last sent message hash (for our chain only).
+    /// Used as prev_msg_hp in next outgoing message.
+    /// None = first message → use our anchor.
+    /// Updated after each send (before ACK - hash chain is independent).
+    last_sent_hash: Option<[u8; 32]>,
+}
+
+/// A sent message awaiting ACK confirmation.
+///
+/// Stored in pending_messages until ACKed. Contains everything needed to:
+/// 1. Match incoming ACK (eagle_time + plaintext_hash)
+/// 2. Advance chain on ACK (plaintext_hash)
+/// 3. Resend if no ACK (ciphertext + prev_msg_hp)
+/// 4. Derive next message's salt (plaintext)
+///
+/// After ACK: removed from pending, chain advances, forward secrecy kicks in.
+/// Without ACK: can be resent from ciphertext (still have encrypted form).
+#[derive(Clone)]
+pub struct PendingMessage {
+    /// Eagle time of this message (for ACK matching and nonce)
+    pub eagle_time: f64,
+    /// Plaintext content (needed for salt derivation of next message)
+    pub plaintext: Vec<u8>,
+    /// BLAKE3 hash of plaintext (for ACK verification and chain advancement)
+    pub plaintext_hash: [u8; 32],
+    /// Hash pointer to previous message (for hash chain continuity)
+    pub prev_msg_hp: [u8; 32],
+    /// This message's hash pointer (becomes prev for next message)
+    pub msg_hp: [u8; 32],
+    /// Encrypted ciphertext (for resend without re-encryption)
+    pub ciphertext: Vec<u8>,
+}
+
+// ============================================================================
+// Hash Chain Derivation Functions
+// ============================================================================
+
+/// Derive first message anchor for a participant's hash chain.
+///
+/// Anchor = BLAKE3(DOMAIN_ANCHOR || handle_hash || chain_fingerprint)
+/// where chain_fingerprint = BLAKE3(active_chain_bytes).
+///
+/// Both parties compute identical anchors from CLUTCH ceremony output.
+fn derive_anchor(handle_hash: &[u8; 32], chain: &Chain) -> [u8; 32] {
+    // Chain fingerprint: hash of active portion (links[256..512])
+    let active_bytes = chain.to_bytes();
+    let active_portion = &active_bytes[CHAIN_SIZE / 2..]; // 8KB active links
+    let chain_fingerprint = blake3::hash(active_portion);
+
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(DOMAIN_ANCHOR);
+    hasher.update(handle_hash);
+    hasher.update(chain_fingerprint.as_bytes());
+    *hasher.finalize().as_bytes()
+}
+
+/// Derive message hash pointer (provenance hash) for hash chain.
+///
+/// msg_hp = BLAKE3(DOMAIN_MSG_HP || prev_msg_hp || plaintext_hash || eagle_time_bytes)
+///
+/// This creates a cryptographic chain where each message's identity depends on:
+/// - The entire history (via prev_msg_hp)
+/// - The content (plaintext_hash)
+/// - The timestamp (eagle_time)
+pub fn derive_msg_hp(prev_msg_hp: &[u8; 32], plaintext_hash: &[u8; 32], eagle_time: f64) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(DOMAIN_MSG_HP);
+    hasher.update(prev_msg_hp);
+    hasher.update(plaintext_hash);
+    hasher.update(&eagle_time.to_le_bytes());
+    *hasher.finalize().as_bytes()
 }
 
 impl FriendshipChains {
     /// Initialize chains from CLUTCH shared secrets.
     ///
-    /// Uses parallel XOF expansion with BLAKE3 and SHA3-SHAKE256, then XORs
-    /// the results for hash algorithm diversity. If either construction survives
-    /// cryptanalysis, the chain material remains secure.
+    /// Defense-in-depth key derivation without keyspace compression:
+    ///
+    /// 1. **Avalanche expansion**: 640B eggs → 2MB memory-hard mixed buffer
+    /// 2. **Domain separation**: Each participant gets unique XOF-expanded state
+    /// 3. **Truncate-and-append**: 256 rounds of smear_hash, accumulating links
+    /// 4. **Algorithm diversity**: smear_hash uses BLAKE3 ⊕ SHA3 ⊕ SHA512
+    ///
+    /// Security survives if ANY layer remains unbroken:
+    /// - 20 eggs from 8 algorithms (4 classical + 4 post-quantum)
+    /// - Memory-hard 2MB intermediate state
+    /// - Three hash algorithms in parallel (smear_hash)
+    /// - No compression: full entropy preserved through derivation
     pub fn from_clutch(participants: &[[u8; 32]], eggs: &[[u8; 32]]) -> Self {
-        use sha3::{Shake256, digest::{Update, ExtendableOutput, XofReader}};
+        use crate::crypto::clutch::{avalanche_expand_eggs, derive_chain_from_avalanche, derive_conversation_token, ClutchEggs};
 
         // Sort participants for canonical ordering
         let mut sorted_participants = participants.to_vec();
@@ -172,57 +303,90 @@ impl FriendshipChains {
         // Derive friendship ID
         let friendship_id = FriendshipId::derive(&sorted_participants);
 
-        // Calculate total bytes needed: 8KB per participant
-        let chain_count = sorted_participants.len();
-        let total_bytes = CHAIN_SIZE * chain_count;
+        // Derive conversation token (privacy-preserving wire identifier)
+        let conversation_token = derive_conversation_token(&sorted_participants);
 
-        // BLAKE3 XOF expansion
-        let mut blake3_hasher = blake3::Hasher::new();
-        blake3_hasher.update(b"PHOTON_CHAIN_INIT_v1_BLAKE3");
-        for egg in eggs {
-            blake3_hasher.update(egg);
-        }
-        let mut blake3_bytes = vec![0u8; total_bytes];
-        blake3_hasher.finalize_xof().fill(&mut blake3_bytes);
+        // Step 1: Expand eggs to 2MB (memory-hard, no compression)
+        let eggs_struct = ClutchEggs { eggs: eggs.to_vec() };
+        let avalanche = avalanche_expand_eggs(&eggs_struct);
 
-        // SHA3-SHAKE256 XOF expansion (completely different sponge construction)
-        let mut shake_hasher = Shake256::default();
-        shake_hasher.update(b"PHOTON_CHAIN_INIT_v1_SHAKE256");
-        for egg in eggs {
-            shake_hasher.update(egg);
-        }
-        let mut shake_bytes = vec![0u8; total_bytes];
-        shake_hasher.finalize_xof().read(&mut shake_bytes);
+        // Step 2: Derive each participant's chain via truncate-and-append
+        // derive_chain_from_avalanche returns 8KB (256 active links)
+        // We need 16KB (256 history zeros + 256 active links)
+        let mut chains = Vec::with_capacity(sorted_participants.len());
+        for participant in &sorted_participants {
+            let active_bytes = derive_chain_from_avalanche(&avalanche, participant);
 
-        // XOR both expansions - secure if EITHER algorithm survives
-        let mut chain_bytes = vec![0u8; total_bytes];
-        for i in 0..total_bytes {
-            chain_bytes[i] = blake3_bytes[i] ^ shake_bytes[i];
-        }
+            // Build full 16KB chain: [0..8KB] = history zeros, [8KB..16KB] = active links
+            let mut full_chain = vec![0u8; CHAIN_SIZE];
+            full_chain[CHAIN_SIZE / 2..].copy_from_slice(&active_bytes);
 
-        // Split into per-participant chains
-        let mut chains = Vec::with_capacity(chain_count);
-        for i in 0..chain_count {
-            let start = i * CHAIN_SIZE;
-            let end = start + CHAIN_SIZE;
-            let chain =
-                Chain::from_bytes(&chain_bytes[start..end]).expect("Chain size is correct");
+            let chain = Chain::from_full_bytes(&full_chain).expect("chain is 16KB");
             chains.push(chain);
         }
 
+        // Initialize last_plaintexts with empty vecs (first message on each chain)
+        let last_plaintexts = vec![Vec::new(); sorted_participants.len()];
+
+        // Initialize last_received_times with None (no messages received yet)
+        let last_received_times = vec![None; sorted_participants.len()];
+
+        // Derive first_message_anchors for each participant's hash chain
+        // Anchor = BLAKE3(DOMAIN_ANCHOR || handle_hash || chain_fingerprint)
+        // where chain_fingerprint = BLAKE3(active_chain_portion)
+        let first_message_anchors: Vec<[u8; 32]> = sorted_participants
+            .iter()
+            .zip(chains.iter())
+            .map(|(handle_hash, chain)| {
+                derive_anchor(handle_hash, chain)
+            })
+            .collect();
+
+        // Initialize hash chain tracking (all None - no messages yet)
+        let last_received_hashes = vec![None; sorted_participants.len()];
+
         Self {
             friendship_id,
+            conversation_token,
             chains,
             participants: sorted_participants,
+            last_plaintexts,
+            pending_messages: Vec::new(),
+            last_received_times,
+            first_message_anchors,
+            last_received_hashes,
+            last_sent_hash: None,
         }
     }
 
-    /// Create from serialized data (for loading from storage).
+    /// Create from serialized data (for loading from storage) - v1 format (no hash chain state).
     pub fn from_storage(
         friendship_id: FriendshipId,
         participants: Vec<[u8; 32]>,
         chain_bytes: &[u8],
     ) -> Option<Self> {
+        // Delegate to v2 with default hash chain state
+        Self::from_storage_v2(
+            friendship_id,
+            participants,
+            chain_bytes,
+            None,
+            Vec::new(),
+            Vec::new(),
+        )
+    }
+
+    /// Create from serialized data (for loading from storage) - v2 format with hash chain state.
+    pub fn from_storage_v2(
+        friendship_id: FriendshipId,
+        participants: Vec<[u8; 32]>,
+        chain_bytes: &[u8],
+        last_sent_hash: Option<[u8; 32]>,
+        mut last_received_hashes: Vec<Option<[u8; 32]>>,
+        pending_messages: Vec<PendingMessage>,
+    ) -> Option<Self> {
+        use crate::crypto::clutch::derive_conversation_token;
+
         let chain_count = participants.len();
         if chain_bytes.len() != CHAIN_SIZE * chain_count {
             return None;
@@ -232,14 +396,43 @@ impl FriendshipChains {
         for i in 0..chain_count {
             let start = i * CHAIN_SIZE;
             let end = start + CHAIN_SIZE;
-            let chain = Chain::from_bytes(&chain_bytes[start..end])?;
+            let chain = Chain::from_full_bytes(&chain_bytes[start..end])?;
             chains.push(chain);
+        }
+
+        // Derive conversation token from participants
+        let conversation_token = derive_conversation_token(&participants);
+
+        // Initialize last_plaintexts with empty vecs (will be populated on first message)
+        let last_plaintexts = vec![Vec::new(); participants.len()];
+
+        // Initialize last_received_times with None (will be populated on first message)
+        let last_received_times = vec![None; participants.len()];
+
+        // Derive first_message_anchors for each participant's hash chain
+        // These are deterministic from chain state, so we recompute them
+        let first_message_anchors: Vec<[u8; 32]> = participants
+            .iter()
+            .zip(chains.iter())
+            .map(|(handle_hash, chain)| derive_anchor(handle_hash, chain))
+            .collect();
+
+        // Use provided last_received_hashes, or initialize to None if empty
+        if last_received_hashes.is_empty() {
+            last_received_hashes = vec![None; participants.len()];
         }
 
         Some(Self {
             friendship_id,
+            conversation_token,
             chains,
             participants,
+            last_plaintexts,
+            pending_messages,
+            last_received_times,
+            first_message_anchors,
+            last_received_hashes,
+            last_sent_hash,
         })
     }
 
@@ -276,9 +469,14 @@ impl FriendshipChains {
     /// Advance a participant's chain after ACK.
     ///
     /// Call this when we receive confirmation that a message was decrypted.
-    pub fn advance(&mut self, sender_handle_hash: &[u8; 32], plaintext_hash: &[u8; 32]) -> bool {
+    pub fn advance(
+        &mut self,
+        sender_handle_hash: &[u8; 32],
+        eagle_time: &vsf::EagleTime,
+        plaintext_hash: &[u8; 32],
+    ) -> bool {
         if let Some(idx) = self.participant_index(sender_handle_hash) {
-            self.chains[idx].advance(plaintext_hash);
+            self.chains[idx].advance(eagle_time, plaintext_hash);
             true
         } else {
             false
@@ -296,9 +494,249 @@ impl FriendshipChains {
         self.participants.len()
     }
 
-    /// Total size in bytes (N × 8KB).
+    /// Total size in bytes (N × 16KB).
     pub fn total_size(&self) -> usize {
         CHAIN_SIZE * self.chains.len()
+    }
+
+    /// Get last plaintext for a participant's chain (for salt derivation).
+    /// Returns empty slice for first message on that chain.
+    pub fn last_plaintext(&self, handle_hash: &[u8; 32]) -> &[u8] {
+        if let Some(idx) = self.participant_index(handle_hash) {
+            &self.last_plaintexts[idx]
+        } else {
+            &[]
+        }
+    }
+
+    /// Get the "other" participant in a 2-party conversation.
+    /// Returns None for self-notes (1-party) or group chats (3+ party).
+    pub fn other_participant(&self, our_handle_hash: &[u8; 32]) -> Option<&[u8; 32]> {
+        if self.participants.len() != 2 {
+            return None;
+        }
+        if &self.participants[0] == our_handle_hash {
+            Some(&self.participants[1])
+        } else if &self.participants[1] == our_handle_hash {
+            Some(&self.participants[0])
+        } else {
+            None // We're not in this conversation
+        }
+    }
+
+    /// Update last plaintext for a participant's chain after successful decrypt/send.
+    pub fn set_last_plaintext(&mut self, handle_hash: &[u8; 32], plaintext: Vec<u8>) {
+        if let Some(idx) = self.participant_index(handle_hash) {
+            self.last_plaintexts[idx] = plaintext;
+        }
+    }
+
+    /// Check if a message is a duplicate (already received from this sender).
+    /// Returns true if this is a duplicate and should be skipped.
+    pub fn is_duplicate(&self, sender_handle_hash: &[u8; 32], eagle_time: f64) -> bool {
+        if let Some(idx) = self.participant_index(sender_handle_hash) {
+            if let Some(last_time) = self.last_received_times[idx] {
+                // Duplicate if eagle_time <= last received (exact match or older)
+                return eagle_time <= last_time;
+            }
+        }
+        false
+    }
+
+    /// Mark a message as received (update last received time for deduplication).
+    pub fn mark_received(&mut self, sender_handle_hash: &[u8; 32], eagle_time: f64) {
+        if let Some(idx) = self.participant_index(sender_handle_hash) {
+            self.last_received_times[idx] = Some(eagle_time);
+        }
+    }
+
+    // ==================== HASH CHAIN METHODS ====================
+
+    /// Get the first message anchor for a participant.
+    /// Used as prev_msg_hp for the first message on their chain.
+    pub fn get_anchor(&self, handle_hash: &[u8; 32]) -> Option<&[u8; 32]> {
+        let idx = self.participant_index(handle_hash)?;
+        Some(&self.first_message_anchors[idx])
+    }
+
+    /// Get prev_msg_hp for the next outgoing message.
+    /// Returns last_sent_hash if we've sent messages, otherwise our anchor.
+    pub fn get_prev_msg_hp(&self, our_handle_hash: &[u8; 32]) -> Option<[u8; 32]> {
+        if let Some(hash) = self.last_sent_hash {
+            Some(hash)
+        } else {
+            // First message - use our anchor
+            self.get_anchor(our_handle_hash).copied()
+        }
+    }
+
+    /// Get the expected prev_msg_hp for incoming message from a sender.
+    /// Returns their last_received_hash, or their anchor if first message.
+    pub fn get_expected_prev_hp(&self, sender_handle_hash: &[u8; 32]) -> Option<[u8; 32]> {
+        let idx = self.participant_index(sender_handle_hash)?;
+        if let Some(hash) = self.last_received_hashes[idx] {
+            Some(hash)
+        } else {
+            // First message from them - expect their anchor
+            Some(self.first_message_anchors[idx])
+        }
+    }
+
+    /// Verify hash chain link: check if received prev_msg_hp matches expected.
+    ///
+    /// Returns Ok(()) if chain is valid, Err with expected hash if mismatch.
+    /// Caller can use the expected hash to request resync.
+    pub fn verify_chain_link(
+        &self,
+        sender_handle_hash: &[u8; 32],
+        received_prev_msg_hp: &[u8; 32],
+    ) -> Result<(), [u8; 32]> {
+        let expected = self.get_expected_prev_hp(sender_handle_hash)
+            .ok_or([0u8; 32])?;
+
+        if received_prev_msg_hp == &expected {
+            Ok(())
+        } else {
+            Err(expected)
+        }
+    }
+
+    /// Update hash chain state after successfully receiving and decrypting a message.
+    /// Call this AFTER verify_chain_link succeeds and decrypt succeeds.
+    pub fn update_received_hash(
+        &mut self,
+        sender_handle_hash: &[u8; 32],
+        msg_hp: [u8; 32],
+    ) {
+        if let Some(idx) = self.participant_index(sender_handle_hash) {
+            self.last_received_hashes[idx] = Some(msg_hp);
+        }
+    }
+
+    /// Get pending messages that come after a given hash pointer.
+    /// Used for resync: peer says "I have hash X", we return messages after X.
+    ///
+    /// Returns Vec of (eagle_time, ciphertext, prev_msg_hp) for resending.
+    pub fn get_pending_after(&self, after_hash: &[u8; 32]) -> Vec<(f64, Vec<u8>, [u8; 32])> {
+        let mut found_start = false;
+        let mut result = Vec::new();
+
+        // Check if after_hash matches our anchor (they want everything)
+        // or if it's somewhere in our pending chain
+        for pending in &self.pending_messages {
+            if found_start {
+                result.push((pending.eagle_time, pending.ciphertext.clone(), pending.prev_msg_hp));
+            } else if &pending.prev_msg_hp == after_hash || pending.msg_hp == *after_hash {
+                // Found the starting point - include this one and all after
+                if &pending.prev_msg_hp == after_hash {
+                    // They have the message before this one
+                    result.push((pending.eagle_time, pending.ciphertext.clone(), pending.prev_msg_hp));
+                }
+                found_start = true;
+            }
+        }
+
+        // If after_hash is one of our anchors, return all pending
+        if !found_start && self.first_message_anchors.iter().any(|a| a == after_hash) {
+            return self.pending_messages.iter()
+                .map(|p| (p.eagle_time, p.ciphertext.clone(), p.prev_msg_hp))
+                .collect();
+        }
+
+        result
+    }
+
+    /// Get last_sent_hash (for debugging/logging).
+    pub fn last_sent_hash(&self) -> Option<&[u8; 32]> {
+        self.last_sent_hash.as_ref()
+    }
+
+    /// Get last_received_hash for a sender (for debugging/logging).
+    pub fn last_received_hash(&self, sender_handle_hash: &[u8; 32]) -> Option<&[u8; 32]> {
+        let idx = self.participant_index(sender_handle_hash)?;
+        self.last_received_hashes[idx].as_ref()
+    }
+
+    /// Get all last_received_hashes (for persistence).
+    pub fn last_received_hashes(&self) -> &[Option<[u8; 32]>] {
+        &self.last_received_hashes
+    }
+
+    /// Get pending messages (for persistence).
+    pub fn pending_messages(&self) -> &[PendingMessage] {
+        &self.pending_messages
+    }
+
+    /// Add a pending message (after sending, before ACK).
+    ///
+    /// Stores everything needed for:
+    /// - ACK matching (eagle_time + plaintext_hash)
+    /// - Chain advancement on ACK (plaintext_hash)
+    /// - Resend capability (ciphertext + prev_msg_hp)
+    /// - Next message derivation (plaintext for salt, msg_hp for prev)
+    pub fn add_pending(
+        &mut self,
+        eagle_time: f64,
+        plaintext: Vec<u8>,
+        plaintext_hash: [u8; 32],
+        prev_msg_hp: [u8; 32],
+        msg_hp: [u8; 32],
+        ciphertext: Vec<u8>,
+    ) {
+        self.pending_messages.push(PendingMessage {
+            eagle_time,
+            plaintext,
+            plaintext_hash,
+            prev_msg_hp,
+            msg_hp,
+            ciphertext,
+        });
+
+        // Update last_sent_hash for next message's prev_msg_hp
+        self.last_sent_hash = Some(msg_hp);
+    }
+
+    /// Process ACK: find pending message, advance chain, update last_plaintext.
+    /// Returns true if ACK was valid and chain was advanced.
+    pub fn process_ack(
+        &mut self,
+        our_handle_hash: &[u8; 32],
+        acked_eagle_time: f64,
+        acked_plaintext_hash: &[u8; 32],
+    ) -> bool {
+        // Find the pending message by eagle_time
+        let pos = self.pending_messages.iter().position(|m| {
+            (m.eagle_time - acked_eagle_time).abs() < 0.001 // ~1ms tolerance
+                && &m.plaintext_hash == acked_plaintext_hash
+        });
+
+        if let Some(idx) = pos {
+            let pending = self.pending_messages.remove(idx);
+
+            // Advance our chain
+            let eagle_time = vsf::datetime_to_eagle_time(
+                chrono::DateTime::from_timestamp_nanos((pending.eagle_time * 1e9) as i64)
+            );
+            if let Some(chain_idx) = self.participant_index(our_handle_hash) {
+                self.chains[chain_idx].advance(&eagle_time, &pending.plaintext_hash);
+                // Update last plaintext for our chain
+                self.last_plaintexts[chain_idx] = pending.plaintext;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Get the most recent pending plaintext (for salt derivation of next send).
+    /// If no pending messages, returns last_plaintext for our chain.
+    pub fn current_send_plaintext(&self, our_handle_hash: &[u8; 32]) -> &[u8] {
+        // If we have pending messages, use the last one's plaintext
+        if let Some(last_pending) = self.pending_messages.last() {
+            &last_pending.plaintext
+        } else {
+            // Otherwise use the last acked plaintext from our chain
+            self.last_plaintext(our_handle_hash)
+        }
     }
 }
 
@@ -379,6 +817,8 @@ mod tests {
 
     #[test]
     fn test_friendship_chains_advance() {
+        use vsf::EagleTime;
+
         let alice = [1u8; 32];
         let bob = [2u8; 32];
         let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
@@ -390,8 +830,9 @@ mod tests {
         let bob_key_before = *chains.current_key(&bob).unwrap();
 
         // Advance Alice's chain
+        let eagle_time = vsf::datetime_to_eagle_time(chrono::Utc::now());
         let plaintext_hash = [0xAA; 32];
-        assert!(chains.advance(&alice, &plaintext_hash));
+        assert!(chains.advance(&alice, &eagle_time, &plaintext_hash));
 
         // Alice's key should change
         let alice_key_after = *chains.current_key(&alice).unwrap();

@@ -41,9 +41,8 @@ Photon is a peer-to-peer messaging application that replaces traditional authent
 - ✅ Signed binary distribution with self-verification
 
 ### What Doesn't Work Yet
-- ❌ Encrypted message exchange (chains derived, message flow pending)
+- ⚠️ Encrypted message exchange (hash chains implemented, end-to-end testing in progress)
 - ❌ Identity validation and key recovery flows
-- ❌ Message persistence (database layer empty)
 - ❌ Full social attestation (2-human requirement not enforced)
 
 ### Platform Support

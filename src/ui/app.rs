@@ -4,9 +4,10 @@ use super::theme;
 #[cfg(not(target_os = "android"))]
 use super::PhotonEvent;
 use crate::crypto::clutch::ClutchAllKeypairs;
+use crate::network::status::AckRequest;
 use crate::network::StatusChecker;
 use crate::network::{HandleQuery, QueryResult};
-use crate::types::{Contact, ContactId, FriendshipChains, FriendshipId, HandleText};
+use crate::types::{ChatMessage, Contact, ContactId, FriendshipChains, FriendshipId, HandleText};
 
 /// Result from background CLUTCH keypair generation
 pub struct ClutchKeygenResult {
@@ -1622,6 +1623,7 @@ impl PhotonApp {
                     crate::storage::contacts::load_all_contacts(&identity_seed, device_secret);
 
                 // Load friendship chains from encrypted storage
+                crate::log_info("UI: Loading friendship chains from disk...");
                 let loaded_friendships =
                     crate::storage::friendship::load_all_friendships(&identity_seed, device_secret);
                 if !loaded_friendships.is_empty() {
@@ -1629,8 +1631,16 @@ impl PhotonApp {
                         "UI: Loaded {} friendship chains from storage",
                         loaded_friendships.len()
                     ));
+                    for (fid, _) in &loaded_friendships {
+                        crate::log_info(&format!(
+                            "  - Friendship: {}",
+                            hex::encode(&fid.as_bytes()[..8])
+                        ));
+                    }
                     // Already a Vec, just extend
                     self.friendship_chains.extend(loaded_friendships);
+                } else {
+                    crate::log_info("UI: No friendship chains found on disk");
                 }
 
                 if !loaded_contacts.is_empty() {
@@ -1639,6 +1649,18 @@ impl PhotonApp {
                         loaded_contacts.len()
                     ));
                     for mut contact in loaded_contacts {
+                        // Load messages for this contact
+                        if let Err(e) = crate::storage::contacts::load_messages(
+                            &mut contact,
+                            &identity_seed,
+                            device_secret,
+                        ) {
+                            crate::log_error(&format!(
+                                "STORAGE: Failed to load messages for {}: {}",
+                                contact.handle.as_str(), e
+                            ));
+                        }
+
                         // Update shared pubkey list for StatusChecker
                         {
                             let mut pubkeys = self.contact_pubkeys.lock().unwrap();
@@ -2006,12 +2028,11 @@ impl PhotonApp {
                                             "CLUTCH: Sending full offer to {} via TCP",
                                             contact.handle
                                         ));
-                                        // Build sorted handle_hashes for N-party wire format
-                                        let mut handle_hashes = vec![our_handle_hash, contact.handle_hash];
-                                        handle_hashes.sort();
+                                        // Compute conversation_token for privacy-preserving wire format
+                                        let conversation_token = clutch::derive_conversation_token(&[our_handle_hash, contact.handle_hash]);
                                         checker.send_full_offer(ClutchFullOfferRequest {
                                             peer_addr: ip,
-                                            handle_hashes,
+                                            conversation_token,
                                             ceremony_id,
                                             payload,
                                             device_pubkey: *self.device_keypair.public.as_bytes(),
@@ -2031,80 +2052,324 @@ impl PhotonApp {
                 // which are handled above (via TCP/PT transport).
 
                 StatusUpdate::ChatMessage {
-                    from_handle_proof,
-                    sequence,
+                    conversation_token,
+                    prev_msg_hp,
                     ciphertext,
+                    timestamp,
                     sender_addr,
                 } => {
-                    // Find contact by handle_proof
-                    let contact_info = self.contacts.iter().enumerate().find_map(|(idx, c)| {
-                        if c.handle_proof == from_handle_proof {
-                            Some((
-                                idx,
-                                c.friendship_id,
-                                c.handle_hash,
-                                c.handle.to_string(),
-                            ))
-                        } else {
-                            None
+                    // Get our handle_hash for chain lookups
+                    let our_handle_hash = match self.user_identity_seed {
+                        Some(h) => h,
+                        None => {
+                            crate::log_error("CHAT: No user_identity_seed - cannot decrypt");
+                            continue;
                         }
-                    });
+                    };
 
-                    if let Some((contact_idx, Some(friendship_id), their_handle_hash, handle)) =
-                        contact_info
-                    {
+                    // Find friendship by conversation_token
+                    let chains_result = self.friendship_chains.iter_mut()
+                        .find(|(_, c)| c.conversation_token == conversation_token);
+
+                    if let Some((fid, chains)) = chains_result {
+                        // For 2-party chats, infer sender as the "other" participant
+                        let from_handle_hash = match chains.other_participant(&our_handle_hash) {
+                            Some(h) => *h,
+                            None => {
+                                crate::log_error("CHAT: Could not determine sender (not a 2-party chat or we're not a participant)");
+                                continue;
+                            }
+                        };
+
+                        // Find contact by their handle_hash
+                        let contact_info = self.contacts.iter().enumerate().find_map(|(idx, c)| {
+                            if c.handle_hash == from_handle_hash {
+                                Some((idx, c.handle.to_string()))
+                            } else {
+                                None
+                            }
+                        });
+
+                        let (contact_idx, handle) = match contact_info {
+                            Some((idx, h)) => (idx, h),
+                            None => {
+                                crate::log_error(&format!(
+                                    "CHAT: Contact not found for handle_hash {}...",
+                                    hex::encode(&from_handle_hash[..8])
+                                ));
+                                continue;
+                            }
+                        };
+
+                        // Deduplication: skip if we've already processed this exact message
+                        // (UDP duplicates have identical eagle_time)
+                        if chains.is_duplicate(&from_handle_hash, timestamp) {
+                            crate::log_info(&format!(
+                                "CHAT: Skipping duplicate message from {} (eagle_time {})",
+                                handle, timestamp
+                            ));
+                            continue;
+                        }
+
+                        // Hash chain verification: check prev_msg_hp matches expected
+                        // If mismatch: either out-of-order or missing messages
+                        if let Err(expected) = chains.verify_chain_link(&from_handle_hash, &prev_msg_hp) {
+                            crate::log_info(&format!(
+                                "CHAT: Hash chain mismatch from {} - expected {}..., got {}... (may need resync)",
+                                handle,
+                                hex::encode(&expected[..8]),
+                                hex::encode(&prev_msg_hp[..8])
+                            ));
+                            // For now, continue with decryption anyway (soft verification)
+                            // TODO: Request resync if gap detected
+                        }
+
                         crate::log_info(&format!(
-                            "CHAT: Received message from {} (seq {}), {} bytes",
+                            "CHAT: Received message from {} (eagle_time {}), {} bytes ciphertext",
                             handle,
-                            sequence,
+                            timestamp,
                             ciphertext.len()
                         ));
 
-                        // TODO: Implement message decryption with new FriendshipChains
-                        // For now, just log that we received a message
-                        let _ = (contact_idx, friendship_id, their_handle_hash, sender_addr, sequence, ciphertext);
-                        crate::log_info("CHAT: Message handling not yet implemented for new chain format");
-                    }
-                }
-                StatusUpdate::MessageAck {
-                    from_handle_proof,
-                    sequence,
-                    plaintext_hash,
-                    sender_last_acked,
-                } => {
-                    // Find contact by handle_proof
-                    let contact_info = self.contacts.iter().enumerate().find_map(|(idx, c)| {
-                        if c.handle_proof == from_handle_proof {
-                            Some((idx, c.id.clone(), c.handle.to_string()))
-                        } else {
-                            None
-                        }
-                    });
+                        use crate::crypto::chain::{derive_salt, decrypt_layers, generate_scratch, CURRENT_KEY_INDEX};
 
-                    if let Some((contact_idx, _contact_id, handle)) = contact_info {
+                        // Get sender's chain for decryption
+                        let sender_chain = match chains.chain(&from_handle_hash) {
+                            Some(c) => c.clone(), // Clone to avoid borrow issues
+                            None => {
+                                crate::log_error(&format!("CHAT: Sender chain not found for {}", handle));
+                                continue;
+                            }
+                        };
+
+                        // Get sender's last plaintext for salt derivation
+                        let their_last_plaintext = chains.last_plaintext(&from_handle_hash).to_vec();
+
+                        // Derive salt from their previous plaintext
+                        let salt = derive_salt(&their_last_plaintext, &sender_chain);
+
+                        // Generate scratch pad
+                        let scratch = generate_scratch(&sender_chain, &salt);
+
+                        // Convert eagle time for decryption
+                        let eagle_time = vsf::EagleTime::new(vsf::types::EtType::f6(timestamp));
+
+                        // DEBUG: Log decryption parameters
                         crate::log_info(&format!(
-                            "CHAT: ACK received from {} for seq {} (weave: {})",
-                            handle,
-                            sequence,
-                            hex::encode(&sender_last_acked[..8])
+                            "CHAIN DECRYPT: sender_handle_hash={}..., key={}..., salt={}..., eagle_time={}, ciphertext_len={}",
+                            hex::encode(&from_handle_hash[..4]),
+                            hex::encode(&sender_chain.current_key()[..4]),
+                            hex::encode(&salt[..4]),
+                            timestamp,
+                            ciphertext.len()
                         ));
 
-                        // TODO: Implement chain advancement with new FriendshipChains
-                        // For now, just update the UI
-                        let _ = (plaintext_hash, sender_last_acked, sequence);
+                        // Decrypt using sender's chain
+                        let plaintext = decrypt_layers(
+                            &ciphertext,
+                            &sender_chain,
+                            CURRENT_KEY_INDEX,
+                            &scratch,
+                            &eagle_time,
+                        );
 
-                        // Mark message as delivered in UI
+                        // DEBUG: Log raw decrypted bytes
+                        crate::log_info(&format!(
+                            "CHAIN DECRYPT: raw plaintext bytes = {:?}",
+                            &plaintext
+                        ));
+
+                        // Convert to string (assuming UTF-8)
+                        let message_text = match String::from_utf8(plaintext.clone()) {
+                            Ok(s) => s,
+                            Err(_) => {
+                                crate::log_error("CHAT: Decrypted message is not valid UTF-8");
+                                continue;
+                            }
+                        };
+
+                        crate::log_info(&format!(
+                            "CHAT: Decrypted message from {}: \"{}\"",
+                            handle, message_text
+                        ));
+
+                        // Compute plaintext hash for ACK
+                        let plaintext_hash = *blake3::hash(&plaintext).as_bytes();
+
+                        // Update their last_plaintext for next message's salt
+                        chains.set_last_plaintext(&from_handle_hash, plaintext.clone());
+
+                        // Advance their chain (receiver advances sender's chain after decrypt)
+                        let eagle_time_for_advance = vsf::EagleTime::new(vsf::types::EtType::f6(timestamp));
+                        chains.advance(&from_handle_hash, &eagle_time_for_advance, &plaintext_hash);
+
+                        // Mark as received for deduplication (protects against UDP duplicates)
+                        chains.mark_received(&from_handle_hash, timestamp);
+
+                        // Send ACK with conversation_token (privacy-preserving)
+                        if let Some(ref checker) = self.status_checker {
+                            checker.send_ack(AckRequest {
+                                peer_addr: sender_addr,
+                                conversation_token,
+                                acked_eagle_time: timestamp,
+                                plaintext_hash,
+                            });
+                            crate::log_info(&format!(
+                                "CHAT: Sent ACK to {} (eagle_time {}, hash {}...)",
+                                handle, timestamp, hex::encode(&plaintext_hash[..8])
+                            ));
+                        }
+
+                        // Add message to contact's message list and persist
                         if let Some(contact) = self.contacts.get_mut(contact_idx) {
-                            // Find the message by sequence (it's the Nth outgoing message)
-                            // For now, mark recent outgoing messages as delivered
-                            for msg in contact.messages.iter_mut().rev() {
-                                if msg.is_outgoing && !msg.delivered {
-                                    msg.delivered = true;
-                                    changed = true;
-                                    break;
+                            contact.messages.push(ChatMessage::new(
+                                message_text,
+                                false, // is_outgoing = false (received)
+                            ));
+                            contact.message_scroll_offset = 0.0; // Scroll to show new message
+                            changed = true;
+
+                            // Persist immediately (AGENT.md: every change hits disk)
+                            if let Some(ref identity_seed) = self.user_identity_seed {
+                                let device_secret = self.device_keypair.secret.as_bytes();
+                                if let Err(e) = crate::storage::contacts::save_messages(
+                                    contact,
+                                    identity_seed,
+                                    device_secret,
+                                ) {
+                                    crate::log_error(&format!("STORAGE: Failed to save messages: {}", e));
                                 }
                             }
                         }
+
+                        // Update hash chain state: compute msg_hp and store for next verification
+                        use crate::types::friendship::derive_msg_hp;
+                        let msg_hp = derive_msg_hp(&prev_msg_hp, &plaintext_hash, timestamp);
+                        chains.update_received_hash(&from_handle_hash, msg_hp);
+                        crate::log_info(&format!(
+                            "CHAT: Updated hash chain for {} - msg_hp={}...",
+                            handle,
+                            hex::encode(&msg_hp[..8])
+                        ));
+
+                        // Persist chains (AGENT.md: every change hits disk)
+                        if let Some(ref identity_seed) = self.user_identity_seed {
+                            let device_secret = self.device_keypair.secret.as_bytes();
+                            if let Err(e) = crate::storage::friendship::save_friendship_chains(
+                                chains,
+                                identity_seed,
+                                device_secret,
+                            ) {
+                                crate::log_error(&format!("STORAGE: Failed to save chains after recv: {}", e));
+                            }
+                        }
+                        let _ = fid; // We looked up by token, fid is available if needed
+                    } else {
+                        crate::log_error(&format!(
+                            "CHAT: No friendship found for conversation_token {}...",
+                            hex::encode(&conversation_token[..8])
+                        ));
+                    }
+                }
+                StatusUpdate::MessageAck {
+                    conversation_token,
+                    acked_eagle_time,
+                    plaintext_hash,
+                } => {
+                    // Get our handle_hash
+                    let our_handle_hash = match self.user_identity_seed {
+                        Some(h) => h,
+                        None => {
+                            crate::log_error("CHAT: No user_identity_seed - cannot process ACK");
+                            continue;
+                        }
+                    };
+
+                    // Find friendship by conversation_token
+                    let chains_result = self.friendship_chains.iter_mut()
+                        .find(|(_, c)| c.conversation_token == conversation_token);
+
+                    if let Some((_, chains)) = chains_result {
+                        // For 2-party chats, the ACK sender is the "other" participant
+                        let from_handle_hash = match chains.other_participant(&our_handle_hash) {
+                            Some(h) => *h,
+                            None => {
+                                crate::log_error("CHAT: Could not determine ACK sender");
+                                continue;
+                            }
+                        };
+
+                        // Find contact by their handle_hash
+                        let contact_info = self.contacts.iter().enumerate().find_map(|(idx, c)| {
+                            if c.handle_hash == from_handle_hash {
+                                Some((idx, c.handle.to_string()))
+                            } else {
+                                None
+                            }
+                        });
+
+                        let (contact_idx, handle) = match contact_info {
+                            Some((idx, h)) => (idx, h),
+                            None => {
+                                crate::log_error(&format!(
+                                    "CHAT: Contact not found for ACK from handle_hash {}...",
+                                    hex::encode(&from_handle_hash[..8])
+                                ));
+                                continue;
+                            }
+                        };
+
+                        crate::log_info(&format!(
+                            "CHAT: ACK received from {} for eagle_time {} (hash: {}...)",
+                            handle,
+                            acked_eagle_time,
+                            hex::encode(&plaintext_hash[..8])
+                        ));
+
+                        // Process ACK: advance our chain and remove pending message
+                        if chains.process_ack(&our_handle_hash, acked_eagle_time, &plaintext_hash) {
+                            crate::log_info(&format!(
+                                "CHAT: Chain advanced for {} (ACK verified)",
+                                handle
+                            ));
+
+                            // Persist chains (AGENT.md: every change hits disk)
+                            if let Some(ref identity_seed) = self.user_identity_seed {
+                                let device_secret = self.device_keypair.secret.as_bytes();
+                                if let Err(e) = crate::storage::friendship::save_friendship_chains(
+                                    chains,
+                                    identity_seed,
+                                    device_secret,
+                                ) {
+                                    crate::log_error(&format!("STORAGE: Failed to save chains after ACK: {}", e));
+                                }
+                            }
+                        } else {
+                            crate::log_error(&format!(
+                                "CHAT: ACK verification failed for {} (no matching pending message)",
+                                handle
+                            ));
+                        }
+
+                        // Mark message as delivered in UI
+                        if let Some(contact) = self.contacts.get_mut(contact_idx) {
+                            // Find message by matching eagle_time (within tolerance)
+                            for msg in contact.messages.iter_mut().rev() {
+                                if msg.is_outgoing && !msg.delivered {
+                                    // Match by eagle_time (same tolerance as process_ack)
+                                    if (msg.timestamp - acked_eagle_time).abs() < 0.001 {
+                                        msg.delivered = true;
+                                        changed = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        crate::log_error(&format!(
+                            "CHAT: No friendship found for ACK conversation_token {}...",
+                            hex::encode(&conversation_token[..8])
+                        ));
                     }
                 }
 
@@ -2130,24 +2395,18 @@ impl PhotonApp {
                 // Full CLUTCH offer received (~548KB with all 8 pubkeys)
                 // Payload is already parsed and signature verified by status.rs
                 StatusUpdate::ClutchFullOfferReceived {
-                    handle_hashes,
-                    ceremony_id: received_ceremony_id,
+                    conversation_token,
+                    ceremony_id: _ceremony_id, // Not used for stale detection (handle-derived, invariant)
                     sender_pubkey,
                     payload,
                     sender_addr: raw_sender_addr,
                 } => {
-                    use crate::crypto::clutch::{ClutchFullOfferPayload, ClutchKemResponsePayload};
+                    use crate::crypto::clutch::{derive_conversation_token, ClutchFullOfferPayload, ClutchKemResponsePayload};
                     use crate::network::status::ClutchFullOfferRequest;
                     use crate::types::ClutchState;
 
                     // Normalize to port 4383 (TCP source port is ephemeral)
                     let sender_addr = std::net::SocketAddr::new(raw_sender_addr.ip(), crate::PHOTON_PORT);
-
-                    crate::log_info(&format!(
-                        "CLUTCH: Received full offer (VSF verified) from {} ({} parties)",
-                        sender_addr,
-                        handle_hashes.len()
-                    ));
 
                     // Get our handle_hash
                     let our_handle_hash = match self.user_identity_seed {
@@ -2158,20 +2417,26 @@ impl PhotonApp {
                         }
                     };
 
-                    // Verify we're in the handle_hashes vector
-                    if !handle_hashes.contains(&our_handle_hash) {
-                        crate::log_error("CLUTCH: Offer not addressed to us");
-                        continue;
-                    }
-
-                    // For 2-party, find their handle_hash (the one that isn't ours)
-                    let their_handle_hash = match handle_hashes.iter().find(|h| **h != our_handle_hash) {
-                        Some(h) => *h,
+                    // Find contact by conversation_token (compute token for each contact and match)
+                    let their_handle_hash = match self.contacts.iter()
+                        .find(|c| derive_conversation_token(&[our_handle_hash, c.handle_hash]) == conversation_token)
+                        .map(|c| c.handle_hash)
+                    {
+                        Some(h) => h,
                         None => {
-                            crate::log_error("CLUTCH: No other party in handle_hashes");
+                            crate::log_error(&format!(
+                                "CLUTCH: Received offer with unknown conversation_token {}",
+                                hex::encode(&conversation_token[..8])
+                            ));
                             continue;
                         }
                     };
+
+                    crate::log_info(&format!(
+                        "CLUTCH: Received full offer (VSF verified) from {} tok={}...",
+                        sender_addr,
+                        hex::encode(&conversation_token[..8])
+                    ));
 
                     // Verify sender's device pubkey matches the contact's known identity
                     let contact_pubkey = self.contacts.iter()
@@ -2265,14 +2530,15 @@ impl PhotonApp {
                             if let (Some(ref keypairs), Some(ceremony_id)) =
                                 (&contact.clutch_our_keypairs, contact.ceremony_id)
                             {
+                                // Compute conversation_token once for this contact
+                                let conv_token = derive_conversation_token(&[our_handle_hash, contact.handle_hash]);
+
                                 // Send our offer if not already sent
                                 if !contact.clutch_offer_sent {
                                     let our_offer = ClutchFullOfferPayload::from_keypairs(keypairs);
-                                    let mut sorted_hashes = vec![our_handle_hash, contact.handle_hash];
-                                    sorted_hashes.sort();
                                     checker.send_full_offer(ClutchFullOfferRequest {
                                         peer_addr: sender_addr,
-                                        handle_hashes: sorted_hashes,
+                                        conversation_token: conv_token,
                                         ceremony_id,
                                         payload: our_offer.clone(),
                                         device_pubkey: *self.device_keypair.public.as_bytes(),
@@ -2307,11 +2573,9 @@ impl PhotonApp {
                                         slot.kem_secrets_to_them = Some(our_secrets);
                                     }
 
-                                    let mut sorted_hashes = vec![our_handle_hash, contact.handle_hash];
-                                    sorted_hashes.sort();
                                     checker.send_kem_response(ClutchKemResponseRequest {
                                         peer_addr: sender_addr,
-                                        handle_hashes: sorted_hashes,
+                                        conversation_token: conv_token,
                                         ceremony_id,
                                         payload: kem_response,
                                         device_pubkey: *self.device_keypair.public.as_bytes(),
@@ -2336,21 +2600,59 @@ impl PhotonApp {
                                         "CLUTCH: Received offer from {} but keygen already in progress - waiting",
                                         contact.handle
                                     ));
-                                } else if contact.clutch_state != ClutchState::Complete {
-                                    // No keypairs AND ceremony isn't complete - need to respond
-                                    // This handles: restart mid-ceremony, or peer initiated fresh re-key
-                                    crate::log_info(&format!(
-                                        "CLUTCH: Received offer from {} but no keypairs (state={:?}) - triggering keygen",
-                                        contact.handle, contact.clutch_state
-                                    ));
+                                } else {
+                                    // No keypairs - need to respond (whether Complete or not)
+                                    // If Complete: peer lost their chains, accept re-key
+                                    // If not Complete: restart mid-ceremony or fresh re-key
+                                    if contact.clutch_state == ClutchState::Complete {
+                                        // Check if this is a stale offer from the completed ceremony
+                                        // (PT retransmission after restart)
+                                        // Compare HQC pub prefix - unique per keygen
+                                        if let Some(completed_prefix) = contact.completed_their_hqc_prefix {
+                                            let received_prefix: [u8; 8] = their_offer.hqc256_public[..8].try_into().unwrap_or_default();
+                                            if completed_prefix == received_prefix {
+                                                // Stale offer - same HQC pub we already completed with
+                                                crate::log_info(&format!(
+                                                    "CLUTCH: Ignoring stale offer from {} (HQC prefix={}... already complete)",
+                                                    contact.handle,
+                                                    hex::encode(&completed_prefix)
+                                                ));
+                                                break; // Skip this offer entirely
+                                            }
+                                        }
+                                        // Different HQC pub = legitimate re-key request (new ephemeral keys)
+                                        crate::log_info(&format!(
+                                            "CLUTCH: Received offer from {} while Complete - peer lost chains, accepting re-key",
+                                            contact.handle
+                                        ));
+                                        // Delete our old chains - they're useless now
+                                        if let Some(fid) = contact.friendship_id {
+                                            chains_to_remove.push(fid);
+                                        }
+                                        // Reset ALL CLUTCH state for new ceremony
+                                        contact.clutch_state = ClutchState::Pending;
+                                        contact.friendship_id = None;
+                                        contact.completed_their_hqc_prefix = None;
+                                        contact.clutch_our_keypairs = None;
+                                        contact.clutch_slots.clear();
+                                        contact.ceremony_id = None;
+                                        contact.clutch_pending_kem = None;
+                                        contact.clutch_offer_sent = false;
+                                        contact.clutch_our_eggs_proof = None;
+                                        contact.clutch_their_eggs_proof = None;
+                                        // Re-initialize slots and store their offer (was stored earlier but we just cleared)
+                                        contact.init_clutch_slots(our_handle_hash);
+                                        if let Some(slot) = contact.get_slot_mut(&their_handle_hash) {
+                                            slot.offer = Some(their_offer.clone());
+                                        }
+                                    } else {
+                                        crate::log_info(&format!(
+                                            "CLUTCH: Received offer from {} but no keypairs (state={:?}) - triggering keygen",
+                                            contact.handle, contact.clutch_state
+                                        ));
+                                    }
                                     contact.clutch_keygen_in_progress = true;
                                     rekey_request = Some((contact.id.clone(), contact.handle_hash));
-                                } else {
-                                    // Complete state - stale PT retry, ignore
-                                    crate::log_info(&format!(
-                                        "CLUTCH: Ignoring stale offer from {} (already Complete)",
-                                        contact.handle
-                                    ));
                                 }
                             }
                             break;
@@ -2375,22 +2677,16 @@ impl PhotonApp {
                 // CLUTCH KEM response received (~31KB with 4 ciphertexts)
                 // Payload is already parsed and signature verified by status.rs
                 StatusUpdate::ClutchKemResponseReceived {
-                    handle_hashes,
+                    conversation_token,
                     ceremony_id: received_ceremony_id,
                     sender_pubkey,
                     payload,
                     sender_addr: raw_sender_addr,
                 } => {
-                    use crate::crypto::clutch::ClutchKemSharedSecrets;
+                    use crate::crypto::clutch::{derive_conversation_token, ClutchKemSharedSecrets};
 
                     // Normalize to port 4383 (TCP source port is ephemeral)
                     let sender_addr = std::net::SocketAddr::new(raw_sender_addr.ip(), crate::PHOTON_PORT);
-
-                    crate::log_info(&format!(
-                        "CLUTCH: Received KEM response (VSF verified) from {} ({} parties)",
-                        sender_addr,
-                        handle_hashes.len()
-                    ));
 
                     // Get our handle_hash
                     let our_handle_hash = match self.user_identity_seed {
@@ -2401,20 +2697,26 @@ impl PhotonApp {
                         }
                     };
 
-                    // Verify we're in the handle_hashes vector
-                    if !handle_hashes.contains(&our_handle_hash) {
-                        crate::log_error("CLUTCH: KEM response not addressed to us");
-                        continue;
-                    }
-
-                    // For 2-party, find their handle_hash (the one that isn't ours)
-                    let their_handle_hash = match handle_hashes.iter().find(|h| **h != our_handle_hash) {
-                        Some(h) => *h,
+                    // Find contact by conversation_token
+                    let their_handle_hash = match self.contacts.iter()
+                        .find(|c| derive_conversation_token(&[our_handle_hash, c.handle_hash]) == conversation_token)
+                        .map(|c| c.handle_hash)
+                    {
+                        Some(h) => h,
                         None => {
-                            crate::log_error("CLUTCH: No other party in handle_hashes");
+                            crate::log_error(&format!(
+                                "CLUTCH: Received KEM response with unknown conversation_token {}",
+                                hex::encode(&conversation_token[..8])
+                            ));
                             continue;
                         }
                     };
+
+                    crate::log_info(&format!(
+                        "CLUTCH: Received KEM response (VSF verified) from {} tok={}...",
+                        sender_addr,
+                        hex::encode(&conversation_token[..8])
+                    ));
 
                     // Verify sender's device pubkey matches the contact's known identity
                     let contact_pubkey = self.contacts.iter()
@@ -2522,12 +2824,13 @@ impl PhotonApp {
                 // CLUTCH complete proof received (~200 bytes with eggs_proof)
                 // Both parties exchange this to verify they derived identical eggs
                 StatusUpdate::ClutchCompleteReceived {
-                    handle_hashes,
+                    conversation_token,
                     ceremony_id: _received_ceremony_id,
                     sender_pubkey,
                     payload,
                     sender_addr: raw_sender_addr,
                 } => {
+                    use crate::crypto::clutch::derive_conversation_token;
                     use crate::types::ClutchState;
 
                     // Normalize to port 4383 (TCP source port is ephemeral)
@@ -2539,17 +2842,17 @@ impl PhotonApp {
                         hex::encode(&payload.eggs_proof[..8])
                     ));
 
-                    // Verify we're in the handle_hashes vector
-                    if !handle_hashes.contains(&our_handle_hash) {
-                        crate::log_error("CLUTCH: Complete proof not addressed to us");
-                        continue;
-                    }
-
-                    // For 2-party, find their handle_hash
-                    let their_handle_hash = match handle_hashes.iter().find(|h| **h != our_handle_hash) {
-                        Some(h) => *h,
+                    // Find contact by conversation_token
+                    let their_handle_hash = match self.contacts.iter()
+                        .find(|c| derive_conversation_token(&[our_handle_hash, c.handle_hash]) == conversation_token)
+                        .map(|c| c.handle_hash)
+                    {
+                        Some(h) => h,
                         None => {
-                            crate::log_error("CLUTCH: No other party in handle_hashes");
+                            crate::log_error(&format!(
+                                "CLUTCH: Received complete proof with unknown conversation_token {}",
+                                hex::encode(&conversation_token[..8])
+                            ));
                             continue;
                         }
                     };
@@ -2592,9 +2895,22 @@ impl PhotonApp {
                                                 hex::encode(&our_proof[..8])
                                             ));
                                             contact.clutch_state = ClutchState::Complete;
+                                            // Store their HQC pub prefix to detect stale offers after restart
+                                            if let Some(their_slot) = contact.get_slot(&contact.handle_hash) {
+                                                if let Some(ref their_offer) = their_slot.offer {
+                                                    let prefix: [u8; 8] = their_offer.hqc256_public[..8].try_into().unwrap_or_default();
+                                                    contact.completed_their_hqc_prefix = Some(prefix);
+                                                }
+                                            }
                                             contact.clutch_our_eggs_proof = None; // Clean up
                                             contact.clutch_their_eggs_proof = None;
                                             changed = true;
+
+                                            // Clear pending PT sends now that CLUTCH is complete
+                                            // This stops wasteful retransmission of offers/KEM responses
+                                            if let Some(ref checker) = self.status_checker {
+                                                checker.clear_pt_sends(sender_addr);
+                                            }
 
                                             // Save Complete state to disk immediately
                                             if let Some(identity_seed) = self.user_identity_seed.as_ref() {
@@ -2719,7 +3035,7 @@ impl PhotonApp {
         };
 
         // Get contact info we need
-        let (friendship_id, our_handle_hash, ip) = {
+        let (friendship_id, _our_handle_hash, ip) = {
             let contact = match self.contacts.get(contact_idx) {
                 Some(c) => c,
                 None => return false,
@@ -2789,43 +3105,82 @@ impl PhotonApp {
             }
         };
 
-        // Get sequence number (we need to track this per-friendship)
-        // For now, use 0 - TODO: track sequence per friendship
-        let sequence = 0u64;
-
         // Encrypt the message using new CHAIN protocol
         use crate::crypto::chain::{derive_salt, encrypt_layers, generate_scratch};
 
         let payload = message_text.as_bytes();
         let eagle_time = vsf::datetime_to_eagle_time(chrono::Utc::now());
 
-        // Derive salt from previous plaintext (empty for first message)
-        // TODO: track previous plaintext per friendship for proper chaining
-        let prev_plaintext: &[u8] = &[];
+        // Derive salt from previous plaintext (use tracked plaintext from chains)
+        let prev_plaintext = chains.current_send_plaintext(&our_identity_seed);
         let salt = derive_salt(prev_plaintext, chain);
 
         // Generate memory-hard scratch pad
         let scratch = generate_scratch(chain, &salt);
 
+        // DEBUG: Log encryption parameters
+        crate::log_info(&format!(
+            "CHAIN ENCRYPT: our_handle_hash={}..., key={}..., salt={}..., eagle_time={}, payload_len={}",
+            hex::encode(&our_identity_seed[..4]),
+            hex::encode(&chain.current_key()[..4]),
+            hex::encode(&salt[..4]),
+            eagle_time.to_f64(),
+            payload.len()
+        ));
+
         // Encrypt using 3-layer encryption
         let ciphertext = encrypt_layers(payload, chain, &scratch, &eagle_time);
 
-        // Get our handle proof
-        let our_handle_proof = match self.user_handle_proof {
-            Some(hp) => hp,
-            None => return false,
-        };
+        // Compute hash chain pointers using proper derivation
+        let plaintext_hash = *blake3::hash(payload).as_bytes();
+        let prev_msg_hp = chains.get_prev_msg_hp(&our_identity_seed)
+            .unwrap_or_else(|| {
+                // Fallback: derive anchor manually (shouldn't happen)
+                let mut hasher = blake3::Hasher::new();
+                hasher.update(friendship_id.as_bytes());
+                hasher.update(b"first");
+                *hasher.finalize().as_bytes()
+            });
+
+        // Derive this message's hash pointer (links to prev + content + time)
+        use crate::types::friendship::derive_msg_hp;
+        let msg_hp = derive_msg_hp(&prev_msg_hp, &plaintext_hash, eagle_time.to_f64());
 
         // Send via StatusChecker
         if let Some(ref checker) = self.status_checker {
             checker.send_message(MessageRequest {
                 peer_addr: ip,
-                our_handle_proof,
-                sequence,
-                ciphertext,
+                conversation_token: chains.conversation_token,
+                prev_msg_hp,
+                ciphertext: ciphertext.clone(),
+                eagle_time: eagle_time.to_f64(),
             });
 
-            // Add to contact's message list
+            // Track pending message for ACK matching and resync capability
+            if let Some((_, chains_mut)) = self.friendship_chains.iter_mut().find(|(id, _)| *id == friendship_id) {
+                chains_mut.add_pending(
+                    eagle_time.to_f64(),
+                    payload.to_vec(),
+                    plaintext_hash,
+                    prev_msg_hp,
+                    msg_hp,
+                    ciphertext,
+                );
+
+                // Persist chains (AGENT.md: every change hits disk)
+                if let Some(ref identity_seed) = self.user_identity_seed {
+                    let device_secret = self.device_keypair.secret.as_bytes();
+                    if let Err(e) = crate::storage::friendship::save_friendship_chains(
+                        chains_mut,
+                        identity_seed,
+                        device_secret,
+                    ) {
+                        crate::log_error(&format!("STORAGE: Failed to save chains after send: {}", e));
+                    }
+                }
+            }
+
+            // Add to contact's message list and persist
             if let Some(contact) = self.contacts.get_mut(contact_idx) {
                 contact.messages.push(ChatMessage::new(
                     message_text.to_string(),
@@ -2833,11 +3188,24 @@ impl PhotonApp {
                 ));
                 // Auto-scroll to bottom to show new message
                 contact.message_scroll_offset = 0.0;
+
+                // Persist immediately (AGENT.md: every change hits disk)
+                if let Some(ref identity_seed) = self.user_identity_seed {
+                    let device_secret = self.device_keypair.secret.as_bytes();
+                    if let Err(e) = crate::storage::contacts::save_messages(
+                        contact,
+                        identity_seed,
+                        device_secret,
+                    ) {
+                        crate::log_error(&format!("STORAGE: Failed to save messages: {}", e));
+                    }
+                }
             }
 
             crate::log_info(&format!(
-                "CHAT: Sent message (seq {}) to {}",
-                sequence, ip
+                "CHAT: Sent message (fid {}...) to {}",
+                hex::encode(&friendship_id.as_bytes()[..4]),
+                ip
             ));
             return true;
         }
@@ -2948,7 +3316,7 @@ impl PhotonApp {
     /// Slot-based design: keypairs stored once, slots filled as messages arrive.
     /// Ceremony completes when all slots have offer + both KEM secret directions.
     pub fn check_clutch_keygens(&mut self) -> bool {
-        use crate::crypto::clutch::{ClutchFullOfferPayload, ClutchKemResponsePayload, ClutchKemSharedSecrets};
+        use crate::crypto::clutch::{derive_conversation_token, ClutchFullOfferPayload, ClutchKemResponsePayload, ClutchKemSharedSecrets};
         use crate::network::status::{ClutchFullOfferRequest, ClutchKemResponseRequest};
 
         let mut changed = false;
@@ -3012,14 +3380,13 @@ impl PhotonApp {
                         if let Some(ip) = contact.ip {
                             if let Some(ref keypairs) = contact.clutch_our_keypairs {
                                 let offer = ClutchFullOfferPayload::from_keypairs(keypairs);
-                                let mut handle_hashes = vec![our_handle_hash, contact.handle_hash];
-                                handle_hashes.sort();
+                                let conv_token = derive_conversation_token(&[our_handle_hash, contact.handle_hash]);
 
                                 if let Some(ref checker) = self.status_checker {
                                     // Send our offer
                                     checker.send_full_offer(ClutchFullOfferRequest {
                                         peer_addr: ip,
-                                        handle_hashes: handle_hashes.clone(),
+                                        conversation_token: conv_token,
                                         ceremony_id,
                                         payload: offer,
                                         device_pubkey,
@@ -3046,7 +3413,7 @@ impl PhotonApp {
 
                                         checker.send_kem_response(ClutchKemResponseRequest {
                                             peer_addr: ip,
-                                            handle_hashes,
+                                            conversation_token: conv_token,
                                             ceremony_id,
                                             payload: kem_response,
                                             device_pubkey,
@@ -3070,13 +3437,12 @@ impl PhotonApp {
                         if let Some(ip) = contact.ip {
                             if let Some(ref keypairs) = contact.clutch_our_keypairs {
                                 let offer = ClutchFullOfferPayload::from_keypairs(keypairs);
-                                let mut handle_hashes = vec![our_handle_hash, contact.handle_hash];
-                                handle_hashes.sort();
+                                let conv_token = derive_conversation_token(&[our_handle_hash, contact.handle_hash]);
 
                                 if let Some(ref checker) = self.status_checker {
                                     checker.send_full_offer(ClutchFullOfferRequest {
                                         peer_addr: ip,
-                                        handle_hashes,
+                                        conversation_token: conv_token,
                                         ceremony_id,
                                         payload: offer,
                                         device_pubkey,
@@ -3139,12 +3505,8 @@ impl PhotonApp {
     ///
     /// Takes contact index to avoid borrow conflicts in the event loop.
     fn complete_clutch_ceremony_by_idx(&mut self, contact_idx: usize, our_handle_hash: [u8; 32]) {
-        use crate::crypto::clutch::{
-            clutch_complete_full, p256_ecdh, p384_ecdh, secp256k1_ecdh, x25519_ecdh,
-            ClutchSharedSecrets,
-        };
+        use crate::crypto::clutch::{clutch_complete_full, ClutchSharedSecrets};
         use crate::types::ClutchState;
-        use zeroize::Zeroize;
 
         // Extract data from contact to avoid borrow issues
         let contact = match self.contacts.get(contact_idx) {
@@ -3177,14 +3539,7 @@ impl PhotonApp {
             }
         };
 
-        let their_offer = match &their_slot.offer {
-            Some(o) => o.clone(),
-            None => {
-                crate::log_error("CLUTCH: No offer in their slot");
-                return;
-            }
-        };
-        // Our KEM secrets from OUR slot (our encapsulation = our contribution)
+        // Our encapsulation secrets from OUR slot (our contribution - we encapsulated to them)
         let our_kem_secrets = match &our_slot.kem_secrets_to_them {
             Some(s) => s.clone(),
             None => {
@@ -3192,20 +3547,11 @@ impl PhotonApp {
                 return;
             }
         };
-        // Their KEM secrets from THEIR slot (their encapsulation = their contribution)
+        // Their encapsulation secrets from THEIR slot (their contribution - they encapsulated to us)
         let their_kem_secrets = match &their_slot.kem_secrets_from_them {
             Some(s) => s.clone(),
             None => {
                 crate::log_error("CLUTCH: No kem_secrets_from_them in their slot");
-                return;
-            }
-        };
-
-        // Get our keys (cloning to release borrow)
-        let our_keys = match &contact.clutch_our_keypairs {
-            Some(k) => k.clone(),
-            None => {
-                crate::log_error("CLUTCH: complete_clutch_ceremony called without keypairs");
                 return;
             }
         };
@@ -3215,26 +3561,23 @@ impl PhotonApp {
             contact_handle
         ));
 
-        // Compute EC shared secrets (same both directions)
-        let x25519_shared = x25519_ecdh(&our_keys.x25519_secret, &their_offer.x25519_public);
-        let p384_shared = p384_ecdh(&our_keys.p384_secret, &their_offer.p384_public);
-        let secp256k1_shared = secp256k1_ecdh(&our_keys.secp256k1_secret, &their_offer.secp256k1_public);
-        let p256_shared = p256_ecdh(&our_keys.p256_secret, &their_offer.p256_public);
-
         // Determine low/high ordering by handle hash
         let we_are_low = our_handle_hash < their_handle_hash;
 
         // Build shared secrets struct with proper ordering
+        // Now using ECIES-style bidirectional EC secrets from ClutchKemSharedSecrets
+        // Each direction has its own shared secret (truly distinct per participant)
         let secrets = if we_are_low {
             ClutchSharedSecrets {
-                low_x25519: x25519_shared,
-                high_x25519: x25519_shared,
-                low_p384: p384_shared.clone(),
-                high_p384: p384_shared,
-                low_secp256k1: secp256k1_shared.clone(),
-                high_secp256k1: secp256k1_shared,
-                low_p256: p256_shared.clone(),
-                high_p256: p256_shared,
+                // EC: low = our encap (we→them), high = their encap (them→us)
+                low_x25519: our_kem_secrets.x25519,
+                high_x25519: their_kem_secrets.x25519,
+                low_p384: our_kem_secrets.p384.clone(),
+                high_p384: their_kem_secrets.p384.clone(),
+                low_secp256k1: our_kem_secrets.secp256k1.clone(),
+                high_secp256k1: their_kem_secrets.secp256k1.clone(),
+                low_p256: our_kem_secrets.p256.clone(),
+                high_p256: their_kem_secrets.p256.clone(),
                 // KEM: low = our encap (we→them), high = their encap (them→us)
                 low_frodo: our_kem_secrets.frodo.clone(),
                 high_frodo: their_kem_secrets.frodo.clone(),
@@ -3247,14 +3590,15 @@ impl PhotonApp {
             }
         } else {
             ClutchSharedSecrets {
-                low_x25519: x25519_shared,
-                high_x25519: x25519_shared,
-                low_p384: p384_shared.clone(),
-                high_p384: p384_shared,
-                low_secp256k1: secp256k1_shared.clone(),
-                high_secp256k1: secp256k1_shared,
-                low_p256: p256_shared.clone(),
-                high_p256: p256_shared,
+                // EC: low = their encap (them→us), high = our encap (we→them)
+                low_x25519: their_kem_secrets.x25519,
+                high_x25519: our_kem_secrets.x25519,
+                low_p384: their_kem_secrets.p384.clone(),
+                high_p384: our_kem_secrets.p384.clone(),
+                low_secp256k1: their_kem_secrets.secp256k1.clone(),
+                high_secp256k1: our_kem_secrets.secp256k1.clone(),
+                low_p256: their_kem_secrets.p256.clone(),
+                high_p256: our_kem_secrets.p256.clone(),
                 // KEM: low = their encap (them→us), high = our encap (we→them)
                 low_frodo: their_kem_secrets.frodo.clone(),
                 high_frodo: our_kem_secrets.frodo.clone(),
@@ -3289,13 +3633,21 @@ impl PhotonApp {
         // Save chains to disk
         if let Some(identity_seed) = self.user_identity_seed.as_ref() {
             let device_secret = self.device_keypair.secret.as_bytes();
+            crate::log_info(&format!(
+                "CLUTCH: Saving friendship chains to disk (fid={}...)",
+                hex::encode(&friendship_id.as_bytes()[..8])
+            ));
             if let Err(e) = crate::storage::friendship::save_friendship_chains(
                 &friendship_chains,
                 identity_seed,
                 device_secret,
             ) {
                 crate::log_error(&format!("Failed to save friendship chains: {}", e));
+            } else {
+                crate::log_info("CLUTCH: Friendship chains saved successfully");
             }
+        } else {
+            crate::log_error("CLUTCH: Cannot save chains - no identity_seed!");
         }
 
         // Cache chains in memory
@@ -3329,16 +3681,17 @@ impl PhotonApp {
             if let (Some(checker), Some(peer_addr), Some(ceremony_id)) =
                 (&self.status_checker, contact_ip, ceremony_id)
             {
-                use crate::crypto::clutch::ClutchCompletePayload;
+                use crate::crypto::clutch::{derive_conversation_token, ClutchCompletePayload};
                 use crate::network::status::ClutchCompleteRequest;
 
                 let payload = ClutchCompletePayload {
                     eggs_proof: result.proof,
                 };
 
+                let conversation_token = derive_conversation_token(&[our_handle_hash, their_handle_hash]);
                 checker.send_complete_proof(ClutchCompleteRequest {
                     peer_addr,
-                    handle_hashes: vec![our_handle_hash, their_handle_hash],
+                    conversation_token,
                     ceremony_id,
                     payload,
                     device_pubkey: *self.device_keypair.public.as_bytes(),
@@ -3366,8 +3719,21 @@ impl PhotonApp {
                         hex::encode(&result.proof[..8])
                     ));
                     contact.clutch_state = ClutchState::Complete;
+                    // Store their HQC pub prefix to detect stale offers after restart
+                    if let Some(their_slot) = contact.get_slot(&contact.handle_hash) {
+                        if let Some(ref their_offer) = their_slot.offer {
+                            let prefix: [u8; 8] = their_offer.hqc256_public[..8].try_into().unwrap_or_default();
+                            contact.completed_their_hqc_prefix = Some(prefix);
+                        }
+                    }
                     contact.clutch_our_eggs_proof = None;
                     contact.clutch_their_eggs_proof = None;
+
+                    // Clear pending PT sends now that CLUTCH is complete
+                    // This stops wasteful retransmission of offers/KEM responses
+                    if let (Some(ref checker), Some(peer_addr)) = (&self.status_checker, contact_ip) {
+                        checker.clear_pt_sends(peer_addr);
+                    }
                 } else {
                     // CRYPTOGRAPHIC FAILURE!
                     let our_hex = hex::encode(&result.proof);
@@ -3598,7 +3964,7 @@ impl PhotonApp {
 
         // Update contact IPs from fresh peer data
         // Also send CLUTCH offer if we have keys ready but haven't sent yet
-        use crate::crypto::clutch::ClutchFullOfferPayload;
+        use crate::crypto::clutch::{derive_conversation_token, ClutchFullOfferPayload};
         use crate::network::status::ClutchFullOfferRequest;
         use crate::types::ClutchState;
 
@@ -3636,12 +4002,11 @@ impl PhotonApp {
                             (&contact.clutch_our_keypairs, contact.ceremony_id)
                         {
                             let offer = ClutchFullOfferPayload::from_keypairs(keypairs);
-                            // Build sorted handle_hashes for N-party wire format
-                            let mut handle_hashes = vec![our_handle_hash, contact.handle_hash];
-                            handle_hashes.sort();
+                            // Compute conversation_token for privacy-preserving wire format
+                            let conv_token = derive_conversation_token(&[our_handle_hash, contact.handle_hash]);
                             offers_to_send.push(ClutchFullOfferRequest {
                                 peer_addr: peer.ip,
-                                handle_hashes,
+                                conversation_token: conv_token,
                                 ceremony_id,
                                 payload: offer,
                                 device_pubkey,

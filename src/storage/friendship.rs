@@ -125,6 +125,16 @@ fn chains_schema() -> SectionSchema {
         .field("friendship_id", TypeConstraint::AnyHash)
         .field("participant", TypeConstraint::AnyHash) // One per participant (handle_hash)
         .field("chain_bytes", TypeConstraint::AnyHash) // All chains concatenated (stored as hb)
+        // Hash chain state (v2)
+        .field("last_sent_hash", TypeConstraint::AnyHash) // hp type: last msg_hp we sent
+        .field("last_received_hash", TypeConstraint::AnyHash) // One per participant (None = anchor)
+        // Pending messages (v2) - each message has 6 fields
+        .field("pending_eagle_time", TypeConstraint::AnyFloat)
+        .field("pending_plaintext", TypeConstraint::AnyHash) // hb
+        .field("pending_plaintext_hash", TypeConstraint::AnyHash) // hp
+        .field("pending_prev_msg_hp", TypeConstraint::AnyHash) // hp
+        .field("pending_msg_hp", TypeConstraint::AnyHash) // hp
+        .field("pending_ciphertext", TypeConstraint::AnyHash) // hb
 }
 
 /// Save FriendshipChains to disk
@@ -141,7 +151,7 @@ pub fn save_friendship_chains(
     let schema = chains_schema();
     let mut builder = schema
         .build()
-        .set("version", 1u8)
+        .set("version", 2u8) // v2: includes hash chain state and pending messages
         .map_err(|e| FriendshipStorageError::Parse(e.to_string()))?
         .set(
             "friendship_id",
@@ -160,6 +170,43 @@ pub fn save_friendship_chains(
     builder = builder
         .set("chain_bytes", VsfType::hb(chains.chains_to_bytes()))
         .map_err(|e| FriendshipStorageError::Parse(e.to_string()))?;
+
+    // === Hash chain state (v2) ===
+
+    // last_sent_hash - use hp (hash provenance) for immutable content ID
+    if let Some(hash) = chains.last_sent_hash() {
+        builder = builder
+            .set("last_sent_hash", VsfType::hp(hash.to_vec()))
+            .map_err(|e| FriendshipStorageError::Parse(e.to_string()))?;
+    }
+
+    // last_received_hashes - one per participant (None serialized as empty hb)
+    for hash_opt in chains.last_received_hashes() {
+        let vsf_val = match hash_opt {
+            Some(hash) => VsfType::hp(hash.to_vec()),
+            None => VsfType::hb(Vec::new()), // Empty = no messages received yet (expect anchor)
+        };
+        builder = builder
+            .append_multi("last_received_hash", vec![vsf_val])
+            .map_err(|e| FriendshipStorageError::Parse(e.to_string()))?;
+    }
+
+    // === Pending messages (v2) ===
+    for pending in chains.pending_messages() {
+        builder = builder
+            .append_multi("pending_eagle_time", vec![VsfType::f6(pending.eagle_time)])
+            .map_err(|e| FriendshipStorageError::Parse(e.to_string()))?
+            .append_multi("pending_plaintext", vec![VsfType::hb(pending.plaintext.clone())])
+            .map_err(|e| FriendshipStorageError::Parse(e.to_string()))?
+            .append_multi("pending_plaintext_hash", vec![VsfType::hp(pending.plaintext_hash.to_vec())])
+            .map_err(|e| FriendshipStorageError::Parse(e.to_string()))?
+            .append_multi("pending_prev_msg_hp", vec![VsfType::hp(pending.prev_msg_hp.to_vec())])
+            .map_err(|e| FriendshipStorageError::Parse(e.to_string()))?
+            .append_multi("pending_msg_hp", vec![VsfType::hp(pending.msg_hp.to_vec())])
+            .map_err(|e| FriendshipStorageError::Parse(e.to_string()))?
+            .append_multi("pending_ciphertext", vec![VsfType::hb(pending.ciphertext.clone())])
+            .map_err(|e| FriendshipStorageError::Parse(e.to_string()))?;
+    }
 
     let vsf_bytes = builder
         .encode()
@@ -182,6 +229,8 @@ pub fn load_friendship_chains(
     identity_seed: &[u8; 32],
     device_secret: &[u8; 32],
 ) -> Result<FriendshipChains, FriendshipStorageError> {
+    use crate::types::friendship::PendingMessage;
+
     let dir = friendship_dir(friendship_id);
     let path = dir.join("chains.vsf.enc");
 
@@ -229,8 +278,141 @@ pub fn load_friendship_chains(
             FriendshipStorageError::InvalidChains("Missing chain_bytes".to_string())
         })?;
 
-    // Reconstruct chains
-    FriendshipChains::from_storage(*friendship_id, participants, &chain_bytes).ok_or_else(|| {
+    // === Hash chain state (v2) ===
+
+    // last_sent_hash - optional (None if not present or never sent)
+    let last_sent_hash: Option<[u8; 32]> = section
+        .get_field("last_sent_hash")
+        .and_then(|f| f.values.first())
+        .and_then(|v| match v {
+            VsfType::hp(bytes) | VsfType::hb(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(bytes);
+                Some(arr)
+            }
+            _ => None,
+        });
+
+    // last_received_hashes - one per participant (empty bytes = None)
+    let mut last_received_hashes: Vec<Option<[u8; 32]>> = Vec::new();
+    for field in section.get_fields("last_received_hash") {
+        if let Some(v) = field.values.first() {
+            let hash_opt = match v {
+                VsfType::hp(bytes) | VsfType::hb(bytes) if bytes.len() == 32 => {
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(bytes);
+                    Some(arr)
+                }
+                VsfType::hb(bytes) if bytes.is_empty() => None, // Empty = anchor expected
+                _ => None,
+            };
+            last_received_hashes.push(hash_opt);
+        }
+    }
+
+    // If no last_received_hashes in file (v1 format), initialize to None for all participants
+    if last_received_hashes.is_empty() {
+        last_received_hashes = vec![None; participants.len()];
+    }
+
+    // === Pending messages (v2) ===
+    let eagle_times: Vec<f64> = section
+        .get_fields("pending_eagle_time")
+        .iter()
+        .filter_map(|f| f.values.first())
+        .filter_map(|v| match v {
+            VsfType::f6(t) => Some(*t),
+            _ => None,
+        })
+        .collect();
+
+    let plaintexts: Vec<Vec<u8>> = section
+        .get_fields("pending_plaintext")
+        .iter()
+        .filter_map(|f| f.values.first())
+        .filter_map(|v| match v {
+            VsfType::hb(b) => Some(b.clone()),
+            _ => None,
+        })
+        .collect();
+
+    let plaintext_hashes: Vec<[u8; 32]> = section
+        .get_fields("pending_plaintext_hash")
+        .iter()
+        .filter_map(|f| f.values.first())
+        .filter_map(|v| match v {
+            VsfType::hp(b) | VsfType::hb(b) if b.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(b);
+                Some(arr)
+            }
+            _ => None,
+        })
+        .collect();
+
+    let prev_msg_hps: Vec<[u8; 32]> = section
+        .get_fields("pending_prev_msg_hp")
+        .iter()
+        .filter_map(|f| f.values.first())
+        .filter_map(|v| match v {
+            VsfType::hp(b) | VsfType::hb(b) if b.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(b);
+                Some(arr)
+            }
+            _ => None,
+        })
+        .collect();
+
+    let msg_hps: Vec<[u8; 32]> = section
+        .get_fields("pending_msg_hp")
+        .iter()
+        .filter_map(|f| f.values.first())
+        .filter_map(|v| match v {
+            VsfType::hp(b) | VsfType::hb(b) if b.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(b);
+                Some(arr)
+            }
+            _ => None,
+        })
+        .collect();
+
+    let ciphertexts: Vec<Vec<u8>> = section
+        .get_fields("pending_ciphertext")
+        .iter()
+        .filter_map(|f| f.values.first())
+        .filter_map(|v| match v {
+            VsfType::hb(b) => Some(b.clone()),
+            _ => None,
+        })
+        .collect();
+
+    // Reconstruct pending messages (all arrays must have same length)
+    let pending_count = eagle_times.len().min(plaintexts.len())
+        .min(plaintext_hashes.len()).min(prev_msg_hps.len())
+        .min(msg_hps.len()).min(ciphertexts.len());
+
+    let pending_messages: Vec<PendingMessage> = (0..pending_count)
+        .map(|i| PendingMessage {
+            eagle_time: eagle_times[i],
+            plaintext: plaintexts[i].clone(),
+            plaintext_hash: plaintext_hashes[i],
+            prev_msg_hp: prev_msg_hps[i],
+            msg_hp: msg_hps[i],
+            ciphertext: ciphertexts[i].clone(),
+        })
+        .collect();
+
+    // Reconstruct chains with hash chain state
+    FriendshipChains::from_storage_v2(
+        *friendship_id,
+        participants,
+        &chain_bytes,
+        last_sent_hash,
+        last_received_hashes,
+        pending_messages,
+    ).ok_or_else(|| {
         FriendshipStorageError::InvalidChains("Failed to reconstruct chains".to_string())
     })
 }
@@ -271,6 +453,19 @@ pub fn load_all_friendships(
     }
 
     result
+}
+
+/// Delete friendship chains from disk (used on re-key)
+pub fn delete_friendship_chains(friendship_id: &FriendshipId) -> Result<(), FriendshipStorageError> {
+    let dir = friendship_dir(friendship_id);
+    if dir.exists() {
+        fs::remove_dir_all(&dir)?;
+        crate::log_info(&format!(
+            "CLUTCH: Deleted old chains directory: {}",
+            dir.display()
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

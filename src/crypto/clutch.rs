@@ -41,6 +41,62 @@ pub fn smear_hash(data: &[u8]) -> [u8; 32] {
     result
 }
 
+/// Domain separation for conversation token derivation
+const CONVERSATION_TOKEN_DOMAIN: &[u8] = b"PHOTON_CONVERSATION_TOKEN_v0";
+
+/// Derive a privacy-preserving conversation token from participant identity seeds.
+///
+/// Works for N-party conversations (2-party, 3-party, etc.).
+/// All participants derive the SAME token by sorting seeds lexicographically
+/// before hashing. The token:
+/// - Only participants can compute (requires knowing all identity seeds)
+/// - Doesn't reveal individual identities to network observers
+/// - Different for each unique set of participants
+///
+/// Uses smear_hash for algorithm diversity (defense-in-depth).
+pub fn derive_conversation_token(participant_seeds: &[[u8; 32]]) -> [u8; 32] {
+    // Canonical ordering - ALL participants compute same token
+    let mut sorted_seeds = participant_seeds.to_vec();
+    sorted_seeds.sort(); // Lexicographic sort of 32-byte arrays
+
+    // Domain separation + concatenated seeds
+    let mut input = Vec::with_capacity(CONVERSATION_TOKEN_DOMAIN.len() + sorted_seeds.len() * 32);
+    input.extend_from_slice(CONVERSATION_TOKEN_DOMAIN);
+    for seed in &sorted_seeds {
+        input.extend_from_slice(seed);
+    }
+
+    smear_hash(&input)
+}
+
+/// Domain separator for ceremony instance derivation
+const CEREMONY_INSTANCE_DOMAIN: &[u8] = b"PHOTON_CEREMONY_INSTANCE_v0";
+
+/// Derive a unique ceremony instance identifier from all parties' offers.
+///
+/// This is used for stale detection: distinguishes re-key requests from PT
+/// retransmissions. Unlike ceremony_id (derived from handle_hashes, invariant
+/// per handle pair), this changes when ephemeral keypairs are regenerated.
+///
+/// Both parties can compute this independently once they have both offers.
+/// Works for N-party ceremonies.
+pub fn derive_ceremony_instance(offers: &[&ClutchFullOfferPayload]) -> [u8; 32] {
+    // Serialize each offer to bytes (concatenate all 8 public keys)
+    let mut offer_bytes: Vec<Vec<u8>> = offers.iter().map(|o| o.to_bytes()).collect();
+
+    // Canonical ordering - sort by serialized bytes
+    offer_bytes.sort();
+
+    // Domain separation + concatenated sorted offers
+    let mut input = Vec::with_capacity(CEREMONY_INSTANCE_DOMAIN.len() + offer_bytes.iter().map(|b| b.len()).sum::<usize>());
+    input.extend_from_slice(CEREMONY_INSTANCE_DOMAIN);
+    for bytes in &offer_bytes {
+        input.extend_from_slice(bytes);
+    }
+
+    smear_hash(&input)
+}
+
 // ============================================================================
 // SPAGHETTIFY: Rube Goldberg mixing with U256 chunks and f64 bit chaos
 // ============================================================================
@@ -907,6 +963,12 @@ pub struct ClutchFullOfferPayload {
 impl ClutchFullOfferPayload {
     /// Create from our keypairs (extract public keys)
     pub fn from_keypairs(keys: &ClutchAllKeypairs) -> Self {
+        #[cfg(feature = "development")]
+        crate::log_info(&format!(
+            "CLUTCH: Building offer with HQC pub[..8]={}",
+            hex::encode(&keys.hqc256_public[..8])
+        ));
+
         Self {
             x25519_public: keys.x25519_public,
             p384_public: keys.p384_public.clone(),
@@ -918,31 +980,66 @@ impl ClutchFullOfferPayload {
             hqc256_public: keys.hqc256_public.clone(),
         }
     }
+
+    /// Serialize all 8 public keys to bytes (for ceremony instance derivation)
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(
+            32 + self.p384_public.len() + self.secp256k1_public.len() + self.p256_public.len()
+                + self.frodo976_public.len() + self.ntru701_public.len()
+                + self.mceliece_public.len() + self.hqc256_public.len(),
+        );
+        bytes.extend_from_slice(&self.x25519_public);
+        bytes.extend_from_slice(&self.p384_public);
+        bytes.extend_from_slice(&self.secp256k1_public);
+        bytes.extend_from_slice(&self.p256_public);
+        bytes.extend_from_slice(&self.frodo976_public);
+        bytes.extend_from_slice(&self.ntru701_public);
+        bytes.extend_from_slice(&self.mceliece_public);
+        bytes.extend_from_slice(&self.hqc256_public);
+        bytes
+    }
 }
 
-/// KEM response with 4 ciphertexts (~31KB).
+/// KEM response with 4 PQC ciphertexts + 4 EC ephemeral pubkeys (~31KB).
 /// Sent by both parties after receiving peer's full offer.
+///
+/// The EC ephemeral pubkeys enable ECIES-style encapsulation: sender generates
+/// fresh keypair, computes ECDH with recipient's long-term pubkey, sends ephemeral
+/// pubkey. This gives truly distinct shared secrets per direction per algorithm.
 ///
 /// For network serialization, use the VSF-wrapped functions in protocol.rs:
 /// - build_clutch_kem_response_vsf() / parse_clutch_kem_response_vsf()
 #[derive(Clone, Debug)]
 pub struct ClutchKemResponsePayload {
+    // PQC KEM ciphertexts (encapsulated to peer's pubkeys)
     pub frodo976_ciphertext: Vec<u8>,
     pub ntru701_ciphertext: Vec<u8>,
     pub mceliece_ciphertext: Vec<u8>,
     pub hqc256_ciphertext: Vec<u8>,
+    /// First 8 bytes of HQC public key this was encrypted to (for stale detection)
+    pub target_hqc_pub_prefix: [u8; 8],
+    // EC ephemeral pubkeys for ECIES-style encapsulation
+    // Sender generates fresh keypair, computes ECDH(ephemeral_secret, peer_offer_pubkey)
+    // Receiver computes ECDH(offer_secret, ephemeral_pubkey) to get same shared secret
+    pub x25519_ephemeral: [u8; 32],
+    pub p384_ephemeral: Vec<u8>,      // 97B uncompressed SEC1
+    pub secp256k1_ephemeral: Vec<u8>, // 65B uncompressed SEC1
+    pub p256_ephemeral: Vec<u8>,      // 65B uncompressed SEC1
 }
 
 impl ClutchKemResponsePayload {
-    /// Perform KEM encapsulations to peer's public keys.
+    /// Perform encapsulations to peer's public keys (4 PQC KEMs + 4 EC ECIES-style).
     /// Returns (payload, shared_secrets) where shared_secrets are our encapsulated secrets.
+    ///
+    /// For EC algorithms, we generate fresh ephemeral keypairs and compute ECDH with
+    /// the peer's offer pubkeys. This gives truly distinct secrets per direction.
     pub fn encapsulate_to_peer(
         their_offer: &ClutchFullOfferPayload,
     ) -> (Self, ClutchKemSharedSecrets) {
         #[cfg(feature = "development")]
-        crate::log_info("CLUTCH: Encapsulating to peer's public keys...");
+        crate::log_info("CLUTCH: Encapsulating to peer's public keys (8 algorithms)...");
 
-        // Encapsulate to each KEM public key (all 4 PQC primitives)
+        // ===== PQC KEMs =====
         let (frodo976_ciphertext, frodo_ss) = frodo976_encapsulate(&their_offer.frodo976_public);
         let (ntru701_ciphertext, ntru_ss) = ntru701_encapsulate(&their_offer.ntru701_public);
         let (mceliece_ciphertext, mceliece_ss) = mceliece460896_encapsulate(&their_offer.mceliece_public);
@@ -950,18 +1047,51 @@ impl ClutchKemResponsePayload {
 
         #[cfg(feature = "development")]
         crate::log_info(&format!(
-            "CLUTCH: KEM ciphertexts ready (Frodo: {}B, NTRU: {}B, McEliece: {}B, HQC: {}B)",
+            "CLUTCH: HQC encap: their_pub[..8]={} → ct[..8]={}",
+            hex::encode(&their_offer.hqc256_public[..8]),
+            hex::encode(&hqc256_ciphertext[..8])
+        ));
+
+        // ===== EC ECIES-style: generate ephemeral keypairs, ECDH with peer's offer pubkeys =====
+        // This gives distinct shared secrets per direction (we→them vs them→us)
+        let (x25519_eph_secret, x25519_ephemeral) = generate_x25519_ephemeral();
+        let x25519_ss = x25519_ecdh(&x25519_eph_secret, &their_offer.x25519_public);
+
+        let (p384_eph_secret, p384_ephemeral) = generate_p384_ephemeral();
+        let p384_ss = p384_ecdh(&p384_eph_secret, &their_offer.p384_public);
+
+        let (secp256k1_eph_secret, secp256k1_ephemeral) = generate_secp256k1_ephemeral();
+        let secp256k1_ss = secp256k1_ecdh(&secp256k1_eph_secret, &their_offer.secp256k1_public);
+
+        let (p256_eph_secret, p256_ephemeral) = generate_p256_ephemeral();
+        let p256_ss = p256_ecdh(&p256_eph_secret, &their_offer.p256_public);
+
+        #[cfg(feature = "development")]
+        crate::log_info(&format!(
+            "CLUTCH: Encap ready (PQC: Frodo {}B, NTRU {}B, McEliece {}B, HQC {}B) (EC: X25519 32B, P384 {}B, secp256k1 {}B, P256 {}B)",
             frodo976_ciphertext.len(),
             ntru701_ciphertext.len(),
             mceliece_ciphertext.len(),
-            hqc256_ciphertext.len()
+            hqc256_ciphertext.len(),
+            p384_ss.len(),
+            secp256k1_ss.len(),
+            p256_ss.len()
         ));
+
+        // Store the target HQC pub prefix so recipient can verify before decapsulating
+        let mut target_hqc_pub_prefix = [0u8; 8];
+        target_hqc_pub_prefix.copy_from_slice(&their_offer.hqc256_public[..8]);
 
         let payload = Self {
             frodo976_ciphertext,
             ntru701_ciphertext,
             mceliece_ciphertext,
             hqc256_ciphertext,
+            target_hqc_pub_prefix,
+            x25519_ephemeral,
+            p384_ephemeral,
+            secp256k1_ephemeral,
+            p256_ephemeral,
         };
 
         let secrets = ClutchKemSharedSecrets {
@@ -969,30 +1099,45 @@ impl ClutchKemResponsePayload {
             ntru: ntru_ss,
             mceliece: mceliece_ss,
             hqc: hqc_ss,
+            x25519: x25519_ss,
+            p384: p384_ss,
+            secp256k1: secp256k1_ss,
+            p256: p256_ss,
         };
 
         (payload, secrets)
     }
 }
 
-/// Shared secrets from KEM encapsulation (one direction)
+/// Shared secrets from encapsulation (one direction) - all 8 algorithms.
+/// PQC KEMs produce variable-size secrets, EC ECDH produces 32B secrets.
 #[derive(Clone, Debug)]
 pub struct ClutchKemSharedSecrets {
+    // PQC KEM shared secrets
     pub frodo: Vec<u8>,
     pub ntru: Vec<u8>,
     pub mceliece: Vec<u8>,
     pub hqc: Vec<u8>,
+    // EC ECDH shared secrets (ECIES-style: ephemeral_secret × peer_offer_pubkey)
+    pub x25519: [u8; 32],
+    pub p384: Vec<u8>,      // 48B
+    pub secp256k1: Vec<u8>, // 32B
+    pub p256: Vec<u8>,      // 32B
 }
 
 impl ClutchKemSharedSecrets {
-    /// Decapsulate from received ciphertexts using our secret keys
+    /// Decapsulate from received response using our secret keys (4 PQC + 4 EC).
+    ///
+    /// For EC algorithms, we compute ECDH(our_offer_secret, their_ephemeral_pubkey)
+    /// which gives the same shared secret as their ECDH(ephemeral_secret, our_offer_pubkey).
     pub fn decapsulate_from_peer(
         response: &ClutchKemResponsePayload,
         our_keys: &ClutchAllKeypairs,
     ) -> Self {
         #[cfg(feature = "development")]
-        crate::log_info("CLUTCH: Decapsulating from peer's ciphertexts...");
+        crate::log_info("CLUTCH: Decapsulating from peer's response (8 algorithms)...");
 
+        // ===== PQC KEMs =====
         let frodo = frodo976_decapsulate(&our_keys.frodo976_secret, &response.frodo976_ciphertext);
         #[cfg(feature = "development")]
         crate::log_info(&format!("CLUTCH: ✓ Frodo976 decap OK ({}B shared secret)", frodo.len()));
@@ -1013,15 +1158,44 @@ impl ClutchKemSharedSecrets {
             ss
         };
 
+        #[cfg(feature = "development")]
+        crate::log_info(&format!(
+            "CLUTCH: HQC256 decap: our_sk[..8]={} their_ct[..8]={}",
+            hex::encode(&our_keys.hqc256_secret[..8]),
+            hex::encode(&response.hqc256_ciphertext[..8])
+        ));
+
         let hqc = hqc256_decapsulate(&our_keys.hqc256_secret, &response.hqc256_ciphertext);
         #[cfg(feature = "development")]
         crate::log_info(&format!("CLUTCH: ✓ HQC256 decap OK ({}B shared secret)", hqc.len()));
+
+        // ===== EC ECIES-style: ECDH(our_offer_secret, their_ephemeral_pubkey) =====
+        // This matches their ECDH(ephemeral_secret, our_offer_pubkey)
+        let x25519 = x25519_ecdh(&our_keys.x25519_secret, &response.x25519_ephemeral);
+        #[cfg(feature = "development")]
+        crate::log_info("CLUTCH: ✓ X25519 decap OK (32B shared secret)");
+
+        let p384 = p384_ecdh(&our_keys.p384_secret, &response.p384_ephemeral);
+        #[cfg(feature = "development")]
+        crate::log_info(&format!("CLUTCH: ✓ P384 decap OK ({}B shared secret)", p384.len()));
+
+        let secp256k1 = secp256k1_ecdh(&our_keys.secp256k1_secret, &response.secp256k1_ephemeral);
+        #[cfg(feature = "development")]
+        crate::log_info(&format!("CLUTCH: ✓ secp256k1 decap OK ({}B shared secret)", secp256k1.len()));
+
+        let p256 = p256_ecdh(&our_keys.p256_secret, &response.p256_ephemeral);
+        #[cfg(feature = "development")]
+        crate::log_info(&format!("CLUTCH: ✓ P256 decap OK ({}B shared secret)", p256.len()));
 
         Self {
             frodo,
             ntru,
             mceliece,
             hqc,
+            x25519,
+            p384,
+            secp256k1,
+            p256,
         }
     }
 
@@ -1031,7 +1205,26 @@ impl ClutchKemSharedSecrets {
         self.ntru.zeroize();
         self.mceliece.zeroize();
         self.hqc.zeroize();
+        self.x25519.zeroize();
+        self.p384.zeroize();
+        self.secp256k1.zeroize();
+        self.p256.zeroize();
     }
+}
+
+/// Sent by both parties after computing eggs to verify agreement.
+///
+/// Contains the eggs_proof hash. Both parties MUST compute the same proof
+/// since they derived identical eggs from the ceremony.
+///
+/// If proofs don't match, something went catastrophically wrong (MITM, bug,
+/// or corruption) and the ceremony MUST be aborted with a panic.
+///
+/// For network serialization, use the VSF-wrapped functions in protocol.rs:
+/// - build_clutch_complete_vsf() / parse_clutch_complete_vsf()
+#[derive(Clone, Debug)]
+pub struct ClutchCompletePayload {
+    pub eggs_proof: [u8; 32],
 }
 
 /// Generate all 8 ephemeral keypairs for full CLUTCH ceremony.
@@ -1054,6 +1247,13 @@ pub fn generate_all_ephemeral_keypairs() -> ClutchAllKeypairs {
     // Class 2: Post-quantum code-based KEMs
     let (mceliece_secret, mceliece_public) = generate_mceliece460896_keypair();
     let (hqc256_secret, hqc256_public) = generate_hqc256_keypair();
+
+    #[cfg(feature = "development")]
+    crate::log_info(&format!(
+        "CLUTCH: HQC256 keypair generated: pub[..8]={} sk[..8]={}",
+        hex::encode(&hqc256_public[..8]),
+        hex::encode(&hqc256_secret[..8])
+    ));
 
     #[cfg(feature = "development")]
     crate::log_info(&format!(
@@ -1213,6 +1413,9 @@ pub fn avalanche_hash_eggs(eggs: &ClutchEggs) -> (Vec<u8>, Vec<u8>) {
     use i256::U256;
 
     #[cfg(feature = "development")]
+    let start_time = std::time::Instant::now();
+
+    #[cfg(feature = "development")]
     crate::log_info(&format!(
         "CLUTCH: Collecting {} eggs for avalanche ({} bytes input)...",
         eggs.eggs.len(),
@@ -1230,7 +1433,7 @@ pub fn avalanche_hash_eggs(eggs: &ClutchEggs) -> (Vec<u8>, Vec<u8>) {
     }
 
     #[cfg(feature = "development")]
-    crate::log_info("CLUTCH: Avalanche hashing to 2MB...");
+    let step0_elapsed = start_time.elapsed();
 
     let mut target_hasher = Hasher::new();
     target_hasher.update(b"target");
@@ -1267,8 +1470,16 @@ pub fn avalanche_hash_eggs(eggs: &ClutchEggs) -> (Vec<u8>, Vec<u8>) {
             (start_pos, stop_pos, false)
         };
 
-        // Copy chunk [start..stop] and append/prepend based on direction
-        let chunk = omelette[start..stop].to_vec();
+        // Guard against empty chunk (start == stop) causing infinite loop
+        let chunk = if start == stop {
+            // Hash current state to get a non-empty chunk
+            let mut chunk_hasher = Hasher::new();
+            chunk_hasher.update(b"empty_chunk_fallback");
+            chunk_hasher.update(&omelette);
+            chunk_hasher.finalize().as_bytes().to_vec()
+        } else {
+            omelette[start..stop].to_vec()
+        };
         if append {
             // Append to end
             omelette.extend_from_slice(&chunk);
@@ -1284,6 +1495,9 @@ pub fn avalanche_hash_eggs(eggs: &ClutchEggs) -> (Vec<u8>, Vec<u8>) {
             break;
         }
     }
+
+    #[cfg(feature = "development")]
+    let step1_elapsed = start_time.elapsed();
 
     // Step 2: Heavy mixing with diverse operations
     // Process as variable-sized chunks (1-43 bytes, unaligned) for maximum diffusion
@@ -1354,6 +1568,9 @@ pub fn avalanche_hash_eggs(eggs: &ClutchEggs) -> (Vec<u8>, Vec<u8>) {
         }
     }
 
+    #[cfg(feature = "development")]
+    let step2_elapsed = start_time.elapsed();
+
     // Step 3: Final rotation before trim
     // Hash entire buffer and rotate by (hash % len) to shuffle one last time
     let final_hash = blake3::hash(&omelette);
@@ -1370,15 +1587,228 @@ pub fn avalanche_hash_eggs(eggs: &ClutchEggs) -> (Vec<u8>, Vec<u8>) {
 
     #[cfg(feature = "development")]
     {
-        // Show first 64 bytes of each pad for comparison
-        let low_preview: String = low_pad[..64].iter().map(|b| format!("{:02x}", b)).collect();
-        let high_preview: String = high_pad[..64].iter().map(|b| format!("{:02x}", b)).collect();
-
-        crate::log_info(&format!("CLUTCH: low_pad[0..64]  = {}", low_preview));
-        crate::log_info(&format!("CLUTCH: high_pad[0..64] = {}", high_preview));
+        let total_elapsed = start_time.elapsed();
+        crate::log_info(&format!(
+            "CLUTCH: avalanche_hash 2MB: step0={:.1}ms step1={:.1}ms step2={:.1}ms step3={:.1}ms total={:.1}ms",
+            step0_elapsed.as_secs_f64() * 1000.0,
+            (step1_elapsed - step0_elapsed).as_secs_f64() * 1000.0,
+            (step2_elapsed - step1_elapsed).as_secs_f64() * 1000.0,
+            (total_elapsed - step2_elapsed).as_secs_f64() * 1000.0,
+            total_elapsed.as_secs_f64() * 1000.0,
+        ));
     }
 
     (low_pad, high_pad)
+}
+
+/// Expand eggs to 2MB mixed buffer for chain derivation.
+///
+/// Memory-hard, deterministic, preserves full entropy from all 20 eggs.
+/// Uses the same expansion and mixing logic as avalanche_hash_eggs but
+/// returns the full 2MB buffer instead of splitting into pads.
+///
+/// Properties:
+/// - Deterministic: same eggs → same 2MB output
+/// - Memory-hard: 2MB total state
+/// - Avalanche: every bit of input affects every bit of output
+/// - No compression: full 2MB preserves entropy for chain derivation
+pub fn avalanche_expand_eggs(eggs: &ClutchEggs) -> Vec<u8> {
+    use i256::U256;
+
+    #[cfg(feature = "development")]
+    let start_time = std::time::Instant::now();
+
+    const TOTAL_SIZE: usize = 2_097_152; // 2MB
+    let max_size = TOTAL_SIZE * 2; // Allow expansion up to 4MB
+
+    // Step 0: Flatten all eggs into one buffer
+    let mut omelette = Vec::with_capacity(max_size);
+    for egg in &eggs.eggs {
+        omelette.extend_from_slice(egg);
+    }
+
+    #[cfg(feature = "development")]
+    let step0_elapsed = start_time.elapsed();
+
+    // Determine target size (2-4MB, data-dependent)
+    let mut target_hasher = Hasher::new();
+    target_hasher.update(b"target");
+    target_hasher.update(&omelette);
+    let target_hash = target_hasher.finalize();
+    let target_u256 = U256::from_be_bytes(*target_hash.as_bytes());
+    let target_size =
+        TOTAL_SIZE + (target_u256 % U256::from(TOTAL_SIZE as u128)).as_u128() as usize;
+
+    // Step 1: Grow to target size by copying pseudo-random chunks
+    while omelette.len() < target_size {
+        let current_len = omelette.len();
+
+        let mut start_hasher = Hasher::new();
+        start_hasher.update(b"start");
+        start_hasher.update(&omelette);
+        let start_hash = start_hasher.finalize();
+        let start_u256 = U256::from_be_bytes(*start_hash.as_bytes());
+        let start_pos = (start_u256 % U256::from(current_len as u128)).as_u128() as usize;
+
+        let mut stop_hasher = Hasher::new();
+        stop_hasher.update(&omelette);
+        stop_hasher.update(b"stop");
+        let stop_hash = stop_hasher.finalize();
+        let stop_u256 = U256::from_be_bytes(*stop_hash.as_bytes());
+        let stop_pos = (stop_u256 % U256::from(current_len as u128)).as_u128() as usize;
+
+        let (start, stop, append) = if start_pos > stop_pos {
+            (stop_pos, start_pos, true)
+        } else {
+            (start_pos, stop_pos, false)
+        };
+
+        // Guard against empty chunk (start == stop) causing infinite loop
+        let chunk = if start == stop {
+            // Hash current state to get a non-empty chunk
+            let mut chunk_hasher = Hasher::new();
+            chunk_hasher.update(b"empty_chunk_fallback");
+            chunk_hasher.update(&omelette);
+            chunk_hasher.finalize().as_bytes().to_vec()
+        } else {
+            omelette[start..stop].to_vec()
+        };
+        if append {
+            omelette.extend_from_slice(&chunk);
+        } else {
+            let mut temp = chunk;
+            temp.append(&mut omelette);
+            omelette = temp;
+        }
+
+        if omelette.len() > target_size {
+            break;
+        }
+    }
+
+    #[cfg(feature = "development")]
+    let step1_elapsed = start_time.elapsed();
+
+    // Step 2: Heavy mixing with diverse operations
+    const MIX_ROUNDS: usize = 8;
+
+    for round in 0..MIX_ROUNDS {
+        let len = omelette.len();
+
+        let mut round_hasher = Hasher::new();
+        round_hasher.update(&omelette);
+        round_hasher.update(&[round as u8]);
+        let round_hash = round_hasher.finalize();
+        let round_u256 = U256::from_be_bytes(*round_hash.as_bytes());
+
+        let chunk_size = 1 + ((round_u256 % U256::from(43_u128)).as_u128() as usize);
+        let num_chunks = len / chunk_size;
+
+        for i in 0..num_chunks {
+            let pos = i * chunk_size;
+            if pos > len - chunk_size {
+                break;
+            }
+
+            let chunk = &omelette[pos..pos + chunk_size];
+            let mut idx_hasher = Hasher::new();
+            idx_hasher.update(chunk);
+            idx_hasher.update(&[round as u8, i as u8]);
+            let idx_hash = idx_hasher.finalize();
+            let idx_u256 = U256::from_be_bytes(*idx_hash.as_bytes());
+
+            let idx1 =
+                ((idx_u256 % U256::from(num_chunks as u128)).as_u128() as usize) * chunk_size;
+            let idx2 = (((idx_u256 >> 64_u32) % U256::from(num_chunks as u128)).as_u128() as usize)
+                * chunk_size;
+
+            if idx1 + chunk_size > len || idx2 + chunk_size > len {
+                continue;
+            }
+
+            let chunk1 = omelette[idx1..idx1 + chunk_size].to_vec();
+            let chunk2 = omelette[idx2..idx2 + chunk_size].to_vec();
+
+            for j in 0..chunk_size {
+                let val = omelette[pos + j];
+                let v1 = chunk1[j];
+                let v2 = chunk2[j];
+
+                omelette[pos + j] = match round % 7 {
+                    0 => val.wrapping_add(v1) ^ v2,
+                    1 => val.wrapping_sub(v1).wrapping_mul(v2),
+                    2 => (val ^ v1).wrapping_add(v2),
+                    3 => val.wrapping_mul(0xEF) ^ v1 ^ 0xBE,
+                    4 => (val << (v1 & 7)) ^ v2,
+                    5 => (val >> (v2 & 7)) ^ v1,
+                    6 => val ^ v1 ^ v2 ^ 0xDE,
+                    _ => val,
+                };
+            }
+        }
+    }
+
+    #[cfg(feature = "development")]
+    let step2_elapsed = start_time.elapsed();
+
+    // Step 3: Final rotation
+    let final_hash = blake3::hash(&omelette);
+    let final_u256 = U256::from_be_bytes(*final_hash.as_bytes());
+    let rotate_amount = (final_u256 % U256::from(omelette.len() as u128)).as_u128() as usize;
+    omelette.rotate_left(rotate_amount);
+
+    // Trim to exactly 2MB
+    omelette.truncate(TOTAL_SIZE);
+
+    #[cfg(feature = "development")]
+    {
+        let total_elapsed = start_time.elapsed();
+        crate::log_info(&format!(
+            "CLUTCH: avalanche_expand 2MB: step0={:.1}ms step1={:.1}ms step2={:.1}ms step3={:.1}ms total={:.1}ms",
+            step0_elapsed.as_secs_f64() * 1000.0,
+            (step1_elapsed - step0_elapsed).as_secs_f64() * 1000.0,
+            (step2_elapsed - step1_elapsed).as_secs_f64() * 1000.0,
+            (total_elapsed - step2_elapsed).as_secs_f64() * 1000.0,
+            total_elapsed.as_secs_f64() * 1000.0,
+        ));
+    }
+
+    omelette
+}
+
+/// Derive one participant's 8KB chain from avalanche buffer.
+///
+/// Uses truncate-and-append for deterministic PRNG without compression.
+/// Links accumulate at end of buffer - no separate Vec needed.
+///
+/// Algorithm:
+/// 1. Domain separation: BLAKE3_XOF(avalanche || participant) → 2MB buffer
+/// 2. For 256 rounds:
+///    - link = smear_hash(buffer)  // BLAKE3 ⊕ SHA3 ⊕ SHA512
+///    - Drop first 32B, append link at end
+/// 3. Chain = last 8KB (256 links in order)
+pub fn derive_chain_from_avalanche(avalanche: &[u8], participant: &[u8; 32]) -> Vec<u8> {
+    // Domain separation: mix participant identity into state
+    let mut hasher = Hasher::new();
+    hasher.update(b"PHOTON_CHAIN_DERIVE_v1");
+    hasher.update(participant);
+    hasher.update(avalanche);
+
+    // Create working buffer from domain-separated XOF
+    let mut buffer = vec![0u8; avalanche.len()];
+    hasher.finalize_xof().fill(&mut buffer);
+    let len = buffer.len();
+
+    // Generate 256 links via truncate-and-append
+    // Each link = smear_hash(buffer), then drop first 32B, append link at end
+    for _ in 0..256 {
+        let link = smear_hash(&buffer);
+        buffer.copy_within(32.., 0); // shift left, drop first 32B
+        buffer[len - 32..].copy_from_slice(&link); // append link at end
+    }
+
+    // Chain = last 8KB (256 × 32B links in order)
+    buffer[len - 8192..].to_vec()
 }
 
 /// Compute the clutch completion proof.
@@ -1456,15 +1886,19 @@ pub struct ClutchFullResult {
 
 /// All 16 shared secrets for full CLUTCH (8 algorithms × 2 directions).
 ///
-/// For EC algorithms (X25519, P-384, secp256k1, P-256):
-/// - Both parties compute ECDH → same shared secret
-/// - But we label them low_* and high_* by handle ordering
+/// All algorithms now use ECIES-style bidirectional encapsulation:
+/// - Each party generates ephemeral keys and encapsulates to peer
+/// - Results in TWO distinct shared secrets per algorithm (truly bidirectional)
+/// - low_* = encapsulated by lower handle_hash party
+/// - high_* = encapsulated by higher handle_hash party
 ///
-/// For KEM algorithms (Frodo, NTRU, McEliece, HQC):
-/// - Each party encapsulates to peer → peer decapsulates
-/// - Two different shared secrets per algorithm (bidirectional)
+/// For 2-party: 16 distinct shared secrets (8 algorithms × 2 directions)
+/// For 3-party: 48 distinct shared secrets (8 algorithms × 6 directed pairs)
+///
+/// An attacker must compromise BOTH directions of an algorithm to break
+/// that algorithm's contribution to the final key material.
 pub struct ClutchSharedSecrets {
-    // Class 0: Classical EC (same secret, labeled by party)
+    // Class 0: Classical EC (ECIES-style: distinct secret per direction)
     pub low_x25519: [u8; 32],
     pub high_x25519: [u8; 32],
     pub low_p384: Vec<u8>, // 48B
@@ -1474,13 +1908,13 @@ pub struct ClutchSharedSecrets {
     pub low_p256: Vec<u8>, // 32B
     pub high_p256: Vec<u8>,
 
-    // Class 1: Post-quantum lattice KEMs (different secrets per direction)
+    // Class 1: Post-quantum lattice KEMs (distinct secret per direction)
     pub low_frodo: Vec<u8>, // 24B
     pub high_frodo: Vec<u8>,
     pub low_ntru: Vec<u8>, // 32B
     pub high_ntru: Vec<u8>,
 
-    // Class 2: Post-quantum code-based KEMs
+    // Class 2: Post-quantum code-based KEMs (distinct secret per direction)
     pub low_mceliece: Vec<u8>, // 32B
     pub high_mceliece: Vec<u8>,
     pub low_hqc: Vec<u8>, // 64B
@@ -1564,13 +1998,30 @@ pub fn clutch_complete_full(
 
 /// Compute proof hash for CLUTCH verification from eggs.
 /// Used by both parties to verify they collected identical eggs.
+///
+/// Defense-in-depth: uses spaghettify + smear_hash for algorithm diversity.
+/// If BLAKE3 is broken, SHA3 and SHA512 still protect the proof.
+/// If any hash is broken, spaghettify's chaos mixing still scrambles the eggs.
 pub fn compute_eggs_proof(eggs: &ClutchEggs) -> [u8; 32] {
-    let mut hasher = Hasher::new();
-    hasher.update(b"CLUTCH_EGGS_v1_proof");
+    // Flatten eggs to bytes
+    let mut egg_bytes = Vec::with_capacity(eggs.eggs.len() * 32);
     for egg in &eggs.eggs {
-        hasher.update(egg);
+        egg_bytes.extend_from_slice(egg);
     }
-    *hasher.finalize().as_bytes()
+
+    // Add domain separation
+    let mut input = b"CLUTCH_EGGS_v2_proof".to_vec();
+    input.extend_from_slice(&egg_bytes);
+
+    // Spaghettify for chaos mixing, then smear_hash for algorithm diversity
+    // This is overkill for a proof, but consistency with chain derivation is good
+    let spaghetti = spaghettify(&input);
+
+    // Final proof = smear_hash(spaghetti || eggs)
+    // Defense in depth: if spaghettify broken, eggs still contribute directly
+    let mut final_input = spaghetti.to_vec();
+    final_input.extend_from_slice(&egg_bytes);
+    smear_hash(&final_input)
 }
 
 /// Verify CLUTCH proof matches our eggs.

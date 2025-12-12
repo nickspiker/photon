@@ -131,6 +131,11 @@ pub struct Contact {
     pub clutch_their_eggs_proof: Option<[u8; 32]>,
     /// Flag to prevent multiple concurrent keygens (race condition guard)
     pub clutch_keygen_in_progress: bool,
+    /// HQC public key prefix from peer's last completed ceremony.
+    /// Used for stale detection: if received offer has same HQC prefix, it's a
+    /// PT retransmission (stale), not a legitimate re-key request.
+    /// Stored at completion time, cleared when accepting new ceremony.
+    pub completed_their_hqc_prefix: Option<[u8; 8]>,
 
     pub trust_level: TrustLevel,
     pub added: f64,
@@ -208,6 +213,7 @@ impl Contact {
             clutch_our_eggs_proof: None,   // Our proof (stored while awaiting peer's)
             clutch_their_eggs_proof: None, // Peer's proof (if received early)
             clutch_keygen_in_progress: false, // No keygen running yet
+            completed_their_hqc_prefix: None, // Set when CLUTCH completes, persisted
             trust_level: TrustLevel::Stranger,
             added: vsf::eagle_time_nanos(),
             last_seen: None,

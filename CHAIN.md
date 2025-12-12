@@ -1,4 +1,4 @@
-# CHAIN Protocol Specification v1.0
+# CHAIN Protocol Specification v0.0
 
 **Protocol:** Rolling Chain Encryption (Post-CLUTCH Communication)
 **Author:** Nick Spiker
@@ -11,9 +11,9 @@
 
 ## 0. Abstract
 
-CHAIN is the rolling encryption protocol used for all communication after a CLUTCH ceremony completes. It transforms the 256-byte CLUTCH seed into an evolving chain state that provides forward secrecy, self-authentication, and memory-hard advancement.
+CHAIN is the rolling encryption protocol used for all communication after a CLUTCH ceremony completes. It transforms the CLUTCH eggs into an evolving chain state that provides forward secrecy, self-authentication, and memory-hard advancement.
 
-CHAIN is not a separate handshake—successful decryption *is* authentication. Both parties derive identical chain states deterministically, and the chain advances with every message. Compromise of current state reveals nothing about past messages.
+CHAIN is not a separate handshake—successful decryption *is* authentication. Both parties derive identical chain states deterministically, and the chain advances with every ACKed message. Compromise of current state reveals nothing about past messages.
 
 ---
 
@@ -21,161 +21,214 @@ CHAIN is not a separate handshake—successful decryption *is* authentication. B
 
 ### 1.0 Self-Authenticating Messages
 
-No signatures, no certificates, no identity proofs. If a message decrypts successfully, the sender must possess the chain state, which proves continuous participation since the CLUTCH ceremony. The chain itself is the credential.
+No signatures, no certificates, no identity proofs. If a message decrypts successfully and the smear proof matches, the sender must possess the chain state. This proves continuous participation since the CLUTCH ceremony. The chain itself IS the credential.
 
 ### 1.1 Forward Secrecy by Default
 
-Every message advances the chain state through a memory-hard function. Even if current state is compromised, past messages remain protected—the attacker cannot reverse the chain advancement.
+Every ACKed message advances the chain state thru memory-hard mixing. Even if current state is compromised, past messages remain protected—the attacker cannot reverse the chain advancement.
 
 ### 1.2 Symmetric Efficiency
 
-After the asymmetric CLUTCH ceremony (~500ms), all subsequent encryption is symmetric (ChaCha20-Poly1305). Message encryption is effectively instant, limited only by XOR bandwidth.
+After the asymmetric CLUTCH ceremony, all subsequent encryption is symmetric. Message encryption is fast, limited primarily by memory bandwidth for scratch generation.
 
-### 1.3 Dual PRNG Defense
+### 1.3 Defense in Depth
 
-Salt generation uses two independent PRNGs (ChaCha20Rng + Pcg64). An attacker must break both simultaneously to predict salt values.
+Multiple independent security layers:
+- ChaCha20 stream cipher (proven, fast)
+- XOR with memory-hard scratch pad
+- Smear hash authentication (BLAKE3 ⊕ SHA3 ⊕ SHA512)
+- Device key encryption at rest
+
+### 1.4 Eagle Time Ordering
+
+No sequence numbers. Messages carry Eagle time (f6) which provides:
+- Temporal ordering
+- Implicit uniqueness (nanosecond precision)
+- Consistency check with outer VSF header
 
 ---
 
 ## 2. Chain State Structure
 
-### 2.0 State Definition
+### 2.0 Extended Chain (512 Links)
+
+Each participant maintains a 512-link chain (16KB):
+- **Links 0-255:** History window (initialized to zeros, fills as chain advances)
+- **Links 256-511:** Active chain (current encryption keys, derived from CLUTCH)
+
+This layout is natural from truncate-and-append derivation: append-right fills [256..512],
+and on each advance we shift-left, dropping oldest history at [0] and adding new link at [511].
 
 ```rust
-struct ChainState {
-    /// Current chain hash (32 bytes)
-    /// Advances with every message via memory-hard function
-    current: [u8; 32],
+struct ParticipantChain {
+    /// 512 links × 32 bytes = 16KB
+    /// [0..256) = history (zeros initially, fills on advance)
+    /// [256..512) = active (derived, current key at [511])
+    links: [[u8; 32]; 512],
 
-    /// Message sequence number (monotonic)
-    /// Prevents replay, provides nonce uniqueness
-    sequence: u64,
-
-    /// CLUTCH seed backup (for PRNG initialization)
-    /// Only used once (on first message)
-    clutch_seed: [u8; 256],
-
-    /// Dual PRNG state (initialized on first message)
-    prng: Option<DualPRNG>,
-
-    /// Precomputed L1 scratch for next message
-    /// Background thread generates this continuously
-    next_scratch: Option<Vec<u8>>,
+    /// Last ACKed Eagle time for this participant
+    /// Included in fresh_link derivation - chains messages temporally
+    /// If parties disagree on prev_time, chains diverge immediately
+    last_ack_time: EagleTime,
 }
 
-struct DualPRNG {
-    chacha_rng: ChaCha20Rng,  // CSPRNG - cryptographically secure
-    pcg_rng: Pcg64,           // Fast PRNG - different mathematical structure
+struct FriendshipChains {
+    /// Friendship identifier
+    friendship_id: FriendshipId,
+
+    /// One extended chain per participant (sorted by handle_hash)
+    chains: Vec<ParticipantChain>,
+
+    /// Participant handle_hashes (sorted)
+    participants: Vec<[u8; 32]>,
 }
 ```
 
-### 2.1 State Synchronization
+### 2.1 Chain Initialization
 
-Both parties maintain identical chain states. The chain is **deterministic**:
-- Same CLUTCH seed → same initial state
-- Same messages processed → same current state
-- Same sequence number → synchronized
+From CLUTCH eggs via avalanche expansion:
 
-If states desynchronize (missed message, corruption), decryption fails and resynchronization is required (see Section 7).
+```
+CLUTCH eggs (640B)
+    ↓
+avalanche_expand_eggs() → 2MB mixed buffer
+    ↓
+For each participant (sorted):
+    derive_chain_from_avalanche(avalanche, handle_hash) → 8KB
+    ↓
+    Place in links[256..512], set links[0..256] = zeros
+```
+
+The history window starts empty (zeros). It fills as messages are ACKed and the chain
+advances - each advance shifts everything left, new link appends at [511], and the
+oldest active link (now at [255]) becomes the newest history entry.
+
+### 2.2 State Synchronization
+
+Both parties maintain identical chain states. Deterministic:
+- Same CLUTCH eggs → same initial chains
+- Same ACKed messages → same current state
+
+### 2.3 Why Full 512 Links for All Chains?
+
+Each participant stores full 512 links for ALL chains (their own + others'), even though:
+- Your own chain: only need active portion (256 links) for sending
+- Their chains: need history for decrypting retries
+
+**Reasons for uniform storage:**
+1. **Multi-device sync**: Your laptop needs full state of your chain to continue conversations started on your phone
+2. **Cross-device message display**: All your devices need to decrypt/display your own sent messages
+3. **Device sync protocol**: Similar chain-based sync between your own devices
+4. **Simplicity**: One data structure, one sync mechanism
+5. **Future-proof**: New features may need history of your own chain
+
+Messages stored locally are re-encrypted with device-specific keys. Chain state syncs between your devices via separate device-to-device protocol (see Device Sync spec).
 
 ---
 
-## 3. Chain Initialization
+## 3. Chained Salt Generation
 
-### 3.0 From CLUTCH Seed
+### 3.0 Salt Chaining via Spaghettify
 
-Upon CLUTCH ceremony completion:
-
-```rust
-fn init_chain_state(clutch_seed: &[u8; 256]) -> ChainState {
-    // Domain-separated derivation of initial chain hash
-    let initial_hash = blake3::keyed_hash(
-        b"PHOTON_CHAIN_v1_init____________",  // 32-byte key
-        clutch_seed
-    );
-
-    ChainState {
-        current: *initial_hash.as_bytes(),
-        sequence: 0,
-        clutch_seed: *clutch_seed,
-        prng: None,  // Initialized on first message
-        next_scratch: None,  // Background thread starts computing
-    }
-}
-```
-
-### 3.1 PRNG Initialization
-
-Triggered by the first message in either direction:
+Each message's salt is derived from the **previous message's plaintext**. This creates
+a cryptographic chain that forces message ordering:
 
 ```rust
-fn init_dual_prng(clutch_seed: &[u8; 256], first_message_hash: &[u8; 32]) -> DualPRNG {
-    // ChaCha20Rng seed (32 bytes)
-    let chacha_seed = blake3::keyed_hash(
-        b"PHOTON_CHAIN_chacha_seed________",
-        &[clutch_seed.as_slice(), first_message_hash].concat()
-    );
-
-    // Pcg64 seed (16 bytes -> 2x u64)
-    let pcg_seed = blake3::keyed_hash(
-        b"PHOTON_CHAIN_pcg_seed___________",
-        &[clutch_seed.as_slice(), first_message_hash].concat()
-    );
-
-    let pcg_state = u64::from_le_bytes(pcg_seed.as_bytes()[0..8].try_into().unwrap());
-    let pcg_stream = u64::from_le_bytes(pcg_seed.as_bytes()[8..16].try_into().unwrap());
-
-    DualPRNG {
-        chacha_rng: ChaCha20Rng::from_seed(*chacha_seed.as_bytes()),
-        pcg_rng: Pcg64::new(pcg_state, pcg_stream),
-    }
+fn derive_salt(prev_plaintext: &[u8], chain: &ParticipantChain) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"PHOTON_SALT_v0");
+    hasher.update(prev_plaintext);  // Empty for first message
+    hasher.update(chain.links[500..512].as_flattened());  // Last 12 links
+    *spaghettify(hasher.finalize().as_bytes()).as_bytes()
 }
+
+// Usage:
+// S1 = derive_salt(&[], chain)           // First message: empty prev
+// S2 = derive_salt(&m1_plaintext, chain) // Second message
+// S3 = derive_salt(&m2_plaintext, chain) // Third message
 ```
 
-**Why first message hash?** Adds unpredictable entropy to PRNG seeding. Even if CLUTCH seed is somehow predicted, the first message content provides additional randomness.
+### 3.1 Why Chained Salt?
+
+- **Forced ordering**: Can't decrypt M2 without M1's plaintext (need it to derive S2)
+- **Implicit gap detection**: Missing message = can't derive next salt = chain breaks
+- **ACK efficiency**: ACK for last message confirms entire chain received
+- **Deterministic**: No random generation, both parties derive same sequence
+- **Memory-hard**: spaghettify prevents precomputation attacks
+- **Simple base case**: First message just uses empty prev_plaintext
+
+### 3.2 Message Flow
+
+```
+Alice sends M1, M2, M3 without waiting for ACKs:
+    S1 = derive_salt(&[], chain)            // First: empty prev
+    Send M1 with S1
+    S2 = derive_salt(&M1_plaintext, chain)  // S2 from M1
+    Send M2 with S2
+    S3 = derive_salt(&M2_plaintext, chain)  // S3 from M2
+    Send M3 with S3
+
+Bob receives out of order (M3, M1, M2):
+    Receive M3 - can't decrypt (don't know S3)
+    Receive M1 - decrypt with S1 ✓ → now can derive S2
+    Receive M2 - decrypt with S2 ✓ → now can derive S3
+    Receive M3 - decrypt with S3 ✓
+    ACK(M3) → Alice knows entire chain received
+```
+
+### 3.3 Salt NOT in Wire Format
+
+With chained salt, both sides derive it independently:
+- Sender: `derive_salt(prev_plaintext, chain)` before encrypting
+- Receiver: `derive_salt(prev_plaintext, chain)` after decrypting previous message
+
+**No salt on the wire** - saves 32 bytes per message. The receiver already has prev_plaintext (they just decrypted it), so they can derive the same salt.
 
 ---
 
-## 4. Memory-Hard Scratch Generation
+## 4. L1 Scratch Pad Generation
 
-### 4.0 L1 Cache-Optimized Scratch
+### 4.0 Memory-Hard Scratch
 
 Background thread continuously precomputes scratch buffers:
 
 ```rust
-const L1_SIZE: usize = 32_768;  // 32KB - fits in L1 cache
-const L1_ROUNDS: usize = 3;      // 3 rounds, ~1-10ms
+const L1_SIZE: usize = 30_720;  // 30KB - fits in L1 cache
+const L1_ROUNDS: usize = 3;      // Sequential rounds
 
-fn generate_l1_scratch(chain_state: &[u8; 32]) -> Vec<u8> {
+fn generate_scratch(
+    chain: &[[u8; 32]; 512],
+    salt: &[u8; 32],
+) -> Vec<u8> {
     let mut scratch = vec![0u8; L1_SIZE];
 
-    // Seed with chain state
-    scratch[..32].copy_from_slice(chain_state);
+    // Initialize from current key (link[511]) XOR salt
+    let mut state = [0u8; 32];
+    for i in 0..32 {
+        state[i] = chain[511][i] ^ salt[i];
+    }
+    scratch[0..32].copy_from_slice(&state);
 
+    // Fill with sequential hashing
+    for i in (32..L1_SIZE).step_by(32) {
+        state = smear_hash(&scratch[i-32..i]);
+        scratch[i..i+32].copy_from_slice(&state);
+    }
+
+    // Data-dependent mixing rounds
     for round in 0..L1_ROUNDS {
-        // Sequential fill with data-dependent reads
         for i in (32..L1_SIZE).step_by(32) {
-            // Hash previous 32 bytes
-            let prev_hash = blake3::hash(&scratch[i - 32..i]);
+            // Read position depends on current state
+            let read_idx = (u32::from_le_bytes(scratch[i..i+4].try_into().unwrap()) as usize)
+                % (i / 32) * 32;
 
-            // Data-dependent read position (cache-hostile)
-            let read_pos = u32::from_le_bytes(
-                prev_hash.as_bytes()[0..4].try_into().unwrap()
-            ) as usize % i;
+            // Mix with data-dependent read
+            let mut mix_input = [0u8; 64];
+            mix_input[0..32].copy_from_slice(&scratch[i-32..i]);
+            mix_input[32..64].copy_from_slice(&scratch[read_idx..read_idx+32]);
 
-            // Ensure 32-byte aligned read
-            let aligned_pos = read_pos & !31;
-            let chunk = &scratch[aligned_pos..aligned_pos + 32];
-
-            // Mix: prev_hash XOR chunk XOR round XOR position
-            let mixed = blake3::hash(&[
-                prev_hash.as_bytes(),
-                chunk,
-                &(round as u64).to_le_bytes(),
-                &(i as u64).to_le_bytes(),
-            ].concat());
-
-            scratch[i..i + 32].copy_from_slice(mixed.as_bytes());
+            let mixed = smear_hash(&mix_input);
+            scratch[i..i+32].copy_from_slice(&mixed);
         }
     }
 
@@ -185,480 +238,1024 @@ fn generate_l1_scratch(chain_state: &[u8; 32]) -> Vec<u8> {
 
 ### 4.1 Scratch Properties
 
-- **Memory-hard:** Must hold 32KB in fast memory
-- **Sequential:** Cannot parallelize within a round
-- **Data-dependent:** Read positions depend on computed values
-- **Deterministic:** Same chain_state → same scratch
-- **Fast:** 1-10ms (precomputed in background, never on hot path)
+| Property | Value | Rationale |
+|----------|-------|-----------|
+| Size | 30KB | Fits in L1 cache |
+| Rounds | 3 | ~1-5ms generation |
+| Sequential | Yes | Cannot parallelize |
+| Data-dependent | Yes | Cache-hostile, ASIC-resistant |
+| Deterministic | Yes | Same inputs → same scratch |
 
-### 4.2 Background Precomputation
+### 4.2 Scratch Precomputation
 
 ```rust
-impl ChainState {
-    /// Called by background thread after each message
-    fn precompute_next_scratch(&mut self) {
-        self.next_scratch = Some(generate_l1_scratch(&self.current));
-    }
-
-    /// Returns precomputed scratch, or generates if not ready
-    fn get_scratch(&mut self) -> Vec<u8> {
-        self.next_scratch.take()
-            .unwrap_or_else(|| generate_l1_scratch(&self.current))
+impl ParticipantChain {
+    /// Precompute scratch for next message
+    /// prev_plaintext is empty for first message, otherwise previous message content
+    fn precompute_scratch(&self, prev_plaintext: &[u8]) -> ScratchPad {
+        let salt = derive_salt(prev_plaintext, self);
+        let data = generate_scratch(&self.links, &salt);
+        ScratchPad { salt, data }
     }
 }
+
+struct ScratchPad {
+    salt: [u8; 32],  // Derived, not transmitted - for internal verification
+    data: Vec<u8>,   // 30KB scratch for XOR layer
+}
+
+// Usage:
+// First message:  precompute_scratch(&[])
+// After sending:  precompute_scratch(&sent_plaintext)
 ```
+
+**Precomputation timing:**
+- After sending M1, immediately start computing scratch for M2 (using M1's plaintext)
+- spaghettify (~1s) can overlap with network latency waiting for ACK
+- By the time user types next message, scratch is ready
 
 ---
 
-## 5. Text Message Encryption
+## 5. Message Encryption
 
-### 5.0 Wire Format
+### 5.0 Encryption Layers
+
+Three-layer inner encryption + standard VSF outer signature:
+
+```
+Message (text)
+    ↓ Layer 1: Build VSF section [x(text), hM(confirm_smear)]
+    ↓ Layer 2: Encrypt section.flatten() with ChaCha20
+    ↓ Layer 3: XOR with scratch pad
+Inner ciphertext (opaque blob)
+    ↓ Layer 4: Standard VSF Ed25519 signature (outer integrity)
+VSF Document
+```
+
+**Plaintext is a VSF section:**
+```
+[
+    x(message_text),     // UTF-8 user message (Huffman compressed)
+    hM(confirm_smear),   // 32B chain-bound smear hash
+]
+```
+
+This gives us:
+- **Domain separation**: VSF type prefixes (`x`, `hM`) baked into plaintext
+- **Clean parsing**: Decrypt → parse VSF → get typed `x` and `hM`
+- **Extensible**: Add fields later (media attachments, reactions, etc.)
+- **Type safety**: Can't confuse message bytes with smear bytes
+
+**Why both inner and outer integrity?**
+- Inner (hM smear): Encrypted, chain-bound, proves possession of chain state
+- Outer (se signature): Standard Ed25519 in header, device-bound, passes normal VSF integrity checks
+
+**Standard VSF structure:**
+- Header contains: version, Created timestamp, provenance hash, signature, pubkey, labels
+- Body contains: `[message v(vP, ciphertext)]` - Photon-wrapped encrypted content
+- Any VSF tool can verify the signature given sender's device pubkey
+- Body content is opaque `v` wrapped bytes to generic VSF tools
+
+### 5.1 Encryption Process
 
 ```rust
-struct EncryptedMessage {
-    /// Sequence number (prevents replay, provides nonce)
-    sequence: u64,
+fn encrypt_message(
+    message_text: &str,
+    chain: &ParticipantChain,
+    scratch: &ScratchPad,
+    eagle_time: EagleTime,
+    device_key: &Ed25519Key,
+) -> VsfDocument {
+    // Layer 1: Build plaintext VSF section [x(text), hM(smear)]
+    let confirm = generate_confirmation_smear(message_text.as_bytes(), chain);
+    let plaintext_section = VsfSection::new()
+        .with(VsfType::x(message_text.to_string()))  // UTF-8 text
+        .with(VsfType::hM(confirm.to_vec()));        // Chain-bound smear
+    let plaintext = plaintext_section.flatten();
 
-    /// Dual PRNG salt (64 bytes: 32 ChaCha20 + 32 Pcg64)
-    salt: [u8; 64],
+    // Derive ChaCha20 key from current link (rightmost = newest)
+    let chacha_key = blake3::derive_key("photon.chain.chacha.v0", &chain.links[511]);
 
-    /// ChaCha20-Poly1305 ciphertext (includes 16-byte auth tag)
-    ciphertext: Vec<u8>,
+    // Derive nonce from eagle time (from VSF header)
+    let nonce = derive_nonce(eagle_time);
+
+    // Layer 2: ChaCha20 encryption
+    let mut cipher = ChaCha20::new(&chacha_key.into(), &nonce.into());
+    let mut ciphertext = plaintext.clone();
+    cipher.apply_keystream(&mut ciphertext);
+
+    // Layer 3: XOR with scratch pad (cycling if message > scratch)
+    for (i, byte) in ciphertext.iter_mut().enumerate() {
+        *byte ^= scratch.data[i % scratch.data.len()];
+    }
+
+    // Build body section with Photon-wrapped ciphertext
+    let body_section = VsfSection::new_labeled("message")
+        .with(VsfType::v(b'P', ciphertext));  // v(vP, ciphertext)
+
+    // Layer 4: Create VSF document with standard header
+    // Timestamp goes in header (Created field), signature covers body
+    VsfDocument::new()
+        .with_created(eagle_time)                    // Header: Created timestamp
+        .with_signature(device_key, &body_section)   // Header: se(sig), ke(pubkey)
+        .with_body(body_section)                     // Body: [message v(vP, ...)]
+    // Note: salt not included - receiver derives it from prev_plaintext
+}
+
+fn generate_confirmation_smear(message: &[u8], chain: &ParticipantChain) -> [u8; 32] {
+    // Inner integrity - chain-bound, encrypted
+    // Uses hM (smear hash) for algorithm diversity
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"PHOTON_CONFIRM_v0");
+    hasher.update(message);
+    hasher.update(chain.links[509..512].as_flattened());  // Last 3 links (96B)
+    smear_hash(hasher.finalize().as_bytes())  // hM type: BLAKE3 ⊕ SHA3 ⊕ SHA512
 }
 ```
 
-**Wire overhead:** 8 (sequence) + 64 (salt) + 16 (Poly1305 tag) = 88 bytes per message
+**Note:** `generate_auth_smear` removed - outer integrity now uses standard VSF Ed25519 signature.
 
-### 5.1 Send Flow
+### 5.2 Decryption Process
 
 ```rust
-fn send_message(plaintext: &[u8], state: &mut ChainState) -> EncryptedMessage {
-    // 0. Get precomputed scratch (or generate)
-    let scratch = state.get_scratch();
-    let scratch_hash = blake3::hash(&scratch);
+fn decrypt_message(
+    doc: &VsfDocument,
+    sender_pubkey: &[u8; 32],  // Known from CLUTCH ceremony
+    chain: &ParticipantChain,
+    prev_plaintext: &[u8],  // Empty for first message, otherwise previous msg
+) -> Result<String, ChainError> {
+    // Layer 4 (first): Verify VSF signature (outer integrity, fast reject)
+    // Signature is in header, covers body section
+    if !doc.verify_signature(sender_pubkey) {
+        return Err(ChainError::SignatureInvalid);
+    }
 
-    // 1. Derive message key from chain state + scratch
-    let message_key = blake3::keyed_hash(
-        b"PHOTON_CHAIN_message_key________",
-        &[&state.current[..], &state.sequence.to_le_bytes(), scratch_hash.as_bytes()].concat()
-    );
+    // Extract timestamp from VSF header (single source of truth)
+    let eagle_time = doc.created();
 
-    // 2. Generate or initialize PRNG, get dual salt
-    let salt = match state.prng.as_mut() {
-        Some(prng) => generate_dual_salt(prng),
-        None => {
-            // First message: initialize PRNGs with message hash
-            let msg_hash = blake3::hash(plaintext);
-            state.prng = Some(init_dual_prng(&state.clutch_seed, msg_hash.as_bytes()));
-            generate_dual_salt(state.prng.as_mut().unwrap())
+    // Extract ciphertext from body: [message v(vP, ciphertext)]
+    let message_section = doc.body.get_section("message")?;
+    let (encoding, ciphertext) = message_section.get::<(u8, Vec<u8>)>()?;  // v type
+    if encoding != b'P' {
+        return Err(ChainError::InvalidEncoding);
+    }
+
+    // Derive salt from previous plaintext (same as sender did)
+    let salt = derive_salt(prev_plaintext, chain);
+
+    // Try current state first, then history if needed
+    if let Ok(text) = try_decrypt_at_offset(&ciphertext, eagle_time, chain, &salt, 0) {
+        return Ok(text);
+    }
+
+    // Try history window (shifted by 1..256 positions)
+    for offset in 1..=256 {
+        if let Ok(text) = try_decrypt_at_offset(&ciphertext, eagle_time, chain, &salt, offset) {
+            return Ok(text);
         }
-    };
-
-    // 3. Derive encryption key (message_key + salt)
-    let encryption_key = blake3::keyed_hash(
-        b"PHOTON_CHAIN_encryption_________",
-        &[message_key.as_bytes(), &salt].concat()
-    );
-
-    // 4. Encrypt with ChaCha20-Poly1305
-    let cipher = ChaCha20Poly1305::new(Key::from_slice(&encryption_key.as_bytes()[..32]));
-    let nonce = derive_nonce(state.sequence);
-    let ciphertext = cipher.encrypt(&nonce, plaintext).expect("encryption should not fail");
-
-    // 5. Advance chain state (includes memory-hard scratch)
-    let message_hash = blake3::hash(plaintext);
-    state.current = blake3::keyed_hash(
-        b"PHOTON_CHAIN_advance____________",
-        &[&state.current[..], message_hash.as_bytes(), scratch_hash.as_bytes()].concat()
-    ).as_bytes().clone();
-    state.sequence += 1;
-
-    // 6. Trigger background precomputation for next message
-    state.precompute_next_scratch();
-
-    EncryptedMessage {
-        sequence: state.sequence - 1,
-        salt,
-        ciphertext,
-    }
-}
-
-fn generate_dual_salt(prng: &mut DualPRNG) -> [u8; 64] {
-    let mut salt = [0u8; 64];
-    prng.chacha_rng.fill_bytes(&mut salt[..32]);  // Cryptographic randomness
-    prng.pcg_rng.fill_bytes(&mut salt[32..]);     // Different PRNG family
-    salt
-}
-
-fn derive_nonce(sequence: u64) -> Nonce {
-    let mut nonce_bytes = [0u8; 12];
-    nonce_bytes[..8].copy_from_slice(&sequence.to_le_bytes());
-    // Remaining 4 bytes are zero (domain separation)
-    Nonce::from_slice(&nonce_bytes).clone()
-}
-```
-
-### 5.2 Receive Flow
-
-```rust
-fn receive_message(
-    encrypted: &EncryptedMessage,
-    state: &mut ChainState
-) -> Result<Vec<u8>, ChainError> {
-    // 0. Verify sequence number
-    if encrypted.sequence != state.sequence {
-        return Err(ChainError::SequenceMismatch {
-            expected: state.sequence,
-            received: encrypted.sequence,
-        });
     }
 
-    // 1. Generate same scratch (deterministic)
-    let scratch = state.get_scratch();
-    let scratch_hash = blake3::hash(&scratch);
+    Err(ChainError::DecryptionFailed)
+}
 
-    // 2. Derive same message key
-    let message_key = blake3::keyed_hash(
-        b"PHOTON_CHAIN_message_key________",
-        &[&state.current[..], &state.sequence.to_le_bytes(), scratch_hash.as_bytes()].concat()
-    );
+fn try_decrypt_at_offset(
+    ciphertext: &[u8],
+    eagle_time: EagleTime,
+    chain: &ParticipantChain,
+    salt: &[u8; 32],
+    history_offset: usize,
+) -> Result<String, ChainError> {
+    // Current key is at [511], history at [511 - offset]
+    let key_index = 511 - history_offset;
+    if key_index < 256 {
+        return Err(ChainError::DecryptionFailed);
+    }
 
-    // 3. Derive encryption key with received salt
-    let encryption_key = blake3::keyed_hash(
-        b"PHOTON_CHAIN_encryption_________",
-        &[message_key.as_bytes(), &encrypted.salt].concat()
-    );
+    // Regenerate scratch from derived salt + historical key
+    let scratch = generate_scratch_with_key(&chain.links[key_index], salt);
 
-    // 4. Decrypt
-    let cipher = ChaCha20Poly1305::new(Key::from_slice(&encryption_key.as_bytes()[..32]));
-    let nonce = derive_nonce(state.sequence);
-    let plaintext = cipher.decrypt(&nonce, encrypted.ciphertext.as_slice())
+    // Layer 3 (reverse): XOR with scratch pad
+    let mut intermediate = ciphertext.to_vec();
+    for (i, byte) in intermediate.iter_mut().enumerate() {
+        *byte ^= scratch[i % scratch.len()];
+    }
+
+    // Layer 2 (reverse): ChaCha20 decryption
+    let chacha_key = blake3::derive_key("photon.chain.chacha.v0", &chain.links[key_index]);
+    let nonce = derive_nonce(eagle_time);
+    let mut cipher = ChaCha20::new(&chacha_key.into(), &nonce.into());
+    cipher.apply_keystream(&mut intermediate);
+
+    // Layer 1 (reverse): Parse VSF section [x(text), hM(smear)]
+    let plaintext_section = VsfSection::parse(&intermediate)
         .map_err(|_| ChainError::DecryptionFailed)?;
 
-    // 5. Advance chain (must match sender exactly)
-    let message_hash = blake3::hash(&plaintext);
-    state.current = blake3::keyed_hash(
-        b"PHOTON_CHAIN_advance____________",
-        &[&state.current[..], message_hash.as_bytes(), scratch_hash.as_bytes()].concat()
-    ).as_bytes().clone();
-    state.sequence += 1;
+    // Extract typed fields
+    let message_text: String = plaintext_section.get::<String>()  // x(text)
+        .map_err(|_| ChainError::DecryptionFailed)?;
+    let received_smear: Vec<u8> = plaintext_section.get::<Vec<u8>>()  // hM(smear)
+        .map_err(|_| ChainError::DecryptionFailed)?;
 
-    // 6. Advance PRNG to stay synchronized
-    match state.prng.as_mut() {
-        Some(prng) => { let _ = generate_dual_salt(prng); },
-        None => {
-            // First message received: initialize PRNGs
-            state.prng = Some(init_dual_prng(&state.clutch_seed, message_hash.as_bytes()));
-        }
+    // Verify confirmation smear (inner integrity, chain-bound)
+    let expected_smear = generate_confirmation_smear_at_offset(
+        message_text.as_bytes(), chain, history_offset
+    );
+    if !constant_time_eq(&expected_smear, &received_smear) {
+        return Err(ChainError::DecryptionFailed);  // Tampered or wrong key
     }
 
-    // 7. Precompute next scratch
-    state.precompute_next_scratch();
-
-    Ok(plaintext)
+    Ok(message_text)
 }
 ```
+
+**Verification order:**
+1. **Signature first** (fast reject) - O(1), no chain state needed
+2. **Layers 3→2→1** - only if signature valid
 
 ---
 
-## 6. Media Encryption (Voice/Video)
+## 6. Wire Format (VSF)
 
-### 6.0 Batched Chain Advancement
+### 6.0 Encrypted Message Document
 
-Video at 30fps would require 30 chain advancements per second, which is excessive. Instead, we batch:
+Standard VSF document - timestamp lives in header, not duplicated in body:
+
+```
+VSF Document: Encrypted Message
+┌────────────────────────────────────────────────────────────┐
+│ HEADER (standard VSF):                                     │
+│   Version 5                                                │
+│   Created e(eagle_time)     ← timestamp HERE ONLY          │
+│   hp(provenance_hash)       - 32B BLAKE3 of body           │
+│   se(signature)             - 64B Ed25519 signature        │
+│   ke(pubkey)                - 32B sender device pubkey     │
+│   1 labels: (message @offset N bytes 1 field)              │
+├────────────────────────────────────────────────────────────┤
+│ BODY SECTION [message]:                                    │
+│   v(vP, ciphertext)         - Photon-wrapped encrypted     │
+└────────────────────────────────────────────────────────────┘
+
+Signature covers: BLAKE3(body.flatten())
+```
+
+**The `v(vP, ciphertext)` wrapper:**
+- `v` = VSF wrapped data type
+- `vP` = Photon encoding byte (application-specific)
+- `ciphertext` = encrypted VSF section (plaintext below)
+
+**Plaintext section (encrypted inside v):**
+```
+┌────────────────────────────────────────────────────────────┐
+│ x(message_text)      - UTF-8 user message (Huffman)        │
+│ hM(confirm_smear)    - 32B chain-bound smear hash          │
+└────────────────────────────────────────────────────────────┘
+```
+
+**Wire overhead:**
+- Plaintext section: ~3 (x header) + message + 33 (hM) = message + ~36 bytes
+- Body section: ~4 (v header) = ~4 bytes
+- Header: ~132 bytes (version, timestamp, hash, sig, pubkey, labels)
+- Total: message + ~172 bytes (no salt - derived)
+
+**Why this structure?**
+- **Single timestamp**: VSF header `Created` field, not duplicated
+- **Standard VSF**: Any VSF tool can verify signature, inspect header
+- **Clean wrapping**: `v(vP, ...)` marks Photon-specific content
+- **Extensible**: Add fields to plaintext section without format changes
+
+### 6.1 ACK Message Section
+
+```
+VSF Section: Message ACK
+┌────────────────────────────────────────────────────────────┐
+│ e(eagle_time)        - f6, which message we're ACKing      │
+│ hb(ack_proof)        - 32B, domain-separated decrypt proof │
+└────────────────────────────────────────────────────────────┘
+```
+
+**ACK Proof Generation (fast, domain-separated):**
 
 ```rust
-const MEDIA_BATCH_DURATION_MS: u64 = 1000;  // 1 second batches
+fn generate_ack_proof(
+    eagle_time: EagleTime,
+    plaintext_hash: &[u8; 32],
+    chain: &ParticipantChain,
+) -> [u8; 32] {
+    // Different structure than fresh_link:
+    // - Different domain prefix
+    // - Only last 5 links (not full active chain)
+    // - Different field order
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"PHOTON_ACK_v0");           // Different domain
+    hasher.update(plaintext_hash);              // Hash first (opposite order)
+    hasher.update(&eagle_time.to_bytes());
+    hasher.update(chain.links[507..512].as_flattened());  // Only last 5 links (160B)
 
-struct MediaChainState {
-    /// Text chain (shared with text messages)
-    text_chain: ChainState,
-
-    /// Current media batch key (derived from text chain)
-    batch_key: [u8; 32],
-
-    /// Frame counter within current batch
-    batch_frame: u32,
-
-    /// Batch start timestamp
-    batch_start: Instant,
+    smear_hash(hasher.finalize().as_bytes())  // Fast, not memory-hard
 }
 ```
 
-### 6.1 Batch Key Derivation
+**ACK is fast because:**
+- smear_hash (~microseconds) not handle_proof (~1 second)
+- Only 5 links, not 256 (160B vs 8KB)
+- Message flow stays snappy
+
+**Still secure because:**
+- Domain separation: `PHOTON_ACK_v0` ≠ `PHOTON_ADVANCE_v0`
+- Field order reversed (plaintext_hash before eagle_time)
+- Different link range (last 5 vs full active)
+- Attacker can't use ACK as fresh_link or vice versa
+
+### 6.2 Full Message Envelope
+
+```
+VSF Document
+┌────────────────────────────────────────────────────────────┐
+│ HEADER (standard VSF):                                     │
+│   Version 5                                                │
+│   Created e(eagle_time)     ← single timestamp             │
+│   hp(provenance_hash)       - 32B BLAKE3 of body           │
+│   se(signature)             - 64B Ed25519 signature        │
+│   ke(pubkey)                - 32B sender device pubkey     │
+│   Labels: (message @...), (routing @...), (acks @...)      │
+├────────────────────────────────────────────────────────────┤
+│ BODY SECTIONS:                                             │
+│   [message v(vP, ciphertext)]     - encrypted content      │
+│   [routing                                                 │
+│     hb(sender_handle_hash),       - 32B                    │
+│     hb(friendship_id),            - 32B                    │
+│     hp(prev_msg_hp)               - 32B, hash chain link   │
+│   ]                                                        │
+│   [acks                           - bundled ACKs (optional)│
+│     (e, hb), (e, hb), ...         - time + proof pairs     │
+│   ]                                                        │
+└────────────────────────────────────────────────────────────┘
+```
+
+**Routing overhead:** 96 bytes constant (no sequence numbers, no growth)
+
+**The `hp(prev_msg_hp)` field:**
+- Links messages in a hash chain for ordering
+- First message uses deterministic anchor (see Section 6.3)
+- Subsequent messages reference previous message's `hp` (from header)
+- Enables gap detection: unknown `prev_msg_hp` → request missing message
+
+### 6.3 Message Ordering
+
+#### 6.3.1 First Message Anchor
+
+The first message in a conversation uses a deterministic anchor derived from the friendship ID:
 
 ```rust
-fn derive_batch_key(chain_state: &[u8; 32], batch_number: u64) -> [u8; 32] {
+const DOMAIN_FIRST_MSG: &[u8] = b"PHOTON_FIRST_MSG_v0";
+
+fn first_message_anchor(friendship_id: &FriendshipId) -> [u8; 32] {
     *blake3::keyed_hash(
-        b"PHOTON_CHAIN_media_batch________",
-        &[chain_state, &batch_number.to_le_bytes()].concat()
+        blake3::hash(DOMAIN_FIRST_MSG).as_bytes(),
+        friendship_id.as_bytes()
     ).as_bytes()
 }
 ```
 
-### 6.2 Frame Encryption
+**Usage:**
+- First message: `prev_msg_hp = first_message_anchor(friendship_id)`
+- Subsequent: `prev_msg_hp = hp` from previous message's header
+
+#### 6.3.2 Hash Domain Separation
+
+| Hash | Computed Over | Purpose |
+|------|---------------|---------|
+| `hp` (header) | Encrypted body | Wire identifier, VSF standard |
+| `plaintext_hash` | Decrypted content | Chain advancement, ACK verification |
+| `network_id` | `spaghettify(BLAKE3(plaintext))` | Storage/request identifier |
+
+**Key insight:** `hp` is over encrypted body (what's on wire before decryption), `plaintext_hash` is over decrypted content. They are naturally domain-separated by their inputs.
+
+#### 6.3.3 Gap Detection Flow
+
+```
+Receive msg4:
+  1. Check routing.prev_msg_hp → points to unknown hash
+  2. Don't have that message → request it
+  3. Request by network_id (spaghettified plaintext hash)
+  4. Receive msg3, decrypt with history links
+  5. Now can verify msg4's chain and process it
+```
+
+**History links enable recovery:** Even if your chain has advanced, the 256 history links let you decrypt late-arriving messages (up to 256 messages behind).
+
+#### 6.3.4 Message Request Format
+
+```
+VSF Section: Message Request
+┌────────────────────────────────────────────────────────────┐
+│ hG(network_id)         - 32B spaghettified identifier      │
+│ hb(friendship_id)      - 32B which conversation            │
+└────────────────────────────────────────────────────────────┘
+```
+
+**Response:** Original chain-encrypted blob. Requester uses history links to decrypt.
+
+**Why `hG` (spaghettify) for network_id?**
+- Privacy: Observer can't correlate with raw `hp` or `plaintext_hash`
+- Defense-in-depth: If BLAKE3 broken, spaghettify layer still protects
+- Deterministic: Same plaintext → same network_id on all devices
+
+---
+
+## 7. Chain Advancement
+
+### 7.0 Advancement Trigger
+
+Chain advances ONLY on ACK confirmation:
+
+```
+Alice sends message M1 (eagle_time T1)
+    Alice: encrypt with chain state S0
+    Alice: store M1 locally, mark pending
+
+Bob receives M1
+    Bob: decrypt with chain state S0 ✓
+    Bob: send ACK(T1, ack_smear)
+    Bob: advance chain S0 → S1
+
+Alice receives ACK
+    Alice: verify ack_smear
+    Alice: advance chain S0 → S1
+    Alice: mark M1 as delivered
+```
+
+### 7.1 Advancement Algorithm
 
 ```rust
-fn encrypt_media_frame(
-    frame_data: &[u8],
-    state: &mut MediaChainState
-) -> EncryptedFrame {
-    // Check if we need new batch
-    if state.batch_start.elapsed().as_millis() >= MEDIA_BATCH_DURATION_MS as u128 {
-        // Advance text chain (triggers memory-hard computation)
-        advance_chain_for_media(&mut state.text_chain);
+impl ParticipantChain {
+    fn advance(&mut self, eagle_time: EagleTime, plaintext_hash: &[u8; 32]) {
+        // Single left-shift: everything moves left, oldest history drops off [0]
+        // Old [256] (oldest active) becomes [255] (newest history)
+        self.links.copy_within(1..512, 0);
 
-        // Derive new batch key
-        state.batch_key = derive_batch_key(
-            &state.text_chain.current,
-            state.text_chain.sequence
-        );
-        state.batch_frame = 0;
-        state.batch_start = Instant::now();
+        // Derive fresh link via spaghettify
+        let fresh_link = derive_fresh_link(eagle_time, plaintext_hash, &self.links);
+
+        // Append at rightmost position
+        self.links[511] = fresh_link;
+
+        // Update last ack time
+        self.last_ack_time = eagle_time;
+    }
+}
+
+fn derive_fresh_link(
+    eagle_time: EagleTime,
+    plaintext_hash: &[u8; 32],
+    chain: &[[u8; 32]; 512],
+) -> [u8; 32] {
+    // Domain-separated from ACK proof!
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"PHOTON_ADVANCE_v0");  // Different domain than ACK_PROOF
+    hasher.update(&eagle_time.to_bytes());
+    hasher.update(chain[256..511].as_flattened()); // Active chain (post-shift)
+    hasher.update(plaintext_hash);
+
+    // Spaghettify: computationally chaotic Rube Goldberg mixing
+    *spaghettify(&hasher.finalize().as_bytes()).as_bytes()
+}
+```
+
+**Why spaghettify for fresh_link?**
+- Computationally chaotic: data-dependent ops, IEEE754 weirdness, path explosion
+- NOT memory-hard (~1.7KB state) - fast enough for per-message use
+- Multi-algorithm: uses smear_hash internally (BLAKE3 ⊕ SHA3 ⊕ SHA512)
+- Domain separation: `PHOTON_ADVANCE_v0` ≠ `PHOTON_ACK_v0`
+
+**Note:** Memory-hard operations are `handle_proof` (~25MB) and `avalanche_expand_eggs` (2MB).
+Spaghettify is for chaos/mixing, not memory-hardness.
+
+### 7.2 State Machine
+
+```
+┌─────────────────┐
+│  Chain State S  │
+└────────┬────────┘
+         │
+    Send Message
+         │
+         ▼
+┌─────────────────┐
+│ Pending (S, M)  │◄────────┐
+└────────┬────────┘         │
+         │                  │
+    Receive ACK             │ Timeout/Retry
+         │                  │
+         ▼                  │
+┌─────────────────┐         │
+│ Verify ACK      │─────────┘
+│ smear matches?  │    No
+└────────┬────────┘
+         │ Yes
+         ▼
+┌─────────────────┐
+│ Advance → S'    │
+│ Mark delivered  │
+└─────────────────┘
+```
+
+---
+
+## 8. Message Storage
+
+### 8.0 Security Model
+
+- **Assume:** Process isolation (OS enforced)
+- **Assume:** No disk encryption (user may not enable)
+- **Therefore:** Encrypt all messages at rest with device key
+
+### 8.1 Device Key
+
+```rust
+struct DeviceKey {
+    /// ChaCha20-Poly1305 key derived from device-specific entropy
+    key: [u8; 32],
+
+    /// Key derivation: platform-specific secure storage
+    /// - Linux: libsecret / kernel keyring
+    /// - macOS: Keychain
+    /// - Windows: DPAPI
+    /// - Android: Keystore
+}
+
+impl DeviceKey {
+    fn encrypt(&self, plaintext: &[u8]) -> Vec<u8> {
+        // Random nonce + ChaCha20-Poly1305 AEAD
+        let nonce: [u8; 12] = rand::random();
+        let cipher = ChaCha20Poly1305::new(&self.key.into());
+        let ciphertext = cipher.encrypt(&nonce.into(), plaintext).unwrap();
+
+        [nonce.as_slice(), &ciphertext].concat()
     }
 
-    // Derive per-frame key (fast, no memory-hard)
-    let frame_key = blake3::keyed_hash(
-        b"PHOTON_CHAIN_frame_key__________",
-        &[&state.batch_key[..], &state.batch_frame.to_le_bytes()].concat()
-    );
-
-    // Encrypt frame with ChaCha20 (no Poly1305 auth - UDP may lose frames)
-    let mut ciphertext = frame_data.to_vec();
-    let mut cipher = ChaCha20::new(
-        Key::from_slice(&frame_key.as_bytes()[..32]),
-        &derive_nonce(state.batch_frame as u64)
-    );
-    cipher.apply_keystream(&mut ciphertext);
-
-    state.batch_frame += 1;
-
-    EncryptedFrame {
-        batch_sequence: state.text_chain.sequence,
-        frame_number: state.batch_frame - 1,
-        ciphertext,
+    fn decrypt(&self, encrypted: &[u8]) -> Result<Vec<u8>, Error> {
+        let (nonce, ciphertext) = encrypted.split_at(12);
+        let cipher = ChaCha20Poly1305::new(&self.key.into());
+        cipher.decrypt(nonce.into(), ciphertext)
     }
 }
 ```
 
-### 6.3 Frame Decryption
+### 8.2 Message File Format
+
+Each message stored as separate file, identified by **network_id** (spaghettified plaintext hash):
+
+```
+Path: ~/.photon/friendships/{friendship_id_base64}/messages/{network_id_base64}.vsf
+
+File contents (device-key encrypted):
+┌────────────────────────────────────────────────────────────┐
+│ VSF Document                                               │
+│   direction: u3(0=sent, 1=received)                        │
+│   status: u3(pending/sent/delivered/read)                  │
+│   eagle_time: e(...)                                       │
+│   plaintext: t_u3(...)     ← original message content      │
+│   wire_format: t_u3(...)   ← encrypted wire bytes (for re-send) │
+│   prev_msg_hp: hb(...)     ← for chain reconstruction       │
+└────────────────────────────────────────────────────────────┘
+```
+
+**Network ID derivation:**
 
 ```rust
-fn decrypt_media_frame(
-    encrypted: &EncryptedFrame,
-    state: &mut MediaChainState
-) -> Result<Vec<u8>, ChainError> {
-    // Sync batch if needed
-    if encrypted.batch_sequence != state.text_chain.sequence {
-        // Advance chain to match (may need to skip batches)
-        while state.text_chain.sequence < encrypted.batch_sequence {
-            advance_chain_for_media(&mut state.text_chain);
+const DOMAIN_NETWORK_ID: &[u8] = b"PHOTON_NETWORK_ID_v0";
+
+/// Derive network identifier from plaintext.
+/// Deterministic, device-independent, privacy-preserving.
+fn derive_network_id(plaintext: &[u8]) -> [u8; 32] {
+    let hp_plaintext = blake3::hash(plaintext);
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(DOMAIN_NETWORK_ID);
+    hasher.update(hp_plaintext.as_bytes());
+    spaghettify(hasher.finalize().as_bytes())
+}
+```
+
+**Why network_id instead of eagle_time for filename?**
+- **Deterministic across devices**: Same plaintext → same filename everywhere
+- **Content-addressable**: Can request by network_id without knowing timestamp
+- **Privacy**: Spaghettified, can't reverse to plaintext hash
+- **Sync-friendly**: Devices can compare network_ids to find missing messages
+
+### 8.3 Benefits of Per-Message Files
+
+1. **Easy enumeration:** List directory for message history
+2. **Atomic writes:** Rename-based atomic save
+3. **Selective sync:** Transfer specific messages
+4. **Easy cleanup:** Delete old files
+5. **Recovery-friendly:** Re-encrypt individual messages for new device
+
+---
+
+### 10.1 Pending Message Tracking
+
+Sender stores pending messages for retry and ACK matching:
+
+```rust
+struct PendingMessage {
+    eagle_time: EagleTime,
+    plaintext: String,        // x type - need for next salt derivation
+    plaintext_hash: [u8; 32], // For ACK verification and advancement
+    wire_bytes: Vec<u8>,      // For retry
+}
+
+// Sender tracks all unACKed messages in send order
+pending_messages: Vec<PendingMessage>
+```
+
+### 10.2 ACK Confirms Chain
+
+When ACK arrives for message N, it confirms messages 1..N all received:
+
+```
+Alice receives ACK(T3):
+    Verify ACK proof using T3, hash3, chain
+
+    // Process all pending up to and including T3
+    for msg in pending_messages where T <= T3:
+        Advance chain with (msg.eagle_time, msg.plaintext_hash)
+        Mark delivered
+        Remove from pending
+```
+
+**Why this works:**
+- Bob couldn't decrypt M3 without M1 and M2 plaintexts
+- Bob couldn't generate valid ACK(T3) without successfully decrypting M3
+- Therefore: ACK(T3) proves M1, M2, M3 all decrypted correctly
+
+### 10.3 Receiver Processing
+
+Bob queues until he can decrypt in order:
+
+```rust
+struct ReceivedMessage {
+    eagle_time: EagleTime,
+    encrypted: EncryptedMessage,
+    decrypted: Option<Vec<u8>>,  // None until we can decrypt
+}
+
+// Queue of received messages awaiting decryption
+received_queue: BTreeMap<EagleTime, ReceivedMessage>
+
+fn process_received(msg: EncryptedMessage, chain: &ParticipantChain) {
+    received_queue.insert(msg.eagle_time, ReceivedMessage {
+        eagle_time: msg.eagle_time,
+        encrypted: msg,
+        decrypted: None,
+    });
+
+    // Try to decrypt in order
+    try_decrypt_chain(chain);
+}
+
+fn try_decrypt_chain(chain: &mut ParticipantChain) {
+    // Track previous plaintext for salt derivation
+    // Empty for first message, then each decrypted message feeds the next
+    let mut prev_plaintext: Vec<u8> = last_decrypted_plaintext.unwrap_or_default();
+
+    for msg in received_queue.values_mut() {
+        if msg.decrypted.is_some() {
+            // Already decrypted, use as prev for next salt
+            prev_plaintext = msg.decrypted.clone().unwrap();
+            continue;
         }
-        state.batch_key = derive_batch_key(
-            &state.text_chain.current,
-            state.text_chain.sequence
-        );
-    }
 
-    // Derive frame key
-    let frame_key = blake3::keyed_hash(
-        b"PHOTON_CHAIN_frame_key__________",
-        &[&state.batch_key[..], &encrypted.frame_number.to_le_bytes()].concat()
-    );
+        // Derive salt from previous plaintext (empty = first message)
+        let salt = derive_salt(&prev_plaintext, chain);
 
-    // Decrypt
-    let mut plaintext = encrypted.ciphertext.clone();
-    let mut cipher = ChaCha20::new(
-        Key::from_slice(&frame_key.as_bytes()[..32]),
-        &derive_nonce(encrypted.frame_number as u64)
-    );
-    cipher.apply_keystream(&mut plaintext);
+        // Try decrypt with derived salt
+        if let Ok(plaintext) = decrypt_with_salt(&msg.encrypted, chain, &salt) {
+            msg.decrypted = Some(plaintext.clone());
 
-    Ok(plaintext)
-}
-```
+            // Send ACK now that we verified decrypt
+            send_ack(msg.eagle_time, hash(&plaintext), chain);
 
-**Note:** Media frames use ChaCha20 without Poly1305 authentication. UDP may drop or reorder frames, and authenticating every frame is expensive. The batch key provides implicit authentication—only someone with the chain state can derive valid frame keys.
+            // This plaintext becomes prev for next message
+            prev_plaintext = plaintext;
 
----
-
-## 7. Error Handling and Resynchronization
-
-### 7.0 Sequence Mismatch
-
-If received sequence doesn't match expected:
-
-```rust
-enum SyncStrategy {
-    /// Receiver is behind: skip forward
-    SkipForward { frames_to_skip: u64 },
-
-    /// Receiver is ahead: sender may have restarted
-    WaitForRetransmit,
-
-    /// Gap too large: requires full resync
-    RequiresResync,
-}
-
-fn handle_sequence_mismatch(
-    expected: u64,
-    received: u64
-) -> SyncStrategy {
-    if received > expected && received - expected < 100 {
-        // Small gap: skip forward (lost packets)
-        SyncStrategy::SkipForward {
-            frames_to_skip: received - expected
+            // Advance chain
+            chain.advance(msg.eagle_time, &hash(&prev_plaintext));
+        } else {
+            // Can't decrypt - waiting for earlier message
+            break;
         }
-    } else if expected > received && expected - received < 10 {
-        // Duplicate or out-of-order: ignore
-        SyncStrategy::WaitForRetransmit
-    } else {
-        // Large gap: chain state irrecoverable
-        SyncStrategy::RequiresResync
     }
 }
 ```
 
-### 7.1 Resynchronization Protocol
+### 10.4 Retry with History
 
-When chains desync beyond recovery:
+If ACK was lost, sender retries. Receiver uses history window:
+
+```
+Alice sends M1, times out waiting for ACK
+Alice retries M1 (same eagle_time, same wire bytes)
+
+Bob already processed M1, advanced chain
+Bob receives M1 retry:
+    Decrypt with current salt fails (chain advanced)
+    Try history: regenerate old salt from stored state
+    Decrypt with history succeeds
+    Re-send ACK(T1) (deterministic - same proof)
+```
+
+History window (256 links) allows decrypting messages up to 256 advances ago.
+
+### 10.5 Gap Recovery
+
+If M1 is permanently lost (network partition, etc.):
+
+```
+Alice sent M1, M2, M3
+M1 lost forever
+Bob has M2, M3 but can't decrypt (no S2 without M1)
+
+Recovery options:
+1. Alice re-sends M1 (if she still has pending state)
+2. Out-of-band: Alice tells Bob plaintext of M1
+3. Nuclear: New CLUTCH ceremony (fresh chains)
+```
+
+The chained salt design means: **no gaps allowed**. This is intentional - it prevents selective message suppression attacks and ensures conversation integrity.
+
+---
+
+## 11. Security Properties
+
+### 11.0 Forward Secrecy
+
+| Scenario | Past Messages | Future Messages |
+|----------|---------------|-----------------|
+| Current chain compromised | Protected | Compromised until re-CLUTCH |
+| Device key compromised | Protected (chain-encrypted) | At risk on that device |
+| Both compromised | At risk | At risk |
+
+### 11.1 Authentication
+
+| Property | Mechanism |
+|----------|-----------|
+| Outer integrity | Standard VSF Ed25519 signature (device-bound) |
+| Inner integrity | confirmation_smear (chain-bound, encrypted) |
+| Sender identity | Chain state + device key |
+| Replay protection | Eagle time uniqueness |
+| Ordering | Eagle time comparison |
+
+### 11.2 Defense Layers
+
+```
+Layer 0: CLUTCH ceremony (20 eggs from 8 algorithms)
+    ↓
+Layer 1: Avalanche expansion (2MB memory-hard)
+    ↓
+Layer 2: Truncate-and-append chain derivation (smear_hash)
+    ↓
+Layer 3: L1 scratch pad (memory-hard, data-dependent)
+    ↓
+Layer 4: ChaCha20 stream cipher
+    ↓
+Layer 5: XOR with scratch pad
+    ↓
+Layer 6: Inner smear confirmation (BLAKE3 ⊕ SHA3 ⊕ SHA512)
+    ↓
+Layer 7: Standard VSF Ed25519 signature (outer integrity)
+    ↓
+Layer 8: Domain-separated ACK proof (fast smear)
+    ↓
+Layer 9: spaghettify chain advancement (memory-hard, async)
+    ↓
+Layer 10: Device key encryption at rest
+```
+
+Memory-hard operations (Layers 1, 3, 8) happen during setup or async after ACK.
+Fast path (Layers 4-7) keeps message tx/rx snappy.
+
+---
+
+## 12. Implementation Checklist
+
+### 12.0 Core Types
+
+- [ ] `ParticipantChain` with 512 links ([0..256]=history, [256..512]=active)
+- [ ] `ScratchPad` with chained salt
+- [ ] `EncryptedMessage` VSF format
+- [ ] `MessageAck` with fast smear proof
+- [ ] `PendingMessage` for ACK matching (stores plaintext for salt chain)
+- [ ] `ReceivedMessage` queue for out-of-order handling
+
+### 12.1 Salt Chaining
+
+- [ ] `derive_salt(prev_plaintext, chain)` - unified (empty = first message)
+- [ ] Salt precomputation after send (overlaps with ACK wait)
+
+### 12.2 Encryption
+
+- [ ] `generate_scratch()` - L1 memory-hard from link[511] + salt
+- [ ] `generate_confirmation_smear()` - inner integrity (last 3 links, hM type)
+- [ ] `encrypt_message()` - 3-layer inner + VSF signature outer
+- [ ] `decrypt_message()` - signature check first, then history fallback
+- [ ] Standard VSF Ed25519 signature for outer integrity
+
+### 12.3 Chain Management
+
+- [ ] `advance()` - left-shift + spaghettify new link at [511]
+- [ ] `derive_fresh_link()` - spaghettify with domain separation
+- [ ] `generate_ack_proof()` - fast smear with domain separation (last 5 links)
+- [ ] Receiver queue + ordered decryption via salt chain
+- [ ] ACK-confirms-chain logic (ACK for M3 confirms M1, M2, M3)
+
+### 12.4 Storage
+
+- [ ] Device key derivation (per-platform)
+- [ ] Per-message file encryption
+- [ ] Chain state persistence (16KB per participant)
+
+### 12.5 Recovery
+
+- [ ] Recovery key derivation
+- [ ] Export bundle format
+- [ ] Import and re-key
+
+---
+
+## Appendix A: Constants
 
 ```rust
-/// Sent by party detecting desync
-struct ResyncRequest {
-    /// Hash of our current chain state (proves we had valid state)
-    state_hash: [u8; 32],
+// Chain structure
+const HISTORY_LINKS: usize = 256;   // links[0..256] - zeros initially
+const ACTIVE_LINKS: usize = 256;    // links[256..512] - derived from CLUTCH
+const TOTAL_LINKS: usize = 512;
+const LINK_SIZE: usize = 32;
+const CHAIN_SIZE: usize = TOTAL_LINKS * LINK_SIZE;  // 16KB
 
-    /// Our current sequence number
-    sequence: u64,
+// Current key position
+const CURRENT_KEY_INDEX: usize = 511;  // Rightmost = newest
 
-    /// Signed with device key (proves identity)
-    signature: [u8; 64],
+// Scratch
+const L1_SIZE: usize = 30_720;  // 30KB
+const L1_ROUNDS: usize = 3;
+
+// Wire format (VSF with standard header)
+const PLAINTEXT_OVERHEAD: usize = 36;   // x header (~3B) + hM smear (33B)
+const BODY_OVERHEAD: usize = 4;         // v(vP, ...) header
+const HEADER_SIZE: usize = 132;         // version, timestamp, hash, sig, pubkey, labels
+const MSG_OVERHEAD: usize = 172;        // plaintext + body + header (no salt - derived)
+
+// Domain separation strings
+const DOMAIN_ADVANCE: &[u8] = b"PHOTON_ADVANCE_v0";    // Chain advancement (spaghettify)
+const DOMAIN_ACK: &[u8] = b"PHOTON_ACK_v0";            // ACK proof (fast smear)
+const DOMAIN_CONFIRM: &[u8] = b"PHOTON_CONFIRM_v0";    // Inner integrity (smear hash)
+const DOMAIN_SALT: &[u8] = b"PHOTON_SALT_v0";          // Salt derivation (empty prev = first msg)
+const DOMAIN_FIRST_MSG: &[u8] = b"PHOTON_FIRST_MSG_v0"; // First message anchor
+const DOMAIN_NETWORK_ID: &[u8] = b"PHOTON_NETWORK_ID_v0"; // Storage/request identifier
+// Note: Outer integrity uses standard VSF Ed25519 signature (no custom domain)
+
+// Each domain uses different link ranges for additional separation
+const ACK_LINK_RANGE: Range<usize> = 507..512;      // 5 links (160B)
+const CONFIRM_LINK_RANGE: Range<usize> = 509..512;  // 3 links (96B)
+const SALT_LINK_RANGE: Range<usize> = 500..512;     // 12 links for salt derivation
+// Note: Outer integrity is standard VSF header signature (device key, no chain links)
+```
+
+## Appendix C: VSF Type Extensions
+
+Photon uses application-defined VSF types with **uppercase second character**:
+
+```rust
+// Standard VSF types (lowercase = VSF-defined)
+hp(Vec<u8>),  // BLAKE3 provenance hash
+hb(Vec<u8>),  // BLAKE3 rolling hash
+hs(Vec<u8>),  // SHA hash family
+ke(Vec<u8>),  // Ed25519 public key
+se(Vec<u8>),  // Ed25519 signature
+v(u8, Vec<u8>),  // Wrapped data with encoding byte
+
+// Application-defined hash types (UPPERCASE = app-specific)
+hM(Vec<u8>),  // Smear hash: BLAKE3 ⊕ SHA3 ⊕ SHA512 (multi-algorithm)
+hD(Vec<u8>),  // Handle proof output (memory-hard ~25MB, ~1s)
+hG(Vec<u8>),  // Spaghettify output (chaotic Rube Goldberg, ~1.7KB state)
+
+// Application-defined v encoding bytes
+v(b'P', ...),  // Photon encrypted message (vP)
+               // Body contains: encrypted [x(text), hM(smear)] section
+```
+
+**Convention:** `a-z` = reserved for VSF standard types, `A-Z` = application extensions.
+
+**The `v` wrapper type:**
+- First byte is the encoding identifier (application-defined meaning)
+- `vP` = Photon-encrypted content (decrypt to get VSF section)
+- Generic VSF tools see opaque wrapped bytes, Photon tools know to decrypt
+
+## Appendix D: Test Vectors
+
+TODO: Add test vectors for:
+- Chain initialization from known eggs
+- Salt derivation (empty prev = first message)
+- Chained salt derivation from plaintext
+- Scratch generation from known chain + salt
+- Message encryption/decryption roundtrip
+- Confirmation smear (inner integrity, hM type)
+- VSF signature verification (outer integrity)
+- ACK proof generation
+- Chain advancement
+- History fallback decryption
+- Multi-message salt chain (M1 → M2 → M3)
+- Out-of-order receive + queue processing
+- First message anchor derivation
+- Network ID derivation from plaintext
+
+## Appendix E: Storage Identifiers
+
+### E.1 Identifier Hierarchy
+
+Messages have three related identifiers, each serving a different purpose:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ plaintext (decrypted message content)                           │
+│     ↓                                                           │
+│ hp_plaintext = BLAKE3(plaintext)                                │
+│     • Device-independent                                        │
+│     • Used for chain advancement (as plaintext_hash)            │
+│     • Input to network_id derivation                            │
+│     ↓                                                           │
+│ network_id = spaghettify(DOMAIN_NETWORK_ID || hp_plaintext)     │
+│     • Privacy-preserving (one-way from hp_plaintext)            │
+│     • Used for storage filenames                                │
+│     • Used for network message requests                         │
+│     • Deterministic: same plaintext → same network_id everywhere│
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### E.2 hp (Header) vs hp_plaintext
+
+| Property | `hp` (header provenance) | `hp_plaintext` |
+|----------|--------------------------|----------------|
+| Input | Encrypted body (wire format) | Decrypted plaintext |
+| Computed | VSF standard, before decryption | After successful decryption |
+| Device-dependent | Yes (different device keys) | No |
+| Use case | Wire identifier | Storage/sync identifier |
+
+**Critical distinction:** `hp` changes if you re-encrypt with different keys (e.g., re-encryption for different device). `hp_plaintext` stays the same regardless of encryption.
+
+### E.3 Network ID Properties
+
+```rust
+fn derive_network_id(plaintext: &[u8]) -> [u8; 32] {
+    let hp_plaintext = blake3::hash(plaintext);
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(DOMAIN_NETWORK_ID);
+    hasher.update(hp_plaintext.as_bytes());
+    spaghettify(hasher.finalize().as_bytes())
 }
-
-/// Response with enough info to resync
-struct ResyncResponse {
-    /// Agreed sequence to resume from
-    resume_sequence: u64,
-
-    /// Chain state at resume point (encrypted with shared secret)
-    encrypted_state: Vec<u8>,
-
-    signature: [u8; 64],
-}
 ```
 
-**Security consideration:** Resync requires proving identity (device signature) to prevent attackers from forcing resync to known state.
+**Security properties:**
+1. **Preimage resistant**: Can't reverse spaghettify to get hp_plaintext
+2. **Collision resistant**: Different plaintexts → different network_ids
+3. **Deterministic**: Same plaintext → same network_id (required for sync)
+4. **Domain separated**: `DOMAIN_NETWORK_ID` prevents cross-protocol attacks
 
----
-
-## 8. Security Analysis
-
-### 8.0 Forward Secrecy
-
-Each message advances the chain through a memory-hard function:
+### E.4 Storage Path Examples
 
 ```
-state_n+1 = BLAKE3(state_n || message_hash || scratch_hash)
+Friendship between Alice and Bob:
+  friendship_id = BLAKE3("PHOTON_FRIENDSHIP_v1" || sorted_handle_hashes)
+
+Storage root: ~/.photon/friendships/{friendship_id_base64}/
+
+Messages:
+  messages/abc123...xyz.vsf  ← network_id of message 1
+  messages/def456...uvw.vsf  ← network_id of message 2
+  messages/ghi789...rst.vsf  ← network_id of message 3
+
+Chain state:
+  chain.bin  ← 16KB × 2 participants = 32KB
+
+Metadata:
+  metadata.vsf  ← friendship info, participants, etc.
 ```
 
-Reversing this requires:
-0. Inverting BLAKE3 (computationally infeasible)
-1. OR: Possessing all previous messages to replay the chain
+### E.5 Cross-Device Sync
 
-Compromise of `state_n` reveals nothing about `state_0..n-1`.
+When syncing between your own devices:
 
-### 8.1 Break Requirements
+```
+Device A has: {net_id_1, net_id_2, net_id_3}
+Device B has: {net_id_1, net_id_4}
 
-To decrypt a message, attacker must have:
+Sync protocol:
+  1. Exchange network_id sets
+  2. A requests net_id_4 from B
+  3. B requests net_id_2, net_id_3 from A
+  4. Exchange device-encrypted blobs
+  5. Each device re-encrypts with own device key
+```
 
-| Layer | Requirement |
-|-------|-------------|
-| 0 | CLUTCH seed (break 8 primitives or obtain handles) |
-| 1 | All previous message hashes (to derive current state) |
-| 2 | Memory-hard scratch for that state |
-| 3 | Correct sequence number |
-| 4 | Salt value (from wire, or break dual PRNG) |
-
-**Minimum: 3 independent compromises** (seed + chain history + network position)
-
-### 8.2 PRNG Security
-
-Dual PRNG provides defense-in-depth:
-
-| PRNG | Type | Strength |
-|------|------|----------|
-| ChaCha20Rng | Stream cipher CSPRNG | 256-bit security, proven secure |
-| Pcg64 | Permuted congruential generator | Statistical quality, different math |
-
-Attacker must break **both** to predict salt values.
-
-### 8.3 Replay Protection
-
-- Sequence numbers are monotonic and verified
-- Same sequence + different message = different chain advancement
-- Replaying old message fails because receiver's chain has advanced
-
----
-
-## 9. Performance
-
-| Operation | Time | Notes |
-|-----------|------|-------|
-| L1 scratch generation | 1-10ms | Precomputed in background |
-| Message key derivation | <1μs | BLAKE3 is fast |
-| ChaCha20-Poly1305 encrypt | ~1μs/KB | ~4 GB/s on modern CPUs |
-| Chain advancement | <1μs | Single BLAKE3 call |
-| Total send latency | **0ms perceived** | Scratch precomputed |
-| Total receive latency | **<1ms** | Scratch + decrypt |
-| Media frame encrypt | <100μs | ChaCha20 only, no auth |
-| Media batch advance | ~10ms | Once per second |
-
----
-
-## 10. Implementation Checklist
-
-**Core:**
-- [ ] ChainState struct with all fields
-- [ ] init_chain_state from CLUTCH seed
-- [ ] init_dual_prng with first message hash
-- [ ] generate_l1_scratch with data-dependent reads
-- [ ] Background scratch precomputation thread
-
-**Text Messages:**
-- [ ] send_message with full flow
-- [ ] receive_message with validation
-- [ ] generate_dual_salt from both PRNGs
-- [ ] derive_nonce from sequence
-
-**Media:**
-- [ ] MediaChainState with batching
-- [ ] derive_batch_key for 1-second batches
-- [ ] encrypt_media_frame / decrypt_media_frame
-- [ ] ChaCha20-only encryption (no Poly1305)
-
-**Error Handling:**
-- [ ] Sequence mismatch detection
-- [ ] Skip-forward for small gaps
-- [ ] Resync protocol for large gaps
-- [ ] Device signature verification for resync
-
----
-
-## 11. Relationship to CLUTCH
-
-CHAIN depends on CLUTCH but is conceptually separate:
-
-| Aspect | CLUTCH | CHAIN |
-|--------|--------|-------|
-| Purpose | Generate shared seed | Encrypt messages |
-| Frequency | Once per relationship | Every message |
-| Primitives | 8 asymmetric | BLAKE3 + ChaCha20 symmetric |
-| Latency | 100-500ms | 0ms perceived |
-| Forward secrecy | N/A (one-time) | Yes (per-message) |
-
-CLUTCH creates the seed. CHAIN uses it forever.
-
----
-
-**End of Specification**
+**Key insight:** network_id is the common identifier that works across devices with different device keys.

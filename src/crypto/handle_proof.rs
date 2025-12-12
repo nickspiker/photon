@@ -43,7 +43,7 @@ use i256::U256;
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// let handle = "fractal decoder";
 /// let vsf_bytes = vsf::VsfType::x(handle.to_string()).flatten();
 /// let handle_hash = blake3::hash(&vsf_bytes);

@@ -354,6 +354,20 @@ impl PTManager {
         );
     }
 
+    /// Clear ALL outbound transfers to a peer (regardless of state)
+    /// Used when CLUTCH completes to stop retransmitting offers/KEM responses.
+    pub fn clear_outbound(&mut self, peer_addr: &SocketAddr) {
+        let before = self.outbound.len();
+        self.outbound.retain(|t| t.peer_addr != *peer_addr);
+        let removed = before - self.outbound.len();
+        if removed > 0 {
+            crate::log_info(&format!(
+                "PT: Cleared {} outbound transfers to {} (forced)",
+                removed, peer_addr
+            ));
+        }
+    }
+
     /// Periodic tick - check timeouts, send retransmits
     pub fn tick(&mut self) -> Vec<(SocketAddr, Vec<u8>)> {
         let mut to_send = Vec::new();

@@ -292,6 +292,32 @@ Use these. Derive everything from screen dimensions and their mathematical relat
 2. Explain what would happen if the invariant is violated
 3. Let the human decide
 
+## Persistence Rule: EVERY CHANGE HITS DISK
+
+**Any state change beyond a single keystroke (and ping/pong) MUST be persisted immediately.**
+
+### What MUST be Saved:
+- Messages sent or received → `save_messages()` immediately
+- Contact state changes (online status, CLUTCH completion) → `save_contact_state()`
+- Friendship chain state → `save_friendship()` after every advance
+- User preferences/settings → save on change, not on exit
+
+### Why:
+- App can crash at any moment (kernel panic, power loss, OOM killer)
+- RAM is ephemeral. Disk is truth.
+- If you can't see it in `~/.config/photon/`, it didn't happen
+
+### The Pattern:
+```rust
+// Message received - save IMMEDIATELY after adding to list
+contact.messages.push(ChatMessage::new(text, false));
+save_messages(&contact, &our_seed, &device_secret)?;  // RIGHT HERE
+
+// NOT "batch save on exit" - that guarantees data loss
+```
+
+**Think like a database:** every write is a commit. There is no rollback. There is no "save later."
+
 ## Active Projects
 
 - **Spirix**: Two's complement floating-point (replaces IEEE-754)
