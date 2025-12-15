@@ -29,3 +29,5 @@ peers.vsf
 # Build outputs
 *.exe
 *.dll
+fractal decoder log.txt
+*.log
