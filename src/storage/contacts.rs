@@ -305,47 +305,16 @@ pub fn save_contact_list(
         .encode()
         .map_err(|e| StorageError::Parse(e.to_string()))?;
 
-    // Log VSF before encryption
-    #[cfg(feature = "development")]
-    {
-        let msg = crate::network::inspect::section_inspect(
-            &vsf_bytes,
-            "Disk",
-            "Write",
-            "contacts/index.vsf",
-        );
-        if !msg.is_empty() {
-            println!("{}", msg);
-        }
-    }
-
     let key = derive_list_key(our_identity_seed, device_secret);
     let encrypted = encrypt_data(&vsf_bytes, &key, "encrypted_contact_list")?;
 
-    // Log the complete VSF file being written
-    #[cfg(feature = "development")]
-    {
-        if encrypted.len() < 1024 {
-            let msg = crate::network::inspect::vsf_inspect(
-                &encrypted,
-                "Disk",
-                "Write",
-                "contacts/index.vsf",
-            );
-            if !msg.is_empty() {
-                println!("{}", msg);
-            }
-        }
-    }
-
-    #[cfg(feature = "development")]
-    crate::log_info(&format!(
-        "STORAGE: save_contact_list: file_len={} raw[..32]={}",
-        encrypted.len(),
-        hex::encode(&encrypted[..32.min(encrypted.len())])
-    ));
-
-    fs::write(&index_path, &encrypted)?;
+    crate::network::inspect::vsf_write(
+        &index_path,
+        &encrypted,
+        "contacts/index.vsf",
+        Some(&vsf_bytes),
+        device_secret,
+    )?;
     Ok(())
 }
 
@@ -360,49 +329,13 @@ pub fn load_contact_list(
         return Ok(Vec::new());
     }
 
-    let encrypted = fs::read(&index_path)?;
-
-    #[cfg(feature = "development")]
-    crate::log_info(&format!(
-        "STORAGE: load_contact_list: file_len={} raw[..32]={}",
-        encrypted.len(),
-        hex::encode(&encrypted[..32.min(encrypted.len())])
-    ));
-
-    // Log the VSF file being read
-    #[cfg(feature = "development")]
-    {
-        if encrypted.len() < 1024 {
-            let msg = crate::network::inspect::vsf_inspect(
-                &encrypted,
-                "Disk",
-                "Read",
-                "contacts/index.vsf",
-            );
-            if !msg.is_empty() {
-                println!("{}", msg);
-            }
-        }
-    }
+    let encrypted = crate::network::inspect::vsf_read(&index_path, "contacts/index.vsf", device_secret)?;
 
     let key = derive_list_key(our_identity_seed, device_secret);
     let vsf_bytes = decrypt_data(&encrypted, &key)?;
 
-    // Log decrypted section
     #[cfg(feature = "development")]
-    {
-        if vsf_bytes.len() < 1024 {
-            let msg = crate::network::inspect::section_inspect(
-                &vsf_bytes,
-                "Disk",
-                "Decrypted",
-                "contacts/index.vsf",
-            );
-            if !msg.is_empty() {
-                println!("{}", msg);
-            }
-        }
-    }
+    crate::network::inspect::vsf_read_decrypted(&vsf_bytes, "contacts/index.vsf");
 
     let schema = contact_list_schema();
     let builder = SectionBuilder::parse(schema, &vsf_bytes)
@@ -508,44 +441,11 @@ pub fn save_contact_state(
         .encode()
         .map_err(|e| StorageError::Parse(e.to_string()))?;
 
-    // Log plaintext section before encryption
-    #[cfg(feature = "development")]
-    {
-        if vsf_bytes.len() < 1024 {
-            let label = format!("contacts/{}/state.vsf", hex::encode(&identity_seed[..8]));
-            let msg = crate::network::inspect::section_inspect(
-                &vsf_bytes,
-                "Disk",
-                "Write",
-                &label,
-            );
-            if !msg.is_empty() {
-                println!("{}", msg);
-            }
-        }
-    }
-
     let key = derive_state_key(our_identity_seed, &identity_seed, device_secret);
     let encrypted = encrypt_data(&vsf_bytes, &key, "encrypted_contact_state")?;
 
-    // Log the complete VSF file being written
-    #[cfg(feature = "development")]
-    {
-        if encrypted.len() < 1024 {
-            let label = format!("contacts/{}/state.vsf", hex::encode(&identity_seed[..8]));
-            let msg = crate::network::inspect::vsf_inspect(
-                &encrypted,
-                "Disk",
-                "Write",
-                &label,
-            );
-            if !msg.is_empty() {
-                println!("{}", msg);
-            }
-        }
-    }
-
-    fs::write(&state_path, &encrypted)?;
+    let label = format!("contacts/{}/state.vsf", hex::encode(&identity_seed[..8]));
+    crate::network::inspect::vsf_write(&state_path, &encrypted, &label, Some(&vsf_bytes), device_secret)?;
     Ok(())
 }
 
@@ -570,44 +470,14 @@ pub fn load_contact_state(
         return Ok(contact);
     }
 
-    let encrypted = fs::read(&state_path)?;
-
-    // Log the VSF file being read
-    #[cfg(feature = "development")]
-    {
-        if encrypted.len() < 1024 {
-            let label = format!("contacts/{}/state.vsf", hex::encode(&their_identity_seed[..8]));
-            let msg = crate::network::inspect::vsf_inspect(
-                &encrypted,
-                "Disk",
-                "Read",
-                &label,
-            );
-            if !msg.is_empty() {
-                println!("{}", msg);
-            }
-        }
-    }
+    let label = format!("contacts/{}/state.vsf", hex::encode(&their_identity_seed[..8]));
+    let encrypted = crate::network::inspect::vsf_read(&state_path, &label, device_secret)?;
 
     let key = derive_state_key(our_identity_seed, &their_identity_seed, device_secret);
     let vsf_bytes = decrypt_data(&encrypted, &key)?;
 
-    // Log decrypted section
     #[cfg(feature = "development")]
-    {
-        if vsf_bytes.len() < 1024 {
-            let label = format!("contacts/{}/state.vsf", hex::encode(&their_identity_seed[..8]));
-            let msg = crate::network::inspect::section_inspect(
-                &vsf_bytes,
-                "Disk",
-                "Decrypted",
-                &label,
-            );
-            if !msg.is_empty() {
-                println!("{}", msg);
-            }
-        }
-    }
+    crate::network::inspect::vsf_read_decrypted(&vsf_bytes, &label);
 
     let mut ptr = 0;
     let section = VsfSection::parse(&vsf_bytes, &mut ptr)
@@ -778,6 +648,541 @@ fn u8_to_trust_level(v: u8) -> TrustLevel {
 }
 
 // ============================================================================
+// CLUTCH Keypairs Storage (~600KB, stored separately)
+// ============================================================================
+
+use crate::crypto::clutch::ClutchAllKeypairs;
+
+/// Derive encryption key for keypairs
+fn derive_keypairs_key(
+    our_identity_seed: &[u8; 32],
+    their_identity_seed: &[u8; 32],
+    device_secret: &[u8; 32],
+) -> [u8; 32] {
+    let mut hasher = Hasher::new();
+    hasher.update(b"photon_clutch_keypairs_v1");
+    hasher.update(our_identity_seed);
+    hasher.update(their_identity_seed);
+    hasher.update(device_secret);
+    *hasher.finalize().as_bytes()
+}
+
+/// Save CLUTCH keypairs to disk (encrypted).
+/// Called after keygen completes - persists ~600KB of ephemeral keypairs.
+pub fn save_clutch_keypairs(
+    keypairs: &ClutchAllKeypairs,
+    handle: &str,
+    our_identity_seed: &[u8; 32],
+    device_secret: &[u8; 32],
+) -> Result<(), StorageError> {
+    let their_identity_seed = derive_identity_seed(handle);
+    let dir = contact_dir_from_seed(&their_identity_seed)?;
+    let keypairs_path = dir.join("keypairs.vsf");
+
+    // Build VSF section from keypairs
+    let mut section = VsfSection::new("clutch_keypairs");
+    for (name, value) in keypairs.to_vsf_fields() {
+        section.add_field(&name, value);
+    }
+
+    let vsf_bytes = section.encode();
+
+    let key = derive_keypairs_key(our_identity_seed, &their_identity_seed, device_secret);
+    let encrypted = encrypt_data(&vsf_bytes, &key, "encrypted_clutch_keypairs")?;
+
+    let label = format!("contacts/{}/keypairs.vsf", hex::encode(&their_identity_seed[..8]));
+    crate::network::inspect::vsf_write(&keypairs_path, &encrypted, &label, Some(&vsf_bytes), device_secret)?;
+
+    #[cfg(feature = "development")]
+    crate::log_info(&format!(
+        "STORAGE: Saved CLUTCH keypairs for {} (~{}KB)",
+        handle,
+        vsf_bytes.len() / 1024
+    ));
+
+    Ok(())
+}
+
+/// Load CLUTCH keypairs from disk.
+/// Returns None if no keypairs file exists or parsing fails.
+pub fn load_clutch_keypairs(
+    handle: &str,
+    our_identity_seed: &[u8; 32],
+    device_secret: &[u8; 32],
+) -> Result<Option<ClutchAllKeypairs>, StorageError> {
+    let their_identity_seed = derive_identity_seed(handle);
+    let dir = contact_dir_from_seed(&their_identity_seed)?;
+    let keypairs_path = dir.join("keypairs.vsf");
+
+    if !keypairs_path.exists() {
+        return Ok(None);
+    }
+
+    let label = format!("contacts/{}/keypairs.vsf", hex::encode(&their_identity_seed[..8]));
+    let encrypted = crate::network::inspect::vsf_read(&keypairs_path, &label, device_secret)?;
+
+    let key = derive_keypairs_key(our_identity_seed, &their_identity_seed, device_secret);
+    let vsf_bytes = decrypt_data(&encrypted, &key)?;
+
+    #[cfg(feature = "development")]
+    crate::network::inspect::vsf_read_decrypted(&vsf_bytes, &label);
+
+    let mut ptr = 0;
+    let section = VsfSection::parse(&vsf_bytes, &mut ptr)
+        .map_err(|e| StorageError::Parse(format!("Keypairs parse: {}", e)))?;
+
+    let keypairs = ClutchAllKeypairs::from_vsf_section(&section)
+        .ok_or_else(|| StorageError::Parse("Invalid keypairs format".into()))?;
+
+    #[cfg(feature = "development")]
+    crate::log_info(&format!(
+        "STORAGE: Loaded CLUTCH keypairs for {} (~{}KB)",
+        handle,
+        vsf_bytes.len() / 1024
+    ));
+
+    Ok(Some(keypairs))
+}
+
+/// Delete CLUTCH keypairs file (called after ceremony completes or on zeroize)
+pub fn delete_clutch_keypairs(handle: &str) -> Result<(), StorageError> {
+    let their_identity_seed = derive_identity_seed(handle);
+    let dir = contact_dir_from_seed(&their_identity_seed)?;
+    let keypairs_path = dir.join("keypairs.vsf");
+
+    if keypairs_path.exists() {
+        fs::remove_file(&keypairs_path)?;
+        #[cfg(feature = "development")]
+        crate::log_info(&format!("STORAGE: Deleted CLUTCH keypairs for {}", handle));
+    }
+
+    Ok(())
+}
+
+// ============================================================================
+// CLUTCH Slots Storage (ceremony progress - offers, KEM secrets)
+// ============================================================================
+
+use crate::crypto::clutch::{ClutchOfferPayload, ClutchKemSharedSecrets};
+use crate::types::PartySlot;
+
+/// Derive encryption key for slots
+fn derive_slots_key(
+    our_identity_seed: &[u8; 32],
+    their_identity_seed: &[u8; 32],
+    device_secret: &[u8; 32],
+) -> [u8; 32] {
+    let mut hasher = Hasher::new();
+    hasher.update(b"photon_clutch_slots_v1");
+    hasher.update(our_identity_seed);
+    hasher.update(their_identity_seed);
+    hasher.update(device_secret);
+    *hasher.finalize().as_bytes()
+}
+
+/// Save CLUTCH slots to disk (encrypted).
+/// Persists ceremony progress: offers received, KEM secrets computed.
+///
+/// VSF structure (proper multi-value fields):
+/// ```text
+/// [clutch_slots]
+///   (ceremony_id: hb{...})                  // if computed
+///   (provenances: hb{p0}, hb{p1}, ...)     // only if ceremony_id not yet computed
+///   (slot: hb{handle}, u0{offer}, u0{from}, u0{to}, ...data...)  // repeated
+/// ```
+pub fn save_clutch_slots(
+    slots: &[PartySlot],
+    offer_provenances: &[[u8; 32]],
+    ceremony_id: Option<[u8; 32]>,
+    handle: &str,
+    our_identity_seed: &[u8; 32],
+    device_secret: &[u8; 32],
+) -> Result<(), StorageError> {
+    if slots.is_empty() {
+        return Ok(()); // Nothing to save
+    }
+
+    let their_identity_seed = derive_identity_seed(handle);
+    let dir = contact_dir_from_seed(&their_identity_seed)?;
+    let slots_path = dir.join("slots.vsf");
+
+    // Build VSF section with all slots
+    let mut section = VsfSection::new("clutch_slots");
+
+    // Ceremony ID takes priority - if we have it, no need for provenances
+    if let Some(cid) = ceremony_id {
+        section.add_field("ceremony_id", VsfType::hb(cid.to_vec()));
+    } else if !offer_provenances.is_empty() {
+        // Only store provenances if ceremony_id not yet computed (needed to derive it later)
+        section.add_field_multi(
+            "provenances",
+            offer_provenances.iter().map(|p| VsfType::hb(p.to_vec())).collect(),
+        );
+    }
+
+    // Each slot as a repeated "slot" field with multi-value
+    // Format: (slot: hb{handle_hash}, u0{has_offer}, u0{has_from}, u0{has_to}, ...offer_keys..., ...from_secrets..., ...to_secrets...)
+    for slot in slots {
+        let mut values: Vec<VsfType> = Vec::new();
+
+        // Handle hash identifies this slot's party
+        values.push(VsfType::hb(slot.handle_hash.to_vec()));
+
+        // Flags for what's present
+        values.push(VsfType::u0(slot.offer.is_some()));
+        values.push(VsfType::u0(slot.kem_secrets_from_them.is_some()));
+        values.push(VsfType::u0(slot.kem_secrets_to_them.is_some()));
+
+        // Offer data (if present) - 8 public keys in fixed order
+        if let Some(ref offer) = slot.offer {
+            values.push(VsfType::kx(offer.x25519_public.to_vec()));
+            values.push(VsfType::kp(offer.p384_public.clone()));
+            values.push(VsfType::kk(offer.secp256k1_public.clone()));
+            values.push(VsfType::kp(offer.p256_public.clone()));
+            values.push(VsfType::kf(offer.frodo976_public.clone()));
+            values.push(VsfType::kn(offer.ntru701_public.clone()));
+            values.push(VsfType::kl(offer.mceliece_public.clone()));
+            values.push(VsfType::kh(offer.hqc256_public.clone()));
+        }
+
+        // KEM secrets from them (if present) - 8 typed shared secrets
+        if let Some(ref secrets) = slot.kem_secrets_from_them {
+            values.push(VsfType::ksx(secrets.x25519.to_vec()));
+            values.push(VsfType::ksp(secrets.p384.clone()));
+            values.push(VsfType::ksk(secrets.secp256k1.clone()));
+            values.push(VsfType::ksp(secrets.p256.clone()));
+            values.push(VsfType::ksf(secrets.frodo.clone()));
+            values.push(VsfType::ksn(secrets.ntru.clone()));
+            values.push(VsfType::ksl(secrets.mceliece.clone()));
+            values.push(VsfType::ksh(secrets.hqc.clone()));
+        }
+
+        // KEM secrets to them (if present) - 8 typed shared secrets
+        if let Some(ref secrets) = slot.kem_secrets_to_them {
+            values.push(VsfType::ksx(secrets.x25519.to_vec()));
+            values.push(VsfType::ksp(secrets.p384.clone()));
+            values.push(VsfType::ksk(secrets.secp256k1.clone()));
+            values.push(VsfType::ksp(secrets.p256.clone()));
+            values.push(VsfType::ksf(secrets.frodo.clone()));
+            values.push(VsfType::ksn(secrets.ntru.clone()));
+            values.push(VsfType::ksl(secrets.mceliece.clone()));
+            values.push(VsfType::ksh(secrets.hqc.clone()));
+        }
+
+        section.add_field_multi("slot", values);
+    }
+
+    let vsf_bytes = section.encode();
+
+    let key = derive_slots_key(our_identity_seed, &their_identity_seed, device_secret);
+    let encrypted = encrypt_data(&vsf_bytes, &key, "encrypted_clutch_slots")?;
+
+    let label = format!("contacts/{}/slots.vsf", hex::encode(&their_identity_seed[..8]));
+    crate::network::inspect::vsf_write(&slots_path, &encrypted, &label, Some(&vsf_bytes), device_secret)?;
+
+    #[cfg(feature = "development")]
+    crate::log_info(&format!(
+        "STORAGE: Saved CLUTCH slots for {} ({} slots, {}B)",
+        handle,
+        slots.len(),
+        vsf_bytes.len()
+    ));
+
+    Ok(())
+}
+
+/// Loaded CLUTCH ceremony state
+pub struct ClutchCeremonyState {
+    pub slots: Vec<PartySlot>,
+    pub offer_provenances: Vec<[u8; 32]>,
+    pub ceremony_id: Option<[u8; 32]>,
+}
+
+/// Load CLUTCH slots from disk.
+/// Returns None if no slots file exists.
+///
+/// Parses VSF structure with multi-value fields (no decimal string prefixes):
+/// ```text
+/// [clutch_slots]
+///   (provenances: hb{p0}, hb{p1}, ...)
+///   (ceremony_id: hb{...})
+///   (slot: hb{handle}, u0{offer}, u0{from}, u0{to}, ...data...)
+/// ```
+pub fn load_clutch_slots(
+    handle: &str,
+    our_identity_seed: &[u8; 32],
+    device_secret: &[u8; 32],
+) -> Result<Option<ClutchCeremonyState>, StorageError> {
+    let their_identity_seed = derive_identity_seed(handle);
+    let dir = contact_dir_from_seed(&their_identity_seed)?;
+    let slots_path = dir.join("slots.vsf");
+
+    if !slots_path.exists() {
+        return Ok(None);
+    }
+
+    let label = format!("contacts/{}/slots.vsf", hex::encode(&their_identity_seed[..8]));
+    let encrypted = crate::network::inspect::vsf_read(&slots_path, &label, device_secret)?;
+
+    let key = derive_slots_key(our_identity_seed, &their_identity_seed, device_secret);
+    let vsf_bytes = decrypt_data(&encrypted, &key)?;
+
+    #[cfg(feature = "development")]
+    crate::network::inspect::vsf_read_decrypted(&vsf_bytes, &label);
+
+    let mut ptr = 0;
+    let section = VsfSection::parse(&vsf_bytes, &mut ptr)
+        .map_err(|e| StorageError::Parse(format!("Slots parse: {}", e)))?;
+
+    // Parse provenances from multi-value field
+    let offer_provenances: Vec<[u8; 32]> = section.get_field("provenances")
+        .map(|f| {
+            f.values.iter().filter_map(|v| match v {
+                VsfType::hb(b) if b.len() == 32 => {
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(b);
+                    Some(arr)
+                }
+                _ => None,
+            }).collect()
+        })
+        .unwrap_or_default();
+
+    // Parse ceremony_id (optional single value)
+    let ceremony_id = section.get_field("ceremony_id")
+        .and_then(|f| f.values.first())
+        .and_then(|v| match v {
+            VsfType::hb(b) if b.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(b);
+                Some(arr)
+            }
+            _ => None,
+        });
+
+    // Parse slots from repeated "slot" fields
+    let slot_fields = section.get_fields("slot");
+    let mut slots = Vec::with_capacity(slot_fields.len());
+
+    for field in slot_fields {
+        let slot = parse_slot_from_values(&field.values)?;
+        slots.push(slot);
+    }
+
+    #[cfg(feature = "development")]
+    crate::log_info(&format!(
+        "STORAGE: Loaded CLUTCH slots for {} ({} slots, {} provenances, ceremony_id={})",
+        handle,
+        slots.len(),
+        offer_provenances.len(),
+        ceremony_id.map(|c| hex::encode(&c[..4])).unwrap_or_else(|| "none".into())
+    ));
+
+    Ok(Some(ClutchCeremonyState {
+        slots,
+        offer_provenances,
+        ceremony_id,
+    }))
+}
+
+/// Parse a PartySlot from multi-value field values.
+/// Type markers are self-describing - we match on kx/kf/kn/kl/kh/kk/kp, NOT position.
+/// Format: hb{handle}, u0{has_offer}, u0{has_from}, u0{has_to}, ...keys by type...
+fn parse_slot_from_values(values: &[VsfType]) -> Result<PartySlot, StorageError> {
+    if values.len() < 4 {
+        return Err(StorageError::Parse("Slot field too short".into()));
+    }
+
+    // Parse handle_hash (first value - this one IS positional, it's the identifier)
+    let handle_hash = match &values[0] {
+        VsfType::hb(b) if b.len() == 32 => {
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(b);
+            arr
+        }
+        _ => return Err(StorageError::Parse("Invalid handle_hash in slot".into())),
+    };
+
+    // Parse flags (values 1-3 - positional since they're just bools)
+    let has_offer = match &values[1] {
+        VsfType::u0(b) => *b,
+        _ => return Err(StorageError::Parse("Invalid has_offer flag".into())),
+    };
+    let has_from = match &values[2] {
+        VsfType::u0(b) => *b,
+        _ => return Err(StorageError::Parse("Invalid has_from flag".into())),
+    };
+    let has_to = match &values[3] {
+        VsfType::u0(b) => *b,
+        _ => return Err(StorageError::Parse("Invalid has_to flag".into())),
+    };
+
+    let mut slot = PartySlot::new(handle_hash);
+
+    // Parse keys and secrets by TYPE MARKER, not position
+    // The type (kx, kf, kn, kl, kh, kk, kp, ks) tells us exactly what it is
+    if has_offer {
+        let mut offer = ClutchOfferPayload::default();
+        let mut found_keys = 0u8;
+
+        for v in &values[4..] {
+            match v {
+                VsfType::kx(b) if b.len() == 32 => {
+                    offer.x25519_public.copy_from_slice(b);
+                    found_keys |= 1;
+                }
+                VsfType::kf(b) => {
+                    offer.frodo976_public = b.clone();
+                    found_keys |= 2;
+                }
+                VsfType::kn(b) => {
+                    offer.ntru701_public = b.clone();
+                    found_keys |= 4;
+                }
+                VsfType::kl(b) => {
+                    offer.mceliece_public = b.clone();
+                    found_keys |= 8;
+                }
+                VsfType::kh(b) => {
+                    offer.hqc256_public = b.clone();
+                    found_keys |= 16;
+                }
+                VsfType::kk(b) => {
+                    offer.secp256k1_public = b.clone();
+                    found_keys |= 32;
+                }
+                // P-curves disambiguated by size: P-384 = 97B, P-256 = 65B
+                VsfType::kp(b) if b.len() == 97 => {
+                    offer.p384_public = b.clone();
+                    found_keys |= 64;
+                }
+                VsfType::kp(b) if b.len() == 65 => {
+                    offer.p256_public = b.clone();
+                    found_keys |= 128;
+                }
+                // Hit any shared secret type, stop parsing keys
+                VsfType::ksx(_) | VsfType::ksp(_) | VsfType::ksk(_) | VsfType::ksf(_) |
+                VsfType::ksn(_) | VsfType::ksl(_) | VsfType::ksh(_) | VsfType::ksm(_) => break,
+                _ => {}
+            }
+        }
+
+        if found_keys != 255 {
+            return Err(StorageError::Parse(format!("Missing offer keys, found mask: {:#010b}", found_keys)));
+        }
+        slot.offer = Some(offer);
+    }
+
+    // Parse typed shared secrets (ksx, ksp, ksk, ksf, ksn, ksl, ksh)
+    // Secrets come in groups of 8, first group is "from_them", second is "to_them"
+    if has_from || has_to {
+        let secrets: Vec<&VsfType> = values[4..].iter().filter(|v| matches!(v,
+            VsfType::ksx(_) | VsfType::ksp(_) | VsfType::ksk(_) | VsfType::ksf(_) |
+            VsfType::ksn(_) | VsfType::ksl(_) | VsfType::ksh(_) | VsfType::ksm(_)
+        )).collect();
+
+        let secrets_per_group = 8;
+
+        if has_from {
+            if secrets.len() < secrets_per_group {
+                return Err(StorageError::Parse("Missing from_them secrets".into()));
+            }
+            slot.kem_secrets_from_them = Some(parse_typed_secrets_group(&secrets[..secrets_per_group])?);
+        }
+
+        if has_to {
+            let start = if has_from { secrets_per_group } else { 0 };
+            if secrets.len() < start + secrets_per_group {
+                return Err(StorageError::Parse("Missing to_them secrets".into()));
+            }
+            slot.kem_secrets_to_them = Some(parse_typed_secrets_group(&secrets[start..start + secrets_per_group])?);
+        }
+    }
+
+    Ok(slot)
+}
+
+/// Parse a group of 8 typed shared secrets (ksx, ksp, ksk, ksf, ksn, ksl, ksh).
+/// Secrets are now typed, so we extract by VsfType variant.
+/// Order in file: x25519, p384, secp256k1, p256, frodo, ntru, mceliece, hqc
+fn parse_typed_secrets_group(secrets: &[&VsfType]) -> Result<ClutchKemSharedSecrets, StorageError> {
+    if secrets.len() != 8 {
+        return Err(StorageError::Parse(format!("Expected 8 secrets, got {}", secrets.len())));
+    }
+
+    // Extract each secret by expected type and position
+    let x25519 = match secrets[0] {
+        VsfType::ksx(b) if b.len() == 32 => {
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(b);
+            arr
+        }
+        _ => return Err(StorageError::Parse("x25519 secret missing or wrong type".into())),
+    };
+
+    let p384 = match secrets[1] {
+        VsfType::ksp(b) => b.clone(),
+        _ => return Err(StorageError::Parse("p384 secret missing or wrong type".into())),
+    };
+
+    let secp256k1 = match secrets[2] {
+        VsfType::ksk(b) => b.clone(),
+        _ => return Err(StorageError::Parse("secp256k1 secret missing or wrong type".into())),
+    };
+
+    let p256 = match secrets[3] {
+        VsfType::ksp(b) => b.clone(),
+        _ => return Err(StorageError::Parse("p256 secret missing or wrong type".into())),
+    };
+
+    let frodo = match secrets[4] {
+        VsfType::ksf(b) => b.clone(),
+        _ => return Err(StorageError::Parse("frodo secret missing or wrong type".into())),
+    };
+
+    let ntru = match secrets[5] {
+        VsfType::ksn(b) => b.clone(),
+        _ => return Err(StorageError::Parse("ntru secret missing or wrong type".into())),
+    };
+
+    let mceliece = match secrets[6] {
+        VsfType::ksl(b) => b.clone(),
+        _ => return Err(StorageError::Parse("mceliece secret missing or wrong type".into())),
+    };
+
+    let hqc = match secrets[7] {
+        VsfType::ksh(b) => b.clone(),
+        _ => return Err(StorageError::Parse("hqc secret missing or wrong type".into())),
+    };
+
+    Ok(ClutchKemSharedSecrets {
+        x25519,
+        p384,
+        secp256k1,
+        p256,
+        frodo,
+        ntru,
+        mceliece,
+        hqc,
+    })
+}
+
+/// Delete CLUTCH slots file (called after ceremony completes)
+pub fn delete_clutch_slots(handle: &str) -> Result<(), StorageError> {
+    let their_identity_seed = derive_identity_seed(handle);
+    let dir = contact_dir_from_seed(&their_identity_seed)?;
+    let slots_path = dir.join("slots.vsf");
+
+    if slots_path.exists() {
+        fs::remove_file(&slots_path)?;
+        #[cfg(feature = "development")]
+        crate::log_info(&format!("STORAGE: Deleted CLUTCH slots for {}", handle));
+    }
+
+    Ok(())
+}
+
+// ============================================================================
 // Message Storage
 // ============================================================================
 
@@ -831,7 +1236,8 @@ pub fn save_messages(
     let key = derive_messages_key(our_identity_seed, &their_identity_seed, device_secret);
     let encrypted = encrypt_data(&vsf_bytes, &key, "encrypted_messages")?;
 
-    fs::write(&messages_path, &encrypted)?;
+    let label = format!("contacts/{}/messages.vsf", hex::encode(&their_identity_seed[..8]));
+    crate::network::inspect::vsf_write(&messages_path, &encrypted, &label, Some(&vsf_bytes), device_secret)?;
 
     #[cfg(feature = "development")]
     crate::log_info(&format!(
@@ -857,9 +1263,13 @@ pub fn load_messages(
         return Ok(()); // No messages yet
     }
 
-    let encrypted = fs::read(&messages_path)?;
+    let label = format!("contacts/{}/messages.vsf", hex::encode(&their_identity_seed[..8]));
+    let encrypted = crate::network::inspect::vsf_read(&messages_path, &label, device_secret)?;
     let key = derive_messages_key(our_identity_seed, &their_identity_seed, device_secret);
     let vsf_bytes = decrypt_data(&encrypted, &key)?;
+
+    #[cfg(feature = "development")]
+    crate::network::inspect::vsf_read_decrypted(&vsf_bytes, &label);
 
     let mut ptr = 0;
     let section = VsfSection::parse(&vsf_bytes, &mut ptr)

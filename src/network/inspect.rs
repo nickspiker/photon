@@ -174,3 +174,157 @@ fn strip_ansi_if_needed(s: &str) -> String {
         s.to_string()
     }
 }
+
+// =============================================================================
+// Centralized VSF disk I/O with automatic dev-mode inspection
+// =============================================================================
+
+use std::path::Path;
+use ed25519_dalek::SigningKey;
+use vsf::VsfBuilder;
+use vsf::VsfType;
+
+/// Write encrypted VSF data to disk as a complete, signed VSF file
+///
+/// Wraps the encrypted payload in a proper VSF file with:
+/// - VSF header with magic, version, timestamp
+/// - Provenance hash for content integrity
+/// - Ed25519 signature from the device key (signs file hash)
+/// - The encrypted payload as a v(b'e', ...) field
+///
+/// In development mode, logs both the encrypted payload and decrypted content.
+pub fn vsf_write(
+    path: &Path,
+    encrypted: &[u8],
+    label: &str,
+    #[allow(unused_variables)] decrypted: Option<&[u8]>,
+    device_secret: &[u8; 32],
+) -> std::io::Result<()> {
+    // Derive device pubkey
+    let signing_key = SigningKey::from_bytes(device_secret);
+    let device_pubkey = signing_key.verifying_key();
+
+    // Build VSF file with placeholder signature (zeros) - sign_file will fill it
+    let unsigned_vsf = VsfBuilder::new()
+        .signature_ed25519(*device_pubkey.as_bytes(), [0u8; 64]) // Placeholder
+        .add_section("encrypted", vec![
+            ("payload".to_string(), VsfType::v(b'e', encrypted.to_vec())),
+        ])
+        .build()
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+
+    // Sign properly using VSF library (signs file hash, fills hp and ge)
+    let vsf_file = vsf::verification::sign_file(unsigned_vsf, device_secret)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+
+    #[cfg(feature = "development")]
+    {
+        // Log decrypted VSF section first (if provided)
+        if let Some(data) = decrypted {
+            let msg = section_inspect(data, "Disk", "Write", &format!("{} (decrypted)", label));
+            if !msg.is_empty() {
+                println!("{}", msg);
+            }
+        }
+
+        // Log the complete VSF file (will show proper structure)
+        let msg = vsf_inspect(&vsf_file, "Disk", "Write", label);
+        if !msg.is_empty() {
+            println!("{}", msg);
+        }
+
+        crate::log_info(&format!(
+            "STORAGE: vsf_write: {} file_len={}",
+            label,
+            vsf_file.len()
+        ));
+    }
+
+    std::fs::write(path, vsf_file)
+}
+
+/// Read encrypted VSF data from disk with signature verification
+///
+/// Uses VSF library's verify_file_signature to verify integrity, then extracts payload.
+///
+/// Returns the encrypted bytes. Caller is responsible for decryption.
+/// After decryption, call `vsf_read_decrypted` to log the decrypted content.
+pub fn vsf_read(path: &Path, label: &str, device_secret: &[u8; 32]) -> std::io::Result<Vec<u8>> {
+    let file_bytes = std::fs::read(path)?;
+
+    #[cfg(feature = "development")]
+    {
+        let msg = vsf_inspect(&file_bytes, "Disk", "Read", label);
+        if !msg.is_empty() {
+            println!("{}", msg);
+        }
+    }
+
+    // Verify signature using VSF library
+    match vsf::verification::verify_file_signature(&file_bytes) {
+        Ok(true) => {} // Signature valid
+        Ok(false) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("{}: Signature verification failed", label)
+            ));
+        }
+        Err(e) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("{}: {}", label, e)
+            ));
+        }
+    }
+
+    // Verify file was signed by our device
+    let signing_key = SigningKey::from_bytes(device_secret);
+    let expected_pubkey = signing_key.verifying_key();
+    let file_pubkey = vsf::verification::extract_signer_pubkey(&file_bytes)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+
+    if file_pubkey != *expected_pubkey.as_bytes() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("{}: Signed by different device (expected {}, got {})",
+                label,
+                hex::encode(&expected_pubkey.as_bytes()[..8]),
+                hex::encode(&file_pubkey[..8]))
+        ));
+    }
+
+    // Parse to extract encrypted payload
+    let (header, header_len) = vsf::VsfHeader::decode(&file_bytes)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{:?}", e)))?;
+
+    let mut ptr = header_len;
+    let section = vsf::VsfSection::parse(&file_bytes, &mut ptr)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{:?}", e)))?;
+
+    for field in &section.fields {
+        if field.name == "payload" {
+            if let Some(VsfType::v(b'e', data)) = field.values.first() {
+                #[cfg(feature = "development")]
+                crate::log_info(&format!(
+                    "STORAGE: vsf_read: {} verified, payload_len={}",
+                    label,
+                    data.len()
+                ));
+                return Ok(data.clone());
+            }
+        }
+    }
+
+    Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{}: No encrypted payload", label)))
+}
+
+/// Log decrypted VSF content after reading (call after successful decryption)
+///
+/// This is separate from vsf_read because decryption happens in the caller.
+#[cfg(feature = "development")]
+pub fn vsf_read_decrypted(decrypted: &[u8], label: &str) {
+    let msg = section_inspect(decrypted, "Disk", "Read", &format!("{} (decrypted)", label));
+    if !msg.is_empty() {
+        println!("{}", msg);
+    }
+}

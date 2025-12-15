@@ -75,8 +75,8 @@ pub enum FgtwMessage {
         sync_records: Vec<SyncRecord>,
     },
     // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete REMOVED
-    // Full 8-primitive CLUTCH uses ClutchFullOffer and ClutchKemResponse
-    // which are handled via build_clutch_full_offer_vsf() and parse_clutch_full_offer_vsf()
+    // Full 8-primitive CLUTCH uses ClutchOffer and ClutchKemResponse
+    // which are handled via build_clutch_offer_vsf() and parse_clutch_offer_vsf()
     // See CLUTCH.md Section 4.2 for the slot-based ceremony protocol.
 
     /// Encrypted chat message
@@ -383,7 +383,7 @@ impl FgtwMessage {
                     .build()
             }
             // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete serialization REMOVED
-            // Full CLUTCH uses build_clutch_full_offer_vsf() and build_clutch_kem_response_vsf()
+            // Full CLUTCH uses build_clutch_offer_vsf() and build_clutch_kem_response_vsf()
 
             FgtwMessage::ChatMessage {
                 timestamp,
@@ -402,7 +402,7 @@ impl FgtwMessage {
                     .add_section(
                         "msg",
                         vec![
-                            ("tok".to_string(), VsfType::hb(conversation_token.to_vec())),
+                            ("tok".to_string(), VsfType::hg(conversation_token.to_vec())),
                             ("prev".to_string(), VsfType::hp(prev_msg_hp.to_vec())),
                             (
                                 "data".to_string(),
@@ -436,7 +436,7 @@ impl FgtwMessage {
                     .add_section(
                         "ack",
                         vec![
-                            ("tok".to_string(), VsfType::hb(conversation_token.to_vec())),
+                            ("tok".to_string(), VsfType::hg(conversation_token.to_vec())),
                             ("time".to_string(), VsfType::e(vsf::types::EtType::f6(*acked_eagle_time))),
                             ("hash".to_string(), VsfType::hb(plaintext_hash.to_vec())),
                         ],
@@ -570,8 +570,8 @@ impl FgtwMessage {
         }
 
         // NOTE: clutch_offer, clutch_init, clutch_resp, clutch_done deserialization REMOVED
-        // Full CLUTCH uses parse_clutch_full_offer_vsf() and parse_clutch_kem_response_vsf()
-        // which handle "clutch_full_offer" and "clutch_kem_response" sections
+        // Full CLUTCH uses parse_clutch_offer_vsf() and parse_clutch_kem_response_vsf()
+        // which handle "clutch_offer" and "clutch_kem_response" sections
 
         // Handle msg (encrypted chat message) and ack (acknowledgment)
         if section_name == "msg" || section_name == "ack" {
@@ -603,7 +603,7 @@ impl FgtwMessage {
             }
 
             // CHAIN format: conversation_token (privacy-preserving), no sequence numbers
-            let conversation_token = extract_hash(&fields, "tok")?;
+            let conversation_token = extract_spaghetti_hash(&fields, "tok")?;
 
             if section_name == "msg" {
                 // ChatMessage: tok (conversation_token), prev (prev_msg_hp), data (ciphertext)
@@ -803,6 +803,20 @@ fn extract_hash_hp(fields: &[(String, VsfType)], key: &str) -> Result<[u8; 32], 
     Ok(arr)
 }
 
+/// Extract a spaghetti hash (hg type) as [u8; 32]
+fn extract_spaghetti_hash(fields: &[(String, VsfType)], key: &str) -> Result<[u8; 32], String> {
+    let hash_bytes = match get_field(fields, key) {
+        Some(VsfType::hg(bytes)) => bytes,
+        _ => return Err(format!("Missing or invalid spaghetti hash: {}", key)),
+    };
+    let mut arr = [0u8; 32];
+    if hash_bytes.len() != 32 {
+        return Err(format!("Spaghetti hash {} must be 32 bytes", key));
+    }
+    arr.copy_from_slice(hash_bytes);
+    Ok(arr)
+}
+
 /// Extract Eagle time (f64) from VSF e() type
 fn extract_eagle_time(fields: &[(String, VsfType)], key: &str) -> Result<f64, String> {
     use vsf::types::EtType;
@@ -991,13 +1005,13 @@ fn compute_ack_provenance_v2(
 // VSF-WRAPPED CLUTCH MESSAGES (Full 8-Algorithm CLUTCH)
 // =============================================================================
 
-use crate::crypto::clutch::{ClutchCompletePayload, ClutchFullOfferPayload, ClutchKemResponsePayload};
+use crate::crypto::clutch::{ClutchCompletePayload, ClutchOfferPayload, ClutchKemResponsePayload};
 
 // NOTE: ceremony_id is now computed deterministically via CeremonyId::derive()
 // from sorted participant handle_hashes. No memory-hard hashing needed.
 // See src/types/friendship.rs for the implementation.
 
-/// Build a signed VSF ClutchFullOffer message (~548KB).
+/// Build a signed VSF ClutchOffer message (~548KB).
 ///
 /// Uses VSF native key types for all 8 algorithms:
 /// - kx: X25519 (32B)
@@ -1015,24 +1029,29 @@ use crate::crypto::clutch::{ClutchCompletePayload, ClutchFullOfferPayload, Clutc
 ///
 /// conversation_token: Privacy-preserving smear_hash of sorted participant identity seeds.
 /// Replaces handle_hashes to prevent identity correlation by network observers.
-pub fn build_clutch_full_offer_vsf(
+///
+/// Note: The VSF provenance hash (hp) is auto-computed by sign_file and serves as the
+/// unique offer provenance (includes timestamp + content hash). The ceremony_id is
+/// computed later from all parties' offer provenances via spaghettify.
+/// Returns (vsf_bytes, offer_provenance) - the signed VSF and its unique hp hash.
+pub fn build_clutch_offer_vsf(
     conversation_token: &[u8; 32],
-    ceremony_id: &[u8; 32],
-    payload: &ClutchFullOfferPayload,
+    payload: &ClutchOfferPayload,
     device_pubkey: &[u8; 32],
     device_secret: &[u8; 32],
-) -> Result<Vec<u8>, String> {
+) -> Result<(Vec<u8>, [u8; 32]), String> {
     use vsf::VsfBuilder;
 
     // Build unsigned VSF with signature placeholder
+    // hp (provenance hash) will be auto-computed by sign_file from the content
+    // This hash is unique per offer due to timestamp and content
     let unsigned = VsfBuilder::new()
         .creation_time_nanos(vsf::eagle_time_nanos())
-        .provenance_hash(*ceremony_id)
         .signature_ed25519(*device_pubkey, [0u8; 64])
         .add_section(
-            "clutch_full_offer",
+            "clutch_offer",
             vec![
-                ("tok".to_string(), VsfType::hb(conversation_token.to_vec())),
+                ("tok".to_string(), VsfType::hg(conversation_token.to_vec())),
                 ("x25519".to_string(), VsfType::kx(payload.x25519_public.to_vec())),
                 ("p384".to_string(), VsfType::kp(payload.p384_public.clone())),
                 ("secp256k1".to_string(), VsfType::kk(payload.secp256k1_public.clone())),
@@ -1044,44 +1063,53 @@ pub fn build_clutch_full_offer_vsf(
             ],
         )
         .build()
-        .map_err(|e| format!("Failed to build ClutchFullOffer VSF: {}", e))?;
+        .map_err(|e| format!("Failed to build ClutchOffer VSF: {}", e))?;
 
     // Sign the file (computes file hash, signs it, patches ge)
-    vsf::verification::sign_file(unsigned, device_secret)
+    let signed = vsf::verification::sign_file(unsigned, device_secret)?;
+
+    // Extract the offer_provenance (hp field) from the signed VSF
+    use vsf::file_format::VsfHeader;
+    let (header, _) = VsfHeader::decode(&signed)
+        .map_err(|e| format!("Failed to parse signed header: {}", e))?;
+    let offer_provenance = extract_header_provenance(&header)?;
+
+    Ok((signed, offer_provenance))
 }
 
-/// Parse and verify a VSF ClutchFullOffer message.
+/// Parse and verify a VSF ClutchOffer message.
 ///
 /// Verifies:
 /// 1. VSF format and magic bytes
 /// 2. Ed25519 signature (header-level)
 /// 3. conversation_token matches expected token for our conversation
 ///
-/// Returns (payload, sender_pubkey, ceremony_id, conversation_token)
-/// conversation_token is the privacy-preserving smear_hash of sorted participant identity seeds.
-pub fn parse_clutch_full_offer_vsf(
+/// Returns (payload, sender_pubkey, offer_provenance, conversation_token)
+/// - offer_provenance: Unique per offer (VSF hp field = content hash with timestamp)
+/// - conversation_token: Privacy-preserving smear_hash of sorted participant identity seeds
+pub fn parse_clutch_offer_vsf(
     vsf_bytes: &[u8],
     expected_conversation_token: &[u8; 32],
-) -> Result<(ClutchFullOfferPayload, [u8; 32], [u8; 32], [u8; 32]), String> {
+) -> Result<(ClutchOfferPayload, [u8; 32], [u8; 32], [u8; 32]), String> {
     // Verify signature first
     if !vsf::verification::verify_file_signature(vsf_bytes)? {
-        return Err("Invalid signature on ClutchFullOffer".to_string());
+        return Err("Invalid signature on ClutchOffer".to_string());
     }
 
     // Extract signer pubkey
     let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
 
-    // Parse header for ceremony_id (provenance hash)
+    // Parse header for offer_provenance (hp field - unique per offer due to timestamp)
     use vsf::file_format::VsfHeader;
     let (header, header_end) = VsfHeader::decode(vsf_bytes)
         .map_err(|e| format!("Failed to parse header: {}", e))?;
 
-    let ceremony_id = extract_header_provenance(&header)?;
+    let offer_provenance = extract_header_provenance(&header)?;
 
     // Parse section
     let mut ptr = header_end;
     if ptr >= vsf_bytes.len() || vsf_bytes[ptr] != b'[' {
-        return Err("No section body in ClutchFullOffer".to_string());
+        return Err("No section body in ClutchOffer".to_string());
     }
     ptr += 1;
 
@@ -1091,8 +1119,8 @@ pub fn parse_clutch_full_offer_vsf(
         _ => return Err("Invalid section name".to_string()),
     };
 
-    if section_name != "clutch_full_offer" {
-        return Err(format!("Expected 'clutch_full_offer' section, got '{}'", section_name));
+    if section_name != "clutch_offer" {
+        return Err(format!("Expected 'clutch_offer' section, got '{}'", section_name));
     }
 
     // Parse fields
@@ -1119,11 +1147,11 @@ pub fn parse_clutch_full_offer_vsf(
     }
 
     // Extract conversation_token
-    let conversation_token = extract_hash(&fields, "tok")?;
+    let conversation_token = extract_spaghetti_hash(&fields, "tok")?;
 
     // Verify conversation_token matches expected
     if &conversation_token != expected_conversation_token {
-        return Err("ClutchFullOffer conversation_token mismatch".to_string());
+        return Err("ClutchOffer conversation_token mismatch".to_string());
     }
 
     // Extract all public keys using native VSF types
@@ -1136,7 +1164,7 @@ pub fn parse_clutch_full_offer_vsf(
     let mceliece_public = extract_kl(&fields, "mceliece")?;
     let hqc256_public = extract_kh(&fields, "hqc")?;
 
-    let payload = ClutchFullOfferPayload {
+    let payload = ClutchOfferPayload {
         x25519_public,
         p384_public,
         secp256k1_public,
@@ -1149,11 +1177,11 @@ pub fn parse_clutch_full_offer_vsf(
 
     #[cfg(feature = "development")]
     {
-        let id_hex: String = ceremony_id.iter().take(8).map(|b| format!("{:02x}", b)).collect();
+        let prov_hex: String = offer_provenance.iter().take(8).map(|b| format!("{:02x}", b)).collect();
         crate::log_info(&format!(
-            "CLUTCH: Received offer ({} bytes) ceremony_id={}...",
+            "CLUTCH: Received offer ({} bytes) offer_provenance={}...",
             vsf_bytes.len(),
-            id_hex
+            prov_hex
         ));
         crate::log_info(&format!(
             "CLUTCH: Offer pubkeys (X25519: {}B, P-384: {}B, secp256k1: {}B, P-256: {}B, Frodo: {}B, NTRU: {}B, McEliece: {}B, HQC: {}B)",
@@ -1172,7 +1200,7 @@ pub fn parse_clutch_full_offer_vsf(
         ));
     }
 
-    Ok((payload, sender_pubkey, ceremony_id, conversation_token))
+    Ok((payload, sender_pubkey, offer_provenance, conversation_token))
 }
 
 /// Build a signed VSF ClutchKemResponse message (~31KB).
@@ -1203,7 +1231,7 @@ pub fn build_clutch_kem_response_vsf(
         .add_section(
             "clutch_kem_response",
             vec![
-                ("tok".to_string(), VsfType::hb(conversation_token.to_vec())),
+                ("tok".to_string(), VsfType::hg(conversation_token.to_vec())),
                 // PQC KEM ciphertexts
                 ("frodo_ct".to_string(), VsfType::v(b'f', payload.frodo976_ciphertext.clone())),
                 ("ntru_ct".to_string(), VsfType::v(b'n', payload.ntru701_ciphertext.clone())),
@@ -1212,10 +1240,10 @@ pub fn build_clutch_kem_response_vsf(
                 // Target HQC pub prefix for stale KEM response detection
                 ("target_hqc".to_string(), VsfType::hb(payload.target_hqc_pub_prefix.to_vec())),
                 // EC ephemeral pubkeys for ECIES-style encapsulation
-                ("x25519_eph".to_string(), VsfType::hb(payload.x25519_ephemeral.to_vec())),
-                ("p384_eph".to_string(), VsfType::hb(payload.p384_ephemeral.clone())),
-                ("secp256k1_eph".to_string(), VsfType::hb(payload.secp256k1_ephemeral.clone())),
-                ("p256_eph".to_string(), VsfType::hb(payload.p256_ephemeral.clone())),
+                ("x25519_eph".to_string(), VsfType::kx(payload.x25519_ephemeral.to_vec())),
+                ("p384_eph".to_string(), VsfType::kp(payload.p384_ephemeral.clone())),
+                ("secp256k1_eph".to_string(), VsfType::kk(payload.secp256k1_ephemeral.clone())),
+                ("p256_eph".to_string(), VsfType::kp(payload.p256_ephemeral.clone())),
             ],
         )
         .build()
@@ -1294,7 +1322,7 @@ pub fn parse_clutch_kem_response_vsf(
     }
 
     // Extract conversation_token
-    let conversation_token = extract_hash(&fields, "tok")?;
+    let conversation_token = extract_spaghetti_hash(&fields, "tok")?;
 
     // Verify conversation_token matches expected
     if &conversation_token != expected_conversation_token {
@@ -1327,7 +1355,7 @@ pub fn parse_clutch_kem_response_vsf(
     let x25519_ephemeral: [u8; 32] = fields.iter()
         .find_map(|(name, value)| {
             if name == "x25519_eph" {
-                if let VsfType::hb(bytes) = value {
+                if let VsfType::kx(bytes) = value {
                     if bytes.len() == 32 {
                         let mut arr = [0u8; 32];
                         arr.copy_from_slice(bytes);
@@ -1342,7 +1370,7 @@ pub fn parse_clutch_kem_response_vsf(
     let p384_ephemeral: Vec<u8> = fields.iter()
         .find_map(|(name, value)| {
             if name == "p384_eph" {
-                if let VsfType::hb(bytes) = value {
+                if let VsfType::kp(bytes) = value {
                     return Some(bytes.clone());
                 }
             }
@@ -1353,7 +1381,7 @@ pub fn parse_clutch_kem_response_vsf(
     let secp256k1_ephemeral: Vec<u8> = fields.iter()
         .find_map(|(name, value)| {
             if name == "secp256k1_eph" {
-                if let VsfType::hb(bytes) = value {
+                if let VsfType::kk(bytes) = value {
                     return Some(bytes.clone());
                 }
             }
@@ -1364,7 +1392,7 @@ pub fn parse_clutch_kem_response_vsf(
     let p256_ephemeral: Vec<u8> = fields.iter()
         .find_map(|(name, value)| {
             if name == "p256_eph" {
-                if let VsfType::hb(bytes) = value {
+                if let VsfType::kp(bytes) = value {
                     return Some(bytes.clone());
                 }
             }
@@ -1410,7 +1438,7 @@ pub fn parse_clutch_kem_response_vsf(
     Ok((payload, sender_pubkey, ceremony_id, conversation_token))
 }
 
-/// Parse and verify a VSF ClutchFullOffer message WITHOUT recipient check.
+/// Parse and verify a VSF ClutchOffer message WITHOUT recipient check.
 ///
 /// This variant is used by the TCP receiver which doesn't know our conversation_token.
 /// The caller (app.rs) is responsible for verifying the message is addressed to them.
@@ -1419,29 +1447,30 @@ pub fn parse_clutch_kem_response_vsf(
 /// 1. VSF format and magic bytes
 /// 2. Ed25519 signature (header-level)
 ///
-/// Returns (payload, sender_pubkey, ceremony_id, conversation_token)
-pub fn parse_clutch_full_offer_vsf_without_recipient_check(
+/// Returns (payload, sender_pubkey, offer_provenance, conversation_token)
+/// - offer_provenance: Unique per offer (VSF hp field = content hash with timestamp)
+pub fn parse_clutch_offer_vsf_without_recipient_check(
     vsf_bytes: &[u8],
-) -> Result<(ClutchFullOfferPayload, [u8; 32], [u8; 32], [u8; 32]), String> {
+) -> Result<(ClutchOfferPayload, [u8; 32], [u8; 32], [u8; 32]), String> {
     // Verify signature first
     if !vsf::verification::verify_file_signature(vsf_bytes)? {
-        return Err("Invalid signature on ClutchFullOffer".to_string());
+        return Err("Invalid signature on ClutchOffer".to_string());
     }
 
     // Extract signer pubkey
     let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
 
-    // Parse header for ceremony_id
+    // Parse header for offer_provenance (hp field - unique per offer due to timestamp)
     use vsf::file_format::VsfHeader;
     let (header, header_end) = VsfHeader::decode(vsf_bytes)
         .map_err(|e| format!("Failed to parse header: {}", e))?;
 
-    let ceremony_id = extract_header_provenance(&header)?;
+    let offer_provenance = extract_header_provenance(&header)?;
 
     // Parse section
     let mut ptr = header_end;
     if ptr >= vsf_bytes.len() || vsf_bytes[ptr] != b'[' {
-        return Err("No section body in ClutchFullOffer".to_string());
+        return Err("No section body in ClutchOffer".to_string());
     }
     ptr += 1;
 
@@ -1451,8 +1480,8 @@ pub fn parse_clutch_full_offer_vsf_without_recipient_check(
         _ => return Err("Invalid section name".to_string()),
     };
 
-    if section_name != "clutch_full_offer" {
-        return Err(format!("Expected 'clutch_full_offer' section, got '{}'", section_name));
+    if section_name != "clutch_offer" {
+        return Err(format!("Expected 'clutch_offer' section, got '{}'", section_name));
     }
 
     // Parse fields
@@ -1479,7 +1508,7 @@ pub fn parse_clutch_full_offer_vsf_without_recipient_check(
     }
 
     // Extract conversation_token (NO recipient check - caller verifies)
-    let conversation_token = extract_hash(&fields, "tok")?;
+    let conversation_token = extract_spaghetti_hash(&fields, "tok")?;
 
     // Extract all public keys using native VSF types
     let x25519_public = extract_kx(&fields, "x25519")?;
@@ -1491,7 +1520,7 @@ pub fn parse_clutch_full_offer_vsf_without_recipient_check(
     let mceliece_public = extract_kl(&fields, "mceliece")?;
     let hqc256_public = extract_kh(&fields, "hqc")?;
 
-    let payload = ClutchFullOfferPayload {
+    let payload = ClutchOfferPayload {
         x25519_public,
         p384_public,
         secp256k1_public,
@@ -1508,7 +1537,7 @@ pub fn parse_clutch_full_offer_vsf_without_recipient_check(
         hex::encode(&payload.hqc256_public[..8])
     ));
 
-    Ok((payload, sender_pubkey, ceremony_id, conversation_token))
+    Ok((payload, sender_pubkey, offer_provenance, conversation_token))
 }
 
 /// Parse and verify a VSF ClutchKemResponse message WITHOUT recipient check.
@@ -1580,7 +1609,7 @@ pub fn parse_clutch_kem_response_vsf_without_recipient_check(
     }
 
     // Extract conversation_token (NO recipient check - caller verifies)
-    let conversation_token = extract_hash(&fields, "tok")?;
+    let conversation_token = extract_spaghetti_hash(&fields, "tok")?;
 
     // Extract ciphertexts using VSF v() wrapped type
     let frodo976_ciphertext = extract_v(&fields, "frodo_ct", b'f')?;
@@ -1608,7 +1637,7 @@ pub fn parse_clutch_kem_response_vsf_without_recipient_check(
     let x25519_ephemeral: [u8; 32] = fields.iter()
         .find_map(|(name, value)| {
             if name == "x25519_eph" {
-                if let VsfType::hb(bytes) = value {
+                if let VsfType::kx(bytes) = value {
                     if bytes.len() == 32 {
                         let mut arr = [0u8; 32];
                         arr.copy_from_slice(bytes);
@@ -1623,7 +1652,7 @@ pub fn parse_clutch_kem_response_vsf_without_recipient_check(
     let p384_ephemeral: Vec<u8> = fields.iter()
         .find_map(|(name, value)| {
             if name == "p384_eph" {
-                if let VsfType::hb(bytes) = value {
+                if let VsfType::kp(bytes) = value {
                     return Some(bytes.clone());
                 }
             }
@@ -1634,7 +1663,7 @@ pub fn parse_clutch_kem_response_vsf_without_recipient_check(
     let secp256k1_ephemeral: Vec<u8> = fields.iter()
         .find_map(|(name, value)| {
             if name == "secp256k1_eph" {
-                if let VsfType::hb(bytes) = value {
+                if let VsfType::kk(bytes) = value {
                     return Some(bytes.clone());
                 }
             }
@@ -1645,7 +1674,7 @@ pub fn parse_clutch_kem_response_vsf_without_recipient_check(
     let p256_ephemeral: Vec<u8> = fields.iter()
         .find_map(|(name, value)| {
             if name == "p256_eph" {
-                if let VsfType::hb(bytes) = value {
+                if let VsfType::kp(bytes) = value {
                     return Some(bytes.clone());
                 }
             }
@@ -1768,8 +1797,8 @@ pub fn build_clutch_complete_vsf(
         .add_section(
             "clutch_complete",
             vec![
-                ("tok".to_string(), VsfType::hb(conversation_token.to_vec())),
-                ("eggs_proof".to_string(), VsfType::hb(payload.eggs_proof.to_vec())),
+                ("tok".to_string(), VsfType::hg(conversation_token.to_vec())),
+                ("eggs_proof".to_string(), VsfType::hg(payload.eggs_proof.to_vec())),
             ],
         )
         .build()
@@ -1847,7 +1876,7 @@ pub fn parse_clutch_complete_vsf(
     }
 
     // Extract conversation_token
-    let conversation_token = extract_hash(&fields, "tok")?;
+    let conversation_token = extract_spaghetti_hash(&fields, "tok")?;
 
     // Verify conversation_token matches expected
     if &conversation_token != expected_conversation_token {
@@ -1855,7 +1884,7 @@ pub fn parse_clutch_complete_vsf(
     }
 
     // Extract eggs_proof
-    let eggs_proof = extract_hash(&fields, "eggs_proof")?;
+    let eggs_proof = extract_spaghetti_hash(&fields, "eggs_proof")?;
 
     let payload = ClutchCompletePayload { eggs_proof };
 
@@ -1936,10 +1965,10 @@ pub fn parse_clutch_complete_vsf_without_recipient_check(
     }
 
     // Extract conversation_token (NO recipient check - caller verifies)
-    let conversation_token = extract_hash(&fields, "tok")?;
+    let conversation_token = extract_spaghetti_hash(&fields, "tok")?;
 
     // Extract eggs_proof
-    let eggs_proof = extract_hash(&fields, "eggs_proof")?;
+    let eggs_proof = extract_spaghetti_hash(&fields, "eggs_proof")?;
 
     let payload = ClutchCompletePayload { eggs_proof };
 

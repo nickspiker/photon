@@ -1,6 +1,9 @@
 #!/bin/bash
 set -e
 
+# Allow release builds (bypasses build.rs safety check)
+export PHOTON_ALLOW_RELEASE=1
+
 # Build and sign Linux
 ./build-release.sh
 

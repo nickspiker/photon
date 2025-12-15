@@ -47,6 +47,8 @@ pub struct PTManager {
     stale_timeout: Duration,
     /// Next stream_id to allocate for outbound transfers (per peer would be better but this is simpler)
     next_stream_id: u8,
+    /// Monotonic transfer ID counter for external tracking
+    next_transfer_id: usize,
 }
 
 impl PTManager {
@@ -58,8 +60,13 @@ impl PTManager {
             keypair,
             stale_timeout: Duration::from_secs(30),
             next_stream_id: b'a',
+            next_transfer_id: 0,
         }
     }
+
+    // =========================================================================
+    // Transfer Stream Management ('a'-'z')
+    // =========================================================================
 
     /// Allocate next available stream_id ('a'-'z', wraps around)
     fn allocate_stream_id(&mut self) -> u8 {
@@ -73,26 +80,31 @@ impl PTManager {
     }
 
     /// Start sending data to peer
-    /// Returns the SPEC bytes to send to initiate the transfer
-    pub fn start_send(&mut self, peer_addr: SocketAddr, data: Vec<u8>) -> Vec<u8> {
+    /// Returns (spec_bytes, transfer_id) - SPEC to send and ID for tracking
+    pub fn send(&mut self, peer_addr: SocketAddr, data: Vec<u8>) -> (Vec<u8>, usize) {
         let stream_id = self.allocate_stream_id();
-        let transfer = OutboundTransfer::new(peer_addr, data, stream_id);
+        let transfer_id = self.next_transfer_id;
+        self.next_transfer_id += 1;
+
+        let mut transfer = OutboundTransfer::new(peer_addr, data, stream_id, transfer_id);
         let spec = transfer.build_spec();
-        let data_hash = spec.data_hash;
         let spec_bytes = spec.to_vsf_bytes(&self.keypair);
 
+        // Mark SPEC as sent for retry tracking
+        transfer.mark_spec_sent();
+
         crate::log_info(&format!(
-            "PT: Starting outbound transfer to {} ({} bytes, stream '{}', hash {})",
+            "PT: Starting outbound transfer #{} to {} ({} bytes, stream '{}')",
+            transfer_id,
             peer_addr,
             transfer.send_buffer.total_size(),
             stream_id as char,
-            hex::encode(&data_hash[..4])
         ));
 
         // Push to vec - allows multiple concurrent transfers to same peer
         self.outbound.push(transfer);
 
-        spec_bytes
+        (spec_bytes, transfer_id)
     }
 
     /// Handle received SPEC (start receiving)
@@ -341,10 +353,23 @@ impl PTManager {
         Some(transfer.take_data())
     }
 
-    /// Check if outbound transfer is complete
+    /// Check if outbound transfer is complete (by peer address - any transfer)
     pub fn is_outbound_complete(&self, peer_addr: &SocketAddr) -> bool {
         self.outbound.iter()
             .any(|t| t.peer_addr == *peer_addr && t.state == TransferState::Complete)
+    }
+
+    /// Check if outbound transfer is complete (by transfer ID - specific transfer)
+    pub fn is_outbound_complete_by_id(&self, transfer_id: usize) -> bool {
+        self.outbound.iter()
+            .any(|t| t.transfer_id == transfer_id && t.state == TransferState::Complete)
+    }
+
+    /// Remove completed outbound transfer by transfer ID
+    pub fn remove_outbound_by_id(&mut self, transfer_id: usize) {
+        self.outbound.retain(|t|
+            !(t.transfer_id == transfer_id && t.state == TransferState::Complete)
+        );
     }
 
     /// Remove completed outbound transfer
@@ -369,10 +394,11 @@ impl PTManager {
     }
 
     /// Periodic tick - check timeouts, send retransmits
-    pub fn tick(&mut self) -> Vec<(SocketAddr, Vec<u8>)> {
+    /// Returns: Vec<(peer_addr, wire_bytes, use_tcp)>
+    pub fn tick(&mut self) -> Vec<(SocketAddr, Vec<u8>, bool)> {
         let mut to_send = Vec::new();
 
-        // Check outbound timeouts and retransmits
+        // Check outbound transfers
         for transfer in &mut self.outbound {
             if transfer.is_stale(self.stale_timeout) {
                 crate::log_error(&format!("PT: Outbound transfer to {} timed out", transfer.peer_addr));
@@ -380,9 +406,35 @@ impl PTManager {
                 continue;
             }
 
-            // Check for packet timeouts
-            for data in transfer.check_timeouts() {
-                to_send.push((transfer.peer_addr, data.to_bytes()));
+            // SPEC retry with exponential backoff
+            if transfer.spec_needs_retry() {
+                let use_tcp = transfer.spec_should_fallback_tcp();
+                if use_tcp && !transfer.spec_tcp_fallback {
+                    transfer.set_spec_tcp_fallback();
+                    crate::log_info(&format!(
+                        "PT: SPEC for stream '{}' to {} falling back to TCP",
+                        transfer.stream_id as char, transfer.peer_addr
+                    ));
+                }
+
+                transfer.mark_spec_sent();
+                let spec = transfer.build_spec();
+                to_send.push((transfer.peer_addr, spec.to_vsf_bytes(&self.keypair), transfer.spec_tcp_fallback));
+
+                crate::log_info(&format!(
+                    "PT: Retrying SPEC stream '{}' to {} (attempt {}, next delay {:?})",
+                    transfer.stream_id as char,
+                    transfer.peer_addr,
+                    transfer.spec_retry_count,
+                    transfer.spec_next_delay
+                ));
+            }
+
+            // Check for DATA packet timeouts (only during transfer phase)
+            if transfer.state == TransferState::Transferring {
+                for data in transfer.check_timeouts() {
+                    to_send.push((transfer.peer_addr, data.to_bytes(), transfer.spec_tcp_fallback));
+                }
             }
         }
 
@@ -450,7 +502,7 @@ mod tests {
         let data = vec![0xAB; 3000]; // 3 packets
 
         // Sender initiates
-        let spec_bytes = sender.start_send(peer_addr, data.clone());
+        let (spec_bytes, _transfer_id) = sender.send(peer_addr, data.clone());
         assert!(!spec_bytes.is_empty());
 
         // Parse SPEC and feed to receiver
@@ -526,8 +578,8 @@ mod tests {
         let data1 = vec![0xAA; 1000];
         let data2 = vec![0xBB; 2000];
 
-        let _spec1 = manager.start_send(peer_addr, data1);
-        let _spec2 = manager.start_send(peer_addr, data2);
+        manager.send(peer_addr, data1);
+        manager.send(peer_addr, data2);
 
         // Both should be tracked
         assert_eq!(manager.outbound.len(), 2);

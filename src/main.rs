@@ -267,6 +267,22 @@ impl ApplicationHandler<PhotonEvent> for App {
                 }
             }
 
+            // Check for completed CLUTCH KEM encapsulation (non-blocking)
+            if app.check_clutch_kem_encaps() {
+                // KEM response sent, redraw
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            }
+
+            // Check for completed CLUTCH ceremony (non-blocking)
+            if app.check_clutch_ceremonies() {
+                // Ceremony complete, chains created, redraw
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            }
+
             // Periodically ping contacts to check online status
             app.maybe_ping_contacts();
 
@@ -358,6 +374,20 @@ impl ApplicationHandler<PhotonEvent> for App {
             }
             PhotonEvent::ClutchKeygenComplete => {
                 // Background CLUTCH keypair generation finished
+                // Request redraw to process the result
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            }
+            PhotonEvent::ClutchKemEncapComplete => {
+                // Background CLUTCH KEM encapsulation finished
+                // Request redraw to process the result
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            }
+            PhotonEvent::ClutchCeremonyComplete => {
+                // Background CLUTCH ceremony completion (avalanche_expand) finished
                 // Request redraw to process the result
                 if let Some(window) = &self.window {
                     window.request_redraw();

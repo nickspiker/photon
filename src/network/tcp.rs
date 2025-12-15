@@ -68,15 +68,15 @@ pub fn recv(stream: &mut TcpStream) -> std::io::Result<Vec<u8>> {
 
     // Parse z (version)
     let _ = vsf::decoding::parse(&header_buf, &mut ptr)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("TCP recv: Failed to parse version: {}", e)))?;
 
     // Parse y (backward compat)
     let _ = vsf::decoding::parse(&header_buf, &mut ptr)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("TCP recv: Failed to parse backward compat: {}", e)))?;
 
     // Parse b (header length)
     let _ = vsf::decoding::parse(&header_buf, &mut ptr)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("TCP recv: Failed to parse header length: {}", e)))?;
 
     // Parse L (file length) - this is what we need!
     let file_length = match vsf::decoding::parse(&header_buf, &mut ptr) {
@@ -84,13 +84,13 @@ pub fn recv(stream: &mut TcpStream) -> std::io::Result<Vec<u8>> {
         Ok(other) => {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("Expected L for file length, got {:?}", other),
+                format!("TCP recv: Expected L for file length, got {:?}", other),
             ))
         }
         Err(e) => {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                e.to_string(),
+                format!("TCP recv: Failed to parse L field: {}", e),
             ))
         }
     };

@@ -1,9 +1,12 @@
-//! Build script to embed Windows icon into the executable
-
 use std::env;
 use std::process::Command;
 
 fn main() {
+    let profile = std::env::var("PROFILE").unwrap_or_default();
+    let allow_release = std::env::var("PHOTON_ALLOW_RELEASE").is_ok();
+    if profile == "release" && !allow_release {
+        panic!("RELEASE BUILDS DISABLED - Use build-development.sh or build-release!\n READ AGENT.md!");
+    }
     let target = env::var("TARGET").unwrap_or_default();
 
     // Only embed icon when building for Windows

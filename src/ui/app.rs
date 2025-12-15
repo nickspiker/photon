@@ -13,9 +13,32 @@ use crate::types::{ChatMessage, Contact, ContactId, FriendshipChains, Friendship
 pub struct ClutchKeygenResult {
     pub contact_id: ContactId,
     pub keypairs: ClutchAllKeypairs,
-    /// Deterministic ceremony ID (memory-hard, ~1 second to compute)
-    pub ceremony_id: [u8; 32],
+    // NOTE: ceremony_id is now computed on-demand from handle_hashes + offer_provenances
+    // after we receive enough offers (2 for 2-party DM). No longer computed in background.
 }
+
+/// Result from background CLUTCH KEM encapsulation
+pub struct ClutchKemEncapResult {
+    pub contact_id: ContactId,
+    pub kem_response: crate::crypto::clutch::ClutchKemResponsePayload,
+    pub local_secrets: crate::crypto::clutch::ClutchKemSharedSecrets,
+    pub ceremony_id: [u8; 32],
+    pub conversation_token: [u8; 32],
+    pub peer_addr: std::net::SocketAddr,
+}
+
+/// Result from background CLUTCH ceremony completion (avalanche_expand)
+pub struct ClutchCeremonyResult {
+    pub contact_id: ContactId,
+    pub friendship_chains: FriendshipChains,
+    pub eggs_proof: [u8; 32],
+    pub their_handle_hash: [u8; 32],
+    pub ceremony_id: [u8; 32],
+    pub conversation_token: [u8; 32],
+    pub peer_addr: std::net::SocketAddr,
+    pub their_hqc_prefix: [u8; 8],
+}
+
 #[cfg(not(target_os = "android"))]
 use winit::{
     dpi::PhysicalSize, event_loop::EventLoopProxy, keyboard::ModifiersState, window::Window,
@@ -296,6 +319,14 @@ pub struct PhotonApp {
     pub clutch_keygen_rx: std::sync::mpsc::Receiver<ClutchKeygenResult>,
     pub clutch_keygen_tx: std::sync::mpsc::Sender<ClutchKeygenResult>,
 
+    // Background CLUTCH KEM encapsulation (slow PQ ops, do off main thread)
+    pub clutch_kem_encap_rx: std::sync::mpsc::Receiver<ClutchKemEncapResult>,
+    pub clutch_kem_encap_tx: std::sync::mpsc::Sender<ClutchKemEncapResult>,
+
+    // Background CLUTCH ceremony completion (avalanche_expand is slow)
+    pub clutch_ceremony_rx: std::sync::mpsc::Receiver<ClutchCeremonyResult>,
+    pub clutch_ceremony_tx: std::sync::mpsc::Sender<ClutchCeremonyResult>,
+
     // Device keypair for signing (needed by StatusChecker)
     pub device_keypair: crate::network::fgtw::Keypair,
 
@@ -376,6 +407,10 @@ impl PhotonApp {
 
         // Create channel for background CLUTCH keypair generation
         let (clutch_keygen_tx, clutch_keygen_rx) = std::sync::mpsc::channel();
+
+        // Create channels for background CLUTCH KEM encapsulation and ceremony completion
+        let (clutch_kem_encap_tx, clutch_kem_encap_rx) = std::sync::mpsc::channel();
+        let (clutch_ceremony_tx, clutch_ceremony_rx) = std::sync::mpsc::channel();
 
         let mut app = Self {
             renderer,
@@ -473,6 +508,10 @@ impl PhotonApp {
             contact_avatar_tx,
             clutch_keygen_rx,
             clutch_keygen_tx,
+            clutch_kem_encap_rx,
+            clutch_kem_encap_tx,
+            clutch_ceremony_rx,
+            clutch_ceremony_tx,
             friendship_chains: Vec::new(),
             event_proxy: event_proxy.clone(),
             peer_update_client: None, // Started after attestation
@@ -506,6 +545,10 @@ impl PhotonApp {
 
         // Create channel for background CLUTCH keypair generation
         let (clutch_keygen_tx, clutch_keygen_rx) = std::sync::mpsc::channel();
+
+        // Create channels for background CLUTCH KEM encapsulation and ceremony completion
+        let (clutch_kem_encap_tx, clutch_kem_encap_rx) = std::sync::mpsc::channel();
+        let (clutch_ceremony_tx, clutch_ceremony_rx) = std::sync::mpsc::channel();
 
         Self {
             renderer,
@@ -592,6 +635,10 @@ impl PhotonApp {
             contact_avatar_tx,
             clutch_keygen_rx,
             clutch_keygen_tx,
+            clutch_kem_encap_rx,
+            clutch_kem_encap_tx,
+            clutch_ceremony_rx,
+            clutch_ceremony_tx,
             friendship_chains: Vec::new(),
         }
     }
@@ -1702,9 +1749,83 @@ impl PhotonApp {
                             pubkeys.push(contact.public_identity.clone());
                         }
 
-                        // Start CLUTCH keygen if not complete
-                        // Keypairs are ephemeral (not persisted), so regenerate if missing
-                        let needs_keygen = contact.clutch_state != crate::types::ClutchState::Complete;
+                        // Load persisted CLUTCH state if ceremony incomplete
+                        if contact.clutch_state != crate::types::ClutchState::Complete {
+                            // Load slot state (offers, KEM secrets, provenances, ceremony_id)
+                            match crate::storage::contacts::load_clutch_slots(
+                                contact.handle.as_str(),
+                                &identity_seed,
+                                device_secret,
+                            ) {
+                                Ok(Some(state)) => {
+                                    crate::log_info(&format!(
+                                        "CLUTCH: Loaded persisted slots for {} ({} slots, {} provenances)",
+                                        contact.handle,
+                                        state.slots.len(),
+                                        state.offer_provenances.len()
+                                    ));
+                                    contact.clutch_slots = state.slots;
+                                    contact.offer_provenances = state.offer_provenances;
+                                    contact.ceremony_id = state.ceremony_id;
+                                }
+                                Ok(None) => {
+                                    // No slots on disk yet
+                                }
+                                Err(e) => {
+                                    crate::log_error(&format!(
+                                        "CLUTCH: Failed to load slots for {}: {}",
+                                        contact.handle, e
+                                    ));
+                                }
+                            }
+
+                            // Load keypairs
+                            match crate::storage::contacts::load_clutch_keypairs(
+                                contact.handle.as_str(),
+                                &identity_seed,
+                                device_secret,
+                            ) {
+                                Ok(Some(keypairs)) => {
+                                    crate::log_info(&format!(
+                                        "CLUTCH: Loaded persisted keypairs for {}",
+                                        contact.handle
+                                    ));
+                                    contact.clutch_our_keypairs = Some(keypairs);
+
+                                    // Initialize slots if not loaded from disk, and store local offer
+                                    if contact.clutch_slots.is_empty() {
+                                        contact.init_clutch_slots(identity_seed);
+                                    }
+                                    // Store local offer in local slot if not already present
+                                    if let Some(ref kp) = contact.clutch_our_keypairs {
+                                        use crate::crypto::clutch::ClutchOfferPayload;
+                                        let our_offer = ClutchOfferPayload::from_keypairs(kp);
+                                        if let Some(local_slot) = contact.get_slot_mut(&identity_seed) {
+                                            if local_slot.offer.is_none() {
+                                                local_slot.offer = Some(our_offer);
+                                                crate::log_info(&format!(
+                                                    "CLUTCH: Stored local offer in slot for {} (from disk keypairs)",
+                                                    contact.handle
+                                                ));
+                                            }
+                                        }
+                                    }
+                                }
+                                Ok(None) => {
+                                    // No keypairs on disk - will trigger keygen below
+                                }
+                                Err(e) => {
+                                    crate::log_error(&format!(
+                                        "CLUTCH: Failed to load keypairs for {}: {}",
+                                        contact.handle, e
+                                    ));
+                                }
+                            }
+                        }
+
+                        // Start CLUTCH keygen if not complete AND no persisted keypairs
+                        let needs_keygen = contact.clutch_state != crate::types::ClutchState::Complete
+                            && contact.clutch_our_keypairs.is_none();
                         let contact_id = contact.id.clone();
                         let their_handle_hash = contact.handle_hash;
                         if needs_keygen {
@@ -2040,6 +2161,9 @@ impl PhotonApp {
                     // Find matching contact and update status
                     for contact in &mut self.contacts {
                         if contact.public_identity == peer_pubkey {
+                            // Note: ceremony_id is now computed from offer_provenances, not ping provenances.
+                            // Offer provenances are collected when ClutchOfferReceived messages arrive.
+
                             // Update IP from the ping/pong source address
                             if let Some(addr) = peer_addr {
                                 if contact.ip != Some(addr) {
@@ -2064,35 +2188,53 @@ impl PhotonApp {
                             // Send full offer when contact comes online and keys are ready
                             // Keys are pre-generated in background when contact is added
                             // Slot-based: send if Pending, have keypairs, haven't sent yet
+                            // Note: ceremony_id is now computed AFTER offers are exchanged
                             if is_online
                                 && contact.clutch_state == ClutchState::Pending
                                 && !contact.clutch_offer_sent
                             {
-                                if let (Some(ref keypairs), Some(ceremony_id)) =
-                                    (&contact.clutch_our_keypairs, contact.ceremony_id)
-                                {
-                                    use crate::network::status::ClutchFullOfferRequest;
+                                if let Some(ref keypairs) = contact.clutch_our_keypairs {
+                                    use crate::network::status::ClutchOfferRequest;
+                                    use crate::network::fgtw::protocol::build_clutch_offer_vsf;
 
                                     let payload =
-                                        clutch::ClutchFullOfferPayload::from_keypairs(keypairs);
+                                        clutch::ClutchOfferPayload::from_keypairs(keypairs);
 
                                     if let Some(ip) = contact.ip {
-                                        crate::log_info(&format!(
-                                            "CLUTCH: Sending full offer to {} via TCP",
-                                            contact.handle
-                                        ));
-                                        // Compute conversation_token for privacy-preserving wire format
+                                        // Build VSF and capture our offer_provenance
                                         let conversation_token = clutch::derive_conversation_token(&[our_handle_hash, contact.handle_hash]);
-                                        checker.send_full_offer(ClutchFullOfferRequest {
-                                            peer_addr: ip,
-                                            conversation_token,
-                                            ceremony_id,
-                                            payload,
-                                            device_pubkey: *self.device_keypair.public.as_bytes(),
-                                            device_secret: *self.device_keypair.secret.as_bytes(),
-                                        });
-                                        contact.clutch_offer_sent = true;
-                                        changed = true;
+                                        match build_clutch_offer_vsf(
+                                            &conversation_token,
+                                            &payload,
+                                            self.device_keypair.public.as_bytes(),
+                                            self.device_keypair.secret.as_bytes(),
+                                        ) {
+                                            Ok((vsf_bytes, our_offer_provenance)) => {
+                                                crate::log_info(&format!(
+                                                    "CLUTCH: Sending full offer to {} (prov={}...)",
+                                                    contact.handle,
+                                                    hex::encode(&our_offer_provenance[..4])
+                                                ));
+
+                                                // Store our offer provenance (for ceremony_id derivation)
+                                                if !contact.offer_provenances.contains(&our_offer_provenance) {
+                                                    contact.offer_provenances.push(our_offer_provenance);
+                                                }
+
+                                                checker.send_offer(ClutchOfferRequest {
+                                                    peer_addr: ip,
+                                                    vsf_bytes,
+                                                });
+                                                contact.clutch_offer_sent = true;
+                                                changed = true;
+                                            }
+                                            Err(e) => {
+                                                crate::log_error(&format!(
+                                                    "CLUTCH: Failed to build offer VSF: {}",
+                                                    e
+                                                ));
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -2117,7 +2259,7 @@ impl PhotonApp {
                     }
                 }
                 // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete handlers REMOVED
-                // Full 8-primitive CLUTCH uses ClutchFullOfferReceived and ClutchKemResponseReceived
+                // Full 8-primitive CLUTCH uses ClutchOfferReceived and ClutchKemResponseReceived
                 // which are handled above (via TCP/PT transport).
 
                 StatusUpdate::ChatMessage {
@@ -2422,6 +2564,40 @@ impl PhotonApp {
                                 handle
                             ));
 
+                            // First ACK confirms both sides have working chains - safe to zeroize CLUTCH keypairs
+                            if let Some(contact) = self.contacts.get_mut(contact_idx) {
+                                if contact.clutch_our_keypairs.is_some() {
+                                    let handle_str = contact.handle.as_str().to_string();
+                                    crate::log_info(&format!(
+                                        "CLUTCH: First ACK from {} - zeroizing ephemeral keypairs",
+                                        contact.handle
+                                    ));
+                                    if let Some(ref mut keys) = contact.clutch_our_keypairs {
+                                        keys.zeroize();
+                                    }
+                                    contact.clutch_our_keypairs = None;
+                                    for slot in &mut contact.clutch_slots {
+                                        slot.offer = None;
+                                        if let Some(ref mut s) = slot.kem_secrets_from_them {
+                                            s.zeroize();
+                                        }
+                                        if let Some(ref mut s) = slot.kem_secrets_to_them {
+                                            s.zeroize();
+                                        }
+                                        slot.kem_secrets_from_them = None;
+                                        slot.kem_secrets_to_them = None;
+                                    }
+
+                                    // Delete persisted keypairs file (no longer needed)
+                                    if let Err(e) = crate::storage::contacts::delete_clutch_keypairs(&handle_str) {
+                                        crate::log_error(&format!(
+                                            "CLUTCH: Failed to delete keypairs file for {}: {}",
+                                            handle_str, e
+                                        ));
+                                    }
+                                }
+                            }
+
                             // Persist chains (AGENT.md: every change hits disk)
                             if let Some(ref identity_seed) = self.user_identity_seed {
                                 let device_secret = self.device_keypair.secret.as_bytes();
@@ -2499,15 +2675,15 @@ impl PhotonApp {
 
                 // Full CLUTCH offer received (~548KB with all 8 pubkeys)
                 // Payload is already parsed and signature verified by status.rs
-                StatusUpdate::ClutchFullOfferReceived {
+                StatusUpdate::ClutchOfferReceived {
                     conversation_token,
-                    ceremony_id: _ceremony_id, // Not used for stale detection (handle-derived, invariant)
+                    offer_provenance, // Unique per offer (VSF hp field)
                     sender_pubkey,
                     payload,
                     sender_addr: raw_sender_addr,
                 } => {
-                    use crate::crypto::clutch::{derive_conversation_token, ClutchFullOfferPayload, ClutchKemResponsePayload};
-                    use crate::network::status::ClutchFullOfferRequest;
+                    use crate::crypto::clutch::{derive_conversation_token, ClutchOfferPayload, ClutchKemResponsePayload, ClutchKemSharedSecrets};
+                    use crate::network::status::ClutchOfferRequest;
                     use crate::types::ClutchState;
 
                     // Normalize to port 4383 (TCP source port is ephemeral)
@@ -2570,6 +2746,8 @@ impl PhotonApp {
                     // Find contact by handle_hash
                     let mut rekey_request: Option<(ContactId, [u8; 32])> = None;
                     let mut chains_to_remove: Vec<FriendshipId> = Vec::new();
+                    // Deferred KEM encapsulation spawn (to avoid borrow conflict)
+                    let mut kem_encap_spawn: Option<(ContactId, ClutchOfferPayload, [u8; 32], [u8; 32], std::net::SocketAddr)> = None;
 
                     for (idx, contact) in self.contacts.iter_mut().enumerate() {
                         if contact.handle_hash == their_handle_hash {
@@ -2584,36 +2762,91 @@ impl PhotonApp {
 
                             if let Some(stored_keys) = stored_hqc_pub {
                                 if stored_keys == their_offer.hqc256_public {
-                                    // Same keys - duplicate/stale, ignore
-                                    crate::log_info(&format!(
-                                        "CLUTCH: Ignoring duplicate offer from {} (same keys)",
-                                        contact.handle
-                                    ));
-                                    continue;
+                                    // Same keys - check if we already sent KEM response
+                                    // If so, peer didn't receive it - re-send!
+                                    let already_sent_kem = contact
+                                        .get_slot(&our_handle_hash)
+                                        .map(|s| s.kem_secrets_to_them.is_some())
+                                        .unwrap_or(false);
+
+                                    if already_sent_kem {
+                                        // We already sent KEM response but peer resent offer
+                                        // They didn't receive it - trigger re-send
+                                        crate::log_info(&format!(
+                                            "CLUTCH: Re-sending KEM response to {} (peer resent same offer)",
+                                            contact.handle
+                                        ));
+                                        // Don't continue - fall through to re-send KEM below
+                                    } else {
+                                        // Same keys but no KEM sent yet - truly duplicate, ignore
+                                        crate::log_info(&format!(
+                                            "CLUTCH: Ignoring duplicate offer from {} (same keys, no KEM sent yet)",
+                                            contact.handle
+                                        ));
+                                        continue;
+                                    }
+                                } else {
+                                    // Different keys from them - but DON'T immediately nuke!
+                                    // This prevents infinite re-key loops where both sides keep regenerating.
+                                    //
+                                    // Strategy: If we have keypairs, just update their offer and continue.
+                                    // We'll send our existing offer, they'll either:
+                                    // - Accept it (converge) if they're mid-ceremony
+                                    // - Send KEM response (complete) if they're ahead
+                                    //
+                                    // Only nuke if we're COMPLETE and they're sending fresh keys
+                                    // (meaning they lost their chains and need full re-key)
+                                    if contact.clutch_state == ClutchState::Complete {
+                                        crate::log_info(&format!(
+                                            "CLUTCH: Re-key from {} - we're Complete, they have new keys, nuking for fresh ceremony",
+                                            contact.handle
+                                        ));
+                                        // Full re-key: nuke everything
+                                        contact.clutch_our_keypairs = None;
+                                        contact.clutch_slots.clear();
+                                        contact.ceremony_id = None;
+                                        contact.offer_provenances.clear();
+                                        contact.clutch_pending_kem = None;
+                                        contact.clutch_offer_sent = false;
+                                        contact.clutch_state = ClutchState::Pending;
+                                        contact.completed_their_hqc_prefix = None;
+                                        if let Some(old_friendship_id) = contact.friendship_id.take() {
+                                            crate::log_info(&format!(
+                                                "CLUTCH: Invalidating old chains for {}",
+                                                contact.handle
+                                            ));
+                                            chains_to_remove.push(old_friendship_id);
+                                        }
+                                        rekey_request = Some((contact.id.clone(), contact.handle_hash));
+                                    } else {
+                                        // Not Complete - just update their offer, don't regenerate our keys
+                                        crate::log_info(&format!(
+                                            "CLUTCH: {} sent new keys but we're mid-ceremony (state={:?}) - updating their offer, keeping our keys",
+                                            contact.handle, contact.clutch_state
+                                        ));
+                                        // Clear their old offer data so we use the new one
+                                        if let Some(slot) = contact.get_slot_mut(&their_handle_hash) {
+                                            slot.offer = None;
+                                            slot.kem_secrets_from_them = None;
+                                        }
+                                        // Clear our old KEM encap - it was for their OLD keys!
+                                        // We need fresh encapsulation against their new pubkeys.
+                                        if let Some(slot) = contact.get_slot_mut(&our_handle_hash) {
+                                            slot.kem_secrets_to_them = None;
+                                            slot.kem_response_for_resend = None;
+                                        }
+                                        contact.clutch_kem_encap_in_progress = false;
+                                        // Clear ceremony_id so it gets recomputed with new provenance
+                                        contact.ceremony_id = None;
+                                        contact.offer_provenances.retain(|p| {
+                                            // Keep our provenance, remove their old one
+                                            // Our provenance is computed from our handle_hash
+                                            // This is a bit hacky but works for 2-party
+                                            p != &offer_provenance
+                                        });
+                                        // Don't trigger rekey_request - we keep our keys
+                                    }
                                 }
-                                // Different keys - re-key needed
-                                crate::log_info(&format!(
-                                    "CLUTCH: Re-key from {} - keys changed, nuking chain state",
-                                    contact.handle
-                                ));
-                                // Clear in-memory CLUTCH state
-                                contact.clutch_our_keypairs = None;
-                                contact.clutch_slots.clear();
-                                contact.ceremony_id = None;
-                                contact.clutch_pending_kem = None;
-                                contact.clutch_offer_sent = false;
-                                contact.clutch_state = ClutchState::Pending;
-                                // Invalidate old friendship chains (will be regenerated after new ceremony)
-                                if let Some(old_friendship_id) = contact.friendship_id.take() {
-                                    crate::log_info(&format!(
-                                        "CLUTCH: Invalidating old chains for {}",
-                                        contact.handle
-                                    ));
-                                    // Remove from in-memory list
-                                    chains_to_remove.push(old_friendship_id);
-                                    // Delete from disk handled below
-                                }
-                                rekey_request = Some((contact.id.clone(), contact.handle_hash));
                             }
                             // No stored keys = fresh start, accept offer below
 
@@ -2631,66 +2864,190 @@ impl PhotonApp {
                                 ));
                             }
 
-                            // If we have keypairs, send our offer (if not sent) and KEM response
-                            if let (Some(ref keypairs), Some(ceremony_id)) =
-                                (&contact.clutch_our_keypairs, contact.ceremony_id)
+                            // Store their offer_provenance for ceremony_id derivation
+                            if !contact.offer_provenances.contains(&offer_provenance) {
+                                contact.offer_provenances.push(offer_provenance);
+                                crate::log_info(&format!(
+                                    "CLUTCH: Stored offer_provenance from {} (now have {})",
+                                    contact.handle,
+                                    contact.offer_provenances.len()
+                                ));
+                            }
+
+                            // Compute ceremony_id if we have all provenances (2 for DM)
+                            let required_provenances = 2;
+                            if contact.ceremony_id.is_none()
+                                && contact.offer_provenances.len() >= required_provenances
                             {
+                                use crate::types::CeremonyId;
+                                let ceremony_id = *CeremonyId::derive(
+                                    &[our_handle_hash, contact.handle_hash],
+                                    &contact.offer_provenances,
+                                ).as_bytes();
+                                contact.ceremony_id = Some(ceremony_id);
+                                crate::log_info(&format!(
+                                    "CLUTCH: Derived ceremony_id={}... from {} offer_provenances",
+                                    hex::encode(&ceremony_id[..4]),
+                                    contact.offer_provenances.len()
+                                ));
+
+                                // Process any pending KEM response that arrived before ceremony_id
+                                if let Some(pending_kem) = contact.clutch_pending_kem.take() {
+                                    crate::log_info(&format!(
+                                        "CLUTCH: Processing queued KEM response from {} (ceremony_id now available)",
+                                        contact.handle
+                                    ));
+                                    // Decapsulate remote KEM (remote encapsulated to local pubkeys)
+                                    if let Some(ref local_keys) = contact.clutch_our_keypairs {
+                                        let remote_secrets = ClutchKemSharedSecrets::decapsulate_from_peer(
+                                            &pending_kem, local_keys,
+                                        );
+                                        // Store remote secrets in remote slot
+                                        if let Some(remote_slot) = contact.get_slot_mut(&their_handle_hash) {
+                                            remote_slot.kem_secrets_from_them = Some(remote_secrets);
+                                            crate::log_info(&format!(
+                                                "CLUTCH: Decapsulated queued KEM from {} - stored in slot",
+                                                contact.handle
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Persist slot state (offer, provenances, ceremony_id)
+                            let device_secret = *self.device_keypair.secret.as_bytes();
+                            if let Err(e) = crate::storage::contacts::save_clutch_slots(
+                                &contact.clutch_slots,
+                                &contact.offer_provenances,
+                                contact.ceremony_id,
+                                contact.handle.as_str(),
+                                &our_handle_hash,
+                                &device_secret,
+                            ) {
+                                crate::log_error(&format!(
+                                    "CLUTCH: Failed to save slots for {}: {}",
+                                    contact.handle, e
+                                ));
+                            }
+
+                            // If we have keypairs, send our offer (if not sent) and KEM response
+                            if let Some(ref keypairs) = contact.clutch_our_keypairs {
                                 // Compute conversation_token once for this contact
                                 let conv_token = derive_conversation_token(&[our_handle_hash, contact.handle_hash]);
 
                                 // Send our offer if not already sent
                                 if !contact.clutch_offer_sent {
-                                    let our_offer = ClutchFullOfferPayload::from_keypairs(keypairs);
-                                    checker.send_full_offer(ClutchFullOfferRequest {
-                                        peer_addr: sender_addr,
-                                        conversation_token: conv_token,
-                                        ceremony_id,
-                                        payload: our_offer.clone(),
-                                        device_pubkey: *self.device_keypair.public.as_bytes(),
-                                        device_secret: *self.device_keypair.secret.as_bytes(),
-                                    });
-                                    contact.clutch_offer_sent = true;
-                                    // Store our offer in our slot too
-                                    if let Some(our_slot) = contact.get_slot_mut(&our_handle_hash) {
-                                        our_slot.offer = Some(our_offer);
+                                    use crate::network::fgtw::protocol::build_clutch_offer_vsf;
+
+                                    let our_offer = ClutchOfferPayload::from_keypairs(keypairs);
+
+                                    // Build VSF and capture our offer_provenance
+                                    match build_clutch_offer_vsf(
+                                        &conv_token,
+                                        &our_offer,
+                                        self.device_keypair.public.as_bytes(),
+                                        self.device_keypair.secret.as_bytes(),
+                                    ) {
+                                        Ok((vsf_bytes, our_offer_provenance)) => {
+                                            // Store our offer provenance
+                                            if !contact.offer_provenances.contains(&our_offer_provenance) {
+                                                contact.offer_provenances.push(our_offer_provenance);
+                                            }
+
+                                            checker.send_offer(ClutchOfferRequest {
+                                                peer_addr: sender_addr,
+                                                vsf_bytes,
+                                            });
+                                            contact.clutch_offer_sent = true;
+                                            // Store local offer in local slot too
+                                            if let Some(local_slot) = contact.get_slot_mut(&our_handle_hash) {
+                                                local_slot.offer = Some(our_offer);
+                                            }
+                                            crate::log_info(&format!(
+                                                "CLUTCH: Sent full offer to {} (prov={}...)",
+                                                contact.handle,
+                                                hex::encode(&our_offer_provenance[..4])
+                                            ));
+
+                                            // Compute ceremony_id now that we have both provenances
+                                            if contact.ceremony_id.is_none()
+                                                && contact.offer_provenances.len() >= required_provenances
+                                            {
+                                                use crate::types::CeremonyId;
+                                                let ceremony_id = *CeremonyId::derive(
+                                                    &[our_handle_hash, contact.handle_hash],
+                                                    &contact.offer_provenances,
+                                                ).as_bytes();
+                                                contact.ceremony_id = Some(ceremony_id);
+                                                crate::log_info(&format!(
+                                                    "CLUTCH: Derived ceremony_id={}... after sending offer",
+                                                    hex::encode(&ceremony_id[..4])
+                                                ));
+                                            }
+                                        }
+                                        Err(e) => {
+                                            crate::log_error(&format!(
+                                                "CLUTCH: Failed to build offer VSF: {}",
+                                                e
+                                            ));
+                                        }
                                     }
-                                    crate::log_info(&format!(
-                                        "CLUTCH: Sent full offer to {}",
-                                        contact.handle
-                                    ));
                                 }
 
-                                // Send KEM response (encapsulate to their pubkeys)
-                                // Check if we haven't already sent (kem_secrets_to_them in OUR slot)
+                                // Send KEM response (encapsulate to remote pubkeys)
+                                // Check if we haven't already sent (kem_secrets_to_them in local slot)
+                                // KEM response requires ceremony_id (for wire format verification)
                                 let already_sent_kem = contact
                                     .get_slot(&our_handle_hash)
                                     .map(|s| s.kem_secrets_to_them.is_some())
                                     .unwrap_or(false);
 
-                                if !already_sent_kem {
-                                    use crate::network::status::ClutchKemResponseRequest;
+                                // Check for re-send case: we have stored payload from previous send
+                                let resend_payload = contact
+                                    .get_slot(&our_handle_hash)
+                                    .and_then(|s| s.kem_response_for_resend.clone());
 
-                                    let (kem_response, our_secrets) =
-                                        ClutchKemResponsePayload::encapsulate_to_peer(&their_offer);
+                                if let Some(kem_response) = resend_payload {
+                                    // Re-send using stored payload
+                                    if let Some(ceremony_id) = contact.ceremony_id {
+                                        use crate::network::status::ClutchKemResponseRequest;
 
-                                    // Store our encapsulation secrets in OUR slot (our contribution)
-                                    if let Some(slot) = contact.get_slot_mut(&our_handle_hash) {
-                                        slot.kem_secrets_to_them = Some(our_secrets);
+                                        checker.send_kem_response(ClutchKemResponseRequest {
+                                            peer_addr: sender_addr,
+                                            conversation_token: conv_token,
+                                            ceremony_id,
+                                            payload: kem_response,
+                                            device_pubkey: *self.device_keypair.public.as_bytes(),
+                                            device_secret: *self.device_keypair.secret.as_bytes(),
+                                        });
+                                        crate::log_info(&format!(
+                                            "CLUTCH: Re-sent KEM response to {}",
+                                            contact.handle
+                                        ));
                                     }
-
-                                    checker.send_kem_response(ClutchKemResponseRequest {
-                                        peer_addr: sender_addr,
-                                        conversation_token: conv_token,
-                                        ceremony_id,
-                                        payload: kem_response,
-                                        device_pubkey: *self.device_keypair.public.as_bytes(),
-                                        device_secret: *self.device_keypair.secret.as_bytes(),
-                                    });
-                                    crate::log_info(&format!(
-                                        "CLUTCH: Sent KEM response to {}",
-                                        contact.handle
-                                    ));
-                                    changed = true;
+                                } else if !already_sent_kem && !contact.clutch_kem_encap_in_progress {
+                                    if let Some(ceremony_id) = contact.ceremony_id {
+                                        // Defer spawn for KEM encapsulation (to avoid borrow conflict)
+                                        // (PQ crypto is slow ~800ms, would block UI/network)
+                                        contact.clutch_kem_encap_in_progress = true;
+                                        kem_encap_spawn = Some((
+                                            contact.id.clone(),
+                                            their_offer.clone(),
+                                            ceremony_id,
+                                            conv_token,
+                                            sender_addr,
+                                        ));
+                                        crate::log_info(&format!(
+                                            "CLUTCH: Will spawn KEM encapsulation for {}",
+                                            contact.handle
+                                        ));
+                                        changed = true;
+                                    } else {
+                                        crate::log_info(&format!(
+                                            "CLUTCH: Deferring KEM response to {} - waiting for ceremony_id",
+                                            contact.handle
+                                        ));
+                                    }
                                 }
 
                                 // Check if ceremony is complete (defer to after outer loop)
@@ -2710,22 +3067,16 @@ impl PhotonApp {
                                     // If Complete: peer lost their chains, accept re-key
                                     // If not Complete: restart mid-ceremony or fresh re-key
                                     if contact.clutch_state == ClutchState::Complete {
-                                        // Check if this is a stale offer from the completed ceremony
-                                        // (PT retransmission after restart)
-                                        // Compare HQC pub prefix - unique per keygen
-                                        if let Some(completed_prefix) = contact.completed_their_hqc_prefix {
-                                            let received_prefix: [u8; 8] = their_offer.hqc256_public[..8].try_into().unwrap_or_default();
-                                            if completed_prefix == received_prefix {
-                                                // Stale offer - same HQC pub we already completed with
-                                                crate::log_info(&format!(
-                                                    "CLUTCH: Ignoring stale offer from {} (HQC prefix={}... already complete)",
-                                                    contact.handle,
-                                                    hex::encode(&completed_prefix)
-                                                ));
-                                                break; // Skip this offer entirely
-                                            }
-                                        }
-                                        // Different HQC pub = legitimate re-key request (new ephemeral keys)
+                                        // Peer is sending an offer while we think we're Complete.
+                                        // This means either:
+                                        // 1. Same HQC prefix: peer missed our KEM response (can't re-send without keypairs)
+                                        // 2. Different HQC prefix: peer lost chains, wants re-key
+                                        //
+                                        // Since we have NO keypairs here (we're in the is_none branch),
+                                        // we can't re-respond even to the same offer. Accept as re-key.
+                                        //
+                                        // Note: If peer keeps re-sending same offer, both sides will eventually
+                                        // converge on a fresh ceremony (peer will regenerate keys after timeout).
                                         crate::log_info(&format!(
                                             "CLUTCH: Received offer from {} while Complete - peer lost chains, accepting re-key",
                                             contact.handle
@@ -2741,6 +3092,7 @@ impl PhotonApp {
                                         contact.clutch_our_keypairs = None;
                                         contact.clutch_slots.clear();
                                         contact.ceremony_id = None;
+                                        contact.offer_provenances.clear(); // Clear for fresh ceremony nonce
                                         contact.clutch_pending_kem = None;
                                         contact.clutch_offer_sent = false;
                                         contact.clutch_our_eggs_proof = None;
@@ -2750,14 +3102,25 @@ impl PhotonApp {
                                         if let Some(slot) = contact.get_slot_mut(&their_handle_hash) {
                                             slot.offer = Some(their_offer.clone());
                                         }
+                                        // Trigger keygen for fresh re-key ceremony
+                                        contact.clutch_keygen_in_progress = true;
+                                        rekey_request = Some((contact.id.clone(), contact.handle_hash));
+                                    } else if contact.clutch_state == ClutchState::AwaitingProof {
+                                        // We've already computed EGGS and sent proof - just waiting for theirs
+                                        // This is a retransmitted offer, ignore it
+                                        crate::log_info(&format!(
+                                            "CLUTCH: Ignoring retransmit from {} (already AwaitingProof)",
+                                            contact.handle
+                                        ));
+                                        break; // Skip - don't trigger keygen
                                     } else {
                                         crate::log_info(&format!(
                                             "CLUTCH: Received offer from {} but no keypairs (state={:?}) - triggering keygen",
                                             contact.handle, contact.clutch_state
                                         ));
+                                        contact.clutch_keygen_in_progress = true;
+                                        rekey_request = Some((contact.id.clone(), contact.handle_hash));
                                     }
-                                    contact.clutch_keygen_in_progress = true;
-                                    rekey_request = Some((contact.id.clone(), contact.handle_hash));
                                 }
                             }
                             break;
@@ -2776,6 +3139,11 @@ impl PhotonApp {
                     // Spawn re-key keygen after releasing mutable borrow
                     if let Some((contact_id, their_handle_hash)) = rekey_request {
                         self.spawn_clutch_keygen(contact_id, our_identity_seed, their_handle_hash);
+                    }
+
+                    // Spawn deferred KEM encapsulation after releasing mutable borrow
+                    if let Some((contact_id, offer, ceremony_id, conv_token, peer_addr)) = kem_encap_spawn {
+                        self.spawn_clutch_kem_encap(contact_id, offer, ceremony_id, conv_token, peer_addr);
                     }
                 }
 
@@ -2852,7 +3220,7 @@ impl PhotonApp {
                         if contact.handle_hash == their_handle_hash {
                             contact.ip = Some(sender_addr);
 
-                            // Verify ceremony_id matches
+                            // Verify ceremony_id matches (if we have one)
                             if let Some(our_ceremony_id) = contact.ceremony_id {
                                 if received_ceremony_id != our_ceremony_id {
                                     crate::log_error(&format!(
@@ -2863,14 +3231,35 @@ impl PhotonApp {
                                     continue;
                                 }
                             } else {
-                                // No keypairs yet - this KEM response is stale (from before our restart)
-                                // The ciphertexts were encrypted to our OLD public keys, which we no longer have.
-                                // Discard it - when we send our new offer, peer will send new KEM response.
-                                crate::log_info(&format!(
-                                    "CLUTCH: KEM response from {} arrived before keygen - discarding (encrypted to old keys)",
-                                    contact.handle
-                                ));
-                                break;
+                                // No ceremony_id yet - check if we have keypairs and if KEM targets them
+                                // This happens when keypairs are loaded from disk but offers not yet exchanged
+                                if let Some(ref our_keys) = contact.clutch_our_keypairs {
+                                    let our_hqc_prefix: [u8; 8] = our_keys.hqc256_public[..8].try_into().unwrap();
+                                    let all_zeros = their_kem.target_hqc_pub_prefix == [0u8; 8];
+                                    if !all_zeros && their_kem.target_hqc_pub_prefix != our_hqc_prefix {
+                                        // KEM targets different keys - truly stale, discard
+                                        crate::log_info(&format!(
+                                            "CLUTCH: KEM response from {} targets old keys (HQC {}) - discarding",
+                                            contact.handle,
+                                            hex::encode(&their_kem.target_hqc_pub_prefix)
+                                        ));
+                                        break;
+                                    }
+                                    // KEM targets our current keypairs - queue it for processing when ceremony_id arrives
+                                    crate::log_info(&format!(
+                                        "CLUTCH: KEM response from {} arrived before ceremony_id - queuing for later",
+                                        contact.handle
+                                    ));
+                                    contact.clutch_pending_kem = Some(their_kem.clone());
+                                    break;
+                                } else {
+                                    // No keypairs at all - stale KEM encrypted to unknown keys
+                                    crate::log_info(&format!(
+                                        "CLUTCH: KEM response from {} arrived before keygen - discarding (encrypted to old keys)",
+                                        contact.handle
+                                    ));
+                                    break;
+                                }
                             }
 
                             // Initialize slots if needed
@@ -2894,18 +3283,34 @@ impl PhotonApp {
                                 }
                             }
 
-                            // Decapsulate their KEM response using our secret keys
-                            if let Some(ref our_keys) = contact.clutch_our_keypairs {
-                                let their_secrets = ClutchKemSharedSecrets::decapsulate_from_peer(
-                                    &their_kem, our_keys,
+                            // Decapsulate remote KEM response using local secret keys
+                            if let Some(ref local_keys) = contact.clutch_our_keypairs {
+                                let remote_secrets = ClutchKemSharedSecrets::decapsulate_from_peer(
+                                    &their_kem, local_keys,
                                 );
 
-                                // Store in their slot (secrets from them to us)
+                                // Store in remote slot (secrets from remote to local)
                                 if let Some(slot) = contact.get_slot_mut(&their_handle_hash) {
-                                    slot.kem_secrets_from_them = Some(their_secrets);
+                                    slot.kem_secrets_from_them = Some(remote_secrets);
                                     crate::log_info(&format!(
                                         "CLUTCH: Decapsulated KEM from {} - stored in slot",
                                         contact.handle
+                                    ));
+                                }
+
+                                // Persist slot state after receiving KEM
+                                let device_secret = *self.device_keypair.secret.as_bytes();
+                                if let Err(e) = crate::storage::contacts::save_clutch_slots(
+                                    &contact.clutch_slots,
+                                    &contact.offer_provenances,
+                                    contact.ceremony_id,
+                                    contact.handle.as_str(),
+                                    &our_handle_hash,
+                                    &device_secret,
+                                ) {
+                                    crate::log_error(&format!(
+                                        "CLUTCH: Failed to save slots for {}: {}",
+                                        contact.handle, e
                                     ));
                                 }
                                 changed = true;
@@ -3026,11 +3431,8 @@ impl PhotonApp {
                                             contact.clutch_their_eggs_proof = None;
                                             changed = true;
 
-                                            // Clear pending PT sends now that CLUTCH is complete
-                                            // This stops wasteful retransmission of offers/KEM responses
-                                            if let Some(ref checker) = self.status_checker {
-                                                checker.clear_pt_sends(sender_addr);
-                                            }
+                                            // NOTE: Don't clear PT sends here - our ClutchComplete
+                                            // proof might still be in flight to them. Let it finish.
 
                                             // Save Complete state to disk immediately
                                             if let Some(identity_seed) = self.user_identity_seed.as_ref() {
@@ -3072,10 +3474,14 @@ impl PhotonApp {
                                             );
                                         }
                                     } else {
-                                        crate::log_error(&format!(
-                                            "CLUTCH: In AwaitingProof but no our_proof stored for {}",
+                                        // Race condition: proof arrived before check_clutch_ceremonies
+                                        // processed our ceremony result. Store theirs for when we're ready.
+                                        crate::log_info(&format!(
+                                            "CLUTCH: Storing early proof from {} (AwaitingProof but our result not processed yet)",
                                             contact.handle
                                         ));
+                                        contact.clutch_their_eggs_proof = Some(payload.eggs_proof);
+                                        changed = true;
                                     }
                                 }
                                 ClutchState::Pending => {
@@ -3468,17 +3874,17 @@ impl PhotonApp {
         changed
     }
 
-    /// Spawn background thread to generate CLUTCH keypairs and ceremony_id for a contact.
-    /// Both McEliece keygen (~100ms+) and handle_proof (~1s) are slow, so we do them off the main thread.
+    /// Spawn background thread to generate CLUTCH keypairs for a contact.
+    /// McEliece keygen (~100ms+) is slow, so we do it off the main thread.
+    /// ceremony_id is now computed on-demand when ping provenances are available.
     /// Results are received via clutch_keygen_rx and processed in check_clutch_keygens().
     pub fn spawn_clutch_keygen(
         &self,
         contact_id: ContactId,
-        our_handle_hash: [u8; 32],
-        their_handle_hash: [u8; 32],
+        _our_handle_hash: [u8; 32],
+        _their_handle_hash: [u8; 32],
     ) {
         use crate::crypto::clutch::generate_all_ephemeral_keypairs;
-        use crate::types::CeremonyId;
 
         let tx = self.clutch_keygen_tx.clone();
         #[cfg(not(target_os = "android"))]
@@ -3487,16 +3893,11 @@ impl PhotonApp {
         std::thread::spawn(move || {
             crate::log_info("CLUTCH: Background keypair generation started...");
             let keypairs = generate_all_ephemeral_keypairs();
-            crate::log_info("CLUTCH: Keypairs ready, computing ceremony_id (memory-hard ~1s)...");
-
-            // Compute deterministic ceremony_id from sorted handle_hashes (memory-hard)
-            let ceremony_id = *CeremonyId::derive(&[our_handle_hash, their_handle_hash]).as_bytes();
-            crate::log_info("CLUTCH: Background generation complete");
+            crate::log_info("CLUTCH: Keypairs ready (ceremony_id computed when ping provenances available)");
 
             let _ = tx.send(ClutchKeygenResult {
                 contact_id,
                 keypairs,
-                ceremony_id,
             });
 
             // Wake the event loop so it processes the result
@@ -3505,16 +3906,126 @@ impl PhotonApp {
         });
     }
 
+    /// Spawn background thread to perform CLUTCH KEM encapsulation.
+    /// The PQ KEMs (~800ms total) are slow, so we do them off the main thread.
+    /// Results are received via clutch_kem_encap_rx and processed in check_clutch_kem_encaps().
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_clutch_kem_encap(
+        &self,
+        contact_id: ContactId,
+        their_offer: crate::crypto::clutch::ClutchOfferPayload,
+        ceremony_id: [u8; 32],
+        conversation_token: [u8; 32],
+        peer_addr: std::net::SocketAddr,
+    ) {
+        use crate::crypto::clutch::ClutchKemResponsePayload;
+        use thread_priority::{ThreadBuilderExt, ThreadPriority};
+
+        let tx = self.clutch_kem_encap_tx.clone();
+        #[cfg(not(target_os = "android"))]
+        let proxy = self.event_proxy.clone();
+
+        std::thread::Builder::new()
+            .name("clutch-kem-encap".to_string())
+            .spawn_with_priority(ThreadPriority::Min, move |_| {
+                crate::log_info("CLUTCH: Background KEM encapsulation started (low priority)...");
+                let (kem_response, local_secrets) =
+                    ClutchKemResponsePayload::encapsulate_to_peer(&their_offer);
+                crate::log_info("CLUTCH: KEM encapsulation complete");
+
+                let _ = tx.send(ClutchKemEncapResult {
+                    contact_id,
+                    kem_response,
+                    local_secrets,
+                    ceremony_id,
+                    conversation_token,
+                    peer_addr,
+                });
+
+                // Wake the event loop so it processes the result
+                #[cfg(not(target_os = "android"))]
+                let _ = proxy.send_event(super::PhotonEvent::ClutchKemEncapComplete);
+            })
+            .expect("Failed to spawn KEM encap thread");
+    }
+
+    /// Spawn background thread to complete CLUTCH ceremony (avalanche_expand).
+    /// The 2MB memory-hard expansion (~850ms) is slow, so we do it off the main thread.
+    /// Results are received via clutch_ceremony_rx and processed in check_clutch_ceremonies().
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_clutch_ceremony(
+        &self,
+        contact_id: ContactId,
+        our_handle_hash: [u8; 32],
+        their_handle_hash: [u8; 32],
+        our_device_pub: [u8; 32],
+        their_device_pub: [u8; 32],
+        secrets: crate::crypto::clutch::ClutchSharedSecrets,
+        ceremony_id: [u8; 32],
+        conversation_token: [u8; 32],
+        peer_addr: std::net::SocketAddr,
+        their_hqc_prefix: [u8; 8],
+    ) {
+        use crate::crypto::clutch::clutch_complete_full;
+        use thread_priority::{ThreadBuilderExt, ThreadPriority};
+
+        let tx = self.clutch_ceremony_tx.clone();
+        #[cfg(not(target_os = "android"))]
+        let proxy = self.event_proxy.clone();
+
+        std::thread::Builder::new()
+            .name("clutch-ceremony".to_string())
+            .spawn_with_priority(ThreadPriority::Min, move |_| {
+                crate::log_info("CLUTCH: Background ceremony completion started (low priority)...");
+
+                // Phase 1: Compute eggs (moderately fast)
+                let result = clutch_complete_full(
+                    &our_device_pub,
+                    &their_device_pub,
+                    &our_handle_hash,
+                    &their_handle_hash,
+                    &secrets,
+                );
+
+                // Phase 2: Expand to 2MB and derive chains (slow - avalanche_expand)
+                let friendship_chains = FriendshipChains::from_clutch(
+                    &[our_handle_hash, their_handle_hash],
+                    result.eggs.as_slice(),
+                );
+
+                crate::log_info("CLUTCH: Ceremony completion finished");
+
+                let _ = tx.send(ClutchCeremonyResult {
+                    contact_id,
+                    friendship_chains,
+                    eggs_proof: result.proof,
+                    their_handle_hash,
+                    ceremony_id,
+                    conversation_token,
+                    peer_addr,
+                    their_hqc_prefix,
+                });
+
+                // Wake the event loop so it processes the result
+                #[cfg(not(target_os = "android"))]
+                let _ = proxy.send_event(super::PhotonEvent::ClutchCeremonyComplete);
+            })
+            .expect("Failed to spawn ceremony thread");
+    }
+
     /// Process background CLUTCH key generation results.
     ///
     /// Slot-based design: keypairs stored once, slots filled as messages arrive.
     /// Ceremony completes when all slots have offer + both KEM secret directions.
     pub fn check_clutch_keygens(&mut self) -> bool {
-        use crate::crypto::clutch::{derive_conversation_token, ClutchFullOfferPayload, ClutchKemResponsePayload, ClutchKemSharedSecrets};
-        use crate::network::status::{ClutchFullOfferRequest, ClutchKemResponseRequest};
+        use crate::crypto::clutch::{derive_conversation_token, ClutchOfferPayload, ClutchKemResponsePayload, ClutchKemSharedSecrets};
+        use crate::network::status::{ClutchOfferRequest, ClutchKemResponseRequest};
+        use crate::types::CeremonyId;
 
         let mut changed = false;
         let mut ceremony_completions: Vec<usize> = Vec::new();
+        // Deferred KEM encapsulation spawn (to avoid borrow conflict)
+        let mut kem_encap_spawn: Option<(ContactId, ClutchOfferPayload, [u8; 32], [u8; 32], std::net::SocketAddr)> = None;
 
         // Get our handle_hash for CLUTCH (PRIVATE identity seed)
         let our_handle_hash = match self.user_identity_seed {
@@ -3539,12 +4050,24 @@ impl PhotonApp {
                     // Clear the in-progress flag now that keygen is complete
                     contact.clutch_keygen_in_progress = false;
 
-                    // Store keypairs and ceremony_id (computed in background thread)
+                    // Store keypairs (ceremony_id computed on-demand when provenances available)
                     contact.clutch_our_keypairs = Some(result.keypairs);
-                    contact.ceremony_id = Some(result.ceremony_id);
                     changed = true;
 
-                    let ceremony_id = result.ceremony_id;
+                    // Persist keypairs to disk immediately (crash recovery)
+                    if let Some(ref keypairs) = contact.clutch_our_keypairs {
+                        if let Err(e) = crate::storage::contacts::save_clutch_keypairs(
+                            keypairs,
+                            contact.handle.as_str(),
+                            &our_handle_hash,
+                            &device_secret,
+                        ) {
+                            crate::log_error(&format!(
+                                "CLUTCH: Failed to save keypairs for {}: {}",
+                                contact.handle, e
+                            ));
+                        }
+                    }
 
                     // Initialize slots if not done yet (sorted by handle_hash)
                     if contact.clutch_slots.is_empty() {
@@ -3557,103 +4080,122 @@ impl PhotonApp {
                         .map(|s| s.offer.is_some())
                         .unwrap_or(false);
 
-                    // Store our offer in our slot
+                    // Store local offer in local slot
                     if let Some(ref keypairs) = contact.clutch_our_keypairs {
-                        let our_offer = ClutchFullOfferPayload::from_keypairs(keypairs);
-                        if let Some(our_slot) = contact.get_slot_mut(&our_handle_hash) {
-                            our_slot.offer = Some(our_offer);
+                        let our_offer = ClutchOfferPayload::from_keypairs(keypairs);
+                        if let Some(local_slot) = contact.get_slot_mut(&our_handle_hash) {
+                            local_slot.offer = Some(our_offer);
                             crate::log_info(&format!(
-                                "CLUTCH: Stored OUR offer in our slot for {}",
+                                "CLUTCH: Stored local offer in local slot for {}",
                                 contact.handle
                             ));
                         } else {
                             crate::log_error(&format!(
-                                "CLUTCH: Could not find our slot for {} - our_handle_hash mismatch?",
+                                "CLUTCH: Could not find local slot for {} - handle_hash mismatch?",
                                 contact.handle
                             ));
                         }
                     }
 
-                    if their_slot_has_offer && !contact.clutch_offer_sent {
-                        // We have their offer - send ours and KEM response
-                        crate::log_info(&format!(
-                            "CLUTCH: Keypairs ready for {} (had their offer) - sending offer + KEM",
-                            contact.handle
-                        ));
-
+                    // Send our offer if not already sent (don't wait for ceremony_id - that comes later)
+                    if !contact.clutch_offer_sent {
                         if let Some(ip) = contact.ip {
                             if let Some(ref keypairs) = contact.clutch_our_keypairs {
-                                let offer = ClutchFullOfferPayload::from_keypairs(keypairs);
+                                use crate::network::fgtw::protocol::build_clutch_offer_vsf;
+
+                                let offer = ClutchOfferPayload::from_keypairs(keypairs);
                                 let conv_token = derive_conversation_token(&[our_handle_hash, contact.handle_hash]);
 
-                                if let Some(ref checker) = self.status_checker {
-                                    // Send our offer
-                                    checker.send_full_offer(ClutchFullOfferRequest {
-                                        peer_addr: ip,
-                                        conversation_token: conv_token,
-                                        ceremony_id,
-                                        payload: offer,
-                                        device_pubkey,
-                                        device_secret,
-                                    });
-                                    contact.clutch_offer_sent = true;
-                                    crate::log_info(&format!(
-                                        "CLUTCH: Sent offer to {}",
-                                        contact.handle
-                                    ));
-
-                                    // Send KEM response (encapsulate to their pubkeys)
-                                    let their_offer = contact
-                                        .get_slot(&contact.handle_hash)
-                                        .and_then(|s| s.offer.clone());
-                                    if let Some(ref their_offer) = their_offer {
-                                        let (kem_response, our_secrets) =
-                                            ClutchKemResponsePayload::encapsulate_to_peer(their_offer);
-
-                                        // Store OUR secrets (from encapsulating TO them) in OUR slot
-                                        if let Some(our_slot) = contact.get_slot_mut(&our_handle_hash) {
-                                            our_slot.kem_secrets_to_them = Some(our_secrets);
+                                // Build VSF and capture our offer_provenance
+                                match build_clutch_offer_vsf(
+                                    &conv_token,
+                                    &offer,
+                                    &device_pubkey,
+                                    &device_secret,
+                                ) {
+                                    Ok((vsf_bytes, our_offer_provenance)) => {
+                                        // Store our offer provenance (for ceremony_id derivation)
+                                        if !contact.offer_provenances.contains(&our_offer_provenance) {
+                                            contact.offer_provenances.push(our_offer_provenance);
                                         }
 
-                                        checker.send_kem_response(ClutchKemResponseRequest {
-                                            peer_addr: ip,
-                                            conversation_token: conv_token,
-                                            ceremony_id,
-                                            payload: kem_response,
-                                            device_pubkey,
-                                            device_secret,
-                                        });
-                                        crate::log_info(&format!(
-                                            "CLUTCH: Sent KEM response to {}",
-                                            contact.handle
+                                        if let Some(ref checker) = self.status_checker {
+                                            checker.send_offer(ClutchOfferRequest {
+                                                peer_addr: ip,
+                                                vsf_bytes,
+                                            });
+                                            contact.clutch_offer_sent = true;
+                                            crate::log_info(&format!(
+                                                "CLUTCH: Sent offer to {} (prov={}...)",
+                                                contact.handle,
+                                                hex::encode(&our_offer_provenance[..4])
+                                            ));
+                                        }
+                                    }
+                                    Err(e) => {
+                                        crate::log_error(&format!(
+                                            "CLUTCH: Failed to build offer VSF for {}: {}",
+                                            contact.handle, e
                                         ));
                                     }
                                 }
                             }
                         }
-                    } else if !contact.clutch_offer_sent {
-                        // No offer from them yet - send our offer proactively
+                    }
+
+                    // Compute ceremony_id if we have enough offer provenances (2 for DM)
+                    let required_provenances = 2;
+                    if contact.ceremony_id.is_none() && contact.offer_provenances.len() >= required_provenances {
+                        let ceremony_id = *CeremonyId::derive(
+                            &[our_handle_hash, contact.handle_hash],
+                            &contact.offer_provenances,
+                        ).as_bytes();
+                        contact.ceremony_id = Some(ceremony_id);
                         crate::log_info(&format!(
-                            "CLUTCH: Keypairs ready for {} - sending offer",
-                            contact.handle
+                            "CLUTCH: Computed ceremony_id for {} from {} offer provenances",
+                            contact.handle,
+                            contact.offer_provenances.len()
                         ));
+                    }
 
-                        if let Some(ip) = contact.ip {
-                            if let Some(ref keypairs) = contact.clutch_our_keypairs {
-                                let offer = ClutchFullOfferPayload::from_keypairs(keypairs);
-                                let conv_token = derive_conversation_token(&[our_handle_hash, contact.handle_hash]);
+                    // Send KEM response if we have ceremony_id and their offer
+                    if their_slot_has_offer {
+                        let already_sent_kem = contact
+                            .get_slot(&our_handle_hash)
+                            .map(|s| s.kem_secrets_to_them.is_some())
+                            .unwrap_or(false);
 
-                                if let Some(ref checker) = self.status_checker {
-                                    checker.send_full_offer(ClutchFullOfferRequest {
-                                        peer_addr: ip,
-                                        conversation_token: conv_token,
-                                        ceremony_id,
-                                        payload: offer,
-                                        device_pubkey,
-                                        device_secret,
-                                    });
-                                    contact.clutch_offer_sent = true;
+                        if !already_sent_kem && !contact.clutch_kem_encap_in_progress {
+                            if let Some(ceremony_id) = contact.ceremony_id {
+                                if let Some(ip) = contact.ip {
+                                    let conv_token = derive_conversation_token(&[our_handle_hash, contact.handle_hash]);
+                                    let remote_offer = contact
+                                        .get_slot(&contact.handle_hash)
+                                        .and_then(|s| s.offer.clone());
+
+                                    if let Some(remote_offer) = remote_offer {
+                                        // Defer spawn for KEM encapsulation (to avoid borrow conflict)
+                                        // (PQ crypto is slow ~800ms, would block UI/network)
+                                        contact.clutch_kem_encap_in_progress = true;
+                                        kem_encap_spawn = Some((
+                                            contact.id.clone(),
+                                            remote_offer,
+                                            ceremony_id,
+                                            conv_token,
+                                            ip,
+                                        ));
+                                        crate::log_info(&format!(
+                                            "CLUTCH: Will spawn KEM encapsulation for {} (post-keygen)",
+                                            contact.handle
+                                        ));
+                                    }
                                 }
+                            } else {
+                                crate::log_info(&format!(
+                                    "CLUTCH: Keypairs ready for {} - need ceremony_id for KEM response (have {} offer provenances)",
+                                    contact.handle,
+                                    contact.offer_provenances.len()
+                                ));
                             }
                         }
                     }
@@ -3664,15 +4206,30 @@ impl PhotonApp {
                             "CLUTCH: Processing queued KEM response from {}",
                             contact.handle
                         ));
-                        // Decapsulate their KEM (they encapsulated to our pubkeys)
-                        if let Some(ref our_keys) = contact.clutch_our_keypairs {
-                            let their_secrets = ClutchKemSharedSecrets::decapsulate_from_peer(
-                                &pending_kem, our_keys,
+                        // Decapsulate remote KEM (remote encapsulated to local pubkeys)
+                        if let Some(ref local_keys) = contact.clutch_our_keypairs {
+                            let remote_secrets = ClutchKemSharedSecrets::decapsulate_from_peer(
+                                &pending_kem, local_keys,
                             );
-                            // Store THEIR secrets (from decapsulating FROM them) in THEIR slot
-                            let their_hash = contact.handle_hash;
-                            if let Some(their_slot) = contact.get_slot_mut(&their_hash) {
-                                their_slot.kem_secrets_from_them = Some(their_secrets);
+                            // Store remote secrets (from decapsulating FROM remote) in remote slot
+                            let remote_hash = contact.handle_hash;
+                            if let Some(remote_slot) = contact.get_slot_mut(&remote_hash) {
+                                remote_slot.kem_secrets_from_them = Some(remote_secrets);
+                            }
+
+                            // Persist slot state after processing pending KEM
+                            if let Err(e) = crate::storage::contacts::save_clutch_slots(
+                                &contact.clutch_slots,
+                                &contact.offer_provenances,
+                                contact.ceremony_id,
+                                contact.handle.as_str(),
+                                &our_handle_hash,
+                                &device_secret,
+                            ) {
+                                crate::log_error(&format!(
+                                    "CLUTCH: Failed to save slots for {}: {}",
+                                    contact.handle, e
+                                ));
                             }
                         }
                     }
@@ -3698,6 +4255,11 @@ impl PhotonApp {
             }
         }
 
+        // Spawn deferred KEM encapsulation after releasing contacts borrow
+        if let Some((contact_id, offer, ceremony_id, conv_token, peer_addr)) = kem_encap_spawn {
+            self.spawn_clutch_kem_encap(contact_id, offer, ceremony_id, conv_token, peer_addr);
+        }
+
         // Process deferred ceremony completions (after releasing contacts borrow)
         for idx in ceremony_completions {
             self.complete_clutch_ceremony_by_idx(idx, our_handle_hash);
@@ -3710,16 +4272,277 @@ impl PhotonApp {
         changed
     }
 
-    /// Complete CLUTCH ceremony when all slots are filled
-    /// Derives shared seed, creates friendship chains, saves to disk, zeroizes secrets
+    /// Process background CLUTCH KEM encapsulation results.
+    /// When KEM encap completes, store the secrets and send the KEM response.
+    pub fn check_clutch_kem_encaps(&mut self) -> bool {
+        use crate::network::status::ClutchKemResponseRequest;
+
+        let mut changed = false;
+        let mut ceremony_completions: Vec<usize> = Vec::new();
+        let our_handle_hash = match self.user_identity_seed {
+            Some(h) => h,
+            None => return changed,
+        };
+        let device_pubkey = *self.device_keypair.public.as_bytes();
+        let device_secret = *self.device_keypair.secret.as_bytes();
+
+        while let Ok(result) = self.clutch_kem_encap_rx.try_recv() {
+            let result_id_hex = hex::encode(&result.contact_id.as_bytes()[..4]);
+            crate::log_info(&format!(
+                "CLUTCH: Processing KEM encap result for contact_id {}...",
+                result_id_hex,
+            ));
+
+            // Find the contact and update state
+            let mut found_idx = None;
+            for (idx, contact) in self.contacts.iter_mut().enumerate() {
+                if contact.id == result.contact_id {
+                    found_idx = Some(idx);
+                    contact.clutch_kem_encap_in_progress = false;
+
+                    // Store local encapsulation secrets in local slot (local contribution)
+                    // Also store the KEM response payload for re-send
+                    if let Some(slot) = contact.get_slot_mut(&our_handle_hash) {
+                        slot.kem_secrets_to_them = Some(result.local_secrets);
+                        slot.kem_response_for_resend = Some(result.kem_response.clone());
+                    }
+
+                    // Persist slot state before sending KEM
+                    if let Err(e) = crate::storage::contacts::save_clutch_slots(
+                        &contact.clutch_slots,
+                        &contact.offer_provenances,
+                        contact.ceremony_id,
+                        contact.handle.as_str(),
+                        &our_handle_hash,
+                        &device_secret,
+                    ) {
+                        crate::log_error(&format!(
+                            "CLUTCH: Failed to save slots for {}: {}",
+                            contact.handle, e
+                        ));
+                    }
+
+                    // Send the KEM response
+                    if let Some(ref checker) = self.status_checker {
+                        checker.send_kem_response(ClutchKemResponseRequest {
+                            peer_addr: result.peer_addr,
+                            conversation_token: result.conversation_token,
+                            ceremony_id: result.ceremony_id,
+                            payload: result.kem_response,
+                            device_pubkey,
+                            device_secret,
+                        });
+                        crate::log_info(&format!(
+                            "CLUTCH: Sent KEM response to {}",
+                            contact.handle
+                        ));
+                    }
+
+                    // Check if all slots are complete after storing our KEM encap secrets
+                    if contact.all_slots_complete() {
+                        crate::log_info(&format!(
+                            "CLUTCH: All slots complete for {} after KEM encap - triggering ceremony",
+                            contact.handle
+                        ));
+                        ceremony_completions.push(idx);
+                    }
+
+                    changed = true;
+                    break;
+                }
+            }
+
+            if found_idx.is_none() {
+                crate::log_error(&format!(
+                    "CLUTCH: KEM encap result contact_id {}... not found in contacts!",
+                    result_id_hex
+                ));
+            }
+        }
+
+        // Process deferred ceremony completions (after releasing contacts borrow)
+        for idx in ceremony_completions {
+            self.complete_clutch_ceremony_by_idx(idx, our_handle_hash);
+            changed = true;
+        }
+
+        if changed {
+            self.window_dirty = true;
+        }
+        changed
+    }
+
+    /// Process background CLUTCH ceremony completion results.
+    /// When ceremony completes, store the friendship chains and send proof.
+    pub fn check_clutch_ceremonies(&mut self) -> bool {
+        use crate::crypto::clutch::{derive_conversation_token, ClutchCompletePayload};
+        use crate::network::status::ClutchCompleteRequest;
+        use crate::types::ClutchState;
+
+        let mut changed = false;
+        let our_handle_hash = match self.user_identity_seed {
+            Some(h) => h,
+            None => return changed,
+        };
+        let device_pubkey = *self.device_keypair.public.as_bytes();
+        let device_secret = *self.device_keypair.secret.as_bytes();
+
+        while let Ok(result) = self.clutch_ceremony_rx.try_recv() {
+            let result_id_hex = hex::encode(&result.contact_id.as_bytes()[..4]);
+            crate::log_info(&format!(
+                "CLUTCH: Processing ceremony result for contact_id {}...",
+                result_id_hex,
+            ));
+
+            let friendship_id = *result.friendship_chains.id();
+
+            // Save chains to disk first
+            if let Some(identity_seed) = self.user_identity_seed.as_ref() {
+                crate::log_info(&format!(
+                    "CLUTCH: Saving friendship chains to disk (fid={}...)",
+                    hex::encode(&friendship_id.as_bytes()[..8])
+                ));
+                if let Err(e) = crate::storage::friendship::save_friendship_chains(
+                    &result.friendship_chains,
+                    identity_seed,
+                    &device_secret,
+                ) {
+                    crate::log_error(&format!("Failed to save friendship chains: {}", e));
+                } else {
+                    crate::log_info("CLUTCH: Friendship chains saved successfully");
+                }
+            } else {
+                crate::log_error("CLUTCH: Cannot save chains - no identity_seed!");
+            }
+
+            // Cache chains in memory
+            if let Some(entry) = self.friendship_chains.iter_mut().find(|(id, _)| *id == friendship_id) {
+                entry.1 = result.friendship_chains;
+            } else {
+                self.friendship_chains.push((friendship_id, result.friendship_chains));
+            }
+
+            // Update sync records for new friendship
+            self.update_sync_records();
+
+            // Find the contact and update state
+            if let Some(contact) = self.contacts.iter_mut().find(|c| c.id == result.contact_id) {
+                let contact_handle = contact.handle.clone();
+                contact.clutch_ceremony_in_progress = false;
+                contact.friendship_id = Some(friendship_id);
+
+                crate::log_info(&format!(
+                    "CLUTCH: Eggs computed with {}! (proof: {}...)",
+                    contact_handle,
+                    hex::encode(&result.eggs_proof[..8])
+                ));
+
+                // Store our proof for later verification
+                contact.clutch_our_eggs_proof = Some(result.eggs_proof);
+
+                // Check if we already received their proof (fast party case)
+                let their_early_proof = contact.clutch_their_eggs_proof;
+
+                // Send ClutchComplete proof to peer
+                if let Some(ref checker) = self.status_checker {
+                    let payload = ClutchCompletePayload {
+                        eggs_proof: result.eggs_proof,
+                    };
+
+                    checker.send_complete_proof(ClutchCompleteRequest {
+                        peer_addr: result.peer_addr,
+                        conversation_token: result.conversation_token,
+                        ceremony_id: result.ceremony_id,
+                        payload,
+                        device_pubkey,
+                        device_secret,
+                    });
+
+                    crate::log_info(&format!(
+                        "CLUTCH: Sent proof to {} via status checker",
+                        contact_handle
+                    ));
+                }
+
+                // Check if they already sent us their proof
+                if let Some(their_proof) = their_early_proof {
+                    if their_proof == result.eggs_proof {
+                        // SUCCESS! Both parties computed same eggs
+                        crate::log_info(&format!(
+                            "CLUTCH: Early proof verified with {}! ✓ proof={}...",
+                            contact_handle,
+                            hex::encode(&result.eggs_proof[..8])
+                        ));
+                        contact.clutch_state = ClutchState::Complete;
+                        // Store their HQC pub prefix to detect stale offers after restart
+                        contact.completed_their_hqc_prefix = Some(result.their_hqc_prefix);
+                        contact.clutch_our_eggs_proof = None;
+                        contact.clutch_their_eggs_proof = None;
+                    } else {
+                        // CRYPTOGRAPHIC FAILURE!
+                        let our_hex = hex::encode(&result.eggs_proof);
+                        let their_hex = hex::encode(&their_proof);
+                        crate::log_error(&format!(
+                            "CLUTCH: ⚠ PROOF MISMATCH with {}! ours={}... theirs={}...",
+                            contact_handle,
+                            &our_hex[..16],
+                            &their_hex[..16]
+                        ));
+                        // Reset to Pending to allow re-keying
+                        contact.clutch_state = ClutchState::Pending;
+                        contact.clutch_our_eggs_proof = None;
+                        contact.clutch_their_eggs_proof = None;
+                    }
+                } else {
+                    // Set state to AwaitingProof - wait for their proof
+                    contact.clutch_state = ClutchState::AwaitingProof;
+                    crate::log_info(&format!(
+                        "CLUTCH: Awaiting proof from {} (we sent ours)",
+                        contact_handle
+                    ));
+                }
+
+                // Save contact to persist friendship_id and clutch_state
+                if let Some(identity_seed) = self.user_identity_seed.as_ref() {
+                    if let Err(e) = crate::storage::contacts::save_contact(
+                        contact,
+                        identity_seed,
+                        &device_secret,
+                    ) {
+                        crate::log_error(&format!("Failed to save contact after CLUTCH: {}", e));
+                    } else {
+                        crate::log_info(&format!("CLUTCH: Saved {} state to disk", contact_handle));
+                    }
+
+                    // Delete slots file - ceremony is complete, slots no longer needed
+                    if let Err(e) = crate::storage::contacts::delete_clutch_slots(contact_handle.as_str()) {
+                        crate::log_error(&format!("Failed to delete CLUTCH slots: {}", e));
+                    }
+                }
+                changed = true;
+            } else {
+                crate::log_error(&format!(
+                    "CLUTCH: Ceremony result contact_id {}... not found in contacts!",
+                    result_id_hex
+                ));
+            }
+        }
+
+        if changed {
+            self.window_dirty = true;
+        }
+        changed
+    }
+
+    /// Spawn background CLUTCH ceremony completion when all slots are filled.
+    /// Extracts data from contact and spawns background thread for heavy crypto.
     ///
     /// Takes contact index to avoid borrow conflicts in the event loop.
     fn complete_clutch_ceremony_by_idx(&mut self, contact_idx: usize, our_handle_hash: [u8; 32]) {
-        use crate::crypto::clutch::{clutch_complete_full, ClutchSharedSecrets};
-        use crate::types::ClutchState;
+        use crate::crypto::clutch::{derive_conversation_token, ClutchSharedSecrets};
 
         // Extract data from contact to avoid borrow issues
-        let contact = match self.contacts.get(contact_idx) {
+        let contact = match self.contacts.get_mut(contact_idx) {
             Some(c) => c,
             None => {
                 crate::log_error("CLUTCH: Invalid contact index");
@@ -3727,47 +4550,80 @@ impl PhotonApp {
             }
         };
 
+        // Check if ceremony already in progress
+        if contact.clutch_ceremony_in_progress {
+            crate::log_info(&format!(
+                "CLUTCH: Ceremony already in progress for {}",
+                contact.handle
+            ));
+            return;
+        }
+
         // Get their slot (the other party)
         let their_handle_hash = contact.handle_hash;
+        let contact_id = contact.id.clone();
         let contact_handle = contact.handle.to_string();
         let their_device_pub = *contact.public_identity.as_bytes();
 
         // Extract all needed data from slots (cloning to release borrow)
-        // Our slot has our encap result, their slot has their encap result
         let our_slot = match contact.get_slot(&our_handle_hash) {
             Some(s) => s,
             None => {
-                crate::log_error("CLUTCH: No slot for our party");
+                crate::log_error("CLUTCH: No slot for local party");
                 return;
             }
         };
         let their_slot = match contact.get_slot(&their_handle_hash) {
             Some(s) => s,
             None => {
-                crate::log_error("CLUTCH: No slot for other party");
+                crate::log_error("CLUTCH: No slot for remote party");
                 return;
             }
         };
 
-        // Our encapsulation secrets from OUR slot (our contribution - we encapsulated to them)
+        // Local encapsulation secrets from local slot
         let our_kem_secrets = match &our_slot.kem_secrets_to_them {
             Some(s) => s.clone(),
             None => {
-                crate::log_error("CLUTCH: No kem_secrets_to_them in our slot");
+                crate::log_error("CLUTCH: No kem_secrets_to_them in local slot");
                 return;
             }
         };
-        // Their encapsulation secrets from THEIR slot (their contribution - they encapsulated to us)
+        // Remote encapsulation secrets from remote slot
         let their_kem_secrets = match &their_slot.kem_secrets_from_them {
             Some(s) => s.clone(),
             None => {
-                crate::log_error("CLUTCH: No kem_secrets_from_them in their slot");
+                crate::log_error("CLUTCH: No kem_secrets_from_them in remote slot");
                 return;
             }
         };
 
+        // Get their HQC prefix for stale detection
+        let their_hqc_prefix: [u8; 8] = their_slot.offer
+            .as_ref()
+            .map(|o| o.hqc256_public[..8].try_into().unwrap_or_default())
+            .unwrap_or_default();
+
+        // Get peer address and ceremony_id
+        let peer_addr = match contact.ip {
+            Some(ip) => ip,
+            None => {
+                crate::log_error(&format!("CLUTCH: No IP for {}", contact_handle));
+                return;
+            }
+        };
+        let ceremony_id = match contact.ceremony_id {
+            Some(c) => c,
+            None => {
+                crate::log_error(&format!("CLUTCH: No ceremony_id for {}", contact_handle));
+                return;
+            }
+        };
+
+        let conversation_token = derive_conversation_token(&[our_handle_hash, their_handle_hash]);
+
         crate::log_info(&format!(
-            "CLUTCH: Completing full 8-algorithm ceremony with {}",
+            "CLUTCH: Spawning ceremony completion for {}",
             contact_handle
         ));
 
@@ -3775,11 +4631,8 @@ impl PhotonApp {
         let we_are_low = our_handle_hash < their_handle_hash;
 
         // Build shared secrets struct with proper ordering
-        // Now using ECIES-style bidirectional EC secrets from ClutchKemSharedSecrets
-        // Each direction has its own shared secret (truly distinct per participant)
         let secrets = if we_are_low {
             ClutchSharedSecrets {
-                // EC: low = our encap (we→them), high = their encap (them→us)
                 low_x25519: our_kem_secrets.x25519,
                 high_x25519: their_kem_secrets.x25519,
                 low_p384: our_kem_secrets.p384.clone(),
@@ -3788,7 +4641,6 @@ impl PhotonApp {
                 high_secp256k1: their_kem_secrets.secp256k1.clone(),
                 low_p256: our_kem_secrets.p256.clone(),
                 high_p256: their_kem_secrets.p256.clone(),
-                // KEM: low = our encap (we→them), high = their encap (them→us)
                 low_frodo: our_kem_secrets.frodo.clone(),
                 high_frodo: their_kem_secrets.frodo.clone(),
                 low_ntru: our_kem_secrets.ntru.clone(),
@@ -3800,7 +4652,6 @@ impl PhotonApp {
             }
         } else {
             ClutchSharedSecrets {
-                // EC: low = their encap (them→us), high = our encap (we→them)
                 low_x25519: their_kem_secrets.x25519,
                 high_x25519: our_kem_secrets.x25519,
                 low_p384: their_kem_secrets.p384.clone(),
@@ -3809,7 +4660,6 @@ impl PhotonApp {
                 high_secp256k1: our_kem_secrets.secp256k1.clone(),
                 low_p256: their_kem_secrets.p256.clone(),
                 high_p256: our_kem_secrets.p256.clone(),
-                // KEM: low = their encap (them→us), high = our encap (we→them)
                 low_frodo: their_kem_secrets.frodo.clone(),
                 high_frodo: our_kem_secrets.frodo.clone(),
                 low_ntru: their_kem_secrets.ntru.clone(),
@@ -3821,191 +4671,22 @@ impl PhotonApp {
             }
         };
 
-        // Complete the ceremony
+        // Mark ceremony in progress and spawn background thread
+        contact.clutch_ceremony_in_progress = true;
+
         let our_device_pub = *self.device_keypair.public.as_bytes();
-        let result = clutch_complete_full(
-            &our_device_pub,
-            &their_device_pub,
-            &our_handle_hash,
-            &their_handle_hash,
-            &secrets,
+        self.spawn_clutch_ceremony(
+            contact_id,
+            our_handle_hash,
+            their_handle_hash,
+            our_device_pub,
+            their_device_pub,
+            secrets,
+            ceremony_id,
+            conversation_token,
+            peer_addr,
+            their_hqc_prefix,
         );
-
-        // Create FriendshipChains from eggs
-        let friendship_chains = FriendshipChains::from_clutch(
-            &[our_handle_hash, their_handle_hash],
-            result.eggs.as_slice(),
-        );
-
-        // Store friendship_id in contact
-        let friendship_id = *friendship_chains.id();
-
-        // Save chains to disk
-        if let Some(identity_seed) = self.user_identity_seed.as_ref() {
-            let device_secret = self.device_keypair.secret.as_bytes();
-            crate::log_info(&format!(
-                "CLUTCH: Saving friendship chains to disk (fid={}...)",
-                hex::encode(&friendship_id.as_bytes()[..8])
-            ));
-            if let Err(e) = crate::storage::friendship::save_friendship_chains(
-                &friendship_chains,
-                identity_seed,
-                device_secret,
-            ) {
-                crate::log_error(&format!("Failed to save friendship chains: {}", e));
-            } else {
-                crate::log_info("CLUTCH: Friendship chains saved successfully");
-            }
-        } else {
-            crate::log_error("CLUTCH: Cannot save chains - no identity_seed!");
-        }
-
-        // Cache chains in memory
-        if let Some(entry) = self.friendship_chains.iter_mut().find(|(id, _)| *id == friendship_id) {
-            entry.1 = friendship_chains;
-        } else {
-            self.friendship_chains.push((friendship_id, friendship_chains));
-        }
-
-        // Update sync records for new friendship
-        self.update_sync_records();
-
-        // Now update the contact (mutable borrow)
-        if let Some(contact) = self.contacts.get_mut(contact_idx) {
-            contact.friendship_id = Some(friendship_id);
-
-            crate::log_info(&format!(
-                "CLUTCH: Eggs computed with {}! (proof: {}...)",
-                contact_handle,
-                hex::encode(&result.proof[..8])
-            ));
-
-            // Store our proof for later verification
-            contact.clutch_our_eggs_proof = Some(result.proof);
-
-            // Check if we already received their proof (fast party case)
-            let their_early_proof = contact.clutch_their_eggs_proof;
-
-            // Get contact IP and ceremony_id for sending ClutchComplete
-            let contact_ip = contact.ip;
-            let ceremony_id = contact.ceremony_id;
-
-            // Send ClutchComplete proof to peer
-            if let (Some(checker), Some(peer_addr), Some(ceremony_id)) =
-                (&self.status_checker, contact_ip, ceremony_id)
-            {
-                use crate::crypto::clutch::{derive_conversation_token, ClutchCompletePayload};
-                use crate::network::status::ClutchCompleteRequest;
-
-                let payload = ClutchCompletePayload {
-                    eggs_proof: result.proof,
-                };
-
-                let conversation_token = derive_conversation_token(&[our_handle_hash, their_handle_hash]);
-                checker.send_complete_proof(ClutchCompleteRequest {
-                    peer_addr,
-                    conversation_token,
-                    ceremony_id,
-                    payload,
-                    device_pubkey: *self.device_keypair.public.as_bytes(),
-                    device_secret: *self.device_keypair.secret.as_bytes(),
-                });
-
-                crate::log_info(&format!(
-                    "CLUTCH: Sent proof to {} via status checker",
-                    contact_handle
-                ));
-            } else {
-                crate::log_error(&format!(
-                    "CLUTCH: Cannot send proof to {} - no IP or ceremony_id",
-                    contact_handle
-                ));
-            }
-
-            // Check if they already sent us their proof
-            if let Some(their_proof) = their_early_proof {
-                if their_proof == result.proof {
-                    // SUCCESS! Both parties computed same eggs
-                    crate::log_info(&format!(
-                        "CLUTCH: Early proof verified with {}! ✓ proof={}...",
-                        contact_handle,
-                        hex::encode(&result.proof[..8])
-                    ));
-                    contact.clutch_state = ClutchState::Complete;
-                    // Store their HQC pub prefix to detect stale offers after restart
-                    if let Some(their_slot) = contact.get_slot(&contact.handle_hash) {
-                        if let Some(ref their_offer) = their_slot.offer {
-                            let prefix: [u8; 8] = their_offer.hqc256_public[..8].try_into().unwrap_or_default();
-                            contact.completed_their_hqc_prefix = Some(prefix);
-                        }
-                    }
-                    contact.clutch_our_eggs_proof = None;
-                    contact.clutch_their_eggs_proof = None;
-
-                    // Clear pending PT sends now that CLUTCH is complete
-                    // This stops wasteful retransmission of offers/KEM responses
-                    if let (Some(ref checker), Some(peer_addr)) = (&self.status_checker, contact_ip) {
-                        checker.clear_pt_sends(peer_addr);
-                    }
-                } else {
-                    // CRYPTOGRAPHIC FAILURE!
-                    let our_hex = hex::encode(&result.proof);
-                    let their_hex = hex::encode(&their_proof);
-                    crate::log_error(&format!(
-                        "CLUTCH PROOF MISMATCH! This is a critical error.\n\
-                        Our proof:   {}\n\
-                        Their proof: {}",
-                        our_hex, their_hex
-                    ));
-                    panic!(
-                        "CLUTCH PROOF MISMATCH with {}! \
-                        This indicates MITM, bug, or corruption. \
-                        Our: {}... Their: {}...",
-                        contact_handle,
-                        &our_hex[..16],
-                        &their_hex[..16]
-                    );
-                }
-            } else {
-                // Set state to AwaitingProof - wait for their proof
-                contact.clutch_state = ClutchState::AwaitingProof;
-                crate::log_info(&format!(
-                    "CLUTCH: Awaiting proof from {} (we sent ours)",
-                    contact_handle
-                ));
-            }
-
-            // Zeroize sensitive material (always, regardless of proof state)
-            if let Some(ref mut keys) = contact.clutch_our_keypairs {
-                keys.zeroize();
-            }
-            contact.clutch_our_keypairs = None;
-            for slot in &mut contact.clutch_slots {
-                slot.offer = None;
-                if let Some(ref mut s) = slot.kem_secrets_from_them {
-                    s.zeroize();
-                }
-                if let Some(ref mut s) = slot.kem_secrets_to_them {
-                    s.zeroize();
-                }
-                slot.kem_secrets_from_them = None;
-                slot.kem_secrets_to_them = None;
-            }
-
-            // Save contact to persist friendship_id and clutch_state
-            if let Some(identity_seed) = self.user_identity_seed.as_ref() {
-                let device_secret = self.device_keypair.secret.as_bytes();
-                if let Err(e) = crate::storage::contacts::save_contact(
-                    contact,
-                    identity_seed,
-                    device_secret,
-                ) {
-                    crate::log_error(&format!("Failed to save contact after CLUTCH: {}", e));
-                } else {
-                    crate::log_info(&format!("CLUTCH: Saved {} state to disk", contact_handle));
-                }
-            }
-        }
 
         self.window_dirty = true;
     }
@@ -4177,12 +4858,13 @@ impl PhotonApp {
 
         // Update contact IPs from fresh peer data
         // Also send CLUTCH offer if we have keys ready but haven't sent yet
-        use crate::crypto::clutch::{derive_conversation_token, ClutchFullOfferPayload};
-        use crate::network::status::ClutchFullOfferRequest;
+        use crate::crypto::clutch::{derive_conversation_token, ClutchOfferPayload};
+        use crate::network::fgtw::protocol::build_clutch_offer_vsf;
+        use crate::network::status::ClutchOfferRequest;
         use crate::types::ClutchState;
 
         let mut updated = 0;
-        let mut offers_to_send: Vec<ClutchFullOfferRequest> = Vec::new();
+        let mut offers_to_send: Vec<ClutchOfferRequest> = Vec::new();
 
         // Get our handle_hash for CLUTCH (PRIVATE identity seed used in VSF messages)
         let our_handle_hash = match self.user_identity_seed {
@@ -4207,29 +4889,47 @@ impl PhotonApp {
 
                     // If we just got an IP and have keys ready, queue offer to send
                     // Slot-based: send if Pending, have keypairs, haven't sent yet
+                    // Note: don't wait for ceremony_id - that comes after offers are exchanged
                     if was_none
                         && contact.clutch_state == ClutchState::Pending
                         && !contact.clutch_offer_sent
                     {
-                        if let (Some(ref keypairs), Some(ceremony_id)) =
-                            (&contact.clutch_our_keypairs, contact.ceremony_id)
-                        {
-                            let offer = ClutchFullOfferPayload::from_keypairs(keypairs);
+                        if let Some(ref keypairs) = contact.clutch_our_keypairs {
+                            let offer = ClutchOfferPayload::from_keypairs(keypairs);
                             // Compute conversation_token for privacy-preserving wire format
                             let conv_token = derive_conversation_token(&[our_handle_hash, contact.handle_hash]);
-                            offers_to_send.push(ClutchFullOfferRequest {
-                                peer_addr: peer.ip,
-                                conversation_token: conv_token,
-                                ceremony_id,
-                                payload: offer,
-                                device_pubkey,
-                                device_secret,
-                            });
-                            contact.clutch_offer_sent = true;
-                            crate::log_info(&format!(
-                                "CLUTCH: Queueing offer for {} (just got IP)",
-                                contact.handle
-                            ));
+
+                            // Build VSF and capture our offer_provenance
+                            match build_clutch_offer_vsf(
+                                &conv_token,
+                                &offer,
+                                &device_pubkey,
+                                &device_secret,
+                            ) {
+                                Ok((vsf_bytes, our_offer_provenance)) => {
+                                    // Store our offer provenance (for ceremony_id derivation)
+                                    if !contact.offer_provenances.contains(&our_offer_provenance) {
+                                        contact.offer_provenances.push(our_offer_provenance);
+                                    }
+
+                                    offers_to_send.push(ClutchOfferRequest {
+                                        peer_addr: peer.ip,
+                                        vsf_bytes,
+                                    });
+                                    contact.clutch_offer_sent = true;
+                                    crate::log_info(&format!(
+                                        "CLUTCH: Queueing offer for {} (just got IP, prov={}...)",
+                                        contact.handle,
+                                        hex::encode(&our_offer_provenance[..4])
+                                    ));
+                                }
+                                Err(e) => {
+                                    crate::log_error(&format!(
+                                        "CLUTCH: Failed to build offer VSF for {}: {}",
+                                        contact.handle, e
+                                    ));
+                                }
+                            }
                         }
                     }
                     break;
@@ -4240,7 +4940,7 @@ impl PhotonApp {
         // Send queued offers (after releasing mutable borrow on contacts)
         if let Some(ref checker) = self.status_checker {
             for request in offers_to_send {
-                checker.send_full_offer(request);
+                checker.send_offer(request);
             }
         }
 

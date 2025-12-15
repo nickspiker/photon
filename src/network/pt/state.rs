@@ -51,6 +51,7 @@ pub enum PTError {
 pub struct OutboundTransfer {
     pub peer_addr: SocketAddr,
     pub stream_id: u8,      // 'a'-'z' for concurrent transfer routing
+    pub transfer_id: usize,  // Monotonic ID for external tracking
     pub state: TransferState,
     pub send_buffer: SendBuffer,
     pub window: WindowController,
@@ -63,14 +64,24 @@ pub struct OutboundTransfer {
     pub retransmits: u32, // Count of retransmitted packets
     pub last_activity: Instant,
     pub created_at: Instant,
+    /// SPEC retry tracking (exponential backoff: 1s, 2s, 4s, 8s...)
+    pub spec_last_sent: Instant,
+    pub spec_retry_count: u32,
+    pub spec_next_delay: Duration,
+    /// Whether to use TCP fallback for SPEC
+    pub spec_tcp_fallback: bool,
 }
 
 impl OutboundTransfer {
-    /// Create new outbound transfer with assigned stream_id
-    pub fn new(peer_addr: SocketAddr, data: Vec<u8>, stream_id: u8) -> Self {
+    /// Maximum SPEC retries before TCP fallback
+    pub const SPEC_MAX_RETRIES: u32 = 5;
+
+    /// Create new outbound transfer with assigned stream_id and transfer_id
+    pub fn new(peer_addr: SocketAddr, data: Vec<u8>, stream_id: u8, transfer_id: usize) -> Self {
         Self {
             peer_addr,
             stream_id,
+            transfer_id,
             state: TransferState::AwaitingSpec,
             send_buffer: SendBuffer::new(data, PTSpec::DEFAULT_PACKET_SIZE),
             window: WindowController::new(),
@@ -83,7 +94,41 @@ impl OutboundTransfer {
             retransmits: 0,
             last_activity: Instant::now(),
             created_at: Instant::now(),
+            spec_last_sent: Instant::now(),
+            spec_retry_count: 0,
+            spec_next_delay: Duration::from_secs(1),
+            spec_tcp_fallback: false,
         }
+    }
+
+    /// Check if SPEC needs retry (exponential backoff)
+    pub fn spec_needs_retry(&self) -> bool {
+        !self.spec_acked && self.spec_sent && self.spec_last_sent.elapsed() >= self.spec_next_delay
+    }
+
+    /// Mark SPEC as sent and update backoff
+    pub fn mark_spec_sent(&mut self) {
+        self.spec_sent = true;
+        self.spec_last_sent = Instant::now();
+        self.spec_retry_count += 1;
+
+        // Exponential backoff: 1s → 2s → 4s → 8s → 16s → 32s (capped)
+        self.spec_next_delay = std::cmp::min(
+            Duration::from_secs(1 << self.spec_retry_count.min(5)),
+            Duration::from_secs(32),
+        );
+    }
+
+    /// Check if we should switch to TCP fallback for SPEC
+    pub fn spec_should_fallback_tcp(&self) -> bool {
+        self.spec_retry_count >= Self::SPEC_MAX_RETRIES && !self.spec_tcp_fallback
+    }
+
+    /// Mark SPEC as using TCP fallback
+    pub fn set_spec_tcp_fallback(&mut self) {
+        self.spec_tcp_fallback = true;
+        self.spec_retry_count = 0; // Reset for TCP retries
+        self.spec_next_delay = Duration::from_secs(1);
     }
 
     /// Build SPEC packet for this transfer
@@ -375,6 +420,7 @@ impl InboundTransfer {
         )
     }
 }
+
 
 #[cfg(test)]
 mod tests {

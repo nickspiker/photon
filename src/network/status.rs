@@ -58,8 +58,8 @@ pub struct PingRequest {
 }
 
 // NOTE: ClutchRequest and ClutchRequestType REMOVED
-// Full 8-primitive CLUTCH uses ClutchFullOfferRequest and ClutchKemResponseRequest
-// which are handled via build_clutch_full_offer_vsf() and build_clutch_kem_response_vsf()
+// Full 8-primitive CLUTCH uses ClutchOfferRequest and ClutchKemResponseRequest
+// which are handled via build_clutch_offer_vsf() and build_clutch_kem_response_vsf()
 // See CLUTCH.md Section 4.2 for the slot-based ceremony protocol.
 
 /// Request to send an encrypted message (CHAIN format)
@@ -100,16 +100,12 @@ pub struct PTSendRequest {
 
 /// Request to send full CLUTCH offer (~548KB) via TCP fallback
 ///
-/// Uses VSF format with proper signing and verification.
-/// See protocol.rs build_clutch_full_offer_vsf() for format details.
+/// Uses pre-built VSF bytes from build_clutch_offer_vsf().
+/// The caller builds the VSF to capture the offer_provenance (hp field).
 #[derive(Clone)]
-pub struct ClutchFullOfferRequest {
+pub struct ClutchOfferRequest {
     pub peer_addr: SocketAddr, // Port comes from FGTW (peer's photon_port)
-    pub conversation_token: [u8; 32], // Privacy-preserving smear_hash of sorted participant seeds
-    pub ceremony_id: [u8; 32], // Deterministic from sorted handle_hashes
-    pub payload: crate::crypto::clutch::ClutchFullOfferPayload,
-    pub device_pubkey: [u8; 32],
-    pub device_secret: [u8; 32], // For signing (zeroize after use)
+    pub vsf_bytes: Vec<u8>,    // Pre-built and signed VSF message
 }
 
 /// Request to send CLUTCH KEM response (~31KB) via TCP fallback
@@ -171,7 +167,7 @@ pub enum StatusUpdate {
         sync_records: Vec<SyncRecord>,
     },
     // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete REMOVED
-    // Full 8-primitive CLUTCH uses ClutchFullOfferReceived and ClutchKemResponseReceived
+    // Full 8-primitive CLUTCH uses ClutchOfferReceived and ClutchKemResponseReceived
     // See CLUTCH.md Section 4.2 for the slot-based ceremony protocol.
 
     /// Encrypted chat message received (CHAIN format)
@@ -204,11 +200,11 @@ pub enum StatusUpdate {
     PTSendComplete { peer_addr: SocketAddr },
     /// Full CLUTCH offer received (~548KB with all 8 pubkeys)
     /// Payload is already verified and parsed from VSF format.
-    ClutchFullOfferReceived {
+    ClutchOfferReceived {
         conversation_token: [u8; 32],    // Privacy-preserving smear_hash of sorted participant seeds
-        ceremony_id: [u8; 32],           // Deterministic from sorted handle_hashes (verified by receiver)
+        offer_provenance: [u8; 32],      // VSF header hp - unique per offer (timestamp entropy)
         sender_pubkey: [u8; 32],         // Device pubkey (verified via signature)
-        payload: crate::crypto::clutch::ClutchFullOfferPayload,
+        payload: crate::crypto::clutch::ClutchOfferPayload,
         sender_addr: SocketAddr,
     },
     /// CLUTCH KEM response received (~31KB with 4 ciphertexts)
@@ -256,7 +252,7 @@ pub struct StatusChecker {
     message_sender: Sender<MessageRequest>,
     ack_sender: Sender<AckRequest>,
     pt_sender: Sender<PTSendRequest>,
-    full_offer_sender: Sender<ClutchFullOfferRequest>,
+    offer_sender: Sender<ClutchOfferRequest>,
     kem_response_sender: Sender<ClutchKemResponseRequest>,
     complete_proof_sender: Sender<ClutchCompleteRequest>,
     lan_broadcast_sender: Sender<LanBroadcastRequest>,
@@ -284,7 +280,7 @@ impl StatusChecker {
         let (message_tx, message_rx) = channel::<MessageRequest>();
         let (ack_tx, ack_rx) = channel::<AckRequest>();
         let (pt_tx, pt_rx) = channel::<PTSendRequest>();
-        let (full_offer_tx, full_offer_rx) = channel::<ClutchFullOfferRequest>();
+        let (offer_tx, offer_rx) = channel::<ClutchOfferRequest>();
         let (kem_response_tx, kem_response_rx) = channel::<ClutchKemResponseRequest>();
         let (complete_proof_tx, complete_proof_rx) = channel::<ClutchCompleteRequest>();
         let (lan_broadcast_tx, lan_broadcast_rx) = channel::<LanBroadcastRequest>();
@@ -310,8 +306,11 @@ impl StatusChecker {
         // Use connect-to-external trick to find actual LAN IP (not 0.0.0.0)
         let local_ip = udp::get_local_ip().unwrap_or(Ipv4Addr::new(0, 0, 0, 0));
 
-        thread::spawn(move || {
-            crate::log_info("Status: Background thread started");
+        use thread_priority::{ThreadBuilderExt, ThreadPriority};
+        thread::Builder::new()
+            .name("network-status".to_string())
+            .spawn_with_priority(ThreadPriority::Max, move |_| {
+            crate::log_info("Status: Background thread started (high priority)");
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -327,7 +326,7 @@ impl StatusChecker {
                     message_rx,
                     ack_rx,
                     pt_rx,
-                    full_offer_rx,
+                    offer_rx,
                     kem_response_rx,
                     complete_proof_rx,
                     lan_broadcast_rx,
@@ -339,14 +338,14 @@ impl StatusChecker {
                 )
                 .await;
             });
-        });
+        }).expect("Failed to spawn network thread");
 
         Ok(Self {
             ping_sender: ping_tx,
             message_sender: message_tx,
             ack_sender: ack_tx,
             pt_sender: pt_tx,
-            full_offer_sender: full_offer_tx,
+            offer_sender: offer_tx,
             kem_response_sender: kem_response_tx,
             complete_proof_sender: complete_proof_tx,
             lan_broadcast_sender: lan_broadcast_tx,
@@ -367,7 +366,7 @@ impl StatusChecker {
         let (message_tx, message_rx) = channel::<MessageRequest>();
         let (ack_tx, ack_rx) = channel::<AckRequest>();
         let (pt_tx, pt_rx) = channel::<PTSendRequest>();
-        let (full_offer_tx, full_offer_rx) = channel::<ClutchFullOfferRequest>();
+        let (offer_tx, offer_rx) = channel::<ClutchOfferRequest>();
         let (kem_response_tx, kem_response_rx) = channel::<ClutchKemResponseRequest>();
         let (complete_proof_tx, complete_proof_rx) = channel::<ClutchCompleteRequest>();
         let (lan_broadcast_tx, lan_broadcast_rx) = channel::<LanBroadcastRequest>();
@@ -392,8 +391,11 @@ impl StatusChecker {
         // Get local IP for TCP listener (and LAN discovery)
         let local_ip = udp::get_local_ip().unwrap_or(Ipv4Addr::new(0, 0, 0, 0));
 
-        thread::spawn(move || {
-            crate::log_info("Status: Background thread started");
+        use thread_priority::{ThreadBuilderExt, ThreadPriority};
+        thread::Builder::new()
+            .name("network-status".to_string())
+            .spawn_with_priority(ThreadPriority::Max, move |_| {
+            crate::log_info("Status: Background thread started (high priority)");
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -409,7 +411,7 @@ impl StatusChecker {
                     message_rx,
                     ack_rx,
                     pt_rx,
-                    full_offer_rx,
+                    offer_rx,
                     kem_response_rx,
                     complete_proof_rx,
                     lan_broadcast_rx,
@@ -421,14 +423,14 @@ impl StatusChecker {
                 )
                 .await;
             });
-        });
+        }).expect("Failed to spawn network thread");
 
         Ok(Self {
             ping_sender: ping_tx,
             message_sender: message_tx,
             ack_sender: ack_tx,
             pt_sender: pt_tx,
-            full_offer_sender: full_offer_tx,
+            offer_sender: offer_tx,
             kem_response_sender: kem_response_tx,
             complete_proof_sender: complete_proof_tx,
             lan_broadcast_sender: lan_broadcast_tx,
@@ -467,8 +469,8 @@ impl StatusChecker {
     /// Uses VSF format with proper signing. Requires:
     /// - ceremony_id: Deterministic from sorted handle_hashes (same on both sides)
     /// - device keys: For Ed25519 signing of the VSF message
-    pub fn send_full_offer(&self, request: ClutchFullOfferRequest) {
-        let _ = self.full_offer_sender.send(request);
+    pub fn send_offer(&self, request: ClutchOfferRequest) {
+        let _ = self.offer_sender.send(request);
     }
 
     /// Send CLUTCH KEM response (~31KB) via TCP fallback (non-blocking)
@@ -496,7 +498,9 @@ impl StatusChecker {
     }
 
     /// Clear pending PT sends for a peer (non-blocking)
-    /// Called when CLUTCH completes to stop retransmitting offers/KEM responses.
+    /// NOTE: Currently unused - clearing PT sends during CLUTCH completion
+    /// was killing ClutchComplete transfers in flight. Left for future use.
+    #[allow(dead_code)]
     pub fn clear_pt_sends(&self, peer_addr: SocketAddr) {
         let _ = self.clear_pt_sender.send(ClearPtSendsRequest { peer_addr });
     }
@@ -539,7 +543,7 @@ async fn run_checker(
     message_rx: Receiver<MessageRequest>,
     ack_rx: Receiver<AckRequest>,
     pt_rx: Receiver<PTSendRequest>,
-    full_offer_rx: Receiver<ClutchFullOfferRequest>,
+    offer_rx: Receiver<ClutchOfferRequest>,
     kem_response_rx: Receiver<ClutchKemResponseRequest>,
     complete_proof_rx: Receiver<ClutchCompleteRequest>,
     lan_broadcast_rx: Receiver<LanBroadcastRequest>,
@@ -661,10 +665,10 @@ async fn run_checker(
                                         // Check for VSF magic bytes (RÅ< = 0x52 0xC3 0x85 0x3C)
                                         if data.len() >= 4 && &data[0..3] == b"R\xC3\x85" && data[3] == b'<' {
                                             // Parse VSF header to determine message type
-                                            // Try parsing as ClutchFullOffer first
+                                            // Try parsing as ClutchOffer first
                                             use crate::network::fgtw::protocol::{
                                                 parse_clutch_complete_vsf_without_recipient_check,
-                                                parse_clutch_full_offer_vsf_without_recipient_check,
+                                                parse_clutch_offer_vsf_without_recipient_check,
                                                 parse_clutch_kem_response_vsf_without_recipient_check,
                                             };
 
@@ -675,25 +679,25 @@ async fn run_checker(
                                                 contact_list.iter().any(|p| *p == sender)
                                             };
 
-                                            // Try full offer first (has clutch_full_offer section)
-                                            if let Ok((payload, sender_pubkey, ceremony_id, conversation_token)) =
-                                                parse_clutch_full_offer_vsf_without_recipient_check(&data)
+                                            // Try full offer first (has clutch_offer section)
+                                            if let Ok((payload, sender_pubkey, offer_provenance, conversation_token)) =
+                                                parse_clutch_offer_vsf_without_recipient_check(&data)
                                             {
                                                 // SECURITY: Only accept from known contacts
                                                 if !is_known_sender(&sender_pubkey) {
                                                     crate::log_error(&format!(
-                                                        "TCP: ClutchFullOffer REJECTED from {} - sender not in contacts (pubkey: {})",
+                                                        "TCP: ClutchOffer REJECTED from {} - sender not in contacts (pubkey: {})",
                                                         src_addr,
                                                         hex::encode(&sender_pubkey[..8])
                                                     ));
                                                     continue;
                                                 }
-                                                crate::log_info("Status: Received ClutchFullOffer via TCP (VSF verified)");
+                                                crate::log_info("Status: Received ClutchOffer via TCP (VSF verified)");
                                                 send_status_update(
                                                     &status_tx_tcp,
-                                                    StatusUpdate::ClutchFullOfferReceived {
+                                                    StatusUpdate::ClutchOfferReceived {
                                                         conversation_token,
-                                                        ceremony_id,
+                                                        offer_provenance,
                                                         sender_pubkey,
                                                         payload,
                                                         sender_addr: src_addr,
@@ -870,7 +874,7 @@ async fn run_checker(
                                     // Parse PT data as CLUTCH message and emit appropriate event
                                     use crate::network::fgtw::protocol::{
                                         parse_clutch_complete_vsf_without_recipient_check,
-                                        parse_clutch_full_offer_vsf_without_recipient_check,
+                                        parse_clutch_offer_vsf_without_recipient_check,
                                         parse_clutch_kem_response_vsf_without_recipient_check,
                                     };
 
@@ -882,24 +886,24 @@ async fn run_checker(
                                         contact_list.iter().any(|p| *p == sender)
                                     };
 
-                                    // Try to parse as ClutchFullOffer
-                                    if let Ok((payload, sender_pubkey, ceremony_id, conversation_token)) =
-                                        parse_clutch_full_offer_vsf_without_recipient_check(&data)
+                                    // Try to parse as ClutchOffer
+                                    if let Ok((payload, sender_pubkey, offer_provenance, conversation_token)) =
+                                        parse_clutch_offer_vsf_without_recipient_check(&data)
                                     {
                                         // Defense-in-depth: verify sender again
                                         if !is_known_sender_pt(&sender_pubkey) {
                                             crate::log_error(&format!(
-                                                "PT: ClutchFullOffer REJECTED (defense-in-depth) - pubkey: {}",
+                                                "PT: ClutchOffer REJECTED (defense-in-depth) - pubkey: {}",
                                                 hex::encode(&sender_pubkey[..8])
                                             ));
                                             continue;
                                         }
-                                        crate::log_info("PT: Parsed as ClutchFullOffer (VSF verified)");
+                                        crate::log_info("PT: Parsed as ClutchOffer (VSF verified)");
                                         send_status_update(
                                             &status_tx_recv,
-                                            StatusUpdate::ClutchFullOfferReceived {
+                                            StatusUpdate::ClutchOfferReceived {
                                                 conversation_token,
-                                                ceremony_id,
+                                                offer_provenance,
                                                 sender_pubkey,
                                                 payload,
                                                 sender_addr: src_addr,
@@ -1159,7 +1163,7 @@ async fn run_checker(
                                 }
 
                                 // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete handlers REMOVED
-                                // Full 8-primitive CLUTCH uses TCP with ClutchFullOfferReceived and ClutchKemResponseReceived
+                                // Full 8-primitive CLUTCH uses TCP with ClutchOfferReceived and ClutchKemResponseReceived
                                 // See CLUTCH.md Section 4.2 for the slot-based ceremony protocol.
 
                                 FgtwMessage::ChatMessage {
@@ -1259,8 +1263,9 @@ async fn run_checker(
         }
     });
 
-    // Track pending PT sends for TCP fallback: (peer, start_time, vsf_bytes, retry_count)
-    let mut pending_pt_sends: Vec<(SocketAddr, Instant, Vec<u8>, u8)> = Vec::new();
+    // Track pending PT sends for TCP fallback: (transfer_id, peer, start_time, vsf_bytes, retry_count)
+    // Keyed by transfer_id to correctly track individual transfers (multiple can go to same peer)
+    let mut pending_pt_sends: Vec<(usize, SocketAddr, Instant, Vec<u8>, u8)> = Vec::new();
     const PT_TIMEOUT: Duration = Duration::from_secs(30);
     const PT_MAX_RETRIES: u8 = 1; // Retry UDP once before TCP fallback
 
@@ -1371,7 +1376,7 @@ async fn run_checker(
         }
 
         // NOTE: "Process CLUTCH requests" block REMOVED
-        // Full 8-primitive CLUTCH uses ClutchFullOfferRequest and ClutchKemResponseRequest
+        // Full 8-primitive CLUTCH uses ClutchOfferRequest and ClutchKemResponseRequest
         // which are processed below using TCP/PT transport.
 
         // Process message requests (encrypted chat messages - CHAIN format)
@@ -1452,33 +1457,19 @@ async fn run_checker(
                 request.data.len()
             ));
             let mut pt_mgr = pt.lock().unwrap();
-            let spec_bytes = pt_mgr.start_send(request.peer_addr, request.data);
+            let (spec_bytes, _transfer_id) = pt_mgr.send(request.peer_addr, request.data);
             drop(pt_mgr); // Drop lock before async call
             udp::send(&socket, &spec_bytes, request.peer_addr).await;
         }
 
         // Process full CLUTCH offer requests (PT/UDP primary, TCP fallback)
         // Uses VSF format with Ed25519 signature for verification
-        while let Ok(request) = full_offer_rx.try_recv() {
-            use crate::network::fgtw::protocol::build_clutch_full_offer_vsf;
-
-            // Build signed VSF message
-            let vsf_bytes = match build_clutch_full_offer_vsf(
-                &request.conversation_token,
-                &request.ceremony_id,
-                &request.payload,
-                &request.device_pubkey,
-                &request.device_secret,
-            ) {
-                Ok(bytes) => bytes,
-                Err(e) => {
-                    crate::log_error(&format!("Status: Failed to build ClutchFullOffer VSF: {}", e));
-                    continue;
-                }
-            };
+        while let Ok(request) = offer_rx.try_recv() {
+            // VSF bytes already built by caller (to capture offer_provenance)
+            let vsf_bytes = request.vsf_bytes;
 
             crate::log_info(&format!(
-                "Status: Sending ClutchFullOffer to {} ({} bytes VSF) via PT/UDP",
+                "Status: Sending ClutchOffer to {} ({} bytes VSF) via PT/UDP",
                 request.peer_addr,
                 vsf_bytes.len()
             ));
@@ -1487,17 +1478,17 @@ async fn run_checker(
             #[cfg(feature = "development")]
             {
                 if let Ok(inspection) = vsf::inspect::inspect_vsf(&vsf_bytes) {
-                    crate::log_info(&format!("Status: ClutchFullOffer VSF:\n{}", inspection));
+                    crate::log_info(&format!("Status: ClutchOffer VSF:\n{}", inspection));
                 }
             }
 
             // Send via PT/UDP (primary) - track for TCP fallback on timeout
-            let spec_bytes = {
+            let (spec_bytes, transfer_id) = {
                 let mut pt_mgr = pt.lock().unwrap();
-                pt_mgr.start_send(request.peer_addr, vsf_bytes.clone())
+                pt_mgr.send(request.peer_addr, vsf_bytes.clone())
             };
             udp::send(&socket, &spec_bytes, request.peer_addr).await;
-            pending_pt_sends.push((request.peer_addr, Instant::now(), vsf_bytes, 0));
+            pending_pt_sends.push((transfer_id, request.peer_addr, Instant::now(), vsf_bytes, 0));
         }
 
         // Process CLUTCH KEM response requests (PT/UDP primary, TCP fallback)
@@ -1535,16 +1526,16 @@ async fn run_checker(
             }
 
             // Send via PT/UDP (primary) - track for TCP fallback on timeout
-            let spec_bytes = {
+            let (spec_bytes, transfer_id) = {
                 let mut pt_mgr = pt.lock().unwrap();
-                pt_mgr.start_send(request.peer_addr, vsf_bytes.clone())
+                pt_mgr.send(request.peer_addr, vsf_bytes.clone())
             };
             udp::send(&socket, &spec_bytes, request.peer_addr).await;
-            pending_pt_sends.push((request.peer_addr, Instant::now(), vsf_bytes, 0));
+            pending_pt_sends.push((transfer_id, request.peer_addr, Instant::now(), vsf_bytes, 0));
         }
 
         // Process CLUTCH complete proof requests
-        // Small messages (<1KB) go direct UDP, larger use PT/TCP fallback
+        // Routes through PT for reliable delivery with exponential backoff
         while let Ok(request) = complete_proof_rx.try_recv() {
             use crate::network::fgtw::protocol::build_clutch_complete_vsf;
 
@@ -1571,29 +1562,18 @@ async fn run_checker(
                 }
             }
 
-            // Small messages (<1KB) go direct UDP - no PT overhead needed
-            const DIRECT_UDP_THRESHOLD: usize = 1024;
-            if vsf_bytes.len() <= DIRECT_UDP_THRESHOLD {
-                crate::log_info(&format!(
-                    "Status: Sending ClutchComplete to {} ({} bytes) via direct UDP",
-                    request.peer_addr,
-                    vsf_bytes.len()
-                ));
-                udp::send(&socket, &vsf_bytes, request.peer_addr).await;
-            } else {
-                // Large message - use PT/UDP with TCP fallback
-                crate::log_info(&format!(
-                    "Status: Sending ClutchComplete to {} ({} bytes) via PT/UDP",
-                    request.peer_addr,
-                    vsf_bytes.len()
-                ));
-                let spec_bytes = {
-                    let mut pt_mgr = pt.lock().unwrap();
-                    pt_mgr.start_send(request.peer_addr, vsf_bytes.clone())
-                };
-                udp::send(&socket, &spec_bytes, request.peer_addr).await;
-                pending_pt_sends.push((request.peer_addr, Instant::now(), vsf_bytes, 0));
-            }
+            // Route through PT stream for reliable delivery
+            crate::log_info(&format!(
+                "Status: Sending ClutchComplete to {} ({} bytes) via PT",
+                request.peer_addr,
+                vsf_bytes.len()
+            ));
+            let (spec_bytes, transfer_id) = {
+                let mut pt_mgr = pt.lock().unwrap();
+                pt_mgr.send(request.peer_addr, vsf_bytes.clone())
+            };
+            udp::send(&socket, &spec_bytes, request.peer_addr).await;
+            pending_pt_sends.push((transfer_id, request.peer_addr, Instant::now(), vsf_bytes, 0));
         }
 
         // Process LAN broadcast requests (NAT hairpinning workaround)
@@ -1622,7 +1602,7 @@ async fn run_checker(
         // Process clear PT sends requests (when CLUTCH completes)
         while let Ok(request) = clear_pt_rx.try_recv() {
             let before = pending_pt_sends.len();
-            pending_pt_sends.retain(|(a, _, _, _)| *a != request.peer_addr);
+            pending_pt_sends.retain(|(_, addr, _, _, _)| *addr != request.peer_addr);
             let removed = before - pending_pt_sends.len();
             if removed > 0 {
                 crate::log_info(&format!(
@@ -1637,57 +1617,70 @@ async fn run_checker(
             }
         }
 
-        // PT periodic tick - check timeouts and retransmit
+        // PT periodic tick - check timeouts and retransmit (SPEC/DATA packets)
         {
             let mut pt_mgr = pt.lock().unwrap();
             let to_send = pt_mgr.tick();
             drop(pt_mgr); // Drop lock before async calls
-            for (addr, pkt) in to_send {
-                udp::send(&socket, &pkt, addr).await;
+            for (addr, pkt, use_tcp) in to_send {
+                if use_tcp {
+                    // TCP fallback for retries
+                    if let Err(e) = crate::network::tcp::send_tcp(&pkt, addr).await {
+                        crate::log_error(&format!("PT: TCP send failed to {}: {}", addr, e));
+                    }
+                } else {
+                    udp::send(&socket, &pkt, addr).await;
+                }
             }
         }
 
-        // Check for completed PT sends - remove from pending
+        // Check for completed PT sends - remove from pending (by transfer_id for correctness)
         {
-            let pt_mgr = pt.lock().unwrap();
-            let completed: Vec<SocketAddr> = pending_pt_sends
+            let mut pt_mgr = pt.lock().unwrap();
+            let completed: Vec<(usize, SocketAddr)> = pending_pt_sends
                 .iter()
-                .filter(|(addr, _, _, _)| pt_mgr.is_outbound_complete(addr))
-                .map(|(addr, _, _, _)| *addr)
+                .filter(|(id, _, _, _, _)| pt_mgr.is_outbound_complete_by_id(*id))
+                .map(|(id, addr, _, _, _)| (*id, *addr))
                 .collect();
+            for (id, addr) in &completed {
+                pt_mgr.remove_outbound_by_id(*id);
+                crate::log_info(&format!(
+                    "PT: Transfer #{} to {} completed, removed from pending",
+                    id, addr
+                ));
+            }
             drop(pt_mgr);
-            for addr in completed {
-                pending_pt_sends.retain(|(a, _, _, _)| *a != addr);
-                crate::log_info(&format!("PT: Transfer to {} completed, removed from pending", addr));
+            for (id, _) in completed {
+                pending_pt_sends.retain(|(i, _, _, _, _)| *i != id);
             }
         }
 
         // Check for PT timeouts - retry UDP once, then fall back to TCP
         {
             let now = Instant::now();
-            let timed_out: Vec<(SocketAddr, Vec<u8>, u8)> = pending_pt_sends
+            let timed_out: Vec<(usize, SocketAddr, Vec<u8>, u8)> = pending_pt_sends
                 .iter()
-                .filter(|(_, start, _, _)| now.duration_since(*start) > PT_TIMEOUT)
-                .map(|(addr, _, vsf, retries)| (*addr, vsf.clone(), *retries))
+                .filter(|(_, _, start, _, _)| now.duration_since(*start) > PT_TIMEOUT)
+                .map(|(id, addr, _, vsf, retries)| (*id, *addr, vsf.clone(), *retries))
                 .collect();
 
-            for (addr, vsf_bytes, retries) in timed_out {
-                pending_pt_sends.retain(|(a, _, _, _)| *a != addr);
+            for (old_transfer_id, addr, vsf_bytes, retries) in timed_out {
+                pending_pt_sends.retain(|(i, _, _, _, _)| *i != old_transfer_id);
 
                 if retries < PT_MAX_RETRIES {
-                    // Retry UDP transfer
+                    // Retry UDP transfer (gets new transfer_id)
                     crate::log_info(&format!(
-                        "PT: Transfer to {} timed out, retrying UDP ({}/{})",
-                        addr, retries + 1, PT_MAX_RETRIES
+                        "PT: Transfer #{} to {} timed out, retrying UDP ({}/{})",
+                        old_transfer_id, addr, retries + 1, PT_MAX_RETRIES
                     ));
 
-                    // Resend SPEC and re-add to pending with incremented retry count
-                    let spec_bytes = {
+                    // Resend SPEC and re-add to pending with new transfer_id and incremented retry count
+                    let (spec_bytes, new_transfer_id) = {
                         let mut pt_mgr = pt.lock().unwrap();
-                        pt_mgr.start_send(addr, vsf_bytes.clone())
+                        pt_mgr.send(addr, vsf_bytes.clone())
                     };
                     udp::send(&socket, &spec_bytes, addr).await;
-                    pending_pt_sends.push((addr, Instant::now(), vsf_bytes, retries + 1));
+                    pending_pt_sends.push((new_transfer_id, addr, Instant::now(), vsf_bytes, retries + 1));
                 } else {
                     // Retries exhausted - try TCP fallback (unless previously denied)
                     if tcp_denied_peers.contains(&addr) {
@@ -1759,7 +1752,7 @@ fn verify_provenance_signature(
 
 // NOTE: compute_clutch_provenance and compute_clutch_complete_provenance REMOVED
 // They were only used by the legacy v1 ClutchOffer/ClutchInit/ClutchResponse/ClutchComplete
-// Full 8-primitive CLUTCH uses different provenance via build_clutch_full_offer_vsf()
+// Full 8-primitive CLUTCH uses different provenance via build_clutch_offer_vsf()
 
 /// Compute provenance hash for encrypted chat message (CHAIN format)
 /// provenance = BLAKE3(conversation_token || prev_msg_hp)
@@ -1798,8 +1791,8 @@ async fn handle_pt_vsf_packet(
     src_addr: SocketAddr,
     pt: &Arc<Mutex<PTManager>>,
     socket: &Arc<tokio::net::UdpSocket>,
-    status_tx: &Sender<StatusUpdate>,
-    event_proxy: &OptionalEventProxy,
+    _status_tx: &Sender<StatusUpdate>,
+    _event_proxy: &OptionalEventProxy,
     contacts: &ContactPubkeys,
 ) -> Option<bool> {
     // Try to parse as PT packet (supports both header-only and section formats)
@@ -1815,30 +1808,14 @@ async fn handle_pt_vsf_packet(
             match name.as_str() {
                 "pt_ack" => {
                     if let Some(ack) = PTAck::from_vsf_header(provenance_hash, &values) {
-                        let (response_packets, is_complete) = {
+                        // Handle ACK - state transitions happen in handle_ack
+                        // Completion check and cleanup handled by main loop via transfer_id
+                        let response_packets = {
                             let mut pt_mgr = pt.lock().unwrap();
-                            let packets = pt_mgr.handle_ack(src_addr, ack);
-                            let complete = pt_mgr.is_outbound_complete(&src_addr);
-                            if complete {
-                                pt_mgr.remove_outbound(&src_addr);
-                            }
-                            (packets, complete)
+                            pt_mgr.handle_ack(src_addr, ack)
                         };
                         for pkt in response_packets {
                             udp::send(socket, &pkt, src_addr).await;
-                        }
-                        if is_complete {
-                            crate::log_info(&format!(
-                                "PT: Outbound transfer to {} complete",
-                                src_addr
-                            ));
-                            send_status_update(
-                                status_tx,
-                                StatusUpdate::PTSendComplete {
-                                    peer_addr: src_addr,
-                                },
-                                event_proxy,
-                            );
                         }
                         return Some(true);
                     }
@@ -1870,23 +1847,11 @@ async fn handle_pt_vsf_packet(
                         if !complete.success {
                             crate::log_error(&format!("PT: Transfer FAILED from {}", src_addr));
                         }
-                        let is_complete = {
+                        // Handle completion - state transitions happen in handle_complete
+                        // Completion check and cleanup handled by main loop via transfer_id
+                        {
                             let mut pt_mgr = pt.lock().unwrap();
                             pt_mgr.handle_complete(src_addr, complete);
-                            let complete = pt_mgr.is_outbound_complete(&src_addr);
-                            if complete {
-                                pt_mgr.remove_outbound(&src_addr);
-                            }
-                            complete
-                        };
-                        if is_complete {
-                            send_status_update(
-                                status_tx,
-                                StatusUpdate::PTSendComplete {
-                                    peer_addr: src_addr,
-                                },
-                                event_proxy,
-                            );
                         }
                         return Some(true);
                     }

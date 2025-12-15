@@ -14,25 +14,23 @@ use crate::crypto::chain::{Chain, CHAIN_SIZE};
 
 /// Ceremony ID: deterministic CLUTCH ceremony identifier.
 ///
-/// Derived in two steps:
-/// 1. Fast: `BLAKE3("PHOTON_CEREMONY_v1" || sorted_handle_hashes)` - deterministic input
-/// 2. Slow: `handle_proof(step1)` - memory-hard (~1s) to prevent brute-force enumeration
+/// Derived via spaghettify from handle_hashes + sorted ping provenances:
+/// 1. Fast base: `BLAKE3("PHOTON_CEREMONY_v1" || sorted_handle_hashes)`
+/// 2. Nonce: Sorted ping provenances (unique per ceremony via timestamps)
+/// 3. Final: `spaghettify(base || sorted_provenances...)`
 ///
-/// Same value on all participants' devices - no race conditions.
-/// The memory-hard step prevents attackers from enumerating handle pairs to
-/// discover who is communicating with whom.
+/// Same value on all participants' devices - both parties collect all pings.
+/// Unique per ceremony due to nanosecond timestamps in ping provenances.
+/// No memory-hard step needed - timestamp entropy defeats rainbow tables.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CeremonyId(pub [u8; 32]);
 
 impl CeremonyId {
-    /// Derive ceremony ID from participant handle hashes (fast step only).
+    /// Derive ceremony ID base from participant handle hashes (fast step).
     ///
-    /// This is the deterministic BLAKE3 hash - use this for the pre-image
-    /// that will be passed to handle_proof() for the full ceremony_id.
-    ///
-    /// Handle hashes are sorted for canonical ordering - the same participants
-    /// will always produce the same pre-image regardless of order.
-    pub fn derive_preimage(handle_hashes: &[[u8; 32]]) -> [u8; 32] {
+    /// This is the deterministic BLAKE3 hash that identifies the participants.
+    /// Handle hashes are sorted for canonical ordering.
+    pub fn derive_base(handle_hashes: &[[u8; 32]]) -> [u8; 32] {
         // Sort for canonical ordering
         let mut sorted = handle_hashes.to_vec();
         sorted.sort();
@@ -45,15 +43,37 @@ impl CeremonyId {
         *hasher.finalize().as_bytes()
     }
 
-    /// Derive full ceremony ID with memory-hard step (~1 second).
+    /// Derive full ceremony ID from handle_hashes and ping provenances.
     ///
-    /// This runs handle_proof() on the deterministic pre-image to prevent
-    /// brute-force enumeration of handle pairs.
-    pub fn derive(handle_hashes: &[[u8; 32]]) -> Self {
-        let preimage = Self::derive_preimage(handle_hashes);
-        let preimage_hash = blake3::Hash::from_bytes(preimage);
-        let ceremony_id = crate::crypto::handle_proof::handle_proof(&preimage_hash);
-        Self(*ceremony_id.as_bytes())
+    /// Uses spaghettify to mix:
+    /// - Base: BLAKE3(domain || sorted_handle_hashes) - identifies participants
+    /// - Nonce: Sorted ping provenances - unique per ceremony (timestamp entropy)
+    ///
+    /// Ping provenances are BLAKE3(sender_pubkey || timestamp_nanos) from each
+    /// party's ping. Both parties collect all pings, sort them, and derive
+    /// the same ceremony_id deterministically.
+    ///
+    /// No memory-hard computation needed - nanosecond timestamps provide
+    /// enough entropy to defeat rainbow table attacks.
+    pub fn derive(handle_hashes: &[[u8; 32]], ping_provenances: &[[u8; 32]]) -> Self {
+        use crate::crypto::clutch::spaghettify;
+
+        let base = Self::derive_base(handle_hashes);
+
+        // Sort provenances for canonical ordering (should already be sorted, but ensure)
+        let mut sorted_provs = ping_provenances.to_vec();
+        sorted_provs.sort();
+
+        // Build input: base || sorted_provenances
+        let mut input = Vec::with_capacity(32 + 32 * sorted_provs.len());
+        input.extend_from_slice(&base);
+        for prov in &sorted_provs {
+            input.extend_from_slice(prov);
+        }
+
+        // Spaghettify: domain-separated, maximally weird mixing
+        let ceremony_id = spaghettify(&input);
+        Self(ceremony_id)
     }
 
     /// Create from raw bytes (32 bytes)

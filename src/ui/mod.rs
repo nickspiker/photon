@@ -53,4 +53,8 @@ pub enum PhotonEvent {
     NetworkUpdate,
     /// Background CLUTCH keypair generation completed
     ClutchKeygenComplete,
+    /// Background CLUTCH KEM encapsulation completed
+    ClutchKemEncapComplete,
+    /// Background CLUTCH ceremony completion (avalanche_expand) completed
+    ClutchCeremonyComplete,
 }

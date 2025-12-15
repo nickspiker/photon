@@ -557,6 +557,7 @@ fn decode_vsf_uint(bytes: &[u8]) -> Option<(usize, usize)> {
     None // Incomplete
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;

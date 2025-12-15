@@ -69,6 +69,43 @@ pub struct HandleQuery {
     port: Arc<Mutex<u16>>,
 }
 
+/// Bind UDP socket - tries ports in order: 4383 → 3546 → ephemeral
+/// Returns (socket, port) - must have both UDP and TCP free on chosen port
+fn bind_photon_socket() -> (UdpSocket, u16) {
+    let ports_to_try = [crate::PHOTON_PORT, crate::PHOTON_PORT_FALLBACK];
+
+    for port in ports_to_try {
+        // Try to bind UDP first
+        match UdpSocket::bind(format!("[::]:{}", port)) {
+            Ok(udp) => {
+                // Check TCP is also free
+                match std::net::TcpListener::bind(format!("[::]:{}", port)) {
+                    Ok(_tcp) => {
+                        // Both free! TCP listener dropped, status.rs will create its own
+                        crate::log_info(&format!("Network: Bound to port {} (UDP+TCP)", port));
+                        return (udp, port);
+                    }
+                    Err(e) => {
+                        crate::log_error(&format!("Network: Port {} TCP busy: {}", port, e));
+                    }
+                }
+            }
+            Err(e) => {
+                crate::log_error(&format!("Network: Port {} UDP busy: {}", port, e));
+            }
+        }
+    }
+
+    // Fall back to ephemeral if all fixed ports failed
+    crate::log_error("Network: All fixed ports busy - falling back to ephemeral");
+    let udp = UdpSocket::bind("[::]:0").expect("Failed to bind UDP socket");
+    let port = udp
+        .local_addr()
+        .expect("Failed to get socket address")
+        .port();
+    (udp, port)
+}
+
 impl HandleQuery {
     /// Create a new handle query system
     ///
@@ -105,53 +142,8 @@ impl HandleQuery {
         let last_handle_proof = Arc::new(Mutex::new(None::<[u8; 32]>));
         let last_handle = Arc::new(Mutex::new(None::<String>));
 
-        // Bind UDP socket to PHOTON_PORT (4383) - fixed port for all Photon network traffic
-        // Must have BOTH UDP and TCP free on this port
-        let (initial_socket, initial_port) = {
-            let port = crate::PHOTON_PORT;
-            // Try to bind UDP first
-            match UdpSocket::bind(format!("[::]:{}", port)) {
-                Ok(udp) => {
-                    // Check TCP is also free
-                    match std::net::TcpListener::bind(format!("[::]:{}", port)) {
-                        Ok(_tcp) => {
-                            // Both free! TCP listener dropped, status.rs will create its own
-                            crate::log_info(&format!(
-                                "Network: Bound to PHOTON_PORT {} (UDP+TCP)",
-                                port
-                            ));
-                            (udp, port)
-                        }
-                        Err(e) => {
-                            crate::log_error(&format!(
-                                "Network: PHOTON_PORT {} TCP busy: {} - falling back to ephemeral",
-                                port, e
-                            ));
-                            // Fall back to ephemeral port
-                            let udp = UdpSocket::bind("[::]:0").expect("Failed to bind UDP socket");
-                            let p = udp
-                                .local_addr()
-                                .expect("Failed to get socket address")
-                                .port();
-                            (udp, p)
-                        }
-                    }
-                }
-                Err(e) => {
-                    crate::log_error(&format!(
-                        "Network: PHOTON_PORT {} UDP busy: {} - falling back to ephemeral",
-                        port, e
-                    ));
-                    // Fall back to ephemeral port
-                    let udp = UdpSocket::bind("[::]:0").expect("Failed to bind UDP socket");
-                    let p = udp
-                        .local_addr()
-                        .expect("Failed to get socket address")
-                        .port();
-                    (udp, p)
-                }
-            }
-        };
+        // Bind UDP socket - tries 4383 → 3546 → ephemeral
+        let (initial_socket, initial_port) = bind_photon_socket();
         crate::log_info(&format!(
             "Network: Using port {} for all traffic",
             initial_port
@@ -234,53 +226,8 @@ impl HandleQuery {
         let last_handle_proof = Arc::new(Mutex::new(None::<[u8; 32]>));
         let last_handle = Arc::new(Mutex::new(None::<String>));
 
-        // Bind UDP socket to PHOTON_PORT (4383) - fixed port for all Photon network traffic
-        // Must have BOTH UDP and TCP free on this port
-        let (initial_socket, initial_port) = {
-            let port = crate::PHOTON_PORT;
-            // Try to bind UDP first
-            match UdpSocket::bind(format!("[::]:{}", port)) {
-                Ok(udp) => {
-                    // Check TCP is also free
-                    match std::net::TcpListener::bind(format!("[::]:{}", port)) {
-                        Ok(_tcp) => {
-                            // Both free! TCP listener dropped, status.rs will create its own
-                            crate::log_info(&format!(
-                                "Network: Bound to PHOTON_PORT {} (UDP+TCP)",
-                                port
-                            ));
-                            (udp, port)
-                        }
-                        Err(e) => {
-                            crate::log_error(&format!(
-                                "Network: PHOTON_PORT {} TCP busy: {} - falling back to ephemeral",
-                                port, e
-                            ));
-                            // Fall back to ephemeral port
-                            let udp = UdpSocket::bind("[::]:0").expect("Failed to bind UDP socket");
-                            let p = udp
-                                .local_addr()
-                                .expect("Failed to get socket address")
-                                .port();
-                            (udp, p)
-                        }
-                    }
-                }
-                Err(e) => {
-                    crate::log_error(&format!(
-                        "Network: PHOTON_PORT {} UDP busy: {} - falling back to ephemeral",
-                        port, e
-                    ));
-                    // Fall back to ephemeral port
-                    let udp = UdpSocket::bind("[::]:0").expect("Failed to bind UDP socket");
-                    let p = udp
-                        .local_addr()
-                        .expect("Failed to get socket address")
-                        .port();
-                    (udp, p)
-                }
-            }
-        };
+        // Bind UDP socket - tries 4383 → 3546 → ephemeral
+        let (initial_socket, initial_port) = bind_photon_socket();
         crate::log_info(&format!(
             "Network: Using port {} for all traffic",
             initial_port

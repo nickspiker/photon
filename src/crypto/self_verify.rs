@@ -50,12 +50,29 @@
 ///! built and released by the original author. No exceptions.
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 
-/// Embedded public key for signature verification
+/// Embedded public key for signature verification and system messages.
+/// This is Nick Spiker's (fractaldecoder) signing key - used for:
+/// - Binary signature verification
+/// - System messages (updates, security notices, etc.)
+///
+/// Messages signed by this key are official Photon communications.
 /// Public key (hex): dff3af0c127c0bebe539c421da37993a517bfd78d2f5ee491d52fbf616444747
-const PUBLIC_KEY_BYTES: [u8; 32] = [
+pub const AUTHOR_PUBKEY: [u8; 32] = [
     0xdf, 0xf3, 0xaf, 0x0c, 0x12, 0x7c, 0x0b, 0xeb, 0xe5, 0x39, 0xc4, 0x21, 0xda, 0x37, 0x99, 0x3a,
     0x51, 0x7b, 0xfd, 0x78, 0xd2, 0xf5, 0xee, 0x49, 0x1d, 0x52, 0xfb, 0xf6, 0x16, 0x44, 0x47, 0x47,
 ];
+
+/// List of trusted system pubkeys for official messages.
+/// Currently just the author - future: democratic governance for adding keys.
+pub const SYSTEM_PUBKEYS: &[[u8; 32]] = &[
+    AUTHOR_PUBKEY,
+];
+
+/// Check if a pubkey is a trusted system pubkey.
+/// Messages signed by system pubkeys are official Photon communications.
+pub fn is_system_pubkey(pubkey: &[u8; 32]) -> bool {
+    SYSTEM_PUBKEYS.iter().any(|k| k == pubkey)
+}
 
 /// Verify that this binary has a valid Ed25519 signature
 ///
@@ -94,7 +111,7 @@ pub fn verify_binary_hash() -> Result<String, String> {
     let hash = blake3::hash(&exe_data);
 
     // Load public key
-    let verifying_key = VerifyingKey::from_bytes(&PUBLIC_KEY_BYTES)
+    let verifying_key = VerifyingKey::from_bytes(&AUTHOR_PUBKEY)
         .map_err(|e| format!("Invalid public key: {}", e))?;
 
     // Verify signature

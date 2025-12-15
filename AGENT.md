@@ -80,6 +80,87 @@ unsafe { pixels.get_unchecked_mut(idx) }
 If there's a SAFETY comment, **read it**. It's there because the human proved correctness.
 HashMap shall NOT be used without explicit consent and proof showing how it is faster/better than a linear search or a simple lookup.
 
+## Decimal Indexing is FORBIDDEN
+
+**NEVER use decimal digits (0-9) for array indices, field names, or any programmatic counting.**
+
+### Why Decimal Indexing is Broken:
+
+0. **CPUs count in binary** - every decimal index requires base conversion overhead
+1. **Off-by-one bugs** - humans start at 1, computers at 0, decimal encourages confusion
+2. **Fragile serialization** - string concatenation like `s{idx}_` creates parse nightmares
+3. **Not how hardware works** - you're teaching incorrect computational models
+
+### The Right Way: VSF Nested Structures
+
+```rust
+// WRONG - decimal string prefixes, flat namespace pollution
+for idx in 0..party_slots.len() {
+    let prefix = format!("s{}_", idx);  // s0_, s1_, s2_... DECIMAL GARBAGE
+    fields.push((format!("{}handle_hash", prefix), ...));
+    fields.push((format!("{}offer_x25519_pub", prefix), ...));
+}
+```
+
+```rust
+// CORRECT - proper nested VSF sections
+let mut slots_section = VsfSection::new("party_slots");
+for slot in &party_slots {
+    let mut slot_section = VsfSection::new("slot");
+    slot_section.add_field("handle_hash", VsfType::hb(slot.handle_hash));
+    slot_section.add_field("offer_x25519_pub", VsfType::kx(slot.offer.x25519_pub));
+    slots_section.add_nested_section(slot_section);
+}
+```
+
+**If you find yourself doing string formatting with decimal indices, STOP. You're doing it wrong. Use VSF's native array/section nesting.**
+
+## VSF Type Markers Are Self-Describing
+
+**NEVER rely on position to determine what a value is. The type marker tells you.**
+
+VSF key types are self-describing:
+- `kx` = X25519 public key (32B)
+- `kf` = FrodoKEM public key (~15KB)
+- `kn` = NTRU public key (~1KB)
+- `kl` = Classic McEliece public key (~524KB)
+- `kh` = HQC public key (~7KB)
+- `kk` = secp256k1 public key (33B)
+- `kp` = P-curve key (disambiguate by size: 97B = P-384, 65B = P-256)
+- `ks` = Shared secret (any KEM output)
+
+### WRONG: Positional Parsing
+
+```rust
+// FRAGILE - what if order changes? Silent corruption!
+slot.offer = Some(ClutchFullOfferPayload {
+    x25519_public: extract_key(&values[idx])?,     // Assumes position 0 is x25519
+    frodo_public: extract_key(&values[idx + 4])?,  // Assumes position 4 is frodo
+});
+```
+
+### CORRECT: Match on Type Marker
+
+```rust
+// ROBUST - type marker tells us exactly what it is
+for v in &values {
+    match v {
+        VsfType::kx(b) => offer.x25519_public = b.try_into()?,
+        VsfType::kf(b) => offer.frodo_public = b.clone(),
+        VsfType::kn(b) => offer.ntru_public = b.clone(),
+        VsfType::kl(b) => offer.mceliece_public = b.clone(),
+        VsfType::kh(b) => offer.hqc_public = b.clone(),
+        VsfType::kk(b) => offer.secp256k1_public = b.clone(),
+        VsfType::kp(b) if b.len() == 97 => offer.p384_public = b.clone(),
+        VsfType::kp(b) if b.len() == 65 => offer.p256_public = b.clone(),
+        _ => {}
+    }
+}
+```
+
+**Why**: If you parse `kl` (McEliece) into a field expecting `kf` (Frodo), you get silent corruption.
+The type marker exists precisely so you never have to guess. Use it.
+
 ## Language Preferences
 
 ### Strongly Preferred:
@@ -323,6 +404,7 @@ save_messages(&contact, &our_seed, &device_secret)?;  // RIGHT HERE
 - **Spirix**: Two's complement floating-point (replaces IEEE-754)
 - **TOKEN**: Cryptographic identity/reputation system
 - **Ferros**: Kill-switch ready Rust OS
+- **VSF**: Unlimited serialization format
 
 ---
 

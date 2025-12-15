@@ -2,13 +2,14 @@
 use std::sync::atomic::AtomicBool;
 pub static DEBUG_ENABLED: AtomicBool = AtomicBool::new(false);
 
-/// Photon network port - used for ALL network communication
+/// Photon network ports - used for ALL network communication
 /// UDP: peer-to-peer status pings, CLUTCH ceremony, chat messages
 /// TCP: large payloads (full CLUTCH offers ~548KB, KEM responses ~17KB)
 /// FGTW: handle registration and peer discovery announcements
 /// LAN: broadcast discovery for NAT hairpinning workaround
-/// Port 4383 is IANA unassigned (range 4380-4388)
+/// Primary: 4383, Fallback: 3546 (both IANA unassigned)
 pub const PHOTON_PORT: u16 = 4383;
+pub const PHOTON_PORT_FALLBACK: u16 = 3546;
 
 // Debug print macro - only prints if DEBUG_ENABLED is true
 // Compiled out entirely in release builds

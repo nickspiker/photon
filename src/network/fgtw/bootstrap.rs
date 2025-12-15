@@ -373,9 +373,8 @@ fn decrypt_from_fgtw(
 }
 
 /// Build VSF announce message (new encrypted format)
-/// Structure: RÅ< z y b ef6 hp n[1] (d"announce" ke v'e'[encrypted] o b n0) > [d"announce" v(b'e', encrypted[hb(challenge) + hb(handle) + u(port) + ke(avatar_pub)?])]
-/// The device Ed25519 key (ke) is in the header field, signature (ge) is added by sign_section()
-/// Timestamp is generated at flattening time by sign_section()
+/// Structure: RÅ< z y b ef6 hp ke ge n[1] (d"announce" o b n) > [announce payload]
+/// The device Ed25519 key (ke) and signature (ge) are at HEADER level for full file integrity
 fn build_announce_message(
     handle_proof: [u8; 32],
     device_key: &Keypair,
@@ -383,8 +382,8 @@ fn build_announce_message(
     challenge_hash: [u8; 32],
     avatar_pub_key: Option<[u8; 32]>,
 ) -> Result<Vec<u8>, String> {
-    use vsf::verification::sign_section;
-    use vsf::{SectionMeta, VsfBuilder, VsfType};
+    use vsf::verification::sign_file;
+    use vsf::{VsfBuilder, VsfType};
 
     // 1. Build encrypted payload: hb(challenge_hash) + hb(handle_proof) + u(port) + ke(avatar_pub)?
     let mut plaintext = Vec::new();
@@ -400,21 +399,17 @@ fn build_announce_message(
     // 2. Encrypt for FGTW using ephemeral X25519 + AES-GCM
     let encrypted = encrypt_for_fgtw(&plaintext, &FGTW_X25519_PUBLIC_KEY)?;
 
-    // 3. Build VSF using VsfBuilder with section metadata
-    let meta = SectionMeta::new(
-        VsfType::ke(device_key.public.to_bytes().to_vec()), // Ed25519 device public key
-    );
-
+    // 3. Build VSF with ke/ge at HEADER level (not inside section) for full file integrity
     let unsigned_bytes = VsfBuilder::new()
-        .add_section_with_meta(
+        .signed_only(VsfType::ke(device_key.public.to_bytes().to_vec()))
+        .add_section(
             "announce",
             vec![("payload".to_string(), VsfType::v(b'e', encrypted))],
-            meta,
         )
         .build()?;
 
-    // 4. Sign the "announce" section
-    let vsf_bytes = sign_section(unsigned_bytes, "announce", device_key.secret.as_bytes())?;
+    // 4. Sign the entire file (header-level signature)
+    let vsf_bytes = sign_file(unsigned_bytes, device_key.secret.as_bytes())?;
 
     #[cfg(feature = "development")]
     crate::log_info(&crate::network::inspect::vsf_inspect(

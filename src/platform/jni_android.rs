@@ -111,6 +111,12 @@ impl PhotonContext {
         if self.app.check_clutch_keygens() {
             self.app.window_dirty = true;
         }
+        if self.app.check_clutch_kem_encaps() {
+            self.app.window_dirty = true;
+        }
+        if self.app.check_clutch_ceremonies() {
+            self.app.window_dirty = true;
+        }
         self.app.maybe_ping_contacts();
         self.app.maybe_refresh_fgtw();
         self.app.check_refresh_result();

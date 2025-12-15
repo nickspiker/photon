@@ -53,7 +53,8 @@ const CONVERSATION_TOKEN_DOMAIN: &[u8] = b"PHOTON_CONVERSATION_TOKEN_v0";
 /// - Doesn't reveal individual identities to network observers
 /// - Different for each unique set of participants
 ///
-/// Uses smear_hash for algorithm diversity (defense-in-depth).
+/// Uses spaghettify for maximum obfuscation (domain-separated, maximally weird mixing).
+/// VSF type: hg (spaghetti hash)
 pub fn derive_conversation_token(participant_seeds: &[[u8; 32]]) -> [u8; 32] {
     // Canonical ordering - ALL participants compute same token
     let mut sorted_seeds = participant_seeds.to_vec();
@@ -66,7 +67,7 @@ pub fn derive_conversation_token(participant_seeds: &[[u8; 32]]) -> [u8; 32] {
         input.extend_from_slice(seed);
     }
 
-    smear_hash(&input)
+    spaghettify(&input)
 }
 
 /// Domain separator for ceremony instance derivation
@@ -80,7 +81,7 @@ const CEREMONY_INSTANCE_DOMAIN: &[u8] = b"PHOTON_CEREMONY_INSTANCE_v0";
 ///
 /// Both parties can compute this independently once they have both offers.
 /// Works for N-party ceremonies.
-pub fn derive_ceremony_instance(offers: &[&ClutchFullOfferPayload]) -> [u8; 32] {
+pub fn derive_ceremony_instance(offers: &[&ClutchOfferPayload]) -> [u8; 32] {
     // Serialize each offer to bytes (concatenate all 8 public keys)
     let mut offer_bytes: Vec<Vec<u8>> = offers.iter().map(|o| o.to_bytes()).collect();
 
@@ -393,9 +394,9 @@ pub fn spaghettify(input: &[u8]) -> [u8; 32] {
 /// Lower handle_proof = initiator (sends ephemeral pubkeys first)
 /// Higher handle_proof = responder (waits, then responds)
 ///
-/// Both parties compute the same result, so no coordination needed.
-pub fn is_clutch_initiator(our_handle_proof: &[u8; 32], their_handle_proof: &[u8; 32]) -> bool {
-    our_handle_proof < their_handle_proof
+/// All parties compute the same result from sorted handle hashes.
+pub fn is_clutch_initiator(local_handle_proof: &[u8; 32], remote_handle_proof: &[u8; 32]) -> bool {
+    local_handle_proof < remote_handle_proof
 }
 
 /// Generate ephemeral X25519 keypair
@@ -412,11 +413,11 @@ pub fn generate_x25519_ephemeral() -> ([u8; 32], [u8; 32]) {
     (secret_bytes, *public.as_bytes())
 }
 
-/// Perform X25519 ECDH to derive shared secret
-/// Caller should zeroize the returned shared secret after use
-pub fn x25519_ecdh(our_secret: &[u8; 32], their_public: &[u8; 32]) -> [u8; 32] {
-    let secret = StaticSecret::from(*our_secret);
-    let public = PublicKey::from(*their_public);
+/// Perform X25519 ECDH to derive shared secret.
+/// Caller should zeroize the returned shared secret after use.
+pub fn x25519_ecdh(local_secret: &[u8; 32], peer_public: &[u8; 32]) -> [u8; 32] {
+    let secret = StaticSecret::from(*local_secret);
+    let public = PublicKey::from(*peer_public);
     let shared = secret.diffie_hellman(&public);
     // x25519_dalek's SharedSecret zeroizes on drop, but we need the bytes
     *shared.as_bytes()
@@ -440,14 +441,14 @@ pub fn generate_p384_ephemeral() -> (Vec<u8>, Vec<u8>) {
     (secret_bytes, public_bytes)
 }
 
-/// Perform P-384 ECDH
-/// Returns 48-byte shared secret
-pub fn p384_ecdh(our_secret: &[u8], their_public: &[u8]) -> Vec<u8> {
+/// Perform P-384 ECDH.
+/// Returns 48-byte shared secret.
+pub fn p384_ecdh(local_secret: &[u8], peer_public: &[u8]) -> Vec<u8> {
     use p384::elliptic_curve::ecdh::diffie_hellman;
     use p384::{PublicKey, SecretKey};
 
-    let secret = SecretKey::from_slice(our_secret).expect("P-384 secret key invalid");
-    let public = PublicKey::from_sec1_bytes(their_public).expect("P-384 public key invalid");
+    let secret = SecretKey::from_slice(local_secret).expect("P-384 secret key invalid");
+    let public = PublicKey::from_sec1_bytes(peer_public).expect("P-384 public key invalid");
 
     let shared = diffie_hellman(secret.to_nonzero_scalar(), public.as_affine());
     shared.raw_secret_bytes().to_vec()
@@ -467,14 +468,14 @@ pub fn generate_secp256k1_ephemeral() -> (Vec<u8>, Vec<u8>) {
     (secret_bytes, public_bytes)
 }
 
-/// Perform secp256k1 ECDH
-/// Returns 32-byte shared secret
-pub fn secp256k1_ecdh(our_secret: &[u8], their_public: &[u8]) -> Vec<u8> {
+/// Perform secp256k1 ECDH.
+/// Returns 32-byte shared secret.
+pub fn secp256k1_ecdh(local_secret: &[u8], peer_public: &[u8]) -> Vec<u8> {
     use k256::elliptic_curve::ecdh::diffie_hellman;
     use k256::{PublicKey, SecretKey};
 
-    let secret = SecretKey::from_slice(our_secret).expect("secp256k1 secret key invalid");
-    let public = PublicKey::from_sec1_bytes(their_public).expect("secp256k1 public key invalid");
+    let secret = SecretKey::from_slice(local_secret).expect("secp256k1 secret key invalid");
+    let public = PublicKey::from_sec1_bytes(peer_public).expect("secp256k1 public key invalid");
 
     let shared = diffie_hellman(secret.to_nonzero_scalar(), public.as_affine());
     shared.raw_secret_bytes().to_vec()
@@ -494,14 +495,14 @@ pub fn generate_p256_ephemeral() -> (Vec<u8>, Vec<u8>) {
     (secret_bytes, public_bytes)
 }
 
-/// Perform P-256 ECDH
-/// Returns 32-byte shared secret
-pub fn p256_ecdh(our_secret: &[u8], their_public: &[u8]) -> Vec<u8> {
+/// Perform P-256 ECDH.
+/// Returns 32-byte shared secret.
+pub fn p256_ecdh(local_secret: &[u8], peer_public: &[u8]) -> Vec<u8> {
     use p256::elliptic_curve::ecdh::diffie_hellman;
     use p256::{PublicKey, SecretKey};
 
-    let secret = SecretKey::from_slice(our_secret).expect("P-256 secret key invalid");
-    let public = PublicKey::from_sec1_bytes(their_public).expect("P-256 public key invalid");
+    let secret = SecretKey::from_slice(local_secret).expect("P-256 secret key invalid");
+    let public = PublicKey::from_sec1_bytes(peer_public).expect("P-256 public key invalid");
 
     let shared = diffie_hellman(secret.to_nonzero_scalar(), public.as_affine());
     shared.raw_secret_bytes().to_vec()
@@ -937,6 +938,76 @@ impl ClutchAllKeypairs {
         self.mceliece_secret.zeroize();
         self.hqc256_secret.zeroize();
     }
+
+    /// Convert to VSF fields for disk storage.
+    /// Uses proper VSF key types (kx, kp, kf, kn, kl, kh) for public keys
+    /// and wrapped types (vX, vP, vF, vN, vL, vH) for secrets.
+    pub fn to_vsf_fields(&self) -> Vec<(String, vsf::VsfType)> {
+        use vsf::VsfType;
+        vec![
+            // Class 0: Classical EC - public keys use k types, secrets use v wrapped
+            ("x25519_pub".into(), VsfType::kx(self.x25519_public.to_vec())),
+            ("x25519_sec".into(), VsfType::v(b'x', self.x25519_secret.to_vec())),
+            ("p384_pub".into(), VsfType::kp(self.p384_public.clone())),
+            ("p384_sec".into(), VsfType::v(b'3', self.p384_secret.clone())),
+            ("secp256k1_pub".into(), VsfType::kk(self.secp256k1_public.clone())),
+            ("secp256k1_sec".into(), VsfType::v(b'k', self.secp256k1_secret.clone())),
+            ("p256_pub".into(), VsfType::kp(self.p256_public.clone())),
+            ("p256_sec".into(), VsfType::v(b'2', self.p256_secret.clone())),
+            // Class 1: Post-quantum lattice
+            ("frodo_pub".into(), VsfType::kf(self.frodo976_public.clone())),
+            ("frodo_sec".into(), VsfType::v(b'f', self.frodo976_secret.clone())),
+            ("ntru_pub".into(), VsfType::kn(self.ntru701_public.clone())),
+            ("ntru_sec".into(), VsfType::v(b'n', self.ntru701_secret.clone())),
+            // Class 2: Post-quantum code-based
+            ("mceliece_pub".into(), VsfType::kl(self.mceliece_public.clone())),
+            ("mceliece_sec".into(), VsfType::v(b'l', self.mceliece_secret.clone())),
+            ("hqc_pub".into(), VsfType::kh(self.hqc256_public.clone())),
+            ("hqc_sec".into(), VsfType::v(b'h', self.hqc256_secret.clone())),
+        ]
+    }
+
+    /// Parse from VSF section fields
+    pub fn from_vsf_section(section: &vsf::VsfSection) -> Option<Self> {
+        use vsf::VsfType;
+
+        // Helper to extract bytes from a field
+        fn get_bytes(section: &vsf::VsfSection, name: &str) -> Option<Vec<u8>> {
+            section.get_field(name)?.values.first().and_then(|v| match v {
+                VsfType::kx(b) | VsfType::kp(b) | VsfType::kk(b) |
+                VsfType::kf(b) | VsfType::kn(b) | VsfType::kl(b) | VsfType::kh(b) => Some(b.clone()),
+                VsfType::v(_, b) => Some(b.clone()),
+                _ => None,
+            })
+        }
+
+        fn get_array_32(section: &vsf::VsfSection, name: &str) -> Option<[u8; 32]> {
+            let bytes = get_bytes(section, name)?;
+            if bytes.len() != 32 { return None; }
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&bytes);
+            Some(arr)
+        }
+
+        Some(Self {
+            x25519_public: get_array_32(section, "x25519_pub")?,
+            x25519_secret: get_array_32(section, "x25519_sec")?,
+            p384_public: get_bytes(section, "p384_pub")?,
+            p384_secret: get_bytes(section, "p384_sec")?,
+            secp256k1_public: get_bytes(section, "secp256k1_pub")?,
+            secp256k1_secret: get_bytes(section, "secp256k1_sec")?,
+            p256_public: get_bytes(section, "p256_pub")?,
+            p256_secret: get_bytes(section, "p256_sec")?,
+            frodo976_public: get_bytes(section, "frodo_pub")?,
+            frodo976_secret: get_bytes(section, "frodo_sec")?,
+            ntru701_public: get_bytes(section, "ntru_pub")?,
+            ntru701_secret: get_bytes(section, "ntru_sec")?,
+            mceliece_public: get_bytes(section, "mceliece_pub")?,
+            mceliece_secret: get_bytes(section, "mceliece_sec")?,
+            hqc256_public: get_bytes(section, "hqc_pub")?,
+            hqc256_secret: get_bytes(section, "hqc_sec")?,
+        })
+    }
 }
 
 // =============================================================================
@@ -947,9 +1018,9 @@ impl ClutchAllKeypairs {
 /// Sent by both parties at start of CLUTCH ceremony.
 ///
 /// For network serialization, use the VSF-wrapped functions in protocol.rs:
-/// - build_clutch_full_offer_vsf() / parse_clutch_full_offer_vsf()
-#[derive(Clone, Debug)]
-pub struct ClutchFullOfferPayload {
+/// - build_clutch_offer_vsf() / parse_clutch_offer_vsf()
+#[derive(Clone, Debug, Default)]
+pub struct ClutchOfferPayload {
     pub x25519_public: [u8; 32],
     pub p384_public: Vec<u8>,
     pub secp256k1_public: Vec<u8>,
@@ -960,7 +1031,7 @@ pub struct ClutchFullOfferPayload {
     pub hqc256_public: Vec<u8>,
 }
 
-impl ClutchFullOfferPayload {
+impl ClutchOfferPayload {
     /// Create from our keypairs (extract public keys)
     pub fn from_keypairs(keys: &ClutchAllKeypairs) -> Self {
         #[cfg(feature = "development")]
@@ -998,6 +1069,57 @@ impl ClutchFullOfferPayload {
         bytes.extend_from_slice(&self.hqc256_public);
         bytes
     }
+
+    /// Convert to VSF fields for disk storage.
+    /// Uses proper VSF key types (kx, kp, kf, kn, kl, kh) for public keys.
+    pub fn to_vsf_fields(&self) -> Vec<(String, vsf::VsfType)> {
+        use vsf::VsfType;
+        vec![
+            // Class 0: Classical EC public keys
+            ("x25519_pub".into(), VsfType::kx(self.x25519_public.to_vec())),
+            ("p384_pub".into(), VsfType::kp(self.p384_public.clone())),
+            ("secp256k1_pub".into(), VsfType::kk(self.secp256k1_public.clone())),
+            ("p256_pub".into(), VsfType::kp(self.p256_public.clone())),
+            // Class 1: Post-quantum lattice
+            ("frodo_pub".into(), VsfType::kf(self.frodo976_public.clone())),
+            ("ntru_pub".into(), VsfType::kn(self.ntru701_public.clone())),
+            // Class 2: Post-quantum code-based
+            ("mceliece_pub".into(), VsfType::kl(self.mceliece_public.clone())),
+            ("hqc_pub".into(), VsfType::kh(self.hqc256_public.clone())),
+        ]
+    }
+
+    /// Parse from VSF section fields
+    pub fn from_vsf_section(section: &vsf::VsfSection) -> Option<Self> {
+        use vsf::VsfType;
+
+        fn get_bytes(section: &vsf::VsfSection, name: &str) -> Option<Vec<u8>> {
+            section.get_field(name)?.values.first().and_then(|v| match v {
+                VsfType::kx(b) | VsfType::kp(b) | VsfType::kk(b) |
+                VsfType::kf(b) | VsfType::kn(b) | VsfType::kl(b) | VsfType::kh(b) => Some(b.clone()),
+                _ => None,
+            })
+        }
+
+        fn get_array_32(section: &vsf::VsfSection, name: &str) -> Option<[u8; 32]> {
+            let bytes = get_bytes(section, name)?;
+            if bytes.len() != 32 { return None; }
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&bytes);
+            Some(arr)
+        }
+
+        Some(Self {
+            x25519_public: get_array_32(section, "x25519_pub")?,
+            p384_public: get_bytes(section, "p384_pub")?,
+            secp256k1_public: get_bytes(section, "secp256k1_pub")?,
+            p256_public: get_bytes(section, "p256_pub")?,
+            frodo976_public: get_bytes(section, "frodo_pub")?,
+            ntru701_public: get_bytes(section, "ntru_pub")?,
+            mceliece_public: get_bytes(section, "mceliece_pub")?,
+            hqc256_public: get_bytes(section, "hqc_pub")?,
+        })
+    }
 }
 
 /// KEM response with 4 PQC ciphertexts + 4 EC ephemeral pubkeys (~31KB).
@@ -1034,7 +1156,7 @@ impl ClutchKemResponsePayload {
     /// For EC algorithms, we generate fresh ephemeral keypairs and compute ECDH with
     /// the peer's offer pubkeys. This gives truly distinct secrets per direction.
     pub fn encapsulate_to_peer(
-        their_offer: &ClutchFullOfferPayload,
+        their_offer: &ClutchOfferPayload,
     ) -> (Self, ClutchKemSharedSecrets) {
         #[cfg(feature = "development")]
         crate::log_info("CLUTCH: Encapsulating to peer's public keys (8 algorithms)...");
@@ -1209,6 +1331,55 @@ impl ClutchKemSharedSecrets {
         self.p384.zeroize();
         self.secp256k1.zeroize();
         self.p256.zeroize();
+    }
+
+    /// Convert to VSF fields for disk storage.
+    /// Uses wrapped v types for shared secrets (these are sensitive!).
+    pub fn to_vsf_fields(&self) -> Vec<(String, vsf::VsfType)> {
+        use vsf::VsfType;
+        vec![
+            // PQC shared secrets
+            ("frodo_ss".into(), VsfType::v(b'f', self.frodo.clone())),
+            ("ntru_ss".into(), VsfType::v(b'n', self.ntru.clone())),
+            ("mceliece_ss".into(), VsfType::v(b'l', self.mceliece.clone())),
+            ("hqc_ss".into(), VsfType::v(b'h', self.hqc.clone())),
+            // EC shared secrets
+            ("x25519_ss".into(), VsfType::v(b'x', self.x25519.to_vec())),
+            ("p384_ss".into(), VsfType::v(b'3', self.p384.clone())),
+            ("secp256k1_ss".into(), VsfType::v(b'k', self.secp256k1.clone())),
+            ("p256_ss".into(), VsfType::v(b'2', self.p256.clone())),
+        ]
+    }
+
+    /// Parse from VSF section fields
+    pub fn from_vsf_section(section: &vsf::VsfSection) -> Option<Self> {
+        use vsf::VsfType;
+
+        fn get_bytes(section: &vsf::VsfSection, name: &str) -> Option<Vec<u8>> {
+            section.get_field(name)?.values.first().and_then(|v| match v {
+                VsfType::v(_, b) => Some(b.clone()),
+                _ => None,
+            })
+        }
+
+        fn get_array_32(section: &vsf::VsfSection, name: &str) -> Option<[u8; 32]> {
+            let bytes = get_bytes(section, name)?;
+            if bytes.len() != 32 { return None; }
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&bytes);
+            Some(arr)
+        }
+
+        Some(Self {
+            frodo: get_bytes(section, "frodo_ss")?,
+            ntru: get_bytes(section, "ntru_ss")?,
+            mceliece: get_bytes(section, "mceliece_ss")?,
+            hqc: get_bytes(section, "hqc_ss")?,
+            x25519: get_array_32(section, "x25519_ss")?,
+            p384: get_bytes(section, "p384_ss")?,
+            secp256k1: get_bytes(section, "secp256k1_ss")?,
+            p256: get_bytes(section, "p256_ss")?,
+        })
     }
 }
 

@@ -1,19 +1,21 @@
 use super::{CeremonyId, DevicePubkey, FriendshipId, Seed};
-use crate::crypto::clutch::{ClutchAllKeypairs, ClutchFullOfferPayload, ClutchKemResponsePayload, ClutchKemSharedSecrets};
+use crate::crypto::clutch::{ClutchAllKeypairs, ClutchOfferPayload, ClutchKemResponsePayload, ClutchKemSharedSecrets};
 use std::net::{Ipv4Addr, SocketAddr};
 
 /// A slot in the CLUTCH ceremony, indexed by sorted handle_hash position.
-/// Same indexing on all devices in the ceremony.
+/// Same indexing on all devices in the ceremony (N-party ready).
 #[derive(Clone, Debug)]
 pub struct PartySlot {
     /// Handle hash identifying this party (sorted position determines slot index)
     pub handle_hash: [u8; 32],
-    /// Their 8 public keys from ClutchFullOffer (None for our own slot until we generate)
-    pub offer: Option<ClutchFullOfferPayload>,
-    /// Secrets from their KEM response (they encapsulated to us, we decapsulated)
+    /// 8 public keys from ClutchOffer for this slot's party
+    pub offer: Option<ClutchOfferPayload>,
+    /// Secrets from encapsulation FROM this slot's party (they encapsulated to local, local decapsulated)
     pub kem_secrets_from_them: Option<ClutchKemSharedSecrets>,
-    /// Secrets from our KEM response to them (we encapsulated to their pubkeys)
+    /// Secrets from encapsulation TO this slot's party (local encapsulated to them)
     pub kem_secrets_to_them: Option<ClutchKemSharedSecrets>,
+    /// KEM response payload for re-send if peer missed it
+    pub kem_response_for_resend: Option<ClutchKemResponsePayload>,
 }
 
 impl PartySlot {
@@ -24,13 +26,14 @@ impl PartySlot {
             offer: None,
             kem_secrets_from_them: None,
             kem_secrets_to_them: None,
+            kem_response_for_resend: None,
         }
     }
 
-    /// Check if this slot has all required data for ceremony completion
-    /// Each slot needs offer + ONE kem contribution (either direction):
-    /// - Our slot: kem_secrets_to_them (we encapsulated)
-    /// - Their slot: kem_secrets_from_them (they encapsulated)
+    /// Check if this slot has all required data for ceremony completion.
+    /// Each slot needs offer + ONE KEM contribution (either direction):
+    /// - Local slot: kem_secrets_to_them (local encapsulated)
+    /// - Remote slots: kem_secrets_from_them (remote encapsulated)
     pub fn is_complete(&self) -> bool {
         self.offer.is_some()
             && (self.kem_secrets_from_them.is_some() || self.kem_secrets_to_them.is_some())
@@ -127,8 +130,9 @@ pub struct Contact {
     /// Party slots indexed by sorted handle_hash position
     /// Each slot contains offer + kem_secrets for one party (including self)
     pub clutch_slots: Vec<PartySlot>,
-    /// Cached ceremony_id - computed once during keygen (memory-hard ~1s)
-    /// Deterministic from sorted handle_hashes, so all parties compute same value
+    /// Cached ceremony_id - computed from handle_hashes + sorted ping provenances.
+    /// Uses spaghettify for mixing (no memory-hard step needed).
+    /// Unique per ceremony due to ping timestamp entropy.
     pub ceremony_id: Option<[u8; 32]>,
     /// Pending KEM response received before our keygen completed
     /// Stored here and processed when ceremony_id becomes available
@@ -141,11 +145,20 @@ pub struct Contact {
     pub clutch_their_eggs_proof: Option<[u8; 32]>,
     /// Flag to prevent multiple concurrent keygens (race condition guard)
     pub clutch_keygen_in_progress: bool,
+    /// Flag to prevent multiple concurrent KEM encapsulations
+    pub clutch_kem_encap_in_progress: bool,
+    /// Flag to prevent multiple concurrent ceremony completions (avalanche_expand)
+    pub clutch_ceremony_in_progress: bool,
     /// HQC public key prefix from peer's last completed ceremony.
     /// Used for stale detection: if received offer has same HQC prefix, it's a
     /// PT retransmission (stale), not a legitimate re-key request.
     /// Stored at completion time, cleared when accepting new ceremony.
     pub completed_their_hqc_prefix: Option<[u8; 8]>,
+    /// Collected offer provenances for ceremony nonce derivation.
+    /// Each offer's VSF header has hp = BLAKE3(signer_pubkey || creation_time_nanos).
+    /// Sorted and combined via spaghettify to derive unique ceremony_id.
+    /// Cleared when CLUTCH ceremony completes.
+    pub offer_provenances: Vec<[u8; 32]>,
 
     pub trust_level: TrustLevel,
     pub added: f64,
@@ -217,13 +230,16 @@ impl Contact {
             // Slot-based CLUTCH fields
             clutch_our_keypairs: None,
             clutch_slots: Vec::new(), // Initialized when ceremony starts
-            ceremony_id: None,        // Cached after keygen (memory-hard ~1s)
+            ceremony_id: None,        // Computed from handle_hashes + ping provenances
             clutch_pending_kem: None, // KEM response received before keygen completed
             clutch_offer_sent: false, // Track if we've sent our offer
             clutch_our_eggs_proof: None,   // Our proof (stored while awaiting peer's)
             clutch_their_eggs_proof: None, // Peer's proof (if received early)
             clutch_keygen_in_progress: false, // No keygen running yet
+            clutch_kem_encap_in_progress: false, // No KEM encap running yet
+            clutch_ceremony_in_progress: false, // No ceremony completion running yet
             completed_their_hqc_prefix: None, // Set when CLUTCH completes, persisted
+            offer_provenances: Vec::new(), // Collected offer provenances for ceremony nonce
             trust_level: TrustLevel::Stranger,
             added: vsf::eagle_time_nanos(),
             last_seen: None,

@@ -86,7 +86,7 @@ pub fn parse_lan_discovery(
     let mut ptr = header_end;
     let section = VsfSection::parse(packet, &mut ptr).ok()?;
 
-    if section.name != "lan_discovery" {
+    if section.name != "pt_disc" {
         return None;
     }
 
@@ -110,13 +110,15 @@ pub fn parse_lan_discovery(
 
 /// Build LAN discovery broadcast packet
 /// handle_proof is stored in VSF header as provenance hash (hp) for identity
+/// One-shot broadcast - no rolling hash needed (provenance_only)
 pub fn build_lan_discovery(handle_proof: [u8; 32], port: u16) -> Vec<u8> {
     use vsf::{VsfBuilder, VsfType};
 
     VsfBuilder::new()
         .provenance_hash(handle_proof) // Identity in header - no registry lookup needed
+        .provenance_only() // No rolling hash - one-shot broadcast
         .add_section(
-            "lan_discovery",
+            "pt_disc",
             vec![("port".to_string(), VsfType::u4(port))],
         )
         .build()
