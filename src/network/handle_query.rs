@@ -78,6 +78,10 @@ fn bind_photon_socket() -> (UdpSocket, u16) {
         // Try to bind UDP first
         match UdpSocket::bind(format!("[::]:{}", port)) {
             Ok(udp) => {
+                // Enable broadcast receive (needed for LAN discovery)
+                if let Err(e) = udp.set_broadcast(true) {
+                    crate::log_error(&format!("Network: Failed to enable broadcast: {}", e));
+                }
                 // Check TCP is also free
                 match std::net::TcpListener::bind(format!("[::]:{}", port)) {
                     Ok(_tcp) => {
@@ -99,6 +103,8 @@ fn bind_photon_socket() -> (UdpSocket, u16) {
     // Fall back to ephemeral if all fixed ports failed
     crate::log_error("Network: All fixed ports busy - falling back to ephemeral");
     let udp = UdpSocket::bind("[::]:0").expect("Failed to bind UDP socket");
+    // Enable broadcast receive for LAN discovery
+    let _ = udp.set_broadcast(true);
     let port = udp
         .local_addr()
         .expect("Failed to get socket address")
@@ -469,16 +475,21 @@ impl HandleQuery {
                         &handle,
                     ));
 
-                // Add peers to store
-                if !result.peers.is_empty() {
+                // Add peers to store (skip our own device)
+                let our_pubkey = keypair.public.as_bytes();
+                let other_peers: Vec<_> = result.peers.iter()
+                    .filter(|p| &p.device_pubkey.key != our_pubkey)
+                    .cloned()
+                    .collect();
+                if !other_peers.is_empty() {
                     let peer_store = transport_arc;
                     let mut store = peer_store.lock().unwrap();
-                    for peer in &result.peers {
+                    for peer in &other_peers {
                         store.add_peer(peer.clone());
                     }
                     crate::log_info(&format!(
                         "Network: Added {} peer(s) to store",
-                        result.peers.len()
+                        other_peers.len()
                     ));
                 }
 

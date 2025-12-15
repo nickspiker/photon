@@ -626,8 +626,205 @@ async fn run_checker(
     let pt_recv = pt.clone();
     let failed_pings_recv = failed_pings.clone();
 
-    // LAN discovery packets are now handled in the main UDP receiver (parse_lan_discovery)
-    // No separate listener needed - all traffic on PHOTON_PORT
+    // Spawn multicast listener for LAN peer discovery
+    // Multicast is more reliable than broadcast across different network configurations
+    {
+        let status_tx_mcast = status_tx.clone();
+        let event_proxy_mcast = event_proxy.clone();
+        tokio::spawn(async move {
+            // Photon-specific multicast group in administratively scoped range (239.x.x.x)
+            // Address derived from random entropy: 0x68C790 -> 239.104.199.144
+            let multicast_addr: Ipv4Addr = Ipv4Addr::new(239, 104, 199, 144);
+            let multicast_port = crate::MULTICAST_PORT;
+
+            // Create socket bound to multicast port
+            let socket = match std::net::UdpSocket::bind(format!("0.0.0.0:{}", multicast_port)) {
+                Ok(s) => s,
+                Err(e) => {
+                    crate::log_info(&format!("LAN: Could not bind multicast socket: {}", e));
+                    return;
+                }
+            };
+
+            // Enable broadcast receive (for subnet broadcast fallback)
+            let _ = socket.set_broadcast(true);
+
+            // Join multicast group
+            if let Err(e) = socket.join_multicast_v4(&multicast_addr, &Ipv4Addr::UNSPECIFIED) {
+                crate::log_error(&format!("LAN: Failed to join multicast group: {}", e));
+                return;
+            }
+
+            // Set non-blocking for async
+            if let Err(e) = socket.set_nonblocking(true) {
+                crate::log_error(&format!("LAN: Failed to set non-blocking: {}", e));
+                return;
+            }
+
+            // Convert to tokio socket
+            let socket = match tokio::net::UdpSocket::from_std(socket) {
+                Ok(s) => s,
+                Err(e) => {
+                    crate::log_error(&format!("LAN: Failed to convert socket: {}", e));
+                    return;
+                }
+            };
+
+            crate::log_info(&format!("LAN: Multicast listener on {}:{}", multicast_addr, multicast_port));
+
+            let mut buf = [0u8; 2048];
+            loop {
+                match socket.recv_from(&mut buf).await {
+                    Ok((len, src_addr)) => {
+                        crate::log_info(&format!("LAN: Multicast RX {} bytes from {}", len, src_addr));
+                        let packet = &buf[..len];
+                        // Only process pt_disc packets (LAN discovery)
+                        if let Some(lan_update) = parse_lan_discovery(packet, src_addr) {
+                            crate::log_info(&format!("LAN: Discovered peer via multicast: {}", src_addr));
+                            send_status_update(&status_tx_mcast, lan_update, &event_proxy_mcast);
+                        }
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        // No data available, just continue
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    }
+                    Err(e) => {
+                        crate::log_error(&format!("LAN: Multicast recv error: {}", e));
+                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                    }
+                }
+            }
+        });
+    }
+
+    // Spawn IPv6 multicast listener for LAN peer discovery
+    {
+        let status_tx_mcast6 = status_tx.clone();
+        let event_proxy_mcast6 = event_proxy.clone();
+        tokio::spawn(async move {
+            // IPv6 multicast group: ff02::68c7:9014 (link-local scope with our random bytes)
+            let multicast_addr: std::net::Ipv6Addr =
+                std::net::Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0x68c7, 0x9014);
+            let multicast_port = crate::MULTICAST_PORT;
+
+            // Create IPv6-only socket using libc to set IPV6_V6ONLY before binding
+            // This prevents dual-stack conflict with the IPv4 multicast socket on same port
+            #[cfg(unix)]
+            let socket = {
+                use std::os::unix::io::FromRawFd;
+
+                let fd = unsafe { libc::socket(libc::AF_INET6, libc::SOCK_DGRAM, 0) };
+                if fd < 0 {
+                    crate::log_info("LAN: Could not create IPv6 socket");
+                    return;
+                }
+
+                // Set IPV6_V6ONLY so this socket only binds IPv6, not dual-stack
+                let v6only: libc::c_int = 1;
+                let ret = unsafe {
+                    libc::setsockopt(
+                        fd,
+                        libc::IPPROTO_IPV6,
+                        libc::IPV6_V6ONLY,
+                        &v6only as *const _ as *const libc::c_void,
+                        std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+                    )
+                };
+                if ret < 0 {
+                    crate::log_info("LAN: Could not set IPV6_V6ONLY");
+                    unsafe { libc::close(fd) };
+                    return;
+                }
+
+                // Set SO_REUSEADDR for multicast
+                let reuseaddr: libc::c_int = 1;
+                unsafe {
+                    libc::setsockopt(
+                        fd,
+                        libc::SOL_SOCKET,
+                        libc::SO_REUSEADDR,
+                        &reuseaddr as *const _ as *const libc::c_void,
+                        std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+                    )
+                };
+
+                // Bind to [::]:port
+                let addr = libc::sockaddr_in6 {
+                    sin6_family: libc::AF_INET6 as u16,
+                    sin6_port: multicast_port.to_be(),
+                    sin6_flowinfo: 0,
+                    sin6_addr: libc::in6_addr { s6_addr: [0u8; 16] },
+                    sin6_scope_id: 0,
+                };
+                let ret = unsafe {
+                    libc::bind(
+                        fd,
+                        &addr as *const _ as *const libc::sockaddr,
+                        std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t,
+                    )
+                };
+                if ret < 0 {
+                    let err = std::io::Error::last_os_error();
+                    crate::log_info(&format!("LAN: Could not bind IPv6 multicast socket: {}", err));
+                    unsafe { libc::close(fd) };
+                    return;
+                }
+
+                unsafe { std::net::UdpSocket::from_raw_fd(fd) }
+            };
+
+            #[cfg(not(unix))]
+            let socket = match std::net::UdpSocket::bind(format!("[::]:{}", multicast_port)) {
+                Ok(s) => s,
+                Err(e) => {
+                    crate::log_info(&format!("LAN: Could not bind IPv6 multicast socket: {}", e));
+                    return;
+                }
+            };
+
+            // Join multicast group (interface 0 = default)
+            if let Err(e) = socket.join_multicast_v6(&multicast_addr, 0) {
+                crate::log_error(&format!("LAN: Failed to join IPv6 multicast group: {}", e));
+                return;
+            }
+
+            if let Err(e) = socket.set_nonblocking(true) {
+                crate::log_error(&format!("LAN: Failed to set non-blocking: {}", e));
+                return;
+            }
+
+            let socket = match tokio::net::UdpSocket::from_std(socket) {
+                Ok(s) => s,
+                Err(e) => {
+                    crate::log_error(&format!("LAN: Failed to convert IPv6 socket: {}", e));
+                    return;
+                }
+            };
+
+            crate::log_info(&format!("LAN: IPv6 multicast listener on [{}]:{}", multicast_addr, multicast_port));
+
+            let mut buf = [0u8; 2048];
+            loop {
+                match socket.recv_from(&mut buf).await {
+                    Ok((len, src_addr)) => {
+                        crate::log_info(&format!("LAN: IPv6 Multicast RX {} bytes from {}", len, src_addr));
+                        let packet = &buf[..len];
+                        if let Some(lan_update) = parse_lan_discovery(packet, src_addr) {
+                            crate::log_info(&format!("LAN: Discovered peer via IPv6 multicast: {}", src_addr));
+                            send_status_update(&status_tx_mcast6, lan_update, &event_proxy_mcast6);
+                        }
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    }
+                    Err(e) => {
+                        crate::log_error(&format!("LAN: IPv6 multicast recv error: {}", e));
+                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                    }
+                }
+            }
+        });
+    }
 
     // Spawn TCP receiver task for large CLUTCH payloads (VSF format)
     if let Some(listener) = tcp_listener {
@@ -1576,25 +1773,45 @@ async fn run_checker(
             pending_pt_sends.push((transfer_id, request.peer_addr, Instant::now(), vsf_bytes, 0));
         }
 
-        // Process LAN broadcast requests (NAT hairpinning workaround)
+        // Process LAN discovery requests via multicast (more reliable than broadcast)
         while let Ok(request) = lan_broadcast_rx.try_recv() {
             let packet = udp::build_lan_discovery(request.our_handle_proof, request.our_port);
 
-            // Send to broadcast address
-            let broadcast_addr = SocketAddr::new(
-                std::net::IpAddr::V4(Ipv4Addr::new(255, 255, 255, 255)),
-                PHOTON_PORT,
+            // IPv4 multicast: 239.104.199.144 (from random entropy 0x68C790)
+            let mcast_v4 = SocketAddr::new(
+                std::net::IpAddr::V4(Ipv4Addr::new(239, 104, 199, 144)),
+                crate::MULTICAST_PORT,
             );
 
-            // Create a separate socket for broadcast (main socket may not have SO_BROADCAST)
-            if let Ok(broadcast_sock) = UdpSocket::bind("0.0.0.0:0") {
-                if broadcast_sock.set_broadcast(true).is_ok() {
-                    let _ = udp::send_sync(&broadcast_sock, &packet, broadcast_addr);
-                    crate::log_info(&format!(
-                        "LAN: Broadcast {} bytes to {}",
-                        packet.len(),
-                        broadcast_addr
-                    ));
+            // IPv6 multicast: ff02::68c7:9014 (link-local scope with our random bytes)
+            let mcast_v6 = SocketAddr::new(
+                std::net::IpAddr::V6(std::net::Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0x68c7, 0x9014)),
+                crate::MULTICAST_PORT,
+            );
+
+            // Send to IPv4 multicast
+            if let Ok(mcast_sock) = UdpSocket::bind("0.0.0.0:0") {
+                let _ = mcast_sock.set_multicast_ttl_v4(1);
+                let _ = udp::send_sync(&mcast_sock, &packet, mcast_v4);
+                crate::log_info(&format!("LAN: Multicast {} bytes to {}", packet.len(), mcast_v4));
+            }
+
+            // Send to IPv6 multicast (hop limit is 1 by default for link-local)
+            if let Ok(mcast_sock) = UdpSocket::bind("[::]:0") {
+                let _ = udp::send_sync(&mcast_sock, &packet, mcast_v6);
+                crate::log_info(&format!("LAN: Multicast {} bytes to {}", packet.len(), mcast_v6));
+            }
+
+            // Also send to subnet broadcast as fallback (many routers block multicast)
+            if let Some((broadcast, local_ip)) = udp::get_broadcast_addr() {
+                let bcast_addr = SocketAddr::new(
+                    std::net::IpAddr::V4(broadcast),
+                    crate::MULTICAST_PORT,
+                );
+                if let Ok(bcast_sock) = UdpSocket::bind("0.0.0.0:0") {
+                    let _ = bcast_sock.set_broadcast(true);
+                    let _ = udp::send_sync(&bcast_sock, &packet, bcast_addr);
+                    crate::log_info(&format!("LAN: Broadcast {} bytes to {} (from {})", packet.len(), bcast_addr, local_ip));
                 }
             }
         }

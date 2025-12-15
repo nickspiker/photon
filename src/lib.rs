@@ -6,10 +6,14 @@ pub static DEBUG_ENABLED: AtomicBool = AtomicBool::new(false);
 /// UDP: peer-to-peer status pings, CLUTCH ceremony, chat messages
 /// TCP: large payloads (full CLUTCH offers ~548KB, KEM responses ~17KB)
 /// FGTW: handle registration and peer discovery announcements
-/// LAN: broadcast discovery for NAT hairpinning workaround
 /// Primary: 4383, Fallback: 3546 (both IANA unassigned)
 pub const PHOTON_PORT: u16 = 4383;
 pub const PHOTON_PORT_FALLBACK: u16 = 3546;
+
+/// Multicast port for LAN peer discovery
+/// Separate from main port to avoid SO_REUSEADDR complexity
+/// 4384 is IANA unassigned
+pub const MULTICAST_PORT: u16 = 4384;
 
 // Debug print macro - only prints if DEBUG_ENABLED is true
 // Compiled out entirely in release builds

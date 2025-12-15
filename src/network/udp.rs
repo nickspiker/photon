@@ -50,12 +50,66 @@ pub fn log_received(data: &[u8], addr: &SocketAddr) {
 /// This finds which interface the OS would use to reach the internet
 pub fn get_local_ip() -> Option<std::net::Ipv4Addr> {
     let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
-    // Connect to Google DNS - doesn't actually send packets, just sets up routing
-    socket.connect("8.8.8.8:80").ok()?;
+    // Connect to Cloudflare DNS - doesn't actually send packets, just sets up routing
+    socket.connect("1.1.1.1:80").ok()?;
     match socket.local_addr().ok()?.ip() {
         std::net::IpAddr::V4(ip) => Some(ip),
         _ => None,
     }
+}
+
+/// Get LAN broadcast address for the interface that routes to internet
+/// Returns (broadcast_addr, local_ip) or None if unable to determine
+///
+/// On Linux: parses `ip addr` output to find actual broadcast address
+/// Fallback: assumes /24 subnet and computes broadcast from local IP
+pub fn get_broadcast_addr() -> Option<(std::net::Ipv4Addr, std::net::Ipv4Addr)> {
+    let local_ip = get_local_ip()?;
+
+    // Try to get actual broadcast address from system
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(broadcast) = get_broadcast_from_system(&local_ip) {
+            return Some((broadcast, local_ip));
+        }
+    }
+
+    // Fallback: assume /24 subnet (most common home/office network)
+    // e.g., 192.168.1.42 -> 192.168.1.255
+    let octets = local_ip.octets();
+    let broadcast = std::net::Ipv4Addr::new(octets[0], octets[1], octets[2], 255);
+    Some((broadcast, local_ip))
+}
+
+/// Parse broadcast address from `ip addr` output on Linux
+#[cfg(target_os = "linux")]
+fn get_broadcast_from_system(local_ip: &std::net::Ipv4Addr) -> Option<std::net::Ipv4Addr> {
+    use std::process::Command;
+
+    let output = Command::new("ip")
+        .args(["addr", "show"])
+        .output()
+        .ok()?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let local_str = local_ip.to_string();
+
+    // Find line containing our local IP and extract broadcast address
+    // Format: "inet 192.168.0.197/24 brd 192.168.0.255 scope global ..."
+    for line in stdout.lines() {
+        if line.contains(&local_str) && line.contains("brd") {
+            // Parse: inet IP/prefix brd BROADCAST ...
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if let Some(brd_idx) = parts.iter().position(|&s| s == "brd") {
+                if let Some(brd_addr) = parts.get(brd_idx + 1) {
+                    if let Ok(broadcast) = brd_addr.parse::<std::net::Ipv4Addr>() {
+                        return Some(broadcast);
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Parse LAN discovery packet
