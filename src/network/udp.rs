@@ -115,6 +115,7 @@ pub fn build_lan_discovery(handle_proof: [u8; 32], port: u16) -> Vec<u8> {
     use vsf::{VsfBuilder, VsfType};
 
     VsfBuilder::new()
+        .creation_time_nanos(vsf::eagle_time_nanos())
         .provenance_hash(handle_proof) // Identity in header - no registry lookup needed
         .provenance_only() // No rolling hash - one-shot broadcast
         .add_section(

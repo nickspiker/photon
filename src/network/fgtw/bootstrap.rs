@@ -401,6 +401,7 @@ fn build_announce_message(
 
     // 3. Build VSF with ke/ge at HEADER level (not inside section) for full file integrity
     let unsigned_bytes = VsfBuilder::new()
+        .creation_time_nanos(vsf::eagle_time_nanos())
         .signed_only(VsfType::ke(device_key.public.to_bytes().to_vec()))
         .add_section(
             "announce",

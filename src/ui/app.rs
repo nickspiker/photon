@@ -2221,6 +2221,19 @@ impl PhotonApp {
                                                     contact.offer_provenances.push(our_offer_provenance);
                                                 }
 
+                                                // Persist provenance immediately
+                                                let device_secret = *self.device_keypair.secret.as_bytes();
+                                                if let Err(e) = crate::storage::contacts::save_clutch_slots(
+                                                    &contact.clutch_slots,
+                                                    &contact.offer_provenances,
+                                                    contact.ceremony_id,
+                                                    contact.handle.as_str(),
+                                                    &our_handle_hash,
+                                                    &device_secret,
+                                                ) {
+                                                    crate::log_error(&format!("Failed to persist CLUTCH provenance: {}", e));
+                                                }
+
                                                 checker.send_offer(ClutchOfferRequest {
                                                     peer_addr: ip,
                                                     vsf_bytes,
@@ -2984,6 +2997,19 @@ impl PhotonApp {
                                                     hex::encode(&ceremony_id[..4])
                                                 ));
                                             }
+
+                                            // Persist provenance/ceremony_id immediately
+                                            let device_secret = *self.device_keypair.secret.as_bytes();
+                                            if let Err(e) = crate::storage::contacts::save_clutch_slots(
+                                                &contact.clutch_slots,
+                                                &contact.offer_provenances,
+                                                contact.ceremony_id,
+                                                contact.handle.as_str(),
+                                                &our_handle_hash,
+                                                &device_secret,
+                                            ) {
+                                                crate::log_error(&format!("Failed to persist CLUTCH provenance: {}", e));
+                                            }
                                         }
                                         Err(e) => {
                                             crate::log_error(&format!(
@@ -3102,6 +3128,24 @@ impl PhotonApp {
                                         if let Some(slot) = contact.get_slot_mut(&their_handle_hash) {
                                             slot.offer = Some(their_offer.clone());
                                         }
+                                        // Store their offer_provenance (was cleared, need to re-add)
+                                        if !contact.offer_provenances.contains(&offer_provenance) {
+                                            contact.offer_provenances.push(offer_provenance);
+                                        }
+
+                                        // Persist re-key state immediately
+                                        let device_secret = *self.device_keypair.secret.as_bytes();
+                                        if let Err(e) = crate::storage::contacts::save_clutch_slots(
+                                            &contact.clutch_slots,
+                                            &contact.offer_provenances,
+                                            contact.ceremony_id,
+                                            contact.handle.as_str(),
+                                            &our_handle_hash,
+                                            &device_secret,
+                                        ) {
+                                            crate::log_error(&format!("Failed to persist re-key CLUTCH state: {}", e));
+                                        }
+
                                         // Trigger keygen for fresh re-key ceremony
                                         contact.clutch_keygen_in_progress = true;
                                         rekey_request = Some((contact.id.clone(), contact.handle_hash));
@@ -4119,6 +4163,18 @@ impl PhotonApp {
                                             contact.offer_provenances.push(our_offer_provenance);
                                         }
 
+                                        // Persist provenance immediately
+                                        if let Err(e) = crate::storage::contacts::save_clutch_slots(
+                                            &contact.clutch_slots,
+                                            &contact.offer_provenances,
+                                            contact.ceremony_id,
+                                            contact.handle.as_str(),
+                                            &our_handle_hash,
+                                            &device_secret,
+                                        ) {
+                                            crate::log_error(&format!("Failed to persist CLUTCH provenance: {}", e));
+                                        }
+
                                         if let Some(ref checker) = self.status_checker {
                                             checker.send_offer(ClutchOfferRequest {
                                                 peer_addr: ip,
@@ -4910,6 +4966,18 @@ impl PhotonApp {
                                     // Store our offer provenance (for ceremony_id derivation)
                                     if !contact.offer_provenances.contains(&our_offer_provenance) {
                                         contact.offer_provenances.push(our_offer_provenance);
+                                    }
+
+                                    // Persist provenance immediately
+                                    if let Err(e) = crate::storage::contacts::save_clutch_slots(
+                                        &contact.clutch_slots,
+                                        &contact.offer_provenances,
+                                        contact.ceremony_id,
+                                        contact.handle.as_str(),
+                                        &our_handle_hash,
+                                        &device_secret,
+                                    ) {
+                                        crate::log_error(&format!("Failed to persist CLUTCH provenance: {}", e));
                                     }
 
                                     offers_to_send.push(ClutchOfferRequest {

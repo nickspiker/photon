@@ -201,6 +201,7 @@ fn encrypt_data(data: &[u8], key: &[u8; 32], section_name: &str) -> Result<Vec<u
 
     // Wrap in proper VSF file with header, timestamp, hashes (hp + hb)
     let vsf_bytes = vsf::VsfBuilder::new()
+        .creation_time_nanos(vsf::eagle_time_nanos())
         .add_section(section_name, vec![
             ("data".to_string(), VsfType::v(b'e', encrypted_payload)),
         ])
@@ -679,11 +680,11 @@ pub fn save_clutch_keypairs(
     let dir = contact_dir_from_seed(&their_identity_seed)?;
     let keypairs_path = dir.join("keypairs.vsf");
 
-    // Build VSF section from keypairs
+    // Build VSF section from keypairs (two multi-value fields)
     let mut section = VsfSection::new("clutch_keypairs");
-    for (name, value) in keypairs.to_vsf_fields() {
-        section.add_field(&name, value);
-    }
+    let (pubkeys, secrets) = keypairs.to_vsf_multi();
+    section.add_field_multi("pubkeys", pubkeys);
+    section.add_field_multi("secrets", secrets);
 
     let vsf_bytes = section.encode();
 

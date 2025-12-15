@@ -939,73 +939,126 @@ impl ClutchAllKeypairs {
         self.hqc256_secret.zeroize();
     }
 
-    /// Convert to VSF fields for disk storage.
-    /// Uses proper VSF key types (kx, kp, kf, kn, kl, kh) for public keys
-    /// and wrapped types (vX, vP, vF, vN, vL, vH) for secrets.
-    pub fn to_vsf_fields(&self) -> Vec<(String, vsf::VsfType)> {
+    /// Convert to VSF multi-value fields for disk storage.
+    /// Returns (pubkeys, secrets) as two Vec<VsfType> for use with add_field_multi().
+    /// Order: x25519, p384, secp256k1, p256, frodo, ntru, mceliece, hqc
+    pub fn to_vsf_multi(&self) -> (Vec<vsf::VsfType>, Vec<vsf::VsfType>) {
         use vsf::VsfType;
-        vec![
-            // Class 0: Classical EC - public keys use k types, secrets use v wrapped
-            ("x25519_pub".into(), VsfType::kx(self.x25519_public.to_vec())),
-            ("x25519_sec".into(), VsfType::v(b'x', self.x25519_secret.to_vec())),
-            ("p384_pub".into(), VsfType::kp(self.p384_public.clone())),
-            ("p384_sec".into(), VsfType::v(b'3', self.p384_secret.clone())),
-            ("secp256k1_pub".into(), VsfType::kk(self.secp256k1_public.clone())),
-            ("secp256k1_sec".into(), VsfType::v(b'k', self.secp256k1_secret.clone())),
-            ("p256_pub".into(), VsfType::kp(self.p256_public.clone())),
-            ("p256_sec".into(), VsfType::v(b'2', self.p256_secret.clone())),
-            // Class 1: Post-quantum lattice
-            ("frodo_pub".into(), VsfType::kf(self.frodo976_public.clone())),
-            ("frodo_sec".into(), VsfType::v(b'f', self.frodo976_secret.clone())),
-            ("ntru_pub".into(), VsfType::kn(self.ntru701_public.clone())),
-            ("ntru_sec".into(), VsfType::v(b'n', self.ntru701_secret.clone())),
-            // Class 2: Post-quantum code-based
-            ("mceliece_pub".into(), VsfType::kl(self.mceliece_public.clone())),
-            ("mceliece_sec".into(), VsfType::v(b'l', self.mceliece_secret.clone())),
-            ("hqc_pub".into(), VsfType::kh(self.hqc256_public.clone())),
-            ("hqc_sec".into(), VsfType::v(b'h', self.hqc256_secret.clone())),
-        ]
+        let pubkeys = vec![
+            VsfType::kx(self.x25519_public.to_vec()),
+            VsfType::kp(self.p384_public.clone()),
+            VsfType::kk(self.secp256k1_public.clone()),
+            VsfType::kp(self.p256_public.clone()),
+            VsfType::kf(self.frodo976_public.clone()),
+            VsfType::kn(self.ntru701_public.clone()),
+            VsfType::kl(self.mceliece_public.clone()),
+            VsfType::kh(self.hqc256_public.clone()),
+        ];
+        let secrets = vec![
+            VsfType::v(b'x', self.x25519_secret.to_vec()),
+            VsfType::v(b'p', self.p384_secret.clone()),
+            VsfType::v(b'k', self.secp256k1_secret.clone()),
+            VsfType::v(b'p', self.p256_secret.clone()),
+            VsfType::v(b'f', self.frodo976_secret.clone()),
+            VsfType::v(b'n', self.ntru701_secret.clone()),
+            VsfType::v(b'l', self.mceliece_secret.clone()),
+            VsfType::v(b'h', self.hqc256_secret.clone()),
+        ];
+        (pubkeys, secrets)
     }
 
-    /// Parse from VSF section fields
+    /// Parse from VSF section with multi-value fields.
+    /// Expects: (pubkeys: kx, kp, kk, kp, kf, kn, kl, kh)
+    ///          (secrets: vx, vp, vk, vp, vf, vn, vl, vh)
     pub fn from_vsf_section(section: &vsf::VsfSection) -> Option<Self> {
         use vsf::VsfType;
 
-        // Helper to extract bytes from a field
-        fn get_bytes(section: &vsf::VsfSection, name: &str) -> Option<Vec<u8>> {
-            section.get_field(name)?.values.first().and_then(|v| match v {
-                VsfType::kx(b) | VsfType::kp(b) | VsfType::kk(b) |
-                VsfType::kf(b) | VsfType::kn(b) | VsfType::kl(b) | VsfType::kh(b) => Some(b.clone()),
-                VsfType::v(_, b) => Some(b.clone()),
-                _ => None,
-            })
+        // Parse pubkeys multi-value field by type marker
+        let pubkeys_field = section.get_field("pubkeys")?;
+        let pubkeys = &pubkeys_field.values;
+        if pubkeys.len() < 8 { return None; }
+
+        // Parse secrets multi-value field by type marker
+        let secrets_field = section.get_field("secrets")?;
+        let secrets = &secrets_field.values;
+        if secrets.len() < 8 { return None; }
+
+        // Extract pubkeys by type marker (order: kx, kp, kk, kp, kf, kn, kl, kh)
+        let mut x25519_pub = None;
+        let mut p384_pub = None;
+        let mut secp256k1_pub = None;
+        let mut p256_pub = None;
+        let mut frodo_pub = None;
+        let mut ntru_pub = None;
+        let mut mceliece_pub = None;
+        let mut hqc_pub = None;
+
+        for v in pubkeys {
+            match v {
+                VsfType::kx(b) if x25519_pub.is_none() => x25519_pub = Some(b.clone()),
+                VsfType::kp(b) if p384_pub.is_none() && b.len() > 64 => p384_pub = Some(b.clone()),
+                VsfType::kp(b) if p256_pub.is_none() && b.len() <= 65 => p256_pub = Some(b.clone()),
+                VsfType::kk(b) if secp256k1_pub.is_none() => secp256k1_pub = Some(b.clone()),
+                VsfType::kf(b) if frodo_pub.is_none() => frodo_pub = Some(b.clone()),
+                VsfType::kn(b) if ntru_pub.is_none() => ntru_pub = Some(b.clone()),
+                VsfType::kl(b) if mceliece_pub.is_none() => mceliece_pub = Some(b.clone()),
+                VsfType::kh(b) if hqc_pub.is_none() => hqc_pub = Some(b.clone()),
+                _ => {}
+            }
         }
 
-        fn get_array_32(section: &vsf::VsfSection, name: &str) -> Option<[u8; 32]> {
-            let bytes = get_bytes(section, name)?;
-            if bytes.len() != 32 { return None; }
-            let mut arr = [0u8; 32];
-            arr.copy_from_slice(&bytes);
-            Some(arr)
+        // Extract secrets by type marker (order: vx, vp, vk, vp, vf, vn, vl, vh)
+        let mut x25519_sec = None;
+        let mut p384_sec = None;
+        let mut secp256k1_sec = None;
+        let mut p256_sec = None;
+        let mut frodo_sec = None;
+        let mut ntru_sec = None;
+        let mut mceliece_sec = None;
+        let mut hqc_sec = None;
+
+        for v in secrets {
+            match v {
+                VsfType::v(b'x', b) if x25519_sec.is_none() => x25519_sec = Some(b.clone()),
+                VsfType::v(b'p', b) if p384_sec.is_none() && b.len() > 32 => p384_sec = Some(b.clone()),
+                VsfType::v(b'p', b) if p256_sec.is_none() && b.len() == 32 => p256_sec = Some(b.clone()),
+                VsfType::v(b'k', b) if secp256k1_sec.is_none() => secp256k1_sec = Some(b.clone()),
+                VsfType::v(b'f', b) if frodo_sec.is_none() => frodo_sec = Some(b.clone()),
+                VsfType::v(b'n', b) if ntru_sec.is_none() => ntru_sec = Some(b.clone()),
+                VsfType::v(b'l', b) if mceliece_sec.is_none() => mceliece_sec = Some(b.clone()),
+                VsfType::v(b'h', b) if hqc_sec.is_none() => hqc_sec = Some(b.clone()),
+                _ => {}
+            }
         }
+
+        // Convert x25519 to fixed arrays
+        let x25519_pub_bytes = x25519_pub?;
+        let x25519_sec_bytes = x25519_sec?;
+        if x25519_pub_bytes.len() != 32 || x25519_sec_bytes.len() != 32 {
+            return None;
+        }
+        let mut x25519_public = [0u8; 32];
+        let mut x25519_secret = [0u8; 32];
+        x25519_public.copy_from_slice(&x25519_pub_bytes);
+        x25519_secret.copy_from_slice(&x25519_sec_bytes);
 
         Some(Self {
-            x25519_public: get_array_32(section, "x25519_pub")?,
-            x25519_secret: get_array_32(section, "x25519_sec")?,
-            p384_public: get_bytes(section, "p384_pub")?,
-            p384_secret: get_bytes(section, "p384_sec")?,
-            secp256k1_public: get_bytes(section, "secp256k1_pub")?,
-            secp256k1_secret: get_bytes(section, "secp256k1_sec")?,
-            p256_public: get_bytes(section, "p256_pub")?,
-            p256_secret: get_bytes(section, "p256_sec")?,
-            frodo976_public: get_bytes(section, "frodo_pub")?,
-            frodo976_secret: get_bytes(section, "frodo_sec")?,
-            ntru701_public: get_bytes(section, "ntru_pub")?,
-            ntru701_secret: get_bytes(section, "ntru_sec")?,
-            mceliece_public: get_bytes(section, "mceliece_pub")?,
-            mceliece_secret: get_bytes(section, "mceliece_sec")?,
-            hqc256_public: get_bytes(section, "hqc_pub")?,
-            hqc256_secret: get_bytes(section, "hqc_sec")?,
+            x25519_public,
+            x25519_secret,
+            p384_public: p384_pub?,
+            p384_secret: p384_sec?,
+            secp256k1_public: secp256k1_pub?,
+            secp256k1_secret: secp256k1_sec?,
+            p256_public: p256_pub?,
+            p256_secret: p256_sec?,
+            frodo976_public: frodo_pub?,
+            frodo976_secret: frodo_sec?,
+            ntru701_public: ntru_pub?,
+            ntru701_secret: ntru_sec?,
+            mceliece_public: mceliece_pub?,
+            mceliece_secret: mceliece_sec?,
+            hqc256_public: hqc_pub?,
+            hqc256_secret: hqc_sec?,
         })
     }
 }
@@ -1070,54 +1123,69 @@ impl ClutchOfferPayload {
         bytes
     }
 
-    /// Convert to VSF fields for disk storage.
-    /// Uses proper VSF key types (kx, kp, kf, kn, kl, kh) for public keys.
-    pub fn to_vsf_fields(&self) -> Vec<(String, vsf::VsfType)> {
+    /// Convert to VSF multi-value field for disk storage.
+    /// Returns Vec<VsfType> for use with add_field_multi("pubkeys", ...).
+    /// Order: x25519, p384, secp256k1, p256, frodo, ntru, mceliece, hqc
+    pub fn to_vsf_multi(&self) -> Vec<vsf::VsfType> {
         use vsf::VsfType;
         vec![
-            // Class 0: Classical EC public keys
-            ("x25519_pub".into(), VsfType::kx(self.x25519_public.to_vec())),
-            ("p384_pub".into(), VsfType::kp(self.p384_public.clone())),
-            ("secp256k1_pub".into(), VsfType::kk(self.secp256k1_public.clone())),
-            ("p256_pub".into(), VsfType::kp(self.p256_public.clone())),
-            // Class 1: Post-quantum lattice
-            ("frodo_pub".into(), VsfType::kf(self.frodo976_public.clone())),
-            ("ntru_pub".into(), VsfType::kn(self.ntru701_public.clone())),
-            // Class 2: Post-quantum code-based
-            ("mceliece_pub".into(), VsfType::kl(self.mceliece_public.clone())),
-            ("hqc_pub".into(), VsfType::kh(self.hqc256_public.clone())),
+            VsfType::kx(self.x25519_public.to_vec()),
+            VsfType::kp(self.p384_public.clone()),
+            VsfType::kk(self.secp256k1_public.clone()),
+            VsfType::kp(self.p256_public.clone()),
+            VsfType::kf(self.frodo976_public.clone()),
+            VsfType::kn(self.ntru701_public.clone()),
+            VsfType::kl(self.mceliece_public.clone()),
+            VsfType::kh(self.hqc256_public.clone()),
         ]
     }
 
-    /// Parse from VSF section fields
+    /// Parse from VSF section with multi-value pubkeys field.
+    /// Expects: (pubkeys: kx, kp, kk, kp, kf, kn, kl, kh)
     pub fn from_vsf_section(section: &vsf::VsfSection) -> Option<Self> {
         use vsf::VsfType;
 
-        fn get_bytes(section: &vsf::VsfSection, name: &str) -> Option<Vec<u8>> {
-            section.get_field(name)?.values.first().and_then(|v| match v {
-                VsfType::kx(b) | VsfType::kp(b) | VsfType::kk(b) |
-                VsfType::kf(b) | VsfType::kn(b) | VsfType::kl(b) | VsfType::kh(b) => Some(b.clone()),
-                _ => None,
-            })
+        let pubkeys_field = section.get_field("pubkeys")?;
+        let pubkeys = &pubkeys_field.values;
+        if pubkeys.len() < 8 { return None; }
+
+        let mut x25519_pub = None;
+        let mut p384_pub = None;
+        let mut secp256k1_pub = None;
+        let mut p256_pub = None;
+        let mut frodo_pub = None;
+        let mut ntru_pub = None;
+        let mut mceliece_pub = None;
+        let mut hqc_pub = None;
+
+        for v in pubkeys {
+            match v {
+                VsfType::kx(b) if x25519_pub.is_none() => x25519_pub = Some(b.clone()),
+                VsfType::kp(b) if p384_pub.is_none() && b.len() > 64 => p384_pub = Some(b.clone()),
+                VsfType::kp(b) if p256_pub.is_none() && b.len() <= 65 => p256_pub = Some(b.clone()),
+                VsfType::kk(b) if secp256k1_pub.is_none() => secp256k1_pub = Some(b.clone()),
+                VsfType::kf(b) if frodo_pub.is_none() => frodo_pub = Some(b.clone()),
+                VsfType::kn(b) if ntru_pub.is_none() => ntru_pub = Some(b.clone()),
+                VsfType::kl(b) if mceliece_pub.is_none() => mceliece_pub = Some(b.clone()),
+                VsfType::kh(b) if hqc_pub.is_none() => hqc_pub = Some(b.clone()),
+                _ => {}
+            }
         }
 
-        fn get_array_32(section: &vsf::VsfSection, name: &str) -> Option<[u8; 32]> {
-            let bytes = get_bytes(section, name)?;
-            if bytes.len() != 32 { return None; }
-            let mut arr = [0u8; 32];
-            arr.copy_from_slice(&bytes);
-            Some(arr)
-        }
+        let x25519_bytes = x25519_pub?;
+        if x25519_bytes.len() != 32 { return None; }
+        let mut x25519_public = [0u8; 32];
+        x25519_public.copy_from_slice(&x25519_bytes);
 
         Some(Self {
-            x25519_public: get_array_32(section, "x25519_pub")?,
-            p384_public: get_bytes(section, "p384_pub")?,
-            secp256k1_public: get_bytes(section, "secp256k1_pub")?,
-            p256_public: get_bytes(section, "p256_pub")?,
-            frodo976_public: get_bytes(section, "frodo_pub")?,
-            ntru701_public: get_bytes(section, "ntru_pub")?,
-            mceliece_public: get_bytes(section, "mceliece_pub")?,
-            hqc256_public: get_bytes(section, "hqc_pub")?,
+            x25519_public,
+            p384_public: p384_pub?,
+            secp256k1_public: secp256k1_pub?,
+            p256_public: p256_pub?,
+            frodo976_public: frodo_pub?,
+            ntru701_public: ntru_pub?,
+            mceliece_public: mceliece_pub?,
+            hqc256_public: hqc_pub?,
         })
     }
 }
@@ -1333,52 +1401,69 @@ impl ClutchKemSharedSecrets {
         self.p256.zeroize();
     }
 
-    /// Convert to VSF fields for disk storage.
-    /// Uses wrapped v types for shared secrets (these are sensitive!).
-    pub fn to_vsf_fields(&self) -> Vec<(String, vsf::VsfType)> {
+    /// Convert to VSF multi-value field for disk storage.
+    /// Returns Vec<VsfType> for use with add_field_multi("secrets", ...).
+    /// Order: x25519, p384, secp256k1, p256, frodo, ntru, mceliece, hqc
+    pub fn to_vsf_multi(&self) -> Vec<vsf::VsfType> {
         use vsf::VsfType;
         vec![
-            // PQC shared secrets
-            ("frodo_ss".into(), VsfType::v(b'f', self.frodo.clone())),
-            ("ntru_ss".into(), VsfType::v(b'n', self.ntru.clone())),
-            ("mceliece_ss".into(), VsfType::v(b'l', self.mceliece.clone())),
-            ("hqc_ss".into(), VsfType::v(b'h', self.hqc.clone())),
-            // EC shared secrets
-            ("x25519_ss".into(), VsfType::v(b'x', self.x25519.to_vec())),
-            ("p384_ss".into(), VsfType::v(b'3', self.p384.clone())),
-            ("secp256k1_ss".into(), VsfType::v(b'k', self.secp256k1.clone())),
-            ("p256_ss".into(), VsfType::v(b'2', self.p256.clone())),
+            VsfType::v(b'x', self.x25519.to_vec()),
+            VsfType::v(b'p', self.p384.clone()),
+            VsfType::v(b'k', self.secp256k1.clone()),
+            VsfType::v(b'p', self.p256.clone()),
+            VsfType::v(b'f', self.frodo.clone()),
+            VsfType::v(b'n', self.ntru.clone()),
+            VsfType::v(b'l', self.mceliece.clone()),
+            VsfType::v(b'h', self.hqc.clone()),
         ]
     }
 
-    /// Parse from VSF section fields
+    /// Parse from VSF section with multi-value secrets field.
+    /// Expects: (secrets: vx, vp, vk, vp, vf, vn, vl, vh)
     pub fn from_vsf_section(section: &vsf::VsfSection) -> Option<Self> {
         use vsf::VsfType;
 
-        fn get_bytes(section: &vsf::VsfSection, name: &str) -> Option<Vec<u8>> {
-            section.get_field(name)?.values.first().and_then(|v| match v {
-                VsfType::v(_, b) => Some(b.clone()),
-                _ => None,
-            })
+        let secrets_field = section.get_field("secrets")?;
+        let secrets = &secrets_field.values;
+        if secrets.len() < 8 { return None; }
+
+        let mut x25519_sec = None;
+        let mut p384_sec = None;
+        let mut secp256k1_sec = None;
+        let mut p256_sec = None;
+        let mut frodo_sec = None;
+        let mut ntru_sec = None;
+        let mut mceliece_sec = None;
+        let mut hqc_sec = None;
+
+        for v in secrets {
+            match v {
+                VsfType::v(b'x', b) if x25519_sec.is_none() => x25519_sec = Some(b.clone()),
+                VsfType::v(b'p', b) if p384_sec.is_none() && b.len() > 32 => p384_sec = Some(b.clone()),
+                VsfType::v(b'p', b) if p256_sec.is_none() && b.len() == 32 => p256_sec = Some(b.clone()),
+                VsfType::v(b'k', b) if secp256k1_sec.is_none() => secp256k1_sec = Some(b.clone()),
+                VsfType::v(b'f', b) if frodo_sec.is_none() => frodo_sec = Some(b.clone()),
+                VsfType::v(b'n', b) if ntru_sec.is_none() => ntru_sec = Some(b.clone()),
+                VsfType::v(b'l', b) if mceliece_sec.is_none() => mceliece_sec = Some(b.clone()),
+                VsfType::v(b'h', b) if hqc_sec.is_none() => hqc_sec = Some(b.clone()),
+                _ => {}
+            }
         }
 
-        fn get_array_32(section: &vsf::VsfSection, name: &str) -> Option<[u8; 32]> {
-            let bytes = get_bytes(section, name)?;
-            if bytes.len() != 32 { return None; }
-            let mut arr = [0u8; 32];
-            arr.copy_from_slice(&bytes);
-            Some(arr)
-        }
+        let x25519_bytes = x25519_sec?;
+        if x25519_bytes.len() != 32 { return None; }
+        let mut x25519 = [0u8; 32];
+        x25519.copy_from_slice(&x25519_bytes);
 
         Some(Self {
-            frodo: get_bytes(section, "frodo_ss")?,
-            ntru: get_bytes(section, "ntru_ss")?,
-            mceliece: get_bytes(section, "mceliece_ss")?,
-            hqc: get_bytes(section, "hqc_ss")?,
-            x25519: get_array_32(section, "x25519_ss")?,
-            p384: get_bytes(section, "p384_ss")?,
-            secp256k1: get_bytes(section, "secp256k1_ss")?,
-            p256: get_bytes(section, "p256_ss")?,
+            x25519,
+            p384: p384_sec?,
+            secp256k1: secp256k1_sec?,
+            p256: p256_sec?,
+            frodo: frodo_sec?,
+            ntru: ntru_sec?,
+            mceliece: mceliece_sec?,
+            hqc: hqc_sec?,
         })
     }
 }

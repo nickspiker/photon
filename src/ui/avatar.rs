@@ -919,6 +919,7 @@ pub fn save_avatar(av1_data: &[u8], handle: &str) -> std::io::Result<()> {
 
     // Build VSF with v'e' wrapped encrypted payload
     let vsf_bytes = VsfBuilder::new()
+        .creation_time_nanos(vsf::eagle_time_nanos())
         .provenance_only()
         .add_section(
             "image",
@@ -1296,6 +1297,7 @@ pub fn build_signed_avatar_vsf(
     // Build VSF with avatar pubkey and signature placeholder
     // Uses "image" section with "pixels" v'e' field for encrypted data
     let vsf_bytes = VsfBuilder::new()
+        .creation_time_nanos(vsf::eagle_time_nanos())
         .signature_ed25519(
             *avatar_verifying_key.as_bytes(),
             [0u8; 64], // Placeholder - will be filled after hp computed
