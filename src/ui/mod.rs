@@ -6,6 +6,7 @@ pub mod display_profile;
 pub mod drawing;
 #[cfg(not(target_os = "android"))]
 mod keyboard;
+pub mod layout;
 #[cfg(not(target_os = "android"))]
 mod mouse;
 mod text_editing;

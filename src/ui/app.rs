@@ -1,3 +1,4 @@
+use super::layout::Layout;
 use super::renderer::Renderer;
 use super::text_rasterizing::TextRenderer;
 use super::theme;
@@ -216,6 +217,9 @@ pub struct PhotonApp {
     pub perimeter: usize,   // width + height
     pub diagonal_sq: usize, // width² + height²
 
+    // Centralized layout geometry (recomputed on resize/state change)
+    pub layout: Layout,
+
     // Launch screen state
     pub blinkey_blink_rate_ms: u64, // System blinkey blink rate in milliseconds (max for random range)
     pub blinkey_wave_top_bright: bool, // True=top is bright, False=top is dark
@@ -424,6 +428,7 @@ impl PhotonApp {
             min_dim: w.min(h),
             perimeter: w + h,
             diagonal_sq: w * w + h * h,
+            layout: Layout::compute(size.width, size.height, w.min(h), &AppState::Launch(LaunchState::Fresh)),
             blinkey_blink_rate_ms,
             blinkey_visible: false,
             is_mouse_selecting: false,
@@ -562,6 +567,7 @@ impl PhotonApp {
             min_dim: w.min(h),
             perimeter: w + h,
             diagonal_sq: w * w + h * h,
+            layout: Layout::compute(width, height, w.min(h), &AppState::Launch(LaunchState::Fresh)),
             blinkey_blink_rate_ms: 500,
             blinkey_visible: false,
             is_mouse_selecting: false,
@@ -1276,6 +1282,9 @@ impl PhotonApp {
         self.min_dim = w.min(h);
         self.perimeter = w + h;
         self.diagonal_sq = w * w + h * h;
+
+        // Recompute layout geometry
+        self.layout = Layout::compute(size.width, size.height, self.min_dim, &self.app_state);
 
         self.renderer.resize(size.width, size.height);
         self.hit_test_map
@@ -2132,6 +2141,11 @@ impl PhotonApp {
     /// Set the launch state (only if currently in Launch mode)
     pub fn set_launch_state(&mut self, state: LaunchState) {
         self.app_state = AppState::Launch(state);
+    }
+
+    /// Recompute layout geometry (call after resize or state change)
+    pub fn recompute_layout(&mut self) {
+        self.layout = Layout::compute(self.width, self.height, self.min_dim, &self.app_state);
     }
 
     /// Check for status updates from P2P checker (non-blocking)
