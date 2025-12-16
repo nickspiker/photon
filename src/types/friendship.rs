@@ -651,11 +651,11 @@ impl FriendshipChains {
         &mut self,
         sender_handle_hash: &[u8; 32],
         eagle_time: &vsf::EagleTime,
-        plaintext_hash: &[u8; 32],
+        our_plaintext: &[u8],
         their_plaintext: Option<&[u8]>,
     ) -> bool {
         if let Some(idx) = self.participant_index(sender_handle_hash) {
-            self.chains[idx].advance(eagle_time, plaintext_hash, their_plaintext);
+            self.chains[idx].advance(eagle_time, our_plaintext, their_plaintext);
             true
         } else {
             false
@@ -1017,6 +1017,15 @@ impl FriendshipChains {
         }
 
         cleared
+    }
+
+    /// Look up a pending message's plaintext by its msg_hp.
+    /// Used by receiver to get the plaintext for bidirectional weave.
+    pub fn get_pending_plaintext_by_hp(&self, msg_hp: &[u8; 32]) -> Option<&[u8]> {
+        self.pending_messages
+            .iter()
+            .find(|m| &m.msg_hp == msg_hp)
+            .map(|m| m.plaintext.as_slice())
     }
 
     // ==================== GAP BUFFER METHODS ====================

@@ -183,7 +183,7 @@ impl Chain {
     pub fn advance(
         &mut self,
         eagle_time: &EagleTime,
-        plaintext_hash: &[u8; 32],
+        our_plaintext: &[u8],
         their_plaintext: Option<&[u8]>,
     ) {
         // Left-shift: everything moves left, oldest drops off [0]
@@ -192,7 +192,7 @@ impl Chain {
         // Derive fresh link via spaghettify (computationally chaotic)
         // With bidirectional entropy mixing if their_plaintext is provided
         let fresh_link =
-            derive_fresh_link(&eagle_time, plaintext_hash, their_plaintext, &self.links);
+            derive_fresh_link(&eagle_time, our_plaintext, their_plaintext, &self.links);
 
         // Append at rightmost position
         self.links[CURRENT_KEY_INDEX] = fresh_link;
@@ -330,32 +330,38 @@ pub fn verify_ack_proof(
 /// Uses spaghettify for computational chaos (data-dependent ops, IEEE754 weirdness).
 /// NOT memory-hard (~1.7KB state) - fast enough for per-message use.
 ///
-/// Bidirectional entropy: if `their_plaintext` is provided, it's mixed into
-/// the hash before spaghettify. This incorporates the other party's message
-/// content as entropy, providing stronger forward secrecy than unidirectional
-/// schemes - an attacker would need BOTH parties' plaintext history to predict keys.
+/// Bidirectional entropy: both plaintexts (ours and theirs) are fed directly to
+/// spaghettify. No pre-hashing - spaghettify gets all the raw entropy.
+/// Domain separation via clear structure: domain + lengths + data
 fn derive_fresh_link(
     eagle_time: &EagleTime,
-    plaintext_hash: &[u8; 32],
+    our_plaintext: &[u8],
     their_plaintext: Option<&[u8]>,
     chain: &[[u8; 32]; CHAIN_LINKS],
 ) -> [u8; 32] {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(DOMAIN_ADVANCE);
-    hasher.update(&eagle_time.to_f64().to_le_bytes());
     // Active chain portion (post-shift, so [256..511] now, [255..510] after shift)
-    // Note: after copy_within(1.., 0), old [257..512] is now at [256..511]
-    hasher.update(chain[HISTORY_LINKS..CURRENT_KEY_INDEX].as_flattened());
-    hasher.update(plaintext_hash);
+    let chain_portion = chain[HISTORY_LINKS..CURRENT_KEY_INDEX].as_flattened();
 
-    // Bidirectional entropy: mix in their plaintext if available
-    // This creates a dependency on the other party's message content
+    // Build input with clear domain separation:
+    // domain_tag + eagle_time + our_len + our_plaintext + chain_portion + [their_len + their_plaintext]
+    let mut input = Vec::with_capacity(
+        DOMAIN_ADVANCE.len() + 8 + 4 + our_plaintext.len() + chain_portion.len() + 4 + their_plaintext.map_or(0, |p| p.len())
+    );
+
+    input.extend_from_slice(DOMAIN_ADVANCE);
+    input.extend_from_slice(&eagle_time.to_f64().to_le_bytes());
+    input.extend_from_slice(&(our_plaintext.len() as u32).to_le_bytes());
+    input.extend_from_slice(our_plaintext);
+    input.extend_from_slice(chain_portion);
+
+    // Add their plaintext if available (bidirectional weave)
     if let Some(their_pt) = their_plaintext {
-        hasher.update(b"THEIR_ENTROPY");
-        hasher.update(their_pt);
+        input.extend_from_slice(&(their_pt.len() as u32).to_le_bytes());
+        input.extend_from_slice(their_pt);
     }
 
-    spaghettify(hasher.finalize().as_bytes())
+    // Feed raw bytes directly to spaghettify - no pre-hash bottleneck
+    spaghettify(&input)
 }
 
 // ============================================================================

@@ -2405,18 +2405,33 @@ impl PhotonApp {
                             &plaintext
                         ));
 
-                        // Convert to string (assuming UTF-8)
-                        let message_text = match String::from_utf8(plaintext.clone()) {
-                            Ok(s) => s,
-                            Err(_) => {
-                                crate::log_error("CHAT: Decrypted message is not valid UTF-8");
+                        // Decompress Huffman-encoded message (VSF x type)
+                        let mut ptr = 0usize;
+                        let message_text = match vsf::parse(&plaintext, &mut ptr) {
+                            Ok(vsf::VsfType::x(s)) => s,
+                            Ok(other) => {
+                                crate::log_error(&format!("CHAT: Expected x type, got {:?}", other));
+                                continue;
+                            }
+                            Err(e) => {
+                                crate::log_error(&format!("CHAT: VSF parse error: {:?}", e));
                                 continue;
                             }
                         };
 
+                        // Extract incorporated_hp (32 bytes after the x type)
+                        // This tells us which of OUR messages they incorporated into their weave
+                        let incorporated_hp: [u8; 32] = if ptr + 32 <= plaintext.len() {
+                            let mut hp = [0u8; 32];
+                            hp.copy_from_slice(&plaintext[ptr..ptr + 32]);
+                            hp
+                        } else {
+                            [0u8; 32] // No incorporated_hp (legacy or first message)
+                        };
+
                         crate::log_info(&format!(
-                            "CHAT: Decrypted message from {}: \"{}\"",
-                            handle, message_text
+                            "CHAT: Decrypted message from {}: \"{}\" (incorporated_hp={}...)",
+                            handle, message_text, hex::encode(&incorporated_hp[..8])
                         ));
 
                         // Compute plaintext hash for ACK
@@ -2432,11 +2447,18 @@ impl PhotonApp {
                         // Update bidirectional entropy state (derive weave hash from full message context)
                         chains.update_received_for_mixing(timestamp, msg_hp, &plaintext);
 
-                        // Advance their chain (receiver advances sender's chain after decrypt)
-                        // TEMPORARILY: Pass None for bidir entropy until wire protocol has their_incorporated_hp
-                        // This prevents desync when messages cross in flight
+                        // Look up OUR plaintext that they incorporated (for bidirectional weave)
+                        // If incorporated_hp is all zeros, they didn't incorporate any of our messages
+                        // Clone to avoid borrow issues with advance()
+                        let our_incorporated_plaintext: Option<Vec<u8>> = if incorporated_hp != [0u8; 32] {
+                            chains.get_pending_plaintext_by_hp(&incorporated_hp).map(|p| p.to_vec())
+                        } else {
+                            None
+                        };
+
+                        // Advance their chain with bidirectional weave
                         let eagle_time_for_advance = vsf::EagleTime::new(vsf::types::EtType::f6(timestamp));
-                        chains.advance(&from_handle_hash, &eagle_time_for_advance, &plaintext_hash, None);
+                        chains.advance(&from_handle_hash, &eagle_time_for_advance, &plaintext, our_incorporated_plaintext.as_deref());
 
                         // Mark as received for deduplication (protects against UDP duplicates)
                         chains.mark_received(&from_handle_hash, timestamp);
@@ -3735,7 +3757,16 @@ impl PhotonApp {
         // Encrypt the message using new CHAIN protocol
         use crate::crypto::chain::{derive_salt, encrypt_layers, generate_scratch};
 
-        let payload = message_text.as_bytes();
+        // Get the hp of their last message we received (for bidirectional weave)
+        let incorporated_hp: [u8; 32] = chains.other_participant(&our_identity_seed)
+            .and_then(|their_hash| chains.last_received_hash(their_hash).copied())
+            .unwrap_or([0u8; 32]);
+
+        // Build payload: x(message) + incorporated_hp (32B) + random_extension
+        let mut payload = vsf::VsfType::x(message_text.to_string()).flatten();
+        payload.extend_from_slice(&incorporated_hp);
+        // TODO: Add random extension here
+
         let eagle_time = vsf::datetime_to_eagle_time(chrono::Utc::now());
 
         // Derive salt from previous plaintext (use tracked plaintext from chains)
@@ -3756,10 +3787,10 @@ impl PhotonApp {
         ));
 
         // Encrypt using 3-layer encryption
-        let ciphertext = encrypt_layers(payload, chain, &scratch, &eagle_time);
+        let ciphertext = encrypt_layers(&payload, chain, &scratch, &eagle_time);
 
         // Compute hash chain pointers using proper derivation
-        let plaintext_hash = *blake3::hash(payload).as_bytes();
+        let plaintext_hash = *blake3::hash(&payload).as_bytes();
         let prev_msg_hp = chains.get_prev_msg_hp(&our_identity_seed)
             .unwrap_or_else(|| {
                 // Fallback: derive anchor manually (shouldn't happen)
@@ -3792,12 +3823,15 @@ impl PhotonApp {
             );
 
             // Track sent weave for bidirectional entropy (receiver uses this to advance our chain)
-            chains_mut.update_sent_for_mixing(eagle_time.to_f64(), msg_hp, payload);
+            chains_mut.update_sent_for_mixing(eagle_time.to_f64(), msg_hp, &payload);
 
-            // Advance our chain immediately after sending (chain advances every message, not on ACK)
-            // TEMPORARILY: Pass None for bidir entropy until wire protocol has their_incorporated_hp
-            // This prevents desync when messages cross in flight
-            chains_mut.advance(&our_identity_seed, &eagle_time, &plaintext_hash, None);
+            // Get other party's last plaintext for bidirectional weave
+            // Clone to avoid borrow issues with advance()
+            let their_plaintext: Option<Vec<u8>> = chains_mut.other_participant(&our_identity_seed)
+                .map(|their_hash| chains_mut.last_plaintext(their_hash).to_vec());
+
+            // Advance our chain immediately after sending, weaving in their last message
+            chains_mut.advance(&our_identity_seed, &eagle_time, &payload, their_plaintext.as_deref());
 
             // *** PERSIST to disk FIRST - this is the commit point ***
             if let Some(ref identity_seed) = self.user_identity_seed {
