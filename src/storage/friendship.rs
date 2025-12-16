@@ -221,13 +221,22 @@ pub fn save_friendship_chains(
             .map_err(|e| FriendshipStorageError::Parse(e.to_string()))?
             .append_multi("pending_plaintext", vec![VsfType::x(plaintext_str)])
             .map_err(|e| FriendshipStorageError::Parse(e.to_string()))?
-            .append_multi("pending_plaintext_hash", vec![VsfType::hp(pending.plaintext_hash.to_vec())])
+            .append_multi(
+                "pending_plaintext_hash",
+                vec![VsfType::hp(pending.plaintext_hash.to_vec())],
+            )
             .map_err(|e| FriendshipStorageError::Parse(e.to_string()))?
-            .append_multi("pending_prev_msg_hp", vec![VsfType::hp(pending.prev_msg_hp.to_vec())])
+            .append_multi(
+                "pending_prev_msg_hp",
+                vec![VsfType::hp(pending.prev_msg_hp.to_vec())],
+            )
             .map_err(|e| FriendshipStorageError::Parse(e.to_string()))?
             .append_multi("pending_msg_hp", vec![VsfType::hp(pending.msg_hp.to_vec())])
             .map_err(|e| FriendshipStorageError::Parse(e.to_string()))?
-            .append_multi("pending_ciphertext", vec![VsfType::v(b'X', pending.ciphertext.clone())])
+            .append_multi(
+                "pending_ciphertext",
+                vec![VsfType::v(b'X', pending.ciphertext.clone())],
+            )
             .map_err(|e| FriendshipStorageError::Parse(e.to_string()))?;
     }
 
@@ -280,7 +289,10 @@ pub fn save_friendship_chains(
     let encrypted = encrypt_data(&vsf_bytes, &encryption_key)?;
 
     let path = dir.join("chains.vsf.enc");
-    let label = format!("friendships/{}/chains.vsf.enc", &friendship_id.to_base64()[..8]);
+    let label = format!(
+        "friendships/{}/chains.vsf.enc",
+        &friendship_id.to_base64()[..8]
+    );
     crate::network::inspect::vsf_write(&path, &encrypted, &label, Some(&vsf_bytes), device_secret)?;
 
     Ok(())
@@ -298,7 +310,10 @@ pub fn load_friendship_chains(
     let path = dir.join("chains.vsf.enc");
 
     // Read encrypted file
-    let label = format!("friendships/{}/chains.vsf.enc", &friendship_id.to_base64()[..8]);
+    let label = format!(
+        "friendships/{}/chains.vsf.enc",
+        &friendship_id.to_base64()[..8]
+    );
     let encrypted = crate::network::inspect::vsf_read(&path, &label, device_secret)?;
 
     // Decrypt
@@ -450,9 +465,13 @@ pub fn load_friendship_chains(
         .collect();
 
     // Reconstruct pending messages (all arrays must have same length)
-    let pending_count = eagle_times.len().min(plaintexts.len())
-        .min(plaintext_hashes.len()).min(prev_msg_hps.len())
-        .min(msg_hps.len()).min(ciphertexts.len());
+    let pending_count = eagle_times
+        .len()
+        .min(plaintexts.len())
+        .min(plaintext_hashes.len())
+        .min(prev_msg_hps.len())
+        .min(msg_hps.len())
+        .min(ciphertexts.len());
 
     let pending_messages: Vec<PendingMessage> = (0..pending_count)
         .map(|i| PendingMessage {
@@ -542,7 +561,8 @@ pub fn load_friendship_chains(
         last_incorporated_hp,
         last_plaintexts,
         last_received_times,
-    ).ok_or_else(|| {
+    )
+    .ok_or_else(|| {
         FriendshipStorageError::InvalidChains("Failed to reconstruct chains".to_string())
     })
 }
@@ -586,7 +606,9 @@ pub fn load_all_friendships(
 }
 
 /// Delete friendship chains from disk (used on re-key)
-pub fn delete_friendship_chains(friendship_id: &FriendshipId) -> Result<(), FriendshipStorageError> {
+pub fn delete_friendship_chains(
+    friendship_id: &FriendshipId,
+) -> Result<(), FriendshipStorageError> {
     let dir = friendship_dir(friendship_id);
     if dir.exists() {
         fs::remove_dir_all(&dir)?;
@@ -618,8 +640,7 @@ mod tests {
         save_friendship_chains(&chains, &identity_seed, &device_secret).unwrap();
 
         // Load
-        let loaded =
-            load_friendship_chains(chains.id(), &identity_seed, &device_secret).unwrap();
+        let loaded = load_friendship_chains(chains.id(), &identity_seed, &device_secret).unwrap();
 
         // Verify
         assert_eq!(loaded.id().as_bytes(), chains.id().as_bytes());

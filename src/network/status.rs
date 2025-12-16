@@ -14,8 +14,7 @@ use crate::network::fgtw::protocol::SyncRecord;
 use crate::network::fgtw::FgtwMessage;
 use crate::network::fgtw::Keypair;
 use crate::network::pt::{
-    is_pt_data, PTAck, PTComplete, PTControl, PTData, PTManager, PTNak, PTSpec,
-    TcpTransport,
+    is_pt_data, PTAck, PTComplete, PTControl, PTData, PTManager, PTNak, PTSpec, TcpTransport,
 };
 use crate::types::DevicePubkey;
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
@@ -169,7 +168,6 @@ pub enum StatusUpdate {
     // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete REMOVED
     // Full 8-primitive CLUTCH uses ClutchOfferReceived and ClutchKemResponseReceived
     // See CLUTCH.md Section 4.2 for the slot-based ceremony protocol.
-
     /// Encrypted chat message received (CHAIN format)
     ChatMessage {
         /// Privacy-preserving conversation token (smear_hash of sorted participant seeds)
@@ -201,18 +199,18 @@ pub enum StatusUpdate {
     /// Full CLUTCH offer received (~548KB with all 8 pubkeys)
     /// Payload is already verified and parsed from VSF format.
     ClutchOfferReceived {
-        conversation_token: [u8; 32],    // Privacy-preserving smear_hash of sorted participant seeds
-        offer_provenance: [u8; 32],      // VSF header hp - unique per offer (timestamp entropy)
-        sender_pubkey: [u8; 32],         // Device pubkey (verified via signature)
+        conversation_token: [u8; 32], // Privacy-preserving smear_hash of sorted participant seeds
+        offer_provenance: [u8; 32],   // VSF header hp - unique per offer (timestamp entropy)
+        sender_pubkey: [u8; 32],      // Device pubkey (verified via signature)
         payload: crate::crypto::clutch::ClutchOfferPayload,
         sender_addr: SocketAddr,
     },
     /// CLUTCH KEM response received (~31KB with 4 ciphertexts)
     /// Payload is already verified and parsed from VSF format.
     ClutchKemResponseReceived {
-        conversation_token: [u8; 32],    // Privacy-preserving smear_hash of sorted participant seeds
-        ceremony_id: [u8; 32],           // Deterministic - should match locally computed value
-        sender_pubkey: [u8; 32],         // Device pubkey (verified via signature)
+        conversation_token: [u8; 32], // Privacy-preserving smear_hash of sorted participant seeds
+        ceremony_id: [u8; 32],        // Deterministic - should match locally computed value
+        sender_pubkey: [u8; 32],      // Device pubkey (verified via signature)
         payload: crate::crypto::clutch::ClutchKemResponsePayload,
         sender_addr: SocketAddr,
     },
@@ -220,9 +218,9 @@ pub enum StatusUpdate {
     /// Payload is already verified and parsed from VSF format.
     /// Both parties exchange this to verify they derived identical eggs.
     ClutchCompleteReceived {
-        conversation_token: [u8; 32],    // Privacy-preserving smear_hash of sorted participant seeds
-        ceremony_id: [u8; 32],           // Deterministic - should match locally computed value
-        sender_pubkey: [u8; 32],         // Device pubkey (verified via signature)
+        conversation_token: [u8; 32], // Privacy-preserving smear_hash of sorted participant seeds
+        ceremony_id: [u8; 32],        // Deterministic - should match locally computed value
+        sender_pubkey: [u8; 32],      // Device pubkey (verified via signature)
         payload: crate::crypto::clutch::ClutchCompletePayload,
         sender_addr: SocketAddr,
     },
@@ -310,35 +308,36 @@ impl StatusChecker {
         thread::Builder::new()
             .name("network-status".to_string())
             .spawn_with_priority(ThreadPriority::Max, move |_| {
-            crate::log_info("Status: Background thread started (high priority)");
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("Failed to create tokio runtime for StatusChecker");
+                crate::log_info("Status: Background thread started (high priority)");
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("Failed to create tokio runtime for StatusChecker");
 
-            rt.block_on(async move {
-                run_checker(
-                    socket,
-                    keypair,
-                    our_pubkey,
-                    local_ip,
-                    ping_rx,
-                    message_rx,
-                    ack_rx,
-                    pt_rx,
-                    offer_rx,
-                    kem_response_rx,
-                    complete_proof_rx,
-                    lan_broadcast_rx,
-                    clear_pt_rx,
-                    status_tx,
-                    contacts,
-                    sync_records,
-                    Some(event_proxy),
-                )
-                .await;
-            });
-        }).expect("Failed to spawn network thread");
+                rt.block_on(async move {
+                    run_checker(
+                        socket,
+                        keypair,
+                        our_pubkey,
+                        local_ip,
+                        ping_rx,
+                        message_rx,
+                        ack_rx,
+                        pt_rx,
+                        offer_rx,
+                        kem_response_rx,
+                        complete_proof_rx,
+                        lan_broadcast_rx,
+                        clear_pt_rx,
+                        status_tx,
+                        contacts,
+                        sync_records,
+                        Some(event_proxy),
+                    )
+                    .await;
+                });
+            })
+            .expect("Failed to spawn network thread");
 
         Ok(Self {
             ping_sender: ping_tx,
@@ -395,35 +394,36 @@ impl StatusChecker {
         thread::Builder::new()
             .name("network-status".to_string())
             .spawn_with_priority(ThreadPriority::Max, move |_| {
-            crate::log_info("Status: Background thread started (high priority)");
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("Failed to create tokio runtime for StatusChecker");
+                crate::log_info("Status: Background thread started (high priority)");
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("Failed to create tokio runtime for StatusChecker");
 
-            rt.block_on(async move {
-                run_checker(
-                    socket,
-                    keypair,
-                    our_pubkey,
-                    local_ip,
-                    ping_rx,
-                    message_rx,
-                    ack_rx,
-                    pt_rx,
-                    offer_rx,
-                    kem_response_rx,
-                    complete_proof_rx,
-                    lan_broadcast_rx,
-                    clear_pt_rx,
-                    status_tx,
-                    contacts,
-                    sync_records,
-                    None,
-                )
-                .await;
-            });
-        }).expect("Failed to spawn network thread");
+                rt.block_on(async move {
+                    run_checker(
+                        socket,
+                        keypair,
+                        our_pubkey,
+                        local_ip,
+                        ping_rx,
+                        message_rx,
+                        ack_rx,
+                        pt_rx,
+                        offer_rx,
+                        kem_response_rx,
+                        complete_proof_rx,
+                        lan_broadcast_rx,
+                        clear_pt_rx,
+                        status_tx,
+                        contacts,
+                        sync_records,
+                        None,
+                    )
+                    .await;
+                });
+            })
+            .expect("Failed to spawn network thread");
 
         Ok(Self {
             ping_sender: ping_tx,
@@ -581,10 +581,16 @@ async fn run_checker(
             .map(|a| a.port())
             .unwrap_or(PHOTON_PORT);
         // Try IPv6 dual-stack first (accepts both IPv4 and IPv6 on most systems)
-        let tcp_addr_v6 = SocketAddr::new(std::net::IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED), udp_port);
+        let tcp_addr_v6 = SocketAddr::new(
+            std::net::IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED),
+            udp_port,
+        );
         match tokio::net::TcpListener::bind(tcp_addr_v6).await {
             Ok(listener) => {
-                crate::log_info(&format!("Status: TCP listening on [::]:{}  (dual-stack)", udp_port));
+                crate::log_info(&format!(
+                    "Status: TCP listening on [::]:{}  (dual-stack)",
+                    udp_port
+                ));
                 Some(listener)
             }
             Err(_) => {
@@ -592,7 +598,10 @@ async fn run_checker(
                 let tcp_addr_v4 = SocketAddr::new(std::net::IpAddr::V4(local_ip), udp_port);
                 match tokio::net::TcpListener::bind(tcp_addr_v4).await {
                     Ok(listener) => {
-                        crate::log_info(&format!("Status: TCP listening on {} (IPv4 only)", tcp_addr_v4));
+                        crate::log_info(&format!(
+                            "Status: TCP listening on {} (IPv4 only)",
+                            tcp_addr_v4
+                        ));
                         Some(listener)
                     }
                     Err(e) => {
@@ -670,17 +679,26 @@ async fn run_checker(
                 }
             };
 
-            crate::log_info(&format!("LAN: Multicast listener on {}:{}", multicast_addr, multicast_port));
+            crate::log_info(&format!(
+                "LAN: Multicast listener on {}:{}",
+                multicast_addr, multicast_port
+            ));
 
             let mut buf = [0u8; 2048];
             loop {
                 match socket.recv_from(&mut buf).await {
                     Ok((len, src_addr)) => {
-                        crate::log_info(&format!("LAN: Multicast RX {} bytes from {}", len, src_addr));
+                        crate::log_info(&format!(
+                            "LAN: Multicast RX {} bytes from {}",
+                            len, src_addr
+                        ));
                         let packet = &buf[..len];
                         // Only process pt_disc packets (LAN discovery)
                         if let Some(lan_update) = parse_lan_discovery(packet, src_addr) {
-                            crate::log_info(&format!("LAN: Discovered peer via multicast: {}", src_addr));
+                            crate::log_info(&format!(
+                                "LAN: Discovered peer via multicast: {}",
+                                src_addr
+                            ));
                             send_status_update(&status_tx_mcast, lan_update, &event_proxy_mcast);
                         }
                     }
@@ -765,7 +783,10 @@ async fn run_checker(
                 };
                 if ret < 0 {
                     let err = std::io::Error::last_os_error();
-                    crate::log_info(&format!("LAN: Could not bind IPv6 multicast socket: {}", err));
+                    crate::log_info(&format!(
+                        "LAN: Could not bind IPv6 multicast socket: {}",
+                        err
+                    ));
                     unsafe { libc::close(fd) };
                     return;
                 }
@@ -801,16 +822,25 @@ async fn run_checker(
                 }
             };
 
-            crate::log_info(&format!("LAN: IPv6 multicast listener on [{}]:{}", multicast_addr, multicast_port));
+            crate::log_info(&format!(
+                "LAN: IPv6 multicast listener on [{}]:{}",
+                multicast_addr, multicast_port
+            ));
 
             let mut buf = [0u8; 2048];
             loop {
                 match socket.recv_from(&mut buf).await {
                     Ok((len, src_addr)) => {
-                        crate::log_info(&format!("LAN: IPv6 Multicast RX {} bytes from {}", len, src_addr));
+                        crate::log_info(&format!(
+                            "LAN: IPv6 Multicast RX {} bytes from {}",
+                            len, src_addr
+                        ));
                         let packet = &buf[..len];
                         if let Some(lan_update) = parse_lan_discovery(packet, src_addr) {
-                            crate::log_info(&format!("LAN: Discovered peer via IPv6 multicast: {}", src_addr));
+                            crate::log_info(&format!(
+                                "LAN: Discovered peer via IPv6 multicast: {}",
+                                src_addr
+                            ));
                             send_status_update(&status_tx_mcast6, lan_update, &event_proxy_mcast6);
                         }
                     }
@@ -854,27 +884,36 @@ async fn run_checker(
                                         // VSF inspection for development builds
                                         #[cfg(feature = "development")]
                                         {
-                                            if let Ok(inspection) = vsf::inspect::inspect_vsf(&data) {
-                                                crate::log_info(&format!("Status: Received TCP VSF:\n{}", inspection));
+                                            if let Ok(inspection) = vsf::inspect::inspect_vsf(&data)
+                                            {
+                                                crate::log_info(&format!(
+                                                    "Status: Received TCP VSF:\n{}",
+                                                    inspection
+                                                ));
                                             }
                                         }
 
                                         // Check for VSF magic bytes (RÅ< = 0x52 0xC3 0x85 0x3C)
-                                        if data.len() >= 4 && &data[0..3] == b"R\xC3\x85" && data[3] == b'<' {
+                                        if data.len() >= 4
+                                            && &data[0..3] == b"R\xC3\x85"
+                                            && data[3] == b'<'
+                                        {
                                             // Parse VSF header to determine message type
                                             // Try parsing as ClutchOffer first
                                             use crate::network::fgtw::protocol::{
                                                 parse_clutch_complete_vsf_without_recipient_check,
-                                                parse_clutch_offer_vsf_without_recipient_check,
                                                 parse_clutch_kem_response_vsf_without_recipient_check,
+                                                parse_clutch_offer_vsf_without_recipient_check,
                                             };
 
                                             // Helper to check if sender is a known contact
-                                            let is_known_sender = |pubkey_bytes: &[u8; 32]| -> bool {
-                                                let sender = DevicePubkey::from_bytes(*pubkey_bytes);
-                                                let contact_list = contacts_tcp.lock().unwrap();
-                                                contact_list.iter().any(|p| *p == sender)
-                                            };
+                                            let is_known_sender =
+                                                |pubkey_bytes: &[u8; 32]| -> bool {
+                                                    let sender =
+                                                        DevicePubkey::from_bytes(*pubkey_bytes);
+                                                    let contact_list = contacts_tcp.lock().unwrap();
+                                                    contact_list.iter().any(|p| *p == sender)
+                                                };
 
                                             // Try full offer first (has clutch_offer section)
                                             if let Ok((payload, sender_pubkey, offer_provenance, conversation_token)) =
@@ -1020,7 +1059,9 @@ async fn run_checker(
                                 udp::send(&socket_recv, &complete, src_addr).await;
                                 if let Some(data) = received_data {
                                     // Log utilization summary
-                                    if let Some((packets, bytes, duplicates, duration_ms)) = inbound_stats {
+                                    if let Some((packets, bytes, duplicates, duration_ms)) =
+                                        inbound_stats
+                                    {
                                         let total_recv = packets + duplicates;
                                         let utilization = if total_recv > 0 {
                                             (packets as f64 / total_recv as f64) * 100.0
@@ -1071,8 +1112,8 @@ async fn run_checker(
                                     // Parse PT data as CLUTCH message and emit appropriate event
                                     use crate::network::fgtw::protocol::{
                                         parse_clutch_complete_vsf_without_recipient_check,
-                                        parse_clutch_offer_vsf_without_recipient_check,
                                         parse_clutch_kem_response_vsf_without_recipient_check,
+                                        parse_clutch_offer_vsf_without_recipient_check,
                                     };
 
                                     // Helper to check if sender is a known contact (defense-in-depth)
@@ -1084,8 +1125,12 @@ async fn run_checker(
                                     };
 
                                     // Try to parse as ClutchOffer
-                                    if let Ok((payload, sender_pubkey, offer_provenance, conversation_token)) =
-                                        parse_clutch_offer_vsf_without_recipient_check(&data)
+                                    if let Ok((
+                                        payload,
+                                        sender_pubkey,
+                                        offer_provenance,
+                                        conversation_token,
+                                    )) = parse_clutch_offer_vsf_without_recipient_check(&data)
                                     {
                                         // Defense-in-depth: verify sender again
                                         if !is_known_sender_pt(&sender_pubkey) {
@@ -1109,7 +1154,12 @@ async fn run_checker(
                                         );
                                     }
                                     // Try to parse as ClutchKemResponse
-                                    else if let Ok((payload, sender_pubkey, ceremony_id, conversation_token)) =
+                                    else if let Ok((
+                                        payload,
+                                        sender_pubkey,
+                                        ceremony_id,
+                                        conversation_token,
+                                    )) =
                                         parse_clutch_kem_response_vsf_without_recipient_check(&data)
                                     {
                                         // Defense-in-depth: verify sender again
@@ -1120,7 +1170,9 @@ async fn run_checker(
                                             ));
                                             continue;
                                         }
-                                        crate::log_info("PT: Parsed as ClutchKemResponse (VSF verified)");
+                                        crate::log_info(
+                                            "PT: Parsed as ClutchKemResponse (VSF verified)",
+                                        );
                                         send_status_update(
                                             &status_tx_recv,
                                             StatusUpdate::ClutchKemResponseReceived {
@@ -1134,7 +1186,12 @@ async fn run_checker(
                                         );
                                     }
                                     // Try to parse as ClutchComplete
-                                    else if let Ok((payload, sender_pubkey, ceremony_id, conversation_token)) =
+                                    else if let Ok((
+                                        payload,
+                                        sender_pubkey,
+                                        ceremony_id,
+                                        conversation_token,
+                                    )) =
                                         parse_clutch_complete_vsf_without_recipient_check(&data)
                                     {
                                         // Defense-in-depth: verify sender again
@@ -1145,7 +1202,9 @@ async fn run_checker(
                                             ));
                                             continue;
                                         }
-                                        crate::log_info("PT: Parsed as ClutchComplete (VSF verified)");
+                                        crate::log_info(
+                                            "PT: Parsed as ClutchComplete (VSF verified)",
+                                        );
                                         send_status_update(
                                             &status_tx_recv,
                                             StatusUpdate::ClutchCompleteReceived {
@@ -1157,8 +1216,7 @@ async fn run_checker(
                                             },
                                             &event_proxy_recv,
                                         );
-                                    }
-                                    else {
+                                    } else {
                                         // Unknown PT data - emit generic event for debugging
                                         crate::log_error(&format!(
                                             "PT: Failed to parse {} bytes as CLUTCH message",
@@ -1208,7 +1266,10 @@ async fn run_checker(
 
                     // Try to parse small direct UDP VSF messages (ClutchComplete, etc.)
                     // These are sent directly without PT overhead for efficiency
-                    if msg_bytes.len() >= 4 && &msg_bytes[0..3] == b"R\xC3\x85" && msg_bytes[3] == b'<' {
+                    if msg_bytes.len() >= 4
+                        && &msg_bytes[0..3] == b"R\xC3\x85"
+                        && msg_bytes[3] == b'<'
+                    {
                         use crate::network::fgtw::protocol::parse_clutch_complete_vsf_without_recipient_check;
 
                         if let Ok((payload, sender_pubkey, ceremony_id, conversation_token)) =
@@ -1362,7 +1423,6 @@ async fn run_checker(
                                 // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete handlers REMOVED
                                 // Full 8-primitive CLUTCH uses TCP with ClutchOfferReceived and ClutchKemResponseReceived
                                 // See CLUTCH.md Section 4.2 for the slot-based ceremony protocol.
-
                                 FgtwMessage::ChatMessage {
                                     timestamp,
                                     conversation_token,
@@ -1372,10 +1432,8 @@ async fn run_checker(
                                     signature,
                                 } => {
                                     // Verify signature (CHAIN format provenance)
-                                    let provenance = compute_chat_provenance(
-                                        &conversation_token,
-                                        &prev_msg_hp,
-                                    );
+                                    let provenance =
+                                        compute_chat_provenance(&conversation_token, &prev_msg_hp);
                                     if !verify_provenance_signature(
                                         &provenance,
                                         &sender_pubkey,
@@ -1444,13 +1502,17 @@ async fn run_checker(
                         }
                         Err(e) => {
                             // Log first 32 bytes for debugging
-                            let preview: String = msg_bytes.iter().take(32)
+                            let preview: String = msg_bytes
+                                .iter()
+                                .take(32)
                                 .map(|b| format!("{:02x}", b))
                                 .collect::<Vec<_>>()
                                 .join(" ");
                             crate::log_info(&format!(
                                 "Status: Parse error: {} (len={}, first 32 bytes: {})",
-                                e, msg_bytes.len(), preview
+                                e,
+                                msg_bytes.len(),
+                                preview
                             ));
                         }
                     }
@@ -1467,7 +1529,8 @@ async fn run_checker(
     const PT_MAX_RETRIES: u8 = 1; // Retry UDP once before TCP fallback
 
     // Peers where TCP fallback was denied (EACCES) - don't retry TCP for these
-    let mut tcp_denied_peers: std::collections::HashSet<SocketAddr> = std::collections::HashSet::new();
+    let mut tcp_denied_peers: std::collections::HashSet<SocketAddr> =
+        std::collections::HashSet::new();
 
     // Process ping requests from UI
     loop {
@@ -1533,13 +1596,14 @@ async fn run_checker(
             for pubkey in expired {
                 let pubkey_bytes = *pubkey.as_bytes();
                 // Find or insert entry with linear search
-                let count = if let Some(entry) = failures.iter_mut().find(|(k, _)| *k == pubkey_bytes) {
-                    entry.1 = entry.1.saturating_add(1);
-                    entry.1
-                } else {
-                    failures.push((pubkey_bytes, 1));
-                    1
-                };
+                let count =
+                    if let Some(entry) = failures.iter_mut().find(|(k, _)| *k == pubkey_bytes) {
+                        entry.1 = entry.1.saturating_add(1);
+                        entry.1
+                    } else {
+                        failures.push((pubkey_bytes, 1));
+                        1
+                    };
 
                 if count >= OFFLINE_THRESHOLD {
                     // Enough consecutive failures - mark offline
@@ -1553,7 +1617,7 @@ async fn run_checker(
                         StatusUpdate::Online {
                             peer_pubkey: pubkey,
                             is_online: false,
-                            peer_addr: None, // No address for offline
+                            peer_addr: None,      // No address for offline
                             sync_records: vec![], // No sync for offline
                         },
                         &event_proxy,
@@ -1563,7 +1627,8 @@ async fn run_checker(
                 } else {
                     crate::log_info(&format!(
                         "Status: TIMEOUT ({}/{}) - {} (waiting for more failures before offline)",
-                        count, OFFLINE_THRESHOLD,
+                        count,
+                        OFFLINE_THRESHOLD,
                         hex::encode(&pubkey_bytes[..8])
                     ));
                 }
@@ -1583,10 +1648,8 @@ async fn run_checker(
             let timestamp = request.eagle_time;
 
             // Compute provenance and sign (CHAIN format)
-            let provenance = compute_chat_provenance(
-                &request.conversation_token,
-                &request.prev_msg_hp,
-            );
+            let provenance =
+                compute_chat_provenance(&request.conversation_token, &request.prev_msg_hp);
             let sig = keypair.sign(&provenance);
             let mut sig_bytes = [0u8; 64];
             sig_bytes.copy_from_slice(&sig.to_bytes());
@@ -1703,7 +1766,10 @@ async fn run_checker(
             ) {
                 Ok(bytes) => bytes,
                 Err(e) => {
-                    crate::log_error(&format!("Status: Failed to build ClutchKemResponse VSF: {}", e));
+                    crate::log_error(&format!(
+                        "Status: Failed to build ClutchKemResponse VSF: {}",
+                        e
+                    ));
                     continue;
                 }
             };
@@ -1746,7 +1812,10 @@ async fn run_checker(
             ) {
                 Ok(bytes) => bytes,
                 Err(e) => {
-                    crate::log_error(&format!("Status: Failed to build ClutchComplete VSF: {}", e));
+                    crate::log_error(&format!(
+                        "Status: Failed to build ClutchComplete VSF: {}",
+                        e
+                    ));
                     continue;
                 }
             };
@@ -1785,7 +1854,9 @@ async fn run_checker(
 
             // IPv6 multicast: ff02::68c7:9014 (link-local scope with our random bytes)
             let mcast_v6 = SocketAddr::new(
-                std::net::IpAddr::V6(std::net::Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0x68c7, 0x9014)),
+                std::net::IpAddr::V6(std::net::Ipv6Addr::new(
+                    0xff02, 0, 0, 0, 0, 0, 0x68c7, 0x9014,
+                )),
                 crate::MULTICAST_PORT,
             );
 
@@ -1793,25 +1864,36 @@ async fn run_checker(
             if let Ok(mcast_sock) = UdpSocket::bind("0.0.0.0:0") {
                 let _ = mcast_sock.set_multicast_ttl_v4(1);
                 let _ = udp::send_sync(&mcast_sock, &packet, mcast_v4);
-                crate::log_info(&format!("LAN: Multicast {} bytes to {}", packet.len(), mcast_v4));
+                crate::log_info(&format!(
+                    "LAN: Multicast {} bytes to {}",
+                    packet.len(),
+                    mcast_v4
+                ));
             }
 
             // Send to IPv6 multicast (hop limit is 1 by default for link-local)
             if let Ok(mcast_sock) = UdpSocket::bind("[::]:0") {
                 let _ = udp::send_sync(&mcast_sock, &packet, mcast_v6);
-                crate::log_info(&format!("LAN: Multicast {} bytes to {}", packet.len(), mcast_v6));
+                crate::log_info(&format!(
+                    "LAN: Multicast {} bytes to {}",
+                    packet.len(),
+                    mcast_v6
+                ));
             }
 
             // Also send to subnet broadcast as fallback (many routers block multicast)
             if let Some((broadcast, local_ip)) = udp::get_broadcast_addr() {
-                let bcast_addr = SocketAddr::new(
-                    std::net::IpAddr::V4(broadcast),
-                    crate::MULTICAST_PORT,
-                );
+                let bcast_addr =
+                    SocketAddr::new(std::net::IpAddr::V4(broadcast), crate::MULTICAST_PORT);
                 if let Ok(bcast_sock) = UdpSocket::bind("0.0.0.0:0") {
                     let _ = bcast_sock.set_broadcast(true);
                     let _ = udp::send_sync(&bcast_sock, &packet, bcast_addr);
-                    crate::log_info(&format!("LAN: Broadcast {} bytes to {} (from {})", packet.len(), bcast_addr, local_ip));
+                    crate::log_info(&format!(
+                        "LAN: Broadcast {} bytes to {} (from {})",
+                        packet.len(),
+                        bcast_addr,
+                        local_ip
+                    ));
                 }
             }
         }
@@ -1888,7 +1970,10 @@ async fn run_checker(
                     // Retry UDP transfer (gets new transfer_id)
                     crate::log_info(&format!(
                         "PT: Transfer #{} to {} timed out, retrying UDP ({}/{})",
-                        old_transfer_id, addr, retries + 1, PT_MAX_RETRIES
+                        old_transfer_id,
+                        addr,
+                        retries + 1,
+                        PT_MAX_RETRIES
                     ));
 
                     // Resend SPEC and re-add to pending with new transfer_id and incremented retry count
@@ -1897,7 +1982,13 @@ async fn run_checker(
                         pt_mgr.send(addr, vsf_bytes.clone())
                     };
                     udp::send(&socket, &spec_bytes, addr).await;
-                    pending_pt_sends.push((new_transfer_id, addr, Instant::now(), vsf_bytes, retries + 1));
+                    pending_pt_sends.push((
+                        new_transfer_id,
+                        addr,
+                        Instant::now(),
+                        vsf_bytes,
+                        retries + 1,
+                    ));
                 } else {
                     // Retries exhausted - try TCP fallback (unless previously denied)
                     if tcp_denied_peers.contains(&addr) {
@@ -1910,7 +2001,8 @@ async fn run_checker(
 
                     crate::log_info(&format!(
                         "PT: Transfer to {} timed out after {}s, falling back to TCP",
-                        addr, PT_TIMEOUT.as_secs()
+                        addr,
+                        PT_TIMEOUT.as_secs()
                     ));
 
                     // Try TCP fallback
@@ -1924,7 +2016,8 @@ async fn run_checker(
                             } else {
                                 crate::log_info(&format!(
                                     "Status: TCP fallback sent {} bytes to {} successfully",
-                                    vsf_bytes.len(), addr
+                                    vsf_bytes.len(),
+                                    addr
                                 ));
                             }
                         }
@@ -1973,10 +2066,7 @@ fn verify_provenance_signature(
 
 /// Compute provenance hash for encrypted chat message (CHAIN format)
 /// provenance = BLAKE3(conversation_token || prev_msg_hp)
-fn compute_chat_provenance(
-    conversation_token: &[u8; 32],
-    prev_msg_hp: &[u8; 32],
-) -> [u8; 32] {
+fn compute_chat_provenance(conversation_token: &[u8; 32], prev_msg_hp: &[u8; 32]) -> [u8; 32] {
     use blake3::Hasher;
     let mut hasher = Hasher::new();
     hasher.update(conversation_token);
@@ -2078,7 +2168,11 @@ async fn handle_pt_vsf_packet(
         }
 
         // Section format (SPEC uses full section, not header-only)
-        ParsedPtPacket::Section { name, fields, sender_pubkey } => {
+        ParsedPtPacket::Section {
+            name,
+            fields,
+            sender_pubkey,
+        } => {
             if name == "pt_spec" {
                 if let Some(spec) = PTSpec::from_vsf_fields(&fields) {
                     // SECURITY: Validate sender before accepting any transfer
@@ -2096,7 +2190,9 @@ async fn handle_pt_vsf_packet(
                         crate::log_error(&format!(
                             "PT: SPEC REJECTED from {} - sender not in contacts (pubkey: {})",
                             src_addr,
-                            sender_pubkey.map(|p| hex::encode(&p[..8])).unwrap_or_else(|| "none".to_string())
+                            sender_pubkey
+                                .map(|p| hex::encode(&p[..8]))
+                                .unwrap_or_else(|| "none".to_string())
                         ));
                         // Silent drop - don't send ACK, don't accept transfer
                         return Some(true);

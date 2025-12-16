@@ -30,7 +30,9 @@
 //!
 //! Encrypted with ChaCha20-Poly1305 using key derived from our identity_seed.
 
-use crate::types::{ClutchState, Contact, ContactId, DevicePubkey, FriendshipId, HandleText, Seed, TrustLevel};
+use crate::types::{
+    ClutchState, Contact, ContactId, DevicePubkey, FriendshipId, HandleText, Seed, TrustLevel,
+};
 use blake3::Hasher;
 use chacha20poly1305::{
     aead::{Aead, KeyInit},
@@ -202,9 +204,10 @@ fn encrypt_data(data: &[u8], key: &[u8; 32], section_name: &str) -> Result<Vec<u
     // Wrap in proper VSF file with header, timestamp, hashes (hp + hb)
     let vsf_bytes = vsf::VsfBuilder::new()
         .creation_time_nanos(vsf::eagle_time_nanos())
-        .add_section(section_name, vec![
-            ("data".to_string(), VsfType::v(b'e', encrypted_payload)),
-        ])
+        .add_section(
+            section_name,
+            vec![("data".to_string(), VsfType::v(b'e', encrypted_payload))],
+        )
         .build()
         .map_err(|e| StorageError::Encryption(format!("VSF build: {}", e)))?;
 
@@ -218,7 +221,9 @@ fn decrypt_data(vsf_bytes: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, StorageErro
         .map_err(|e| StorageError::Decryption(format!("VSF parse: {}", e)))?;
 
     // Find the section with encrypted data
-    let section_field = header.fields.first()
+    let section_field = header
+        .fields
+        .first()
         .ok_or_else(|| StorageError::Decryption("No sections in VSF".to_string()))?;
 
     let offset = section_field.offset_bytes;
@@ -233,12 +238,17 @@ fn decrypt_data(vsf_bytes: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, StorageErro
     let section = VsfSection::parse(vsf_bytes, &mut ptr)
         .map_err(|e| StorageError::Decryption(format!("Section parse: {}", e)))?;
 
-    let data_field = section.get_field("data")
+    let data_field = section
+        .get_field("data")
         .ok_or_else(|| StorageError::Decryption("No data field".to_string()))?;
 
     let encrypted_payload = match data_field.values.first() {
         Some(VsfType::v(b'e', payload)) => payload,
-        _ => return Err(StorageError::Decryption("Expected ve{} encrypted data".to_string())),
+        _ => {
+            return Err(StorageError::Decryption(
+                "Expected ve{} encrypted data".to_string(),
+            ))
+        }
     };
 
     #[cfg(feature = "development")]
@@ -250,7 +260,9 @@ fn decrypt_data(vsf_bytes: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, StorageErro
     ));
 
     if encrypted_payload.len() < 12 + 16 {
-        return Err(StorageError::Decryption("Encrypted payload too short".to_string()));
+        return Err(StorageError::Decryption(
+            "Encrypted payload too short".to_string(),
+        ));
     }
 
     let cipher = ChaCha20Poly1305::new_from_slice(key)
@@ -330,7 +342,8 @@ pub fn load_contact_list(
         return Ok(Vec::new());
     }
 
-    let encrypted = crate::network::inspect::vsf_read(&index_path, "contacts/index.vsf", device_secret)?;
+    let encrypted =
+        crate::network::inspect::vsf_read(&index_path, "contacts/index.vsf", device_secret)?;
 
     let key = derive_list_key(our_identity_seed, device_secret);
     let vsf_bytes = decrypt_data(&encrypted, &key)?;
@@ -424,7 +437,10 @@ pub fn save_contact_state(
     }
     if let Some(friendship_id) = &contact.friendship_id {
         builder = builder
-            .set("friendship_id", VsfType::hb(friendship_id.as_bytes().to_vec()))
+            .set(
+                "friendship_id",
+                VsfType::hb(friendship_id.as_bytes().to_vec()),
+            )
             .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
     if let Some(last_seen) = contact.last_seen {
@@ -434,7 +450,10 @@ pub fn save_contact_state(
     }
     if let Some(hqc_prefix) = &contact.completed_their_hqc_prefix {
         builder = builder
-            .set("completed_their_hqc_prefix", VsfType::hb(hqc_prefix.to_vec()))
+            .set(
+                "completed_their_hqc_prefix",
+                VsfType::hb(hqc_prefix.to_vec()),
+            )
             .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
 
@@ -446,7 +465,13 @@ pub fn save_contact_state(
     let encrypted = encrypt_data(&vsf_bytes, &key, "encrypted_contact_state")?;
 
     let label = format!("contacts/{}/state.vsf", hex::encode(&identity_seed[..8]));
-    crate::network::inspect::vsf_write(&state_path, &encrypted, &label, Some(&vsf_bytes), device_secret)?;
+    crate::network::inspect::vsf_write(
+        &state_path,
+        &encrypted,
+        &label,
+        Some(&vsf_bytes),
+        device_secret,
+    )?;
     Ok(())
 }
 
@@ -471,7 +496,10 @@ pub fn load_contact_state(
         return Ok(contact);
     }
 
-    let label = format!("contacts/{}/state.vsf", hex::encode(&their_identity_seed[..8]));
+    let label = format!(
+        "contacts/{}/state.vsf",
+        hex::encode(&their_identity_seed[..8])
+    );
     let encrypted = crate::network::inspect::vsf_read(&state_path, &label, device_secret)?;
 
     let key = derive_state_key(our_identity_seed, &their_identity_seed, device_secret);
@@ -527,7 +555,8 @@ pub fn load_contact_state(
     }
     if let Some(VsfType::hb(v)) = get_val("friendship_id") {
         if v.len() == 32 {
-            contact.friendship_id = Some(FriendshipId::from_bytes(v.as_slice().try_into().unwrap()));
+            contact.friendship_id =
+                Some(FriendshipId::from_bytes(v.as_slice().try_into().unwrap()));
         }
     }
     if let Some(v) = get_val("last_seen") {
@@ -691,8 +720,17 @@ pub fn save_clutch_keypairs(
     let key = derive_keypairs_key(our_identity_seed, &their_identity_seed, device_secret);
     let encrypted = encrypt_data(&vsf_bytes, &key, "encrypted_clutch_keypairs")?;
 
-    let label = format!("contacts/{}/keypairs.vsf", hex::encode(&their_identity_seed[..8]));
-    crate::network::inspect::vsf_write(&keypairs_path, &encrypted, &label, Some(&vsf_bytes), device_secret)?;
+    let label = format!(
+        "contacts/{}/keypairs.vsf",
+        hex::encode(&their_identity_seed[..8])
+    );
+    crate::network::inspect::vsf_write(
+        &keypairs_path,
+        &encrypted,
+        &label,
+        Some(&vsf_bytes),
+        device_secret,
+    )?;
 
     #[cfg(feature = "development")]
     crate::log_info(&format!(
@@ -719,7 +757,10 @@ pub fn load_clutch_keypairs(
         return Ok(None);
     }
 
-    let label = format!("contacts/{}/keypairs.vsf", hex::encode(&their_identity_seed[..8]));
+    let label = format!(
+        "contacts/{}/keypairs.vsf",
+        hex::encode(&their_identity_seed[..8])
+    );
     let encrypted = crate::network::inspect::vsf_read(&keypairs_path, &label, device_secret)?;
 
     let key = derive_keypairs_key(our_identity_seed, &their_identity_seed, device_secret);
@@ -764,7 +805,7 @@ pub fn delete_clutch_keypairs(handle: &str) -> Result<(), StorageError> {
 // CLUTCH Slots Storage (ceremony progress - offers, KEM secrets)
 // ============================================================================
 
-use crate::crypto::clutch::{ClutchOfferPayload, ClutchKemSharedSecrets};
+use crate::crypto::clutch::{ClutchKemSharedSecrets, ClutchOfferPayload};
 use crate::types::PartySlot;
 
 /// Derive encryption key for slots
@@ -817,7 +858,10 @@ pub fn save_clutch_slots(
         // Only store provenances if ceremony_id not yet computed (needed to derive it later)
         section.add_field_multi(
             "provenances",
-            offer_provenances.iter().map(|p| VsfType::hb(p.to_vec())).collect(),
+            offer_provenances
+                .iter()
+                .map(|p| VsfType::hb(p.to_vec()))
+                .collect(),
         );
     }
 
@@ -878,8 +922,17 @@ pub fn save_clutch_slots(
     let key = derive_slots_key(our_identity_seed, &their_identity_seed, device_secret);
     let encrypted = encrypt_data(&vsf_bytes, &key, "encrypted_clutch_slots")?;
 
-    let label = format!("contacts/{}/slots.vsf", hex::encode(&their_identity_seed[..8]));
-    crate::network::inspect::vsf_write(&slots_path, &encrypted, &label, Some(&vsf_bytes), device_secret)?;
+    let label = format!(
+        "contacts/{}/slots.vsf",
+        hex::encode(&their_identity_seed[..8])
+    );
+    crate::network::inspect::vsf_write(
+        &slots_path,
+        &encrypted,
+        &label,
+        Some(&vsf_bytes),
+        device_secret,
+    )?;
 
     #[cfg(feature = "development")]
     crate::log_info(&format!(
@@ -922,7 +975,10 @@ pub fn load_clutch_slots(
         return Ok(None);
     }
 
-    let label = format!("contacts/{}/slots.vsf", hex::encode(&their_identity_seed[..8]));
+    let label = format!(
+        "contacts/{}/slots.vsf",
+        hex::encode(&their_identity_seed[..8])
+    );
     let encrypted = crate::network::inspect::vsf_read(&slots_path, &label, device_secret)?;
 
     let key = derive_slots_key(our_identity_seed, &their_identity_seed, device_secret);
@@ -936,21 +992,26 @@ pub fn load_clutch_slots(
         .map_err(|e| StorageError::Parse(format!("Slots parse: {}", e)))?;
 
     // Parse provenances from multi-value field
-    let offer_provenances: Vec<[u8; 32]> = section.get_field("provenances")
+    let offer_provenances: Vec<[u8; 32]> = section
+        .get_field("provenances")
         .map(|f| {
-            f.values.iter().filter_map(|v| match v {
-                VsfType::hb(b) if b.len() == 32 => {
-                    let mut arr = [0u8; 32];
-                    arr.copy_from_slice(b);
-                    Some(arr)
-                }
-                _ => None,
-            }).collect()
+            f.values
+                .iter()
+                .filter_map(|v| match v {
+                    VsfType::hb(b) if b.len() == 32 => {
+                        let mut arr = [0u8; 32];
+                        arr.copy_from_slice(b);
+                        Some(arr)
+                    }
+                    _ => None,
+                })
+                .collect()
         })
         .unwrap_or_default();
 
     // Parse ceremony_id (optional single value)
-    let ceremony_id = section.get_field("ceremony_id")
+    let ceremony_id = section
+        .get_field("ceremony_id")
         .and_then(|f| f.values.first())
         .and_then(|v| match v {
             VsfType::hb(b) if b.len() == 32 => {
@@ -976,7 +1037,9 @@ pub fn load_clutch_slots(
         handle,
         slots.len(),
         offer_provenances.len(),
-        ceremony_id.map(|c| hex::encode(&c[..4])).unwrap_or_else(|| "none".into())
+        ceremony_id
+            .map(|c| hex::encode(&c[..4]))
+            .unwrap_or_else(|| "none".into())
     ));
 
     Ok(Some(ClutchCeremonyState {
@@ -1062,14 +1125,23 @@ fn parse_slot_from_values(values: &[VsfType]) -> Result<PartySlot, StorageError>
                     found_keys |= 128;
                 }
                 // Hit any shared secret type, stop parsing keys
-                VsfType::ksx(_) | VsfType::ksp(_) | VsfType::ksk(_) | VsfType::ksf(_) |
-                VsfType::ksn(_) | VsfType::ksl(_) | VsfType::ksh(_) | VsfType::ksm(_) => break,
+                VsfType::ksx(_)
+                | VsfType::ksp(_)
+                | VsfType::ksk(_)
+                | VsfType::ksf(_)
+                | VsfType::ksn(_)
+                | VsfType::ksl(_)
+                | VsfType::ksh(_)
+                | VsfType::ksm(_) => break,
                 _ => {}
             }
         }
 
         if found_keys != 255 {
-            return Err(StorageError::Parse(format!("Missing offer keys, found mask: {:#010b}", found_keys)));
+            return Err(StorageError::Parse(format!(
+                "Missing offer keys, found mask: {:#010b}",
+                found_keys
+            )));
         }
         slot.offer = Some(offer);
     }
@@ -1077,10 +1149,22 @@ fn parse_slot_from_values(values: &[VsfType]) -> Result<PartySlot, StorageError>
     // Parse typed shared secrets (ksx, ksp, ksk, ksf, ksn, ksl, ksh)
     // Secrets come in groups of 8, first group is "from_them", second is "to_them"
     if has_from || has_to {
-        let secrets: Vec<&VsfType> = values[4..].iter().filter(|v| matches!(v,
-            VsfType::ksx(_) | VsfType::ksp(_) | VsfType::ksk(_) | VsfType::ksf(_) |
-            VsfType::ksn(_) | VsfType::ksl(_) | VsfType::ksh(_) | VsfType::ksm(_)
-        )).collect();
+        let secrets: Vec<&VsfType> = values[4..]
+            .iter()
+            .filter(|v| {
+                matches!(
+                    v,
+                    VsfType::ksx(_)
+                        | VsfType::ksp(_)
+                        | VsfType::ksk(_)
+                        | VsfType::ksf(_)
+                        | VsfType::ksn(_)
+                        | VsfType::ksl(_)
+                        | VsfType::ksh(_)
+                        | VsfType::ksm(_)
+                )
+            })
+            .collect();
 
         let secrets_per_group = 8;
 
@@ -1088,7 +1172,8 @@ fn parse_slot_from_values(values: &[VsfType]) -> Result<PartySlot, StorageError>
             if secrets.len() < secrets_per_group {
                 return Err(StorageError::Parse("Missing from_them secrets".into()));
             }
-            slot.kem_secrets_from_them = Some(parse_typed_secrets_group(&secrets[..secrets_per_group])?);
+            slot.kem_secrets_from_them =
+                Some(parse_typed_secrets_group(&secrets[..secrets_per_group])?);
         }
 
         if has_to {
@@ -1096,7 +1181,9 @@ fn parse_slot_from_values(values: &[VsfType]) -> Result<PartySlot, StorageError>
             if secrets.len() < start + secrets_per_group {
                 return Err(StorageError::Parse("Missing to_them secrets".into()));
             }
-            slot.kem_secrets_to_them = Some(parse_typed_secrets_group(&secrets[start..start + secrets_per_group])?);
+            slot.kem_secrets_to_them = Some(parse_typed_secrets_group(
+                &secrets[start..start + secrets_per_group],
+            )?);
         }
     }
 
@@ -1108,7 +1195,10 @@ fn parse_slot_from_values(values: &[VsfType]) -> Result<PartySlot, StorageError>
 /// Order in file: x25519, p384, secp256k1, p256, frodo, ntru, mceliece, hqc
 fn parse_typed_secrets_group(secrets: &[&VsfType]) -> Result<ClutchKemSharedSecrets, StorageError> {
     if secrets.len() != 8 {
-        return Err(StorageError::Parse(format!("Expected 8 secrets, got {}", secrets.len())));
+        return Err(StorageError::Parse(format!(
+            "Expected 8 secrets, got {}",
+            secrets.len()
+        )));
     }
 
     // Extract each secret by expected type and position
@@ -1118,42 +1208,74 @@ fn parse_typed_secrets_group(secrets: &[&VsfType]) -> Result<ClutchKemSharedSecr
             arr.copy_from_slice(b);
             arr
         }
-        _ => return Err(StorageError::Parse("x25519 secret missing or wrong type".into())),
+        _ => {
+            return Err(StorageError::Parse(
+                "x25519 secret missing or wrong type".into(),
+            ))
+        }
     };
 
     let p384 = match secrets[1] {
         VsfType::ksp(b) => b.clone(),
-        _ => return Err(StorageError::Parse("p384 secret missing or wrong type".into())),
+        _ => {
+            return Err(StorageError::Parse(
+                "p384 secret missing or wrong type".into(),
+            ))
+        }
     };
 
     let secp256k1 = match secrets[2] {
         VsfType::ksk(b) => b.clone(),
-        _ => return Err(StorageError::Parse("secp256k1 secret missing or wrong type".into())),
+        _ => {
+            return Err(StorageError::Parse(
+                "secp256k1 secret missing or wrong type".into(),
+            ))
+        }
     };
 
     let p256 = match secrets[3] {
         VsfType::ksp(b) => b.clone(),
-        _ => return Err(StorageError::Parse("p256 secret missing or wrong type".into())),
+        _ => {
+            return Err(StorageError::Parse(
+                "p256 secret missing or wrong type".into(),
+            ))
+        }
     };
 
     let frodo = match secrets[4] {
         VsfType::ksf(b) => b.clone(),
-        _ => return Err(StorageError::Parse("frodo secret missing or wrong type".into())),
+        _ => {
+            return Err(StorageError::Parse(
+                "frodo secret missing or wrong type".into(),
+            ))
+        }
     };
 
     let ntru = match secrets[5] {
         VsfType::ksn(b) => b.clone(),
-        _ => return Err(StorageError::Parse("ntru secret missing or wrong type".into())),
+        _ => {
+            return Err(StorageError::Parse(
+                "ntru secret missing or wrong type".into(),
+            ))
+        }
     };
 
     let mceliece = match secrets[6] {
         VsfType::ksl(b) => b.clone(),
-        _ => return Err(StorageError::Parse("mceliece secret missing or wrong type".into())),
+        _ => {
+            return Err(StorageError::Parse(
+                "mceliece secret missing or wrong type".into(),
+            ))
+        }
     };
 
     let hqc = match secrets[7] {
         VsfType::ksh(b) => b.clone(),
-        _ => return Err(StorageError::Parse("hqc secret missing or wrong type".into())),
+        _ => {
+            return Err(StorageError::Parse(
+                "hqc secret missing or wrong type".into(),
+            ))
+        }
     };
 
     Ok(ClutchKemSharedSecrets {
@@ -1237,8 +1359,17 @@ pub fn save_messages(
     let key = derive_messages_key(our_identity_seed, &their_identity_seed, device_secret);
     let encrypted = encrypt_data(&vsf_bytes, &key, "encrypted_messages")?;
 
-    let label = format!("contacts/{}/messages.vsf", hex::encode(&their_identity_seed[..8]));
-    crate::network::inspect::vsf_write(&messages_path, &encrypted, &label, Some(&vsf_bytes), device_secret)?;
+    let label = format!(
+        "contacts/{}/messages.vsf",
+        hex::encode(&their_identity_seed[..8])
+    );
+    crate::network::inspect::vsf_write(
+        &messages_path,
+        &encrypted,
+        &label,
+        Some(&vsf_bytes),
+        device_secret,
+    )?;
 
     #[cfg(feature = "development")]
     crate::log_info(&format!(
@@ -1264,7 +1395,10 @@ pub fn load_messages(
         return Ok(()); // No messages yet
     }
 
-    let label = format!("contacts/{}/messages.vsf", hex::encode(&their_identity_seed[..8]));
+    let label = format!(
+        "contacts/{}/messages.vsf",
+        hex::encode(&their_identity_seed[..8])
+    );
     let encrypted = crate::network::inspect::vsf_read(&messages_path, &label, device_secret)?;
     let key = derive_messages_key(our_identity_seed, &their_identity_seed, device_secret);
     let vsf_bytes = decrypt_data(&encrypted, &key)?;
@@ -1307,7 +1441,9 @@ pub fn load_messages(
     // Sort messages by timestamp (ascending) to ensure correct chronological order
     // This handles messages that may have been saved before sorted-insert was implemented
     contact.messages.sort_by(|a, b| {
-        a.timestamp.partial_cmp(&b.timestamp).unwrap_or(std::cmp::Ordering::Equal)
+        a.timestamp
+            .partial_cmp(&b.timestamp)
+            .unwrap_or(std::cmp::Ordering::Equal)
     });
 
     #[cfg(feature = "development")]

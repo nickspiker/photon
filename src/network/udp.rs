@@ -86,10 +86,7 @@ pub fn get_broadcast_addr() -> Option<(std::net::Ipv4Addr, std::net::Ipv4Addr)> 
 fn get_broadcast_from_system(local_ip: &std::net::Ipv4Addr) -> Option<std::net::Ipv4Addr> {
     use std::process::Command;
 
-    let output = Command::new("ip")
-        .args(["addr", "show"])
-        .output()
-        .ok()?;
+    let output = Command::new("ip").args(["addr", "show"]).output().ok()?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let local_str = local_ip.to_string();
@@ -172,10 +169,7 @@ pub fn build_lan_discovery(handle_proof: [u8; 32], port: u16) -> Vec<u8> {
         .creation_time_nanos(vsf::eagle_time_nanos())
         .provenance_hash(handle_proof) // Identity in header - no registry lookup needed
         .provenance_only() // No rolling hash - one-shot broadcast
-        .add_section(
-            "pt_disc",
-            vec![("port".to_string(), VsfType::u4(port))],
-        )
+        .add_section("pt_disc", vec![("port".to_string(), VsfType::u4(port))])
         .build()
         .unwrap_or_default()
 }

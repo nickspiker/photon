@@ -1,7 +1,7 @@
 use crate::types::Seed;
 use blake3::Hasher;
-use sha2::{Sha512, Digest as Sha2Digest};
-use sha3::{Sha3_256, Digest as Sha3Digest};
+use sha2::{Digest as Sha2Digest, Sha512};
+use sha3::{Digest as Sha3Digest, Sha3_256};
 use spirix::ScalarF4E4;
 use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::Zeroize;
@@ -73,7 +73,11 @@ pub fn derive_conversation_token(participant_seeds: &[[u8; 32]]) -> [u8; 32] {
         "CONV_TOKEN: input_len={}, input_hash={}, sorted_seeds={}",
         input.len(),
         hex::encode(&blake3::hash(&input).as_bytes()[..8]),
-        sorted_seeds.iter().map(|s| hex::encode(&s[..8])).collect::<Vec<_>>().join(",")
+        sorted_seeds
+            .iter()
+            .map(|s| hex::encode(&s[..8]))
+            .collect::<Vec<_>>()
+            .join(",")
     ));
 
     let result = spaghettify(&input);
@@ -105,7 +109,9 @@ pub fn derive_ceremony_instance(offers: &[&ClutchOfferPayload]) -> [u8; 32] {
     offer_bytes.sort();
 
     // Domain separation + concatenated sorted offers
-    let mut input = Vec::with_capacity(CEREMONY_INSTANCE_DOMAIN.len() + offer_bytes.iter().map(|b| b.len()).sum::<usize>());
+    let mut input = Vec::with_capacity(
+        CEREMONY_INSTANCE_DOMAIN.len() + offer_bytes.iter().map(|b| b.len()).sum::<usize>(),
+    );
     input.extend_from_slice(CEREMONY_INSTANCE_DOMAIN);
     for bytes in &offer_bytes {
         input.extend_from_slice(bytes);
@@ -122,30 +128,42 @@ use i256::U256;
 
 /// Bootstrap seed - Nothing Up My Sleeve: ASCII bytes of self-documenting string
 /// "PHOTON_SPAGHETTI: 53 buckets, 23 ops, Spirix chaos, NUMS seed v0"
-const LAVA_SEED_256: [u8; 64] = *b"PHOTON_SPAGHETTI: 53 buckets, 23 ops, Spirix chaos, NUMS seed v0";
+const LAVA_SEED_256: [u8; 64] =
+    *b"PHOTON_SPAGHETTI: 53 buckets, 23 ops, Spirix chaos, NUMS seed v0";
 
 // Constants for U256 - use from_be_bytes with const arrays
 const U256_ZERO: U256 = U256::from_be_bytes([0u8; 32]);
 const U256_ONE: U256 = U256::from_be_bytes([
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
 ]);
 
 /// Integer square root for U256 using Newton-Raphson
 fn sqrt_u256(n: U256) -> U256 {
-    if n == U256_ZERO { return U256_ZERO; }
-    if n == U256_ONE { return U256_ONE; }
+    if n == U256_ZERO {
+        return U256_ZERO;
+    }
+    if n == U256_ONE {
+        return U256_ONE;
+    }
 
     // Start with a rough estimate: n >> (leading_zeros / 2)
     // For U256, we approximate by checking high bits
-    let mut x = n >> 128;  // Start smaller
-    if x == U256_ZERO { x = n >> 64; }
-    if x == U256_ZERO { x = n >> 32; }
-    if x == U256_ZERO { x = n; }
+    let mut x = n >> 128; // Start smaller
+    if x == U256_ZERO {
+        x = n >> 64;
+    }
+    if x == U256_ZERO {
+        x = n >> 32;
+    }
+    if x == U256_ZERO {
+        x = n;
+    }
 
     // Newton-Raphson: x_new = (x + n/x) / 2
     loop {
-        if x == U256_ZERO { return U256_ZERO; }
+        if x == U256_ZERO {
+            return U256_ZERO;
+        }
         let x_new = (x + n / x) >> 1;
         if x_new >= x {
             return x;
@@ -160,16 +178,46 @@ fn sqrt_u256(n: U256) -> U256 {
 /// Each scalar is normalized to ensure valid Spirix representation (prevents div-by-zero panics).
 fn u256_to_spirix8(n: U256) -> [ScalarF4E4; 8] {
     let bytes = n.to_be_bytes();
-    let mut s0 = ScalarF4E4 { fraction: i16::from_be_bytes([bytes[0], bytes[1]]), exponent: i16::from_be_bytes([bytes[2], bytes[3]]) };
-    let mut s1 = ScalarF4E4 { fraction: i16::from_be_bytes([bytes[4], bytes[5]]), exponent: i16::from_be_bytes([bytes[6], bytes[7]]) };
-    let mut s2 = ScalarF4E4 { fraction: i16::from_be_bytes([bytes[8], bytes[9]]), exponent: i16::from_be_bytes([bytes[10], bytes[11]]) };
-    let mut s3 = ScalarF4E4 { fraction: i16::from_be_bytes([bytes[12], bytes[13]]), exponent: i16::from_be_bytes([bytes[14], bytes[15]]) };
-    let mut s4 = ScalarF4E4 { fraction: i16::from_be_bytes([bytes[16], bytes[17]]), exponent: i16::from_be_bytes([bytes[18], bytes[19]]) };
-    let mut s5 = ScalarF4E4 { fraction: i16::from_be_bytes([bytes[20], bytes[21]]), exponent: i16::from_be_bytes([bytes[22], bytes[23]]) };
-    let mut s6 = ScalarF4E4 { fraction: i16::from_be_bytes([bytes[24], bytes[25]]), exponent: i16::from_be_bytes([bytes[26], bytes[27]]) };
-    let mut s7 = ScalarF4E4 { fraction: i16::from_be_bytes([bytes[28], bytes[29]]), exponent: i16::from_be_bytes([bytes[30], bytes[31]]) };
-    s0.normalize(); s1.normalize(); s2.normalize(); s3.normalize();
-    s4.normalize(); s5.normalize(); s6.normalize(); s7.normalize();
+    let mut s0 = ScalarF4E4 {
+        fraction: i16::from_be_bytes([bytes[0], bytes[1]]),
+        exponent: i16::from_be_bytes([bytes[2], bytes[3]]),
+    };
+    let mut s1 = ScalarF4E4 {
+        fraction: i16::from_be_bytes([bytes[4], bytes[5]]),
+        exponent: i16::from_be_bytes([bytes[6], bytes[7]]),
+    };
+    let mut s2 = ScalarF4E4 {
+        fraction: i16::from_be_bytes([bytes[8], bytes[9]]),
+        exponent: i16::from_be_bytes([bytes[10], bytes[11]]),
+    };
+    let mut s3 = ScalarF4E4 {
+        fraction: i16::from_be_bytes([bytes[12], bytes[13]]),
+        exponent: i16::from_be_bytes([bytes[14], bytes[15]]),
+    };
+    let mut s4 = ScalarF4E4 {
+        fraction: i16::from_be_bytes([bytes[16], bytes[17]]),
+        exponent: i16::from_be_bytes([bytes[18], bytes[19]]),
+    };
+    let mut s5 = ScalarF4E4 {
+        fraction: i16::from_be_bytes([bytes[20], bytes[21]]),
+        exponent: i16::from_be_bytes([bytes[22], bytes[23]]),
+    };
+    let mut s6 = ScalarF4E4 {
+        fraction: i16::from_be_bytes([bytes[24], bytes[25]]),
+        exponent: i16::from_be_bytes([bytes[26], bytes[27]]),
+    };
+    let mut s7 = ScalarF4E4 {
+        fraction: i16::from_be_bytes([bytes[28], bytes[29]]),
+        exponent: i16::from_be_bytes([bytes[30], bytes[31]]),
+    };
+    s0.normalize();
+    s1.normalize();
+    s2.normalize();
+    s3.normalize();
+    s4.normalize();
+    s5.normalize();
+    s6.normalize();
+    s7.normalize();
     [s0, s1, s2, s3, s4, s5, s6, s7]
 }
 
@@ -179,10 +227,10 @@ fn spirix8_to_u256(s: [ScalarF4E4; 8]) -> U256 {
     for i in 0..8 {
         let frac = s[i].fraction.to_be_bytes();
         let exp = s[i].exponent.to_be_bytes();
-        bytes[i*4] = frac[0];
-        bytes[i*4+1] = frac[1];
-        bytes[i*4+2] = exp[0];
-        bytes[i*4+3] = exp[1];
+        bytes[i * 4] = frac[0];
+        bytes[i * 4 + 1] = frac[1];
+        bytes[i * 4 + 2] = exp[0];
+        bytes[i * 4 + 3] = exp[1];
     }
     U256::from_be_bytes(bytes)
 }
@@ -190,72 +238,171 @@ fn spirix8_to_u256(s: [ScalarF4E4; 8]) -> U256 {
 /// Apply sin to U256 via Spirix (deterministic across all platforms)
 fn chaos_sin(n: U256) -> U256 {
     let s = u256_to_spirix8(n);
-    spirix8_to_u256([s[0].sin(), s[1].sin(), s[2].sin(), s[3].sin(), s[4].sin(), s[5].sin(), s[6].sin(), s[7].sin()])
+    spirix8_to_u256([
+        s[0].sin(),
+        s[1].sin(),
+        s[2].sin(),
+        s[3].sin(),
+        s[4].sin(),
+        s[5].sin(),
+        s[6].sin(),
+        s[7].sin(),
+    ])
 }
 
 /// Apply cos to U256 via Spirix
 fn chaos_cos(n: U256) -> U256 {
     let s = u256_to_spirix8(n);
-    spirix8_to_u256([s[0].cos(), s[1].cos(), s[2].cos(), s[3].cos(), s[4].cos(), s[5].cos(), s[6].cos(), s[7].cos()])
+    spirix8_to_u256([
+        s[0].cos(),
+        s[1].cos(),
+        s[2].cos(),
+        s[3].cos(),
+        s[4].cos(),
+        s[5].cos(),
+        s[6].cos(),
+        s[7].cos(),
+    ])
 }
 
 /// Apply ln (natural log) to U256 via Spirix - negative/zero become deterministic undefined
 fn chaos_ln(n: U256) -> U256 {
     let s = u256_to_spirix8(n);
-    spirix8_to_u256([s[0].ln(), s[1].ln(), s[2].ln(), s[3].ln(), s[4].ln(), s[5].ln(), s[6].ln(), s[7].ln()])
+    spirix8_to_u256([
+        s[0].ln(),
+        s[1].ln(),
+        s[2].ln(),
+        s[3].ln(),
+        s[4].ln(),
+        s[5].ln(),
+        s[6].ln(),
+        s[7].ln(),
+    ])
 }
 
 /// Apply exp to U256 via Spirix - large values become deterministic exploded
 fn chaos_exp(n: U256) -> U256 {
     let s = u256_to_spirix8(n);
-    spirix8_to_u256([s[0].exp(), s[1].exp(), s[2].exp(), s[3].exp(), s[4].exp(), s[5].exp(), s[6].exp(), s[7].exp()])
+    spirix8_to_u256([
+        s[0].exp(),
+        s[1].exp(),
+        s[2].exp(),
+        s[3].exp(),
+        s[4].exp(),
+        s[5].exp(),
+        s[6].exp(),
+        s[7].exp(),
+    ])
 }
 
 /// Apply tan to U256 via Spirix - near-90° values become deterministic undefined
 fn chaos_tan(n: U256) -> U256 {
     let s = u256_to_spirix8(n);
-    spirix8_to_u256([s[0].tan(), s[1].tan(), s[2].tan(), s[3].tan(), s[4].tan(), s[5].tan(), s[6].tan(), s[7].tan()])
+    spirix8_to_u256([
+        s[0].tan(),
+        s[1].tan(),
+        s[2].tan(),
+        s[3].tan(),
+        s[4].tan(),
+        s[5].tan(),
+        s[6].tan(),
+        s[7].tan(),
+    ])
 }
 
 /// Apply atan to U256 via Spirix - compresses everything to [-π/2, π/2]
 fn chaos_atan(n: U256) -> U256 {
     let s = u256_to_spirix8(n);
-    spirix8_to_u256([s[0].atan(), s[1].atan(), s[2].atan(), s[3].atan(), s[4].atan(), s[5].atan(), s[6].atan(), s[7].atan()])
+    spirix8_to_u256([
+        s[0].atan(),
+        s[1].atan(),
+        s[2].atan(),
+        s[3].atan(),
+        s[4].atan(),
+        s[5].atan(),
+        s[6].atan(),
+        s[7].atan(),
+    ])
 }
 
 /// Spirix addition: deterministic handling of infinity/undefined states
 fn chaos_add(a: U256, b: U256) -> U256 {
     let sa = u256_to_spirix8(a);
     let sb = u256_to_spirix8(b);
-    spirix8_to_u256([sa[0]+sb[0], sa[1]+sb[1], sa[2]+sb[2], sa[3]+sb[3], sa[4]+sb[4], sa[5]+sb[5], sa[6]+sb[6], sa[7]+sb[7]])
+    spirix8_to_u256([
+        sa[0] + sb[0],
+        sa[1] + sb[1],
+        sa[2] + sb[2],
+        sa[3] + sb[3],
+        sa[4] + sb[4],
+        sa[5] + sb[5],
+        sa[6] + sb[6],
+        sa[7] + sb[7],
+    ])
 }
 
 /// Spirix subtraction: deterministic handling of infinity/undefined states
 fn chaos_sub(a: U256, b: U256) -> U256 {
     let sa = u256_to_spirix8(a);
     let sb = u256_to_spirix8(b);
-    spirix8_to_u256([sa[0]-sb[0], sa[1]-sb[1], sa[2]-sb[2], sa[3]-sb[3], sa[4]-sb[4], sa[5]-sb[5], sa[6]-sb[6], sa[7]-sb[7]])
+    spirix8_to_u256([
+        sa[0] - sb[0],
+        sa[1] - sb[1],
+        sa[2] - sb[2],
+        sa[3] - sb[3],
+        sa[4] - sb[4],
+        sa[5] - sb[5],
+        sa[6] - sb[6],
+        sa[7] - sb[7],
+    ])
 }
 
 /// Spirix multiplication: 0 * Inf = undefined (deterministic), overflow → exploded
 fn chaos_mul(a: U256, b: U256) -> U256 {
     let sa = u256_to_spirix8(a);
     let sb = u256_to_spirix8(b);
-    spirix8_to_u256([sa[0]*sb[0], sa[1]*sb[1], sa[2]*sb[2], sa[3]*sb[3], sa[4]*sb[4], sa[5]*sb[5], sa[6]*sb[6], sa[7]*sb[7]])
+    spirix8_to_u256([
+        sa[0] * sb[0],
+        sa[1] * sb[1],
+        sa[2] * sb[2],
+        sa[3] * sb[3],
+        sa[4] * sb[4],
+        sa[5] * sb[5],
+        sa[6] * sb[6],
+        sa[7] * sb[7],
+    ])
 }
 
 /// Spirix division: x/0 = Inf, 0/0 = undefined (deterministic)
 fn chaos_div(a: U256, b: U256) -> U256 {
     let sa = u256_to_spirix8(a);
     let sb = u256_to_spirix8(b);
-    spirix8_to_u256([sa[0]/sb[0], sa[1]/sb[1], sa[2]/sb[2], sa[3]/sb[3], sa[4]/sb[4], sa[5]/sb[5], sa[6]/sb[6], sa[7]/sb[7]])
+    spirix8_to_u256([
+        sa[0] / sb[0],
+        sa[1] / sb[1],
+        sa[2] / sb[2],
+        sa[3] / sb[3],
+        sa[4] / sb[4],
+        sa[5] / sb[5],
+        sa[6] / sb[6],
+        sa[7] / sb[7],
+    ])
 }
 
 /// Spirix power: deterministic handling of edge cases
 fn chaos_pow(a: U256, b: U256) -> U256 {
     let sa = u256_to_spirix8(a);
     let sb = u256_to_spirix8(b);
-    spirix8_to_u256([sa[0].pow(sb[0]), sa[1].pow(sb[1]), sa[2].pow(sb[2]), sa[3].pow(sb[3]), sa[4].pow(sb[4]), sa[5].pow(sb[5]), sa[6].pow(sb[6]), sa[7].pow(sb[7])])
+    spirix8_to_u256([
+        sa[0].pow(sb[0]),
+        sa[1].pow(sb[1]),
+        sa[2].pow(sb[2]),
+        sa[3].pow(sb[3]),
+        sa[4].pow(sb[4]),
+        sa[5].pow(sb[5]),
+        sa[6].pow(sb[6]),
+        sa[7].pow(sb[7]),
+    ])
 }
 
 /// Spirix hypot: sqrt(a² + b²) via square() and sqrt()
@@ -328,9 +475,9 @@ fn chaos_hypot(a: U256, b: U256) -> U256 {
 /// # Returns
 /// 32 bytes of maximally entangled chaos (via smear_hash)
 pub fn spaghettify(input: &[u8]) -> [u8; 32] {
-    const BUCKETS: usize = 53;   // Prime, 53 * 32 = 1696 bytes
-    const CROSS: usize = 29;     // Prime offset for cross-contamination (changed from 23)
-    const OPS: usize = 23;       // Prime number of operations
+    const BUCKETS: usize = 53; // Prime, 53 * 32 = 1696 bytes
+    const CROSS: usize = 29; // Prime offset for cross-contamination (changed from 23)
+    const OPS: usize = 23; // Prime number of operations
 
     let mut buckets: [U256; BUCKETS] = [U256_ZERO; BUCKETS];
 
@@ -350,7 +497,7 @@ pub fn spaghettify(input: &[u8]) -> [u8; 32] {
         // XOR and rotate into both seed values
         seed[0] = seed[0] ^ chunk_val;
         seed[1] = seed[1].wrapping_add(chunk_val);
-        seed[0] = (seed[0] << 7) | (seed[0] >> 249);  // Rotate left 7
+        seed[0] = (seed[0] << 7) | (seed[0] >> 249); // Rotate left 7
         seed[1] = seed[1] ^ (chunk_val >> (chunk_idx % 128));
     }
 
@@ -374,7 +521,7 @@ pub fn spaghettify(input: &[u8]) -> [u8; 32] {
 
     // Phase 2: Determine round count from initial state (11-23, both prime)
     let state_sum: u128 = buckets.iter().map(|b| b.as_u128()).sum();
-    let rounds = 11 + (state_sum % 13) as usize;  // Variable work: 11..=23
+    let rounds = 11 + (state_sum % 13) as usize; // Variable work: 11..=23
 
     // Phase 3: Spaghettification - the chaos engine with U256 ops
     for round in 0..rounds {
@@ -383,10 +530,10 @@ pub fn spaghettify(input: &[u8]) -> [u8; 32] {
 
         for i in 0..BUCKETS {
             let val = buckets[i];
-            let op = (val.as_u128() as usize) % OPS;  // Which operation (23 choices)
+            let op = (val.as_u128() as usize) % OPS; // Which operation (23 choices)
 
             // Data-dependent target
-            let target = (i + (val.as_u128() as usize) + round * 31) % BUCKETS;  // 31 is prime
+            let target = (i + (val.as_u128() as usize) + round * 31) % BUCKETS; // 31 is prime
             let secondary = (target + CROSS) % BUCKETS;
 
             // Position-dependent constant prevents convergence to fixed point
@@ -394,31 +541,31 @@ pub fn spaghettify(input: &[u8]) -> [u8; 32] {
 
             let op_result = match op {
                 // Spirix unary ops (deterministic across all platforms):
-                0  => chaos_sin(val),                              // Trig chaos
-                1  => chaos_cos(val),                              // More trig chaos
-                2  => chaos_ln(val),                               // Negative → undefined
-                3  => chaos_exp(val),                              // Large → exploded
-                4  => chaos_tan(val),                              // Near-90° → undefined
-                5  => chaos_atan(val),                             // Compresses range
+                0 => chaos_sin(val),  // Trig chaos
+                1 => chaos_cos(val),  // More trig chaos
+                2 => chaos_ln(val),   // Negative → undefined
+                3 => chaos_exp(val),  // Large → exploded
+                4 => chaos_tan(val),  // Near-90° → undefined
+                5 => chaos_atan(val), // Compresses range
 
                 // Spirix binary ops (deterministic special value handling):
-                6  => chaos_add(val, buckets[secondary]),          // Inf + (-Inf) → undefined
-                7  => chaos_sub(val, buckets[secondary]),          // Inf - Inf → undefined
-                8  => chaos_mul(val, buckets[secondary]),          // 0 * Inf → undefined
-                9  => chaos_div(val, buckets[secondary]),          // 0/0 → undefined, x/0 → Inf
-                10 => chaos_pow(val, buckets[secondary]),          // neg^frac → undefined
-                11 => chaos_hypot(val, buckets[secondary]),        // sqrt(a² + b²)
+                6 => chaos_add(val, buckets[secondary]), // Inf + (-Inf) → undefined
+                7 => chaos_sub(val, buckets[secondary]), // Inf - Inf → undefined
+                8 => chaos_mul(val, buckets[secondary]), // 0 * Inf → undefined
+                9 => chaos_div(val, buckets[secondary]), // 0/0 → undefined, x/0 → Inf
+                10 => chaos_pow(val, buckets[secondary]), // neg^frac → undefined
+                11 => chaos_hypot(val, buckets[secondary]), // sqrt(a² + b²)
 
                 // U256 arithmetic ops:
-                12 => sqrt_u256(val),                              // Lossy: 2^256 → 2^128 outputs
-                13 => buckets[target].saturating_add(val),         // Stuck at MAX
-                14 => buckets[target].saturating_sub(val),         // Stuck at 0
-                15 => buckets[target] & val,                       // Bits destroyed
-                16 => buckets[target] | val,                       // Bits forced on
-                17 => U256::from(val.count_ones() as u128),        // 256 bits → 0-256
+                12 => sqrt_u256(val), // Lossy: 2^256 → 2^128 outputs
+                13 => buckets[target].saturating_add(val), // Stuck at MAX
+                14 => buckets[target].saturating_sub(val), // Stuck at 0
+                15 => buckets[target] & val, // Bits destroyed
+                16 => buckets[target] | val, // Bits forced on
+                17 => U256::from(val.count_ones() as u128), // 256 bits → 0-256
 
                 // Reversible but path-dependent:
-                18 => buckets[target] ^ val,                       // XOR mixing
+                18 => buckets[target] ^ val, // XOR mixing
                 19 => (val << (val.as_u128() % 256)) | (val >> (256 - val.as_u128() % 256)), // Data-dep rotate
                 20 => buckets[target].wrapping_mul(val | U256_ONE), // |1 avoids *0
                 21 => {
@@ -428,7 +575,7 @@ pub fn spaghettify(input: &[u8]) -> [u8; 32] {
                     }
                     buckets[target]
                 }
-                _  => val.wrapping_add(buckets[secondary]),        // Cross-bucket mixing (op 22)
+                _ => val.wrapping_add(buckets[secondary]), // Cross-bucket mixing (op 22)
             };
 
             // Mix in position constant to prevent fixed point convergence
@@ -443,7 +590,7 @@ pub fn spaghettify(input: &[u8]) -> [u8; 32] {
     for bucket in &buckets {
         state_bytes.extend_from_slice(&bucket.to_be_bytes());
     }
-    state_bytes.extend_from_slice(input);  // Append original input
+    state_bytes.extend_from_slice(input); // Append original input
 
     // Use smear_hash to collapse to 32 bytes with hash algorithm diversity
     smear_hash(&state_bytes)
@@ -1035,12 +1182,16 @@ impl ClutchAllKeypairs {
         // Parse pubkeys multi-value field by type marker
         let pubkeys_field = section.get_field("pubkeys")?;
         let pubkeys = &pubkeys_field.values;
-        if pubkeys.len() < 8 { return None; }
+        if pubkeys.len() < 8 {
+            return None;
+        }
 
         // Parse secrets multi-value field by type marker
         let secrets_field = section.get_field("secrets")?;
         let secrets = &secrets_field.values;
-        if secrets.len() < 8 { return None; }
+        if secrets.len() < 8 {
+            return None;
+        }
 
         // Extract pubkeys by type marker (order: kx, kp, kk, kp, kf, kn, kl, kh)
         let mut x25519_pub = None;
@@ -1079,8 +1230,12 @@ impl ClutchAllKeypairs {
         for v in secrets {
             match v {
                 VsfType::v(b'x', b) if x25519_sec.is_none() => x25519_sec = Some(b.clone()),
-                VsfType::v(b'p', b) if p384_sec.is_none() && b.len() > 32 => p384_sec = Some(b.clone()),
-                VsfType::v(b'p', b) if p256_sec.is_none() && b.len() == 32 => p256_sec = Some(b.clone()),
+                VsfType::v(b'p', b) if p384_sec.is_none() && b.len() > 32 => {
+                    p384_sec = Some(b.clone())
+                }
+                VsfType::v(b'p', b) if p256_sec.is_none() && b.len() == 32 => {
+                    p256_sec = Some(b.clone())
+                }
                 VsfType::v(b'k', b) if secp256k1_sec.is_none() => secp256k1_sec = Some(b.clone()),
                 VsfType::v(b'f', b) if frodo_sec.is_none() => frodo_sec = Some(b.clone()),
                 VsfType::v(b'n', b) if ntru_sec.is_none() => ntru_sec = Some(b.clone()),
@@ -1167,9 +1322,13 @@ impl ClutchOfferPayload {
     /// Serialize all 8 public keys to bytes (for ceremony instance derivation)
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(
-            32 + self.p384_public.len() + self.secp256k1_public.len() + self.p256_public.len()
-                + self.frodo976_public.len() + self.ntru701_public.len()
-                + self.mceliece_public.len() + self.hqc256_public.len(),
+            32 + self.p384_public.len()
+                + self.secp256k1_public.len()
+                + self.p256_public.len()
+                + self.frodo976_public.len()
+                + self.ntru701_public.len()
+                + self.mceliece_public.len()
+                + self.hqc256_public.len(),
         );
         bytes.extend_from_slice(&self.x25519_public);
         bytes.extend_from_slice(&self.p384_public);
@@ -1206,7 +1365,9 @@ impl ClutchOfferPayload {
 
         let pubkeys_field = section.get_field("pubkeys")?;
         let pubkeys = &pubkeys_field.values;
-        if pubkeys.len() < 8 { return None; }
+        if pubkeys.len() < 8 {
+            return None;
+        }
 
         let mut x25519_pub = None;
         let mut p384_pub = None;
@@ -1232,7 +1393,9 @@ impl ClutchOfferPayload {
         }
 
         let x25519_bytes = x25519_pub?;
-        if x25519_bytes.len() != 32 { return None; }
+        if x25519_bytes.len() != 32 {
+            return None;
+        }
         let mut x25519_public = [0u8; 32];
         x25519_public.copy_from_slice(&x25519_bytes);
 
@@ -1282,16 +1445,15 @@ impl ClutchKemResponsePayload {
     ///
     /// For EC algorithms, we generate fresh ephemeral keypairs and compute ECDH with
     /// the peer's offer pubkeys. This gives truly distinct secrets per direction.
-    pub fn encapsulate_to_peer(
-        their_offer: &ClutchOfferPayload,
-    ) -> (Self, ClutchKemSharedSecrets) {
+    pub fn encapsulate_to_peer(their_offer: &ClutchOfferPayload) -> (Self, ClutchKemSharedSecrets) {
         #[cfg(feature = "development")]
         crate::log_info("CLUTCH: Encapsulating to peer's public keys (8 algorithms)...");
 
         // ===== PQC KEMs =====
         let (frodo976_ciphertext, frodo_ss) = frodo976_encapsulate(&their_offer.frodo976_public);
         let (ntru701_ciphertext, ntru_ss) = ntru701_encapsulate(&their_offer.ntru701_public);
-        let (mceliece_ciphertext, mceliece_ss) = mceliece460896_encapsulate(&their_offer.mceliece_public);
+        let (mceliece_ciphertext, mceliece_ss) =
+            mceliece460896_encapsulate(&their_offer.mceliece_public);
         let (hqc256_ciphertext, hqc_ss) = hqc256_encapsulate(&their_offer.hqc256_public);
 
         #[cfg(feature = "development")]
@@ -1389,11 +1551,17 @@ impl ClutchKemSharedSecrets {
         // ===== PQC KEMs =====
         let frodo = frodo976_decapsulate(&our_keys.frodo976_secret, &response.frodo976_ciphertext);
         #[cfg(feature = "development")]
-        crate::log_info(&format!("CLUTCH: ✓ Frodo976 decap OK ({}B shared secret)", frodo.len()));
+        crate::log_info(&format!(
+            "CLUTCH: ✓ Frodo976 decap OK ({}B shared secret)",
+            frodo.len()
+        ));
 
         let ntru = ntru701_decapsulate(&our_keys.ntru701_secret, &response.ntru701_ciphertext);
         #[cfg(feature = "development")]
-        crate::log_info(&format!("CLUTCH: ✓ NTRU701 decap OK ({}B shared secret)", ntru.len()));
+        crate::log_info(&format!(
+            "CLUTCH: ✓ NTRU701 decap OK ({}B shared secret)",
+            ntru.len()
+        ));
 
         // TODO: Re-enable McEliece once PT transfer is stable
         let mceliece = if response.mceliece_ciphertext.is_empty() {
@@ -1401,9 +1569,15 @@ impl ClutchKemSharedSecrets {
             crate::log_info("CLUTCH: - McEliece skipped (empty ciphertext)");
             vec![0u8; 32] // Placeholder shared secret
         } else {
-            let ss = mceliece460896_decapsulate(&our_keys.mceliece_secret, &response.mceliece_ciphertext);
+            let ss = mceliece460896_decapsulate(
+                &our_keys.mceliece_secret,
+                &response.mceliece_ciphertext,
+            );
             #[cfg(feature = "development")]
-            crate::log_info(&format!("CLUTCH: ✓ McEliece decap OK ({}B shared secret)", ss.len()));
+            crate::log_info(&format!(
+                "CLUTCH: ✓ McEliece decap OK ({}B shared secret)",
+                ss.len()
+            ));
             ss
         };
 
@@ -1416,7 +1590,10 @@ impl ClutchKemSharedSecrets {
 
         let hqc = hqc256_decapsulate(&our_keys.hqc256_secret, &response.hqc256_ciphertext);
         #[cfg(feature = "development")]
-        crate::log_info(&format!("CLUTCH: ✓ HQC256 decap OK ({}B shared secret)", hqc.len()));
+        crate::log_info(&format!(
+            "CLUTCH: ✓ HQC256 decap OK ({}B shared secret)",
+            hqc.len()
+        ));
 
         // ===== EC ECIES-style: ECDH(our_offer_secret, their_ephemeral_pubkey) =====
         // This matches their ECDH(ephemeral_secret, our_offer_pubkey)
@@ -1426,15 +1603,24 @@ impl ClutchKemSharedSecrets {
 
         let p384 = p384_ecdh(&our_keys.p384_secret, &response.p384_ephemeral);
         #[cfg(feature = "development")]
-        crate::log_info(&format!("CLUTCH: ✓ P384 decap OK ({}B shared secret)", p384.len()));
+        crate::log_info(&format!(
+            "CLUTCH: ✓ P384 decap OK ({}B shared secret)",
+            p384.len()
+        ));
 
         let secp256k1 = secp256k1_ecdh(&our_keys.secp256k1_secret, &response.secp256k1_ephemeral);
         #[cfg(feature = "development")]
-        crate::log_info(&format!("CLUTCH: ✓ secp256k1 decap OK ({}B shared secret)", secp256k1.len()));
+        crate::log_info(&format!(
+            "CLUTCH: ✓ secp256k1 decap OK ({}B shared secret)",
+            secp256k1.len()
+        ));
 
         let p256 = p256_ecdh(&our_keys.p256_secret, &response.p256_ephemeral);
         #[cfg(feature = "development")]
-        crate::log_info(&format!("CLUTCH: ✓ P256 decap OK ({}B shared secret)", p256.len()));
+        crate::log_info(&format!(
+            "CLUTCH: ✓ P256 decap OK ({}B shared secret)",
+            p256.len()
+        ));
 
         Self {
             frodo,
@@ -1484,7 +1670,9 @@ impl ClutchKemSharedSecrets {
 
         let secrets_field = section.get_field("secrets")?;
         let secrets = &secrets_field.values;
-        if secrets.len() < 8 { return None; }
+        if secrets.len() < 8 {
+            return None;
+        }
 
         let mut x25519_sec = None;
         let mut p384_sec = None;
@@ -1498,8 +1686,12 @@ impl ClutchKemSharedSecrets {
         for v in secrets {
             match v {
                 VsfType::v(b'x', b) if x25519_sec.is_none() => x25519_sec = Some(b.clone()),
-                VsfType::v(b'p', b) if p384_sec.is_none() && b.len() > 32 => p384_sec = Some(b.clone()),
-                VsfType::v(b'p', b) if p256_sec.is_none() && b.len() == 32 => p256_sec = Some(b.clone()),
+                VsfType::v(b'p', b) if p384_sec.is_none() && b.len() > 32 => {
+                    p384_sec = Some(b.clone())
+                }
+                VsfType::v(b'p', b) if p256_sec.is_none() && b.len() == 32 => {
+                    p256_sec = Some(b.clone())
+                }
                 VsfType::v(b'k', b) if secp256k1_sec.is_none() => secp256k1_sec = Some(b.clone()),
                 VsfType::v(b'f', b) if frodo_sec.is_none() => frodo_sec = Some(b.clone()),
                 VsfType::v(b'n', b) if ntru_sec.is_none() => ntru_sec = Some(b.clone()),
@@ -1510,7 +1702,9 @@ impl ClutchKemSharedSecrets {
         }
 
         let x25519_bytes = x25519_sec?;
-        if x25519_bytes.len() != 32 { return None; }
+        if x25519_bytes.len() != 32 {
+            return None;
+        }
         let mut x25519 = [0u8; 32];
         x25519.copy_from_slice(&x25519_bytes);
 
@@ -2894,7 +3088,10 @@ mod tests {
     fn test_spaghettify_empty_input() {
         // Empty input should produce valid output from LAVA_SEED
         let output = spaghettify(&[]);
-        assert_ne!(output, [0u8; 32], "empty input should not produce all zeros");
+        assert_ne!(
+            output, [0u8; 32],
+            "empty input should not produce all zeros"
+        );
 
         // Should also be deterministic
         let output2 = spaghettify(&[]);
@@ -2906,7 +3103,10 @@ mod tests {
         // Different inputs should produce different outputs
         let output1 = spaghettify(b"input one");
         let output2 = spaghettify(b"input two");
-        assert_ne!(output1, output2, "different inputs should produce different outputs");
+        assert_ne!(
+            output1, output2,
+            "different inputs should produce different outputs"
+        );
     }
 
     #[test]
@@ -2926,8 +3126,16 @@ mod tests {
         }
 
         // Should change roughly half the bits (128 ± 32 is reasonable)
-        assert!(diff_bits > 64, "avalanche too weak: only {} bits changed", diff_bits);
-        assert!(diff_bits < 192, "avalanche too strong: {} bits changed", diff_bits);
+        assert!(
+            diff_bits > 64,
+            "avalanche too weak: only {} bits changed",
+            diff_bits
+        );
+        assert!(
+            diff_bits < 192,
+            "avalanche too strong: {} bits changed",
+            diff_bits
+        );
     }
 
     #[test]

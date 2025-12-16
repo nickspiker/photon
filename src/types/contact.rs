@@ -1,5 +1,7 @@
 use super::{CeremonyId, DevicePubkey, FriendshipId, Seed};
-use crate::crypto::clutch::{ClutchAllKeypairs, ClutchOfferPayload, ClutchKemResponsePayload, ClutchKemSharedSecrets};
+use crate::crypto::clutch::{
+    ClutchAllKeypairs, ClutchKemResponsePayload, ClutchKemSharedSecrets, ClutchOfferPayload,
+};
 use std::net::{Ipv4Addr, SocketAddr};
 
 /// A slot in the CLUTCH ceremony, indexed by sorted handle_hash position.
@@ -105,7 +107,7 @@ impl std::fmt::Display for HandleText {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum ClutchState {
     #[default]
-    Pending,       // Slots not all filled yet
+    Pending, // Slots not all filled yet
     AwaitingProof, // Eggs computed, sent our proof, waiting for peer's proof
     Complete,      // Proofs exchanged and verified
 }
@@ -229,11 +231,11 @@ impl Contact {
             clutch_state: ClutchState::Pending,
             // Slot-based CLUTCH fields
             clutch_our_keypairs: None,
-            clutch_slots: Vec::new(), // Initialized when ceremony starts
-            ceremony_id: None,        // Computed from handle_hashes + ping provenances
-            clutch_pending_kem: None, // KEM response received before keygen completed
-            clutch_offer_sent: false, // Track if we've sent our offer
-            clutch_our_eggs_proof: None,   // Our proof (stored while awaiting peer's)
+            clutch_slots: Vec::new(),    // Initialized when ceremony starts
+            ceremony_id: None,           // Computed from handle_hashes + ping provenances
+            clutch_pending_kem: None,    // KEM response received before keygen completed
+            clutch_offer_sent: false,    // Track if we've sent our offer
+            clutch_our_eggs_proof: None, // Our proof (stored while awaiting peer's)
             clutch_their_eggs_proof: None, // Peer's proof (if received early)
             clutch_keygen_in_progress: false, // No keygen running yet
             clutch_kem_encap_in_progress: false, // No KEM encap running yet
@@ -301,17 +303,23 @@ impl Contact {
     /// Get the slot index for a given handle_hash.
     /// Returns None if the handle_hash is not in the ceremony.
     pub fn get_slot_index(&self, handle_hash: &[u8; 32]) -> Option<usize> {
-        self.clutch_slots.iter().position(|s| &s.handle_hash == handle_hash)
+        self.clutch_slots
+            .iter()
+            .position(|s| &s.handle_hash == handle_hash)
     }
 
     /// Get mutable reference to the slot for a given handle_hash.
     pub fn get_slot_mut(&mut self, handle_hash: &[u8; 32]) -> Option<&mut PartySlot> {
-        self.clutch_slots.iter_mut().find(|s| &s.handle_hash == handle_hash)
+        self.clutch_slots
+            .iter_mut()
+            .find(|s| &s.handle_hash == handle_hash)
     }
 
     /// Get reference to the slot for a given handle_hash.
     pub fn get_slot(&self, handle_hash: &[u8; 32]) -> Option<&PartySlot> {
-        self.clutch_slots.iter().find(|s| &s.handle_hash == handle_hash)
+        self.clutch_slots
+            .iter()
+            .find(|s| &s.handle_hash == handle_hash)
     }
 
     /// Check if all slots are complete (ceremony can finish).
@@ -324,8 +332,13 @@ impl Contact {
     /// Uses binary search for O(log n) position finding.
     pub fn insert_message_sorted(&mut self, msg: ChatMessage) {
         // Binary search for insertion point (maintains ascending timestamp order)
-        let pos = self.messages
-            .binary_search_by(|m| m.timestamp.partial_cmp(&msg.timestamp).unwrap_or(std::cmp::Ordering::Equal))
+        let pos = self
+            .messages
+            .binary_search_by(|m| {
+                m.timestamp
+                    .partial_cmp(&msg.timestamp)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
             .unwrap_or_else(|pos| pos);
         self.messages.insert(pos, msg);
     }

@@ -120,6 +120,27 @@ impl PhotonApp {
                             let textbox_y = self.textbox_y();
                             let font_size = self.font_size();
 
+                            // Calculate NEW blinkey position
+                            let blinkey_pixel_offset: usize =
+                                if self.current_text_state.blinkey_index > 0 {
+                                    self.current_text_state.widths
+                                        [..self.current_text_state.blinkey_index]
+                                        .iter()
+                                        .sum()
+                                } else {
+                                    0
+                                };
+                            let total_text_width: usize = self.current_text_state.width;
+                            let text_half = total_text_width / 2;
+                            let blinkey_x = (center_x as f32 - text_half as f32
+                                + self.current_text_state.scroll_offset
+                                + blinkey_pixel_offset as f32)
+                                as usize;
+
+                            let new_blinkey_x = blinkey_x;
+                            let new_blinkey_y =
+                                (textbox_y as f32 - box_height as f32 * 0.25) as usize;
+
                             // Lock buffer for blinkey update (immediate-mode)
                             let mut buffer = self.renderer.lock_buffer();
                             let pixels = buffer.as_mut();
@@ -137,24 +158,8 @@ impl PhotonApp {
                                 );
                             }
 
-                            // Calculate NEW blinkey position
-                            let blinkey_pixel_offset: usize =
-                                if self.current_text_state.blinkey_index > 0 {
-                                    self.current_text_state.widths
-                                        [..self.current_text_state.blinkey_index]
-                                        .iter()
-                                        .sum()
-                                } else {
-                                    0
-                                };
-                            let total_text_width: usize = self.current_text_state.width;
-                            let text_half = total_text_width / 2;
-                            self.blinkey_pixel_x = (center_x as f32 - text_half as f32
-                                + self.current_text_state.scroll_offset
-                                + blinkey_pixel_offset as f32)
-                                as usize;
-                            self.blinkey_pixel_y =
-                                (textbox_y as f32 - box_height as f32 * 0.25) as usize;
+                            self.blinkey_pixel_x = new_blinkey_x;
+                            self.blinkey_pixel_y = new_blinkey_y;
 
                             // Draw blinkey at NEW position (or start if first focus)
                             if !was_focused {
@@ -453,10 +458,12 @@ impl PhotonApp {
                         };
                         let total_text_width: usize = self.current_text_state.width;
                         let text_half = total_text_width / 2;
-                        self.blinkey_pixel_x = (center_x as f32 - text_half as f32
+                        let blinkey_x = (center_x as f32 - text_half as f32
                             + self.current_text_state.scroll_offset
                             + blinkey_pixel_offset as f32)
                             as usize;
+
+                        self.blinkey_pixel_x = blinkey_x;
                         self.blinkey_pixel_y =
                             (textbox_y as f32 - box_height as f32 * 0.25) as usize;
 

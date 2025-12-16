@@ -477,7 +477,9 @@ impl HandleQuery {
 
                 // Add peers to store (skip our own device)
                 let our_pubkey = keypair.public.as_bytes();
-                let other_peers: Vec<_> = result.peers.iter()
+                let other_peers: Vec<_> = result
+                    .peers
+                    .iter()
                     .filter(|p| &p.device_pubkey.key != our_pubkey)
                     .cloned()
                     .collect();

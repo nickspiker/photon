@@ -51,7 +51,7 @@ pub enum PTError {
 pub struct OutboundTransfer {
     pub peer_addr: SocketAddr,
     pub stream_id: u8,      // 'a'-'z' for concurrent transfer routing
-    pub transfer_id: usize,  // Monotonic ID for external tracking
+    pub transfer_id: usize, // Monotonic ID for external tracking
     pub state: TransferState,
     pub send_buffer: SendBuffer,
     pub window: WindowController,
@@ -313,7 +313,7 @@ impl OutboundTransfer {
 /// Inbound transfer (we're receiving)
 pub struct InboundTransfer {
     pub peer_addr: SocketAddr,
-    pub stream_id: u8,      // 'a'-'z' for concurrent transfer routing
+    pub stream_id: u8, // 'a'-'z' for concurrent transfer routing
     pub state: TransferState,
     pub receive_buffer: ReceiveBuffer,
     pub duplicates: u32, // Count of duplicate packets received
@@ -346,19 +346,11 @@ impl InboundTransfer {
 
         if self.receive_buffer.insert(data.sequence, &data.payload) {
             // New packet - send ACK with stream_id for routing
-            Some(PTAck::new(
-                self.stream_id,
-                data.sequence,
-                &data.payload,
-            ))
+            Some(PTAck::new(self.stream_id, data.sequence, &data.payload))
         } else {
             // Duplicate - track and still ACK to prevent sender retransmit
             self.duplicates += 1;
-            Some(PTAck::new(
-                self.stream_id,
-                data.sequence,
-                &data.payload,
-            ))
+            Some(PTAck::new(self.stream_id, data.sequence, &data.payload))
         }
     }
 
@@ -420,7 +412,6 @@ impl InboundTransfer {
         )
     }
 }
-
 
 #[cfg(test)]
 mod tests {

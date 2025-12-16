@@ -64,9 +64,7 @@ pub const AUTHOR_PUBKEY: [u8; 32] = [
 
 /// List of trusted system pubkeys for official messages.
 /// Currently just the author - future: democratic governance for adding keys.
-pub const SYSTEM_PUBKEYS: &[[u8; 32]] = &[
-    AUTHOR_PUBKEY,
-];
+pub const SYSTEM_PUBKEYS: &[[u8; 32]] = &[AUTHOR_PUBKEY];
 
 /// Check if a pubkey is a trusted system pubkey.
 /// Messages signed by system pubkeys are official Photon communications.

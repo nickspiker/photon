@@ -67,16 +67,28 @@ pub fn recv(stream: &mut TcpStream) -> std::io::Result<Vec<u8>> {
     let mut ptr = 4; // After "RÅ<"
 
     // Parse z (version)
-    let _ = vsf::decoding::parse(&header_buf, &mut ptr)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("TCP recv: Failed to parse version: {}", e)))?;
+    let _ = vsf::decoding::parse(&header_buf, &mut ptr).map_err(|e| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("TCP recv: Failed to parse version: {}", e),
+        )
+    })?;
 
     // Parse y (backward compat)
-    let _ = vsf::decoding::parse(&header_buf, &mut ptr)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("TCP recv: Failed to parse backward compat: {}", e)))?;
+    let _ = vsf::decoding::parse(&header_buf, &mut ptr).map_err(|e| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("TCP recv: Failed to parse backward compat: {}", e),
+        )
+    })?;
 
     // Parse b (header length)
-    let _ = vsf::decoding::parse(&header_buf, &mut ptr)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("TCP recv: Failed to parse header length: {}", e)))?;
+    let _ = vsf::decoding::parse(&header_buf, &mut ptr).map_err(|e| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("TCP recv: Failed to parse header length: {}", e),
+        )
+    })?;
 
     // Parse L (file length) - this is what we need!
     let file_length = match vsf::decoding::parse(&header_buf, &mut ptr) {
@@ -145,8 +157,7 @@ pub async fn send_tcp(data: &[u8], addr: SocketAddr) -> std::io::Result<()> {
     // Connect with timeout
     let mut stream = timeout(connect_timeout, tokio::net::TcpStream::connect(addr))
         .await
-        .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "TCP connect timeout"))?
-        ?;
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "TCP connect timeout"))??;
 
     // No length prefix - VSF header contains L (file length)
     // Write with timeout

@@ -255,9 +255,9 @@ pub fn generate_scratch(chain: &Chain, salt: &[u8; 32]) -> Vec<u8> {
     for _round in 0..L1_ROUNDS {
         for i in (32..L1_SIZE).step_by(32) {
             // Read position depends on current state
-            let read_idx =
-                (u32::from_le_bytes(scratch[i..i + 4].try_into().unwrap()) as usize) % (i / 32)
-                    * 32;
+            let read_idx = (u32::from_le_bytes(scratch[i..i + 4].try_into().unwrap()) as usize)
+                % (i / 32)
+                * 32;
 
             // Mix with data-dependent read
             let mut mix_input = [0u8; 64];
@@ -345,7 +345,13 @@ fn derive_fresh_link(
     // Build input with clear domain separation:
     // domain_tag + eagle_time + our_len + our_plaintext + chain_portion + [their_len + their_plaintext]
     let mut input = Vec::with_capacity(
-        DOMAIN_ADVANCE.len() + 8 + 4 + our_plaintext.len() + chain_portion.len() + 4 + their_plaintext.map_or(0, |p| p.len())
+        DOMAIN_ADVANCE.len()
+            + 8
+            + 4
+            + our_plaintext.len()
+            + chain_portion.len()
+            + 4
+            + their_plaintext.map_or(0, |p| p.len()),
     );
 
     input.extend_from_slice(DOMAIN_ADVANCE);
@@ -471,9 +477,9 @@ pub fn generate_scratch_at_offset(chain: &Chain, salt: &[u8; 32], offset: usize)
     // Data-dependent mixing rounds
     for _round in 0..L1_ROUNDS {
         for i in (32..L1_SIZE).step_by(32) {
-            let read_idx =
-                (u32::from_le_bytes(scratch[i..i + 4].try_into().unwrap()) as usize) % (i / 32)
-                    * 32;
+            let read_idx = (u32::from_le_bytes(scratch[i..i + 4].try_into().unwrap()) as usize)
+                % (i / 32)
+                * 32;
 
             let mut mix_input = [0u8; 64];
             mix_input[0..32].copy_from_slice(&scratch[i - 32..i]);
@@ -690,12 +696,7 @@ mod tests {
 
         // Wrong hash should fail
         let wrong_hash = [0xCC; 32];
-        assert!(!verify_ack_proof(
-            &eagle_time,
-            &wrong_hash,
-            &chain,
-            &proof
-        ));
+        assert!(!verify_ack_proof(&eagle_time, &wrong_hash, &chain, &proof));
     }
 
     #[test]
@@ -712,7 +713,13 @@ mod tests {
         assert_ne!(&ciphertext[..], plaintext);
 
         // Should decrypt correctly
-        let decrypted = decrypt_layers(&ciphertext, &chain, CURRENT_KEY_INDEX, &scratch, &eagle_time);
+        let decrypted = decrypt_layers(
+            &ciphertext,
+            &chain,
+            CURRENT_KEY_INDEX,
+            &scratch,
+            &eagle_time,
+        );
         assert_eq!(&decrypted[..], plaintext);
     }
 
@@ -739,8 +746,13 @@ mod tests {
             let rx_scratch = generate_scratch(&receiver, &rx_salt);
 
             // Decrypt
-            let decrypted =
-                decrypt_layers(&ciphertext, &receiver, CURRENT_KEY_INDEX, &rx_scratch, &eagle_time);
+            let decrypted = decrypt_layers(
+                &ciphertext,
+                &receiver,
+                CURRENT_KEY_INDEX,
+                &rx_scratch,
+                &eagle_time,
+            );
             assert_eq!(&decrypted[..], message.as_bytes());
 
             // Compute plaintext hash for ACK

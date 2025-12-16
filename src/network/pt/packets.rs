@@ -23,7 +23,7 @@ use crate::network::fgtw::Keypair;
 /// - signature in header proves sender identity
 #[derive(Clone, Debug)]
 pub struct PTSpec {
-    pub stream_id: u8,       // 'a'-'z' for concurrent transfer routing
+    pub stream_id: u8, // 'a'-'z' for concurrent transfer routing
     pub total_packets: u32,
     pub packet_size: u16,
     pub total_size: u32,
@@ -66,10 +66,7 @@ impl PTSpec {
             .add_section(
                 "pt_spec",
                 vec![
-                    (
-                        "sid".to_string(),
-                        VsfType::u3(self.stream_id),
-                    ),
+                    ("sid".to_string(), VsfType::u3(self.stream_id)),
                     (
                         "count".to_string(),
                         VsfType::u(self.total_packets as usize, false),
@@ -188,7 +185,7 @@ impl PTSpec {
 /// - payload: raw data bytes (up to packet_size from SPEC)
 #[derive(Clone, Debug)]
 pub struct PTData {
-    pub stream_id: u8,   // 'a'-'z' for routing
+    pub stream_id: u8, // 'a'-'z' for routing
     pub sequence: u32,
     pub payload: Vec<u8>,
 }
@@ -234,7 +231,7 @@ impl PTData {
 /// - No signature needed - provenance hash provides integrity
 #[derive(Clone, Debug)]
 pub struct PTAck {
-    pub stream_id: u8,       // 'a'-'z' for routing back to correct transfer
+    pub stream_id: u8, // 'a'-'z' for routing back to correct transfer
     pub sequence: u32,
     pub chunk_hash: [u8; 32],
 }
@@ -309,7 +306,6 @@ impl PTAck {
             chunk_hash: provenance_hash,
         })
     }
-
 }
 
 /// NAK packet - request retransmission of missing sequences
@@ -500,11 +496,14 @@ impl PTComplete {
     ) -> Option<Self> {
         use vsf::VsfType;
 
-        let success = field_values.first().map(|v| match v {
-            VsfType::u3(n) => *n != 0,
-            VsfType::u(n, _) => *n != 0,
-            _ => false,
-        }).unwrap_or(false);
+        let success = field_values
+            .first()
+            .map(|v| match v {
+                VsfType::u3(n) => *n != 0,
+                VsfType::u(n, _) => *n != 0,
+                _ => false,
+            })
+            .unwrap_or(false);
 
         Some(Self {
             final_hash: provenance_hash, // Provenance IS the final hash
@@ -561,7 +560,6 @@ fn decode_vsf_uint(bytes: &[u8]) -> Option<(usize, usize)> {
 
     None // Incomplete
 }
-
 
 #[cfg(test)]
 mod tests {

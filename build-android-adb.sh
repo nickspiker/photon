@@ -50,7 +50,7 @@ export CC="clang"
 export CXX="clang++"
 
 echo "Building Photon for Android (arm64)..."
-cargo build --release --lib --target aarch64-linux-android --features logging
+PHOTON_ALLOW_RELEASE=1 cargo build --release --lib --target aarch64-linux-android --features logging
 
 # Copy to Android project jniLibs
 echo "Copying .so to Android project..."

@@ -179,8 +179,8 @@ fn strip_ansi_if_needed(s: &str) -> String {
 // Centralized VSF disk I/O with automatic dev-mode inspection
 // =============================================================================
 
-use std::path::Path;
 use ed25519_dalek::SigningKey;
+use std::path::Path;
 use vsf::VsfBuilder;
 use vsf::VsfType;
 
@@ -208,9 +208,10 @@ pub fn vsf_write(
     let unsigned_vsf = VsfBuilder::new()
         .creation_time_nanos(vsf::eagle_time_nanos())
         .signature_ed25519(*device_pubkey.as_bytes(), [0u8; 64]) // Placeholder
-        .add_section("encrypted", vec![
-            ("payload".to_string(), VsfType::v(b'e', encrypted.to_vec())),
-        ])
+        .add_section(
+            "encrypted",
+            vec![("payload".to_string(), VsfType::v(b'e', encrypted.to_vec()))],
+        )
         .build()
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
@@ -267,13 +268,13 @@ pub fn vsf_read(path: &Path, label: &str, device_secret: &[u8; 32]) -> std::io::
         Ok(false) => {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("{}: Signature verification failed", label)
+                format!("{}: Signature verification failed", label),
             ));
         }
         Err(e) => {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("{}: {}", label, e)
+                format!("{}: {}", label, e),
             ));
         }
     }
@@ -287,10 +288,12 @@ pub fn vsf_read(path: &Path, label: &str, device_secret: &[u8; 32]) -> std::io::
     if file_pubkey != *expected_pubkey.as_bytes() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
-            format!("{}: Signed by different device (expected {}, got {})",
+            format!(
+                "{}: Signed by different device (expected {}, got {})",
                 label,
                 hex::encode(&expected_pubkey.as_bytes()[..8]),
-                hex::encode(&file_pubkey[..8]))
+                hex::encode(&file_pubkey[..8])
+            ),
         ));
     }
 
@@ -316,7 +319,10 @@ pub fn vsf_read(path: &Path, label: &str, device_secret: &[u8; 32]) -> std::io::
         }
     }
 
-    Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{}: No encrypted payload", label)))
+    Err(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        format!("{}: No encrypted payload", label),
+    ))
 }
 
 /// Log decrypted VSF content after reading (call after successful decryption)

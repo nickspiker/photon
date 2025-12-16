@@ -212,7 +212,6 @@ pub struct FriendshipChains {
     last_received_times: Vec<Option<f64>>,
 
     // ==================== HASH CHAIN STATE ====================
-
     /// First message anchor per participant (deterministic starting point).
     /// Derived from: BLAKE3(DOMAIN_ANCHOR || participant_handle_hash || chain_fingerprint)
     /// where chain_fingerprint = BLAKE3(chain[256..512]).
@@ -232,7 +231,6 @@ pub struct FriendshipChains {
     last_sent_hash: Option<[u8; 32]>,
 
     // ==================== BIDIRECTIONAL ENTROPY STATE ====================
-
     /// Last received weave hash (for bidirectional entropy mixing).
     /// Derived from: hash(DOMAIN || eagle_time || msg_hp || plaintext)
     /// This prevents brute-forcing even if plaintext is guessable.
@@ -330,7 +328,11 @@ fn derive_anchor(handle_hash: &[u8; 32], chain: &Chain) -> [u8; 32] {
 /// - The entire history (via prev_msg_hp)
 /// - The content (plaintext_hash)
 /// - The timestamp (eagle_time)
-pub fn derive_msg_hp(prev_msg_hp: &[u8; 32], plaintext_hash: &[u8; 32], eagle_time: f64) -> [u8; 32] {
+pub fn derive_msg_hp(
+    prev_msg_hp: &[u8; 32],
+    plaintext_hash: &[u8; 32],
+    eagle_time: f64,
+) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(DOMAIN_MSG_HP);
     hasher.update(prev_msg_hp);
@@ -371,7 +373,10 @@ impl FriendshipChains {
     /// - Three hash algorithms in parallel (smear_hash)
     /// - No compression: full entropy preserved through derivation
     pub fn from_clutch(participants: &[[u8; 32]], eggs: &[[u8; 32]]) -> Self {
-        use crate::crypto::clutch::{avalanche_expand_eggs, derive_chain_from_avalanche, derive_conversation_token, ClutchEggs};
+        use crate::crypto::clutch::{
+            avalanche_expand_eggs, derive_chain_from_avalanche, derive_conversation_token,
+            ClutchEggs,
+        };
 
         // Sort participants for canonical ordering
         let mut sorted_participants = participants.to_vec();
@@ -384,7 +389,9 @@ impl FriendshipChains {
         let conversation_token = derive_conversation_token(&sorted_participants);
 
         // Step 1: Expand eggs to 2MB (memory-hard, no compression)
-        let eggs_struct = ClutchEggs { eggs: eggs.to_vec() };
+        let eggs_struct = ClutchEggs {
+            eggs: eggs.to_vec(),
+        };
         let avalanche = avalanche_expand_eggs(&eggs_struct);
 
         // Step 2: Derive each participant's chain via truncate-and-append
@@ -414,9 +421,7 @@ impl FriendshipChains {
         let first_message_anchors: Vec<[u8; 32]> = sorted_participants
             .iter()
             .zip(chains.iter())
-            .map(|(handle_hash, chain)| {
-                derive_anchor(handle_hash, chain)
-            })
+            .map(|(handle_hash, chain)| derive_anchor(handle_hash, chain))
             .collect();
 
         // Initialize hash chain tracking (all None - no messages yet)
@@ -770,7 +775,8 @@ impl FriendshipChains {
         sender_handle_hash: &[u8; 32],
         received_prev_msg_hp: &[u8; 32],
     ) -> Result<(), [u8; 32]> {
-        let expected = self.get_expected_prev_hp(sender_handle_hash)
+        let expected = self
+            .get_expected_prev_hp(sender_handle_hash)
             .ok_or([0u8; 32])?;
 
         if received_prev_msg_hp == &expected {
@@ -782,11 +788,7 @@ impl FriendshipChains {
 
     /// Update hash chain state after successfully receiving and decrypting a message.
     /// Call this AFTER verify_chain_link succeeds and decrypt succeeds.
-    pub fn update_received_hash(
-        &mut self,
-        sender_handle_hash: &[u8; 32],
-        msg_hp: [u8; 32],
-    ) {
+    pub fn update_received_hash(&mut self, sender_handle_hash: &[u8; 32], msg_hp: [u8; 32]) {
         if let Some(idx) = self.participant_index(sender_handle_hash) {
             self.last_received_hashes[idx] = Some(msg_hp);
         }
@@ -804,12 +806,20 @@ impl FriendshipChains {
         // or if it's somewhere in our pending chain
         for pending in &self.pending_messages {
             if found_start {
-                result.push((pending.eagle_time, pending.ciphertext.clone(), pending.prev_msg_hp));
+                result.push((
+                    pending.eagle_time,
+                    pending.ciphertext.clone(),
+                    pending.prev_msg_hp,
+                ));
             } else if &pending.prev_msg_hp == after_hash || pending.msg_hp == *after_hash {
                 // Found the starting point - include this one and all after
                 if &pending.prev_msg_hp == after_hash {
                     // They have the message before this one
-                    result.push((pending.eagle_time, pending.ciphertext.clone(), pending.prev_msg_hp));
+                    result.push((
+                        pending.eagle_time,
+                        pending.ciphertext.clone(),
+                        pending.prev_msg_hp,
+                    ));
                 }
                 found_start = true;
             }
@@ -817,7 +827,9 @@ impl FriendshipChains {
 
         // If after_hash is one of our anchors, return all pending
         if !found_start && self.first_message_anchors.iter().any(|a| a == after_hash) {
-            return self.pending_messages.iter()
+            return self
+                .pending_messages
+                .iter()
                 .map(|p| (p.eagle_time, p.ciphertext.clone(), p.prev_msg_hp))
                 .collect();
         }
@@ -916,7 +928,11 @@ impl FriendshipChains {
     /// Clear all pending messages up to and including the given msg_hp.
     /// Used for hp-based sync: peer tells us their last_received_hp, we clear everything they have.
     /// Returns count of messages cleared.
-    pub fn clear_pending_up_to(&mut self, our_handle_hash: &[u8; 32], up_to_hp: &[u8; 32]) -> usize {
+    pub fn clear_pending_up_to(
+        &mut self,
+        our_handle_hash: &[u8; 32],
+        up_to_hp: &[u8; 32],
+    ) -> usize {
         let mut cleared = 0;
         let mut last_plaintext_to_set: Option<Vec<u8>> = None;
 
@@ -933,7 +949,10 @@ impl FriendshipChains {
         });
 
         // Update last_plaintext for salt derivation
-        if let (Some(plaintext), Some(chain_idx)) = (last_plaintext_to_set, self.participant_index(our_handle_hash)) {
+        if let (Some(plaintext), Some(chain_idx)) = (
+            last_plaintext_to_set,
+            self.participant_index(our_handle_hash),
+        ) {
             self.last_plaintexts[chain_idx] = plaintext;
         }
 
@@ -992,12 +1011,7 @@ impl FriendshipChains {
     /// Call this after add_pending() to track what weave the receiver will use.
     ///
     /// Derives a weave hash from the full message context (timestamp, msg_hp, plaintext).
-    pub fn update_sent_for_mixing(
-        &mut self,
-        eagle_time: f64,
-        msg_hp: [u8; 32],
-        plaintext: &[u8],
-    ) {
+    pub fn update_sent_for_mixing(&mut self, eagle_time: f64, msg_hp: [u8; 32], plaintext: &[u8]) {
         let weave = derive_weave_hash(eagle_time, &msg_hp, plaintext);
         self.last_sent_weave = Some(weave);
     }
@@ -1009,7 +1023,11 @@ impl FriendshipChains {
         let mut cleared = 0;
 
         // Find the position of the acked message
-        if let Some(ack_pos) = self.pending_messages.iter().position(|m| &m.msg_hp == their_incorporated_hp) {
+        if let Some(ack_pos) = self
+            .pending_messages
+            .iter()
+            .position(|m| &m.msg_hp == their_incorporated_hp)
+        {
             // Remove all messages up to and including this one
             // They're in order, so we can drain 0..=ack_pos
             cleared = ack_pos + 1;
@@ -1199,18 +1217,18 @@ mod tests {
         let friendship_id = *original.id();
 
         // Deserialize (v3 with defaults for optional state)
-        let restored =
-            FriendshipChains::from_storage_v3(
-                friendship_id,
-                participants,
-                &chain_bytes,
-                None,
-                Vec::new(),
-                Vec::new(),
-                None,
-                None,
-                None,
-            ).unwrap();
+        let restored = FriendshipChains::from_storage_v3(
+            friendship_id,
+            participants,
+            &chain_bytes,
+            None,
+            Vec::new(),
+            Vec::new(),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
 
         // Should have same keys
         assert_eq!(

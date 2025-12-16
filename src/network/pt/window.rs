@@ -127,7 +127,7 @@ impl WindowController {
     /// Create new window controller
     pub fn new() -> Self {
         Self {
-            send_ratio: 2.0,      // Start aggressive: 2 packets per ACK
+            send_ratio: 2.0, // Start aggressive: 2 packets per ACK
             loss_rate: 0.0,
             in_blast_phase: true,
             blast_remaining: INITIAL_BLAST,

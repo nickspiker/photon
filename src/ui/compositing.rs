@@ -356,6 +356,7 @@ impl PhotonApp {
                         Self::draw_button(
                             pixels,
                             &mut self.hit_test_map,
+                            Some(&mut self.textbox_mask),
                             self.width as usize,
                             self.height as usize,
                             button_center_x,
@@ -840,6 +841,7 @@ impl PhotonApp {
                                         Self::draw_button(
                                             pixels,
                                             &mut self.hit_test_map,
+                                            Some(&mut self.textbox_mask),
                                             self.width as usize,
                                             self.height as usize,
                                             button_center_x,
@@ -907,7 +909,9 @@ impl PhotonApp {
                                     } else {
                                         // Count filled slots for progress
                                         let total = contact.clutch_slots.len();
-                                        let filled = contact.clutch_slots.iter()
+                                        let filled = contact
+                                            .clutch_slots
+                                            .iter()
                                             .filter(|s| s.is_complete())
                                             .count();
                                         if filled == 0 {
@@ -1154,6 +1158,7 @@ impl PhotonApp {
                 && self.current_text_state.textbox_focused
                 && (self.window_dirty || self.text_dirty || self.selection_dirty)
             {
+                // Recalculate blinkey position (text may have changed)
                 let blinkey_pixel_offset: usize = if self.current_text_state.blinkey_index > 0 {
                     self.current_text_state.widths[..self.current_text_state.blinkey_index]
                         .iter()
@@ -1170,11 +1175,12 @@ impl PhotonApp {
 
                 self.blinkey_pixel_x = blinkey_x;
                 self.blinkey_pixel_y = blinkey_y;
+
                 Self::draw_blinkey(
                     pixels,
                     self.width as usize,
-                    blinkey_x,
-                    blinkey_y,
+                    self.blinkey_pixel_x,
+                    self.blinkey_pixel_y,
                     &mut self.blinkey_visible,
                     &mut self.blinkey_wave_top_bright,
                     font_size as usize,
@@ -1197,9 +1203,11 @@ impl PhotonApp {
                     let textbox_bottom = textbox_y + box_height / 2;
                     let button_center_y = textbox_bottom - inset - send_button_size / 2;
 
+                    // Differential: button appearing, need to knock out mask
                     Self::draw_button(
                         pixels,
                         &mut self.hit_test_map,
+                        Some(&mut self.textbox_mask),
                         self.width as usize,
                         self.height as usize,
                         button_center_x,
@@ -1246,9 +1254,11 @@ impl PhotonApp {
                         theme::BUTTON_BLUE
                     };
 
+                    // Differential: button appearing, need to knock out mask
                     Self::draw_button(
                         pixels,
                         &mut self.hit_test_map,
+                        Some(&mut self.textbox_mask),
                         self.width as usize,
                         self.height as usize,
                         button_center_x,
@@ -1729,6 +1739,7 @@ impl PhotonApp {
                             Self::draw_button(
                                 pixels,
                                 &mut self.hit_test_map,
+                                None,
                                 self.width as usize,
                                 self.height as usize,
                                 center_x,
@@ -3754,7 +3765,7 @@ impl PhotonApp {
     pub fn draw_button(
         pixels: &mut [u32],
         hit_test_map: &mut [u8],
-
+        mut textbox_mask: Option<&mut [u8]>,
         window_width: usize,
         _window_height: usize,
         center_x: usize,
@@ -3815,6 +3826,9 @@ impl PhotonApp {
             let idx = idx + 1;
             pixels[idx] = blend_rgb_only(light_colour, fill_colour, l, h);
             hit_test_map[idx] = hit_id;
+            if let Some(ref mut mask) = textbox_mask {
+                mask[idx] = 255 - h;
+            }
 
             // Fill horizontally to the diagonal (where horizontal edge would be)
             let diag_x = (x + radius as usize - i).min(window_width);
@@ -3822,6 +3836,9 @@ impl PhotonApp {
                 let idx = py * window_width + fill_x;
                 pixels[idx] = fill_colour;
                 hit_test_map[idx] = hit_id;
+                if let Some(ref mut mask) = textbox_mask {
+                    mask[idx] = 0;
+                }
             }
 
             // Horizontal edge - Outer antialiased pixel
@@ -3835,6 +3852,9 @@ impl PhotonApp {
             let idx = (hy + 1) * window_width + hx;
             pixels[idx] = blend_rgb_only(light_colour, fill_colour, l, h);
             hit_test_map[idx] = hit_id;
+            if let Some(ref mut mask) = textbox_mask {
+                mask[idx] = 255 - h;
+            }
 
             // Fill vertically down from horizontal edge to diagonal
             // Diagonal is where the vertical edge is at this same iteration
@@ -3843,6 +3863,9 @@ impl PhotonApp {
                 let idx = fill_y * window_width + hx;
                 pixels[idx] = fill_colour;
                 hit_test_map[idx] = hit_id;
+                if let Some(ref mut mask) = textbox_mask {
+                    mask[idx] = 0;
+                }
             }
         }
 
@@ -3863,6 +3886,9 @@ impl PhotonApp {
             let idx = idx - 1;
             pixels[idx] = blend_rgb_only(shadow_colour, fill_colour, l, h);
             hit_test_map[idx] = hit_id;
+            if let Some(ref mut mask) = textbox_mask {
+                mask[idx] = 255 - h;
+            }
 
             // Fill horizontally to the diagonal
             let diag_x = x + box_width - 1 - radius as usize + i;
@@ -3870,6 +3896,9 @@ impl PhotonApp {
                 let idx = py * window_width + fill_x;
                 pixels[idx] = fill_colour;
                 hit_test_map[idx] = hit_id;
+                if let Some(ref mut mask) = textbox_mask {
+                    mask[idx] = 0;
+                }
             }
 
             // Horizontal edge - Outer antialiased pixel
@@ -3883,6 +3912,9 @@ impl PhotonApp {
             let idx = (hy + 1) * window_width + hx;
             pixels[idx] = blend_rgb_only(light_colour, fill_colour, l, h);
             hit_test_map[idx] = hit_id;
+            if let Some(ref mut mask) = textbox_mask {
+                mask[idx] = 255 - h;
+            }
 
             // Fill vertically down from horizontal edge to diagonal
             let diag_y = y + radius as usize - i;
@@ -3890,6 +3922,9 @@ impl PhotonApp {
                 let idx = fill_y * window_width + hx;
                 pixels[idx] = fill_colour;
                 hit_test_map[idx] = hit_id;
+                if let Some(ref mut mask) = textbox_mask {
+                    mask[idx] = 0;
+                }
             }
         }
 
@@ -3910,6 +3945,9 @@ impl PhotonApp {
             let idx = idx + 1;
             pixels[idx] = blend_rgb_only(light_colour, fill_colour, l, h);
             hit_test_map[idx] = hit_id;
+            if let Some(ref mut mask) = textbox_mask {
+                mask[idx] = 255 - h;
+            }
 
             // Fill horizontally to the diagonal
             let diag_x = (x + radius as usize - i).min(window_width);
@@ -3917,6 +3955,9 @@ impl PhotonApp {
                 let idx = py * window_width + fill_x;
                 pixels[idx] = fill_colour;
                 hit_test_map[idx] = hit_id;
+                if let Some(ref mut mask) = textbox_mask {
+                    mask[idx] = 0;
+                }
             }
 
             // Horizontal edge - Outer antialiased pixel
@@ -3930,6 +3971,9 @@ impl PhotonApp {
             let idx = (hy - 1) * window_width + hx;
             pixels[idx] = blend_rgb_only(shadow_colour, fill_colour, l, h);
             hit_test_map[idx] = hit_id;
+            if let Some(ref mut mask) = textbox_mask {
+                mask[idx] = 255 - h;
+            }
 
             // Fill vertically up from horizontal edge to diagonal
             let diag_y = y + box_height - radius as usize + i;
@@ -3937,6 +3981,9 @@ impl PhotonApp {
                 let idx = fill_y * window_width + hx;
                 pixels[idx] = fill_colour;
                 hit_test_map[idx] = hit_id;
+                if let Some(ref mut mask) = textbox_mask {
+                    mask[idx] = 0;
+                }
             }
         }
 
@@ -3957,6 +4004,9 @@ impl PhotonApp {
             let idx = idx - 1;
             pixels[idx] = blend_rgb_only(shadow_colour, fill_colour, l, h);
             hit_test_map[idx] = hit_id;
+            if let Some(ref mut mask) = textbox_mask {
+                mask[idx] = 255 - h;
+            }
 
             // Fill horizontally to the diagonal
             let diag_x = x + box_width - 1 - radius as usize + i;
@@ -3964,6 +4014,9 @@ impl PhotonApp {
                 let idx = py * window_width + fill_x;
                 pixels[idx] = fill_colour;
                 hit_test_map[idx] = hit_id;
+                if let Some(ref mut mask) = textbox_mask {
+                    mask[idx] = 0;
+                }
             }
 
             // Horizontal edge - Outer antialiased pixel
@@ -3977,6 +4030,9 @@ impl PhotonApp {
             let idx = (hy - 1) * window_width + hx;
             pixels[idx] = blend_rgb_only(shadow_colour, fill_colour, l, h);
             hit_test_map[idx] = hit_id;
+            if let Some(ref mut mask) = textbox_mask {
+                mask[idx] = 255 - h;
+            }
 
             // Fill vertically up from horizontal edge to diagonal
             let diag_y = y + box_height - radius as usize + i;
@@ -3984,6 +4040,9 @@ impl PhotonApp {
                 let idx = fill_y * window_width + hx;
                 pixels[idx] = fill_colour;
                 hit_test_map[idx] = hit_id;
+                if let Some(ref mut mask) = textbox_mask {
+                    mask[idx] = 0;
+                }
             }
         }
 
@@ -4014,6 +4073,9 @@ impl PhotonApp {
                     let idx = py * window_width + px;
                     pixels[idx] = fill_colour;
                     hit_test_map[idx] = hit_id;
+                    if let Some(ref mut mask) = textbox_mask {
+                        mask[idx] = 0;
+                    }
                 }
             }
         } else {
@@ -4040,6 +4102,9 @@ impl PhotonApp {
                     let idx = py * window_width + px;
                     pixels[idx] = fill_colour;
                     hit_test_map[idx] = hit_id;
+                    if let Some(ref mut mask) = textbox_mask {
+                        mask[idx] = 0;
+                    }
                 }
             }
         }

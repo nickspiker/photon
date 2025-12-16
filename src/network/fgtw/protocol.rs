@@ -78,7 +78,6 @@ pub enum FgtwMessage {
     // Full 8-primitive CLUTCH uses ClutchOffer and ClutchKemResponse
     // which are handled via build_clutch_offer_vsf() and parse_clutch_offer_vsf()
     // See CLUTCH.md Section 4.2 for the slot-based ceremony protocol.
-
     /// Encrypted chat message
     ///
     /// Format: section "msg" with encrypted payload per CHAIN.md Section 6.2
@@ -183,8 +182,7 @@ impl FgtwMessage {
     pub fn to_vsf_bytes(&self) -> Vec<u8> {
         use vsf::VsfBuilder;
 
-        let builder = VsfBuilder::new()
-            .creation_time_nanos(vsf::eagle_time_nanos());
+        let builder = VsfBuilder::new().creation_time_nanos(vsf::eagle_time_nanos());
 
         let result = match self {
             FgtwMessage::Ping { device_pubkey } => builder
@@ -363,9 +361,10 @@ impl FgtwMessage {
             } => {
                 // Pong with sync records for efficient resync
                 // Format: RÅ< ... ke[pubkey] ge[sig] > [pong (sync_count: N) (sync_0_tok: hb) (sync_0_ef6: f6) ...]
-                let mut fields = vec![
-                    ("sync_count".to_string(), VsfType::u(sync_records.len(), false)),
-                ];
+                let mut fields = vec![(
+                    "sync_count".to_string(),
+                    VsfType::u(sync_records.len(), false),
+                )];
                 for (i, record) in sync_records.iter().enumerate() {
                     fields.push((
                         format!("sync_{}_tok", i),
@@ -385,7 +384,6 @@ impl FgtwMessage {
             }
             // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete serialization REMOVED
             // Full CLUTCH uses build_clutch_offer_vsf() and build_clutch_kem_response_vsf()
-
             FgtwMessage::ChatMessage {
                 timestamp,
                 conversation_token,
@@ -438,7 +436,10 @@ impl FgtwMessage {
                         "ack",
                         vec![
                             ("tok".to_string(), VsfType::hg(conversation_token.to_vec())),
-                            ("time".to_string(), VsfType::e(vsf::types::EtType::f6(*acked_eagle_time))),
+                            (
+                                "time".to_string(),
+                                VsfType::e(vsf::types::EtType::f6(*acked_eagle_time)),
+                            ),
                             ("hash".to_string(), VsfType::hb(plaintext_hash.to_vec())),
                         ],
                     )
@@ -977,10 +978,7 @@ fn extract_header_signature(header: &vsf::file_format::VsfHeader) -> Result<[u8;
 
 /// Compute provenance hash for encrypted chat message (CHAIN format)
 /// provenance = BLAKE3(conversation_token || prev_msg_hp)
-fn compute_chat_provenance(
-    conversation_token: &[u8; 32],
-    prev_msg_hp: &[u8; 32],
-) -> [u8; 32] {
+fn compute_chat_provenance(conversation_token: &[u8; 32], prev_msg_hp: &[u8; 32]) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(conversation_token);
     hasher.update(prev_msg_hp);
@@ -1006,7 +1004,7 @@ fn compute_ack_provenance_v2(
 // VSF-WRAPPED CLUTCH MESSAGES (Full 8-Algorithm CLUTCH)
 // =============================================================================
 
-use crate::crypto::clutch::{ClutchCompletePayload, ClutchOfferPayload, ClutchKemResponsePayload};
+use crate::crypto::clutch::{ClutchCompletePayload, ClutchKemResponsePayload, ClutchOfferPayload};
 
 // NOTE: ceremony_id is now computed deterministically via CeremonyId::derive()
 // from sorted participant handle_hashes. No memory-hard hashing needed.
@@ -1052,16 +1050,19 @@ pub fn build_clutch_offer_vsf(
     let mut section = VsfSection::new("clutch_offer");
     section.add_field("tok", VsfType::hg(conversation_token.to_vec()));
     // All 8 pubkeys as multi-value field (kx, kp, kk, kp, kf, kn, kl, kh order)
-    section.add_field_multi("pubkeys", vec![
-        VsfType::kx(payload.x25519_public.to_vec()),
-        VsfType::kp(payload.p384_public.clone()),
-        VsfType::kk(payload.secp256k1_public.clone()),
-        VsfType::kp(payload.p256_public.clone()),
-        VsfType::kf(payload.frodo976_public.clone()),
-        VsfType::kn(payload.ntru701_public.clone()),
-        VsfType::kl(payload.mceliece_public.clone()),
-        VsfType::kh(payload.hqc256_public.clone()),
-    ]);
+    section.add_field_multi(
+        "pubkeys",
+        vec![
+            VsfType::kx(payload.x25519_public.to_vec()),
+            VsfType::kp(payload.p384_public.clone()),
+            VsfType::kk(payload.secp256k1_public.clone()),
+            VsfType::kp(payload.p256_public.clone()),
+            VsfType::kf(payload.frodo976_public.clone()),
+            VsfType::kn(payload.ntru701_public.clone()),
+            VsfType::kl(payload.mceliece_public.clone()),
+            VsfType::kh(payload.hqc256_public.clone()),
+        ],
+    );
 
     let unsigned = VsfBuilder::new()
         .creation_time_nanos(vsf::eagle_time_nanos())
@@ -1075,8 +1076,8 @@ pub fn build_clutch_offer_vsf(
 
     // Extract the offer_provenance (hp field) from the signed VSF
     use vsf::file_format::VsfHeader;
-    let (header, _) = VsfHeader::decode(&signed)
-        .map_err(|e| format!("Failed to parse signed header: {}", e))?;
+    let (header, _) =
+        VsfHeader::decode(&signed).map_err(|e| format!("Failed to parse signed header: {}", e))?;
     let offer_provenance = extract_header_provenance(&header)?;
 
     Ok((signed, offer_provenance))
@@ -1106,8 +1107,8 @@ pub fn parse_clutch_offer_vsf(
 
     // Parse header for offer_provenance (hp field - unique per offer due to timestamp)
     use vsf::file_format::VsfHeader;
-    let (header, header_end) = VsfHeader::decode(vsf_bytes)
-        .map_err(|e| format!("Failed to parse header: {}", e))?;
+    let (header, header_end) =
+        VsfHeader::decode(vsf_bytes).map_err(|e| format!("Failed to parse header: {}", e))?;
 
     let offer_provenance = extract_header_provenance(&header)?;
 
@@ -1125,20 +1126,24 @@ pub fn parse_clutch_offer_vsf(
     };
 
     if section_name != "clutch_offer" {
-        return Err(format!("Expected 'clutch_offer' section, got '{}'", section_name));
+        return Err(format!(
+            "Expected 'clutch_offer' section, got '{}'",
+            section_name
+        ));
     }
 
     // Parse fields with multi-value support
     use vsf::file_format::VsfField;
     let mut fields: Vec<VsfField> = Vec::new();
     while ptr < vsf_bytes.len() && vsf_bytes[ptr] != b']' {
-        let field = VsfField::parse(vsf_bytes, &mut ptr)
-            .map_err(|e| format!("Parse field: {}", e))?;
+        let field =
+            VsfField::parse(vsf_bytes, &mut ptr).map_err(|e| format!("Parse field: {}", e))?;
         fields.push(field);
     }
 
     // Extract conversation_token (single value field)
-    let conversation_token: [u8; 32] = fields.iter()
+    let conversation_token: [u8; 32] = fields
+        .iter()
         .find(|f| f.name == "tok")
         .and_then(|f| f.values.first())
         .and_then(|v| match v {
@@ -1158,58 +1163,66 @@ pub fn parse_clutch_offer_vsf(
 
     // Extract pubkeys from multi-value "pubkeys" field (kx, kp, kk, kp, kf, kn, kl, kh order)
     // Also support legacy individual fields for backwards compatibility
-    let (x25519_public, p384_public, secp256k1_public, p256_public,
-         frodo976_public, ntru701_public, mceliece_public, hqc256_public) =
-        if let Some(pk_field) = fields.iter().find(|f| f.name == "pubkeys") {
-            // New format: multi-value field
-            let mut x25519 = [0u8; 32];
-            let mut p384 = Vec::new();
-            let mut secp256k1 = Vec::new();
-            let mut p256 = Vec::new();
-            let mut frodo = Vec::new();
-            let mut ntru = Vec::new();
-            let mut mceliece = Vec::new();
-            let mut hqc = Vec::new();
-            let mut kp_index = 0;
-            for v in &pk_field.values {
-                match v {
-                    VsfType::kx(data) if data.len() == 32 => {
-                        x25519.copy_from_slice(data);
-                    }
-                    VsfType::kp(data) => {
-                        // P-384 (97B) comes before P-256 (65B) in order
-                        if kp_index == 0 {
-                            p384 = data.clone();
-                        } else {
-                            p256 = data.clone();
-                        }
-                        kp_index += 1;
-                    }
-                    VsfType::kk(data) => secp256k1 = data.clone(),
-                    VsfType::kf(data) => frodo = data.clone(),
-                    VsfType::kn(data) => ntru = data.clone(),
-                    VsfType::kl(data) => mceliece = data.clone(),
-                    VsfType::kh(data) => hqc = data.clone(),
-                    _ => {}
+    let (
+        x25519_public,
+        p384_public,
+        secp256k1_public,
+        p256_public,
+        frodo976_public,
+        ntru701_public,
+        mceliece_public,
+        hqc256_public,
+    ) = if let Some(pk_field) = fields.iter().find(|f| f.name == "pubkeys") {
+        // New format: multi-value field
+        let mut x25519 = [0u8; 32];
+        let mut p384 = Vec::new();
+        let mut secp256k1 = Vec::new();
+        let mut p256 = Vec::new();
+        let mut frodo = Vec::new();
+        let mut ntru = Vec::new();
+        let mut mceliece = Vec::new();
+        let mut hqc = Vec::new();
+        let mut kp_index = 0;
+        for v in &pk_field.values {
+            match v {
+                VsfType::kx(data) if data.len() == 32 => {
+                    x25519.copy_from_slice(data);
                 }
+                VsfType::kp(data) => {
+                    // P-384 (97B) comes before P-256 (65B) in order
+                    if kp_index == 0 {
+                        p384 = data.clone();
+                    } else {
+                        p256 = data.clone();
+                    }
+                    kp_index += 1;
+                }
+                VsfType::kk(data) => secp256k1 = data.clone(),
+                VsfType::kf(data) => frodo = data.clone(),
+                VsfType::kn(data) => ntru = data.clone(),
+                VsfType::kl(data) => mceliece = data.clone(),
+                VsfType::kh(data) => hqc = data.clone(),
+                _ => {}
             }
-            (x25519, p384, secp256k1, p256, frodo, ntru, mceliece, hqc)
-        } else {
-            // Legacy format: individual named fields
-            let legacy_fields: Vec<(String, VsfType)> = fields.iter()
-                .flat_map(|f| f.values.first().map(|v| (f.name.clone(), v.clone())))
-                .collect();
-            (
-                extract_kx(&legacy_fields, "x25519")?,
-                extract_kp(&legacy_fields, "p384")?,
-                extract_kk(&legacy_fields, "secp256k1")?,
-                extract_kp(&legacy_fields, "p256")?,
-                extract_kf(&legacy_fields, "frodo")?,
-                extract_kn(&legacy_fields, "ntru")?,
-                extract_kl(&legacy_fields, "mceliece")?,
-                extract_kh(&legacy_fields, "hqc")?,
-            )
-        };
+        }
+        (x25519, p384, secp256k1, p256, frodo, ntru, mceliece, hqc)
+    } else {
+        // Legacy format: individual named fields
+        let legacy_fields: Vec<(String, VsfType)> = fields
+            .iter()
+            .flat_map(|f| f.values.first().map(|v| (f.name.clone(), v.clone())))
+            .collect();
+        (
+            extract_kx(&legacy_fields, "x25519")?,
+            extract_kp(&legacy_fields, "p384")?,
+            extract_kk(&legacy_fields, "secp256k1")?,
+            extract_kp(&legacy_fields, "p256")?,
+            extract_kf(&legacy_fields, "frodo")?,
+            extract_kn(&legacy_fields, "ntru")?,
+            extract_kl(&legacy_fields, "mceliece")?,
+            extract_kh(&legacy_fields, "hqc")?,
+        )
+    };
 
     let payload = ClutchOfferPayload {
         x25519_public,
@@ -1224,7 +1237,11 @@ pub fn parse_clutch_offer_vsf(
 
     #[cfg(feature = "development")]
     {
-        let prov_hex: String = offer_provenance.iter().take(8).map(|b| format!("{:02x}", b)).collect();
+        let prov_hex: String = offer_provenance
+            .iter()
+            .take(8)
+            .map(|b| format!("{:02x}", b))
+            .collect();
         crate::log_info(&format!(
             "CLUTCH: Received offer ({} bytes) offer_provenance={}...",
             vsf_bytes.len(),
@@ -1268,28 +1285,37 @@ pub fn build_clutch_kem_response_vsf(
     device_pubkey: &[u8; 32],
     device_secret: &[u8; 32],
 ) -> Result<Vec<u8>, String> {
-    use vsf::VsfBuilder;
     use vsf::file_format::VsfSection;
+    use vsf::VsfBuilder;
 
     // Build section with multi-value fields (matches keypairs.vsf format)
     let mut section = VsfSection::new("clutch_kem_response");
     section.add_field("tok", VsfType::hg(conversation_token.to_vec()));
     // Target HQC pub prefix for stale KEM response detection
-    section.add_field("target_hqc", VsfType::hb(payload.target_hqc_pub_prefix.to_vec()));
+    section.add_field(
+        "target_hqc",
+        VsfType::hb(payload.target_hqc_pub_prefix.to_vec()),
+    );
     // PQC KEM ciphertexts as multi-value field (vf, vn, vl, vc order matches offer pubkeys)
-    section.add_field_multi("ciphertexts", vec![
-        VsfType::v(b'f', payload.frodo976_ciphertext.clone()),
-        VsfType::v(b'n', payload.ntru701_ciphertext.clone()),
-        VsfType::v(b'l', payload.mceliece_ciphertext.clone()),
-        VsfType::v(b'c', payload.hqc256_ciphertext.clone()),
-    ]);
+    section.add_field_multi(
+        "ciphertexts",
+        vec![
+            VsfType::v(b'f', payload.frodo976_ciphertext.clone()),
+            VsfType::v(b'n', payload.ntru701_ciphertext.clone()),
+            VsfType::v(b'l', payload.mceliece_ciphertext.clone()),
+            VsfType::v(b'c', payload.hqc256_ciphertext.clone()),
+        ],
+    );
     // EC ephemeral pubkeys as multi-value field (kx, kp, kk, kp order matches offer pubkeys)
-    section.add_field_multi("ephemerals", vec![
-        VsfType::kx(payload.x25519_ephemeral.to_vec()),
-        VsfType::kp(payload.p384_ephemeral.clone()),
-        VsfType::kk(payload.secp256k1_ephemeral.clone()),
-        VsfType::kp(payload.p256_ephemeral.clone()),
-    ]);
+    section.add_field_multi(
+        "ephemerals",
+        vec![
+            VsfType::kx(payload.x25519_ephemeral.to_vec()),
+            VsfType::kp(payload.p384_ephemeral.clone()),
+            VsfType::kk(payload.secp256k1_ephemeral.clone()),
+            VsfType::kp(payload.p256_ephemeral.clone()),
+        ],
+    );
 
     // Build unsigned VSF with signature placeholder
     let unsigned = VsfBuilder::new()
@@ -1327,8 +1353,8 @@ pub fn parse_clutch_kem_response_vsf(
 
     // Parse header for ceremony_id
     use vsf::file_format::VsfHeader;
-    let (header, header_end) = VsfHeader::decode(vsf_bytes)
-        .map_err(|e| format!("Failed to parse header: {}", e))?;
+    let (header, header_end) =
+        VsfHeader::decode(vsf_bytes).map_err(|e| format!("Failed to parse header: {}", e))?;
 
     let ceremony_id = extract_header_provenance(&header)?;
 
@@ -1346,20 +1372,24 @@ pub fn parse_clutch_kem_response_vsf(
     };
 
     if section_name != "clutch_kem_response" {
-        return Err(format!("Expected 'clutch_kem_response' section, got '{}'", section_name));
+        return Err(format!(
+            "Expected 'clutch_kem_response' section, got '{}'",
+            section_name
+        ));
     }
 
     // Parse fields with multi-value support
     use vsf::file_format::VsfField;
     let mut fields: Vec<VsfField> = Vec::new();
     while ptr < vsf_bytes.len() && vsf_bytes[ptr] != b']' {
-        let field = VsfField::parse(vsf_bytes, &mut ptr)
-            .map_err(|e| format!("Parse field: {}", e))?;
+        let field =
+            VsfField::parse(vsf_bytes, &mut ptr).map_err(|e| format!("Parse field: {}", e))?;
         fields.push(field);
     }
 
     // Extract conversation_token (single value field)
-    let conversation_token: [u8; 32] = fields.iter()
+    let conversation_token: [u8; 32] = fields
+        .iter()
         .find(|f| f.name == "tok")
         .and_then(|f| f.values.first())
         .and_then(|v| match v {
@@ -1378,7 +1408,8 @@ pub fn parse_clutch_kem_response_vsf(
     }
 
     // Extract target HQC pub prefix for stale detection
-    let target_hqc_pub_prefix: [u8; 8] = fields.iter()
+    let target_hqc_pub_prefix: [u8; 8] = fields
+        .iter()
         .find(|f| f.name == "target_hqc")
         .and_then(|f| f.values.first())
         .and_then(|v| match v {
@@ -1412,7 +1443,8 @@ pub fn parse_clutch_kem_response_vsf(
             (frodo, ntru, mceliece, hqc)
         } else {
             // Legacy format: individual named fields
-            let legacy_fields: Vec<(String, VsfType)> = fields.iter()
+            let legacy_fields: Vec<(String, VsfType)> = fields
+                .iter()
                 .flat_map(|f| f.values.first().map(|v| (f.name.clone(), v.clone())))
                 .collect();
             (
@@ -1454,7 +1486,8 @@ pub fn parse_clutch_kem_response_vsf(
             (x25519, p384, secp256k1, p256)
         } else {
             // Legacy format: individual named fields
-            let x25519 = fields.iter()
+            let x25519 = fields
+                .iter()
                 .find(|f| f.name == "x25519_eph")
                 .and_then(|f| f.values.first())
                 .and_then(|v| match v {
@@ -1466,20 +1499,32 @@ pub fn parse_clutch_kem_response_vsf(
                     _ => None,
                 })
                 .unwrap_or([0u8; 32]);
-            let p384 = fields.iter()
+            let p384 = fields
+                .iter()
                 .find(|f| f.name == "p384_eph")
                 .and_then(|f| f.values.first())
-                .and_then(|v| match v { VsfType::kp(data) => Some(data.clone()), _ => None })
+                .and_then(|v| match v {
+                    VsfType::kp(data) => Some(data.clone()),
+                    _ => None,
+                })
                 .unwrap_or_default();
-            let secp256k1 = fields.iter()
+            let secp256k1 = fields
+                .iter()
                 .find(|f| f.name == "secp256k1_eph")
                 .and_then(|f| f.values.first())
-                .and_then(|v| match v { VsfType::kk(data) => Some(data.clone()), _ => None })
+                .and_then(|v| match v {
+                    VsfType::kk(data) => Some(data.clone()),
+                    _ => None,
+                })
                 .unwrap_or_default();
-            let p256 = fields.iter()
+            let p256 = fields
+                .iter()
                 .find(|f| f.name == "p256_eph")
                 .and_then(|f| f.values.first())
-                .and_then(|v| match v { VsfType::kp(data) => Some(data.clone()), _ => None })
+                .and_then(|v| match v {
+                    VsfType::kp(data) => Some(data.clone()),
+                    _ => None,
+                })
                 .unwrap_or_default();
             (x25519, p384, secp256k1, p256)
         };
@@ -1498,7 +1543,11 @@ pub fn parse_clutch_kem_response_vsf(
 
     #[cfg(feature = "development")]
     {
-        let hp_hex: String = ceremony_id.iter().take(8).map(|b| format!("{:02x}", b)).collect();
+        let hp_hex: String = ceremony_id
+            .iter()
+            .take(8)
+            .map(|b| format!("{:02x}", b))
+            .collect();
         crate::log_info(&format!(
             "CLUTCH: Received KEM response ({} bytes) ceremony_id={}...",
             vsf_bytes.len(),
@@ -1546,8 +1595,8 @@ pub fn parse_clutch_offer_vsf_without_recipient_check(
 
     // Parse header for offer_provenance (hp field - unique per offer due to timestamp)
     use vsf::file_format::VsfHeader;
-    let (header, header_end) = VsfHeader::decode(vsf_bytes)
-        .map_err(|e| format!("Failed to parse header: {}", e))?;
+    let (header, header_end) =
+        VsfHeader::decode(vsf_bytes).map_err(|e| format!("Failed to parse header: {}", e))?;
 
     let offer_provenance = extract_header_provenance(&header)?;
 
@@ -1565,20 +1614,24 @@ pub fn parse_clutch_offer_vsf_without_recipient_check(
     };
 
     if section_name != "clutch_offer" {
-        return Err(format!("Expected 'clutch_offer' section, got '{}'", section_name));
+        return Err(format!(
+            "Expected 'clutch_offer' section, got '{}'",
+            section_name
+        ));
     }
 
     // Parse fields with multi-value support
     use vsf::file_format::VsfField;
     let mut fields: Vec<VsfField> = Vec::new();
     while ptr < vsf_bytes.len() && vsf_bytes[ptr] != b']' {
-        let field = VsfField::parse(vsf_bytes, &mut ptr)
-            .map_err(|e| format!("Parse field: {}", e))?;
+        let field =
+            VsfField::parse(vsf_bytes, &mut ptr).map_err(|e| format!("Parse field: {}", e))?;
         fields.push(field);
     }
 
     // Extract conversation_token (NO recipient check - caller verifies)
-    let conversation_token: [u8; 32] = fields.iter()
+    let conversation_token: [u8; 32] = fields
+        .iter()
         .find(|f| f.name == "tok")
         .and_then(|f| f.values.first())
         .and_then(|v| match v {
@@ -1593,58 +1646,66 @@ pub fn parse_clutch_offer_vsf_without_recipient_check(
 
     // Extract pubkeys from multi-value "pubkeys" field (kx, kp, kk, kp, kf, kn, kl, kh order)
     // Also support legacy individual fields for backwards compatibility
-    let (x25519_public, p384_public, secp256k1_public, p256_public,
-         frodo976_public, ntru701_public, mceliece_public, hqc256_public) =
-        if let Some(pk_field) = fields.iter().find(|f| f.name == "pubkeys") {
-            // New format: multi-value field
-            let mut x25519 = [0u8; 32];
-            let mut p384 = Vec::new();
-            let mut secp256k1 = Vec::new();
-            let mut p256 = Vec::new();
-            let mut frodo = Vec::new();
-            let mut ntru = Vec::new();
-            let mut mceliece = Vec::new();
-            let mut hqc = Vec::new();
-            let mut kp_index = 0;
-            for v in &pk_field.values {
-                match v {
-                    VsfType::kx(data) if data.len() == 32 => {
-                        x25519.copy_from_slice(data);
-                    }
-                    VsfType::kp(data) => {
-                        // P-384 (97B) comes before P-256 (65B) in order
-                        if kp_index == 0 {
-                            p384 = data.clone();
-                        } else {
-                            p256 = data.clone();
-                        }
-                        kp_index += 1;
-                    }
-                    VsfType::kk(data) => secp256k1 = data.clone(),
-                    VsfType::kf(data) => frodo = data.clone(),
-                    VsfType::kn(data) => ntru = data.clone(),
-                    VsfType::kl(data) => mceliece = data.clone(),
-                    VsfType::kh(data) => hqc = data.clone(),
-                    _ => {}
+    let (
+        x25519_public,
+        p384_public,
+        secp256k1_public,
+        p256_public,
+        frodo976_public,
+        ntru701_public,
+        mceliece_public,
+        hqc256_public,
+    ) = if let Some(pk_field) = fields.iter().find(|f| f.name == "pubkeys") {
+        // New format: multi-value field
+        let mut x25519 = [0u8; 32];
+        let mut p384 = Vec::new();
+        let mut secp256k1 = Vec::new();
+        let mut p256 = Vec::new();
+        let mut frodo = Vec::new();
+        let mut ntru = Vec::new();
+        let mut mceliece = Vec::new();
+        let mut hqc = Vec::new();
+        let mut kp_index = 0;
+        for v in &pk_field.values {
+            match v {
+                VsfType::kx(data) if data.len() == 32 => {
+                    x25519.copy_from_slice(data);
                 }
+                VsfType::kp(data) => {
+                    // P-384 (97B) comes before P-256 (65B) in order
+                    if kp_index == 0 {
+                        p384 = data.clone();
+                    } else {
+                        p256 = data.clone();
+                    }
+                    kp_index += 1;
+                }
+                VsfType::kk(data) => secp256k1 = data.clone(),
+                VsfType::kf(data) => frodo = data.clone(),
+                VsfType::kn(data) => ntru = data.clone(),
+                VsfType::kl(data) => mceliece = data.clone(),
+                VsfType::kh(data) => hqc = data.clone(),
+                _ => {}
             }
-            (x25519, p384, secp256k1, p256, frodo, ntru, mceliece, hqc)
-        } else {
-            // Legacy format: individual named fields
-            let legacy_fields: Vec<(String, VsfType)> = fields.iter()
-                .flat_map(|f| f.values.first().map(|v| (f.name.clone(), v.clone())))
-                .collect();
-            (
-                extract_kx(&legacy_fields, "x25519")?,
-                extract_kp(&legacy_fields, "p384")?,
-                extract_kk(&legacy_fields, "secp256k1")?,
-                extract_kp(&legacy_fields, "p256")?,
-                extract_kf(&legacy_fields, "frodo")?,
-                extract_kn(&legacy_fields, "ntru")?,
-                extract_kl(&legacy_fields, "mceliece")?,
-                extract_kh(&legacy_fields, "hqc")?,
-            )
-        };
+        }
+        (x25519, p384, secp256k1, p256, frodo, ntru, mceliece, hqc)
+    } else {
+        // Legacy format: individual named fields
+        let legacy_fields: Vec<(String, VsfType)> = fields
+            .iter()
+            .flat_map(|f| f.values.first().map(|v| (f.name.clone(), v.clone())))
+            .collect();
+        (
+            extract_kx(&legacy_fields, "x25519")?,
+            extract_kp(&legacy_fields, "p384")?,
+            extract_kk(&legacy_fields, "secp256k1")?,
+            extract_kp(&legacy_fields, "p256")?,
+            extract_kf(&legacy_fields, "frodo")?,
+            extract_kn(&legacy_fields, "ntru")?,
+            extract_kl(&legacy_fields, "mceliece")?,
+            extract_kh(&legacy_fields, "hqc")?,
+        )
+    };
 
     let payload = ClutchOfferPayload {
         x25519_public,
@@ -1689,8 +1750,8 @@ pub fn parse_clutch_kem_response_vsf_without_recipient_check(
 
     // Parse header for ceremony_id
     use vsf::file_format::VsfHeader;
-    let (header, header_end) = VsfHeader::decode(vsf_bytes)
-        .map_err(|e| format!("Failed to parse header: {}", e))?;
+    let (header, header_end) =
+        VsfHeader::decode(vsf_bytes).map_err(|e| format!("Failed to parse header: {}", e))?;
 
     let ceremony_id = extract_header_provenance(&header)?;
 
@@ -1708,20 +1769,24 @@ pub fn parse_clutch_kem_response_vsf_without_recipient_check(
     };
 
     if section_name != "clutch_kem_response" {
-        return Err(format!("Expected 'clutch_kem_response' section, got '{}'", section_name));
+        return Err(format!(
+            "Expected 'clutch_kem_response' section, got '{}'",
+            section_name
+        ));
     }
 
     // Parse fields with multi-value support
     use vsf::file_format::VsfField;
     let mut fields: Vec<VsfField> = Vec::new();
     while ptr < vsf_bytes.len() && vsf_bytes[ptr] != b']' {
-        let field = VsfField::parse(vsf_bytes, &mut ptr)
-            .map_err(|e| format!("Parse field: {}", e))?;
+        let field =
+            VsfField::parse(vsf_bytes, &mut ptr).map_err(|e| format!("Parse field: {}", e))?;
         fields.push(field);
     }
 
     // Extract conversation_token (NO recipient check - caller verifies)
-    let conversation_token: [u8; 32] = fields.iter()
+    let conversation_token: [u8; 32] = fields
+        .iter()
         .find(|f| f.name == "tok")
         .and_then(|f| f.values.first())
         .and_then(|v| match v {
@@ -1735,7 +1800,8 @@ pub fn parse_clutch_kem_response_vsf_without_recipient_check(
         .ok_or("Missing or invalid conversation_token")?;
 
     // Extract target HQC pub prefix for stale detection
-    let target_hqc_pub_prefix: [u8; 8] = fields.iter()
+    let target_hqc_pub_prefix: [u8; 8] = fields
+        .iter()
         .find(|f| f.name == "target_hqc")
         .and_then(|f| f.values.first())
         .and_then(|v| match v {
@@ -1769,7 +1835,8 @@ pub fn parse_clutch_kem_response_vsf_without_recipient_check(
             (frodo, ntru, mceliece, hqc)
         } else {
             // Legacy format: individual named fields
-            let legacy_fields: Vec<(String, VsfType)> = fields.iter()
+            let legacy_fields: Vec<(String, VsfType)> = fields
+                .iter()
                 .flat_map(|f| f.values.first().map(|v| (f.name.clone(), v.clone())))
                 .collect();
             (
@@ -1811,7 +1878,8 @@ pub fn parse_clutch_kem_response_vsf_without_recipient_check(
             (x25519, p384, secp256k1, p256)
         } else {
             // Legacy format: individual named fields
-            let x25519 = fields.iter()
+            let x25519 = fields
+                .iter()
                 .find(|f| f.name == "x25519_eph")
                 .and_then(|f| f.values.first())
                 .and_then(|v| match v {
@@ -1823,20 +1891,32 @@ pub fn parse_clutch_kem_response_vsf_without_recipient_check(
                     _ => None,
                 })
                 .unwrap_or([0u8; 32]);
-            let p384 = fields.iter()
+            let p384 = fields
+                .iter()
                 .find(|f| f.name == "p384_eph")
                 .and_then(|f| f.values.first())
-                .and_then(|v| match v { VsfType::kp(data) => Some(data.clone()), _ => None })
+                .and_then(|v| match v {
+                    VsfType::kp(data) => Some(data.clone()),
+                    _ => None,
+                })
                 .unwrap_or_default();
-            let secp256k1 = fields.iter()
+            let secp256k1 = fields
+                .iter()
                 .find(|f| f.name == "secp256k1_eph")
                 .and_then(|f| f.values.first())
-                .and_then(|v| match v { VsfType::kk(data) => Some(data.clone()), _ => None })
+                .and_then(|v| match v {
+                    VsfType::kk(data) => Some(data.clone()),
+                    _ => None,
+                })
                 .unwrap_or_default();
-            let p256 = fields.iter()
+            let p256 = fields
+                .iter()
                 .find(|f| f.name == "p256_eph")
                 .and_then(|f| f.values.first())
-                .and_then(|v| match v { VsfType::kp(data) => Some(data.clone()), _ => None })
+                .and_then(|v| match v {
+                    VsfType::kp(data) => Some(data.clone()),
+                    _ => None,
+                })
                 .unwrap_or_default();
             (x25519, p384, secp256k1, p256)
         };
@@ -1957,7 +2037,10 @@ pub fn build_clutch_complete_vsf(
             "clutch_complete",
             vec![
                 ("tok".to_string(), VsfType::hg(conversation_token.to_vec())),
-                ("eggs_proof".to_string(), VsfType::hg(payload.eggs_proof.to_vec())),
+                (
+                    "eggs_proof".to_string(),
+                    VsfType::hg(payload.eggs_proof.to_vec()),
+                ),
             ],
         )
         .build()
@@ -1989,8 +2072,8 @@ pub fn parse_clutch_complete_vsf(
 
     // Parse header for ceremony_id
     use vsf::file_format::VsfHeader;
-    let (header, header_end) = VsfHeader::decode(vsf_bytes)
-        .map_err(|e| format!("Failed to parse header: {}", e))?;
+    let (header, header_end) =
+        VsfHeader::decode(vsf_bytes).map_err(|e| format!("Failed to parse header: {}", e))?;
 
     let ceremony_id = extract_header_provenance(&header)?;
 
@@ -2008,7 +2091,10 @@ pub fn parse_clutch_complete_vsf(
     };
 
     if section_name != "clutch_complete" {
-        return Err(format!("Expected 'clutch_complete' section, got '{}'", section_name));
+        return Err(format!(
+            "Expected 'clutch_complete' section, got '{}'",
+            section_name
+        ));
     }
 
     // Parse fields
@@ -2024,8 +2110,8 @@ pub fn parse_clutch_complete_vsf(
         };
         if ptr < vsf_bytes.len() && vsf_bytes[ptr] == b':' {
             ptr += 1;
-            let value = vsf::parse(vsf_bytes, &mut ptr)
-                .map_err(|e| format!("Parse field value: {}", e))?;
+            let value =
+                vsf::parse(vsf_bytes, &mut ptr).map_err(|e| format!("Parse field value: {}", e))?;
             fields.push((field_name, value));
         }
         if ptr >= vsf_bytes.len() || vsf_bytes[ptr] != b')' {
@@ -2049,7 +2135,11 @@ pub fn parse_clutch_complete_vsf(
 
     #[cfg(feature = "development")]
     {
-        let id_hex: String = ceremony_id.iter().take(8).map(|b| format!("{:02x}", b)).collect();
+        let id_hex: String = ceremony_id
+            .iter()
+            .take(8)
+            .map(|b| format!("{:02x}", b))
+            .collect();
         crate::log_info(&format!(
             "CLUTCH: Received complete proof ({} bytes) ceremony_id={}... proof={}...",
             vsf_bytes.len(),
@@ -2078,8 +2168,8 @@ pub fn parse_clutch_complete_vsf_without_recipient_check(
 
     // Parse header for ceremony_id
     use vsf::file_format::VsfHeader;
-    let (header, header_end) = VsfHeader::decode(vsf_bytes)
-        .map_err(|e| format!("Failed to parse header: {}", e))?;
+    let (header, header_end) =
+        VsfHeader::decode(vsf_bytes).map_err(|e| format!("Failed to parse header: {}", e))?;
 
     let ceremony_id = extract_header_provenance(&header)?;
 
@@ -2097,7 +2187,10 @@ pub fn parse_clutch_complete_vsf_without_recipient_check(
     };
 
     if section_name != "clutch_complete" {
-        return Err(format!("Expected 'clutch_complete' section, got '{}'", section_name));
+        return Err(format!(
+            "Expected 'clutch_complete' section, got '{}'",
+            section_name
+        ));
     }
 
     // Parse fields
@@ -2113,8 +2206,8 @@ pub fn parse_clutch_complete_vsf_without_recipient_check(
         };
         if ptr < vsf_bytes.len() && vsf_bytes[ptr] == b':' {
             ptr += 1;
-            let value = vsf::parse(vsf_bytes, &mut ptr)
-                .map_err(|e| format!("Parse field value: {}", e))?;
+            let value =
+                vsf::parse(vsf_bytes, &mut ptr).map_err(|e| format!("Parse field value: {}", e))?;
             fields.push((field_name, value));
         }
         if ptr >= vsf_bytes.len() || vsf_bytes[ptr] != b')' {
