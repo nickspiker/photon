@@ -283,6 +283,19 @@ impl PhotonApp {
                                     self.start_handle_search(&handle);
                                     self.window_dirty = true;
                                 }
+                                AppState::Conversation => {
+                                    // "Send" button clicked - send message
+                                    let message: String =
+                                        self.current_text_state.chars.iter().collect();
+                                    if !message.is_empty() {
+                                        debug_println!("Send button clicked, sending: {}", message);
+                                        if self.send_message_to_selected_contact(&message) {
+                                            // Clear textbox after successful send
+                                            self.reset_textbox();
+                                            self.window_dirty = true;
+                                        }
+                                    }
+                                }
                                 _ => {}
                             }
                             return;

@@ -935,34 +935,6 @@ impl PhotonApp {
                     }
                 }
 
-                // Debug: overlay hit test map visualization with random colours
-                if self.debug_hit_test {
-                    for y in 0..self.height as usize {
-                        for x in 0..self.width as usize {
-                            let hit_idx = y * self.width as usize + x;
-                            let element_id = self.hit_test_map[hit_idx];
-
-                            // Show all areas including HIT_NONE (0)
-                            if (element_id as usize) < self.debug_hit_colours.len() {
-                                let (r, g, b) = self.debug_hit_colours[element_id as usize];
-                                pixels[hit_idx] = pack_argb(r, g, b, 255);
-                            }
-                        }
-                    }
-                }
-
-                // Debug: overlay textbox mask visualization (grayscale alpha)
-                if self.show_textbox_mask {
-                    for y in 0..self.height as usize {
-                        for x in 0..self.width as usize {
-                            let idx = y * self.width as usize + x;
-                            let alpha = self.textbox_mask[idx];
-                            // Show mask as white with varying alpha (0=black, 255=white)
-                            pixels[idx] = pack_argb(alpha, alpha, alpha, 255);
-                        }
-                    }
-                }
-
                 // Frame counter continues incrementing (not reset)
                 self.prev_hovered_button = HoveredButton::None;
             } else {
@@ -1814,6 +1786,35 @@ impl PhotonApp {
                         // Search button is now drawn inside textbox (above), no separate button needed
                     }
                     _ => {}
+                }
+            }
+
+            // Debug: overlay hit test map visualization with random colours
+            // (drawn last so it covers all UI elements including differentially rendered buttons)
+            if self.debug_hit_test {
+                for y in 0..self.height as usize {
+                    for x in 0..self.width as usize {
+                        let hit_idx = y * self.width as usize + x;
+                        let element_id = self.hit_test_map[hit_idx];
+
+                        // Show all areas including HIT_NONE (0)
+                        if (element_id as usize) < self.debug_hit_colours.len() {
+                            let (r, g, b) = self.debug_hit_colours[element_id as usize];
+                            pixels[hit_idx] = pack_argb(r, g, b, 255);
+                        }
+                    }
+                }
+            }
+
+            // Debug: overlay textbox mask visualization (grayscale alpha)
+            if self.show_textbox_mask {
+                for y in 0..self.height as usize {
+                    for x in 0..self.width as usize {
+                        let idx = y * self.width as usize + x;
+                        let alpha = self.textbox_mask[idx];
+                        // Show mask as white with varying alpha (0=black, 255=white)
+                        pixels[idx] = pack_argb(alpha, alpha, alpha, 255);
+                    }
                 }
             }
 
