@@ -143,6 +143,20 @@ impl PhotonApp {
         let textbox_half = (textbox_width / 2) as f32;
         let text_half = (total_text_width / 2) as f32;
 
+        // Button present on Ready/Searching/Conversation, NOT on Launch (attest screen)
+        let has_button = matches!(
+            self.app_state,
+            AppState::Ready | AppState::Searching | AppState::Conversation
+        );
+        let right_margin = if has_button {
+            let box_height = self.textbox_height();
+            let button_size = box_height * 7 / 8;
+            let inset = box_height / 16;
+            margin + button_size + inset * 2
+        } else {
+            margin
+        };
+
         let blinkey_pos_in_centered_text = blinkey_pixel_offset as f32 - text_half;
         let blinkey_pos_in_view =
             blinkey_pos_in_centered_text + self.current_text_state.scroll_offset;
@@ -151,9 +165,9 @@ impl PhotonApp {
             self.current_text_state.scroll_offset =
                 -textbox_half + margin as f32 - blinkey_pos_in_centered_text;
             return true;
-        } else if blinkey_pos_in_view > textbox_half - margin as f32 {
+        } else if blinkey_pos_in_view > textbox_half - right_margin as f32 {
             self.current_text_state.scroll_offset =
-                textbox_half - margin as f32 - blinkey_pos_in_centered_text;
+                textbox_half - right_margin as f32 - blinkey_pos_in_centered_text;
             return true;
         }
         false

@@ -1203,11 +1203,11 @@ impl PhotonApp {
                     let textbox_bottom = textbox_y + box_height / 2;
                     let button_center_y = textbox_bottom - inset - send_button_size / 2;
 
-                    // Differential: button appearing, need to knock out mask
+                    // Differential: button appearing (mask already set during window_dirty)
                     Self::draw_button(
                         pixels,
                         &mut self.hit_test_map,
-                        Some(&mut self.textbox_mask),
+                        None,
                         self.width as usize,
                         self.height as usize,
                         button_center_x,
@@ -1254,11 +1254,11 @@ impl PhotonApp {
                         theme::BUTTON_BLUE
                     };
 
-                    // Differential: button appearing, need to knock out mask
+                    // Differential: button appearing (mask already set during window_dirty)
                     Self::draw_button(
                         pixels,
                         &mut self.hit_test_map,
-                        Some(&mut self.textbox_mask),
+                        None,
                         self.width as usize,
                         self.height as usize,
                         button_center_x,
