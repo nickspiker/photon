@@ -142,7 +142,7 @@ async fn load_bootstrap_peers_inner(
         .map_err(|e| format!("Failed to read challenge: {}", e))?;
 
     #[cfg(feature = "development")]
-    crate::log_info(&crate::network::inspect::vsf_inspect(
+    crate::log(&crate::network::inspect::vsf_inspect(
         &challenge_bytes,
         "FGTW",
         "RX",
@@ -184,7 +184,7 @@ async fn load_bootstrap_peers_inner(
         .map_err(|e| format!("Failed to read response: {}", e))?;
 
     #[cfg(feature = "development")]
-    crate::log_info(&crate::network::inspect::vsf_inspect(
+    crate::log(&crate::network::inspect::vsf_inspect(
         &response_bytes,
         "FGTW",
         "RX",
@@ -202,7 +202,7 @@ async fn load_bootstrap_peers_inner(
     // Parse peer list
     let peers = parse_peer_list(&response_bytes, device_key)?;
 
-    crate::log_info(&format!("FGTW: Received {} peer(s)", peers.len()));
+    crate::log(&format!("FGTW: Received {} peer(s)", peers.len()));
 
     Ok(peers)
 }
@@ -385,10 +385,10 @@ fn build_announce_message(
     use vsf::verification::sign_file;
     use vsf::{VsfBuilder, VsfType};
 
-    // 1. Build encrypted payload: hb(challenge_hash) + hb(handle_proof) + u(port) + ke(avatar_pub)?
+    // 1. Build encrypted payload: hb(challenge_hash) + hP(handle_proof) + u(port) + ke(avatar_pub)?
     let mut plaintext = Vec::new();
     plaintext.extend(VsfType::hb(challenge_hash.to_vec()).flatten());
-    plaintext.extend(VsfType::hb(handle_proof.to_vec()).flatten());
+    plaintext.extend(VsfType::hP(handle_proof.to_vec()).flatten());
     plaintext.extend(VsfType::u(port as usize, false).flatten());
 
     // Optional: include avatar public key for avatar authentication
@@ -413,7 +413,7 @@ fn build_announce_message(
     let vsf_bytes = sign_file(unsigned_bytes, device_key.secret.as_bytes())?;
 
     #[cfg(feature = "development")]
-    crate::log_info(&crate::network::inspect::vsf_inspect(
+    crate::log(&crate::network::inspect::vsf_inspect(
         &vsf_bytes,
         "FGTW",
         "TX",
@@ -465,7 +465,7 @@ fn parse_peer_list(bytes: &[u8], device_key: &Keypair) -> Result<Vec<PeerRecord>
             "peers",
         );
         if !msg.is_empty() {
-            crate::log_info(&msg);
+            crate::log(&msg);
         }
     }
 
@@ -495,9 +495,9 @@ fn parse_peer_from_field(field: &vsf::VsfField) -> Result<PeerRecord, String> {
         ));
     }
 
-    // Parse handle_proof (hb{32})
+    // Parse handle_proof (hP{32})
     let handle_proof = match &field.values[0] {
-        vsf::VsfType::hb(h) if h.len() == 32 => {
+        vsf::VsfType::hP(h) if h.len() == 32 => {
             let mut arr = [0u8; 32];
             arr.copy_from_slice(h);
             arr

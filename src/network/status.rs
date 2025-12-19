@@ -291,7 +291,7 @@ impl StatusChecker {
         let local_addr = socket
             .local_addr()
             .map_err(|e| format!("Failed to get local addr: {}", e))?;
-        crate::log_info(&format!(
+        crate::log(&format!(
             "Status: Using socket on port {}",
             local_addr.port()
         ));
@@ -304,40 +304,52 @@ impl StatusChecker {
         // Use connect-to-external trick to find actual LAN IP (not 0.0.0.0)
         let local_ip = udp::get_local_ip().unwrap_or(Ipv4Addr::new(0, 0, 0, 0));
 
-        use thread_priority::{ThreadBuilderExt, ThreadPriority};
-        thread::Builder::new()
-            .name("network-status".to_string())
-            .spawn_with_priority(ThreadPriority::Max, move |_| {
-                crate::log_info("Status: Background thread started (high priority)");
-                let rt = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("Failed to create tokio runtime for StatusChecker");
+        let thread_body = move || {
+            crate::log("Status: Background thread started");
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("Failed to create tokio runtime for StatusChecker");
 
-                rt.block_on(async move {
-                    run_checker(
-                        socket,
-                        keypair,
-                        our_pubkey,
-                        local_ip,
-                        ping_rx,
-                        message_rx,
-                        ack_rx,
-                        pt_rx,
-                        offer_rx,
-                        kem_response_rx,
-                        complete_proof_rx,
-                        lan_broadcast_rx,
-                        clear_pt_rx,
-                        status_tx,
-                        contacts,
-                        sync_records,
-                        Some(event_proxy),
-                    )
-                    .await;
-                });
-            })
-            .expect("Failed to spawn network thread");
+            rt.block_on(async move {
+                run_checker(
+                    socket,
+                    keypair,
+                    our_pubkey,
+                    local_ip,
+                    ping_rx,
+                    message_rx,
+                    ack_rx,
+                    pt_rx,
+                    offer_rx,
+                    kem_response_rx,
+                    complete_proof_rx,
+                    lan_broadcast_rx,
+                    clear_pt_rx,
+                    status_tx,
+                    contacts,
+                    sync_records,
+                    Some(event_proxy),
+                )
+                .await;
+            });
+        };
+
+        #[cfg(not(target_os = "redox"))]
+        {
+            use thread_priority::{ThreadBuilderExt, ThreadPriority};
+            thread::Builder::new()
+                .name("network-status".to_string())
+                .spawn_with_priority(ThreadPriority::Max, move |_| thread_body())
+                .expect("Failed to spawn network thread");
+        }
+        #[cfg(target_os = "redox")]
+        {
+            thread::Builder::new()
+                .name("network-status".to_string())
+                .spawn(thread_body)
+                .expect("Failed to spawn network thread");
+        }
 
         Ok(Self {
             ping_sender: ping_tx,
@@ -378,7 +390,7 @@ impl StatusChecker {
         let local_addr = socket
             .local_addr()
             .map_err(|e| format!("Failed to get local addr: {}", e))?;
-        crate::log_info(&format!(
+        crate::log(&format!(
             "Status: Using socket on port {}",
             local_addr.port()
         ));
@@ -390,40 +402,52 @@ impl StatusChecker {
         // Get local IP for TCP listener (and LAN discovery)
         let local_ip = udp::get_local_ip().unwrap_or(Ipv4Addr::new(0, 0, 0, 0));
 
-        use thread_priority::{ThreadBuilderExt, ThreadPriority};
-        thread::Builder::new()
-            .name("network-status".to_string())
-            .spawn_with_priority(ThreadPriority::Max, move |_| {
-                crate::log_info("Status: Background thread started (high priority)");
-                let rt = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("Failed to create tokio runtime for StatusChecker");
+        let thread_body = move || {
+            crate::log("Status: Background thread started");
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("Failed to create tokio runtime for StatusChecker");
 
-                rt.block_on(async move {
-                    run_checker(
-                        socket,
-                        keypair,
-                        our_pubkey,
-                        local_ip,
-                        ping_rx,
-                        message_rx,
-                        ack_rx,
-                        pt_rx,
-                        offer_rx,
-                        kem_response_rx,
-                        complete_proof_rx,
-                        lan_broadcast_rx,
-                        clear_pt_rx,
-                        status_tx,
-                        contacts,
-                        sync_records,
-                        None,
-                    )
-                    .await;
-                });
-            })
-            .expect("Failed to spawn network thread");
+            rt.block_on(async move {
+                run_checker(
+                    socket,
+                    keypair,
+                    our_pubkey,
+                    local_ip,
+                    ping_rx,
+                    message_rx,
+                    ack_rx,
+                    pt_rx,
+                    offer_rx,
+                    kem_response_rx,
+                    complete_proof_rx,
+                    lan_broadcast_rx,
+                    clear_pt_rx,
+                    status_tx,
+                    contacts,
+                    sync_records,
+                    None,
+                )
+                .await;
+            });
+        };
+
+        #[cfg(not(target_os = "redox"))]
+        {
+            use thread_priority::{ThreadBuilderExt, ThreadPriority};
+            thread::Builder::new()
+                .name("network-status".to_string())
+                .spawn_with_priority(ThreadPriority::Max, move |_| thread_body())
+                .expect("Failed to spawn network thread");
+        }
+        #[cfg(target_os = "redox")]
+        {
+            thread::Builder::new()
+                .name("network-status".to_string())
+                .spawn(thread_body)
+                .expect("Failed to spawn network thread");
+        }
 
         Ok(Self {
             ping_sender: ping_tx,
@@ -527,7 +551,7 @@ fn send_status_update(
     #[cfg(not(target_os = "android"))]
     if let Some(proxy) = event_proxy {
         if let Err(e) = proxy.send_event(PhotonEvent::NetworkUpdate) {
-            crate::log_error(&format!("Status: Failed to send wake event: {:?}", e));
+            crate::log(&format!("Status: Failed to send wake event: {:?}", e));
         }
     }
 }
@@ -558,7 +582,7 @@ async fn run_checker(
     let cloned = match std_socket.try_clone() {
         Ok(s) => s,
         Err(e) => {
-            crate::log_error(&format!("Status: Failed to clone socket: {}", e));
+            crate::log(&format!("Status: Failed to clone socket: {}", e));
             return;
         }
     };
@@ -566,7 +590,7 @@ async fn run_checker(
     let socket = match TokioUdpSocket::from_std(cloned) {
         Ok(s) => Arc::new(s),
         Err(e) => {
-            crate::log_error(&format!("Status: Failed to convert to tokio socket: {}", e));
+            crate::log(&format!("Status: Failed to convert to tokio socket: {}", e));
             return;
         }
     };
@@ -587,7 +611,7 @@ async fn run_checker(
         );
         match tokio::net::TcpListener::bind(tcp_addr_v6).await {
             Ok(listener) => {
-                crate::log_info(&format!(
+                crate::log(&format!(
                     "Status: TCP listening on [::]:{}  (dual-stack)",
                     udp_port
                 ));
@@ -598,14 +622,14 @@ async fn run_checker(
                 let tcp_addr_v4 = SocketAddr::new(std::net::IpAddr::V4(local_ip), udp_port);
                 match tokio::net::TcpListener::bind(tcp_addr_v4).await {
                     Ok(listener) => {
-                        crate::log_info(&format!(
+                        crate::log(&format!(
                             "Status: TCP listening on {} (IPv4 only)",
                             tcp_addr_v4
                         ));
                         Some(listener)
                     }
                     Err(e) => {
-                        crate::log_error(&format!("Status: Failed to bind TCP: {}", e));
+                        crate::log(&format!("Status: Failed to bind TCP: {}", e));
                         None
                     }
                 }
@@ -650,7 +674,7 @@ async fn run_checker(
             let socket = match std::net::UdpSocket::bind(format!("0.0.0.0:{}", multicast_port)) {
                 Ok(s) => s,
                 Err(e) => {
-                    crate::log_info(&format!("LAN: Could not bind multicast socket: {}", e));
+                    crate::log(&format!("LAN: Could not bind multicast socket: {}", e));
                     return;
                 }
             };
@@ -660,13 +684,13 @@ async fn run_checker(
 
             // Join multicast group
             if let Err(e) = socket.join_multicast_v4(&multicast_addr, &Ipv4Addr::UNSPECIFIED) {
-                crate::log_error(&format!("LAN: Failed to join multicast group: {}", e));
+                crate::log(&format!("LAN: Failed to join multicast group: {}", e));
                 return;
             }
 
             // Set non-blocking for async
             if let Err(e) = socket.set_nonblocking(true) {
-                crate::log_error(&format!("LAN: Failed to set non-blocking: {}", e));
+                crate::log(&format!("LAN: Failed to set non-blocking: {}", e));
                 return;
             }
 
@@ -674,12 +698,12 @@ async fn run_checker(
             let socket = match tokio::net::UdpSocket::from_std(socket) {
                 Ok(s) => s,
                 Err(e) => {
-                    crate::log_error(&format!("LAN: Failed to convert socket: {}", e));
+                    crate::log(&format!("LAN: Failed to convert socket: {}", e));
                     return;
                 }
             };
 
-            crate::log_info(&format!(
+            crate::log(&format!(
                 "LAN: Multicast listener on {}:{}",
                 multicast_addr, multicast_port
             ));
@@ -688,14 +712,14 @@ async fn run_checker(
             loop {
                 match socket.recv_from(&mut buf).await {
                     Ok((len, src_addr)) => {
-                        crate::log_info(&format!(
+                        crate::log(&format!(
                             "LAN: Multicast RX {} bytes from {}",
                             len, src_addr
                         ));
                         let packet = &buf[..len];
                         // Only process pt_disc packets (LAN discovery)
                         if let Some(lan_update) = parse_lan_discovery(packet, src_addr) {
-                            crate::log_info(&format!(
+                            crate::log(&format!(
                                 "LAN: Discovered peer via multicast: {}",
                                 src_addr
                             ));
@@ -707,7 +731,7 @@ async fn run_checker(
                         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                     }
                     Err(e) => {
-                        crate::log_error(&format!("LAN: Multicast recv error: {}", e));
+                        crate::log(&format!("LAN: Multicast recv error: {}", e));
                         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                     }
                 }
@@ -733,7 +757,7 @@ async fn run_checker(
 
                 let fd = unsafe { libc::socket(libc::AF_INET6, libc::SOCK_DGRAM, 0) };
                 if fd < 0 {
-                    crate::log_info("LAN: Could not create IPv6 socket");
+                    crate::log("LAN: Could not create IPv6 socket");
                     return;
                 }
 
@@ -749,7 +773,7 @@ async fn run_checker(
                     )
                 };
                 if ret < 0 {
-                    crate::log_info("LAN: Could not set IPV6_V6ONLY");
+                    crate::log("LAN: Could not set IPV6_V6ONLY");
                     unsafe { libc::close(fd) };
                     return;
                 }
@@ -767,6 +791,16 @@ async fn run_checker(
                 };
 
                 // Bind to [::]:port
+                #[cfg(target_os = "macos")]
+                let addr = libc::sockaddr_in6 {
+                    sin6_len: std::mem::size_of::<libc::sockaddr_in6>() as u8,
+                    sin6_family: libc::AF_INET6 as u8,
+                    sin6_port: multicast_port.to_be(),
+                    sin6_flowinfo: 0,
+                    sin6_addr: libc::in6_addr { s6_addr: [0u8; 16] },
+                    sin6_scope_id: 0,
+                };
+                #[cfg(not(target_os = "macos"))]
                 let addr = libc::sockaddr_in6 {
                     sin6_family: libc::AF_INET6 as u16,
                     sin6_port: multicast_port.to_be(),
@@ -783,7 +817,7 @@ async fn run_checker(
                 };
                 if ret < 0 {
                     let err = std::io::Error::last_os_error();
-                    crate::log_info(&format!(
+                    crate::log(&format!(
                         "LAN: Could not bind IPv6 multicast socket: {}",
                         err
                     ));
@@ -798,31 +832,31 @@ async fn run_checker(
             let socket = match std::net::UdpSocket::bind(format!("[::]:{}", multicast_port)) {
                 Ok(s) => s,
                 Err(e) => {
-                    crate::log_info(&format!("LAN: Could not bind IPv6 multicast socket: {}", e));
+                    crate::log(&format!("LAN: Could not bind IPv6 multicast socket: {}", e));
                     return;
                 }
             };
 
             // Join multicast group (interface 0 = default)
             if let Err(e) = socket.join_multicast_v6(&multicast_addr, 0) {
-                crate::log_error(&format!("LAN: Failed to join IPv6 multicast group: {}", e));
+                crate::log(&format!("LAN: Failed to join IPv6 multicast group: {}", e));
                 return;
             }
 
             if let Err(e) = socket.set_nonblocking(true) {
-                crate::log_error(&format!("LAN: Failed to set non-blocking: {}", e));
+                crate::log(&format!("LAN: Failed to set non-blocking: {}", e));
                 return;
             }
 
             let socket = match tokio::net::UdpSocket::from_std(socket) {
                 Ok(s) => s,
                 Err(e) => {
-                    crate::log_error(&format!("LAN: Failed to convert IPv6 socket: {}", e));
+                    crate::log(&format!("LAN: Failed to convert IPv6 socket: {}", e));
                     return;
                 }
             };
 
-            crate::log_info(&format!(
+            crate::log(&format!(
                 "LAN: IPv6 multicast listener on [{}]:{}",
                 multicast_addr, multicast_port
             ));
@@ -831,13 +865,13 @@ async fn run_checker(
             loop {
                 match socket.recv_from(&mut buf).await {
                     Ok((len, src_addr)) => {
-                        crate::log_info(&format!(
+                        crate::log(&format!(
                             "LAN: IPv6 Multicast RX {} bytes from {}",
                             len, src_addr
                         ));
                         let packet = &buf[..len];
                         if let Some(lan_update) = parse_lan_discovery(packet, src_addr) {
-                            crate::log_info(&format!(
+                            crate::log(&format!(
                                 "LAN: Discovered peer via IPv6 multicast: {}",
                                 src_addr
                             ));
@@ -848,7 +882,7 @@ async fn run_checker(
                         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                     }
                     Err(e) => {
-                        crate::log_error(&format!("LAN: IPv6 multicast recv error: {}", e));
+                        crate::log(&format!("LAN: IPv6 multicast recv error: {}", e));
                         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                     }
                 }
@@ -862,12 +896,12 @@ async fn run_checker(
         let event_proxy_tcp = event_proxy.clone();
         let contacts_tcp = contacts.clone();
         tokio::spawn(async move {
-            crate::log_info("Status: TCP receiver task started");
+            crate::log("Status: TCP receiver task started");
             loop {
                 // Async accept - sleeps until connection arrives (no polling)
                 match listener.accept().await {
                     Ok((stream, src_addr)) => {
-                        crate::log_info(&format!("Status: TCP connection from {}", src_addr));
+                        crate::log(&format!("Status: TCP connection from {}", src_addr));
                         // Convert to std TcpStream for TcpTransport
                         let std_stream = stream.into_std();
                         match std_stream {
@@ -875,7 +909,7 @@ async fn run_checker(
                                 // Read the payload
                                 match TcpTransport::recv_payload(&mut std_stream) {
                                     Ok(data) => {
-                                        crate::log_info(&format!(
+                                        crate::log(&format!(
                                             "Status: Received {} bytes via TCP from {}",
                                             data.len(),
                                             src_addr
@@ -886,7 +920,7 @@ async fn run_checker(
                                         {
                                             if let Ok(inspection) = vsf::inspect::inspect_vsf(&data)
                                             {
-                                                crate::log_info(&format!(
+                                                crate::log(&format!(
                                                     "Status: Received TCP VSF:\n{}",
                                                     inspection
                                                 ));
@@ -921,14 +955,14 @@ async fn run_checker(
                                             {
                                                 // SECURITY: Only accept from known contacts
                                                 if !is_known_sender(&sender_pubkey) {
-                                                    crate::log_error(&format!(
+                                                    crate::log(&format!(
                                                         "TCP: ClutchOffer REJECTED from {} - sender not in contacts (pubkey: {})",
                                                         src_addr,
                                                         hex::encode(&sender_pubkey[..8])
                                                     ));
                                                     continue;
                                                 }
-                                                crate::log_info("Status: Received ClutchOffer via TCP (VSF verified)");
+                                                crate::log("Status: Received ClutchOffer via TCP (VSF verified)");
                                                 send_status_update(
                                                     &status_tx_tcp,
                                                     StatusUpdate::ClutchOfferReceived {
@@ -947,14 +981,14 @@ async fn run_checker(
                                             {
                                                 // SECURITY: Only accept from known contacts
                                                 if !is_known_sender(&sender_pubkey) {
-                                                    crate::log_error(&format!(
+                                                    crate::log(&format!(
                                                         "TCP: ClutchKemResponse REJECTED from {} - sender not in contacts (pubkey: {})",
                                                         src_addr,
                                                         hex::encode(&sender_pubkey[..8])
                                                     ));
                                                     continue;
                                                 }
-                                                crate::log_info("Status: Received ClutchKemResponse via TCP (VSF verified)");
+                                                crate::log("Status: Received ClutchKemResponse via TCP (VSF verified)");
                                                 send_status_update(
                                                     &status_tx_tcp,
                                                     StatusUpdate::ClutchKemResponseReceived {
@@ -973,14 +1007,14 @@ async fn run_checker(
                                             {
                                                 // SECURITY: Only accept from known contacts
                                                 if !is_known_sender(&sender_pubkey) {
-                                                    crate::log_error(&format!(
+                                                    crate::log(&format!(
                                                         "TCP: ClutchComplete REJECTED from {} - sender not in contacts (pubkey: {})",
                                                         src_addr,
                                                         hex::encode(&sender_pubkey[..8])
                                                     ));
                                                     continue;
                                                 }
-                                                crate::log_info("Status: Received ClutchComplete via TCP (VSF verified)");
+                                                crate::log("Status: Received ClutchComplete via TCP (VSF verified)");
                                                 send_status_update(
                                                     &status_tx_tcp,
                                                     StatusUpdate::ClutchCompleteReceived {
@@ -994,10 +1028,10 @@ async fn run_checker(
                                                 );
                                             }
                                             else {
-                                                crate::log_error("Status: Failed to parse TCP VSF as CLUTCH message");
+                                                crate::log("Status: Failed to parse TCP VSF as CLUTCH message");
                                             }
                                         } else {
-                                            crate::log_error(&format!(
+                                            crate::log(&format!(
                                                 "Status: TCP payload is not VSF format (len={}, magic={:02x?})",
                                                 data.len(),
                                                 if data.len() >= 4 { &data[0..4] } else { &data[..] }
@@ -1005,12 +1039,12 @@ async fn run_checker(
                                         }
                                     }
                                     Err(e) => {
-                                        crate::log_error(&format!("Status: TCP recv error: {}", e));
+                                        crate::log(&format!("Status: TCP recv error: {}", e));
                                     }
                                 }
                             }
                             Err(e) => {
-                                crate::log_error(&format!(
+                                crate::log(&format!(
                                     "Status: Failed to convert TCP stream: {}",
                                     e
                                 ));
@@ -1018,7 +1052,7 @@ async fn run_checker(
                         }
                     }
                     Err(e) => {
-                        crate::log_error(&format!("Status: TCP accept error: {}", e));
+                        crate::log(&format!("Status: TCP accept error: {}", e));
                     }
                 }
             }
@@ -1027,7 +1061,7 @@ async fn run_checker(
 
     // Spawn UDP receiver task
     tokio::spawn(async move {
-        crate::log_info("Status: Receiver task started, waiting for UDP packets...");
+        crate::log("Status: Receiver task started, waiting for UDP packets...");
         let mut buf = [0u8; 2048];
         loop {
             match socket_recv.recv_from(&mut buf).await {
@@ -1078,7 +1112,7 @@ async fn run_checker(
                                         } else {
                                             format!("{:.0} kbps", throughput_kbps)
                                         };
-                                        crate::log_info(&format!(
+                                        crate::log(&format!(
                                             "PT: ← {} OK | {} | {:.1}s | {} pkts | {:.0}% util ({} dups)",
                                             src_addr,
                                             throughput_str,
@@ -1088,7 +1122,7 @@ async fn run_checker(
                                             duplicates,
                                         ));
                                     } else {
-                                        crate::log_info(&format!(
+                                        crate::log(&format!(
                                             "PT: ← {} OK | {} bytes",
                                             src_addr,
                                             data.len()
@@ -1097,13 +1131,13 @@ async fn run_checker(
 
                                     // Inspect completed PT data with VSF inspector
                                     if let Ok(inspection) = vsf::inspect::inspect_vsf(&data) {
-                                        crate::log_info(&format!(
+                                        crate::log(&format!(
                                             "PT: Received VSF ({} bytes):\n{}",
                                             data.len(),
                                             inspection
                                         ));
                                     } else {
-                                        crate::log_error(&format!(
+                                        crate::log(&format!(
                                             "PT: Received {} bytes - NOT valid VSF",
                                             data.len()
                                         ));
@@ -1134,13 +1168,13 @@ async fn run_checker(
                                     {
                                         // Defense-in-depth: verify sender again
                                         if !is_known_sender_pt(&sender_pubkey) {
-                                            crate::log_error(&format!(
+                                            crate::log(&format!(
                                                 "PT: ClutchOffer REJECTED (defense-in-depth) - pubkey: {}",
                                                 hex::encode(&sender_pubkey[..8])
                                             ));
                                             continue;
                                         }
-                                        crate::log_info("PT: Parsed as ClutchOffer (VSF verified)");
+                                        crate::log("PT: Parsed as ClutchOffer (VSF verified)");
                                         send_status_update(
                                             &status_tx_recv,
                                             StatusUpdate::ClutchOfferReceived {
@@ -1164,13 +1198,13 @@ async fn run_checker(
                                     {
                                         // Defense-in-depth: verify sender again
                                         if !is_known_sender_pt(&sender_pubkey) {
-                                            crate::log_error(&format!(
+                                            crate::log(&format!(
                                                 "PT: ClutchKemResponse REJECTED (defense-in-depth) - pubkey: {}",
                                                 hex::encode(&sender_pubkey[..8])
                                             ));
                                             continue;
                                         }
-                                        crate::log_info(
+                                        crate::log(
                                             "PT: Parsed as ClutchKemResponse (VSF verified)",
                                         );
                                         send_status_update(
@@ -1196,13 +1230,13 @@ async fn run_checker(
                                     {
                                         // Defense-in-depth: verify sender again
                                         if !is_known_sender_pt(&sender_pubkey) {
-                                            crate::log_error(&format!(
+                                            crate::log(&format!(
                                                 "PT: ClutchComplete REJECTED (defense-in-depth) - pubkey: {}",
                                                 hex::encode(&sender_pubkey[..8])
                                             ));
                                             continue;
                                         }
-                                        crate::log_info(
+                                        crate::log(
                                             "PT: Parsed as ClutchComplete (VSF verified)",
                                         );
                                         send_status_update(
@@ -1218,7 +1252,7 @@ async fn run_checker(
                                         );
                                     } else {
                                         // Unknown PT data - emit generic event for debugging
-                                        crate::log_error(&format!(
+                                        crate::log(&format!(
                                             "PT: Failed to parse {} bytes as CLUTCH message",
                                             data.len()
                                         ));
@@ -1275,7 +1309,7 @@ async fn run_checker(
                         if let Ok((payload, sender_pubkey, ceremony_id, conversation_token)) =
                             parse_clutch_complete_vsf_without_recipient_check(msg_bytes)
                         {
-                            crate::log_info("UDP: Received ClutchComplete directly (VSF verified)");
+                            crate::log("UDP: Received ClutchComplete directly (VSF verified)");
                             send_status_update(
                                 &status_tx_recv,
                                 StatusUpdate::ClutchCompleteReceived {
@@ -1464,7 +1498,7 @@ async fn run_checker(
                                     sender_pubkey,
                                     signature,
                                 } => {
-                                    crate::log_info(&format!(
+                                    crate::log(&format!(
                                         "Status: MESSAGE_ACK received from {} (eagle_time {})",
                                         src_addr, acked_eagle_time
                                     ));
@@ -1480,7 +1514,7 @@ async fn run_checker(
                                         &sender_pubkey,
                                         &signature,
                                     ) {
-                                        crate::log_info("  -> REJECTED (bad signature)");
+                                        crate::log("  -> REJECTED (bad signature)");
                                         continue;
                                     }
 
@@ -1496,7 +1530,7 @@ async fn run_checker(
                                 }
 
                                 _ => {
-                                    crate::log_info("Status: Unknown message type received");
+                                    crate::log("Status: Unknown message type received");
                                 }
                             }
                         }
@@ -1508,7 +1542,7 @@ async fn run_checker(
                                 .map(|b| format!("{:02x}", b))
                                 .collect::<Vec<_>>()
                                 .join(" ");
-                            crate::log_info(&format!(
+                            crate::log(&format!(
                                 "Status: Parse error: {} (len={}, first 32 bytes: {})",
                                 e,
                                 msg_bytes.len(),
@@ -1553,7 +1587,7 @@ async fn run_checker(
 
                 let msg_bytes = ping.to_vsf_bytes();
                 if msg_bytes.is_empty() {
-                    crate::log_info(&format!(
+                    crate::log(&format!(
                         "Status: PING build failed for {}",
                         request.peer_addr
                     ));
@@ -1607,7 +1641,7 @@ async fn run_checker(
 
                 if count >= OFFLINE_THRESHOLD {
                     // Enough consecutive failures - mark offline
-                    crate::log_info(&format!(
+                    crate::log(&format!(
                         "Status: TIMEOUT ({} consecutive) - {} marked offline",
                         count,
                         hex::encode(&pubkey_bytes[..8])
@@ -1625,7 +1659,7 @@ async fn run_checker(
                     // Reset counter after marking offline (so we can detect coming back online)
                     failures.retain(|(k, _)| *k != pubkey_bytes);
                 } else {
-                    crate::log_info(&format!(
+                    crate::log(&format!(
                         "Status: TIMEOUT ({}/{}) - {} (waiting for more failures before offline)",
                         count,
                         OFFLINE_THRESHOLD,
@@ -1654,7 +1688,7 @@ async fn run_checker(
             let mut sig_bytes = [0u8; 64];
             sig_bytes.copy_from_slice(&sig.to_bytes());
 
-            crate::log_info(&format!(
+            crate::log(&format!(
                 "Status: Sending CHAT_MESSAGE to {} (tok {}...)",
                 request.peer_addr,
                 hex::encode(&request.conversation_token[..4])
@@ -1689,7 +1723,7 @@ async fn run_checker(
             let mut sig_bytes = [0u8; 64];
             sig_bytes.copy_from_slice(&sig.to_bytes());
 
-            crate::log_info(&format!(
+            crate::log(&format!(
                 "Status: Sending MESSAGE_ACK to {} (eagle_time {})",
                 request.peer_addr, request.acked_eagle_time
             ));
@@ -1711,7 +1745,7 @@ async fn run_checker(
 
         // Process PT send requests (large transfers)
         while let Ok(request) = pt_rx.try_recv() {
-            crate::log_info(&format!(
+            crate::log(&format!(
                 "PT: Starting outbound transfer to {} ({} bytes)",
                 request.peer_addr,
                 request.data.len()
@@ -1728,7 +1762,7 @@ async fn run_checker(
             // VSF bytes already built by caller (to capture offer_provenance)
             let vsf_bytes = request.vsf_bytes;
 
-            crate::log_info(&format!(
+            crate::log(&format!(
                 "Status: Sending ClutchOffer to {} ({} bytes VSF) via PT/UDP",
                 request.peer_addr,
                 vsf_bytes.len()
@@ -1738,7 +1772,7 @@ async fn run_checker(
             #[cfg(feature = "development")]
             {
                 if let Ok(inspection) = vsf::inspect::inspect_vsf(&vsf_bytes) {
-                    crate::log_info(&format!("Status: ClutchOffer VSF:\n{}", inspection));
+                    crate::log(&format!("Status: ClutchOffer VSF:\n{}", inspection));
                 }
             }
 
@@ -1766,7 +1800,7 @@ async fn run_checker(
             ) {
                 Ok(bytes) => bytes,
                 Err(e) => {
-                    crate::log_error(&format!(
+                    crate::log(&format!(
                         "Status: Failed to build ClutchKemResponse VSF: {}",
                         e
                     ));
@@ -1774,7 +1808,7 @@ async fn run_checker(
                 }
             };
 
-            crate::log_info(&format!(
+            crate::log(&format!(
                 "Status: Sending ClutchKemResponse to {} ({} bytes VSF) via PT/UDP",
                 request.peer_addr,
                 vsf_bytes.len()
@@ -1784,7 +1818,7 @@ async fn run_checker(
             #[cfg(feature = "development")]
             {
                 if let Ok(inspection) = vsf::inspect::inspect_vsf(&vsf_bytes) {
-                    crate::log_info(&format!("Status: ClutchKemResponse VSF:\n{}", inspection));
+                    crate::log(&format!("Status: ClutchKemResponse VSF:\n{}", inspection));
                 }
             }
 
@@ -1812,7 +1846,7 @@ async fn run_checker(
             ) {
                 Ok(bytes) => bytes,
                 Err(e) => {
-                    crate::log_error(&format!(
+                    crate::log(&format!(
                         "Status: Failed to build ClutchComplete VSF: {}",
                         e
                     ));
@@ -1824,12 +1858,12 @@ async fn run_checker(
             #[cfg(feature = "development")]
             {
                 if let Ok(inspection) = vsf::inspect::inspect_vsf(&vsf_bytes) {
-                    crate::log_info(&format!("Status: ClutchComplete VSF:\n{}", inspection));
+                    crate::log(&format!("Status: ClutchComplete VSF:\n{}", inspection));
                 }
             }
 
             // Route through PT stream for reliable delivery
-            crate::log_info(&format!(
+            crate::log(&format!(
                 "Status: Sending ClutchComplete to {} ({} bytes) via PT",
                 request.peer_addr,
                 vsf_bytes.len()
@@ -1864,7 +1898,7 @@ async fn run_checker(
             if let Ok(mcast_sock) = UdpSocket::bind("0.0.0.0:0") {
                 let _ = mcast_sock.set_multicast_ttl_v4(1);
                 let _ = udp::send_sync(&mcast_sock, &packet, mcast_v4);
-                crate::log_info(&format!(
+                crate::log(&format!(
                     "LAN: Multicast {} bytes to {}",
                     packet.len(),
                     mcast_v4
@@ -1874,7 +1908,7 @@ async fn run_checker(
             // Send to IPv6 multicast (hop limit is 1 by default for link-local)
             if let Ok(mcast_sock) = UdpSocket::bind("[::]:0") {
                 let _ = udp::send_sync(&mcast_sock, &packet, mcast_v6);
-                crate::log_info(&format!(
+                crate::log(&format!(
                     "LAN: Multicast {} bytes to {}",
                     packet.len(),
                     mcast_v6
@@ -1888,7 +1922,7 @@ async fn run_checker(
                 if let Ok(bcast_sock) = UdpSocket::bind("0.0.0.0:0") {
                     let _ = bcast_sock.set_broadcast(true);
                     let _ = udp::send_sync(&bcast_sock, &packet, bcast_addr);
-                    crate::log_info(&format!(
+                    crate::log(&format!(
                         "LAN: Broadcast {} bytes to {} (from {})",
                         packet.len(),
                         bcast_addr,
@@ -1904,7 +1938,7 @@ async fn run_checker(
             pending_pt_sends.retain(|(_, addr, _, _, _)| *addr != request.peer_addr);
             let removed = before - pending_pt_sends.len();
             if removed > 0 {
-                crate::log_info(&format!(
+                crate::log(&format!(
                     "PT: Cleared {} pending sends to {} (CLUTCH complete)",
                     removed, request.peer_addr
                 ));
@@ -1925,7 +1959,7 @@ async fn run_checker(
                 if use_tcp {
                     // TCP fallback for retries
                     if let Err(e) = crate::network::tcp::send_tcp(&pkt, addr).await {
-                        crate::log_error(&format!("PT: TCP send failed to {}: {}", addr, e));
+                        crate::log(&format!("PT: TCP send failed to {}: {}", addr, e));
                     }
                 } else {
                     udp::send(&socket, &pkt, addr).await;
@@ -1943,7 +1977,7 @@ async fn run_checker(
                 .collect();
             for (id, addr) in &completed {
                 pt_mgr.remove_outbound_by_id(*id);
-                crate::log_info(&format!(
+                crate::log(&format!(
                     "PT: Transfer #{} to {} completed, removed from pending",
                     id, addr
                 ));
@@ -1968,7 +2002,7 @@ async fn run_checker(
 
                 if retries < PT_MAX_RETRIES {
                     // Retry UDP transfer (gets new transfer_id)
-                    crate::log_info(&format!(
+                    crate::log(&format!(
                         "PT: Transfer #{} to {} timed out, retrying UDP ({}/{})",
                         old_transfer_id,
                         addr,
@@ -1992,14 +2026,14 @@ async fn run_checker(
                 } else {
                     // Retries exhausted - try TCP fallback (unless previously denied)
                     if tcp_denied_peers.contains(&addr) {
-                        crate::log_info(&format!(
+                        crate::log(&format!(
                             "PT: Transfer to {} failed after {} retries (TCP fallback skipped - previously denied)",
                             addr, retries
                         ));
                         continue;
                     }
 
-                    crate::log_info(&format!(
+                    crate::log(&format!(
                         "PT: Transfer to {} timed out after {}s, falling back to TCP",
                         addr,
                         PT_TIMEOUT.as_secs()
@@ -2009,12 +2043,12 @@ async fn run_checker(
                     match TcpTransport::connect(addr, Duration::from_secs(10)) {
                         Ok(mut stream) => {
                             if let Err(e) = TcpTransport::send_payload(&mut stream, &vsf_bytes) {
-                                crate::log_error(&format!(
+                                crate::log(&format!(
                                     "Status: TCP fallback failed to send to {}: {}",
                                     addr, e
                                 ));
                             } else {
-                                crate::log_info(&format!(
+                                crate::log(&format!(
                                     "Status: TCP fallback sent {} bytes to {} successfully",
                                     vsf_bytes.len(),
                                     addr
@@ -2025,12 +2059,12 @@ async fn run_checker(
                             // Check if permission denied - don't retry TCP for this peer
                             if e.kind() == std::io::ErrorKind::PermissionDenied {
                                 tcp_denied_peers.insert(addr);
-                                crate::log_error(&format!(
+                                crate::log(&format!(
                                     "Status: TCP fallback denied for {} (SELinux/firewall?), won't retry TCP",
                                     addr
                                 ));
                             } else {
-                                crate::log_error(&format!(
+                                crate::log(&format!(
                                     "Status: TCP fallback failed to connect to {}: {}",
                                     addr, e
                                 ));
@@ -2152,7 +2186,7 @@ async fn handle_pt_vsf_packet(
                     if let Some(complete) = PTComplete::from_vsf_header(provenance_hash, &values) {
                         // Log completion (success or failure)
                         if !complete.success {
-                            crate::log_error(&format!("PT: Transfer FAILED from {}", src_addr));
+                            crate::log(&format!("PT: Transfer FAILED from {}", src_addr));
                         }
                         // Handle completion - state transitions happen in handle_complete
                         // Completion check and cleanup handled by main loop via transfer_id
@@ -2187,7 +2221,7 @@ async fn handle_pt_vsf_packet(
                     };
 
                     if !is_known_contact {
-                        crate::log_error(&format!(
+                        crate::log(&format!(
                             "PT: SPEC REJECTED from {} - sender not in contacts (pubkey: {})",
                             src_addr,
                             sender_pubkey
@@ -2198,7 +2232,7 @@ async fn handle_pt_vsf_packet(
                         return Some(true);
                     }
 
-                    crate::log_info(&format!(
+                    crate::log(&format!(
                         "PT: SPEC accepted from {} - {} packets, {} bytes",
                         src_addr, spec.total_packets, spec.total_size
                     ));
@@ -2220,7 +2254,7 @@ async fn handle_pt_vsf_packet(
 /// Returns StatusUpdate::LanPeerDiscovered if valid, None otherwise
 fn parse_lan_discovery(packet: &[u8], src_addr: SocketAddr) -> Option<StatusUpdate> {
     let (handle_proof, local_ip, port) = udp::parse_lan_discovery(packet, src_addr)?;
-    crate::log_info(&format!(
+    crate::log(&format!(
         "LAN: Received discovery from {} (handle_proof: {}..., port: {})",
         src_addr,
         hex::encode(&handle_proof[..4]),

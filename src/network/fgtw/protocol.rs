@@ -209,7 +209,7 @@ impl FgtwMessage {
                     let prefix = format!("peer_{}", i);
                     fields.push((
                         format!("{}_handle_proof", prefix),
-                        VsfType::hb(peer.handle_proof.to_vec()),
+                        VsfType::hP(peer.handle_proof.to_vec()),
                     ));
                     fields.push((
                         format!("{}_device_pubkey", prefix),
@@ -236,7 +236,7 @@ impl FgtwMessage {
                         ("msg_type".to_string(), VsfType::u3(2)),
                         (
                             "handle_proof".to_string(),
-                            VsfType::hb(handle_proof.to_vec()),
+                            VsfType::hP(handle_proof.to_vec()),
                         ),
                         ("requester_pubkey".to_string(), requester_pubkey.to_vsf()),
                     ],
@@ -252,7 +252,7 @@ impl FgtwMessage {
                     let prefix = format!("device_{}", i);
                     fields.push((
                         format!("{}_handle_proof", prefix),
-                        VsfType::hb(device.handle_proof.to_vec()),
+                        VsfType::hP(device.handle_proof.to_vec()),
                     ));
                     fields.push((
                         format!("{}_device_pubkey", prefix),
@@ -283,7 +283,7 @@ impl FgtwMessage {
                         ("msg_type".to_string(), VsfType::u3(4)),
                         (
                             "handle_proof".to_string(),
-                            VsfType::hb(handle_proof.to_vec()),
+                            VsfType::hP(handle_proof.to_vec()),
                         ),
                         ("device_pubkey".to_string(), device_pubkey.to_vsf()),
                         ("port".to_string(), VsfType::u(*port as usize, false)),
@@ -300,7 +300,7 @@ impl FgtwMessage {
                         ("msg_type".to_string(), VsfType::u3(5)),
                         (
                             "handle_proof".to_string(),
-                            VsfType::hb(handle_proof.to_vec()),
+                            VsfType::hP(handle_proof.to_vec()),
                         ),
                         ("requester_pubkey".to_string(), requester_pubkey.to_vsf()),
                     ],
@@ -316,7 +316,7 @@ impl FgtwMessage {
                     let prefix = format!("device_{}", i);
                     fields.push((
                         format!("{}_handle_proof", prefix),
-                        VsfType::hb(device.handle_proof.to_vec()),
+                        VsfType::hP(device.handle_proof.to_vec()),
                     ));
                     fields.push((
                         format!("{}_device_pubkey", prefix),
@@ -448,7 +448,7 @@ impl FgtwMessage {
         };
 
         result.unwrap_or_else(|e| {
-            crate::log_error(&format!("FGTW: Failed to build VSF message: {}", e));
+            crate::log(&format!("FGTW: Failed to build VSF message: {}", e));
             Vec::new()
         })
     }
@@ -764,7 +764,7 @@ fn get_field<'a>(fields: &'a [(String, VsfType)], key: &str) -> Option<&'a VsfTy
 // Helper functions for extracting fields from VSF
 fn extract_hash(fields: &[(String, VsfType)], key: &str) -> Result<[u8; 32], String> {
     let hash_bytes = match get_field(fields, key) {
-        Some(VsfType::hb(bytes)) => bytes,
+        Some(VsfType::hP(bytes)) => bytes,
         _ => return Err(format!("Missing or invalid hash: {}", key)),
     };
     let mut arr = [0u8; 32];
@@ -1242,12 +1242,12 @@ pub fn parse_clutch_offer_vsf(
             .take(8)
             .map(|b| format!("{:02x}", b))
             .collect();
-        crate::log_info(&format!(
+        crate::log(&format!(
             "CLUTCH: Received offer ({} bytes) offer_provenance={}...",
             vsf_bytes.len(),
             prov_hex
         ));
-        crate::log_info(&format!(
+        crate::log(&format!(
             "CLUTCH: Offer pubkeys (X25519: {}B, P-384: {}B, secp256k1: {}B, P-256: {}B, Frodo: {}B, NTRU: {}B, McEliece: {}B, HQC: {}B)",
             payload.x25519_public.len(),
             payload.p384_public.len(),
@@ -1258,7 +1258,7 @@ pub fn parse_clutch_offer_vsf(
             payload.mceliece_public.len(),
             payload.hqc256_public.len()
         ));
-        crate::log_info(&format!(
+        crate::log(&format!(
             "CLUTCH: Parsed offer HQC pub[..8]={}",
             hex::encode(&payload.hqc256_public[..8])
         ));
@@ -1548,19 +1548,19 @@ pub fn parse_clutch_kem_response_vsf(
             .take(8)
             .map(|b| format!("{:02x}", b))
             .collect();
-        crate::log_info(&format!(
+        crate::log(&format!(
             "CLUTCH: Received KEM response ({} bytes) ceremony_id={}...",
             vsf_bytes.len(),
             hp_hex
         ));
-        crate::log_info(&format!(
+        crate::log(&format!(
             "CLUTCH: KEM ciphertexts (Frodo: {}B, NTRU: {}B, McEliece: {}B, HQC: {}B)",
             payload.frodo976_ciphertext.len(),
             payload.ntru701_ciphertext.len(),
             payload.mceliece_ciphertext.len(),
             payload.hqc256_ciphertext.len()
         ));
-        crate::log_info(&format!(
+        crate::log(&format!(
             "CLUTCH: Parsed KEM response HQC ct[..8]={}, EC ephemerals: X25519 {}B, P384 {}B",
             hex::encode(&payload.hqc256_ciphertext[..8]),
             payload.x25519_ephemeral.len(),
@@ -1719,7 +1719,7 @@ pub fn parse_clutch_offer_vsf_without_recipient_check(
     };
 
     #[cfg(feature = "development")]
-    crate::log_info(&format!(
+    crate::log(&format!(
         "CLUTCH: Parsed offer (no recipient check) HQC pub[..8]={}",
         hex::encode(&payload.hqc256_public[..8])
     ));
@@ -1934,7 +1934,7 @@ pub fn parse_clutch_kem_response_vsf_without_recipient_check(
     };
 
     #[cfg(feature = "development")]
-    crate::log_info(&format!(
+    crate::log(&format!(
         "CLUTCH: Parsed KEM response (no recipient check) HQC ct[..8]={} target_hqc[..8]={} EC ephemerals present",
         hex::encode(&payload.hqc256_ciphertext[..8]),
         hex::encode(&payload.target_hqc_pub_prefix)
@@ -2140,7 +2140,7 @@ pub fn parse_clutch_complete_vsf(
             .take(8)
             .map(|b| format!("{:02x}", b))
             .collect();
-        crate::log_info(&format!(
+        crate::log(&format!(
             "CLUTCH: Received complete proof ({} bytes) ceremony_id={}... proof={}...",
             vsf_bytes.len(),
             id_hex,
@@ -2225,7 +2225,7 @@ pub fn parse_clutch_complete_vsf_without_recipient_check(
     let payload = ClutchCompletePayload { eggs_proof };
 
     #[cfg(feature = "development")]
-    crate::log_info(&format!(
+    crate::log(&format!(
         "CLUTCH: Parsed complete proof (no recipient check) proof={}...",
         hex::encode(&payload.eggs_proof[..8])
     ));

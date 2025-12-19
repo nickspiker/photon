@@ -235,7 +235,7 @@ pub fn vsf_write(
             println!("{}", msg);
         }
 
-        crate::log_info(&format!(
+        crate::log(&format!(
             "STORAGE: vsf_write: {} file_len={}",
             label,
             vsf_file.len()
@@ -309,7 +309,7 @@ pub fn vsf_read(path: &Path, label: &str, device_secret: &[u8; 32]) -> std::io::
         if field.name == "payload" {
             if let Some(VsfType::v(b'e', data)) = field.values.first() {
                 #[cfg(feature = "development")]
-                crate::log_info(&format!(
+                crate::log(&format!(
                     "STORAGE: vsf_read: {} verified, payload_len={}",
                     label,
                     data.len()

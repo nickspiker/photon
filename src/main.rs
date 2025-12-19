@@ -184,7 +184,7 @@ impl ApplicationHandler<PhotonEvent> for App {
             WindowEvent::DroppedFile(path) => {
                 if let (Some(window), Some(app)) = (&self.window, &mut self.photon_app) {
                     if let Err(e) = app.handle_dropped_file(&path) {
-                        eprintln!("Failed to load avatar: {}", e);
+                        photon_messenger::log(&format!("Failed to load avatar: {}", e));
                     }
                     window.request_redraw();
                 }
@@ -456,60 +456,48 @@ fn get_system_blinkey_blink_rate() -> u64 {
 }
 
 fn main() {
-    // Check for --verify flag (used by install script to validate binary)
-    let verify_only = std::env::args().any(|arg| arg == "--verify");
+    // Initialize logging (redirects stdout/stderr to file on Windows GUI apps)
+    photon_messenger::init_logging();
+
+    // Check for verify argument (used by install script to validate binary)
+    let verify_only = std::env::args().any(|arg| arg == "verify");
 
     // Verify binary signature matches fractaldecoder (Ed25519 cryptographic signature)
-    // Enabled by default, skip only with --features skip-sig for development
-    #[cfg(not(feature = "skip-sig"))]
-    {
-        let signature_hex = match self_verify::verify_binary_hash() {
-            Ok(sig) => sig,
-            Err(e) => {
-                eprintln!("BINARY INTEGRITY CHECK FAILED: {}", e);
-                eprintln!();
-                eprintln!("This usually means:");
-                eprintln!("  - Download was corrupted or incomplete");
-                eprintln!("  - Storage failure (bad sectors, bit flips)");
-                eprintln!("  - Binary was modified or tampered with");
-                eprintln!();
-                eprintln!("Try reinstalling from: https://holdmyoscilloscope.com/photon");
-                std::process::exit(1);
-            }
-        };
-
-        // If --verify flag, print result and exit successfully
-        if verify_only {
-            println!("OK");
-            std::process::exit(0);
+    let signature_hex = match self_verify::verify_binary_hash() {
+        Ok(sig) => sig,
+        Err(e) => {
+            photon_messenger::log(&format!("BINARY INTEGRITY CHECK FAILED: {}", e));
+            photon_messenger::log("");
+            photon_messenger::log("This usually means:");
+            photon_messenger::log("  - Download was corrupted or incomplete");
+            photon_messenger::log("  - Storage failure (bad sectors, bit flips)");
+            photon_messenger::log("  - Binary was modified or tampered with");
+            photon_messenger::log("");
+            photon_messenger::log("Try reinstalling from: https://holdmyoscilloscope.com/photon");
+            std::process::exit(1);
         }
+    };
 
-        eprintln!("SIGNATURE CHECK PASSED");
-        eprintln!("Ed25519 signature: {}", signature_hex);
-        eprintln!();
+    // If verify argument, exit successfully (used by install script)
+    if verify_only {
+        println!("OK");
+        std::process::exit(0);
     }
 
-    #[cfg(feature = "skip-sig")]
-    {
-        // If --verify flag on dev build, still exit cleanly
-        if verify_only {
-            eprintln!("SIGNATURE CHECK SKIPPED (development build)");
-            std::process::exit(0);
-        }
-        eprintln!("SIGNATURE CHECK SKIPPED (development build)");
-        eprintln!();
-    }
+    photon_messenger::log(&format!("SIGNATURE CHECK PASSED"));
+    photon_messenger::log(&format!("Ed25519 signature: {}", signature_hex));
+    photon_messenger::log("");
 
     // Startup message
-    eprintln!("Photon Messenger - Built from first principles for true data sovereignty");
-    eprintln!("by Nick Spiker <fractaldecoder@proton.me>");
-    eprintln!();
-    eprintln!("I built this to give you the best damn secure messaging experience possible.");
-    eprintln!("Your data belongs to you—no servers, no tracking, no compromises.");
-    eprintln!();
-    eprintln!("Found a bug? Have feedback? Email me: fractaldecoder@proton.me");
-    eprintln!("(Photon messenger coming soon—for now there's only ~3 of us!)");
-    eprintln!();
+    photon_messenger::log("Photon Messenger - Built from first principles for true data sovereignty");
+    photon_messenger::log("by Nick Spiker <fractaldecoder@proton.me>");
+    photon_messenger::log("");
+    photon_messenger::log("I built this to give you the best damn secure messaging experience possible.");
+    photon_messenger::log("Your data belongs to you—no servers, no tracking, no compromises.");
+    photon_messenger::log("");
+    photon_messenger::log("Found a bug? Have feedback? Email me: fractaldecoder@proton.me");
+    photon_messenger::log("(Photon messenger coming soon—for now there's only ~3 of us!)");
+    photon_messenger::log("");
 
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 

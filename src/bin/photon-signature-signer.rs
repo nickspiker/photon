@@ -5,6 +5,7 @@
 //! Usage: photon-signature-signer <binary-path>
 
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier};
+use sha2::{Digest, Sha256};
 use std::{env, fs, path::PathBuf};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -58,6 +59,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("  Signature verification passed");
             println!("  Skipping to avoid double-signing");
             println!("  Rebuild the binary first if you need to re-sign");
+
+            // Still output SHA256 for Windows binaries
+            if binary_path.ends_with(".exe") {
+                // Restore full binary for SHA256
+                binary_data.extend_from_slice(&signature_bytes);
+                let mut hasher = Sha256::new();
+                hasher.update(&binary_data);
+                let sha256_hash = hex::encode(hasher.finalize()).to_uppercase();
+
+                let sha256_path = format!("{}.sha256", binary_path);
+                fs::write(&sha256_path, &sha256_hash)?;
+                println!("  SHA256 hash: {}", sha256_hash);
+                println!("  Written to: {}", sha256_path);
+            }
             return Ok(());
         }
 
@@ -91,6 +106,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "  New size: {} bytes (+64 for signature)",
         signed_binary.len()
     );
+
+    // For Windows binaries, also compute SHA256 and write to .sha256 file
+    // (PowerShell uses SHA256 for verification since Defender blocks execution)
+    if binary_path.ends_with(".exe") {
+        let mut hasher = Sha256::new();
+        hasher.update(&signed_binary);
+        let sha256_hash = hex::encode(hasher.finalize()).to_uppercase();
+
+        let sha256_path = format!("{}.sha256", binary_path);
+        fs::write(&sha256_path, &sha256_hash)?;
+        println!("  SHA256 hash: {}", sha256_hash);
+        println!("  Written to: {}", sha256_path);
+    }
 
     Ok(())
 }

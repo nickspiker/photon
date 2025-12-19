@@ -29,7 +29,7 @@ pub fn send(stream: &mut TcpStream, data: &[u8]) -> std::io::Result<()> {
     {
         let msg = vsf_inspect(data, "TCP", "TX", &_addr.to_string());
         if !msg.is_empty() {
-            crate::log_info(&msg);
+            crate::log(&msg);
         }
     }
 
@@ -130,7 +130,7 @@ pub fn recv(stream: &mut TcpStream) -> std::io::Result<Vec<u8>> {
     {
         let msg = vsf_inspect(&data, "TCP", "RX", &_addr.to_string());
         if !msg.is_empty() {
-            crate::log_info(&msg);
+            crate::log(&msg);
         }
     }
 
@@ -211,14 +211,14 @@ impl TcpListener {
     /// Bind to address
     pub async fn bind(addr: SocketAddr) -> std::io::Result<Self> {
         let inner = tokio::net::TcpListener::bind(addr).await?;
-        crate::log_info(&format!("TCP: Listening on {}", addr));
+        crate::log(&format!("TCP: Listening on {}", addr));
         Ok(Self { inner })
     }
 
     /// Accept incoming connection
     pub async fn accept(&self) -> std::io::Result<(TcpStream, SocketAddr)> {
         let (stream, addr) = self.inner.accept().await?;
-        crate::log_info(&format!("TCP: Connection from {}", addr));
+        crate::log(&format!("TCP: Connection from {}", addr));
 
         // Convert to std TcpStream for blocking I/O
         let std_stream = stream.into_std()?;

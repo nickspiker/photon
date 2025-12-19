@@ -95,7 +95,7 @@ impl PeerUpdateClient {
             .build();
 
         let Ok(rt) = rt else {
-            crate::log_error("PeerUpdate: Failed to create tokio runtime");
+            crate::log("PeerUpdate: Failed to create tokio runtime");
             return;
         };
 
@@ -103,17 +103,17 @@ impl PeerUpdateClient {
             loop {
                 // Check for shutdown
                 if shutdown_rx.try_recv().is_ok() {
-                    crate::log_info("PeerUpdate: Shutdown signal received");
+                    crate::log("PeerUpdate: Shutdown signal received");
                     break;
                 }
 
                 // Connect to WebSocket
-                crate::log_info("PeerUpdate: Connecting to wss://fgtw.org/ws");
+                crate::log("PeerUpdate: Connecting to wss://fgtw.org/ws");
                 let ws_result = tokio_tungstenite::connect_async("wss://fgtw.org/ws").await;
 
                 match ws_result {
                     Ok((ws_stream, _response)) => {
-                        crate::log_info("PeerUpdate: Connected to FGTW WebSocket");
+                        crate::log("PeerUpdate: Connected to FGTW WebSocket");
 
                         let (_, mut read) = ws_stream.split();
 
@@ -121,7 +121,7 @@ impl PeerUpdateClient {
                         while let Some(msg_result) = read.next().await {
                             // Check for shutdown
                             if shutdown_rx.try_recv().is_ok() {
-                                crate::log_info("PeerUpdate: Shutdown during read");
+                                crate::log("PeerUpdate: Shutdown during read");
                                 return;
                             }
 
@@ -129,7 +129,7 @@ impl PeerUpdateClient {
                                 Ok(Message::Binary(data)) => {
                                     // Parse VSF peer_update message
                                     if let Some(update) = Self::parse_peer_update(&data) {
-                                        crate::log_info(&format!(
+                                        crate::log(&format!(
                                             "PeerUpdate: Received update for {}",
                                             &update.ip
                                         ));
@@ -142,14 +142,14 @@ impl PeerUpdateClient {
                                     // Tungstenite handles pong automatically
                                 }
                                 Ok(Message::Close(_)) => {
-                                    crate::log_info("PeerUpdate: Server closed connection");
+                                    crate::log("PeerUpdate: Server closed connection");
                                     break;
                                 }
                                 Ok(_) => {
                                     // Ignore text, pong, frame messages
                                 }
                                 Err(e) => {
-                                    crate::log_error(&format!(
+                                    crate::log(&format!(
                                         "PeerUpdate: WebSocket error: {}",
                                         e
                                     ));
@@ -159,12 +159,12 @@ impl PeerUpdateClient {
                         }
                     }
                     Err(e) => {
-                        crate::log_error(&format!("PeerUpdate: Connection failed: {}", e));
+                        crate::log(&format!("PeerUpdate: Connection failed: {}", e));
                     }
                 }
 
                 // Wait before reconnecting
-                crate::log_info("PeerUpdate: Reconnecting in 5 seconds...");
+                crate::log("PeerUpdate: Reconnecting in 5 seconds...");
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
         });
@@ -275,10 +275,10 @@ impl PeerUpdateClient {
 
             match field_name.as_str() {
                 "handle_proof" => {
-                    if let VsfType::v(b'b', bytes) = value {
+                    if let VsfType::hP(bytes) = &value {
                         if bytes.len() == 32 {
                             let mut arr = [0u8; 32];
-                            arr.copy_from_slice(&bytes);
+                            arr.copy_from_slice(bytes);
                             handle_proof = Some(arr);
                         }
                     }

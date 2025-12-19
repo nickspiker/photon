@@ -832,7 +832,7 @@ pub fn load_cached_avatar(handle: &str) -> Option<(usize, Vec<u8>)> {
     }
 
     let vsf_data = std::fs::read(&cache_path).ok()?;
-    crate::log_info(&format!("Avatar: Loading {} from local cache", handle));
+    crate::log(&format!("Avatar: Loading {} from local cache", handle));
     load_avatar_from_bytes(&vsf_data, handle)
 }
 
@@ -841,7 +841,7 @@ fn save_avatar_to_cache(handle: &str, vsf_data: &[u8]) -> std::io::Result<()> {
     let storage_key = avatar_storage_key(handle);
     let cache_path = avatar_cache_path(&storage_key)?;
     std::fs::write(&cache_path, vsf_data)?;
-    crate::log_info(&format!(
+    crate::log(&format!(
         "Avatar: Cached {} locally ({}...)",
         handle,
         &storage_key[..8]
@@ -861,7 +861,7 @@ pub fn load_avatar(handle: &str) -> Option<(usize, Vec<u8>)> {
 pub fn load_avatar_from_bytes(vsf_data: &[u8], handle: &str) -> Option<(usize, Vec<u8>)> {
     // Verify this is an unmodified original before processing
     if let Err(e) = vsf::verification::is_original(vsf_data) {
-        crate::log_error(&format!(
+        crate::log(&format!(
             "Avatar: Provenance hash verification failed: {}",
             e
         ));
@@ -873,7 +873,7 @@ pub fn load_avatar_from_bytes(vsf_data: &[u8], handle: &str) -> Option<(usize, V
 
     // Verify encrypted format
     if parsed.encoding != b'e' {
-        crate::log_error(&format!(
+        crate::log(&format!(
             "Avatar: Expected encrypted (v'e'), got: {}",
             parsed.encoding as char
         ));
@@ -884,7 +884,7 @@ pub fn load_avatar_from_bytes(vsf_data: &[u8], handle: &str) -> Option<(usize, V
     let av1_data = match decrypt_av1_data(&parsed.data, handle) {
         Ok(data) => data,
         Err(e) => {
-            crate::log_error(&format!("Avatar: Decryption failed: {}", e));
+            crate::log(&format!("Avatar: Decryption failed: {}", e));
             return None;
         }
     };
@@ -893,7 +893,7 @@ pub fn load_avatar_from_bytes(vsf_data: &[u8], handle: &str) -> Option<(usize, V
     let (width, height, pixels) = match decode_avatar(&av1_data) {
         Ok(result) => result,
         Err(e) => {
-            crate::log_error(&format!("Avatar: decode_avatar failed: {}", e));
+            crate::log(&format!("Avatar: decode_avatar failed: {}", e));
             return None;
         }
     };
@@ -981,7 +981,7 @@ pub fn get_local_avatar_timestamp(handle: &str) -> Option<f64> {
     let cache_path = avatar_cache_path(&storage_key).ok()?;
 
     #[cfg(feature = "development")]
-    crate::log_info(&format!(
+    crate::log(&format!(
         "Avatar: Looking for local cache at {:?}",
         cache_path
     ));
@@ -990,7 +990,7 @@ pub fn get_local_avatar_timestamp(handle: &str) -> Option<f64> {
         Ok(data) => data,
         Err(e) => {
             #[cfg(feature = "development")]
-            crate::log_info(&format!("Avatar: No local cache: {}", e));
+            crate::log(&format!("Avatar: No local cache: {}", e));
             return None;
         }
     };
@@ -1001,7 +1001,7 @@ pub fn get_local_avatar_timestamp(handle: &str) -> Option<f64> {
         VsfType::e(et) => {
             let ts = EagleTime::new(et).to_f64();
             #[cfg(feature = "development")]
-            crate::log_info(&format!("Avatar: Local timestamp = {:.0}", ts));
+            crate::log(&format!("Avatar: Local timestamp = {:.0}", ts));
             Some(ts)
         }
         _ => None,
@@ -1389,7 +1389,7 @@ pub fn upload_avatar(
     let url = format!("{}/avatar/{}", FGTW_URL, storage_key);
 
     #[cfg(feature = "development")]
-    crate::log_info(&crate::network::inspect::vsf_inspect(
+    crate::log(&crate::network::inspect::vsf_inspect(
         &signed_vsf,
         "FGTW",
         "TX",
@@ -1409,7 +1409,7 @@ pub fn upload_avatar(
         .map_err(|e| format!("Failed to upload avatar: {}", e))?;
 
     if response.status().is_success() {
-        crate::log_info(&format!(
+        crate::log(&format!(
             "Avatar: Uploaded to FGTW (key: {}...)",
             &storage_key[..8]
         ));
@@ -1441,7 +1441,7 @@ pub fn download_avatar(handle: &str) -> Option<(usize, Vec<u8>)> {
     // Not cached locally, fetch from FGTW
     let storage_key = avatar_storage_key(handle);
     let url = format!("{}/avatar/{}", FGTW_URL, storage_key);
-    crate::log_info(&format!(
+    crate::log(&format!(
         "Avatar: Fetching {} from FGTW ({}...)",
         handle,
         &storage_key[..8]
@@ -1451,14 +1451,14 @@ pub fn download_avatar(handle: &str) -> Option<(usize, Vec<u8>)> {
     let response = client.get(&url).send().ok()?;
 
     if !response.status().is_success() {
-        crate::log_info(&format!("Avatar: FGTW returned {}", response.status()));
+        crate::log(&format!("Avatar: FGTW returned {}", response.status()));
         return None;
     }
 
     let vsf_data = response.bytes().ok()?;
 
     #[cfg(feature = "development")]
-    crate::log_info(&crate::network::inspect::vsf_inspect(
+    crate::log(&crate::network::inspect::vsf_inspect(
         &vsf_data,
         "FGTW",
         "RX",
@@ -1516,13 +1516,13 @@ pub fn sync_avatar_bidirectional(
         if local_ts.is_some() {
             // We have local, upload it (only if we have handle_proof)
             if let Some(hp) = handle_proof {
-                crate::log_info("Avatar sync: Server empty, uploading local");
+                crate::log("Avatar sync: Server empty, uploading local");
                 match upload_avatar(device_secret, handle, hp) {
                     Ok(_) => return AvatarSyncResult::LocalNewer,
                     Err(e) => return AvatarSyncResult::Error(format!("Upload failed: {}", e)),
                 }
             } else {
-                crate::log_info("Avatar sync: Server empty, but no handle_proof for upload");
+                crate::log("Avatar sync: Server empty, but no handle_proof for upload");
                 return AvatarSyncResult::Error("No handle_proof for upload".to_string());
             }
         } else {
@@ -1544,13 +1544,13 @@ pub fn sync_avatar_bidirectional(
     match (local_ts, server_ts) {
         (None, Some(_)) => {
             // No local, server has one - download
-            crate::log_info("Avatar sync: No local avatar, downloading from server");
+            crate::log("Avatar sync: No local avatar, downloading from server");
             let vsf_data = match response.bytes() {
                 Ok(b) => b,
                 Err(e) => return AvatarSyncResult::Error(format!("Read body: {}", e)),
             };
             #[cfg(feature = "development")]
-            crate::log_info(&crate::network::inspect::vsf_inspect(
+            crate::log(&crate::network::inspect::vsf_inspect(
                 &vsf_data,
                 "FGTW",
                 "RX",
@@ -1563,7 +1563,7 @@ pub fn sync_avatar_bidirectional(
             if local > server {
                 // Local is newer - upload (only if we have handle_proof)
                 if let Some(hp) = handle_proof {
-                    crate::log_info(&format!(
+                    crate::log(&format!(
                         "Avatar sync: Local newer ({:.0} > {:.0}), uploading",
                         local, server
                     ));
@@ -1572,12 +1572,12 @@ pub fn sync_avatar_bidirectional(
                         Err(e) => AvatarSyncResult::Error(format!("Upload failed: {}", e)),
                     }
                 } else {
-                    crate::log_info("Avatar sync: Local newer, but no handle_proof for upload");
+                    crate::log("Avatar sync: Local newer, but no handle_proof for upload");
                     AvatarSyncResult::Error("No handle_proof for upload".to_string())
                 }
             } else if server > local {
                 // Server is newer - download
-                crate::log_info(&format!(
+                crate::log(&format!(
                     "Avatar sync: Server newer ({:.0} > {:.0}), downloading",
                     server, local
                 ));
@@ -1586,7 +1586,7 @@ pub fn sync_avatar_bidirectional(
                     Err(e) => return AvatarSyncResult::Error(format!("Read body: {}", e)),
                 };
                 #[cfg(feature = "development")]
-                crate::log_info(&crate::network::inspect::vsf_inspect(
+                crate::log(&crate::network::inspect::vsf_inspect(
                     &vsf_data,
                     "FGTW",
                     "RX",
@@ -1602,13 +1602,13 @@ pub fn sync_avatar_bidirectional(
             // Have local but server didn't send timestamp (shouldn't happen)
             // Upload to be safe (only if we have handle_proof)
             if let Some(hp) = handle_proof {
-                crate::log_info("Avatar sync: Server missing timestamp, uploading local");
+                crate::log("Avatar sync: Server missing timestamp, uploading local");
                 match upload_avatar(device_secret, handle, hp) {
                     Ok(_) => AvatarSyncResult::LocalNewer,
                     Err(e) => AvatarSyncResult::Error(format!("Upload failed: {}", e)),
                 }
             } else {
-                crate::log_info(
+                crate::log(
                     "Avatar sync: Server missing timestamp, but no handle_proof for upload",
                 );
                 AvatarSyncResult::Error("No handle_proof for upload".to_string())
@@ -1616,13 +1616,13 @@ pub fn sync_avatar_bidirectional(
         }
         (None, None) => {
             // Server returned 200 but no timestamp header - still download the avatar
-            crate::log_info("Avatar sync: Server has avatar (no timestamp), downloading");
+            crate::log("Avatar sync: Server has avatar (no timestamp), downloading");
             let vsf_data = match response.bytes() {
                 Ok(b) => b,
                 Err(e) => return AvatarSyncResult::Error(format!("Read body: {}", e)),
             };
             #[cfg(feature = "development")]
-            crate::log_info(&crate::network::inspect::vsf_inspect(
+            crate::log(&crate::network::inspect::vsf_inspect(
                 &vsf_data,
                 "FGTW",
                 "RX",
@@ -1692,19 +1692,19 @@ pub fn sync_avatar_background(
                 load_cached_avatar(&handle).map(|(_, p)| p)
             }
             AvatarSyncResult::LocalNewer => {
-                crate::log_info("Avatar sync: Uploaded local avatar to FGTW");
+                crate::log("Avatar sync: Uploaded local avatar to FGTW");
                 None // No need to update UI, local was already displayed
             }
             AvatarSyncResult::InSync => {
-                crate::log_info("Avatar sync: Already in sync with FGTW");
+                crate::log("Avatar sync: Already in sync with FGTW");
                 None
             }
             AvatarSyncResult::NoLocalAvatar | AvatarSyncResult::ServerEmpty => {
-                crate::log_info("Avatar sync: No avatar to sync");
+                crate::log("Avatar sync: No avatar to sync");
                 None
             }
             AvatarSyncResult::Error(e) => {
-                crate::log_error(&format!("Avatar sync error: {}", e));
+                crate::log(&format!("Avatar sync error: {}", e));
                 None
             }
         };

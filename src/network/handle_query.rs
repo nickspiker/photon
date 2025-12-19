@@ -80,28 +80,28 @@ fn bind_photon_socket() -> (UdpSocket, u16) {
             Ok(udp) => {
                 // Enable broadcast receive (needed for LAN discovery)
                 if let Err(e) = udp.set_broadcast(true) {
-                    crate::log_error(&format!("Network: Failed to enable broadcast: {}", e));
+                    crate::log(&format!("Network: Failed to enable broadcast: {}", e));
                 }
                 // Check TCP is also free
                 match std::net::TcpListener::bind(format!("[::]:{}", port)) {
                     Ok(_tcp) => {
                         // Both free! TCP listener dropped, status.rs will create its own
-                        crate::log_info(&format!("Network: Bound to port {} (UDP+TCP)", port));
+                        crate::log(&format!("Network: Bound to port {} (UDP+TCP)", port));
                         return (udp, port);
                     }
                     Err(e) => {
-                        crate::log_error(&format!("Network: Port {} TCP busy: {}", port, e));
+                        crate::log(&format!("Network: Port {} TCP busy: {}", port, e));
                     }
                 }
             }
             Err(e) => {
-                crate::log_error(&format!("Network: Port {} UDP busy: {}", port, e));
+                crate::log(&format!("Network: Port {} UDP busy: {}", port, e));
             }
         }
     }
 
     // Fall back to ephemeral if all fixed ports failed
-    crate::log_error("Network: All fixed ports busy - falling back to ephemeral");
+    crate::log("Network: All fixed ports busy - falling back to ephemeral");
     let udp = UdpSocket::bind("[::]:0").expect("Failed to bind UDP socket");
     // Enable broadcast receive for LAN discovery
     let _ = udp.set_broadcast(true);
@@ -150,7 +150,7 @@ impl HandleQuery {
 
         // Bind UDP socket - tries 4383 → 3546 → ephemeral
         let (initial_socket, initial_port) = bind_photon_socket();
-        crate::log_info(&format!(
+        crate::log(&format!(
             "Network: Using port {} for all traffic",
             initial_port
         ));
@@ -234,7 +234,7 @@ impl HandleQuery {
 
         // Bind UDP socket - tries 4383 → 3546 → ephemeral
         let (initial_socket, initial_port) = bind_photon_socket();
-        crate::log_info(&format!(
+        crate::log(&format!(
             "Network: Using port {} for all traffic",
             initial_port
         ));
@@ -385,7 +385,7 @@ impl HandleQuery {
             {
                 Ok(c) => Some(c),
                 Err(e) => {
-                    crate::log_error(&format!("Network: Failed to create HTTP client: {}", e));
+                    crate::log(&format!("Network: Failed to create HTTP client: {}", e));
                     None
                 }
             };
@@ -399,7 +399,7 @@ impl HandleQuery {
                         Ok(r) => {
                             let success = r.status().is_success();
                             if first_check {
-                                crate::log_info(&format!(
+                                crate::log(&format!(
                                     "Network: FGTW status check: {} ({})",
                                     r.status(),
                                     if success { "online" } else { "offline" }
@@ -409,7 +409,7 @@ impl HandleQuery {
                         }
                         Err(e) => {
                             if first_check || prev_online {
-                                crate::log_error(&format!(
+                                crate::log(&format!(
                                     "Network: FGTW status check failed: {}",
                                     e
                                 ));
@@ -442,10 +442,10 @@ impl HandleQuery {
         port: Arc<Mutex<u16>>,
     ) {
         thread::spawn(move || {
-            crate::log_info("Network: Query worker initialized");
+            crate::log("Network: Query worker initialized");
 
             while let Ok(handle) = rx.recv() {
-                crate::log_info(&format!("Network: Querying handle '{}'...", handle));
+                crate::log(&format!("Network: Querying handle '{}'...", handle));
 
                 // Get current port for FGTW query (always PHOTON_PORT now)
                 let current_port = *port.lock().unwrap();
@@ -489,7 +489,7 @@ impl HandleQuery {
                     for peer in &other_peers {
                         store.add_peer(peer.clone());
                     }
-                    crate::log_info(&format!(
+                    crate::log(&format!(
                         "Network: Added {} peer(s) to store",
                         other_peers.len()
                     ));
@@ -497,7 +497,7 @@ impl HandleQuery {
 
                 // Check result
                 let query_result = if let Some(error) = result.error {
-                    crate::log_error(&format!("Network: ERROR - {}", error));
+                    crate::log(&format!("Network: ERROR - {}", error));
                     QueryResult::Error(error)
                 } else {
                     // Check if this is our device or someone else's
@@ -510,13 +510,13 @@ impl HandleQuery {
 
                     if is_ours {
                         *handle_proof_store.lock().unwrap() = Some(handle_proof);
-                        crate::log_info(&format!(
+                        crate::log(&format!(
                             "Network: Handle '{}' registered to this device",
                             handle
                         ));
                         QueryResult::Success(result.peers)
                     } else {
-                        crate::log_info(&format!(
+                        crate::log(&format!(
                             "Network: Handle '{}' is CLAIMED by another device",
                             handle
                         ));
@@ -537,10 +537,10 @@ impl HandleQuery {
         keypair: Keypair,
     ) {
         thread::spawn(move || {
-            crate::log_info("Network: Search worker initialized");
+            crate::log("Network: Search worker initialized");
 
             while let Ok(handle) = rx.recv() {
-                crate::log_info(&format!("Network: Searching for handle '{}'...", handle));
+                crate::log(&format!("Network: Searching for handle '{}'...", handle));
 
                 // Compute handle_proof
                 let handle_proof = Handle::username_to_handle_proof(&handle);
@@ -618,10 +618,10 @@ impl HandleQuery {
         port: Arc<Mutex<u16>>,
     ) {
         thread::spawn(move || {
-            crate::log_info("Network: Refresh worker initialized");
+            crate::log("Network: Refresh worker initialized");
 
             while let Ok((handle_proof, handle)) = rx.recv() {
-                crate::log_info("Network: Refreshing FGTW announcement...");
+                crate::log("Network: Refreshing FGTW announcement...");
 
                 // Get current port
                 let current_port = *port.lock().unwrap();
@@ -655,7 +655,7 @@ impl HandleQuery {
                     for peer in &bootstrap_result.peers {
                         store.add_peer(peer.clone());
                     }
-                    crate::log_info(&format!(
+                    crate::log(&format!(
                         "Network: Refresh updated {} peer(s)",
                         bootstrap_result.peers.len()
                     ));
@@ -724,7 +724,7 @@ impl HandleQuery {
 
         let mut handle_guard = self.last_handle.lock().unwrap();
         *handle_guard = Some(handle.to_string());
-        crate::log_info("Network: Handle proof stored for periodic refresh");
+        crate::log("Network: Handle proof stored for periodic refresh");
     }
 
     /// Get stored handle_proof (for computing handle searches)

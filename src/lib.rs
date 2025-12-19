@@ -33,44 +33,56 @@ macro_rules! debug_println {
     ($($arg:tt)*) => {};
 }
 
-// Unified logging - use log:: on Android, println/eprintln on desktop
-// Controlled by "logging" feature flag (default on, disable with --no-default-features)
+// Logging - feature-gated, compiles to nothing without --features logging
+// - Android: log::info!
+// - Windows: %APPDATA%\photon\photon.log
+// - Other: stdout
 
-#[cfg(all(target_os = "android", feature = "logging"))]
-pub fn log_info(msg: &str) {
-    log::info!("{}", msg);
+#[cfg(all(feature = "logging", target_os = "windows"))]
+static WINDOWS_LOG_FILE: std::sync::OnceLock<std::sync::Mutex<std::fs::File>> =
+    std::sync::OnceLock::new();
+
+/// Initialize logging - must be called early in main() on Windows
+#[cfg(all(feature = "logging", target_os = "windows"))]
+pub fn init_logging() {
+    let _ = WINDOWS_LOG_FILE.get_or_init(|| {
+        let config_dir = dirs::config_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+        let log_dir = config_dir.join("photon");
+        let _ = std::fs::create_dir_all(&log_dir);
+        let log_path = log_dir.join("photon.log");
+        let file = std::fs::File::create(&log_path).expect("Failed to create log file");
+        std::sync::Mutex::new(file)
+    });
 }
 
-#[cfg(all(target_os = "android", not(feature = "logging")))]
-#[inline(always)]
-pub fn log_info(_msg: &str) {}
+#[cfg(not(all(feature = "logging", target_os = "windows")))]
+pub fn init_logging() {}
 
-#[cfg(all(not(target_os = "android"), feature = "logging"))]
-pub fn log_info(msg: &str) {
+// Disabled: compiles to nothing
+#[cfg(not(feature = "logging"))]
+#[inline(always)]
+pub fn log(_msg: &str) {}
+
+// Enabled: platform-specific output
+#[cfg(feature = "logging")]
+pub fn log(msg: &str) {
+    #[cfg(target_os = "android")]
+    log::info!("{}", msg);
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::io::Write;
+        if let Some(file_mutex) = WINDOWS_LOG_FILE.get() {
+            if let Ok(mut file) = file_mutex.lock() {
+                let _ = writeln!(file, "{}", msg);
+                let _ = file.flush();
+            }
+        }
+    }
+
+    #[cfg(not(any(target_os = "android", target_os = "windows")))]
     println!("{}", msg);
 }
-
-#[cfg(all(not(target_os = "android"), not(feature = "logging")))]
-#[inline(always)]
-pub fn log_info(_msg: &str) {}
-
-#[cfg(all(target_os = "android", feature = "logging"))]
-pub fn log_error(msg: &str) {
-    log::error!("{}", msg);
-}
-
-#[cfg(all(target_os = "android", not(feature = "logging")))]
-#[inline(always)]
-pub fn log_error(_msg: &str) {}
-
-#[cfg(all(not(target_os = "android"), feature = "logging"))]
-pub fn log_error(msg: &str) {
-    eprintln!("{}", msg);
-}
-
-#[cfg(all(not(target_os = "android"), not(feature = "logging")))]
-#[inline(always)]
-pub fn log_error(_msg: &str) {}
 
 pub mod crypto;
 pub mod network;

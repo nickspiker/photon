@@ -153,7 +153,7 @@ impl PhotonTransport {
         let udp = match UdpTransport::new(local_addr) {
             Ok(u) => Some(u),
             Err(e) => {
-                crate::log_error(&format!("Failed to create UDP transport: {}", e));
+                crate::log(&format!("Failed to create UDP transport: {}", e));
                 None
             }
         };
@@ -161,7 +161,7 @@ impl PhotonTransport {
         let mode = if udp.is_some() {
             TransportMode::Udp
         } else {
-            crate::log_info("UDP unavailable, using TCP fallback");
+            crate::log("UDP unavailable, using TCP fallback");
             TransportMode::Tcp
         };
 
@@ -169,7 +169,7 @@ impl PhotonTransport {
         let mut tcp = TcpTransport::new()?;
         let tcp_addr = SocketAddr::new(IpAddr::V4(local_addr), TCP_FALLBACK_PORT);
         if let Err(e) = tcp.listen(tcp_addr) {
-            crate::log_error(&format!("Failed to bind TCP fallback: {}", e));
+            crate::log(&format!("Failed to bind TCP fallback: {}", e));
         }
 
         Ok(Self {
@@ -195,7 +195,7 @@ impl PhotonTransport {
         let addr = SocketAddr::new(IpAddr::V4(peer), TCP_FALLBACK_PORT);
         let mut stream = TcpTransport::connect(addr, Duration::from_secs(10))?;
         TcpTransport::send_payload(&mut stream, data)?;
-        crate::log_info(&format!(
+        crate::log(&format!(
             "Sent {} bytes to {} via TCP fallback",
             data.len(),
             peer
@@ -245,7 +245,7 @@ impl PhotonTransport {
             }
         }
 
-        crate::log_info(&format!(
+        crate::log(&format!(
             "Sent {} bytes ({} packets) to {} via UDP",
             data.len(),
             total_packets,
@@ -262,7 +262,7 @@ impl PhotonTransport {
         if let Some((mut stream, addr)) = self.tcp.accept()? {
             if let IpAddr::V4(ipv4) = addr.ip() {
                 let data = TcpTransport::recv_payload(&mut stream)?;
-                crate::log_info(&format!(
+                crate::log(&format!(
                     "Received {} bytes from {} via TCP",
                     data.len(),
                     ipv4

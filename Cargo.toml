@@ -11,7 +11,6 @@ categories = ["cryptography", "network-programming"]
 
 [features]
 default = []
-skip-sig = []      # Skip binary signature verification
 logging = []       # Enable log_info/log_error output
 debug-keys = []    # Enable Ctrl+D/H/T debug shortcuts
 verbose-network = []  # Log every ping/pong/broadcast (noisy)
@@ -102,6 +101,8 @@ rgb = "0.8.52"
 base64 = "0.22.1"
 bitvec = "1.0.1"
 libc = "0.2.178"
+# thread-priority doesn't support Redox yet
+[target.'cfg(not(target_os = "redox"))'.dependencies]
 thread-priority = "1.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -114,7 +115,8 @@ windows = { version = "0.58", features = [
     "Win32_UI_Controls",
     "Win32_UI_WindowsAndMessaging",
     "Win32_Graphics_Gdi",
-    "Win32_UI_ColorSystem"
+    "Win32_UI_ColorSystem",
+    "Win32_System_Console"
 ] }
 
 [target.'cfg(target_os = "android")'.dependencies]

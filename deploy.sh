@@ -60,10 +60,14 @@ cp target/x86_64-apple-darwin/release/photon-messenger /mnt/Chiton/MEGA/holdmyos
 cp target/aarch64-apple-darwin/release/photon-messenger /mnt/Chiton/MEGA/holdmyoscilloscope/photon/photon-messenger-macos-arm64
 cp android/app/build/outputs/apk/release/app-release.apk /mnt/Chiton/MEGA/holdmyoscilloscope/photon/photon-messenger.apk
 cp install.sh /mnt/Chiton/MEGA/holdmyoscilloscope/photon/install.sh
-cp install.ps1 /mnt/Chiton/MEGA/holdmyoscilloscope/photon/install.ps1
 cp assets/icon-1024.png /mnt/Chiton/MEGA/holdmyoscilloscope/photon/icon-1024.png
+
+# Patch install.ps1 with the Windows binary SHA256 hash
+WINDOWS_SHA256=$(cat target/x86_64-pc-windows-gnu/release/photon-messenger.exe.sha256)
+sed "s/\$expectedHash = \"[A-F0-9]*\"/\$expectedHash = \"$WINDOWS_SHA256\"/" install.ps1 > /mnt/Chiton/MEGA/holdmyoscilloscope/photon/install.ps1
 
 echo ""
 echo "✓ Linux, Windows, Redox, macOS Intel, macOS ARM64, Android binaries, icon, and install scripts deployed"
+echo "  Windows SHA256: $WINDOWS_SHA256"
 
 wrangler pages deploy /mnt/Chiton/MEGA/holdmyoscilloscope --project-name=oscilloscope

@@ -150,7 +150,7 @@ fn derive_list_key(our_identity_seed: &[u8; 32], device_secret: &[u8; 32]) -> [u
     hasher.update(device_secret);
     let key = *hasher.finalize().as_bytes();
     #[cfg(feature = "development")]
-    crate::log_info(&format!(
+    crate::log(&format!(
         "STORAGE: derive_list_key: seed[..8]={} dev[..8]={} → key[..8]={}",
         hex::encode(&our_identity_seed[..8]),
         hex::encode(&device_secret[..8]),
@@ -194,7 +194,7 @@ fn encrypt_data(data: &[u8], key: &[u8; 32], section_name: &str) -> Result<Vec<u
     encrypted_payload.extend_from_slice(&ciphertext);
 
     #[cfg(feature = "development")]
-    crate::log_info(&format!(
+    crate::log(&format!(
         "STORAGE: encrypt: plaintext_len={} nonce[..8]={} ct[..8]={}",
         data.len(),
         hex::encode(&nonce_bytes[..8]),
@@ -252,7 +252,7 @@ fn decrypt_data(vsf_bytes: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, StorageErro
     };
 
     #[cfg(feature = "development")]
-    crate::log_info(&format!(
+    crate::log(&format!(
         "STORAGE: decrypt: payload_len={} nonce[..8]={} ct[..8]={}",
         encrypted_payload.len(),
         hex::encode(&encrypted_payload[..8.min(encrypted_payload.len())]),
@@ -307,7 +307,7 @@ pub fn save_contact_list(
             .append_multi(
                 "contact",
                 vec![
-                    VsfType::hb(c.handle_proof.to_vec()),
+                    VsfType::hP(c.handle_proof.to_vec()),
                     VsfType::x(c.handle.clone()),
                 ],
             )
@@ -359,7 +359,7 @@ pub fn load_contact_list(
     for field in builder.get_fields("contact") {
         if field.values.len() >= 2 {
             let handle_proof: [u8; 32] = match &field.values[0] {
-                VsfType::hb(v) if v.len() == 32 => v.as_slice().try_into().unwrap(),
+                VsfType::hP(v) if v.len() == 32 => v.as_slice().try_into().unwrap(),
                 _ => continue,
             };
             let handle = match &field.values[1] {
@@ -611,7 +611,7 @@ pub fn load_all_contacts(our_identity_seed: &[u8; 32], device_secret: &[u8; 32])
     let identities = match load_contact_list(our_identity_seed, device_secret) {
         Ok(list) => list,
         Err(e) => {
-            crate::log_error(&format!("Failed to load contact list: {}", e));
+            crate::log(&format!("Failed to load contact list: {}", e));
             return Vec::new();
         }
     };
@@ -621,7 +621,7 @@ pub fn load_all_contacts(our_identity_seed: &[u8; 32], device_secret: &[u8; 32])
         match load_contact_state(&identity, our_identity_seed, device_secret) {
             Ok(contact) => contacts.push(contact),
             Err(e) => {
-                crate::log_error(&format!(
+                crate::log(&format!(
                     "Failed to load contact state for '{}': {}",
                     identity.handle, e
                 ));
@@ -733,7 +733,7 @@ pub fn save_clutch_keypairs(
     )?;
 
     #[cfg(feature = "development")]
-    crate::log_info(&format!(
+    crate::log(&format!(
         "STORAGE: Saved CLUTCH keypairs for {} (~{}KB)",
         handle,
         vsf_bytes.len() / 1024
@@ -777,7 +777,7 @@ pub fn load_clutch_keypairs(
         .ok_or_else(|| StorageError::Parse("Invalid keypairs format".into()))?;
 
     #[cfg(feature = "development")]
-    crate::log_info(&format!(
+    crate::log(&format!(
         "STORAGE: Loaded CLUTCH keypairs for {} (~{}KB)",
         handle,
         vsf_bytes.len() / 1024
@@ -795,7 +795,7 @@ pub fn delete_clutch_keypairs(handle: &str) -> Result<(), StorageError> {
     if keypairs_path.exists() {
         fs::remove_file(&keypairs_path)?;
         #[cfg(feature = "development")]
-        crate::log_info(&format!("STORAGE: Deleted CLUTCH keypairs for {}", handle));
+        crate::log(&format!("STORAGE: Deleted CLUTCH keypairs for {}", handle));
     }
 
     Ok(())
@@ -935,7 +935,7 @@ pub fn save_clutch_slots(
     )?;
 
     #[cfg(feature = "development")]
-    crate::log_info(&format!(
+    crate::log(&format!(
         "STORAGE: Saved CLUTCH slots for {} ({} slots, {}B)",
         handle,
         slots.len(),
@@ -1032,7 +1032,7 @@ pub fn load_clutch_slots(
     }
 
     #[cfg(feature = "development")]
-    crate::log_info(&format!(
+    crate::log(&format!(
         "STORAGE: Loaded CLUTCH slots for {} ({} slots, {} provenances, ceremony_id={})",
         handle,
         slots.len(),
@@ -1299,7 +1299,7 @@ pub fn delete_clutch_slots(handle: &str) -> Result<(), StorageError> {
     if slots_path.exists() {
         fs::remove_file(&slots_path)?;
         #[cfg(feature = "development")]
-        crate::log_info(&format!("STORAGE: Deleted CLUTCH slots for {}", handle));
+        crate::log(&format!("STORAGE: Deleted CLUTCH slots for {}", handle));
     }
 
     Ok(())
@@ -1372,7 +1372,7 @@ pub fn save_messages(
     )?;
 
     #[cfg(feature = "development")]
-    crate::log_info(&format!(
+    crate::log(&format!(
         "STORAGE: Saved {} messages for {}",
         contact.messages.len(),
         contact.handle.as_str()
@@ -1447,7 +1447,7 @@ pub fn load_messages(
     });
 
     #[cfg(feature = "development")]
-    crate::log_info(&format!(
+    crate::log(&format!(
         "STORAGE: Loaded {} messages for {}",
         contact.messages.len(),
         contact.handle.as_str()
@@ -1472,7 +1472,7 @@ mod tests {
         section.add_field_multi(
             "contact",
             vec![
-                VsfType::hb(identity.handle_proof.to_vec()),
+                VsfType::hP(identity.handle_proof.to_vec()),
                 VsfType::x(identity.handle.clone()),
             ],
         );
@@ -1488,8 +1488,8 @@ mod tests {
         assert_eq!(fields[0].values.len(), 2);
 
         let proof: [u8; 32] = match &fields[0].values[0] {
-            VsfType::hb(v) if v.len() == 32 => v.as_slice().try_into().unwrap(),
-            _ => panic!("Expected hb"),
+            VsfType::hP(v) if v.len() == 32 => v.as_slice().try_into().unwrap(),
+            _ => panic!("Expected hP"),
         };
         let handle = match &fields[0].values[1] {
             VsfType::x(s) => s.clone(),

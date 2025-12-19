@@ -69,7 +69,7 @@ pub fn derive_conversation_token(participant_seeds: &[[u8; 32]]) -> [u8; 32] {
     }
 
     // DEBUG: Print input to spaghettify for cross-platform comparison
-    crate::log_info(&format!(
+    crate::log(&format!(
         "CONV_TOKEN: input_len={}, input_hash={}, sorted_seeds={}",
         input.len(),
         hex::encode(&blake3::hash(&input).as_bytes()[..8]),
@@ -82,7 +82,7 @@ pub fn derive_conversation_token(participant_seeds: &[[u8; 32]]) -> [u8; 32] {
 
     let result = spaghettify(&input);
 
-    crate::log_info(&format!(
+    crate::log(&format!(
         "CONV_TOKEN: spaghettify_result={}",
         hex::encode(&result[..8])
     ));
@@ -1302,7 +1302,7 @@ impl ClutchOfferPayload {
     /// Create from our keypairs (extract public keys)
     pub fn from_keypairs(keys: &ClutchAllKeypairs) -> Self {
         #[cfg(feature = "development")]
-        crate::log_info(&format!(
+        crate::log(&format!(
             "CLUTCH: Building offer with HQC pub[..8]={}",
             hex::encode(&keys.hqc256_public[..8])
         ));
@@ -1447,7 +1447,7 @@ impl ClutchKemResponsePayload {
     /// the peer's offer pubkeys. This gives truly distinct secrets per direction.
     pub fn encapsulate_to_peer(their_offer: &ClutchOfferPayload) -> (Self, ClutchKemSharedSecrets) {
         #[cfg(feature = "development")]
-        crate::log_info("CLUTCH: Encapsulating to peer's public keys (8 algorithms)...");
+        crate::log("CLUTCH: Encapsulating to peer's public keys (8 algorithms)...");
 
         // ===== PQC KEMs =====
         let (frodo976_ciphertext, frodo_ss) = frodo976_encapsulate(&their_offer.frodo976_public);
@@ -1457,7 +1457,7 @@ impl ClutchKemResponsePayload {
         let (hqc256_ciphertext, hqc_ss) = hqc256_encapsulate(&their_offer.hqc256_public);
 
         #[cfg(feature = "development")]
-        crate::log_info(&format!(
+        crate::log(&format!(
             "CLUTCH: HQC encap: their_pub[..8]={} → ct[..8]={}",
             hex::encode(&their_offer.hqc256_public[..8]),
             hex::encode(&hqc256_ciphertext[..8])
@@ -1478,7 +1478,7 @@ impl ClutchKemResponsePayload {
         let p256_ss = p256_ecdh(&p256_eph_secret, &their_offer.p256_public);
 
         #[cfg(feature = "development")]
-        crate::log_info(&format!(
+        crate::log(&format!(
             "CLUTCH: Encap ready (PQC: Frodo {}B, NTRU {}B, McEliece {}B, HQC {}B) (EC: X25519 32B, P384 {}B, secp256k1 {}B, P256 {}B)",
             frodo976_ciphertext.len(),
             ntru701_ciphertext.len(),
@@ -1546,19 +1546,19 @@ impl ClutchKemSharedSecrets {
         our_keys: &ClutchAllKeypairs,
     ) -> Self {
         #[cfg(feature = "development")]
-        crate::log_info("CLUTCH: Decapsulating from peer's response (8 algorithms)...");
+        crate::log("CLUTCH: Decapsulating from peer's response (8 algorithms)...");
 
         // ===== PQC KEMs =====
         let frodo = frodo976_decapsulate(&our_keys.frodo976_secret, &response.frodo976_ciphertext);
         #[cfg(feature = "development")]
-        crate::log_info(&format!(
+        crate::log(&format!(
             "CLUTCH: ✓ Frodo976 decap OK ({}B shared secret)",
             frodo.len()
         ));
 
         let ntru = ntru701_decapsulate(&our_keys.ntru701_secret, &response.ntru701_ciphertext);
         #[cfg(feature = "development")]
-        crate::log_info(&format!(
+        crate::log(&format!(
             "CLUTCH: ✓ NTRU701 decap OK ({}B shared secret)",
             ntru.len()
         ));
@@ -1566,7 +1566,7 @@ impl ClutchKemSharedSecrets {
         // TODO: Re-enable McEliece once PT transfer is stable
         let mceliece = if response.mceliece_ciphertext.is_empty() {
             #[cfg(feature = "development")]
-            crate::log_info("CLUTCH: - McEliece skipped (empty ciphertext)");
+            crate::log("CLUTCH: - McEliece skipped (empty ciphertext)");
             vec![0u8; 32] // Placeholder shared secret
         } else {
             let ss = mceliece460896_decapsulate(
@@ -1574,7 +1574,7 @@ impl ClutchKemSharedSecrets {
                 &response.mceliece_ciphertext,
             );
             #[cfg(feature = "development")]
-            crate::log_info(&format!(
+            crate::log(&format!(
                 "CLUTCH: ✓ McEliece decap OK ({}B shared secret)",
                 ss.len()
             ));
@@ -1582,7 +1582,7 @@ impl ClutchKemSharedSecrets {
         };
 
         #[cfg(feature = "development")]
-        crate::log_info(&format!(
+        crate::log(&format!(
             "CLUTCH: HQC256 decap: our_sk[..8]={} their_ct[..8]={}",
             hex::encode(&our_keys.hqc256_secret[..8]),
             hex::encode(&response.hqc256_ciphertext[..8])
@@ -1590,7 +1590,7 @@ impl ClutchKemSharedSecrets {
 
         let hqc = hqc256_decapsulate(&our_keys.hqc256_secret, &response.hqc256_ciphertext);
         #[cfg(feature = "development")]
-        crate::log_info(&format!(
+        crate::log(&format!(
             "CLUTCH: ✓ HQC256 decap OK ({}B shared secret)",
             hqc.len()
         ));
@@ -1599,25 +1599,25 @@ impl ClutchKemSharedSecrets {
         // This matches their ECDH(ephemeral_secret, our_offer_pubkey)
         let x25519 = x25519_ecdh(&our_keys.x25519_secret, &response.x25519_ephemeral);
         #[cfg(feature = "development")]
-        crate::log_info("CLUTCH: ✓ X25519 decap OK (32B shared secret)");
+        crate::log("CLUTCH: ✓ X25519 decap OK (32B shared secret)");
 
         let p384 = p384_ecdh(&our_keys.p384_secret, &response.p384_ephemeral);
         #[cfg(feature = "development")]
-        crate::log_info(&format!(
+        crate::log(&format!(
             "CLUTCH: ✓ P384 decap OK ({}B shared secret)",
             p384.len()
         ));
 
         let secp256k1 = secp256k1_ecdh(&our_keys.secp256k1_secret, &response.secp256k1_ephemeral);
         #[cfg(feature = "development")]
-        crate::log_info(&format!(
+        crate::log(&format!(
             "CLUTCH: ✓ secp256k1 decap OK ({}B shared secret)",
             secp256k1.len()
         ));
 
         let p256 = p256_ecdh(&our_keys.p256_secret, &response.p256_ephemeral);
         #[cfg(feature = "development")]
-        crate::log_info(&format!(
+        crate::log(&format!(
             "CLUTCH: ✓ P256 decap OK ({}B shared secret)",
             p256.len()
         ));
@@ -1741,7 +1741,7 @@ pub struct ClutchCompletePayload {
 /// Caller MUST call zeroize() on the result when done!
 pub fn generate_all_ephemeral_keypairs() -> ClutchAllKeypairs {
     #[cfg(feature = "development")]
-    crate::log_info("CLUTCH: Generating 8 ephemeral keypairs...");
+    crate::log("CLUTCH: Generating 8 ephemeral keypairs...");
 
     // Class 0: Classical EC
     let (x25519_secret, x25519_public) = generate_x25519_ephemeral();
@@ -1758,14 +1758,14 @@ pub fn generate_all_ephemeral_keypairs() -> ClutchAllKeypairs {
     let (hqc256_secret, hqc256_public) = generate_hqc256_keypair();
 
     #[cfg(feature = "development")]
-    crate::log_info(&format!(
+    crate::log(&format!(
         "CLUTCH: HQC256 keypair generated: pub[..8]={} sk[..8]={}",
         hex::encode(&hqc256_public[..8]),
         hex::encode(&hqc256_secret[..8])
     ));
 
     #[cfg(feature = "development")]
-    crate::log_info(&format!(
+    crate::log(&format!(
         "CLUTCH: Keypairs ready (X25519: {}B, P-384: {}B, secp256k1: {}B, P-256: {}B, Frodo: {}B, NTRU: {}B, McEliece: {}B, HQC: {}B)",
         x25519_public.len(),
         p384_public.len(),
@@ -1925,7 +1925,7 @@ pub fn avalanche_hash_eggs(eggs: &ClutchEggs) -> (Vec<u8>, Vec<u8>) {
     let start_time = std::time::Instant::now();
 
     #[cfg(feature = "development")]
-    crate::log_info(&format!(
+    crate::log(&format!(
         "CLUTCH: Collecting {} eggs for avalanche ({} bytes input)...",
         eggs.eggs.len(),
         eggs.eggs.len() * 32
@@ -2097,7 +2097,7 @@ pub fn avalanche_hash_eggs(eggs: &ClutchEggs) -> (Vec<u8>, Vec<u8>) {
     #[cfg(feature = "development")]
     {
         let total_elapsed = start_time.elapsed();
-        crate::log_info(&format!(
+        crate::log(&format!(
             "CLUTCH: avalanche_hash 2MB: step0={:.1}ms step1={:.1}ms step2={:.1}ms step3={:.1}ms total={:.1}ms",
             step0_elapsed.as_secs_f64() * 1000.0,
             (step1_elapsed - step0_elapsed).as_secs_f64() * 1000.0,
@@ -2272,7 +2272,7 @@ pub fn avalanche_expand_eggs(eggs: &ClutchEggs) -> Vec<u8> {
     #[cfg(feature = "development")]
     {
         let total_elapsed = start_time.elapsed();
-        crate::log_info(&format!(
+        crate::log(&format!(
             "CLUTCH: avalanche_expand 2MB: step0={:.1}ms step1={:.1}ms step2={:.1}ms step3={:.1}ms total={:.1}ms",
             step0_elapsed.as_secs_f64() * 1000.0,
             (step1_elapsed - step0_elapsed).as_secs_f64() * 1000.0,

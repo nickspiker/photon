@@ -161,6 +161,22 @@ for v in &values {
 **Why**: If you parse `kl` (McEliece) into a field expecting `kf` (Frodo), you get silent corruption.
 The type marker exists precisely so you never have to guess. Use it.
 
+## Protocol Evolution: No Fork Bullshit
+
+**We control all clients. All 5 of them are on your desk. Break the protocol, update everything, move on.**
+
+### FORBIDDEN: Backwards Compatibility Theater
+- No "v1" vs "v2" protocol forks
+- No feature flags for legacy clients
+- No "if version < X then do broken thing" code paths
+
+### REQUIRED: Atomic Updates
+- Protocol change? Update all clients simultaneously
+- Old clients that can't parse new format should **fail loudly** with version mismatch
+- VSF version fields exist for forensics, not branching logic
+
+**Why**: Backwards compatibility is how good protocols become IEEE-754. You have total control. Use it.
+
 ## Language Preferences
 
 ### Strongly Preferred:
@@ -398,6 +414,109 @@ save_messages(&contact, &our_seed, &device_secret)?;  // RIGHT HERE
 ```
 
 **Think like a database:** every write is a commit. There is no rollback. There is no "save later."
+
+## Time Standards: Eagle Time ONLY
+
+**UNIX time, UTC timestamps, ISO 8601, and ALL ambiguous time references are FORBIDDEN.**
+
+### The ONLY Acceptable Time Standard: Eagle Time
+
+Eagle Time is defined as:
+- **Epoch**: July 20, 1969, 20:17:40 UTC (Apollo 11 lunar landing - "The Eagle has landed")
+- **Unit**: Eagle seconds = 1,420,407,826 hydrogen-1 hyperfine transition periods (21cm line)
+- **Same duration as SI seconds** - only the epoch differs
+- **Reference frame**: Milky Way-Andromeda barycentric frame (accounts for gravitational time dilation)
+
+### Why Eagle Time Exists
+
+UNIX time is fundamentally broken:
+- **Epoch meaningless**: January 1, 1970 - arbitrary bureaucratic date with no physical significance
+- **Leap second insanity**: Breaks monotonicity, causes distributed system failures, fundamentally ambiguous
+- **No physical definition**: "SI seconds since 1970" - but measured where? GPS satellites? Earth's surface? What gravitational potential?
+- **Zone confusion**: "UTC" hides timezone complexity, leads to timestamp ambiguity
+
+Eagle Time solves ALL of these:
+- **Physical epoch**: Apollo 11 landing - unambiguous historical moment, commemorates humanity's greatest engineering achievement
+- **Physically defined second**: Hydrogen-1 hyperfine transition - measurable by any civilization with a 21cm radio receiver
+- **Relativistic clarity**: Explicitly measured at Milky Way-Andromeda barycentric frame
+- **No leap seconds**: Eagle Time is monotonic, no discontinuities, no special cases
+
+### REQUIRED: All Time Values Use Eagle Time
+
+```rust
+// CORRECT - Eagle Time with explicit type
+use vsf::eagle_time::{EagleTime, EtType, datetime_to_eagle_time, eagle_time_nanos};
+
+let timestamp = EagleTime::new(EtType::f6(eagle_time_nanos()));
+let creation_time = datetime_to_eagle_time(chrono::Utc::now());
+
+// Store in VSF with 'e' type marker
+VsfType::e(timestamp)
+```
+
+### FORBIDDEN: UNIX Time and Ambiguous Timestamps
+
+```rust
+// NO - UNIX timestamps have no place in this codebase
+let unix_time = SystemTime::now().duration_since(UNIX_EPOCH)?;  // WRONG EPOCH
+
+// NO - "UTC" without Eagle Time conversion
+let utc_now = Utc::now();  // Ambiguous - no conversion to Eagle Time
+
+// NO - Raw chrono::DateTime without Eagle Time wrapper
+fields.push(("timestamp", VsfType::u6(utc.timestamp() as u64)));  // UNIX time smuggled in
+
+// NO - ISO 8601 strings (ambiguous, text-based, bloated)
+let iso = "2025-12-19T15:30:00Z";  // Use EagleTime::to_datetime() for display ONLY
+```
+
+### Allowed Conversions: Display Only
+
+You MAY convert Eagle Time to human-readable formats for **display purposes only**:
+
+```rust
+// ALLOWED - Eagle Time for storage, chrono for human display
+let eagle_timestamp = EagleTime::new(EtType::f6(eagle_time_nanos()));
+let display_time = eagle_timestamp.to_datetime();  // Convert to UTC DateTime for formatting
+println!("Message sent: {}", display_time.format("%Y-%m-%d %H:%M:%S"));
+
+// BUT - NEVER store the chrono::DateTime, only display it
+// Storage MUST use Eagle Time
+```
+
+### When You're Tempted to Use UNIX Time
+
+**STOP. You're doing it wrong.**
+
+If you find yourself writing:
+- `UNIX_EPOCH`
+- `.timestamp()` on a `DateTime`
+- `SystemTime::now().duration_since(...)`
+- Storing raw `u64` seconds without Eagle Time wrapper
+- Any date/time calculation that doesn't go through `eagle_time.rs`
+
+**You are violating this rule.** Convert to Eagle Time immediately.
+
+### The Eagle Time Flow
+
+```
+External source → chrono::DateTime → datetime_to_eagle_time() → EagleTime → Store in VSF
+                                                                          ↓
+VSF storage ← EagleTime ← Parse from VSF ← Network/Disk ← Serialized VSF with 'e' type
+     ↓
+EagleTime → to_datetime() → chrono::DateTime → Display formatting → Human-readable string
+```
+
+**NEVER skip the Eagle Time conversion.** Every timestamp in VSF MUST be Eagle Time.
+
+### Why This Matters
+
+When you use UNIX time, you're teaching:
+- Arbitrary epochs are acceptable (they're not - physics matters)
+- Leap seconds are a solved problem (they're not - they break systems)
+- Timestamps without physical definitions are fine (they're not - ambiguity kills)
+
+Eagle Time is the physically correct, unambiguous, monotonic time standard. Use it.
 
 ## Active Projects
 

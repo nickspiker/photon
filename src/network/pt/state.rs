@@ -256,7 +256,7 @@ impl OutboundTransfer {
             self.complete_received = true;
             true
         } else {
-            crate::log_error("PT: COMPLETE verification failed");
+            crate::log("PT: COMPLETE verification failed");
             self.state = TransferState::Failed;
             false
         }
@@ -365,9 +365,9 @@ impl InboundTransfer {
         let success = self.receive_buffer.verify();
 
         if success {
-            crate::log_info("PT: Transfer verified successfully");
+            crate::log("PT: Transfer verified successfully");
         } else {
-            crate::log_error(&format!(
+            crate::log(&format!(
                 "PT: Hash mismatch - expected {:?}, got {:?}",
                 hex::encode(&self.receive_buffer.expected_hash()[..8]),
                 hex::encode(&final_hash[..8])

@@ -67,7 +67,7 @@ fi
 # Run binary once to self-verify signature
 # (Binary will verify Ed25519 signature on startup and exit if invalid)
 echo "Verifying signature..."
-if ! "$TMP_BINARY" --verify >/dev/null 2>&1; then
+if ! "$TMP_BINARY" verify >/dev/null 2>&1; then
     echo "Error: Binary signature verification failed."
     echo "The downloaded file may be corrupted or tampered with."
     rm -f "$TMP_BINARY"

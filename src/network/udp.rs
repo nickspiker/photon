@@ -15,7 +15,7 @@ pub async fn send(socket: &tokio::net::UdpSocket, data: &[u8], addr: SocketAddr)
     {
         let msg = vsf_inspect(data, "UDP", "TX", &addr.to_string());
         if !msg.is_empty() {
-            crate::log_info(&msg);
+            crate::log(&msg);
         }
     }
     let _ = socket.send_to(data, addr).await;
@@ -31,7 +31,7 @@ pub fn send_sync(
     {
         let msg = vsf_inspect(data, "UDP", "TX", &addr.to_string());
         if !msg.is_empty() {
-            crate::log_info(&msg);
+            crate::log(&msg);
         }
     }
     socket.send_to(data, addr)
@@ -42,7 +42,7 @@ pub fn send_sync(
 pub fn log_received(data: &[u8], addr: &SocketAddr) {
     let msg = vsf_inspect(data, "UDP", "RX", &addr.to_string());
     if !msg.is_empty() {
-        crate::log_info(&msg);
+        crate::log(&msg);
     }
 }
 

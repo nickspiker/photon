@@ -83,7 +83,7 @@ pub async fn put_blob(
 
     let status = response.status();
     if status.is_success() {
-        crate::log_info(&format!("FGTW: Uploaded blob ({} bytes)", data.len()));
+        crate::log(&format!("FGTW: Uploaded blob ({} bytes)", data.len()));
         Ok(())
     } else if status == reqwest::StatusCode::FORBIDDEN {
         let body = response.text().await.unwrap_or_default();
@@ -121,7 +121,7 @@ pub async fn get_blob(storage_key: &str) -> Result<Option<Vec<u8>>, BlobError> {
             .bytes()
             .await
             .map_err(|e| BlobError::Network(format!("Failed to read blob: {}", e)))?;
-        crate::log_info(&format!("FGTW: Downloaded blob ({} bytes)", bytes.len()));
+        crate::log(&format!("FGTW: Downloaded blob ({} bytes)", bytes.len()));
         Ok(Some(bytes.to_vec()))
     } else if status == reqwest::StatusCode::NOT_FOUND {
         Ok(None)
@@ -176,7 +176,7 @@ pub fn put_blob_blocking(
 
     let status = response.status();
     if status.is_success() {
-        crate::log_info(&format!("FGTW: Uploaded blob ({} bytes)", data.len()));
+        crate::log(&format!("FGTW: Uploaded blob ({} bytes)", data.len()));
         Ok(())
     } else if status == reqwest::StatusCode::FORBIDDEN {
         let body = response.text().unwrap_or_default();
@@ -206,7 +206,7 @@ pub fn get_blob_blocking(storage_key: &str) -> Result<Option<Vec<u8>>, BlobError
         let bytes = response
             .bytes()
             .map_err(|e| BlobError::Network(format!("Failed to read blob: {}", e)))?;
-        crate::log_info(&format!("FGTW: Downloaded blob ({} bytes)", bytes.len()));
+        crate::log(&format!("FGTW: Downloaded blob ({} bytes)", bytes.len()));
         Ok(Some(bytes.to_vec()))
     } else if status == reqwest::StatusCode::NOT_FOUND {
         Ok(None)
@@ -251,7 +251,7 @@ pub async fn delete_blob(storage_key: &str, device_keypair: &Keypair) -> Result<
 
     let status = response.status();
     if status.is_success() {
-        crate::log_info("FGTW: Deleted blob");
+        crate::log("FGTW: Deleted blob");
         Ok(())
     } else if status == reqwest::StatusCode::NOT_FOUND {
         // Treat not found as success for delete

@@ -108,7 +108,7 @@ pub fn encode_contacts(
             .append_multi(
                 "contact",
                 vec![
-                    VsfType::hb(c.handle_proof.to_vec()),
+                    VsfType::hP(c.handle_proof.to_vec()),
                     VsfType::x(c.handle.clone()),
                     VsfType::ke(c.device_pubkey.to_vec()),
                     VsfType::u3(c.trust_level),
@@ -140,7 +140,7 @@ pub fn decode_contacts(
     for field in section.get_fields("contact") {
         if field.values.len() >= 5 {
             let handle_proof: [u8; 32] = match &field.values[0] {
-                VsfType::hb(v) if v.len() == 32 => v.as_slice().try_into().unwrap(),
+                VsfType::hP(v) if v.len() == 32 => v.as_slice().try_into().unwrap(),
                 _ => continue,
             };
             let handle = match &field.values[1] {
@@ -279,7 +279,7 @@ pub fn sync_contacts_to_cloud(
     // Encode and encrypt
     let encrypted = encode_contacts(&cloud_contacts, &encryption_key)?;
 
-    crate::log_info(&format!(
+    crate::log(&format!(
         "Cloud: Uploading {} contacts ({} bytes encrypted)",
         contacts.len(),
         encrypted.len()
@@ -331,14 +331,14 @@ pub fn load_contacts_from_cloud(
         }
     };
 
-    crate::log_info(&format!(
+    crate::log(&format!(
         "Cloud: Downloaded contacts blob ({} bytes)",
         encrypted.len()
     ));
 
     // Decrypt and decode
     let contacts = decode_contacts(&encrypted, &encryption_key)?;
-    crate::log_info(&format!("Cloud: Decoded {} contacts", contacts.len()));
+    crate::log(&format!("Cloud: Decoded {} contacts", contacts.len()));
     Ok(Some(contacts))
 }
 

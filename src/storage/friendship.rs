@@ -590,7 +590,7 @@ pub fn load_all_friendships(
                                 result.push((friendship_id, chains));
                             }
                             Err(e) => {
-                                crate::log_error(&format!(
+                                crate::log(&format!(
                                     "Failed to load friendship {}: {}",
                                     name, e
                                 ));
@@ -612,7 +612,7 @@ pub fn delete_friendship_chains(
     let dir = friendship_dir(friendship_id);
     if dir.exists() {
         fs::remove_dir_all(&dir)?;
-        crate::log_info(&format!(
+        crate::log(&format!(
             "CLUTCH: Deleted old chains directory: {}",
             dir.display()
         ));
