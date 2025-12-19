@@ -52,22 +52,43 @@ echo ""
 echo "Building Android release..."
 ./build-android.sh
 
-# Copy to deployment folder
-cp target/release/photon-messenger /mnt/Chiton/MEGA/holdmyoscilloscope/photon/photon-messenger-linux
-cp target/x86_64-pc-windows-gnu/release/photon-messenger.exe /mnt/Chiton/MEGA/holdmyoscilloscope/photon/photon-messenger-windows.exe
-cp target/x86_64-unknown-redox/release/photon-messenger /mnt/Chiton/MEGA/holdmyoscilloscope/photon/photon-messenger-redox
-cp target/x86_64-apple-darwin/release/photon-messenger /mnt/Chiton/MEGA/holdmyoscilloscope/photon/photon-messenger-macos-intel
-cp target/aarch64-apple-darwin/release/photon-messenger /mnt/Chiton/MEGA/holdmyoscilloscope/photon/photon-messenger-macos-arm64
-cp android/app/build/outputs/apk/release/app-release.apk /mnt/Chiton/MEGA/holdmyoscilloscope/photon/photon-messenger.apk
-cp install.sh /mnt/Chiton/MEGA/holdmyoscilloscope/photon/install.sh
-cp assets/icon-1024.png /mnt/Chiton/MEGA/holdmyoscilloscope/photon/icon-1024.png
+# R2 bucket for releases (flat structure with release type in filename)
+R2_BUCKET="holdmyoscilloscope"
+R2_PATH="photon"
 
-# Patch install.ps1 with the Windows binary SHA256 hash
+# Get Windows SHA256 for install script
 WINDOWS_SHA256=$(cat target/x86_64-pc-windows-gnu/release/photon-messenger.exe.sha256)
-sed "s/\$expectedHash = \"[A-F0-9]*\"/\$expectedHash = \"$WINDOWS_SHA256\"/" install.ps1 > /mnt/Chiton/MEGA/holdmyoscilloscope/photon/install.ps1
 
 echo ""
-echo "✓ Linux, Windows, Redox, macOS Intel, macOS ARM64, Android binaries, icon, and install scripts deployed"
-echo "  Windows SHA256: $WINDOWS_SHA256"
+echo "Uploading to R2 ($R2_BUCKET/$R2_PATH)..."
 
-wrangler pages deploy /mnt/Chiton/MEGA/holdmyoscilloscope --project-name=oscilloscope
+# Upload all release binaries to R2 (flat naming with -release suffix)
+wrangler r2 object put "$R2_BUCKET/$R2_PATH/photon-messenger-linux-release" \
+    --file target/release/photon-messenger --remote
+wrangler r2 object put "$R2_BUCKET/$R2_PATH/photon-messenger-windows-release.exe" \
+    --file target/x86_64-pc-windows-gnu/release/photon-messenger.exe --remote
+wrangler r2 object put "$R2_BUCKET/$R2_PATH/photon-messenger-redox-release" \
+    --file target/x86_64-unknown-redox/release/photon-messenger --remote
+wrangler r2 object put "$R2_BUCKET/$R2_PATH/photon-messenger-macos-intel-release" \
+    --file target/x86_64-apple-darwin/release/photon-messenger --remote
+wrangler r2 object put "$R2_BUCKET/$R2_PATH/photon-messenger-macos-arm64-release" \
+    --file target/aarch64-apple-darwin/release/photon-messenger --remote
+wrangler r2 object put "$R2_BUCKET/$R2_PATH/photon-messenger-android-release.apk" \
+    --file android/app/build/outputs/apk/release/app-release.apk --remote
+
+# Upload install scripts and assets
+wrangler r2 object put "$R2_BUCKET/$R2_PATH/install-release.sh" --file install-release.sh --remote
+wrangler r2 object put "$R2_BUCKET/$R2_PATH/icon-1024.png" --file assets/icon-1024.png --remote
+wrangler r2 object put "$R2_BUCKET/$R2_PATH/app.png" --file assets/icon-256.png --remote
+
+# Patch and upload install-release.ps1 with correct hash
+sed "s/\$expectedHash = \"[A-F0-9]*\"/\$expectedHash = \"$WINDOWS_SHA256\"/" install-release.ps1 > /tmp/install-release.ps1
+wrangler r2 object put "$R2_BUCKET/$R2_PATH/install-release.ps1" --file /tmp/install-release.ps1 --remote
+
+echo ""
+echo "Linux, Windows, Redox, macOS Intel, macOS ARM64, Android binaries deployed to R2"
+echo "  Windows SHA256: $WINDOWS_SHA256"
+echo ""
+echo "Install with:"
+echo "  curl -sSfL https://brobdingnagian.holdmyoscilloscope.com/$R2_PATH/install-release.sh | sh"
+echo "  powershell -ExecutionPolicy Bypass -c \"irm https://brobdingnagian.holdmyoscilloscope.com/$R2_PATH/install-release.ps1 | iex\""

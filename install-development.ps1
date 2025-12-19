@@ -1,5 +1,6 @@
-# Photon Messenger Installer for Windows
+# Photon Messenger DEVELOPMENT Installer for Windows
 # Run this script in PowerShell
+# This installs the development build with logging enabled
 
 # Make errors visible instead of silent BOOP
 $ErrorActionPreference = "Stop"
@@ -13,8 +14,11 @@ trap {
     exit 1
 }
 
-Write-Host "Photon Messenger Installer" -ForegroundColor Cyan
-Write-Host "============================" -ForegroundColor Cyan
+Write-Host "Photon Messenger DEVELOPMENT Installer" -ForegroundColor Magenta
+Write-Host "=======================================" -ForegroundColor Magenta
+Write-Host ""
+Write-Host "This is a DEVELOPMENT build with logging enabled." -ForegroundColor Yellow
+Write-Host "Logs will be written to: %APPDATA%\photon\photon.log" -ForegroundColor Yellow
 Write-Host ""
 
 # Detect architecture
@@ -29,12 +33,12 @@ Write-Host "Detected: Windows ($arch)" -ForegroundColor White
 Write-Host ""
 
 # Download binary directly to install location (TEMP often blocked by Defender)
-$downloadUrl = "https://holdmyoscilloscope.com/photon/photon-messenger-windows.exe"
+$downloadUrl = "https://brobdingnagian.holdmyoscilloscope.com/photon/photon-messenger-windows-development.exe"
 $installDir = "$env:LOCALAPPDATA\Programs\PhotonMessenger"
 New-Item -ItemType Directory -Path $installDir -Force | Out-Null
 $binaryPath = "$installDir\photon-messenger.exe"
 
-Write-Host "Downloading Photon Messenger..." -ForegroundColor Yellow
+Write-Host "Downloading Photon Messenger (dev)..." -ForegroundColor Yellow
 
 try {
     Invoke-WebRequest -Uri $downloadUrl -OutFile $binaryPath -ErrorAction Stop
@@ -47,7 +51,7 @@ try {
 # Verify SHA256 hash (Defender blocks execution, so we verify hash instead)
 Write-Host "Verifying integrity..." -ForegroundColor Yellow
 
-$expectedHash = "867F644EEB52B2979339681025DB70650400FAE1011F815AAF72064E59935719"
+$expectedHash = "0000000000000000000000000000000000000000000000000000000000000000"
 $actualHash = (Get-FileHash $binaryPath -Algorithm SHA256).Hash
 
 if ($actualHash -ne $expectedHash) {
@@ -89,7 +93,7 @@ $shortcutPath = [System.IO.Path]::Combine($startMenu, "Photon Messenger.lnk")
 $WshShell = New-Object -ComObject WScript.Shell
 $Shortcut = $WshShell.CreateShortcut($shortcutPath)
 $Shortcut.TargetPath = $binaryPath
-$Shortcut.Description = "Photon Messenger - Decentralized secure messaging"
+$Shortcut.Description = "Photon Messenger (DEV) - Decentralized secure messaging"
 $Shortcut.WorkingDirectory = $installDir
 $Shortcut.Save()
 
@@ -99,12 +103,15 @@ Write-Host ""
 # Clean up
 $ProgressPreference = 'Continue'
 
-Write-Host "==========================================" -ForegroundColor Cyan
-Write-Host "Photon Messenger installed successfully!" -ForegroundColor Green
-Write-Host "==========================================" -ForegroundColor Cyan
+Write-Host "==========================================" -ForegroundColor Magenta
+Write-Host "Photon Messenger (DEV) installed!" -ForegroundColor Green
+Write-Host "==========================================" -ForegroundColor Magenta
 Write-Host ""
 Write-Host "Run 'photon-messenger' to start." -ForegroundColor White
 Write-Host "Or find 'Photon Messenger' in your Start Menu." -ForegroundColor White
+Write-Host ""
+Write-Host "DEVELOPMENT BUILD - Logs at:" -ForegroundColor Yellow
+Write-Host "  $env:APPDATA\photon\photon.log" -ForegroundColor Yellow
 Write-Host ""
 Write-Host "Note: You may need to restart your terminal" -ForegroundColor Yellow
 Write-Host "      to refresh your PATH environment variable." -ForegroundColor Yellow

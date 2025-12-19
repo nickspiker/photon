@@ -42,8 +42,8 @@ fi
 echo "Detected: $OS ($ARCH)"
 echo ""
 
-# Download binary
-DOWNLOAD_URL="https://holdmyoscilloscope.com/photon/photon-messenger-$PLATFORM"
+# Download binary (flat naming with -release suffix)
+DOWNLOAD_URL="https://brobdingnagian.holdmyoscilloscope.com/photon/photon-messenger-$PLATFORM-release"
 TMP_BINARY="/tmp/photon-messenger-$$"
 
 echo "Downloading Photon Messenger..."
@@ -103,7 +103,7 @@ if [ "$OS" = "Darwin" ]; then
     chmod +x "$APP_DIR/$APP_NAME/Contents/MacOS/$BINARY_NAME"
 
     # Download icon and convert to icns (macOS has iconutil built-in)
-    ICON_URL="https://holdmyoscilloscope.com/photon/icon-1024.png"
+    ICON_URL="https://brobdingnagian.holdmyoscilloscope.com/photon/icon-1024.png"
     TMP_ICON="/tmp/photon-icon-$$"
     mkdir -p "$TMP_ICON.iconset"
 
@@ -214,9 +214,9 @@ if [ "$PLATFORM" = "linux" ]; then
     ICON_PATH="$ICON_DIR/photon-messenger.png"
 
     if command -v curl >/dev/null 2>&1; then
-        curl -sSfL https://holdmyoscilloscope.com/photon/app.png -o "$ICON_PATH" 2>/dev/null || true
+        curl -sSfL https://brobdingnagian.holdmyoscilloscope.com/photon/app.png -o "$ICON_PATH" 2>/dev/null || true
     elif command -v wget >/dev/null 2>&1; then
-        wget -q https://holdmyoscilloscope.com/photon/app.png -O "$ICON_PATH" 2>/dev/null || true
+        wget -q https://brobdingnagian.holdmyoscilloscope.com/photon/app.png -O "$ICON_PATH" 2>/dev/null || true
     fi
 
     # Create .desktop file
