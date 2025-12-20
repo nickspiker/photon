@@ -765,6 +765,7 @@ fn get_field<'a>(fields: &'a [(String, VsfType)], key: &str) -> Option<&'a VsfTy
 fn extract_hash(fields: &[(String, VsfType)], key: &str) -> Result<[u8; 32], String> {
     let hash_bytes = match get_field(fields, key) {
         Some(VsfType::hP(bytes)) => bytes,
+        Some(VsfType::hb(bytes)) => bytes, // Blake3 hash (used in ACKs)
         _ => return Err(format!("Missing or invalid hash: {}", key)),
     };
     let mut arr = [0u8; 32];
