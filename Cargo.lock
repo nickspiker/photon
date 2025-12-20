@@ -4480,6 +4480,8 @@ dependencies = [
 [[package]]
 name = "spirix"
 version = "0.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1cd374ddcaf90fb611d8c16608d04ae1a6a7fa92e4ebe437797f32fc835f358a"
 dependencies = [
  "i256",
  "num-complex",
@@ -5188,6 +5190,8 @@ checksum = "051eb1abcf10076295e815102942cc58f9d5e3b4560e46e53c21e8ff6f3af7b1"
 [[package]]
 name = "vsf"
 version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6cd183b2bfa13706c709a4cb9b0edd9de8fc998a748689bb66385c4489d236af"
 dependencies = [
  "aes-gcm 0.10.3",
  "bitvec",
