@@ -49,7 +49,7 @@ subtle = "2.6"  # Constant-time comparisons
 
 # Post-quantum KEMs
 frodo-kem-rs = "0.5.0"
-pqcrypto-ntru = "0.5.8"
+pqcrypto-ntru = { version = "0.5.8", default-features = false }
 pqcrypto-hqc = "0.2.2"
 pqcrypto-traits = "0.3.5"
 classic-mceliece-rust = { version = "3.1.0", features = ["mceliece460896"] }
