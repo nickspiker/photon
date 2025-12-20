@@ -15,24 +15,34 @@ impl PhotonApp {
         self.current_text_state.textbox_focused
     }
 
-    /// Returns the font size for text rendering
+    /// Returns the font size for text rendering (min_dim / 16)
     pub fn font_size(&self) -> f32 {
-        self.layout.textbox.font_size
+        self.min_dim as f32 / 16.0
     }
 
-    /// Returns the textbox width
+    /// Returns the textbox width (wide/horizontal layout)
     pub fn textbox_width(&self) -> usize {
-        self.layout.textbox.width
+        let margin = self.min_dim / 8;
+        self.width as usize - margin * 2
     }
 
     /// Returns the textbox height
     pub fn textbox_height(&self) -> usize {
-        self.layout.textbox.height
+        self.min_dim / 8
     }
 
-    /// Returns the textbox Y position
+    /// Returns the textbox Y position (varies by app state)
     pub fn textbox_y(&self) -> usize {
-        self.layout.textbox.y
+        match &self.app_state {
+            // Search screen: textbox below avatar area
+            AppState::Ready | AppState::Searching => self.min_dim as usize * 5 / 8,
+            // Conversation: textbox at bottom
+            AppState::Conversation => {
+                let box_height = self.textbox_height();
+                self.height as usize - box_height * 3 / 2
+            }
+            _ => self.height as usize * 5 / 8, // Center for Launch
+        }
     }
 
     /// Recalculate all character widths (e.g., after font size change on resize)
@@ -133,8 +143,19 @@ impl PhotonApp {
         let textbox_half = (textbox_width / 2) as f32;
         let text_half = (total_text_width / 2) as f32;
 
-        // Right margin accounts for button if present (uses content_width from layout)
-        let right_margin = textbox_width - self.layout.textbox.content_width + margin;
+        // Button present on Ready/Searching/Conversation, NOT on Launch (attest screen)
+        let has_button = matches!(
+            self.app_state,
+            AppState::Ready | AppState::Searching | AppState::Conversation
+        );
+        let right_margin = if has_button {
+            let box_height = self.textbox_height();
+            let button_size = box_height * 7 / 8;
+            let inset = box_height / 16;
+            margin + button_size + inset * 2
+        } else {
+            margin
+        };
 
         let blinkey_pos_in_centered_text = blinkey_pixel_offset as f32 - text_half;
         let blinkey_pos_in_view =
@@ -159,9 +180,8 @@ impl PhotonApp {
             return false;
         }
 
-        let box_width = self.layout.textbox.width;
-        let box_left = self.layout.textbox.x;
-        let box_right = box_left + box_width;
+        let margin = self.min_dim / 8;
+        let box_width = self.width as usize - margin * 2;
         let total_text_width = self.current_text_state.width;
 
         // If text fits in textbox, no need to scroll during selection
@@ -171,6 +191,8 @@ impl PhotonApp {
         }
 
         let now = std::time::Instant::now();
+        let box_left = margin;
+        let box_right = self.width as usize - margin;
         let mouse_x = self.mouse_x as f32;
 
         // Calculate time delta

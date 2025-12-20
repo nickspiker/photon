@@ -7,12 +7,12 @@ impl PhotonApp {
 
         // Increment frame counter (every render() call)
         self.frame_counter += 1;
-        // Layout constants from centralized layout (recomputed on resize/state change)
-        let font_size = self.layout.textbox.font_size;
-        let box_width = self.layout.textbox.width;
-        let box_height = self.layout.textbox.height;
-        let center_x = self.layout.center_x;
-        let textbox_y = self.layout.textbox.y;
+        // Calculate layout constants (needed by all rendering paths)
+        let font_size = self.font_size();
+        let box_width = self.textbox_width();
+        let box_height = self.textbox_height();
+        let center_x = self.width as usize / 2;
+        let textbox_y = self.textbox_y();
 
         // Update spectrum phase and speckle animation while attesting or searching
         if matches!(
@@ -338,54 +338,58 @@ impl PhotonApp {
                         box_height,
                     );
 
-                    // Draw search button inset in bottom-right corner of textbox
-                    if let Some(btn) = &self.layout.textbox.button {
-                        if !self.current_text_state.chars.is_empty() {
-                            // Button colour based on search state
-                            let button_colour = if matches!(self.app_state, AppState::Searching) {
-                                theme::BUTTON_YELLOW
-                            } else {
-                                theme::BUTTON_BLUE
-                            };
+                    // Draw search button inset in bottom-right corner of textbox (like conversation send button)
+                    if !self.current_text_state.chars.is_empty() {
+                        let button_size = box_height * 7 / 8;
+                        let inset = box_height / 16;
+                        let button_center_x = center_x + box_width / 2 - inset - button_size / 2;
+                        let textbox_bottom = textbox_y + box_height / 2;
+                        let button_center_y = textbox_bottom - inset - button_size / 2;
 
-                            Self::draw_button(
+                        // Button colour based on search state
+                        let button_colour = if matches!(self.app_state, AppState::Searching) {
+                            theme::BUTTON_YELLOW
+                        } else {
+                            theme::BUTTON_BLUE
+                        };
+
+                        Self::draw_button(
+                            pixels,
+                            &mut self.hit_test_map,
+                            Some(&mut self.textbox_mask),
+                            self.width as usize,
+                            self.height as usize,
+                            button_center_x,
+                            button_center_y,
+                            button_size,
+                            button_size,
+                            HIT_PRIMARY_BUTTON,
+                            button_colour,
+                            theme::BUTTON_LIGHT_EDGE,
+                            theme::BUTTON_SHADOW_EDGE,
+                        );
+
+                        // Draw magnifying glass or hourglass during search
+                        let (r, g, b, _a) = unpack_argb(theme::BUTTON_TEXT);
+                        if matches!(self.app_state, AppState::Searching) {
+                            Self::draw_hourglass_symbol(
                                 pixels,
-                                &mut self.hit_test_map,
-                                Some(&mut self.textbox_mask),
                                 self.width as usize,
-                                self.height as usize,
-                                btn.center_x,
-                                btn.center_y,
-                                btn.size,
-                                btn.size,
-                                HIT_PRIMARY_BUTTON,
-                                button_colour,
-                                theme::BUTTON_LIGHT_EDGE,
-                                theme::BUTTON_SHADOW_EDGE,
+                                button_center_x,
+                                button_center_y,
+                                button_size * 3 / 4,
+                                self.hourglass_angle,
+                                (r, g, b),
                             );
-
-                            // Draw magnifying glass or hourglass during search
-                            let (r, g, b, _a) = unpack_argb(theme::BUTTON_TEXT);
-                            if matches!(self.app_state, AppState::Searching) {
-                                Self::draw_hourglass_symbol(
-                                    pixels,
-                                    self.width as usize,
-                                    btn.center_x,
-                                    btn.center_y,
-                                    btn.icon_size,
-                                    self.hourglass_angle,
-                                    (r, g, b),
-                                );
-                            } else {
-                                Self::draw_magnify_symbol(
-                                    pixels,
-                                    self.width as usize,
-                                    btn.center_x,
-                                    btn.center_y,
-                                    btn.icon_size,
-                                    (r, g, b),
-                                );
-                            }
+                        } else {
+                            Self::draw_magnify_symbol(
+                                pixels,
+                                self.width as usize,
+                                button_center_x,
+                                button_center_y,
+                                button_size * 3 / 4,
+                                (r, g, b),
+                            );
                         }
                     }
 
@@ -826,37 +830,42 @@ impl PhotonApp {
                                     );
 
                                     // Draw send button inset in bottom-right corner of textbox (only if text entered)
-                                    if let Some(btn) = &self.layout.textbox.button {
-                                        if !self.current_text_state.chars.is_empty() {
-                                            Self::draw_button(
-                                                pixels,
-                                                &mut self.hit_test_map,
-                                                Some(&mut self.textbox_mask),
-                                                self.width as usize,
-                                                self.height as usize,
-                                                btn.center_x,
-                                                btn.center_y,
-                                                btn.size,
-                                                btn.size,
-                                                HIT_PRIMARY_BUTTON,
-                                                theme::BUTTON_BLUE,
-                                                theme::BUTTON_LIGHT_EDGE,
-                                                theme::BUTTON_SHADOW_EDGE,
-                                            );
+                                    if !self.current_text_state.chars.is_empty() {
+                                        let send_button_size = box_height * 7 / 8;
+                                        let inset = box_height / 16;
+                                        let button_center_x =
+                                            center_x + box_width / 2 - inset - send_button_size / 2;
+                                        let textbox_bottom = textbox_y + box_height / 2;
+                                        let button_center_y =
+                                            textbox_bottom - inset - send_button_size / 2;
+                                        Self::draw_button(
+                                            pixels,
+                                            &mut self.hit_test_map,
+                                            Some(&mut self.textbox_mask),
+                                            self.width as usize,
+                                            self.height as usize,
+                                            button_center_x,
+                                            button_center_y,
+                                            send_button_size,
+                                            send_button_size,
+                                            HIT_PRIMARY_BUTTON,
+                                            theme::BUTTON_BLUE,
+                                            theme::BUTTON_LIGHT_EDGE,
+                                            theme::BUTTON_SHADOW_EDGE,
+                                        );
 
-                                            // Draw ">" arrow on send button
-                                            self.text_renderer.draw_text_center_u32(
-                                                pixels,
-                                                self.width as usize,
-                                                ">",
-                                                btn.center_x as f32,
-                                                btn.center_y as f32,
-                                                font_size,
-                                                700,
-                                                theme::BUTTON_TEXT,
-                                                theme::FONT_UI,
-                                            );
-                                        }
+                                        // Draw ">" arrow on send button
+                                        self.text_renderer.draw_text_center_u32(
+                                            pixels,
+                                            self.width as usize,
+                                            ">",
+                                            button_center_x as f32,
+                                            button_center_y as f32,
+                                            font_size,
+                                            700,
+                                            theme::BUTTON_TEXT,
+                                            theme::FONT_UI,
+                                        );
                                     }
 
                                     // Glow if focused
@@ -1184,40 +1193,45 @@ impl PhotonApp {
                 let prev_had_button = !self.previous_text_state.is_empty;
 
                 // Only draw/remove button if state changed OR if doing full redraw
-                if let Some(btn) = &self.layout.textbox.button {
-                    if (current_has_button != prev_had_button || self.window_dirty)
-                        && current_has_button
-                    {
-                        // Differential: button appearing (mask already set during window_dirty)
-                        Self::draw_button(
-                            pixels,
-                            &mut self.hit_test_map,
-                            None,
-                            self.width as usize,
-                            self.height as usize,
-                            btn.center_x,
-                            btn.center_y,
-                            btn.size,
-                            btn.size,
-                            HIT_PRIMARY_BUTTON,
-                            theme::BUTTON_BLUE,
-                            theme::BUTTON_LIGHT_EDGE,
-                            theme::BUTTON_SHADOW_EDGE,
-                        );
+                if (current_has_button != prev_had_button || self.window_dirty)
+                    && current_has_button
+                {
+                    // Button should be visible - draw it
+                    let send_button_size = box_height * 7 / 8;
+                    let inset = box_height / 16;
+                    let button_center_x = center_x + box_width / 2 - inset - send_button_size / 2;
+                    let textbox_bottom = textbox_y + box_height / 2;
+                    let button_center_y = textbox_bottom - inset - send_button_size / 2;
 
-                        // Draw ">" arrow on send button
-                        self.text_renderer.draw_text_center_u32(
-                            pixels,
-                            self.width as usize,
-                            ">",
-                            btn.center_x as f32,
-                            btn.center_y as f32,
-                            font_size,
-                            700,
-                            theme::BUTTON_TEXT,
-                            theme::FONT_UI,
-                        );
-                    }
+                    // Differential: button appearing (mask already set during window_dirty)
+                    Self::draw_button(
+                        pixels,
+                        &mut self.hit_test_map,
+                        None,
+                        self.width as usize,
+                        self.height as usize,
+                        button_center_x,
+                        button_center_y,
+                        send_button_size,
+                        send_button_size,
+                        HIT_PRIMARY_BUTTON,
+                        theme::BUTTON_BLUE,
+                        theme::BUTTON_LIGHT_EDGE,
+                        theme::BUTTON_SHADOW_EDGE,
+                    );
+
+                    // Draw ">" arrow on send button
+                    self.text_renderer.draw_text_center_u32(
+                        pixels,
+                        self.width as usize,
+                        ">",
+                        button_center_x as f32,
+                        button_center_y as f32,
+                        font_size,
+                        700,
+                        theme::BUTTON_TEXT,
+                        theme::FONT_UI,
+                    );
                 }
             }
 
@@ -1227,42 +1241,46 @@ impl PhotonApp {
                 let prev_had_button = !self.previous_text_state.is_empty;
 
                 // Only draw button if state changed from no-button to button
-                if let Some(btn) = &self.layout.textbox.button {
-                    if current_has_button && !prev_had_button {
-                        let button_colour = if matches!(self.app_state, AppState::Searching) {
-                            theme::BUTTON_YELLOW
-                        } else {
-                            theme::BUTTON_BLUE
-                        };
+                if current_has_button && !prev_had_button {
+                    let button_size = box_height * 7 / 8;
+                    let inset = box_height / 16;
+                    let button_center_x = center_x + box_width / 2 - inset - button_size / 2;
+                    let textbox_bottom = textbox_y + box_height / 2;
+                    let button_center_y = textbox_bottom - inset - button_size / 2;
 
-                        // Differential: button appearing (mask already set during window_dirty)
-                        Self::draw_button(
-                            pixels,
-                            &mut self.hit_test_map,
-                            None,
-                            self.width as usize,
-                            self.height as usize,
-                            btn.center_x,
-                            btn.center_y,
-                            btn.size,
-                            btn.size,
-                            HIT_PRIMARY_BUTTON,
-                            button_colour,
-                            theme::BUTTON_LIGHT_EDGE,
-                            theme::BUTTON_SHADOW_EDGE,
-                        );
+                    let button_colour = if matches!(self.app_state, AppState::Searching) {
+                        theme::BUTTON_YELLOW
+                    } else {
+                        theme::BUTTON_BLUE
+                    };
 
-                        // Draw magnifying glass on search button
-                        let (r, g, b, _a) = unpack_argb(theme::BUTTON_TEXT);
-                        Self::draw_magnify_symbol(
-                            pixels,
-                            self.width as usize,
-                            btn.center_x,
-                            btn.center_y,
-                            btn.icon_size,
-                            (r, g, b),
-                        );
-                    }
+                    // Differential: button appearing (mask already set during window_dirty)
+                    Self::draw_button(
+                        pixels,
+                        &mut self.hit_test_map,
+                        None,
+                        self.width as usize,
+                        self.height as usize,
+                        button_center_x,
+                        button_center_y,
+                        button_size,
+                        button_size,
+                        HIT_PRIMARY_BUTTON,
+                        button_colour,
+                        theme::BUTTON_LIGHT_EDGE,
+                        theme::BUTTON_SHADOW_EDGE,
+                    );
+
+                    // Draw magnifying glass on search button
+                    let (r, g, b, _a) = unpack_argb(theme::BUTTON_TEXT);
+                    Self::draw_magnify_symbol(
+                        pixels,
+                        self.width as usize,
+                        button_center_x,
+                        button_center_y,
+                        button_size * 3 / 4,
+                        (r, g, b),
+                    );
                 }
             }
 
@@ -1349,20 +1367,23 @@ impl PhotonApp {
                         }
                         HoveredButton::QueryButton => {
                             // Button is now inset in textbox bottom-right for all relevant states
-                            if let Some(btn) = &self.layout.textbox.button {
-                                Self::draw_hover_centerpoint(
-                                    pixels,
-                                    &self.hit_test_map,
-                                    self.width as usize,
-                                    self.height as usize,
-                                    btn.center_x,
-                                    btn.center_y,
-                                    HIT_PRIMARY_BUTTON,
-                                    false,
-                                    theme::QUERY_BUTTON_HOVER,
-                                    self.debug,
-                                );
-                            }
+                            let send_size = box_height * 7 / 8;
+                            let inset = box_height / 16;
+                            let button_center_x = center_x + box_width / 2 - inset - send_size / 2;
+                            let textbox_bottom = textbox_y + box_height / 2;
+                            let query_button_center_y = textbox_bottom - inset - send_size / 2;
+                            Self::draw_hover_centerpoint(
+                                pixels,
+                                &self.hit_test_map,
+                                self.width as usize,
+                                self.height as usize,
+                                button_center_x,
+                                query_button_center_y,
+                                HIT_PRIMARY_BUTTON,
+                                false,
+                                theme::QUERY_BUTTON_HOVER,
+                                self.debug,
+                            );
                         }
                         HoveredButton::BackHeader => {
                             // Unhover: subtract header tint
@@ -1437,20 +1458,23 @@ impl PhotonApp {
                         }
                         HoveredButton::QueryButton => {
                             // Button is now inset in textbox bottom-right for all relevant states
-                            if let Some(btn) = &self.layout.textbox.button {
-                                Self::draw_hover_centerpoint(
-                                    pixels,
-                                    &self.hit_test_map,
-                                    self.width as usize,
-                                    self.height as usize,
-                                    btn.center_x,
-                                    btn.center_y,
-                                    HIT_PRIMARY_BUTTON,
-                                    true,
-                                    theme::QUERY_BUTTON_HOVER,
-                                    self.debug,
-                                );
-                            }
+                            let send_size = box_height * 7 / 8;
+                            let inset = box_height / 16;
+                            let button_center_x = center_x + box_width / 2 - inset - send_size / 2;
+                            let textbox_bottom = textbox_y + box_height / 2;
+                            let query_button_center_y = textbox_bottom - inset - send_size / 2;
+                            Self::draw_hover_centerpoint(
+                                pixels,
+                                &self.hit_test_map,
+                                self.width as usize,
+                                self.height as usize,
+                                button_center_x,
+                                query_button_center_y,
+                                HIT_PRIMARY_BUTTON,
+                                true,
+                                theme::QUERY_BUTTON_HOVER,
+                                self.debug,
+                            );
                         }
                         HoveredButton::BackHeader => {
                             // Hover: add header tint
@@ -1599,20 +1623,23 @@ impl PhotonApp {
                     }
                     HoveredButton::QueryButton => {
                         // Button is now inset in textbox bottom-right for all relevant states
-                        if let Some(btn) = &self.layout.textbox.button {
-                            Self::draw_hover_centerpoint(
-                                pixels,
-                                &self.hit_test_map,
-                                self.width as usize,
-                                self.height as usize,
-                                btn.center_x,
-                                btn.center_y,
-                                HIT_PRIMARY_BUTTON,
-                                true,
-                                theme::QUERY_BUTTON_HOVER,
-                                self.debug,
-                            );
-                        }
+                        let send_size = box_height * 7 / 8;
+                        let inset = box_height / 16;
+                        let button_center_x = center_x + box_width / 2 - inset - send_size / 2;
+                        let textbox_bottom = textbox_y + box_height / 2;
+                        let query_button_center_y = textbox_bottom - inset - send_size / 2;
+                        Self::draw_hover_centerpoint(
+                            pixels,
+                            &self.hit_test_map,
+                            self.width as usize,
+                            self.height as usize,
+                            button_center_x,
+                            query_button_center_y,
+                            HIT_PRIMARY_BUTTON,
+                            true,
+                            theme::QUERY_BUTTON_HOVER,
+                            self.debug,
+                        );
                     }
                     HoveredButton::BackHeader => {
                         // Reapply header hover after window redraw
