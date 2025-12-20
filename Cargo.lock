@@ -3169,7 +3169,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "photon-messenger"
-version = "0.0.38"
+version = "0.0.39"
 dependencies = [
  "aes-gcm 0.11.0-rc.2",
  "android_logger",
@@ -5187,7 +5187,7 @@ checksum = "051eb1abcf10076295e815102942cc58f9d5e3b4560e46e53c21e8ff6f3af7b1"
 
 [[package]]
 name = "vsf"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "aes-gcm 0.10.3",
  "bitvec",
