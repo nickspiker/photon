@@ -1740,9 +1740,6 @@ pub struct ClutchCompletePayload {
 /// WARNING: This generates ~512KB of public key material (mostly McEliece).
 /// Caller MUST call zeroize() on the result when done!
 pub fn generate_all_ephemeral_keypairs() -> ClutchAllKeypairs {
-    #[cfg(feature = "development")]
-    crate::log("CLUTCH: Generating 8 ephemeral keypairs...");
-
     // Class 0: Classical EC
     let (x25519_secret, x25519_public) = generate_x25519_ephemeral();
     let (p384_secret, p384_public) = generate_p384_ephemeral();
@@ -1756,26 +1753,6 @@ pub fn generate_all_ephemeral_keypairs() -> ClutchAllKeypairs {
     // Class 2: Post-quantum code-based KEMs
     let (mceliece_secret, mceliece_public) = generate_mceliece460896_keypair();
     let (hqc256_secret, hqc256_public) = generate_hqc256_keypair();
-
-    #[cfg(feature = "development")]
-    crate::log(&format!(
-        "CLUTCH: HQC256 keypair generated: pub[..8]={} sk[..8]={}",
-        hex::encode(&hqc256_public[..8]),
-        hex::encode(&hqc256_secret[..8])
-    ));
-
-    #[cfg(feature = "development")]
-    crate::log(&format!(
-        "CLUTCH: Keypairs ready (X25519: {}B, P-384: {}B, secp256k1: {}B, P-256: {}B, Frodo: {}B, NTRU: {}B, McEliece: {}B, HQC: {}B)",
-        x25519_public.len(),
-        p384_public.len(),
-        secp256k1_public.len(),
-        p256_public.len(),
-        frodo976_public.len(),
-        ntru701_public.len(),
-        mceliece_public.len(),
-        hqc256_public.len()
-    ));
 
     ClutchAllKeypairs {
         x25519_secret,
