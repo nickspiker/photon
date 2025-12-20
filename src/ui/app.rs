@@ -2831,6 +2831,8 @@ impl PhotonApp {
                     let our_handle_hash = match self.user_identity_seed {
                         Some(h) => h,
                         None => {
+                            #[cfg(feature = "development")]
+                            #[cfg(feature = "development")]
                             crate::log("CLUTCH: No user_identity_seed available");
                             continue;
                         }
@@ -2871,6 +2873,8 @@ impl PhotonApp {
 
                     match contact_pubkey {
                         None => {
+                            #[cfg(feature = "development")]
+                            #[cfg(feature = "development")]
                             crate::log("CLUTCH: Received offer from unknown contact");
                             continue;
                         }
@@ -3398,6 +3402,8 @@ impl PhotonApp {
                     let our_handle_hash = match self.user_identity_seed {
                         Some(h) => h,
                         None => {
+                            #[cfg(feature = "development")]
+                            #[cfg(feature = "development")]
                             crate::log("CLUTCH: No user_identity_seed available");
                             continue;
                         }
@@ -3438,6 +3444,8 @@ impl PhotonApp {
 
                     match contact_pubkey {
                         None => {
+                            #[cfg(feature = "development")]
+                            #[cfg(feature = "development")]
                             crate::log("CLUTCH: Received KEM response from unknown contact");
                             continue;
                         }
@@ -3641,6 +3649,8 @@ impl PhotonApp {
 
                     match contact_pubkey {
                         None => {
+                            #[cfg(feature = "development")]
+                            #[cfg(feature = "development")]
                             crate::log("CLUTCH: Received proof from unknown contact");
                             continue;
                         }
@@ -4186,6 +4196,8 @@ impl PhotonApp {
         let proxy = self.event_proxy.clone();
 
         std::thread::spawn(move || {
+            #[cfg(feature = "development")]
+            #[cfg(feature = "development")]
             crate::log("CLUTCH: Background keypair generation started...");
             let keypairs = generate_all_ephemeral_keypairs();
             crate::log(
@@ -4216,34 +4228,50 @@ impl PhotonApp {
         peer_addr: std::net::SocketAddr,
     ) {
         use crate::crypto::clutch::ClutchKemResponsePayload;
-        use thread_priority::{ThreadBuilderExt, ThreadPriority};
 
         let tx = self.clutch_kem_encap_tx.clone();
         #[cfg(not(target_os = "android"))]
         let proxy = self.event_proxy.clone();
 
-        std::thread::Builder::new()
-            .name("clutch-kem-encap".to_string())
-            .spawn_with_priority(ThreadPriority::Min, move |_| {
-                crate::log("CLUTCH: Background KEM encapsulation started (low priority)...");
-                let (kem_response, local_secrets) =
-                    ClutchKemResponsePayload::encapsulate_to_peer(&their_offer);
-                crate::log("CLUTCH: KEM encapsulation complete");
+        let thread_body = move || {
+            #[cfg(feature = "development")]
+            #[cfg(feature = "development")]
+            crate::log("CLUTCH: Background KEM encapsulation started (low priority)...");
+            let (kem_response, local_secrets) =
+                ClutchKemResponsePayload::encapsulate_to_peer(&their_offer);
+            #[cfg(feature = "development")]
+            #[cfg(feature = "development")]
+            crate::log("CLUTCH: KEM encapsulation complete");
 
-                let _ = tx.send(ClutchKemEncapResult {
-                    contact_id,
-                    kem_response,
-                    local_secrets,
-                    ceremony_id,
-                    conversation_token,
-                    peer_addr,
-                });
+            let _ = tx.send(ClutchKemEncapResult {
+                contact_id,
+                kem_response,
+                local_secrets,
+                ceremony_id,
+                conversation_token,
+                peer_addr,
+            });
 
-                // Wake the event loop so it processes the result
-                #[cfg(not(target_os = "android"))]
-                let _ = proxy.send_event(super::PhotonEvent::ClutchKemEncapComplete);
-            })
-            .expect("Failed to spawn KEM encap thread");
+            // Wake the event loop so it processes the result
+            #[cfg(not(target_os = "android"))]
+            let _ = proxy.send_event(super::PhotonEvent::ClutchKemEncapComplete);
+        };
+
+        #[cfg(not(target_os = "redox"))]
+        {
+            use thread_priority::{ThreadBuilderExt, ThreadPriority};
+            std::thread::Builder::new()
+                .name("clutch-kem-encap".to_string())
+                .spawn_with_priority(ThreadPriority::Min, move |_| thread_body())
+                .expect("Failed to spawn KEM encap thread");
+        }
+        #[cfg(target_os = "redox")]
+        {
+            std::thread::Builder::new()
+                .name("clutch-kem-encap".to_string())
+                .spawn(thread_body)
+                .expect("Failed to spawn KEM encap thread");
+        }
     }
 
     /// Spawn background thread to complete CLUTCH ceremony (avalanche_expand).
@@ -4264,50 +4292,66 @@ impl PhotonApp {
         their_hqc_prefix: [u8; 8],
     ) {
         use crate::crypto::clutch::clutch_complete_full;
-        use thread_priority::{ThreadBuilderExt, ThreadPriority};
 
         let tx = self.clutch_ceremony_tx.clone();
         #[cfg(not(target_os = "android"))]
         let proxy = self.event_proxy.clone();
 
-        std::thread::Builder::new()
-            .name("clutch-ceremony".to_string())
-            .spawn_with_priority(ThreadPriority::Min, move |_| {
-                crate::log("CLUTCH: Background ceremony completion started (low priority)...");
+        let thread_body = move || {
+            #[cfg(feature = "development")]
+            #[cfg(feature = "development")]
+            crate::log("CLUTCH: Background ceremony completion started (low priority)...");
 
-                // Phase 1: Compute eggs (moderately fast)
-                let result = clutch_complete_full(
-                    &our_device_pub,
-                    &their_device_pub,
-                    &our_handle_hash,
-                    &their_handle_hash,
-                    &secrets,
-                );
+            // Phase 1: Compute eggs (moderately fast)
+            let result = clutch_complete_full(
+                &our_device_pub,
+                &their_device_pub,
+                &our_handle_hash,
+                &their_handle_hash,
+                &secrets,
+            );
 
-                // Phase 2: Expand to 2MB and derive chains (slow - avalanche_expand)
-                let friendship_chains = FriendshipChains::from_clutch(
-                    &[our_handle_hash, their_handle_hash],
-                    result.eggs.as_slice(),
-                );
+            // Phase 2: Expand to 2MB and derive chains (slow - avalanche_expand)
+            let friendship_chains = FriendshipChains::from_clutch(
+                &[our_handle_hash, their_handle_hash],
+                result.eggs.as_slice(),
+            );
 
-                crate::log("CLUTCH: Ceremony completion finished");
+            #[cfg(feature = "development")]
+            #[cfg(feature = "development")]
+            crate::log("CLUTCH: Ceremony completion finished");
 
-                let _ = tx.send(ClutchCeremonyResult {
-                    contact_id,
-                    friendship_chains,
-                    eggs_proof: result.proof,
-                    their_handle_hash,
-                    ceremony_id,
-                    conversation_token,
-                    peer_addr,
-                    their_hqc_prefix,
-                });
+            let _ = tx.send(ClutchCeremonyResult {
+                contact_id,
+                friendship_chains,
+                eggs_proof: result.proof,
+                their_handle_hash,
+                ceremony_id,
+                conversation_token,
+                peer_addr,
+                their_hqc_prefix,
+            });
 
-                // Wake the event loop so it processes the result
-                #[cfg(not(target_os = "android"))]
-                let _ = proxy.send_event(super::PhotonEvent::ClutchCeremonyComplete);
-            })
-            .expect("Failed to spawn ceremony thread");
+            // Wake the event loop so it processes the result
+            #[cfg(not(target_os = "android"))]
+            let _ = proxy.send_event(super::PhotonEvent::ClutchCeremonyComplete);
+        };
+
+        #[cfg(not(target_os = "redox"))]
+        {
+            use thread_priority::{ThreadBuilderExt, ThreadPriority};
+            std::thread::Builder::new()
+                .name("clutch-ceremony".to_string())
+                .spawn_with_priority(ThreadPriority::Min, move |_| thread_body())
+                .expect("Failed to spawn ceremony thread");
+        }
+        #[cfg(target_os = "redox")]
+        {
+            std::thread::Builder::new()
+                .name("clutch-ceremony".to_string())
+                .spawn(thread_body)
+                .expect("Failed to spawn ceremony thread");
+        }
     }
 
     /// Process background CLUTCH key generation results.
@@ -4743,9 +4787,13 @@ impl PhotonApp {
                 ) {
                     crate::log(&format!("Failed to save friendship chains: {}", e));
                 } else {
+                    #[cfg(feature = "development")]
+                    #[cfg(feature = "development")]
                     crate::log("CLUTCH: Friendship chains saved successfully");
                 }
             } else {
+                #[cfg(feature = "development")]
+                #[cfg(feature = "development")]
                 crate::log("CLUTCH: Cannot save chains - no identity_seed!");
             }
 
@@ -4850,6 +4898,8 @@ impl PhotonApp {
                     ) {
                         crate::log(&format!("Failed to save contact after CLUTCH: {}", e));
                     } else {
+                        #[cfg(feature = "development")]
+                        #[cfg(feature = "development")]
                         crate::log(&format!("CLUTCH: Saved {} state to disk", contact_handle));
                     }
 
@@ -4886,6 +4936,8 @@ impl PhotonApp {
         let contact = match self.contacts.get_mut(contact_idx) {
             Some(c) => c,
             None => {
+                #[cfg(feature = "development")]
+                #[cfg(feature = "development")]
                 crate::log("CLUTCH: Invalid contact index");
                 return;
             }
@@ -4910,6 +4962,8 @@ impl PhotonApp {
         let our_slot = match contact.get_slot(&our_handle_hash) {
             Some(s) => s,
             None => {
+                #[cfg(feature = "development")]
+                #[cfg(feature = "development")]
                 crate::log("CLUTCH: No slot for local party");
                 return;
             }
@@ -4917,6 +4971,8 @@ impl PhotonApp {
         let their_slot = match contact.get_slot(&their_handle_hash) {
             Some(s) => s,
             None => {
+                #[cfg(feature = "development")]
+                #[cfg(feature = "development")]
                 crate::log("CLUTCH: No slot for remote party");
                 return;
             }
@@ -4926,6 +4982,8 @@ impl PhotonApp {
         let our_kem_secrets = match &our_slot.kem_secrets_to_them {
             Some(s) => s.clone(),
             None => {
+                #[cfg(feature = "development")]
+                #[cfg(feature = "development")]
                 crate::log("CLUTCH: No kem_secrets_to_them in local slot");
                 return;
             }
@@ -4934,6 +4992,8 @@ impl PhotonApp {
         let their_kem_secrets = match &their_slot.kem_secrets_from_them {
             Some(s) => s.clone(),
             None => {
+                #[cfg(feature = "development")]
+                #[cfg(feature = "development")]
                 crate::log("CLUTCH: No kem_secrets_from_them in remote slot");
                 return;
             }
@@ -4950,6 +5010,8 @@ impl PhotonApp {
         let peer_addr = match contact.ip {
             Some(ip) => ip,
             None => {
+                #[cfg(feature = "development")]
+                #[cfg(feature = "development")]
                 crate::log(&format!("CLUTCH: No IP for {}", contact_handle));
                 return;
             }
@@ -4957,6 +5019,8 @@ impl PhotonApp {
         let ceremony_id = match contact.ceremony_id {
             Some(c) => c,
             None => {
+                #[cfg(feature = "development")]
+                #[cfg(feature = "development")]
                 crate::log(&format!("CLUTCH: No ceremony_id for {}", contact_handle));
                 return;
             }

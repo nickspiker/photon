@@ -1447,6 +1447,8 @@ impl ClutchKemResponsePayload {
     /// the peer's offer pubkeys. This gives truly distinct secrets per direction.
     pub fn encapsulate_to_peer(their_offer: &ClutchOfferPayload) -> (Self, ClutchKemSharedSecrets) {
         #[cfg(feature = "development")]
+        #[cfg(feature = "development")]
+        #[cfg(feature = "development")]
         crate::log("CLUTCH: Encapsulating to peer's public keys (8 algorithms)...");
 
         // ===== PQC KEMs =====
@@ -1546,6 +1548,8 @@ impl ClutchKemSharedSecrets {
         our_keys: &ClutchAllKeypairs,
     ) -> Self {
         #[cfg(feature = "development")]
+        #[cfg(feature = "development")]
+        #[cfg(feature = "development")]
         crate::log("CLUTCH: Decapsulating from peer's response (8 algorithms)...");
 
         // ===== PQC KEMs =====
@@ -1565,6 +1569,8 @@ impl ClutchKemSharedSecrets {
 
         // TODO: Re-enable McEliece once PT transfer is stable
         let mceliece = if response.mceliece_ciphertext.is_empty() {
+            #[cfg(feature = "development")]
+            #[cfg(feature = "development")]
             #[cfg(feature = "development")]
             crate::log("CLUTCH: - McEliece skipped (empty ciphertext)");
             vec![0u8; 32] // Placeholder shared secret
@@ -1598,6 +1604,8 @@ impl ClutchKemSharedSecrets {
         // ===== EC ECIES-style: ECDH(our_offer_secret, their_ephemeral_pubkey) =====
         // This matches their ECDH(ephemeral_secret, our_offer_pubkey)
         let x25519 = x25519_ecdh(&our_keys.x25519_secret, &response.x25519_ephemeral);
+        #[cfg(feature = "development")]
+        #[cfg(feature = "development")]
         #[cfg(feature = "development")]
         crate::log("CLUTCH: ✓ X25519 decap OK (32B shared secret)");
 
