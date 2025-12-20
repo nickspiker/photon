@@ -200,9 +200,15 @@ pub fn vsf_write(
     #[allow(unused_variables)] decrypted: Option<&[u8]>,
     device_secret: &[u8; 32],
 ) -> std::io::Result<()> {
+    #[cfg(feature = "development")]
+    crate::log(&format!("STORAGE: vsf_write: start {}", label));
+
     // Derive device pubkey
     let signing_key = SigningKey::from_bytes(device_secret);
     let device_pubkey = signing_key.verifying_key();
+
+    #[cfg(feature = "development")]
+    crate::log("STORAGE: vsf_write: building unsigned VSF...");
 
     // Build VSF file with placeholder signature (zeros) - sign_file will fill it
     let unsigned_vsf = VsfBuilder::new()
@@ -215,34 +221,32 @@ pub fn vsf_write(
         .build()
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
+    #[cfg(feature = "development")]
+    crate::log("STORAGE: vsf_write: signing VSF...");
+
     // Sign properly using VSF library (signs file hash, fills hp and ge)
     let vsf_file = vsf::verification::sign_file(unsigned_vsf, device_secret)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
     #[cfg(feature = "development")]
-    {
-        // Log decrypted VSF section first (if provided)
-        if let Some(data) = decrypted {
-            let msg = section_inspect(data, "Disk", "Write", &format!("{} (decrypted)", label));
-            if !msg.is_empty() {
-                println!("{}", msg);
-            }
-        }
+    crate::log("STORAGE: vsf_write: signed");
 
-        // Log the complete VSF file (will show proper structure)
-        let msg = vsf_inspect(&vsf_file, "Disk", "Write", label);
-        if !msg.is_empty() {
-            println!("{}", msg);
-        }
+    #[cfg(feature = "development")]
+    crate::log(&format!(
+        "STORAGE: vsf_write: {} file_len={}",
+        label,
+        vsf_file.len()
+    ));
 
-        crate::log(&format!(
-            "STORAGE: vsf_write: {} file_len={}",
-            label,
-            vsf_file.len()
-        ));
-    }
+    #[cfg(feature = "development")]
+    crate::log(&format!("STORAGE: vsf_write: writing to {:?}", path));
 
-    std::fs::write(path, vsf_file)
+    std::fs::write(path, &vsf_file)?;
+
+    #[cfg(feature = "development")]
+    crate::log("STORAGE: vsf_write: write complete");
+
+    Ok(())
 }
 
 /// Read encrypted VSF data from disk with signature verification

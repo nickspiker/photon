@@ -212,7 +212,10 @@ pub struct PhotonApp {
     pub controls_dirty: bool,
 
     // Universal scaling units (cached for performance)
-    pub min_dim: usize,     // min(width, height)
+    /// Span: harmonic mean of width and height = 2wh/(w+h)
+    /// Smooth at w==h (no discontinuity), biased toward smaller dimension,
+    /// finite slope at axes, slope exactly 1 along diagonal. Base unit for all UI scaling.
+    pub span: usize,
     pub perimeter: usize,   // width + height
     pub diagonal_sq: usize, // width² + height²
 
@@ -421,7 +424,7 @@ impl PhotonApp {
             selection_dirty: false,
             text_dirty: false,
             controls_dirty: false,
-            min_dim: w.min(h),
+            span: 2 * w * h / (w + h), // Harmonic mean - smooth at w==h, biased toward smaller
             perimeter: w + h,
             diagonal_sq: w * w + h * h,
             blinkey_blink_rate_ms,
@@ -559,7 +562,7 @@ impl PhotonApp {
             selection_dirty: false,
             text_dirty: false,
             controls_dirty: false,
-            min_dim: w.min(h),
+            span: 2 * w * h / (w + h), // Harmonic mean - smooth at w==h, biased toward smaller
             perimeter: w + h,
             diagonal_sq: w * w + h * h,
             blinkey_blink_rate_ms: 500,
@@ -1264,24 +1267,24 @@ impl PhotonApp {
         Ok(())
     }
 
-    #[cfg(not(target_os = "android"))]
-    pub fn resize(&mut self, size: PhysicalSize<u32>) {
-        let w = size.width as usize;
-        let h = size.height as usize;
+    /// Resize the application to new dimensions (shared by all platforms)
+    pub fn resize_to(&mut self, width: u32, height: u32) {
+        let w = width as usize;
+        let h = height as usize;
 
-        self.width = size.width;
-        self.height = size.height;
+        self.width = width;
+        self.height = height;
 
         // Update cached scaling units
-        self.min_dim = w.min(h);
+        // Span: harmonic mean of width and height - smooth at w==h, biased toward smaller
+        // 2wh/(w+h) has finite slope at axes, slope exactly 1, tastes delicious
+        self.span = 2 * w * h / (w + h);
         self.perimeter = w + h;
         self.diagonal_sq = w * w + h * h;
 
-        self.renderer.resize(size.width, size.height);
-        self.hit_test_map
-            .resize((size.width * size.height) as usize, 0);
-        self.textbox_mask
-            .resize((size.width * size.height) as usize, 0);
+        self.renderer.resize(width, height);
+        self.hit_test_map.resize((width * height) as usize, 0);
+        self.textbox_mask.resize((width * height) as usize, 0);
 
         // Clear hover state on resize since button positions/sizes change
         self.hovered_button = HoveredButton::None;
@@ -1291,7 +1294,7 @@ impl PhotonApp {
 
         // Recalculate scroll to keep blinkey in view with new dimensions
         if !self.current_text_state.chars.is_empty() {
-            let margin = self.min_dim / 8;
+            let margin = self.span / 8;
             let box_width = self.width as usize - margin * 2;
             self.update_text_scroll(box_width);
         } else {
@@ -1305,6 +1308,11 @@ impl PhotonApp {
 
         // Trigger full redraw - differential rendering will be skipped automatically
         self.window_dirty = true;
+    }
+
+    #[cfg(not(target_os = "android"))]
+    pub fn resize(&mut self, size: PhysicalSize<u32>) {
+        self.resize_to(size.width, size.height);
     }
 
     pub fn update_modifiers(&mut self, modifiers: ModifiersState) {

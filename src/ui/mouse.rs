@@ -652,9 +652,8 @@ impl PhotonApp {
 
             // Handle drag selection
             if self.is_mouse_selecting && !self.current_text_state.chars.is_empty() {
-                let margin = self.min_dim / 8;
-                let box_left = margin;
-                let box_right = self.width as usize - margin;
+                let box_left = self.textbox_left();
+                let box_right = self.textbox_right();
 
                 // Clamp mouse position to textbox bounds for blinkey calculation
                 let clamped_mouse_x = self.mouse_x.clamp(box_left as f32, box_right as f32);
@@ -787,7 +786,7 @@ impl PhotonApp {
 
         // Calculate scroll bounds BEFORE mutable borrow
         let line_height = (self.font_size() as f32 * 1.5) as usize;
-        let padding = self.min_dim / 32;
+        let padding = self.span / 32;
         let box_height = self.textbox_height();
         let center_y = self.height as usize / 2;
         let textbox_y = center_y + (center_y / 4);

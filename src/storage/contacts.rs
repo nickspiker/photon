@@ -201,6 +201,9 @@ fn encrypt_data(data: &[u8], key: &[u8; 32], section_name: &str) -> Result<Vec<u
         hex::encode(&ciphertext[..8.min(ciphertext.len())])
     ));
 
+    #[cfg(feature = "development")]
+    crate::log("STORAGE: encrypt: building VSF...");
+
     // Wrap in proper VSF file with header, timestamp, hashes (hp + hb)
     let vsf_bytes = vsf::VsfBuilder::new()
         .creation_time_nanos(vsf::eagle_time_nanos())
@@ -210,6 +213,9 @@ fn encrypt_data(data: &[u8], key: &[u8; 32], section_name: &str) -> Result<Vec<u
         )
         .build()
         .map_err(|e| StorageError::Encryption(format!("VSF build: {}", e)))?;
+
+    #[cfg(feature = "development")]
+    crate::log(&format!("STORAGE: encrypt: VSF built, {} bytes", vsf_bytes.len()));
 
     Ok(vsf_bytes)
 }

@@ -15,27 +15,27 @@ impl PhotonApp {
         self.current_text_state.textbox_focused
     }
 
-    /// Returns the font size for text rendering (min_dim / 16)
+    /// Returns the font size for text rendering (span / 16)
     pub fn font_size(&self) -> f32 {
-        self.min_dim as f32 / 16.0
+        self.span as f32 / 16.0
     }
 
     /// Returns the textbox width (wide/horizontal layout)
     pub fn textbox_width(&self) -> usize {
-        let margin = self.min_dim / 8;
+        let margin = self.span / 8;
         self.width as usize - margin * 2
     }
 
     /// Returns the textbox height
     pub fn textbox_height(&self) -> usize {
-        self.min_dim / 8
+        self.span / 8
     }
 
     /// Returns the textbox Y position (varies by app state)
     pub fn textbox_y(&self) -> usize {
         match &self.app_state {
             // Search screen: textbox below avatar area
-            AppState::Ready | AppState::Searching => self.min_dim as usize * 5 / 8,
+            AppState::Ready | AppState::Searching => self.span as usize * 5 / 8,
             // Conversation: textbox at bottom
             AppState::Conversation => {
                 let box_height = self.textbox_height();
@@ -43,6 +43,32 @@ impl PhotonApp {
             }
             _ => self.height as usize * 5 / 8, // Center for Launch
         }
+    }
+
+    /// Returns the left x limit for blinkey/text
+    pub fn textbox_left(&self) -> usize {
+        self.span / 8
+    }
+
+    /// Returns the button exclusion width (0 if no button present)
+    fn button_exclusion(&self) -> usize {
+        let has_button = matches!(
+            self.app_state,
+            AppState::Ready | AppState::Searching | AppState::Conversation
+        );
+        if has_button {
+            let box_height = self.textbox_height();
+            let button_size = box_height * 7 / 8;
+            let inset = box_height / 16;
+            button_size + inset * 2
+        } else {
+            0
+        }
+    }
+
+    /// Returns the right x limit of the textbox visual bounds
+    pub fn textbox_right(&self) -> usize {
+        self.width as usize - self.textbox_left()
     }
 
     /// Recalculate all character widths (e.g., after font size change on resize)
@@ -76,7 +102,7 @@ impl PhotonApp {
         text_renderer: &mut TextRenderer,
         textbox_mask: &[u8],
         window_width: usize,
-        min_dim: usize,
+        span: usize,
         textbox_y: usize,
         colour: u32,
     ) {
@@ -84,7 +110,7 @@ impl PhotonApp {
             return;
         }
 
-        let margin = min_dim / 8;
+        let margin = span / 8;
         let box_width = window_width - margin * 2;
         let center_x = window_width / 2;
 
@@ -94,7 +120,7 @@ impl PhotonApp {
         let textbox_right = (center_x + box_width / 2) as f32;
 
         let mut x_offset = text_start_x;
-        let font_size = min_dim as f32 / 16.;
+        let font_size = span as f32 / 16.;
 
         for (i, &ch) in text.chars.iter().enumerate() {
             let char_width = text.widths[i] as f32;
@@ -142,20 +168,7 @@ impl PhotonApp {
         let margin = textbox_width / 40;
         let textbox_half = (textbox_width / 2) as f32;
         let text_half = (total_text_width / 2) as f32;
-
-        // Button present on Ready/Searching/Conversation, NOT on Launch (attest screen)
-        let has_button = matches!(
-            self.app_state,
-            AppState::Ready | AppState::Searching | AppState::Conversation
-        );
-        let right_margin = if has_button {
-            let box_height = self.textbox_height();
-            let button_size = box_height * 7 / 8;
-            let inset = box_height / 16;
-            margin + button_size + inset * 2
-        } else {
-            margin
-        };
+        let right_margin = margin + self.button_exclusion();
 
         let blinkey_pos_in_centered_text = blinkey_pixel_offset as f32 - text_half;
         let blinkey_pos_in_view =
@@ -170,6 +183,26 @@ impl PhotonApp {
                 textbox_half - right_margin as f32 - blinkey_pos_in_centered_text;
             return true;
         }
+
+        // Blinkey is in bounds, but text might have a gap (e.g., after backspace)
+        // If text is wider than box but doesn't fill it, scroll to eliminate gap
+        let text_start = -text_half + self.current_text_state.scroll_offset;
+        let text_end = text_start + total_text_width as f32;
+        let left_bound = -textbox_half + margin as f32;
+        let right_bound = textbox_half - right_margin as f32;
+
+        // Gap on right while text overflows left? Scroll text right to fill
+        if text_end < right_bound && text_start < left_bound {
+            self.current_text_state.scroll_offset += right_bound - text_end;
+            return true;
+        }
+
+        // Gap on left while text overflows right? Scroll text left to fill
+        if text_start > left_bound && text_end > right_bound {
+            self.current_text_state.scroll_offset -= text_start - left_bound;
+            return true;
+        }
+
         false
     }
 
@@ -180,7 +213,7 @@ impl PhotonApp {
             return false;
         }
 
-        let margin = self.min_dim / 8;
+        let margin = self.span / 8;
         let box_width = self.width as usize - margin * 2;
         let total_text_width = self.current_text_state.width;
 
@@ -191,8 +224,8 @@ impl PhotonApp {
         }
 
         let now = std::time::Instant::now();
-        let box_left = margin;
-        let box_right = self.width as usize - margin;
+        let box_left = self.textbox_left();
+        let box_right = self.textbox_right();
         let mouse_x = self.mouse_x as f32;
 
         // Calculate time delta

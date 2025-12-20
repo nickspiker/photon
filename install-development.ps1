@@ -33,7 +33,9 @@ Write-Host "Detected: Windows ($arch)" -ForegroundColor White
 Write-Host ""
 
 # Download binary directly to install location (TEMP often blocked by Defender)
-$downloadUrl = "https://brobdingnagian.holdmyoscilloscope.com/photon/photon-messenger-windows-development.exe"
+# Add cache-busting query param to bypass Cloudflare CDN cache
+$cacheBust = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+$downloadUrl = "https://brobdingnagian.holdmyoscilloscope.com/photon/photon-messenger-windows-development.exe?v=$cacheBust"
 $installDir = "$env:LOCALAPPDATA\Programs\PhotonMessenger"
 New-Item -ItemType Directory -Path $installDir -Force | Out-Null
 $binaryPath = "$installDir\photon-messenger.exe"
@@ -51,7 +53,7 @@ try {
 # Verify SHA256 hash (Defender blocks execution, so we verify hash instead)
 Write-Host "Verifying integrity..." -ForegroundColor Yellow
 
-$expectedHash = "0000000000000000000000000000000000000000000000000000000000000000"
+$expectedHash = "7A20ADEB0FAB3B07A64601BD49ED20A4ECE187376DDBA041EDDBC959CB50B450"
 $actualHash = (Get-FileHash $binaryPath -Algorithm SHA256).Hash
 
 if ($actualHash -ne $expectedHash) {

@@ -79,15 +79,15 @@ impl PhotonApp {
 
             // Pre-compute scaled avatar before locking buffer (to avoid borrow conflict)
             if matches!(self.app_state, AppState::Ready | AppState::Searching) {
-                let avatar_radius = self.min_dim / 8;
+                let avatar_radius = self.span / 8;
                 self.update_avatar_scaled(avatar_radius * 2);
             }
 
             let mut buffer = self.renderer.lock_buffer();
             let pixels = buffer.as_mut();
 
-            let indicator_radius = (self.min_dim / 80).max(1);
-            let indicator_x = (self.min_dim / 20).max(1);
+            let indicator_radius = (self.span / 80).max(1);
+            let indicator_x = (self.span / 20).max(1);
             let indicator_y = indicator_x;
 
             if self.window_dirty {
@@ -108,7 +108,7 @@ impl PhotonApp {
                 // Fill header with back button hit area BEFORE window controls
                 // so controls can overwrite their portion
                 if matches!(self.app_state, AppState::Conversation) {
-                    let header_height = self.min_dim as usize / 5;
+                    let header_height = self.span as usize / 5;
                     for y in 0..header_height {
                         for x in 0..self.width as usize {
                             let idx = y * self.width as usize + x;
@@ -274,8 +274,8 @@ impl PhotonApp {
                     );
                 } else if matches!(self.app_state, AppState::Ready | AppState::Searching) {
                     // Ready/Searching screen: Draw avatar at top center
-                    let avatar_radius = self.min_dim / 8;
-                    let avatar_y = avatar_radius + self.min_dim / 16; // Slight padding from top
+                    let avatar_radius = self.span / 8;
+                    let avatar_y = avatar_radius + self.span / 16; // Slight padding from top
 
                     Self::draw_avatar(
                         pixels,
@@ -290,7 +290,7 @@ impl PhotonApp {
 
                     // Draw handle text below avatar
                     if let Some(ref handle) = self.user_handle {
-                        let handle_y = avatar_y + avatar_radius + self.min_dim / 16;
+                        let handle_y = avatar_y + avatar_radius + self.span / 16;
                         self.text_renderer.draw_text_center_u32(
                             pixels,
                             self.width as usize,
@@ -306,7 +306,7 @@ impl PhotonApp {
 
                     // Draw hint text if needed
                     if self.show_avatar_hint {
-                        let hint_y = avatar_y + avatar_radius + self.min_dim / 20;
+                        let hint_y = avatar_y + avatar_radius + self.span / 20;
                         let hint_y = if self.user_handle.is_some() {
                             hint_y + (font_size as f32 * 0.6) as usize
                         } else {
@@ -338,7 +338,35 @@ impl PhotonApp {
                         box_height,
                     );
 
-                    // Draw search button inset in bottom-right corner of textbox (like conversation send button)
+                    // Glow colour: yellow during search, green/red based on result, white default
+                    self.glow_colour = if matches!(self.app_state, AppState::Searching) {
+                        theme::GLOW_ATTESTING // Yellow during search
+                    } else {
+                        match &self.search_result {
+                            Some(SearchResult::Found(_)) => theme::GLOW_SUCCESS, // Green for found
+                            Some(SearchResult::NotFound) => theme::GLOW_ERROR, // Red for not found
+                            Some(SearchResult::Error(_)) => theme::GLOW_ERROR, // Red for error
+                            None => theme::GLOW_DEFAULT,                       // White default
+                        }
+                    };
+
+                    // Apply glow BEFORE button (glow needs full textbox mask bounds)
+                    if self.current_text_state.textbox_focused
+                        || matches!(self.app_state, AppState::Searching)
+                    {
+                        Self::apply_textbox_glow(
+                            pixels,
+                            &self.textbox_mask,
+                            self.width as usize,
+                            textbox_y,
+                            box_width,
+                            box_height,
+                            true,
+                            self.glow_colour,
+                        );
+                    }
+
+                    // Draw search button AFTER glow (button knocks out mask for text clipping)
                     if !self.current_text_state.chars.is_empty() {
                         let button_size = box_height * 7 / 8;
                         let inset = box_height / 16;
@@ -356,7 +384,7 @@ impl PhotonApp {
                         Self::draw_button(
                             pixels,
                             &mut self.hit_test_map,
-                            Some(&mut self.textbox_mask),
+                            Some(&mut self.textbox_mask), // Knock out mask for text clipping
                             self.width as usize,
                             self.height as usize,
                             button_center_x,
@@ -391,34 +419,6 @@ impl PhotonApp {
                                 (r, g, b),
                             );
                         }
-                    }
-
-                    // Glow colour: yellow during search, green/red based on result, white default
-                    self.glow_colour = if matches!(self.app_state, AppState::Searching) {
-                        theme::GLOW_ATTESTING // Yellow during search
-                    } else {
-                        match &self.search_result {
-                            Some(SearchResult::Found(_)) => theme::GLOW_SUCCESS, // Green for found
-                            Some(SearchResult::NotFound) => theme::GLOW_ERROR, // Red for not found
-                            Some(SearchResult::Error(_)) => theme::GLOW_ERROR, // Red for error
-                            None => theme::GLOW_DEFAULT,                       // White default
-                        }
-                    };
-
-                    // Apply glow when focused OR during search (textbox stays glowing during search)
-                    if self.current_text_state.textbox_focused
-                        || matches!(self.app_state, AppState::Searching)
-                    {
-                        Self::apply_textbox_glow(
-                            pixels,
-                            &self.textbox_mask,
-                            self.width as usize,
-                            textbox_y,
-                            box_width,
-                            box_height,
-                            true,
-                            self.glow_colour,
-                        );
                     }
 
                     // Show search result half line above textbox
@@ -476,7 +476,7 @@ impl PhotonApp {
                         }
 
                         // Indicator sizing (same as top-left connectivity indicator)
-                        let indicator_radius = (self.min_dim / 64).max(1);
+                        let indicator_radius = (self.span / 64).max(1);
                         let indicator_spacing = indicator_radius * 3; // Space between dot and text
 
                         // Total list width: dot + spacing + widest handle
@@ -587,7 +587,7 @@ impl PhotonApp {
                     if let Some(contact_idx) = self.selected_contact {
                         if let Some(contact) = self.contacts.get_mut(contact_idx) {
                             // Layout constants
-                            let header_height = self.min_dim as usize / 5; // Contact name header area (1/5 from top)
+                            let header_height = self.span as usize / 5; // Contact name header area (1/5 from top)
                             let message_area_top = header_height;
                             let message_area_bottom = textbox_y - box_height;
 
@@ -663,7 +663,7 @@ impl PhotonApp {
                             }
 
                             // // Online indicator centered on divider line
-                            // let indicator_radius = (self.min_dim / 80).max(1);
+                            // let indicator_radius = (self.span / 80).max(1);
                             // let indicator_x = center_x;
                             // let indicator_y = header_height; // On the divider
 
@@ -736,7 +736,7 @@ impl PhotonApp {
                                     } else {
                                         // Draw messages
                                         let line_height = (font_size as f32 * 1.5) as usize;
-                                        let padding = self.min_dim / 32;
+                                        let padding = self.span / 32;
 
                                         // Calculate total height needed for all messages
                                         let total_height =
@@ -997,7 +997,7 @@ impl PhotonApp {
                                     &mut self.text_renderer,
                                     &self.textbox_mask,
                                     self.width as usize,
-                                    self.min_dim,
+                                    self.span,
                                     textbox_y,
                                     theme::TEXT_COLOUR,
                                 );
@@ -1089,7 +1089,7 @@ impl PhotonApp {
                         &mut self.text_renderer,
                         &self.textbox_mask,
                         self.width as usize,
-                        self.min_dim,
+                        self.span,
                         textbox_y,
                         theme::TEXT_COLOUR,
                     );
@@ -1656,7 +1656,7 @@ impl PhotonApp {
             }
             if self.debug {
                 // Draw black strip at bottom for debug counters
-                let counter_size = self.min_dim / 24;
+                let counter_size = self.span / 24;
                 let strip_height = counter_size * 2;
                 let counter_size = counter_size as f32;
                 for y in (self.height as usize - strip_height)..self.height as usize {

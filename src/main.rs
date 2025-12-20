@@ -459,8 +459,39 @@ fn main() {
     // Initialize logging (redirects stdout/stderr to file on Windows GUI apps)
     photon_messenger::init_logging();
 
+    // Set up panic hook to log panics to file (critical for debugging Windows GUI crashes)
+    std::panic::set_hook(Box::new(|panic_info| {
+        let msg = if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
+            s.to_string()
+        } else if let Some(s) = panic_info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "Unknown panic payload".to_string()
+        };
+
+        let location = if let Some(loc) = panic_info.location() {
+            format!("{}:{}:{}", loc.file(), loc.line(), loc.column())
+        } else {
+            "unknown location".to_string()
+        };
+
+        photon_messenger::log(&format!("PANIC at {}: {}", location, msg));
+
+        // Also print backtrace if available
+        let backtrace = std::backtrace::Backtrace::capture();
+        if backtrace.status() == std::backtrace::BacktraceStatus::Captured {
+            photon_messenger::log(&format!("Backtrace:\n{}", backtrace));
+        }
+    }));
+
     // Check for verify argument (used by install script to validate binary)
     let verify_only = std::env::args().any(|arg| arg == "verify");
+
+    // Test panic hook with test-panic argument
+    if std::env::args().any(|arg| arg == "test-panic") {
+        photon_messenger::log("Testing panic hook...");
+        panic!("TEST PANIC - this should appear in the log");
+    }
 
     // Verify binary signature matches fractaldecoder (Ed25519 cryptographic signature)
     let signature_hex = match self_verify::verify_binary_hash() {

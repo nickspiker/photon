@@ -76,17 +76,7 @@ impl PhotonContext {
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
-        self.app.width = width;
-        self.app.height = height;
-        let w = width as usize;
-        let h = height as usize;
-        self.app.min_dim = w.min(h);
-        self.app.perimeter = w + h;
-        self.app.diagonal_sq = w * w + h * h;
-        self.app.renderer.resize(width, height);
-        self.app.hit_test_map.resize((width * height) as usize, 0);
-        self.app.textbox_mask.resize((width * height) as usize, 0);
-        self.app.window_dirty = true;
+        self.app.resize_to(width, height);
     }
 
     pub fn draw(&mut self, window: &NativeWindow) {

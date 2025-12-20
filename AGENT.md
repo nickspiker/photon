@@ -369,15 +369,32 @@ let margin_pixels = 20;
 
 // CORRECT - scale to display dimensions
 let margin = box_width / 40;  // 2.5% of textbox width
-let margin = self.min_dim / 64;  // Fraction of minimum dimension
+let margin = self.span / 64;  // Fraction of span
 ```
 
 **Physics scales, pixels don't.** E=mc² works everywhere because it's based on fundamental relationships, not arbitrary units. Your code should too.
 
 ### Universal Scaling Units (Already Available):
-- `self.min_dim` - min(width, height), universal scaling base
+- `self.span` - harmonic mean of width and height = 2wh/(w+h), universal scaling base
 - `self.perimeter` - width + height, for edge-aware calculations
 - `self.diagonal_sq` - width² + height², for distance calculations
+
+### Why Span Uses Harmonic Mean
+
+The harmonic mean `2wh/(w+h)` has unique properties that make it ideal for UI scaling:
+
+0. **Smooth at w==h** - No discontinuity when aspect ratio crosses 1:1 (unlike min/max)
+1. **Finite slope at axes** - Behaves well as either dimension approaches zero
+2. **Slope exactly 1 along diagonal** - Natural scaling along the w==h line
+3. **Biased toward smaller dimension** - UI elements scale appropriately on narrow displays
+
+Compare alternatives:
+- `min(w,h)` - Discontinuous derivative at w==h, creates visual "jumps"
+- `max(w,h)` - Same discontinuity problem
+- `sqrt(w*h)` (geometric mean) - Smooth, but infinite slope at axes
+- `(w+h)/2` (arithmetic mean) - Doesn't bias toward smaller dimension
+
+The harmonic mean is the unique function with all desired properties.
 
 Use these. Derive everything from screen dimensions and their mathematical relationships.
 

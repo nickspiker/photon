@@ -142,10 +142,16 @@ pub fn put_blob_blocking(
 ) -> Result<(), BlobError> {
     use ed25519_dalek::Signer;
 
+    #[cfg(feature = "development")]
+    crate::log("Cloud: put_blob_blocking: creating HTTP client...");
+
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| BlobError::Network(format!("Failed to create HTTP client: {}", e)))?;
+
+    #[cfg(feature = "development")]
+    crate::log("Cloud: put_blob_blocking: signing request...");
 
     // Decode storage key to bytes for signing
     let key_bytes = URL_SAFE_NO_PAD
@@ -163,6 +169,9 @@ pub fn put_blob_blocking(
     let signature_b64 = URL_SAFE_NO_PAD.encode(signature.to_bytes());
     let handle_proof_b64 = URL_SAFE_NO_PAD.encode(handle_proof);
 
+    #[cfg(feature = "development")]
+    crate::log(&format!("Cloud: put_blob_blocking: sending PUT to /blob/{}...", &storage_key[..8.min(storage_key.len())]));
+
     let response = client
         .put(&format!("{}/blob/{}", FGTW_URL, storage_key))
         .header("Content-Type", "application/octet-stream")
@@ -173,6 +182,9 @@ pub fn put_blob_blocking(
         .body(data.to_vec())
         .send()
         .map_err(|e| BlobError::Network(format!("PUT request failed: {}", e)))?;
+
+    #[cfg(feature = "development")]
+    crate::log(&format!("Cloud: put_blob_blocking: response status {}", response.status()));
 
     let status = response.status();
     if status.is_success() {

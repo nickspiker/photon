@@ -285,6 +285,9 @@ pub fn sync_contacts_to_cloud(
         encrypted.len()
     ));
 
+    #[cfg(feature = "development")]
+    crate::log("Cloud: About to call put_blob_blocking...");
+
     // Upload to FGTW
     put_blob_blocking(&storage_key, &encrypted, device_keypair, handle_proof).map_err(
         |e| match e {
