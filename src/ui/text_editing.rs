@@ -50,22 +50,6 @@ impl PhotonApp {
         self.span / 8
     }
 
-    /// Returns the button exclusion width (0 if no button present)
-    fn button_exclusion(&self) -> usize {
-        let has_button = matches!(
-            self.app_state,
-            AppState::Ready | AppState::Searching | AppState::Conversation
-        );
-        if has_button {
-            let box_height = self.textbox_height();
-            let button_size = box_height * 7 / 8;
-            let inset = box_height / 16;
-            button_size + inset * 2
-        } else {
-            0
-        }
-    }
-
     /// Returns the right x limit of the textbox visual bounds
     pub fn textbox_right(&self) -> usize {
         self.width as usize - self.textbox_left()
@@ -102,25 +86,18 @@ impl PhotonApp {
         text_renderer: &mut TextRenderer,
         textbox_mask: &[u8],
         window_width: usize,
-        span: usize,
-        textbox_y: usize,
+        layout: &TextLayout,
         colour: u32,
     ) {
         if text.chars.is_empty() {
             return;
         }
 
-        let margin = span / 8;
-        let box_width = window_width - margin * 2;
-        let center_x = window_width / 2;
-
-        let text_half = (text.width / 2) as isize;
-        let text_start_x = (center_x as f32 - text_half as f32 + text.scroll_offset) as f32;
-        let textbox_left = (center_x - box_width / 2) as f32;
-        let textbox_right = (center_x + box_width / 2) as f32;
+        let text_start_x = layout.text_start_x(text);
+        let textbox_left = layout.usable_left as f32;
+        let textbox_right = layout.usable_right as f32;
 
         let mut x_offset = text_start_x;
-        let font_size = span as f32 / 16.;
 
         for (i, &ch) in text.chars.iter().enumerate() {
             let char_width = text.widths[i] as f32;
@@ -133,8 +110,8 @@ impl PhotonApp {
                     window_width,
                     ch,
                     x_offset,
-                    textbox_y as f32,
-                    font_size,
+                    layout.textbox_y as f32,
+                    layout.font_size,
                     500,
                     theme::FONT_USER_CONTENT,
                     colour,
@@ -147,15 +124,18 @@ impl PhotonApp {
         }
     }
 
-    pub fn update_text_scroll(&mut self, textbox_width: usize) -> bool {
+    /// Update scroll offset to keep blinkey visible within usable text area.
+    /// Uses symmetric margins since text is now centered in usable area.
+    pub fn update_text_scroll(&mut self) -> bool {
         if self.current_text_state.chars.is_empty() {
             self.current_text_state.scroll_offset = 0.0;
             return false;
         }
 
+        let layout = &self.text_layout;
         let total_text_width: usize = self.current_text_state.width;
 
-        if total_text_width <= textbox_width {
+        if total_text_width <= layout.usable_width {
             self.current_text_state.scroll_offset = 0.0;
             return false;
         }
@@ -165,45 +145,34 @@ impl PhotonApp {
             .iter()
             .sum();
 
-        let margin = textbox_width / 40;
-        let textbox_half = (textbox_width / 2) as f32;
+        // Symmetric margins - text is centered in usable area
+        let margin = layout.margin as f32;
+        let usable_half = (layout.usable_width / 2) as f32;
         let text_half = (total_text_width / 2) as f32;
-        let right_margin = margin + self.button_exclusion();
 
+        // First: clamp scroll so text doesn't leave empty space
+        // Max scroll right (negative): right edge of text at right margin
+        let max_scroll_right = usable_half - margin - text_half;
+        // Max scroll left (positive): left edge of text at left margin
+        let max_scroll_left = text_half - usable_half + margin;
+
+        let old_offset = self.current_text_state.scroll_offset;
+        self.current_text_state.scroll_offset = old_offset.clamp(max_scroll_right, max_scroll_left);
+
+        // Second: ensure blinkey is visible within margins
         let blinkey_pos_in_centered_text = blinkey_pixel_offset as f32 - text_half;
         let blinkey_pos_in_view =
             blinkey_pos_in_centered_text + self.current_text_state.scroll_offset;
 
-        if blinkey_pos_in_view < -textbox_half + margin as f32 {
+        if blinkey_pos_in_view < -usable_half + margin {
             self.current_text_state.scroll_offset =
-                -textbox_half + margin as f32 - blinkey_pos_in_centered_text;
-            return true;
-        } else if blinkey_pos_in_view > textbox_half - right_margin as f32 {
+                -usable_half + margin - blinkey_pos_in_centered_text;
+        } else if blinkey_pos_in_view > usable_half - margin {
             self.current_text_state.scroll_offset =
-                textbox_half - right_margin as f32 - blinkey_pos_in_centered_text;
-            return true;
+                usable_half - margin - blinkey_pos_in_centered_text;
         }
 
-        // Blinkey is in bounds, but text might have a gap (e.g., after backspace)
-        // If text is wider than box but doesn't fill it, scroll to eliminate gap
-        let text_start = -text_half + self.current_text_state.scroll_offset;
-        let text_end = text_start + total_text_width as f32;
-        let left_bound = -textbox_half + margin as f32;
-        let right_bound = textbox_half - right_margin as f32;
-
-        // Gap on right while text overflows left? Scroll text right to fill
-        if text_end < right_bound && text_start < left_bound {
-            self.current_text_state.scroll_offset += right_bound - text_end;
-            return true;
-        }
-
-        // Gap on left while text overflows right? Scroll text left to fill
-        if text_start > left_bound && text_end > right_bound {
-            self.current_text_state.scroll_offset -= text_start - left_bound;
-            return true;
-        }
-
-        false
+        self.current_text_state.scroll_offset != old_offset
     }
 
     /// Update scroll offset during selection drag (called every frame)
@@ -213,19 +182,17 @@ impl PhotonApp {
             return false;
         }
 
-        let margin = self.span / 8;
-        let box_width = self.width as usize - margin * 2;
         let total_text_width = self.current_text_state.width;
 
         // If text fits in textbox, no need to scroll during selection
-        if total_text_width <= box_width {
+        if total_text_width <= self.text_layout.usable_width {
             self.current_text_state.scroll_offset = 0.0;
             return false;
         }
 
         let now = std::time::Instant::now();
-        let box_left = self.textbox_left();
-        let box_right = self.textbox_right();
+        let box_left = self.text_layout.usable_left;
+        let box_right = self.text_layout.usable_right;
         let mouse_x = self.mouse_x as f32;
 
         // Calculate time delta
@@ -255,7 +222,8 @@ impl PhotonApp {
                 mouse_x
             );
             let base_speed = 1000.; // scroll offset units per second
-            let speed_ratio = distance_outside / box_width as f32;
+            let usable_width = self.text_layout.usable_width as f32;
+            let speed_ratio = distance_outside / usable_width;
             let scroll_speed = base_speed * speed_ratio;
             let scroll_delta = scroll_speed * time_delta;
             debug_println!(
@@ -265,7 +233,7 @@ impl PhotonApp {
             );
 
             let total_text_width = self.current_text_state.width as f32;
-            let textbox_half = (box_width / 2) as f32;
+            let textbox_half = usable_width / 2.0;
 
             // Calculate scroll limits:
             // Stop at 3/4 width from center instead of at the edge (leaves padding for selection)
@@ -638,36 +606,32 @@ impl PhotonApp {
     // Invert RGB for selection highlight (reversible: 255 - (255 - x) = x)
     pub fn invert_selection(
         pixels: &mut [u32],
-        char_widths: &[usize],
+        text: &TextState,
         scroll_offset: f32,
         window_width: usize,
         window_height: usize,
         sel_start: usize,
         sel_end: usize,
-        box_width: usize,
-        font_size: f32,
-        center_x: usize,
-        center_y: usize,
+        layout: &TextLayout,
         hit_test_map: &[u8],
     ) {
-        if sel_start >= sel_end || sel_start >= char_widths.len() {
+        if sel_start >= sel_end || sel_start >= text.widths.len() {
             return;
         }
 
-        let sel_start_px: usize = char_widths[..sel_start].iter().sum();
-        let sel_end_px: usize = char_widths[..sel_end.min(char_widths.len())].iter().sum();
+        let sel_start_px: usize = text.widths[..sel_start].iter().sum();
+        let sel_end_px: usize = text.widths[..sel_end.min(text.widths.len())].iter().sum();
 
-        let total_text_width: usize = char_widths.iter().sum();
-        let text_half = (total_text_width / 2) as f32;
-        let text_start_x = center_x as f32 - text_half + scroll_offset;
+        let text_half = (text.width / 2) as f32;
+        let text_start_x = layout.usable_center as f32 - text_half + scroll_offset;
         let sel_x_start = (text_start_x + sel_start_px as f32) as isize;
         let sel_x_end = (text_start_x + sel_end_px as f32) as isize;
 
-        let sel_y_top = (center_y as f32 - font_size / 2.0) as isize;
-        let sel_y_bottom = (center_y as f32 + font_size / 2.0) as isize;
+        let sel_y_top = (layout.textbox_y as f32 - layout.font_size / 2.0) as isize;
+        let sel_y_bottom = (layout.textbox_y as f32 + layout.font_size / 2.0) as isize;
 
-        let textbox_left = (center_x - box_width / 2) as isize;
-        let textbox_right = (center_x + box_width / 2) as isize;
+        let textbox_left = layout.usable_left as isize;
+        let textbox_right = layout.usable_right as isize;
 
         for y in sel_y_top.max(0)..sel_y_bottom.min(window_height as isize) {
             for x in sel_x_start.max(textbox_left)..sel_x_end.min(textbox_right) {

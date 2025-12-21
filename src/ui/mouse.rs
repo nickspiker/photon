@@ -1,7 +1,7 @@
 // Mouse input handling for PhotonApp
 
 use crate::debug_println;
-use crate::ui::app::HoveredButton;
+use crate::ui::app::{HoveredButton, TextLayout};
 
 use super::app::{
     AppState, LaunchState, PhotonApp, ResizeEdge, HIT_AVATAR, HIT_BACK_HEADER, HIT_CLOSE_BUTTON,
@@ -113,33 +113,14 @@ impl PhotonApp {
                                 self.current_text_state.scroll_offset = 0.0;
                             }
 
-                            // Calculate blinkey pixel position (needed before drawing)
+                            // Calculate blinkey pixel position using TextLayout (single source of truth)
                             let box_width = self.textbox_width();
                             let box_height = self.textbox_height();
-                            let center_x = self.width as usize / 2;
                             let textbox_y = self.textbox_y();
-                            let font_size = self.font_size();
+                            let font_size = self.text_layout.font_size;
 
-                            // Calculate NEW blinkey position
-                            let blinkey_pixel_offset: usize =
-                                if self.current_text_state.blinkey_index > 0 {
-                                    self.current_text_state.widths
-                                        [..self.current_text_state.blinkey_index]
-                                        .iter()
-                                        .sum()
-                                } else {
-                                    0
-                                };
-                            let total_text_width: usize = self.current_text_state.width;
-                            let text_half = total_text_width / 2;
-                            let blinkey_x = (center_x as f32 - text_half as f32
-                                + self.current_text_state.scroll_offset
-                                + blinkey_pixel_offset as f32)
-                                as usize;
-
-                            let new_blinkey_x = blinkey_x;
-                            let new_blinkey_y =
-                                (textbox_y as f32 - box_height as f32 * 0.25) as usize;
+                            let new_blinkey_x = self.text_layout.blinkey_x(&self.current_text_state);
+                            let new_blinkey_y = self.text_layout.blinkey_y();
 
                             // Lock buffer for blinkey update (immediate-mode)
                             let mut buffer = self.renderer.lock_buffer();
@@ -209,6 +190,12 @@ impl PhotonApp {
                         HIT_BACK_HEADER => {
                             // Back button in conversation header - return to contacts
                             self.app_state = AppState::Ready;
+                            self.text_layout = TextLayout::new(
+                                self.width as usize,
+                                self.height as usize,
+                                self.span,
+                                &self.app_state,
+                            );
                             self.selected_contact = None;
                             self.window_dirty = true;
                             self.reset_textbox();
@@ -351,6 +338,12 @@ impl PhotonApp {
 
                                 self.selected_contact = Some(contact_idx);
                                 self.app_state = AppState::Conversation;
+                                self.text_layout = TextLayout::new(
+                                    self.width as usize,
+                                    self.height as usize,
+                                    self.span,
+                                    &self.app_state,
+                                );
                                 self.window_dirty = true;
                                 self.reset_textbox();
 
@@ -440,32 +433,11 @@ impl PhotonApp {
 
                     // State transition: blinkey OFF -> ON (immediate-mode)
                     if !self.blinkey_visible && self.current_text_state.textbox_focused {
-                        // Recalculate blinkey position first
-                        let _box_width = self.textbox_width();
-                        let box_height = self.textbox_height();
-                        let center_x = self.width as usize / 2;
-                        let textbox_y = self.textbox_y();
-                        let font_size = self.font_size();
+                        // Recalculate blinkey position using TextLayout (single source of truth)
+                        let font_size = self.text_layout.font_size;
 
-                        let blinkey_pixel_offset: usize = if self.current_text_state.blinkey_index
-                            > 0
-                        {
-                            self.current_text_state.widths[..self.current_text_state.blinkey_index]
-                                .iter()
-                                .sum()
-                        } else {
-                            0
-                        };
-                        let total_text_width: usize = self.current_text_state.width;
-                        let text_half = total_text_width / 2;
-                        let blinkey_x = (center_x as f32 - text_half as f32
-                            + self.current_text_state.scroll_offset
-                            + blinkey_pixel_offset as f32)
-                            as usize;
-
-                        self.blinkey_pixel_x = blinkey_x;
-                        self.blinkey_pixel_y =
-                            (textbox_y as f32 - box_height as f32 * 0.25) as usize;
+                        self.blinkey_pixel_x = self.text_layout.blinkey_x(&self.current_text_state);
+                        self.blinkey_pixel_y = self.text_layout.blinkey_y();
 
                         let mut buffer = self.renderer.lock_buffer();
                         let pixels = buffer.as_mut();
@@ -652,8 +624,8 @@ impl PhotonApp {
 
             // Handle drag selection
             if self.is_mouse_selecting && !self.current_text_state.chars.is_empty() {
-                let box_left = self.textbox_left();
-                let box_right = self.textbox_right();
+                let box_left = self.text_layout.usable_left;
+                let box_right = self.text_layout.usable_right;
 
                 // Clamp mouse position to textbox bounds for blinkey calculation
                 let clamped_mouse_x = self.mouse_x.clamp(box_left as f32, box_right as f32);

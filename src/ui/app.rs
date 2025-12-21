@@ -121,6 +121,107 @@ impl TextState {
         self.width -= removed_width;
     }
 }
+
+/// Text layout geometry for the usable text area (excludes button on non-attest screens).
+/// Single source of truth for all text/blinkey position calculations.
+/// Designed to be extensible for future multi-line text entry.
+#[derive(Clone, Copy)]
+pub struct TextLayout {
+    /// Left edge of usable text area (pixels from window left)
+    pub usable_left: usize,
+    /// Right edge of usable text area (pixels from window left)
+    pub usable_right: usize,
+    /// Center of usable text area (pixels from window left)
+    pub usable_center: usize,
+    /// Width of usable text area
+    pub usable_width: usize,
+    /// Margin from usable edges (for blinkey limits)
+    pub margin: usize,
+    /// Top of textbox (y coordinate for text baseline)
+    pub textbox_y: usize,
+    /// Height of textbox
+    pub box_height: usize,
+    /// Font size for text rendering
+    pub font_size: f32,
+    /// Line height (for future multi-line support)
+    pub line_height: usize,
+}
+
+impl TextLayout {
+    /// Create layout geometry from app dimensions and state
+    pub fn new(
+        width: usize,
+        height: usize,
+        span: usize,
+        app_state: &AppState,
+    ) -> Self {
+        let textbox_left = span / 8;
+        let textbox_right = width - textbox_left;
+        let textbox_width = textbox_right - textbox_left;
+
+        let box_height = span / 8;
+        let font_size = span as f32 / 16.0;
+        let line_height = box_height; // For future multi-line
+
+        // textbox_y varies by screen
+        let textbox_y = match app_state {
+            AppState::Ready | AppState::Searching => span * 5 / 8,
+            AppState::Conversation => height - box_height * 3 / 2,
+            _ => height * 5 / 8, // Launch screens
+        };
+
+        // Button area (0 on attest screen where button is below textbox)
+        let button_area = if matches!(app_state, AppState::Launch(_)) {
+            0
+        } else {
+            let button_size = box_height * 7 / 8;
+            let inset = box_height / 16;
+            button_size + inset * 2
+        };
+
+        let usable_width = textbox_width - button_area;
+        let usable_left = textbox_left;
+        let usable_right = textbox_right - button_area;
+        let usable_center = usable_left + usable_width / 2;
+        let margin = usable_width / 40;
+
+        Self {
+            usable_left,
+            usable_right,
+            usable_center,
+            usable_width,
+            margin,
+            textbox_y,
+            box_height,
+            font_size,
+            line_height,
+        }
+    }
+
+    /// Calculate blinkey x position from text state
+    pub fn blinkey_x(&self, text: &TextState) -> usize {
+        if text.blinkey_index == 0 {
+            return (self.usable_center as f32 - (text.width / 2) as f32 + text.scroll_offset)
+                as usize;
+        }
+        let blinkey_offset: usize = text.widths[..text.blinkey_index].iter().sum();
+        let text_half = text.width / 2;
+        (self.usable_center as f32 - text_half as f32 + text.scroll_offset + blinkey_offset as f32)
+            as usize
+    }
+
+    /// Calculate blinkey y position (top of cursor)
+    pub fn blinkey_y(&self) -> usize {
+        (self.textbox_y as f32 - self.box_height as f32 * 0.25) as usize
+    }
+
+    /// Calculate text start x from text state
+    pub fn text_start_x(&self, text: &TextState) -> f32 {
+        let text_half = (text.width / 2) as f32;
+        self.usable_center as f32 - text_half + text.scroll_offset
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppState {
     /// Launch screen states (before main messenger UI)
@@ -218,6 +319,9 @@ pub struct PhotonApp {
     pub span: usize,
     pub perimeter: usize,   // width + height
     pub diagonal_sq: usize, // width² + height²
+
+    /// Text layout geometry - single source of truth for text/blinkey positioning
+    pub text_layout: TextLayout,
 
     // Launch screen state
     pub blinkey_blink_rate_ms: u64, // System blinkey blink rate in milliseconds (max for random range)
@@ -427,6 +531,7 @@ impl PhotonApp {
             span: 2 * w * h / (w + h), // Harmonic mean - smooth at w==h, biased toward smaller
             perimeter: w + h,
             diagonal_sq: w * w + h * h,
+            text_layout: TextLayout::new(w, h, 2 * w * h / (w + h), &AppState::Launch(LaunchState::Fresh)),
             blinkey_blink_rate_ms,
             blinkey_visible: false,
             is_mouse_selecting: false,
@@ -565,6 +670,7 @@ impl PhotonApp {
             span: 2 * w * h / (w + h), // Harmonic mean - smooth at w==h, biased toward smaller
             perimeter: w + h,
             diagonal_sq: w * w + h * h,
+            text_layout: TextLayout::new(w, h, 2 * w * h / (w + h), &AppState::Launch(LaunchState::Fresh)),
             blinkey_blink_rate_ms: 500,
             blinkey_visible: false,
             is_mouse_selecting: false,
@@ -879,6 +985,12 @@ impl PhotonApp {
             HoveredButton::BackHeader => {
                 // Go back to contacts list
                 self.app_state = AppState::Ready;
+                self.text_layout = TextLayout::new(
+                    self.width as usize,
+                    self.height as usize,
+                    self.span,
+                    &self.app_state,
+                );
                 self.selected_contact = None;
                 self.reset_textbox();
             }
@@ -919,6 +1031,12 @@ impl PhotonApp {
             if contact_idx < self.contacts.len() {
                 self.selected_contact = Some(contact_idx);
                 self.app_state = AppState::Conversation;
+                self.text_layout = TextLayout::new(
+                    self.width as usize,
+                    self.height as usize,
+                    self.span,
+                    &self.app_state,
+                );
                 self.reset_textbox();
             }
         }
@@ -1082,6 +1200,12 @@ impl PhotonApp {
         // If in a chat, go back to contacts list (same as tapping back header button)
         if self.selected_contact.is_some() {
             self.app_state = AppState::Ready;
+            self.text_layout = TextLayout::new(
+                self.width as usize,
+                self.height as usize,
+                self.span,
+                &self.app_state,
+            );
             self.selected_contact = None;
             self.reset_textbox();
             self.window_dirty = true;
@@ -1282,6 +1406,9 @@ impl PhotonApp {
         self.perimeter = w + h;
         self.diagonal_sq = w * w + h * h;
 
+        // Update text layout geometry
+        self.text_layout = TextLayout::new(w, h, self.span, &self.app_state);
+
         self.renderer.resize(width, height);
         self.hit_test_map.resize((width * height) as usize, 0);
         self.textbox_mask.resize((width * height) as usize, 0);
@@ -1294,9 +1421,7 @@ impl PhotonApp {
 
         // Recalculate scroll to keep blinkey in view with new dimensions
         if !self.current_text_state.chars.is_empty() {
-            let margin = self.span / 8;
-            let box_width = self.width as usize - margin * 2;
-            self.update_text_scroll(box_width);
+            self.update_text_scroll();
         } else {
             // No text - center it
             self.current_text_state.scroll_offset = 0.0;
@@ -2115,6 +2240,13 @@ impl PhotonApp {
             self.glow_colour = theme::GLOW_DEFAULT;
         }
         self.app_state = new_state;
+        // Recalculate text_layout since button area changes between Launch and other states
+        self.text_layout = TextLayout::new(
+            self.width as usize,
+            self.height as usize,
+            self.span,
+            &self.app_state,
+        );
         self.query_start_time = None;
         self.window_dirty = true;
         crate::log("UI: Attestation complete, window marked dirty for redraw");

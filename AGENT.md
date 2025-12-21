@@ -338,7 +338,7 @@ let byte_value = pixel_value.clamp(0.0, 255.0) as u8;
 let byte_value = pixel_value as u8;
 ```
 
-**Why clamp is wrong:**
+**Why clamp is probably wrong:**
 0. **Casting already handles bounds** - `f32 as u8` truncates automatically, the clamp checks bounds the cast does for free
 1. **Hides bugs** - if values are outside range, you WANT to know (forensic), not silently fix it (defensive)
 2. **Assumes your math is broken** - if calculations are correct, values should never be out of range anyway
@@ -352,6 +352,10 @@ let byte_value = pixel_value as u8;
 1. Show the code without the check
 2. Explain what would happen if the invariant is violated
 3. Let the human decide
+
+## When Needed
+
+**PROOF REQUIRED** Don't add clamping unless it has been proven necessary and accepted by the user
 
 ## Error Handling Philosophy
 

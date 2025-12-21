@@ -4,7 +4,7 @@ use crate::ui::theme;
 use crate::{debug_println, DEBUG_ENABLED};
 use std::sync::atomic::Ordering;
 
-use super::app::{AppState, LaunchState, PhotonApp};
+use super::app::{AppState, LaunchState, PhotonApp, TextLayout};
 use rand::Rng;
 use winit::{
     event::{ElementState, KeyEvent},
@@ -356,6 +356,12 @@ impl PhotonApp {
                         self.trigger_peer_refresh();
 
                         self.app_state = AppState::Ready;
+                        self.text_layout = TextLayout::new(
+                            self.width as usize,
+                            self.height as usize,
+                            self.span,
+                            &self.app_state,
+                        );
                         self.selected_contact = None;
                         self.window_dirty = true;
                         self.reset_textbox();

@@ -56,7 +56,7 @@ impl PhotonApp {
             && !self.current_text_state.chars.is_empty()
             && !self.is_mouse_selecting
         {
-            self.text_dirty |= self.update_text_scroll(box_width);
+            self.text_dirty |= self.update_text_scroll();
         }
         if !self.text_dirty {
             if self.current_text_state.width != self.previous_text_state.width
@@ -972,16 +972,13 @@ impl PhotonApp {
                             if sel_start != sel_end {
                                 Self::invert_selection(
                                     pixels,
-                                    &self.previous_text_state.widths,
+                                    &self.previous_text_state,
                                     self.previous_text_state.scroll_offset,
                                     self.width as usize,
                                     self.height as usize,
                                     sel_start,
                                     sel_end,
-                                    box_width,
-                                    font_size,
-                                    center_x,
-                                    textbox_y,
+                                    &self.text_layout,
                                     &self.hit_test_map,
                                 );
                             }
@@ -997,8 +994,7 @@ impl PhotonApp {
                                     &mut self.text_renderer,
                                     &self.textbox_mask,
                                     self.width as usize,
-                                    self.span,
-                                    textbox_y,
+                                    &self.text_layout,
                                     theme::TEXT_COLOUR,
                                 );
                             } else if !self.previous_text_state.textbox_focused {
@@ -1089,8 +1085,7 @@ impl PhotonApp {
                         &mut self.text_renderer,
                         &self.textbox_mask,
                         self.width as usize,
-                        self.span,
-                        textbox_y,
+                        &self.text_layout,
                         theme::TEXT_COLOUR,
                     );
                 } else if !self.current_text_state.textbox_focused {
@@ -1137,16 +1132,13 @@ impl PhotonApp {
                     if sel_start != sel_end {
                         Self::invert_selection(
                             pixels,
-                            &self.current_text_state.widths,
+                            &self.current_text_state,
                             self.current_text_state.scroll_offset,
                             self.width as usize,
                             self.height as usize,
                             sel_start,
                             sel_end,
-                            box_width,
-                            font_size,
-                            center_x,
-                            textbox_y,
+                            &self.text_layout,
                             &self.hit_test_map,
                         );
                     }
@@ -1158,23 +1150,9 @@ impl PhotonApp {
                 && self.current_text_state.textbox_focused
                 && (self.window_dirty || self.text_dirty || self.selection_dirty)
             {
-                // Recalculate blinkey position (text may have changed)
-                let blinkey_pixel_offset: usize = if self.current_text_state.blinkey_index > 0 {
-                    self.current_text_state.widths[..self.current_text_state.blinkey_index]
-                        .iter()
-                        .sum()
-                } else {
-                    0
-                };
-                let total_text_width: usize = self.current_text_state.width;
-                let text_half = total_text_width / 2;
-                let blinkey_x = (center_x as f32 - text_half as f32
-                    + self.current_text_state.scroll_offset
-                    + blinkey_pixel_offset as f32) as usize;
-                let blinkey_y = (textbox_y as f32 - box_height as f32 * 0.25) as usize;
-
-                self.blinkey_pixel_x = blinkey_x;
-                self.blinkey_pixel_y = blinkey_y;
+                // Recalculate blinkey position using TextLayout (single source of truth)
+                self.blinkey_pixel_x = self.text_layout.blinkey_x(&self.current_text_state);
+                self.blinkey_pixel_y = self.text_layout.blinkey_y();
 
                 Self::draw_blinkey(
                     pixels,
@@ -1183,7 +1161,7 @@ impl PhotonApp {
                     self.blinkey_pixel_y,
                     &mut self.blinkey_visible,
                     &mut self.blinkey_wave_top_bright,
-                    font_size as usize,
+                    self.text_layout.font_size as usize,
                 );
             }
 
@@ -1203,11 +1181,11 @@ impl PhotonApp {
                     let textbox_bottom = textbox_y + box_height / 2;
                     let button_center_y = textbox_bottom - inset - send_button_size / 2;
 
-                    // Differential: button appearing (mask already set during window_dirty)
+                    // Differential: button appearing - knockout mask for text clipping
                     Self::draw_button(
                         pixels,
                         &mut self.hit_test_map,
-                        None,
+                        Some(&mut self.textbox_mask),
                         self.width as usize,
                         self.height as usize,
                         button_center_x,
@@ -1254,11 +1232,11 @@ impl PhotonApp {
                         theme::BUTTON_BLUE
                     };
 
-                    // Differential: button appearing (mask already set during window_dirty)
+                    // Differential: button appearing - knockout mask for text clipping
                     Self::draw_button(
                         pixels,
                         &mut self.hit_test_map,
-                        None,
+                        Some(&mut self.textbox_mask),
                         self.width as usize,
                         self.height as usize,
                         button_center_x,
