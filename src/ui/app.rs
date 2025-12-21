@@ -145,6 +145,8 @@ pub struct TextLayout {
     pub font_size: f32,
     /// Line height (for future multi-line support)
     pub line_height: usize,
+    /// Button area width (0 when button is below textbox)
+    pub button_area: usize,
 }
 
 impl TextLayout {
@@ -195,11 +197,16 @@ impl TextLayout {
             box_height,
             font_size,
             line_height,
+            button_area,
         }
     }
 
     /// Calculate blinkey x position from text state
     pub fn blinkey_x(&self, text: &TextState) -> usize {
+        // When text is empty, center in full textbox (no button shown)
+        if text.chars.is_empty() {
+            return self.usable_left + (self.usable_width + self.button_area) / 2;
+        }
         if text.blinkey_index == 0 {
             return (self.usable_center as f32 - (text.width / 2) as f32 + text.scroll_offset)
                 as usize;
