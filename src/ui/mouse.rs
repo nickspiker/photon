@@ -119,7 +119,8 @@ impl PhotonApp {
                             let textbox_y = self.textbox_y();
                             let font_size = self.text_layout.font_size;
 
-                            let new_blinkey_x = self.text_layout.blinkey_x(&self.current_text_state);
+                            let new_blinkey_x =
+                                self.text_layout.blinkey_x(&self.current_text_state);
                             let new_blinkey_y = self.text_layout.blinkey_y();
 
                             // Lock buffer for blinkey update (immediate-mode)
@@ -194,6 +195,7 @@ impl PhotonApp {
                                 self.width as usize,
                                 self.height as usize,
                                 self.span,
+                                self.ru,
                                 &self.app_state,
                             );
                             self.selected_contact = None;
@@ -342,6 +344,7 @@ impl PhotonApp {
                                     self.width as usize,
                                     self.height as usize,
                                     self.span,
+                                    self.ru,
                                     &self.app_state,
                                 );
                                 self.window_dirty = true;
@@ -735,15 +738,6 @@ impl PhotonApp {
     }
 
     pub fn handle_mouse_wheel(&mut self, delta: MouseScrollDelta) -> bool {
-        // Only handle scrolling in conversation view
-        if self.app_state != AppState::Conversation {
-            return false;
-        }
-
-        let Some(contact_idx) = self.selected_contact else {
-            return false;
-        };
-
         // Extract scroll amount (pixels or lines)
         let scroll_pixels = match delta {
             MouseScrollDelta::LineDelta(_x, y) => {
@@ -754,6 +748,25 @@ impl PhotonApp {
                 // Pixel scrolling: use y directly
                 pos.y as f32
             }
+        };
+
+        // Ctrl+scroll = zoom (works in any state)
+        // Logarithmic scaling: 1 step = multiply by 33/32
+        if self.modifiers.control_key() {
+            // scroll_pixels: ~20 per line notch, variable for pixel delta (touchpad)
+            // Convert to steps: 1 notch = 1 step
+            let steps = scroll_pixels / 20.0;
+            self.adjust_zoom(steps);
+            return true;
+        }
+
+        // Regular scroll only works in conversation view
+        if self.app_state != AppState::Conversation {
+            return false;
+        }
+
+        let Some(contact_idx) = self.selected_contact else {
+            return false;
         };
 
         // Calculate scroll bounds BEFORE mutable borrow

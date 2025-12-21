@@ -54,6 +54,30 @@ impl PhotonApp {
                 }
             }
 
+            // Ctrl++/- for zoom (available in all states)
+            // Uses logarithmic scaling: 1 step = multiply by 33/32
+            if self.modifiers.control_key() {
+                if let Key::Character(ref c) = event.logical_key {
+                    // Ctrl++ or Ctrl+= : Zoom in (1 step)
+                    if c == "+" || c == "=" {
+                        self.adjust_zoom(1.0);
+                        return;
+                    }
+                    // Ctrl+- : Zoom out (1 step)
+                    if c == "-" {
+                        self.adjust_zoom(-1.0);
+                        return;
+                    }
+                    // Ctrl+0 : Reset zoom to 100%
+                    if c == "0" {
+                        self.ru = 1.0;
+                        self.window_dirty = true;
+                        self.recalculate_char_widths();
+                        return;
+                    }
+                }
+            }
+
             // Clipboard and text editing Ctrl shortcuts
             if self.modifiers.control_key() {
                 if let Key::Character(ref c) = event.logical_key {
@@ -360,6 +384,7 @@ impl PhotonApp {
                             self.width as usize,
                             self.height as usize,
                             self.span,
+                            self.ru,
                             &self.app_state,
                         );
                         self.selected_contact = None;

@@ -15,9 +15,9 @@ impl PhotonApp {
         self.current_text_state.textbox_focused
     }
 
-    /// Returns the font size for text rendering (span / 16)
+    /// Returns the font size for text rendering (scales with ru for zoom support)
     pub fn font_size(&self) -> f32 {
-        self.span as f32 / 16.0
+        self.span as f32 / 16.0 * self.ru
     }
 
     /// Returns the textbox width (wide/horizontal layout)
@@ -26,9 +26,9 @@ impl PhotonApp {
         self.width as usize - margin * 2
     }
 
-    /// Returns the textbox height
+    /// Returns the textbox height (scales with ru for zoom support)
     pub fn textbox_height(&self) -> usize {
-        self.span / 8
+        (self.span as f32 / 8.0 * self.ru) as usize
     }
 
     /// Returns the textbox Y position (varies by app state)

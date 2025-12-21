@@ -124,6 +124,7 @@ impl PhotonApp {
                     &mut self.hit_test_map,
                     self.width,
                     self.height,
+                    self.ru,
                 );
 
                 // Draw FGTW connectivity indicator (small circle in top-left)
@@ -1853,13 +1854,16 @@ impl PhotonApp {
         hit_test_map: &mut [u8],
         window_width: u32,
         window_height: u32,
+        ru: f32,
     ) -> (usize, Vec<(u16, u8, u8)>, usize, usize) {
         let window_width = window_width as usize;
         let window_height = window_height as usize;
 
-        // Calculate button dimensions
-        let smaller_dim = window_width.min(window_height) as f32;
-        let button_height = (smaller_dim / 16.).ceil() as usize;
+        // Calculate button dimensions using harmonic mean (span) scaled by ru
+        // span = 2wh/(w+h), base button size = span/16, scaled by ru (zoom multiplier)
+        let span = 2.0 * window_width as f32 * window_height as f32
+            / (window_width as f32 + window_height as f32);
+        let button_height = (span / 16.0 * ru).ceil() as usize;
         let button_width = button_height;
         let total_width = button_width * 7 / 2;
 
@@ -1868,8 +1872,10 @@ impl PhotonApp {
         let y_start = 0;
 
         // Build squircle crossings for bottom-left corner
-        // Use same squirdleyness as main window (24)
-        let radius = smaller_dim / 2.;
+        // Radius scales with ru but is soft-limited so it never exceeds span/2
+        let ideal_radius = span / 2.0 * ru;
+        let max_radius = span / 2.0;
+        let radius = crate::ui::app::soft_limit(ideal_radius, max_radius);
         let squirdleyness = 24;
 
         let mut crossings: Vec<(u16, u8, u8)> = Vec::new();

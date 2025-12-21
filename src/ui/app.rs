@@ -4,6 +4,13 @@ use super::theme;
 #[cfg(not(target_os = "android"))]
 use super::PhotonEvent;
 use crate::crypto::clutch::ClutchAllKeypairs;
+
+/// Asymptotic clamping: approaches max but never exceeds it.
+/// soft_limit(x, max) = max * x / (x + max)
+/// At x=0: returns 0. At x=max: returns max/2. As x→∞: approaches max.
+pub fn soft_limit(x: f32, max: f32) -> f32 {
+    max * x / (x + max)
+}
 use crate::network::status::AckRequest;
 use crate::network::StatusChecker;
 use crate::network::{HandleQuery, QueryResult};
@@ -155,18 +162,16 @@ pub struct TextLayout {
 
 impl TextLayout {
     /// Create layout geometry from app dimensions and state
-    pub fn new(
-        width: usize,
-        height: usize,
-        span: usize,
-        app_state: &AppState,
-    ) -> Self {
+    /// ru = dimensionless zoom multiplier (1.0 = default)
+    pub fn new(width: usize, height: usize, span: usize, ru: f32, app_state: &AppState) -> Self {
+        // Layout: margins stay proportional to window (don't scale with ru)
         let textbox_left = span / 8;
         let textbox_right = width - textbox_left;
         let textbox_width = textbox_right - textbox_left;
 
-        let box_height = span / 8;
-        let font_size = span as f32 / 16.0;
+        // Content: font and box height scale with ru
+        let box_height = (span as f32 / 8.0 * ru) as usize;
+        let font_size = span as f32 / 16.0 * ru;
         let line_height = box_height; // For future multi-line
 
         // textbox_y varies by screen
@@ -332,6 +337,10 @@ pub struct PhotonApp {
     pub span: usize,
     pub perimeter: usize,   // width + height
     pub diagonal_sq: usize, // width² + height²
+
+    /// RU: dimensionless zoom multiplier for content scaling. Starts at 1.0.
+    /// Content sizes multiply by ru: font_size = span/16 * ru, box_height = span/8 * ru
+    pub ru: f32,
 
     /// Text layout geometry - single source of truth for text/blinkey positioning
     pub text_layout: TextLayout,
@@ -544,7 +553,14 @@ impl PhotonApp {
             span: 2 * w * h / (w + h), // Harmonic mean - smooth at w==h, biased toward smaller
             perimeter: w + h,
             diagonal_sq: w * w + h * h,
-            text_layout: TextLayout::new(w, h, 2 * w * h / (w + h), &AppState::Launch(LaunchState::Fresh)),
+            ru: 1.0, // Dimensionless zoom multiplier, starts at 1.0
+            text_layout: TextLayout::new(
+                w,
+                h,
+                2 * w * h / (w + h),
+                1.0,
+                &AppState::Launch(LaunchState::Fresh),
+            ),
             blinkey_blink_rate_ms,
             blinkey_visible: false,
             is_mouse_selecting: false,
@@ -683,7 +699,14 @@ impl PhotonApp {
             span: 2 * w * h / (w + h), // Harmonic mean - smooth at w==h, biased toward smaller
             perimeter: w + h,
             diagonal_sq: w * w + h * h,
-            text_layout: TextLayout::new(w, h, 2 * w * h / (w + h), &AppState::Launch(LaunchState::Fresh)),
+            ru: 1.0, // Dimensionless zoom multiplier, starts at 1.0
+            text_layout: TextLayout::new(
+                w,
+                h,
+                2 * w * h / (w + h),
+                1.0,
+                &AppState::Launch(LaunchState::Fresh),
+            ),
             blinkey_blink_rate_ms: 500,
             blinkey_visible: false,
             is_mouse_selecting: false,
@@ -1002,6 +1025,7 @@ impl PhotonApp {
                     self.width as usize,
                     self.height as usize,
                     self.span,
+                    self.ru,
                     &self.app_state,
                 );
                 self.selected_contact = None;
@@ -1048,6 +1072,7 @@ impl PhotonApp {
                     self.width as usize,
                     self.height as usize,
                     self.span,
+                    self.ru,
                     &self.app_state,
                 );
                 self.reset_textbox();
@@ -1217,6 +1242,7 @@ impl PhotonApp {
                 self.width as usize,
                 self.height as usize,
                 self.span,
+                self.ru,
                 &self.app_state,
             );
             self.selected_contact = None;
@@ -1404,6 +1430,16 @@ impl PhotonApp {
         Ok(())
     }
 
+    /// Adjust zoom level by steps (positive = zoom in, negative = zoom out)
+    /// Uses logarithmic scaling: each step multiplies by 33/32 (in) or 32/33 (out).
+    /// Clamps to range [1/32, 32] for full design exploration.
+    pub fn adjust_zoom(&mut self, steps: f32) {
+        let factor = (33.0_f32 / 32.0).powf(steps);
+        self.ru = (self.ru * factor).clamp(1.0 / 32.0, 32.0);
+        self.window_dirty = true;
+        self.recalculate_char_widths();
+    }
+
     /// Resize the application to new dimensions (shared by all platforms)
     pub fn resize_to(&mut self, width: u32, height: u32) {
         let w = width as usize;
@@ -1420,7 +1456,7 @@ impl PhotonApp {
         self.diagonal_sq = w * w + h * h;
 
         // Update text layout geometry
-        self.text_layout = TextLayout::new(w, h, self.span, &self.app_state);
+        self.text_layout = TextLayout::new(w, h, self.span, self.ru, &self.app_state);
 
         self.renderer.resize(width, height);
         self.hit_test_map.resize((width * height) as usize, 0);
@@ -1846,9 +1882,7 @@ impl PhotonApp {
                 self.user_handle = Some(handle.clone());
                 self.user_handle_proof = Some(handle_proof);
                 self.user_identity_seed = Some(identity_seed);
-                crate::log(
-                    "UI: Stored handle_proof and identity_seed for refresh/CLUTCH/storage",
-                );
+                crate::log("UI: Stored handle_proof and identity_seed for refresh/CLUTCH/storage");
 
                 // Load contacts from encrypted storage
                 let device_secret = self.device_keypair.secret.as_bytes();
@@ -2143,10 +2177,7 @@ impl PhotonApp {
                                 &self.device_keypair,
                                 &handle_proof,
                             ) {
-                                crate::log(&format!(
-                                    "Failed to sync contacts to cloud: {}",
-                                    e
-                                ));
+                                crate::log(&format!("Failed to sync contacts to cloud: {}", e));
                             }
                         }
                     }
@@ -2163,10 +2194,7 @@ impl PhotonApp {
                                 &self.device_keypair,
                                 &handle_proof,
                             ) {
-                                crate::log(&format!(
-                                    "Failed to upload contacts to cloud: {}",
-                                    e
-                                ));
+                                crate::log(&format!("Failed to upload contacts to cloud: {}", e));
                             }
                         }
                     }
@@ -2258,6 +2286,7 @@ impl PhotonApp {
             self.width as usize,
             self.height as usize,
             self.span,
+            self.ru,
             &self.app_state,
         );
         self.query_start_time = None;
@@ -2568,10 +2597,7 @@ impl PhotonApp {
                         let sender_chain = match chains.chain(&from_handle_hash) {
                             Some(c) => c.clone(), // Clone to avoid borrow issues
                             None => {
-                                crate::log(&format!(
-                                    "CHAT: Sender chain not found for {}",
-                                    handle
-                                ));
+                                crate::log(&format!("CHAT: Sender chain not found for {}", handle));
                                 continue;
                             }
                         };
@@ -2619,10 +2645,7 @@ impl PhotonApp {
                         let message_text = match vsf::parse(&plaintext, &mut ptr) {
                             Ok(vsf::VsfType::x(s)) => s,
                             Ok(other) => {
-                                crate::log(&format!(
-                                    "CHAT: Expected x type, got {:?}",
-                                    other
-                                ));
+                                crate::log(&format!("CHAT: Expected x type, got {:?}", other));
                                 continue;
                             }
                             Err(e) => {
@@ -2732,10 +2755,7 @@ impl PhotonApp {
                                     identity_seed,
                                     device_secret,
                                 ) {
-                                    crate::log(&format!(
-                                        "STORAGE: Failed to save messages: {}",
-                                        e
-                                    ));
+                                    crate::log(&format!("STORAGE: Failed to save messages: {}", e));
                                 }
                             }
                         }
@@ -3494,10 +3514,7 @@ impl PhotonApp {
                         if let Err(e) =
                             crate::storage::friendship::delete_friendship_chains(&old_id)
                         {
-                            crate::log(&format!(
-                                "CLUTCH: Failed to delete old chains: {}",
-                                e
-                            ));
+                            crate::log(&format!("CLUTCH: Failed to delete old chains: {}", e));
                         }
                     }
 
@@ -4849,10 +4866,7 @@ impl PhotonApp {
                             device_pubkey,
                             device_secret,
                         });
-                        crate::log(&format!(
-                            "CLUTCH: Sent KEM response to {}",
-                            contact.handle
-                        ));
+                        crate::log(&format!("CLUTCH: Sent KEM response to {}", contact.handle));
                     }
 
                     // Check if all slots are complete after storing our KEM encap secrets
