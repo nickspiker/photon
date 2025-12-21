@@ -86,8 +86,8 @@ impl PhotonApp {
             let mut buffer = self.renderer.lock_buffer();
             let pixels = buffer.as_mut();
 
-            let indicator_radius = (self.span / 80).max(1);
-            let indicator_x = (self.span / 20).max(1);
+            let indicator_radius = (self.span as f32 * self.ru / 80.).max(1.) as usize;
+            let indicator_x = (self.span as f32 * self.ru / 20.).max(1.) as usize;
             let indicator_y = indicator_x;
 
             if self.window_dirty {
@@ -209,21 +209,24 @@ impl PhotonApp {
                 // Different UI based on app state
                 if matches!(self.app_state, AppState::Launch(_)) {
                     // Launch screen: spectrum, logo, handle entry
-                    let logo_center_y = self.height as usize / 4;
-                    Self::draw_spectrum(
-                        pixels,
-                        self.width,
-                        self.height,
-                        logo_center_y - self.span / 8,
-                        self.spectrum_phase,
-                    );
-                    Self::draw_logo_text(
-                        pixels,
-                        &mut self.text_renderer,
-                        self.width,
-                        self.height,
-                        logo_center_y + self.span / 8,
-                    );
+                    if let Some(ref spectrum_region) = self.layout.logo_spectrum {
+                        Self::draw_spectrum(
+                            pixels,
+                            self.width as usize,
+                            spectrum_region,
+                            self.spectrum_phase,
+                        );
+                    }
+                    if let Some(ref text_region) = self.layout.photon_text {
+                        let text_center_y = text_region.y + text_region.h / 2;
+                        Self::draw_logo_text(
+                            pixels,
+                            &mut self.text_renderer,
+                            self.width,
+                            self.height,
+                            text_center_y,
+                        );
+                    }
 
                     // Handle textbox
                     Self::draw_textbox(
@@ -1632,6 +1635,52 @@ impl PhotonApp {
                 }
             }
             if self.debug {
+                // Draw magenta borders around layout regions
+                let magenta = 0xFE_FF_00_FF; // ARGB magenta
+                let w = self.width as usize;
+                let h = self.height as usize;
+
+                let regions: [Option<&super::app::PixelRegion>; 9] = [
+                    Some(&self.layout.textbox),
+                    self.layout.logo_spectrum.as_ref(),
+                    self.layout.photon_text.as_ref(),
+                    self.layout.hint.as_ref(),
+                    self.layout.attest_button.as_ref(),
+                    self.layout.avatar.as_ref(),
+                    self.layout.contacts_list.as_ref(),
+                    self.layout.header.as_ref(),
+                    self.layout.message_area.as_ref(),
+                ];
+
+                for region in regions.into_iter().flatten() {
+                    // Top edge
+                    if region.y < h {
+                        for x in region.x..region.right().min(w) {
+                            pixels[region.y * w + x] = magenta;
+                        }
+                    }
+                    // Bottom edge
+                    if region.bottom() > 0 && region.bottom() <= h {
+                        let bottom_y = region.bottom() - 1;
+                        for x in region.x..region.right().min(w) {
+                            pixels[bottom_y * w + x] = magenta;
+                        }
+                    }
+                    // Left edge
+                    if region.x < w {
+                        for y in region.y..region.bottom().min(h) {
+                            pixels[y * w + region.x] = magenta;
+                        }
+                    }
+                    // Right edge
+                    if region.right() > 0 && region.right() <= w {
+                        let right_x = region.right() - 1;
+                        for y in region.y..region.bottom().min(h) {
+                            pixels[y * w + right_x] = magenta;
+                        }
+                    }
+                }
+
                 // Draw black strip at bottom for debug counters
                 let counter_size = self.span / 24;
                 let strip_height = counter_size * 2;
@@ -1870,10 +1919,7 @@ impl PhotonApp {
         let y_start = 0;
 
         // Build squircle crossings for bottom-left corner
-        // Radius scales with ru but is soft-limited so it never exceeds span/2
-        let ideal_radius = span / 2.0 * ru;
-        let max_radius = span / 2.0;
-        let radius = crate::ui::app::soft_limit(ideal_radius, max_radius);
+        let radius = span * ru / 2.;
         let squirdleyness = 24;
 
         let mut crossings: Vec<(u16, u8, u8)> = Vec::new();
@@ -3239,7 +3285,8 @@ impl PhotonApp {
         let light_colour = theme::TEXTBOX_LIGHT_EDGE;
         let shadow_colour = theme::TEXTBOX_SHADOW_EDGE;
         let fill_colour = theme::TEXTBOX_FILL;
-        let radius = (box_width.min(box_height) / 2) as f32;
+        // Harmonic mean for smooth scaling (no derivative discontinuity at width=height)
+        let radius = (box_width * box_height) as f32 / (box_width + box_height) as f32;
         let squirdleyness = 3;
 
         // Generate crossings from edge (radius/12 o'clock) toward diagonal (1:30)
@@ -3574,9 +3621,8 @@ impl PhotonApp {
             }
         }
 
-        // Corner radius for skipping rounded corners
-        // Rounded corners have radius = min(box_width, box_height) / 2
-        let corner_radius = box_width.min(box_height) / 2;
+        // Corner radius for skipping rounded corners (harmonic mean for smooth scaling)
+        let corner_radius = 2 * box_width * box_height / (box_width + box_height);
         let x_vert_start = x_left + corner_radius;
         let x_vert_end = x_right - corner_radius;
         let y_horiz_start = y_top + corner_radius;
@@ -3797,7 +3843,8 @@ impl PhotonApp {
         let x = center_x - box_width / 2;
         let y = center_y - box_height / 2;
 
-        let radius = (box_width.min(box_height) / 2) as f32;
+        // Harmonic mean for smooth scaling (no derivative discontinuity at width=height)
+        let radius = (box_width * box_height) as f32 / (box_width + box_height) as f32;
         let squirdleyness = 3;
 
         // Generate crossings from edge (radius/12 o'clock) toward diagonal (1:30)
@@ -4128,48 +4175,52 @@ impl PhotonApp {
 
     pub fn draw_spectrum(
         pixels: &mut [u32],
-        window_width: u32,
-        window_height: u32,
-        vertical_center_px: usize, // Vertical center position in pixels
-        phase_offset: f32,         // Sine wave phase offset in radians
+        window_width: usize,
+        region: &super::app::PixelRegion,
+        phase_offset: f32, // Sine wave phase offset in radians
     ) {
-        let window_width = window_width as usize;
-        let _window_height = window_height as usize;
-        // Use harmonic mean (span) for smooth scaling
-        let span = 2.0 * window_width as f32 * window_height as f32
-            / (window_width as f32 + window_height as f32);
+        // Spectrum fills full region width, wave amplitude based on height
+        let logo_width = region.w;
+        let logo_height = region.h / 2; // Wave oscillates around center
+                                        // Harmonic mean of region for brightness scaling (matches old span behavior)
+        let region_span =
+            2.0 * region.w as f32 * region.h as f32 / (region.w as f32 + region.h as f32);
 
-        // Size the spectrum relative to span
-        let logo_width = (span / 1.5) as usize;
-        let logo_height = (span / 5.) as usize;
+        // Wave period tied to height - aspect ratio determines wave count
+        let waves_per_region = region.w as f32 / region.h as f32 * 2.;
 
-        // Position horizontally centered, vertically at specified position
-        let x_start: usize = (window_width - logo_width) / 2;
-        // PROOF saturating_sub: logo_height could exceed vertical_center_px
-        // Prevents underflow when logo is taller than vertical position, saturating at 0
-        let y_offset = vertical_center_px.saturating_sub(logo_height);
-
-        // Draw horizontal spectrum rainbow
-        for y in 0..logo_height * 2 {
+        // Loop invariant: y in 0..region.h → py = region.y + y is in region.y..region.bottom()
+        // Loop invariant: x in 0..region.w → px = region.x + x is in region.x..region.right()
+        for y in 0..region.h {
+            let py = region.y + y;
             for x in 0..logo_width {
+                let px = region.x + x;
+
                 // Flip x for wave calculations to match flipped spectrum
                 let x_flipped = logo_width - 1 - x;
                 let x_norm = x_flipped as f32 / logo_width as f32;
+                // Amplitude ramps up toward blue (high x_flipped)
                 let amplitude = logo_height as f32 / (1. + 12. * x_norm);
 
+                // Frequency ramps up toward blue end (logarithmic)
+                let freq_ramp = 2f32.powf(-x_norm + 2.); // ~1x at red, ~3x at blue
                 let wave_phase =
-                    (logo_width as f32 / (x_flipped + logo_width / 2) as f32) * 55. + phase_offset;
+                    x_norm * std::f32::consts::TAU * waves_per_region * freq_ramp + phase_offset;
                 let wave_offset = wave_phase.sin() * amplitude;
 
                 let mut scale = (y as f32 + wave_offset - logo_height as f32) / logo_height as f32;
                 scale = ((logo_height * 2 - y) as f32 / logo_height as f32)
                     * (y as f32 / logo_height as f32)
                     * 32000.
-                    / (scale.abs() + amplitude / span * 0.25);
-                let px = x_start + x;
+                    / (scale.abs() + amplitude / region_span * 0.25);
 
-                // Map x position to wavelength index (0-480), flipped left-right
-                let wavelength_idx = ((logo_width - 1 - x) * 480) / logo_width;
+                // Map x position to wavelength index, flipped left-right
+                // LMS2006SO covers 350-830nm in 1nm steps
+                const START_NM: usize = 350;
+                const LAMBDA_START: usize = 350 - START_NM;
+                const LAMBDA_END: usize = 750 - START_NM;
+                let wavelength_idx = LAMBDA_START
+                    + ((logo_width - 1 - x) * (LAMBDA_END - LAMBDA_START)) / logo_width.max(1);
                 let lms_idx = wavelength_idx * 3;
 
                 // Extract L, M, S from LMS2006SO array
@@ -4186,8 +4237,8 @@ impl PhotonApp {
                 let b =
                     0.003891529873740330 * l + -0.020567680031394800 * m + 0.945832607950864000 * s;
 
-                // Write pixel (with y_offset for vertical positioning)
-                let idx = (y + y_offset) * window_width + px - logo_width / 16;
+                // idx proven in-bounds by loop invariants
+                let idx = py * window_width + px;
                 let (r_bg, g_bg, b_bg, a) = unpack_argb(pixels[idx]);
                 let r_b = r_bg as f32 * r_bg as f32;
                 let g_b = g_bg as f32 * g_bg as f32;

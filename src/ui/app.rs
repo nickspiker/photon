@@ -240,6 +240,230 @@ impl TextLayout {
     }
 }
 
+/// A rectangular region in pixel coordinates.
+/// Used for layout bounds - regions don't scale with ru, content within does.
+#[derive(Clone, Copy, Debug)]
+pub struct PixelRegion {
+    pub x: usize,
+    pub y: usize,
+    pub w: usize,
+    pub h: usize,
+}
+
+impl PixelRegion {
+    pub fn new(x: usize, y: usize, w: usize, h: usize) -> Self {
+        Self { x, y, w, h }
+    }
+
+    #[inline]
+    pub fn contains(&self, px: usize, py: usize) -> bool {
+        px >= self.x && px < self.x + self.w && py >= self.y && py < self.y + self.h
+    }
+
+    #[inline]
+    pub fn right(&self) -> usize {
+        self.x + self.w
+    }
+
+    #[inline]
+    pub fn bottom(&self) -> usize {
+        self.y + self.h
+    }
+
+    pub fn center(&self) -> (usize, usize) {
+        (self.x + self.w / 2, self.y + self.h / 2)
+    }
+
+    /// Calculate content scale for this region using harmonic mean + soft limit.
+    /// This ensures content scales proportionally but never exceeds region bounds.
+    /// Formula: soft_limit(rect_span * ru, min(w, h))
+    /// where rect_span = 2*w*h / (w+h) (harmonic mean)
+    /// and soft_limit(x, max) = max * x / (x + max)
+    #[inline]
+    pub fn content_scale(&self, ru: f64) -> f64 {
+        if self.w == 0 || self.h == 0 {
+            return 0.0;
+        }
+        let w = self.w as f64;
+        let h = self.h as f64;
+        let rect_span = 2.0 * w * h / (w + h);
+        let min_dim = w.min(h);
+        let x = rect_span * ru;
+        // soft_limit: asymptotically approaches min_dim but never exceeds
+        min_dim * x / (x + min_dim)
+    }
+}
+
+/// UI layout regions - fixed containers that don't scale with ru.
+/// Content within each region scales with ru, but the region bounds are fixed.
+/// Note: Window controls are NOT included - they're window chrome, not content regions.
+pub struct Layout {
+    /// Logo and spectrum animation area - launch screens only
+    pub logo_spectrum: Option<PixelRegion>,
+    /// "Photon" text area - launch screens only
+    pub photon_text: Option<PixelRegion>,
+    /// Text input box - present in all states
+    pub textbox: PixelRegion,
+    /// Hint text below textbox - launch screens only
+    pub hint: Option<PixelRegion>,
+    /// Attest button - launch screens only
+    pub attest_button: Option<PixelRegion>,
+    /// User avatar - ready/searching states
+    pub avatar: Option<PixelRegion>,
+    /// Contact list area - ready state
+    pub contacts_list: Option<PixelRegion>,
+    /// Header with back arrow and contact info - conversation state
+    pub header: Option<PixelRegion>,
+    /// Message display area - conversation state
+    pub message_area: Option<PixelRegion>,
+}
+
+/// A named slice in a proportional layout grid.
+/// Each slice has a name (for documentation) and a unit size.
+struct Slice {
+    #[allow(dead_code)]
+    name: &'static str,
+    units: f64,
+}
+
+impl Slice {
+    const fn new(name: &'static str, units: f64) -> Self {
+        Self { name, units }
+    }
+}
+
+/// Compute pixel positions from named slices.
+/// Returns a Vec where positions[i] is the start pixel of slice i,
+/// and positions[len] is the end pixel of the last slice.
+fn slice_positions(total_pixels: usize, slices: &[Slice]) -> Vec<usize> {
+    let total_units: f64 = slices.iter().map(|s| s.units).sum();
+    let mut positions = Vec::with_capacity(slices.len() + 1);
+    let mut cumulative = 0.0;
+    positions.push(0);
+    for slice in slices {
+        cumulative += slice.units;
+        positions.push((total_pixels as f64 * cumulative / total_units) as usize);
+    }
+    positions
+}
+
+impl Layout {
+    /// Create layout from window dimensions and app state.
+    /// Uses proportional slicing: window divided into fixed unit bands vertically and horizontally.
+    /// Each element gets a rectangle from the intersection of bands.
+    /// Content within rectangles scales with ru via content_scale().
+    pub fn new(width: usize, height: usize, _span: usize, app_state: &AppState) -> Self {
+        // Common horizontal slicing: margin | content | margin
+        const H_SLICES: [Slice; 3] = [
+            Slice::new("margin_left", 1.),
+            Slice::new("content", 6.),
+            Slice::new("margin_right", 1.),
+        ];
+        let h = slice_positions(width, &H_SLICES);
+        let content_x = h[1];
+        let content_w = h[2] - h[1];
+
+        match app_state {
+            AppState::Launch(_) => {
+                // Vertical layout for launch screen
+                const V_SLICES: [Slice; 13] = [
+                    Slice::new("gap0", 0.75),
+                    Slice::new("spectrum", 6.),
+                    Slice::new("gap1", -2.),
+                    Slice::new("photon_text", 3.),
+                    Slice::new("gap2", 1.5),
+                    Slice::new("textbox", 2.),
+                    Slice::new("gap3", 0.25),
+                    Slice::new("hint", 1.5),
+                    Slice::new("gap4", 0.5),
+                    Slice::new("attest", 2.),
+                    Slice::new("gap4", 6.),
+                    Slice::new("version", 1.),
+                    Slice::new("gap5", 1.),
+                ];
+                let v = slice_positions(height, &V_SLICES);
+
+                // Named indices for clarity
+                const SPECTRUM: usize = 1;
+                const PHOTON_TEXT: usize = 3;
+                const TEXTBOX: usize = 5;
+                const HINT: usize = 7;
+                const ATTEST: usize = 9;
+
+                Self {
+                    // Spectrum uses full window width (no margins)
+                    logo_spectrum: Some(PixelRegion::new(0, v[SPECTRUM], width, v[SPECTRUM + 1] - v[SPECTRUM])),
+                    photon_text: Some(PixelRegion::new(content_x, v[PHOTON_TEXT], content_w, v[PHOTON_TEXT + 1] - v[PHOTON_TEXT])),
+                    textbox: PixelRegion::new(content_x, v[TEXTBOX], content_w, v[TEXTBOX + 1] - v[TEXTBOX]),
+                    hint: Some(PixelRegion::new(content_x, v[HINT], content_w, v[HINT + 1] - v[HINT])),
+                    attest_button: Some(PixelRegion::new(content_x, v[ATTEST], content_w, v[ATTEST + 1] - v[ATTEST])),
+                    avatar: None,
+                    contacts_list: None,
+                    header: None,
+                    message_area: None,
+                }
+            }
+            AppState::Ready | AppState::Searching => {
+                const V_SLICES: [Slice; 6] = [
+                    Slice::new("gap0", 1.0),
+                    Slice::new("avatar", 4.0),
+                    Slice::new("gap1", 1.0),
+                    Slice::new("textbox", 1.0),
+                    Slice::new("gap2", 0.5),
+                    Slice::new("contacts", 8.0),
+                ];
+                let v = slice_positions(height, &V_SLICES);
+
+                const AVATAR: usize = 1;
+                const TEXTBOX: usize = 3;
+                const CONTACTS: usize = 5;
+
+                // Avatar is centered horizontally, square
+                let avatar_h = v[AVATAR + 1] - v[AVATAR];
+                let avatar_w = avatar_h.min(content_w);
+                let avatar_x = content_x + (content_w - avatar_w) / 2;
+
+                Self {
+                    logo_spectrum: None,
+                    photon_text: None,
+                    textbox: PixelRegion::new(content_x, v[TEXTBOX], content_w, v[TEXTBOX + 1] - v[TEXTBOX]),
+                    hint: None,
+                    attest_button: None,
+                    avatar: Some(PixelRegion::new(avatar_x, v[AVATAR], avatar_w, avatar_h)),
+                    contacts_list: Some(PixelRegion::new(content_x, v[CONTACTS], content_w, v[CONTACTS + 1] - v[CONTACTS])),
+                    header: None,
+                    message_area: None,
+                }
+            }
+            AppState::Conversation | AppState::Connected { .. } => {
+                const V_SLICES: [Slice; 4] = [
+                    Slice::new("header", 2.0),
+                    Slice::new("messages", 12.0),
+                    Slice::new("textbox", 1.5),
+                    Slice::new("bottom_gap", 0.5),
+                ];
+                let v = slice_positions(height, &V_SLICES);
+
+                const HEADER: usize = 0;
+                const MESSAGES: usize = 1;
+                const TEXTBOX: usize = 2;
+
+                Self {
+                    logo_spectrum: None,
+                    photon_text: None,
+                    textbox: PixelRegion::new(content_x, v[TEXTBOX], content_w, v[TEXTBOX + 1] - v[TEXTBOX]),
+                    hint: None,
+                    attest_button: None,
+                    avatar: None,
+                    contacts_list: None,
+                    header: Some(PixelRegion::new(0, v[HEADER], width, v[HEADER + 1] - v[HEADER])),
+                    message_area: Some(PixelRegion::new(content_x, v[MESSAGES], content_w, v[MESSAGES + 1] - v[MESSAGES])),
+                }
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppState {
     /// Launch screen states (before main messenger UI)
@@ -344,6 +568,9 @@ pub struct PhotonApp {
 
     /// Text layout geometry - single source of truth for text/blinkey positioning
     pub text_layout: TextLayout,
+
+    /// UI region layout - fixed containers that don't scale with ru
+    pub layout: Layout,
 
     // Launch screen state
     pub blinkey_blink_rate_ms: u64, // System blinkey blink rate in milliseconds (max for random range)
@@ -561,6 +788,7 @@ impl PhotonApp {
                 1.0,
                 &AppState::Launch(LaunchState::Fresh),
             ),
+            layout: Layout::new(w, h, 2 * w * h / (w + h), &AppState::Launch(LaunchState::Fresh)),
             blinkey_blink_rate_ms,
             blinkey_visible: false,
             is_mouse_selecting: false,
@@ -707,6 +935,7 @@ impl PhotonApp {
                 1.0,
                 &AppState::Launch(LaunchState::Fresh),
             ),
+            layout: Layout::new(w, h, 2 * w * h / (w + h), &AppState::Launch(LaunchState::Fresh)),
             blinkey_blink_rate_ms: 500,
             blinkey_visible: false,
             is_mouse_selecting: false,
@@ -1437,6 +1666,16 @@ impl PhotonApp {
         let factor = (33.0_f32 / 32.0).powf(steps);
         self.ru = (self.ru * factor).clamp(1.0 / 32.0, 32.0);
         self.window_dirty = true;
+
+        // Update text layout with new ru
+        self.text_layout = TextLayout::new(
+            self.width as usize,
+            self.height as usize,
+            self.span,
+            self.ru,
+            &self.app_state,
+        );
+
         self.recalculate_char_widths();
     }
 
@@ -1457,6 +1696,9 @@ impl PhotonApp {
 
         // Update text layout geometry
         self.text_layout = TextLayout::new(w, h, self.span, self.ru, &self.app_state);
+
+        // Update region layout
+        self.layout = Layout::new(w, h, self.span, &self.app_state);
 
         self.renderer.resize(width, height);
         self.hit_test_map.resize((width * height) as usize, 0);
@@ -1494,7 +1736,7 @@ impl PhotonApp {
     }
 
     pub fn get_resize_edge(&self, x: f32, y: f32) -> ResizeEdge {
-        let resize_border = ((self.width.min(self.height) as f32) / 32.0).ceil();
+        let resize_border = (self.span as f32 / 32.0).ceil();
 
         let at_left = x < resize_border;
         let at_right = x > (self.width as f32 - resize_border);
