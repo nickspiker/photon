@@ -214,7 +214,7 @@ impl PhotonApp {
                         pixels,
                         self.width,
                         self.height,
-                        logo_center_y - self.height.min(self.width) as usize / 8,
+                        logo_center_y - self.span / 8,
                         self.spectrum_phase,
                     );
                     Self::draw_logo_text(
@@ -222,7 +222,7 @@ impl PhotonApp {
                         &mut self.text_renderer,
                         self.width,
                         self.height,
-                        logo_center_y + self.height.min(self.width) as usize / 8,
+                        logo_center_y + self.span / 8,
                     );
 
                     // Handle textbox
@@ -1268,8 +1268,7 @@ impl PhotonApp {
                 // Handle hover state changes
                 if self.prev_hovered_button != self.hovered_button {
                     // Calculate button centers for centerpoint fill
-                    let smaller_dim = self.width.min(self.height) as f32;
-                    let button_height = (smaller_dim / 16.).ceil() as usize;
+                    let button_height = (self.span as f32 / 16.0 * self.ru).ceil() as usize;
                     let button_width = button_height;
                     let total_width = button_width * 7 / 2;
                     let x_start = self.width as usize - total_width;
@@ -1524,8 +1523,7 @@ impl PhotonApp {
             // This runs OUTSIDE controls_dirty so it works during animation
             if self.window_dirty && self.hovered_button != HoveredButton::None {
                 // Calculate button centers for centerpoint fill
-                let smaller_dim = self.width.min(self.height) as f32;
-                let button_height = (smaller_dim / 16.).ceil() as usize;
+                let button_height = (self.span as f32 / 16.0 * self.ru).ceil() as usize;
                 let button_width = button_height;
                 let total_width = button_width * 7 / 2;
                 let x_start = self.width as usize - total_width;
@@ -2031,6 +2029,26 @@ impl PhotonApp {
             hit_test_map[pixel_idx] = button_id;
 
             x_offset += 1;
+        }
+
+        // Continue bottom edge linearly from where squircle ends to window edge
+        let linear_start_x = x_start + start + crossings.len();
+        let edge_y = y_start + button_height - 1;
+
+        for px in linear_start_x..window_width {
+            // Draw edge pixel at bottom of button area
+            let pixel_idx = edge_y * window_width + px;
+            pixels[pixel_idx] = edge_colour;
+
+            // Fill grey above the edge (from edge to top of button area)
+            for row in 1..start {
+                let py = edge_y - row;
+                let pixel_idx = py * window_width + px;
+                pixels[pixel_idx] = bg_colour;
+
+                // All pixels past the squircle belong to close button
+                hit_test_map[pixel_idx] = HIT_CLOSE_BUTTON;
+            }
         }
 
         x_start += button_width / 4;
@@ -3139,9 +3157,8 @@ impl PhotonApp {
         let width = window_width as usize;
         let y_start = 0;
 
-        // Calculate button dimensions (matching draw_window_controls)
-        let smaller_dim = window_width.min(window_height) as f32;
-        let button_width = (smaller_dim / 16.).ceil() as usize;
+        // button_width equals button_height (passed in, already scaled with span * ru)
+        let button_width = button_height;
 
         // Two hairlines: at 1.0 and 2.0 button widths from button area start
         // Left hairline between minimize and maximize
@@ -4118,11 +4135,13 @@ impl PhotonApp {
     ) {
         let window_width = window_width as usize;
         let _window_height = window_height as usize;
-        let smaller_dim = window_width.min(window_height as usize) as f32;
+        // Use harmonic mean (span) for smooth scaling
+        let span = 2.0 * window_width as f32 * window_height as f32
+            / (window_width as f32 + window_height as f32);
 
-        // Size the spectrum relative to window dimensions
-        let logo_width = (smaller_dim / 1.5) as usize;
-        let logo_height = (smaller_dim / 5.) as usize;
+        // Size the spectrum relative to span
+        let logo_width = (span / 1.5) as usize;
+        let logo_height = (span / 5.) as usize;
 
         // Position horizontally centered, vertically at specified position
         let x_start: usize = (window_width - logo_width) / 2;
@@ -4146,7 +4165,7 @@ impl PhotonApp {
                 scale = ((logo_height * 2 - y) as f32 / logo_height as f32)
                     * (y as f32 / logo_height as f32)
                     * 32000.
-                    / (scale.abs() + amplitude / smaller_dim * 0.25);
+                    / (scale.abs() + amplitude / span * 0.25);
                 let px = x_start + x;
 
                 // Map x position to wavelength index (0-480), flipped left-right
@@ -4190,12 +4209,14 @@ impl PhotonApp {
     ) {
         let window_width = window_width as usize;
         let window_height = window_height as usize;
-        let smaller_dim = window_width.min(window_height) as f32;
+        // Use harmonic mean (span) for smooth scaling
+        let span = 2.0 * window_width as f32 * window_height as f32
+            / (window_width as f32 + window_height as f32);
 
         // Calculate text position
         let text_x = window_width as f32 / 2.;
         let text_y = vertical_center_px as f32;
-        let text_size = smaller_dim / 8. * 1.18;
+        let text_size = span / 8. * 1.18;
 
         // Virtual buffer region (only process where text lives with glow padding)
         let text_height_estimate = (text_size * 1.5) as usize;
