@@ -94,8 +94,9 @@ impl PhotonApp {
         }
 
         let text_start_x = layout.text_start_x(text);
-        let textbox_left = layout.usable_left as f32;
-        let textbox_right = layout.usable_right as f32;
+        // Use full textbox bounds for rendering - text can flow under button area
+        let textbox_left = layout.textbox_left as f32;
+        let textbox_right = layout.textbox_right as f32;
 
         let mut x_offset = text_start_x;
 

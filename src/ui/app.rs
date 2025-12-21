@@ -127,6 +127,10 @@ impl TextState {
 /// Designed to be extensible for future multi-line text entry.
 #[derive(Clone, Copy)]
 pub struct TextLayout {
+    /// Left edge of full textbox (pixels from window left)
+    pub textbox_left: usize,
+    /// Right edge of full textbox (pixels from window left)
+    pub textbox_right: usize,
     /// Left edge of usable text area (pixels from window left)
     pub usable_left: usize,
     /// Right edge of usable text area (pixels from window left)
@@ -188,6 +192,8 @@ impl TextLayout {
         let margin = usable_width / 40;
 
         Self {
+            textbox_left,
+            textbox_right,
             usable_left,
             usable_right,
             usable_center,

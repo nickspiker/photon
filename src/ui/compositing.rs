@@ -1805,6 +1805,21 @@ impl PhotonApp {
                         pixels[idx] = pack_argb(alpha, alpha, alpha, 255);
                     }
                 }
+
+                // Render text in green WITHOUT clipping (full window mask)
+                if !self.current_text_state.chars.is_empty() {
+                    let unclipped_mask = vec![255u8; pixels.len()];
+                    Self::render_text_clipped(
+                        pixels,
+                        &self.current_text_state,
+                        true,
+                        &mut self.text_renderer,
+                        &unclipped_mask,
+                        self.width as usize,
+                        &self.text_layout,
+                        0x00FF00, // Green
+                    );
+                }
             }
 
             // Always present buffer once per frame
