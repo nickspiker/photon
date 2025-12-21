@@ -27,7 +27,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Binary size: {} bytes", binary_data.len());
 
     // Load private key
-    let keys_dir = PathBuf::from("/mnt/Chiton/MEGA/Code/keys");
+    let keys_dir = PathBuf::from("/home/nick/MEGA/code/keys");
     let private_key_path = keys_dir.join("photon-signing-key");
 
     if !private_key_path.exists() {

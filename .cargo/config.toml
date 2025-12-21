@@ -1,10 +1,10 @@
 # Cargo configuration for Photon Messenger
 # Auto-signing workflow for all builds
 
-# Native Linux - use default linker (override any system mold config)
+# Native Linux - use clang+lld (avoids cc's --no-add-needed flag)
 [target.x86_64-unknown-linux-gnu]
-linker = "cc"
-rustflags = []
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]
 
 # Android cross-compilation
 [target.aarch64-linux-android]

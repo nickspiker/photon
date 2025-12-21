@@ -1018,7 +1018,7 @@ impl PhotonApp {
                                 if let Some(text) = placeholder {
                                     let text_width = self.text_renderer.measure_text_width(
                                         text,
-                                        font_size,
+                                        self.text_layout.font_size,
                                         500,
                                         theme::FONT_USER_CONTENT,
                                     );
@@ -1026,9 +1026,9 @@ impl PhotonApp {
                                         pixels,
                                         self.width as usize,
                                         text,
-                                        center_x as f32 - text_width / 2.0,
-                                        textbox_y as f32,
-                                        font_size,
+                                        self.text_layout.usable_center as f32 - text_width / 2.0,
+                                        self.text_layout.textbox_y as f32,
+                                        self.text_layout.font_size,
                                         500,
                                         theme::PLACEHOLDER_TEXT,
                                         theme::FONT_USER_CONTENT,
@@ -1109,7 +1109,7 @@ impl PhotonApp {
                     if let Some(text) = placeholder {
                         let text_width = self.text_renderer.measure_text_width(
                             text,
-                            font_size,
+                            self.text_layout.font_size,
                             500,
                             theme::FONT_USER_CONTENT,
                         );
@@ -1117,9 +1117,9 @@ impl PhotonApp {
                             pixels,
                             self.width as usize,
                             text,
-                            center_x as f32 - text_width / 2.0,
-                            textbox_y as f32,
-                            font_size,
+                            self.text_layout.usable_center as f32 - text_width / 2.0,
+                            self.text_layout.textbox_y as f32,
+                            self.text_layout.font_size,
                             500,
                             theme::PLACEHOLDER_TEXT,
                             theme::FONT_USER_CONTENT,
@@ -1768,8 +1768,15 @@ impl PhotonApp {
                             if let Some(ref attest) = self.layout.attest_button {
                                 let button_center_x = attest.x + attest.w / 2;
                                 let button_center_y = attest.y + attest.h / 2;
-                                let button_height = (self.span as f32 / 8.0 * self.ru) as usize;
-                                let button_width = attest.w / 2;
+                                // Size constrained to fit region using harmonic mean, scaled by ru
+                                const BUTTON_ASPECT: f32 = 2.7; // ~2.7:1 width:height
+                                let max_size_by_width = attest.w as f32 / BUTTON_ASPECT;
+                                let max_size_by_height = attest.h as f32;
+                                // Harmonic mean: 2*a*b/(a+b) - smoothly blends constraints
+                                let base_height = 2.0 * max_size_by_width * max_size_by_height
+                                    / (max_size_by_width + max_size_by_height);
+                                let button_height = (base_height * self.ru) as usize;
+                                let button_width = (button_height as f32 * BUTTON_ASPECT) as usize;
                                 Self::draw_button(
                                     pixels,
                                     &mut self.hit_test_map,
@@ -1792,7 +1799,7 @@ impl PhotonApp {
                                     "Attest",
                                     button_center_x as f32,
                                     button_center_y as f32,
-                                    font_size,
+                                    button_height as f32 / 2.0,
                                     500,
                                     theme::BUTTON_TEXT,
                                     theme::FONT_USER_CONTENT,
@@ -3852,8 +3859,8 @@ impl PhotonApp {
         let x = center_x - box_width / 2;
         let y = center_y - box_height / 2;
 
-        // Harmonic mean for smooth scaling (no derivative discontinuity at width=height)
-        let radius = (box_width * box_height) as f32 / (box_width + box_height) as f32;
+        // Pill-shaped: radius = height/2 gives semicircular ends (same as textbox)
+        let radius = box_height as f32 / 2.;
         let squirdleyness = 3;
 
         // Generate crossings from edge (radius/12 o'clock) toward diagonal (1:30)
