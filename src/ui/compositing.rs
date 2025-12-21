@@ -218,27 +218,27 @@ impl PhotonApp {
                         );
                     }
                     if let Some(ref text_region) = self.layout.photon_text {
-                        let text_center_y = text_region.y + text_region.h / 2;
                         Self::draw_logo_text(
                             pixels,
                             &mut self.text_renderer,
-                            self.width,
-                            self.height,
-                            text_center_y,
+                            self.width as usize,
+                            text_region,
                         );
                     }
 
-                    // Handle textbox
+                    // Handle textbox - width from layout, height scales with ru
+                    let tb = &self.layout.textbox;
+                    let tb_height = (self.span as f32 / 8.0 * self.ru) as usize;
                     Self::draw_textbox(
                         pixels,
                         &mut self.hit_test_map,
                         HIT_HANDLE_TEXTBOX,
                         &mut self.textbox_mask,
                         self.width as usize,
-                        center_x,
-                        textbox_y,
-                        box_width,
-                        box_height,
+                        tb.x + tb.w / 2,           // center_x from layout
+                        tb.y + tb.h / 2,           // center_y from layout
+                        tb.w,                       // full width from layout
+                        tb_height,                  // height scales with ru
                     );
 
                     // Always update glow_colour based on state (for correct subtract on defocus)
@@ -265,17 +265,20 @@ impl PhotonApp {
                         );
                     }
 
-                    self.text_renderer.draw_text_center_u32(
-                        pixels,
-                        self.width as usize,
-                        "handle",
-                        center_x as f32,
-                        (textbox_y + box_height) as f32,
-                        font_size,
-                        300,
-                        theme::LABEL_COLOUR,
-                        theme::FONT_UI,
-                    );
+                    // "handle" label using hint region
+                    if let Some(ref hint) = self.layout.hint {
+                        self.text_renderer.draw_text_center_u32(
+                            pixels,
+                            self.width as usize,
+                            "handle",
+                            (hint.x + hint.w / 2) as f32,
+                            (hint.y + hint.h / 2) as f32,
+                            font_size,
+                            300,
+                            theme::LABEL_COLOUR,
+                            theme::FONT_UI,
+                        );
+                    }
                 } else if matches!(self.app_state, AppState::Ready | AppState::Searching) {
                     // Ready/Searching screen: Draw avatar at top center
                     let avatar_radius = self.span / 8;
@@ -329,17 +332,19 @@ impl PhotonApp {
                         );
                     }
 
-                    // Query friends textbox
+                    // Query friends textbox - width from layout, height scales with ru
+                    let tb = &self.layout.textbox;
+                    let tb_height = (self.span as f32 / 8.0 * self.ru) as usize;
                     Self::draw_textbox(
                         pixels,
                         &mut self.hit_test_map,
                         HIT_HANDLE_TEXTBOX,
                         &mut self.textbox_mask,
                         self.width as usize,
-                        center_x,
-                        textbox_y,
-                        box_width,
-                        box_height,
+                        tb.x + tb.w / 2,
+                        tb.y + tb.h / 2,
+                        tb.w,
+                        tb_height,
                     );
 
                     // Glow colour: yellow during search, green/red based on result, white default
@@ -820,17 +825,19 @@ impl PhotonApp {
                                         }
                                     }
 
-                                    // Draw bottom textbox for message input (full width, centered)
+                                    // Draw bottom textbox for message input - width from layout, height scales with ru
+                                    let tb = &self.layout.textbox;
+                                    let tb_height = (self.span as f32 / 8.0 * self.ru) as usize;
                                     Self::draw_textbox(
                                         pixels,
                                         &mut self.hit_test_map,
                                         HIT_HANDLE_TEXTBOX,
                                         &mut self.textbox_mask,
                                         self.width as usize,
-                                        center_x,
-                                        textbox_y,
-                                        box_width,
-                                        box_height,
+                                        tb.x + tb.w / 2,
+                                        tb.y + tb.h / 2,
+                                        tb.w,
+                                        tb_height,
                                     );
 
                                     // Draw send button inset in bottom-right corner of textbox (only if text entered)
@@ -1754,41 +1761,43 @@ impl PhotonApp {
                 && !self.current_text_state.chars.is_empty()
                 || self.window_dirty && !self.current_text_state.chars.is_empty()
             {
-                let button_center_y = textbox_y + box_height + box_height;
-                let button_height = box_height;
-
                 match &self.app_state {
                     AppState::Launch(launch_state) => match launch_state {
                         LaunchState::Fresh => {
-                            // Show "Attest" button
-                            let button_width = box_width / 2;
-                            Self::draw_button(
-                                pixels,
-                                &mut self.hit_test_map,
-                                None,
-                                self.width as usize,
-                                self.height as usize,
-                                center_x,
-                                button_center_y,
-                                button_width,
-                                button_height,
-                                HIT_PRIMARY_BUTTON,
-                                theme::BUTTON_BLUE,
-                                theme::BUTTON_LIGHT_EDGE,
-                                theme::BUTTON_SHADOW_EDGE,
-                            );
+                            // Show "Attest" button using layout region
+                            if let Some(ref attest) = self.layout.attest_button {
+                                let button_center_x = attest.x + attest.w / 2;
+                                let button_center_y = attest.y + attest.h / 2;
+                                let button_height = (self.span as f32 / 8.0 * self.ru) as usize;
+                                let button_width = attest.w / 2;
+                                Self::draw_button(
+                                    pixels,
+                                    &mut self.hit_test_map,
+                                    None,
+                                    self.width as usize,
+                                    self.height as usize,
+                                    button_center_x,
+                                    button_center_y,
+                                    button_width,
+                                    button_height,
+                                    HIT_PRIMARY_BUTTON,
+                                    theme::BUTTON_BLUE,
+                                    theme::BUTTON_LIGHT_EDGE,
+                                    theme::BUTTON_SHADOW_EDGE,
+                                );
 
-                            self.text_renderer.draw_text_center_u32(
-                                pixels,
-                                self.width as usize,
-                                "Attest",
-                                center_x as f32,
-                                button_center_y as f32,
-                                font_size,
-                                500,
-                                theme::BUTTON_TEXT,
-                                theme::FONT_USER_CONTENT,
-                            );
+                                self.text_renderer.draw_text_center_u32(
+                                    pixels,
+                                    self.width as usize,
+                                    "Attest",
+                                    button_center_x as f32,
+                                    button_center_y as f32,
+                                    font_size,
+                                    500,
+                                    theme::BUTTON_TEXT,
+                                    theme::FONT_USER_CONTENT,
+                                );
+                            }
                         }
                         LaunchState::Attesting => {
                             // Show "Attesting..." in message area (no button)
@@ -3285,8 +3294,8 @@ impl PhotonApp {
         let light_colour = theme::TEXTBOX_LIGHT_EDGE;
         let shadow_colour = theme::TEXTBOX_SHADOW_EDGE;
         let fill_colour = theme::TEXTBOX_FILL;
-        // Harmonic mean for smooth scaling (no derivative discontinuity at width=height)
-        let radius = (box_width * box_height) as f32 / (box_width + box_height) as f32;
+        // Pill-shaped: radius = height/2 gives semicircular ends
+        let radius = box_height as f32 / 2.;
         let squirdleyness = 3;
 
         // Generate crossings from edge (radius/12 o'clock) toward diagonal (1:30)
@@ -4254,24 +4263,25 @@ impl PhotonApp {
     pub fn draw_logo_text(
         pixels: &mut [u32],
         text_renderer: &mut TextRenderer,
-        window_width: u32,
-        window_height: u32,
-        vertical_center_px: usize, // Vertical center position in pixels
+        window_width: usize,
+        region: &super::app::PixelRegion,
     ) {
-        let window_width = window_width as usize;
-        let window_height = window_height as usize;
-        // Use harmonic mean (span) for smooth scaling
-        let span = 2.0 * window_width as f32 * window_height as f32
-            / (window_width as f32 + window_height as f32);
+        const TEXT_ASPECT: f32 = 6.;
 
-        // Calculate text position
-        let text_x = window_width as f32 / 2.;
-        let text_y = vertical_center_px as f32;
-        let text_size = span / 8. * 1.18;
+        // Size constrained to fit region using harmonic mean (smooth derivative)
+        let max_size_by_width = region.w as f32 / TEXT_ASPECT;
+        let max_size_by_height = region.h as f32;
+        // Harmonic mean: 2*a*b/(a+b) - smoothly blends constraints
+        let text_size =
+            2.0 * max_size_by_width * max_size_by_height / (max_size_by_width + max_size_by_height);
+
+        let text_x = (region.x + region.w / 2) as f32;
+        let text_y = (region.y + region.h / 2) as f32;
 
         // Virtual buffer region (only process where text lives with glow padding)
         let text_height_estimate = (text_size * 1.5) as usize;
-        let start = text_y as usize - text_height_estimate;
+        let window_height = pixels.len() / window_width;
+        let start = (text_y as usize).saturating_sub(text_height_estimate);
         let stop = (text_y as usize + text_height_estimate).min(window_height);
         let virtual_height = stop - start;
         let buffer_size = window_width * virtual_height;

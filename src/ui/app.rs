@@ -164,22 +164,22 @@ impl TextLayout {
     /// Create layout geometry from app dimensions and state
     /// ru = dimensionless zoom multiplier (1.0 = default)
     pub fn new(width: usize, height: usize, span: usize, ru: f32, app_state: &AppState) -> Self {
-        // Layout: margins stay proportional to window (don't scale with ru)
-        let textbox_left = span / 8;
-        let textbox_right = width - textbox_left;
-        let textbox_width = textbox_right - textbox_left;
+        // Get textbox region from Layout (single source of truth)
+        let layout = Layout::new(width, height, span, app_state);
+        let tb = &layout.textbox;
+
+        // Use layout's textbox x bounds
+        let textbox_left = tb.x;
+        let textbox_right = tb.x + tb.w;
+        let textbox_width = tb.w;
 
         // Content: font and box height scale with ru
         let box_height = (span as f32 / 8.0 * ru) as usize;
         let font_size = span as f32 / 16.0 * ru;
         let line_height = box_height; // For future multi-line
 
-        // textbox_y varies by screen
-        let textbox_y = match app_state {
-            AppState::Ready | AppState::Searching => span * 5 / 8,
-            AppState::Conversation => height - box_height * 3 / 2,
-            _ => height * 5 / 8, // Launch screens
-        };
+        // textbox_y from layout center
+        let textbox_y = tb.y + tb.h / 2;
 
         // Button area (0 on attest screen where button is below textbox)
         let button_area = if matches!(app_state, AppState::Launch(_)) {
@@ -370,7 +370,7 @@ impl Layout {
                     Slice::new("gap0", 0.75),
                     Slice::new("spectrum", 6.),
                     Slice::new("gap1", -2.),
-                    Slice::new("photon_text", 3.),
+                    Slice::new("photon_text", 3.5),
                     Slice::new("gap2", 1.5),
                     Slice::new("textbox", 2.),
                     Slice::new("gap3", 0.25),
