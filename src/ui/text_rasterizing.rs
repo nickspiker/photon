@@ -575,7 +575,109 @@ impl TextRenderer {
             }
             let text_height = run.line_height;
 
-            self.render_buffer_additive_u32(
+            self.render_buffer_left_additive_u32(
+                &mut buffer,
+                pixels,
+                width,
+                x,
+                y,
+                text_height,
+                add_mode,
+                colour,
+            );
+
+            text_width
+        } else {
+            0.
+        }
+    }
+
+    /// Draw center-aligned text with additive/subtractive compositing (u32 ARGB version)
+    /// Uses wrapping add/sub so it's reversible - subtract same colour to remove text
+    /// add_mode: true = add colour, false = subtract colour
+    pub fn draw_text_center_additive_u32(
+        &mut self,
+        pixels: &mut [u32],
+        width: usize,
+        text: &str,
+        x: f32,
+        y: f32,
+        size: f32,
+        weight: u16,
+        colour: u32,
+        font: &str,
+        add_mode: bool,
+    ) -> f32 {
+        let attrs = Attrs::new()
+            .family(Family::Name(font))
+            .weight(Weight(weight));
+
+        let metrics = Metrics::relative(size, 1.2);
+        let mut buffer = Buffer::new(&mut self.font_system, metrics);
+
+        buffer.set_size(&mut self.font_system, None, None);
+        buffer.set_text(&mut self.font_system, text, &attrs, Shaping::Advanced);
+        buffer.shape_until_scroll(&mut self.font_system, false);
+
+        if let Some(run) = buffer.layout_runs().next() {
+            let mut text_width = 0.0f32;
+            for glyph in run.glyphs {
+                text_width = text_width.max(glyph.x + glyph.w);
+            }
+            let text_height = run.line_height;
+
+            self.render_buffer_center_additive_u32(
+                &mut buffer,
+                pixels,
+                width,
+                x,
+                y,
+                text_height,
+                add_mode,
+                colour,
+            );
+
+            text_width
+        } else {
+            0.
+        }
+    }
+
+    /// Draw right-aligned text with additive/subtractive compositing (u32 ARGB version)
+    /// Uses wrapping add/sub so it's reversible - subtract same colour to remove text
+    /// add_mode: true = add colour, false = subtract colour
+    pub fn draw_text_right_additive_u32(
+        &mut self,
+        pixels: &mut [u32],
+        width: usize,
+        text: &str,
+        x: f32,
+        y: f32,
+        size: f32,
+        weight: u16,
+        colour: u32,
+        font: &str,
+        add_mode: bool,
+    ) -> f32 {
+        let attrs = Attrs::new()
+            .family(Family::Name(font))
+            .weight(Weight(weight));
+
+        let metrics = Metrics::relative(size, 1.2);
+        let mut buffer = Buffer::new(&mut self.font_system, metrics);
+
+        buffer.set_size(&mut self.font_system, None, None);
+        buffer.set_text(&mut self.font_system, text, &attrs, Shaping::Advanced);
+        buffer.shape_until_scroll(&mut self.font_system, false);
+
+        if let Some(run) = buffer.layout_runs().next() {
+            let mut text_width = 0.0f32;
+            for glyph in run.glyphs {
+                text_width = text_width.max(glyph.x + glyph.w);
+            }
+            let text_height = run.line_height;
+
+            self.render_buffer_right_additive_u32(
                 &mut buffer,
                 pixels,
                 width,
@@ -593,7 +695,7 @@ impl TextRenderer {
     }
 
     /// Render buffer with additive/subtractive compositing (u32 version)
-    fn render_buffer_additive_u32(
+    fn render_buffer_left_additive_u32(
         &mut self,
         buffer: &mut Buffer,
         pixels: &mut [u32],
@@ -639,6 +741,156 @@ impl TextRenderer {
                                 }
 
                                 // Scale colour by alpha, per-channel
+                                let a = alpha as u32;
+                                let r = ((colour >> 16) & 0xFF) * a >> 8;
+                                let g = ((colour >> 8) & 0xFF) * a >> 8;
+                                let b = (colour & 0xFF) * a >> 8;
+                                let contribution = (r << 16) | (g << 8) | b;
+
+                                if add_mode {
+                                    pixels[idx] = pixels[idx].wrapping_add(contribution);
+                                } else {
+                                    pixels[idx] = pixels[idx].wrapping_sub(contribution);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Render buffer with additive/subtractive compositing, center-aligned (u32 version)
+    fn render_buffer_center_additive_u32(
+        &mut self,
+        buffer: &mut Buffer,
+        pixels: &mut [u32],
+        width: usize,
+        anchor_x: f32,
+        anchor_y: f32,
+        text_height: f32,
+        add_mode: bool,
+        colour: u32,
+    ) {
+        // Calculate text width for centering
+        let text_width: f32 = buffer.layout_runs().fold(0.0, |max_width, run| {
+            let run_width = run
+                .glyphs
+                .iter()
+                .map(|g| g.w)
+                .sum::<f32>();
+            max_width.max(run_width)
+        });
+
+        let offset_x = anchor_x - text_width / 2.0;
+        let offset_y = anchor_y - text_height / 2.;
+
+        for run in buffer.layout_runs() {
+            let baseline_offset = run.line_y;
+
+            for glyph in run.glyphs {
+                let physical_glyph = glyph.physical((offset_x, offset_y), 1.);
+
+                if let Some(image) = self
+                    .swash_cache
+                    .get_image(&mut self.font_system, physical_glyph.cache_key)
+                {
+                    let glyph_x = physical_glyph.x + image.placement.left;
+                    let glyph_y = physical_glyph.y + baseline_offset as i32 - image.placement.top;
+
+                    let glyph_width = image.placement.width as usize;
+                    let glyph_height = image.placement.height as usize;
+
+                    for cy in 0..glyph_height {
+                        for cx in 0..glyph_width {
+                            let alpha = image.data[cy * glyph_width + cx];
+                            if alpha > 0 {
+                                let final_x = glyph_x as isize + cx as isize;
+                                let final_y = glyph_y as isize + cy as isize;
+
+                                if final_x < 0 || final_y < 0 || final_x >= width as isize {
+                                    continue;
+                                }
+                                let idx = final_y as usize * width + final_x as usize;
+                                if idx >= pixels.len() {
+                                    continue;
+                                }
+
+                                let a = alpha as u32;
+                                let r = ((colour >> 16) & 0xFF) * a >> 8;
+                                let g = ((colour >> 8) & 0xFF) * a >> 8;
+                                let b = (colour & 0xFF) * a >> 8;
+                                let contribution = (r << 16) | (g << 8) | b;
+
+                                if add_mode {
+                                    pixels[idx] = pixels[idx].wrapping_add(contribution);
+                                } else {
+                                    pixels[idx] = pixels[idx].wrapping_sub(contribution);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Render buffer with additive/subtractive compositing, right-aligned (u32 version)
+    fn render_buffer_right_additive_u32(
+        &mut self,
+        buffer: &mut Buffer,
+        pixels: &mut [u32],
+        width: usize,
+        anchor_x: f32,
+        anchor_y: f32,
+        text_height: f32,
+        add_mode: bool,
+        colour: u32,
+    ) {
+        // Calculate text width for right-alignment
+        let text_width: f32 = buffer.layout_runs().fold(0.0, |max_width, run| {
+            let run_width = run
+                .glyphs
+                .iter()
+                .map(|g| g.w)
+                .sum::<f32>();
+            max_width.max(run_width)
+        });
+
+        let offset_x = anchor_x - text_width;
+        let offset_y = anchor_y - text_height / 2.;
+
+        for run in buffer.layout_runs() {
+            let baseline_offset = run.line_y;
+
+            for glyph in run.glyphs {
+                let physical_glyph = glyph.physical((offset_x, offset_y), 1.);
+
+                if let Some(image) = self
+                    .swash_cache
+                    .get_image(&mut self.font_system, physical_glyph.cache_key)
+                {
+                    let glyph_x = physical_glyph.x + image.placement.left;
+                    let glyph_y = physical_glyph.y + baseline_offset as i32 - image.placement.top;
+
+                    let glyph_width = image.placement.width as usize;
+                    let glyph_height = image.placement.height as usize;
+
+                    for cy in 0..glyph_height {
+                        for cx in 0..glyph_width {
+                            let alpha = image.data[cy * glyph_width + cx];
+                            if alpha > 0 {
+                                let final_x = glyph_x as isize + cx as isize;
+                                let final_y = glyph_y as isize + cy as isize;
+
+                                if final_x < 0 || final_y < 0 || final_x >= width as isize {
+                                    continue;
+                                }
+                                let idx = final_y as usize * width + final_x as usize;
+                                if idx >= pixels.len() {
+                                    continue;
+                                }
+
                                 let a = alpha as u32;
                                 let r = ((colour >> 16) & 0xFF) * a >> 8;
                                 let g = ((colour >> 8) & 0xFF) * a >> 8;
