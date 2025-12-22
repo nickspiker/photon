@@ -239,15 +239,14 @@ impl PhotonApp {
 
                     // Attest block: unified region containing textbox (top), hint (middle), attest (bottom)
                     // Uses AttestBlockLayout for proportional slicing - fiddle with slices in app.rs
+                    // All sizes come from slice rectangle heights
                     if let Some(ref block) = self.layout.attest_block {
-                        let sub = super::app::AttestBlockLayout::new(block, self.ru);
+                        let sub = super::app::AttestBlockLayout::new(block);
 
-                        // Textbox: full width of region, height scales with ru
-                        let tb_height = (self.span as f32 / 8.0 * self.ru) as usize;
                         let tb_center_x = sub.textbox.x + sub.textbox.w / 2;
                         let tb_center_y = sub.textbox.y + sub.textbox.h / 2;
 
-                        // Draw textbox (top region, full width)
+                        // Draw textbox - size from slice
                         Self::draw_textbox(
                             pixels,
                             &mut self.hit_test_map,
@@ -257,17 +256,18 @@ impl PhotonApp {
                             tb_center_x,
                             tb_center_y,
                             sub.textbox.w,
-                            tb_height,
+                            sub.textbox.h,
                         );
 
-                        // Draw "handle" label (middle region, centered)
+                        // Draw "handle" label - font size from hint slice height
+                        let hint_font_size = sub.hint.h as f32 * 0.6;
                         self.text_renderer.draw_text_center_u32(
                             pixels,
                             self.width as usize,
                             "handle",
                             (sub.hint.x + sub.hint.w / 2) as f32,
                             (sub.hint.y + sub.hint.h / 2) as f32,
-                            font_size,
+                            hint_font_size,
                             300,
                             theme::LABEL_COLOUR,
                             theme::FONT_UI,
@@ -290,7 +290,7 @@ impl PhotonApp {
                                 self.width as usize,
                                 tb_center_y,
                                 sub.textbox.w,
-                                tb_height,
+                                sub.textbox.h,
                                 true,
                                 self.glow_colour,
                             );
@@ -1709,8 +1709,8 @@ impl PhotonApp {
                 // Draw yellow hairlines for attest_block subdivisions
                 if let Some(ref block) = self.layout.attest_block {
                     let yellow = 0xFE_FF_FF_00; // ARGB yellow
-                    let sub = super::app::AttestBlockLayout::new(block, self.ru);
-                    let sub_regions = [&sub.textbox, &sub.hint, &sub.attest];
+                    let sub = super::app::AttestBlockLayout::new(block);
+                    let sub_regions = [&sub.error, &sub.textbox, &sub.hint, &sub.attest];
 
                     for region in sub_regions {
                         // Top edge
@@ -1820,16 +1820,13 @@ impl PhotonApp {
                         LaunchState::Fresh => {
                             // Show "Attest" button in bottom region of attest_block
                             if let Some(ref block) = self.layout.attest_block {
-                                let sub = super::app::AttestBlockLayout::new(block, self.ru);
+                                let sub = super::app::AttestBlockLayout::new(block);
 
-                                // Button centered in attest region
+                                // Button centered in attest region - size from slice
                                 let button_center_x = sub.attest.x + sub.attest.w / 2;
                                 let button_center_y = sub.attest.y + sub.attest.h / 2;
-
-                                // Button height scales with ru
-                                let tb_height = (self.span as f32 / 8.0 * self.ru) as usize;
+                                let button_height = sub.attest.h * 3 / 4;
                                 const BUTTON_ASPECT: f32 = 2.7;
-                                let button_height = (tb_height as f32 * 0.75) as usize;
                                 let button_width = (button_height as f32 * BUTTON_ASPECT) as usize;
 
                                 Self::draw_button(
@@ -1862,32 +1859,48 @@ impl PhotonApp {
                             }
                         }
                         LaunchState::Attesting => {
-                            // Show "Attesting..." in message area (no button)
-                            self.text_renderer.draw_text_center_u32(
-                                pixels,
-                                self.width as usize,
-                                "Attesting...",
-                                center_x as f32,
-                                (textbox_y - box_height) as f32,
-                                font_size * 0.8,
-                                500,
-                                theme::STATUS_TEXT_ATTESTING, // Yellow text
-                                theme::FONT_USER_CONTENT,
-                            );
+                            // Show "Attesting..." in error region, bottom-aligned
+                            if let Some(ref block) = self.layout.attest_block {
+                                let sub = super::app::AttestBlockLayout::new(block);
+                                let error_center_x = sub.error.x + sub.error.w / 2;
+                                // Font size from error slice height
+                                let text_size = sub.error.h as f32 * 0.7;
+                                // draw_text_center centers on y, so offset up by half text height
+                                let error_text_y = (sub.error.y + sub.error.h) as f32 - text_size / 2.0;
+                                self.text_renderer.draw_text_center_u32(
+                                    pixels,
+                                    self.width as usize,
+                                    "Attesting...",
+                                    error_center_x as f32,
+                                    error_text_y,
+                                    text_size,
+                                    500,
+                                    theme::STATUS_TEXT_ATTESTING,
+                                    theme::FONT_USER_CONTENT,
+                                );
+                            }
                         }
                         LaunchState::Error(ref msg) => {
-                            // Show error message above textbox (2/3 line height gap from top edge)
-                            self.text_renderer.draw_text_center_u32(
-                                pixels,
-                                self.width as usize,
-                                msg,
-                                center_x as f32,
-                                (textbox_y - box_height) as f32,
-                                font_size * 0.8,
-                                500,
-                                theme::STATUS_TEXT_ERROR,
-                                theme::FONT_USER_CONTENT,
-                            );
+                            // Show error message in error region, bottom-aligned
+                            if let Some(ref block) = self.layout.attest_block {
+                                let sub = super::app::AttestBlockLayout::new(block);
+                                let error_center_x = sub.error.x + sub.error.w / 2;
+                                // Font size from error slice height
+                                let text_size = sub.error.h as f32 * 0.7;
+                                // draw_text_center centers on y, so offset up by half text height
+                                let error_text_y = (sub.error.y + sub.error.h) as f32 - text_size / 2.0;
+                                self.text_renderer.draw_text_center_u32(
+                                    pixels,
+                                    self.width as usize,
+                                    msg,
+                                    error_center_x as f32,
+                                    error_text_y,
+                                    text_size,
+                                    500,
+                                    theme::STATUS_TEXT_ERROR,
+                                    theme::FONT_USER_CONTENT,
+                                );
+                            }
                         }
                     },
                     AppState::Ready => {
@@ -1897,12 +1910,16 @@ impl PhotonApp {
                 }
             }
 
-            // Zoom hint differential rendering - shows current zoom level at top center
+            // Zoom hint differential rendering - shows current zoom level at top left third
+            // (right third is reserved for window controls)
             if zoom_hint_dirty {
                 // Timer expired - subtract the old zoom hint text
                 let zoom_text = format!("{:.0}%", self.zoom_hint_ru * 100.0);
                 let hint_font_size = font_size * 0.8;
-                let hint_y = (self.span as f32 * self.ru / 10.0).max(hint_font_size) as f32;
+                // Top of text is 1/2 font size from top edge
+                let hint_y = hint_font_size / 2.0 + hint_font_size / 2.0; // top edge + half font (for center baseline)
+                // At the 1/3 mark
+                let hint_x = self.width as f32 / 3.0;
                 let text_width = self.text_renderer.measure_text_width(
                     &zoom_text,
                     hint_font_size,
@@ -1913,7 +1930,7 @@ impl PhotonApp {
                     pixels,
                     self.width as usize,
                     &zoom_text,
-                    center_x as f32 - text_width / 2.0,
+                    hint_x - text_width / 2.0,
                     hint_y,
                     hint_font_size,
                     500,
@@ -1927,7 +1944,10 @@ impl PhotonApp {
                 // Full redraw while hint is visible - draw it
                 let zoom_text = format!("{:.0}%", self.zoom_hint_ru * 100.0);
                 let hint_font_size = font_size * 0.8;
-                let hint_y = (self.span as f32 * self.ru / 10.0).max(hint_font_size) as f32;
+                // Top of text is 1/2 font size from top edge
+                let hint_y = hint_font_size / 2.0 + hint_font_size / 2.0;
+                // At the 1/3 mark
+                let hint_x = self.width as f32 / 3.0;
                 let text_width = self.text_renderer.measure_text_width(
                     &zoom_text,
                     hint_font_size,
@@ -1938,7 +1958,7 @@ impl PhotonApp {
                     pixels,
                     self.width as usize,
                     &zoom_text,
-                    center_x as f32 - text_width / 2.0,
+                    hint_x - text_width / 2.0,
                     hint_y,
                     hint_font_size,
                     500,

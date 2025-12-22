@@ -15,44 +15,34 @@ impl PhotonApp {
         self.current_text_state.textbox_focused
     }
 
-    /// Returns the font size for text rendering (scales with ru for zoom support)
+    /// Returns the font size for text rendering (from text_layout)
     pub fn font_size(&self) -> f32 {
-        self.span as f32 / 16.0 * self.ru
+        self.text_layout.font_size
     }
 
-    /// Returns the textbox width (wide/horizontal layout)
+    /// Returns the textbox width (from text_layout)
     pub fn textbox_width(&self) -> usize {
-        let margin = self.span / 8;
-        self.width as usize - margin * 2
+        self.text_layout.textbox_right - self.text_layout.textbox_left
     }
 
-    /// Returns the textbox height (scales with ru for zoom support)
+    /// Returns the textbox height (from text_layout)
     pub fn textbox_height(&self) -> usize {
-        (self.span as f32 / 8.0 * self.ru) as usize
+        self.text_layout.box_height
     }
 
-    /// Returns the textbox Y position (varies by app state)
+    /// Returns the textbox Y position (from text_layout)
     pub fn textbox_y(&self) -> usize {
-        match &self.app_state {
-            // Search screen: textbox below avatar area
-            AppState::Ready | AppState::Searching => self.span as usize * 5 / 8,
-            // Conversation: textbox at bottom
-            AppState::Conversation => {
-                let box_height = self.textbox_height();
-                self.height as usize - box_height * 3 / 2
-            }
-            _ => self.height as usize * 5 / 8, // Center for Launch
-        }
+        self.text_layout.textbox_y
     }
 
-    /// Returns the left x limit for blinkey/text
+    /// Returns the left x limit for blinkey/text (from text_layout)
     pub fn textbox_left(&self) -> usize {
-        self.span / 8
+        self.text_layout.textbox_left
     }
 
-    /// Returns the right x limit of the textbox visual bounds
+    /// Returns the right x limit of the textbox visual bounds (from text_layout)
     pub fn textbox_right(&self) -> usize {
-        self.width as usize - self.textbox_left()
+        self.text_layout.textbox_right
     }
 
     /// Recalculate all character widths (e.g., after font size change on resize)

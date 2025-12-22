@@ -165,38 +165,37 @@ impl TextLayout {
     /// ru = dimensionless zoom multiplier (1.0 = default)
     pub fn new(width: usize, height: usize, span: usize, ru: f32, app_state: &AppState) -> Self {
         // Get region from Layout (single source of truth)
-        let layout = Layout::new(width, height, span, app_state);
+        let layout = Layout::new(width, height, span, ru, app_state);
 
-        // Content: font and box height scale with ru
-        let box_height = (span as f32 / 8.0 * ru) as usize;
-        let font_size = span as f32 / 16.0 * ru;
-        let line_height = box_height; // For future multi-line
-
-        // For Launch screens, textbox geometry comes from attest_block subdivision
-        // For other screens, use the textbox region directly
-        let (textbox_left, textbox_right, textbox_width, textbox_y, button_area) =
+        // For Launch screens, sizes come from slice rectangle heights
+        // For other screens, sizes come from span*ru
+        let (textbox_left, textbox_right, textbox_width, textbox_y, box_height, font_size, button_area) =
             if matches!(app_state, AppState::Launch(_)) {
-                // Launch: use AttestBlockLayout subdivision
+                // Launch: sizes from AttestBlockLayout slice heights
                 let block = layout.attest_block.as_ref().unwrap();
-                let sub = AttestBlockLayout::new(block, ru);
-                // Textbox is full width of its sub-region
+                let sub = AttestBlockLayout::new(block);
                 let tb_left = sub.textbox.x;
                 let tb_right = sub.textbox.x + sub.textbox.w;
                 let tb_width = sub.textbox.w;
-                let tb_y = sub.textbox.y + sub.textbox.h / 2; // Center of textbox region
-                (tb_left, tb_right, tb_width, tb_y, 0)
+                let tb_y = sub.textbox.y + sub.textbox.h / 2;
+                let box_h = sub.textbox.h;
+                let font_sz = box_h as f32 / 2.0;
+                (tb_left, tb_right, tb_width, tb_y, box_h, font_sz, 0)
             } else {
-                // Non-launch: use textbox region directly
+                // Non-launch: sizes from span*ru
                 let tb = layout.textbox.as_ref().unwrap();
                 let tb_left = tb.x;
                 let tb_right = tb.x + tb.w;
                 let tb_width = tb.w;
-                let tb_y = tb.y + tb.h / 2; // Centered
-                let button_size = box_height * 7 / 8;
-                let inset = box_height / 16;
+                let tb_y = tb.y + tb.h / 2;
+                let box_h = (span as f32 / 8.0 * ru) as usize;
+                let font_sz = span as f32 / 16.0 * ru;
+                let button_size = box_h * 7 / 8;
+                let inset = box_h / 16;
                 let button_area = button_size + inset * 2;
-                (tb_left, tb_right, tb_width, tb_y, button_area)
+                (tb_left, tb_right, tb_width, tb_y, box_h, font_sz, button_area)
             };
+        let line_height = box_height;
 
         let usable_width = textbox_width - button_area;
         let usable_left = textbox_left;
@@ -291,25 +290,6 @@ impl PixelRegion {
     pub fn center(&self) -> (usize, usize) {
         (self.x + self.w / 2, self.y + self.h / 2)
     }
-
-    /// Calculate content scale for this region using harmonic mean + soft limit.
-    /// This ensures content scales proportionally but never exceeds region bounds.
-    /// Formula: soft_limit(rect_span * ru, min(w, h))
-    /// where rect_span = 2*w*h / (w+h) (harmonic mean)
-    /// and soft_limit(x, max) = max * x / (x + max)
-    #[inline]
-    pub fn content_scale(&self, ru: f64) -> f64 {
-        if self.w == 0 || self.h == 0 {
-            return 0.0;
-        }
-        let w = self.w as f64;
-        let h = self.h as f64;
-        let rect_span = 2.0 * w * h / (w + h);
-        let min_dim = w.min(h);
-        let x = rect_span * ru;
-        // soft_limit: asymptotically approaches min_dim but never exceeds
-        min_dim * x / (x + min_dim)
-    }
 }
 
 /// UI layout regions - fixed containers that don't scale with ru.
@@ -339,7 +319,9 @@ pub struct Layout {
 /// Uses proportional slicing so you can fiddle with gaps and proportions.
 #[derive(Clone, Copy)]
 pub struct AttestBlockLayout {
-    /// Handle textbox region (top)
+    /// Error message region (top)
+    pub error: PixelRegion,
+    /// Handle textbox region
     pub textbox: PixelRegion,
     /// "handle" hint label region (middle)
     pub hint: PixelRegion,
@@ -348,58 +330,38 @@ pub struct AttestBlockLayout {
 }
 
 impl AttestBlockLayout {
-    /// Subdivide an attest_block region into textbox, hint, and attest sub-regions.
-    /// The whole block scales uniformly with ru (height scales, centered vertically).
-    /// Textbox stays full width of container; hint and attest scale with content.
-    /// Fiddle with the slices here to adjust layout!
-    pub fn new(block: &PixelRegion, ru: f32) -> Self {
-        // Do all math in signed to handle ru > 1.0 correctly
-        let block_x = block.x as isize;
-        let block_y = block.y as isize;
-        let block_w = block.w as isize;
-        let block_h = block.h as isize;
-
-        // Scale height by ru (no clamping - let it grow/shrink freely)
-        let content_h = (block_h as f32 * ru) as isize;
-
-        // Center the scaled content vertically within the container
-        let content_y = block_y + (block_h - content_h) / 2;
-
-        // Scaled width for hint/attest (they scale uniformly)
-        let scaled_w = (block_w as f32 * ru) as isize;
-        let content_x = block_x + (block_w - scaled_w) / 2;
-
-        // Vertical slicing within scaled block: textbox (top), hint (middle), attest (bottom)
-        const V_SLICES: [Slice; 5] = [
+    /// Subdivide an attest_block region into error, textbox, hint, and attest sub-regions.
+    ///
+    /// The block is already scaled with ru by Layout::new().
+    /// This just slices it proportionally - no additional scaling needed.
+    ///
+    /// Textbox and error are full block width; hint and attest are centered.
+    pub fn new(block: &PixelRegion) -> Self {
+        // Slice the block proportionally
+        const V_SLICES: [Slice; 7] = [
+            Slice::new("error", 1.5),
+            Slice::new("gap0", 0.5),
             Slice::new("textbox", 2.0),
-            Slice::new("gap1", 0.5),
-            Slice::new("hint", 1.5),
+            Slice::new("gap1", 0.25),
+            Slice::new("hint", 1.8),
             Slice::new("gap2", 0.5),
-            Slice::new("attest", 2.0),
+            Slice::new("attest", 2.7),
         ];
-        let v = slice_positions(content_h.max(0) as usize, &V_SLICES);
+        let v = slice_positions(block.h, &V_SLICES);
+
+        // Hint and attest are centered horizontally (narrower than full width)
+        // Use 75% of block width for these elements
+        let narrow_w = block.w * 3 / 4;
+        let narrow_x = block.x + (block.w - narrow_w) / 2;
 
         Self {
-            // Textbox: full container width (doesn't scale horizontally)
-            textbox: PixelRegion::from_signed(
-                block_x,
-                content_y + v[0] as isize,
-                block_w,
-                (v[1] - v[0]) as isize,
-            ),
-            // Hint and attest: scale uniformly (both x and y)
-            hint: PixelRegion::from_signed(
-                content_x,
-                content_y + v[2] as isize,
-                scaled_w,
-                (v[3] - v[2]) as isize,
-            ),
-            attest: PixelRegion::from_signed(
-                content_x,
-                content_y + v[4] as isize,
-                scaled_w,
-                (v[5] - v[4]) as isize,
-            ),
+            // Error: full block width
+            error: PixelRegion::new(block.x, block.y + v[0], block.w, v[1] - v[0]),
+            // Textbox: full block width
+            textbox: PixelRegion::new(block.x, block.y + v[2], block.w, v[3] - v[2]),
+            // Hint and attest: centered, narrower
+            hint: PixelRegion::new(narrow_x, block.y + v[4], narrow_w, v[5] - v[4]),
+            attest: PixelRegion::new(narrow_x, block.y + v[6], narrow_w, v[7] - v[6]),
         }
     }
 }
@@ -437,8 +399,8 @@ impl Layout {
     /// Create layout from window dimensions and app state.
     /// Uses proportional slicing: window divided into fixed unit bands vertically and horizontally.
     /// Each element gets a rectangle from the intersection of bands.
-    /// Content within rectangles scales with ru via content_scale().
-    pub fn new(width: usize, height: usize, _span: usize, app_state: &AppState) -> Self {
+    /// attest_block scales with ru; other elements are window-proportional.
+    pub fn new(width: usize, height: usize, _span: usize, ru: f32, app_state: &AppState) -> Self {
         // Common horizontal slicing: margin | content | margin
         const H_SLICES: [Slice; 3] = [
             Slice::new("margin_left", 1.),
@@ -470,12 +432,35 @@ impl Layout {
                 const PHOTON_TEXT: usize = 3;
                 const ATTEST_BLOCK: usize = 5;
 
+                // attest_block: height scales with ru, width stays at content_w
+                // Use signed math to handle ru > 1.0 (content extends beyond base region)
+                let base_block_y = v[ATTEST_BLOCK] as isize;
+                let base_block_h = (v[ATTEST_BLOCK + 1] - v[ATTEST_BLOCK]) as isize;
+                let scaled_block_h = (base_block_h as f32 * ru) as isize;
+                let block_center_y = base_block_y + base_block_h / 2;
+                let scaled_block_y = block_center_y - scaled_block_h / 2;
+
                 Self {
                     // Spectrum uses full window width (no margins)
-                    logo_spectrum: Some(PixelRegion::new(0, v[SPECTRUM], width, v[SPECTRUM + 1] - v[SPECTRUM])),
-                    photon_text: Some(PixelRegion::new(content_x, v[PHOTON_TEXT], content_w, v[PHOTON_TEXT + 1] - v[PHOTON_TEXT])),
+                    logo_spectrum: Some(PixelRegion::new(
+                        0,
+                        v[SPECTRUM],
+                        width,
+                        v[SPECTRUM + 1] - v[SPECTRUM],
+                    )),
+                    photon_text: Some(PixelRegion::new(
+                        content_x,
+                        v[PHOTON_TEXT],
+                        content_w,
+                        v[PHOTON_TEXT + 1] - v[PHOTON_TEXT],
+                    )),
                     textbox: None, // Launch uses attest_block instead
-                    attest_block: Some(PixelRegion::new(content_x, v[ATTEST_BLOCK], content_w, v[ATTEST_BLOCK + 1] - v[ATTEST_BLOCK])),
+                    attest_block: Some(PixelRegion::from_signed(
+                        content_x as isize,
+                        scaled_block_y,
+                        content_w as isize,
+                        scaled_block_h,
+                    )),
                     avatar: None,
                     contacts_list: None,
                     header: None,
@@ -505,10 +490,20 @@ impl Layout {
                 Self {
                     logo_spectrum: None,
                     photon_text: None,
-                    textbox: Some(PixelRegion::new(content_x, v[TEXTBOX], content_w, v[TEXTBOX + 1] - v[TEXTBOX])),
+                    textbox: Some(PixelRegion::new(
+                        content_x,
+                        v[TEXTBOX],
+                        content_w,
+                        v[TEXTBOX + 1] - v[TEXTBOX],
+                    )),
                     attest_block: None,
                     avatar: Some(PixelRegion::new(avatar_x, v[AVATAR], avatar_w, avatar_h)),
-                    contacts_list: Some(PixelRegion::new(content_x, v[CONTACTS], content_w, v[CONTACTS + 1] - v[CONTACTS])),
+                    contacts_list: Some(PixelRegion::new(
+                        content_x,
+                        v[CONTACTS],
+                        content_w,
+                        v[CONTACTS + 1] - v[CONTACTS],
+                    )),
                     header: None,
                     message_area: None,
                 }
@@ -529,12 +524,27 @@ impl Layout {
                 Self {
                     logo_spectrum: None,
                     photon_text: None,
-                    textbox: Some(PixelRegion::new(content_x, v[TEXTBOX], content_w, v[TEXTBOX + 1] - v[TEXTBOX])),
+                    textbox: Some(PixelRegion::new(
+                        content_x,
+                        v[TEXTBOX],
+                        content_w,
+                        v[TEXTBOX + 1] - v[TEXTBOX],
+                    )),
                     attest_block: None,
                     avatar: None,
                     contacts_list: None,
-                    header: Some(PixelRegion::new(0, v[HEADER], width, v[HEADER + 1] - v[HEADER])),
-                    message_area: Some(PixelRegion::new(content_x, v[MESSAGES], content_w, v[MESSAGES + 1] - v[MESSAGES])),
+                    header: Some(PixelRegion::new(
+                        0,
+                        v[HEADER],
+                        width,
+                        v[HEADER + 1] - v[HEADER],
+                    )),
+                    message_area: Some(PixelRegion::new(
+                        content_x,
+                        v[MESSAGES],
+                        content_w,
+                        v[MESSAGES + 1] - v[MESSAGES],
+                    )),
                 }
             }
         }
@@ -677,9 +687,9 @@ pub struct PhotonApp {
     pub next_animation_frame: std::time::Instant, // When next animation frame should be drawn
 
     // Zoom hint overlay (differential rendering)
-    pub zoom_hint_visible: bool,      // True when zoom hint is currently drawn
+    pub zoom_hint_visible: bool, // True when zoom hint is currently drawn
     pub zoom_hint_hide_time: Option<std::time::Instant>, // When to hide the zoom hint
-    pub zoom_hint_ru: f32,            // The ru value currently displayed in the hint
+    pub zoom_hint_ru: f32,       // The ru value currently displayed in the hint
 
     // Text state for differential rendering
     pub current_text_state: TextState,
@@ -870,7 +880,13 @@ impl PhotonApp {
                 1.0,
                 &AppState::Launch(LaunchState::Fresh),
             ),
-            layout: Layout::new(w, h, 2 * w * h / (w + h), &AppState::Launch(LaunchState::Fresh)),
+            layout: Layout::new(
+                w,
+                h,
+                2 * w * h / (w + h),
+                1.0,
+                &AppState::Launch(LaunchState::Fresh),
+            ),
             blinkey_blink_rate_ms,
             blinkey_visible: false,
             is_mouse_selecting: false,
@@ -1020,7 +1036,13 @@ impl PhotonApp {
                 1.0,
                 &AppState::Launch(LaunchState::Fresh),
             ),
-            layout: Layout::new(w, h, 2 * w * h / (w + h), &AppState::Launch(LaunchState::Fresh)),
+            layout: Layout::new(
+                w,
+                h,
+                2 * w * h / (w + h),
+                1.0,
+                &AppState::Launch(LaunchState::Fresh),
+            ),
             blinkey_blink_rate_ms: 500,
             blinkey_visible: false,
             is_mouse_selecting: false,
@@ -1764,6 +1786,15 @@ impl PhotonApp {
             &self.app_state,
         );
 
+        // Update region layout with new ru
+        self.layout = Layout::new(
+            self.width as usize,
+            self.height as usize,
+            self.span,
+            self.ru,
+            &self.app_state,
+        );
+
         self.recalculate_char_widths();
 
         // Show zoom hint (will be hidden after 1 second via differential rendering)
@@ -1792,7 +1823,7 @@ impl PhotonApp {
         self.text_layout = TextLayout::new(w, h, self.span, self.ru, &self.app_state);
 
         // Update region layout
-        self.layout = Layout::new(w, h, self.span, &self.app_state);
+        self.layout = Layout::new(w, h, self.span, self.ru, &self.app_state);
 
         self.renderer.resize(width, height);
         self.hit_test_map.resize((width * height) as usize, 0);

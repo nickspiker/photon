@@ -355,7 +355,7 @@ let byte_value = pixel_value as u8;
 
 ## When Needed
 
-**PROOF REQUIRED** Don't add clamping unless it has been proven necessary and accepted by the user
+**PROOF REQUIRED** Don't add clamping, min, max, saturating or any other clamping ops unless it has been proven necessary AND accepted by the user!
 
 ## Error Handling Philosophy
 

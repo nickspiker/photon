@@ -307,11 +307,22 @@ impl ApplicationHandler<PhotonEvent> for App {
                 return;
             }
 
-            // Priority 3: If textbox focused, handle blinkey timing
+            // Priority 3: Handle blinkey and zoom hint timers
+            let now = std::time::Instant::now();
+
+            // Check zoom hint timer - request redraw if expired
+            if app.zoom_hint_visible {
+                if let Some(hide_time) = app.zoom_hint_hide_time {
+                    if now >= hide_time {
+                        if let Some(window) = &self.window {
+                            window.request_redraw();
+                        }
+                    }
+                }
+            }
+
             if app.textbox_is_focused() {
                 // Check if it's time to blink
-                let now = std::time::Instant::now();
-
                 if now >= app.next_blinkey_blink_time {
                     let font_size = app.font_size() as usize;
                     PhotonApp::flip_blinkey(
@@ -327,15 +338,24 @@ impl ApplicationHandler<PhotonEvent> for App {
                     app.next_blinkey_blink_time = app.next_blink_wake_time();
                 }
 
-                // Always set control flow (either new or same timer)
-                event_loop.set_control_flow(ControlFlow::WaitUntil(app.next_blinkey_blink_time));
+                // Wake at earliest of blinkey time or zoom hint hide time
+                let mut wake_time = app.next_blinkey_blink_time;
+                if let Some(hide_time) = app.zoom_hint_hide_time {
+                    if hide_time < wake_time {
+                        wake_time = hide_time;
+                    }
+                }
+                event_loop.set_control_flow(ControlFlow::WaitUntil(wake_time));
             } else {
                 // No active textbox - poll every 250ms for network updates
-                // EventLoopProxy.send_event() should wake us immediately, but X11 can be unreliable
-                // This ensures we check for status updates, CLUTCH messages, etc. even if wake fails
-                event_loop.set_control_flow(ControlFlow::WaitUntil(
-                    std::time::Instant::now() + std::time::Duration::from_millis(250),
-                ));
+                // But wake earlier if zoom hint needs to hide
+                let mut wake_time = now + std::time::Duration::from_millis(250);
+                if let Some(hide_time) = app.zoom_hint_hide_time {
+                    if hide_time < wake_time {
+                        wake_time = hide_time;
+                    }
+                }
+                event_loop.set_control_flow(ControlFlow::WaitUntil(wake_time));
             }
         }
     }
