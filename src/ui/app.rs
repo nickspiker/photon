@@ -164,31 +164,39 @@ impl TextLayout {
     /// Create layout geometry from app dimensions and state
     /// ru = dimensionless zoom multiplier (1.0 = default)
     pub fn new(width: usize, height: usize, span: usize, ru: f32, app_state: &AppState) -> Self {
-        // Get textbox region from Layout (single source of truth)
+        // Get region from Layout (single source of truth)
         let layout = Layout::new(width, height, span, app_state);
-        let tb = &layout.textbox;
-
-        // Use layout's textbox x bounds
-        let textbox_left = tb.x;
-        let textbox_right = tb.x + tb.w;
-        let textbox_width = tb.w;
 
         // Content: font and box height scale with ru
         let box_height = (span as f32 / 8.0 * ru) as usize;
         let font_size = span as f32 / 16.0 * ru;
         let line_height = box_height; // For future multi-line
 
-        // textbox_y from layout center
-        let textbox_y = tb.y + tb.h / 2;
-
-        // Button area (0 on attest screen where button is below textbox)
-        let button_area = if matches!(app_state, AppState::Launch(_)) {
-            0
-        } else {
-            let button_size = box_height * 7 / 8;
-            let inset = box_height / 16;
-            button_size + inset * 2
-        };
+        // For Launch screens, textbox geometry comes from attest_block subdivision
+        // For other screens, use the textbox region directly
+        let (textbox_left, textbox_right, textbox_width, textbox_y, button_area) =
+            if matches!(app_state, AppState::Launch(_)) {
+                // Launch: use AttestBlockLayout subdivision
+                let block = layout.attest_block.as_ref().unwrap();
+                let sub = AttestBlockLayout::new(block, ru);
+                // Textbox is full width of its sub-region
+                let tb_left = sub.textbox.x;
+                let tb_right = sub.textbox.x + sub.textbox.w;
+                let tb_width = sub.textbox.w;
+                let tb_y = sub.textbox.y + sub.textbox.h / 2; // Center of textbox region
+                (tb_left, tb_right, tb_width, tb_y, 0)
+            } else {
+                // Non-launch: use textbox region directly
+                let tb = layout.textbox.as_ref().unwrap();
+                let tb_left = tb.x;
+                let tb_right = tb.x + tb.w;
+                let tb_width = tb.w;
+                let tb_y = tb.y + tb.h / 2; // Centered
+                let button_size = box_height * 7 / 8;
+                let inset = box_height / 16;
+                let button_area = button_size + inset * 2;
+                (tb_left, tb_right, tb_width, tb_y, button_area)
+            };
 
         let usable_width = textbox_width - button_area;
         let usable_left = textbox_left;
@@ -255,6 +263,16 @@ impl PixelRegion {
         Self { x, y, w, h }
     }
 
+    /// Create from signed values - allows negative positions for off-screen content
+    pub fn from_signed(x: isize, y: isize, w: isize, h: isize) -> Self {
+        Self {
+            x: x as usize,
+            y: y as usize,
+            w: w as usize,
+            h: h as usize,
+        }
+    }
+
     #[inline]
     pub fn contains(&self, px: usize, py: usize) -> bool {
         px >= self.x && px < self.x + self.w && py >= self.y && py < self.y + self.h
@@ -302,12 +320,11 @@ pub struct Layout {
     pub logo_spectrum: Option<PixelRegion>,
     /// "Photon" text area - launch screens only
     pub photon_text: Option<PixelRegion>,
-    /// Text input box - present in all states
-    pub textbox: PixelRegion,
-    /// Hint text below textbox - launch screens only
-    pub hint: Option<PixelRegion>,
-    /// Attest button - launch screens only
-    pub attest_button: Option<PixelRegion>,
+    /// Text input box - present in non-launch states
+    pub textbox: Option<PixelRegion>,
+    /// Unified block containing hint + textbox + attest button - launch screens only
+    /// Subdivided during rendering: hint/attest scale uniformly, textbox scales vertically only
+    pub attest_block: Option<PixelRegion>,
     /// User avatar - ready/searching states
     pub avatar: Option<PixelRegion>,
     /// Contact list area - ready state
@@ -316,6 +333,75 @@ pub struct Layout {
     pub header: Option<PixelRegion>,
     /// Message display area - conversation state
     pub message_area: Option<PixelRegion>,
+}
+
+/// Subdivision of attest_block into textbox, hint label, and attest button regions.
+/// Uses proportional slicing so you can fiddle with gaps and proportions.
+#[derive(Clone, Copy)]
+pub struct AttestBlockLayout {
+    /// Handle textbox region (top)
+    pub textbox: PixelRegion,
+    /// "handle" hint label region (middle)
+    pub hint: PixelRegion,
+    /// Attest button region (bottom)
+    pub attest: PixelRegion,
+}
+
+impl AttestBlockLayout {
+    /// Subdivide an attest_block region into textbox, hint, and attest sub-regions.
+    /// The whole block scales uniformly with ru (height scales, centered vertically).
+    /// Textbox stays full width of container; hint and attest scale with content.
+    /// Fiddle with the slices here to adjust layout!
+    pub fn new(block: &PixelRegion, ru: f32) -> Self {
+        // Do all math in signed to handle ru > 1.0 correctly
+        let block_x = block.x as isize;
+        let block_y = block.y as isize;
+        let block_w = block.w as isize;
+        let block_h = block.h as isize;
+
+        // Scale height by ru (no clamping - let it grow/shrink freely)
+        let content_h = (block_h as f32 * ru) as isize;
+
+        // Center the scaled content vertically within the container
+        let content_y = block_y + (block_h - content_h) / 2;
+
+        // Scaled width for hint/attest (they scale uniformly)
+        let scaled_w = (block_w as f32 * ru) as isize;
+        let content_x = block_x + (block_w - scaled_w) / 2;
+
+        // Vertical slicing within scaled block: textbox (top), hint (middle), attest (bottom)
+        const V_SLICES: [Slice; 5] = [
+            Slice::new("textbox", 2.0),
+            Slice::new("gap1", 0.5),
+            Slice::new("hint", 1.5),
+            Slice::new("gap2", 0.5),
+            Slice::new("attest", 2.0),
+        ];
+        let v = slice_positions(content_h.max(0) as usize, &V_SLICES);
+
+        Self {
+            // Textbox: full container width (doesn't scale horizontally)
+            textbox: PixelRegion::from_signed(
+                block_x,
+                content_y + v[0] as isize,
+                block_w,
+                (v[1] - v[0]) as isize,
+            ),
+            // Hint and attest: scale uniformly (both x and y)
+            hint: PixelRegion::from_signed(
+                content_x,
+                content_y + v[2] as isize,
+                scaled_w,
+                (v[3] - v[2]) as isize,
+            ),
+            attest: PixelRegion::from_signed(
+                content_x,
+                content_y + v[4] as isize,
+                scaled_w,
+                (v[5] - v[4]) as isize,
+            ),
+        }
+    }
 }
 
 /// A named slice in a proportional layout grid.
@@ -366,17 +452,13 @@ impl Layout {
         match app_state {
             AppState::Launch(_) => {
                 // Vertical layout for launch screen
-                const V_SLICES: [Slice; 13] = [
+                const V_SLICES: [Slice; 9] = [
                     Slice::new("gap0", 0.75),
                     Slice::new("spectrum", 6.),
                     Slice::new("gap1", -2.),
                     Slice::new("photon_text", 3.5),
                     Slice::new("gap2", 1.5),
-                    Slice::new("textbox", 2.),
-                    Slice::new("gap3", 0.25),
-                    Slice::new("hint", 1.5),
-                    Slice::new("gap4", 0.5),
-                    Slice::new("attest", 2.),
+                    Slice::new("attest_block", 5.),
                     Slice::new("gap4", 6.),
                     Slice::new("version", 1.),
                     Slice::new("gap5", 1.),
@@ -386,17 +468,14 @@ impl Layout {
                 // Named indices for clarity
                 const SPECTRUM: usize = 1;
                 const PHOTON_TEXT: usize = 3;
-                const TEXTBOX: usize = 5;
-                const HINT: usize = 7;
-                const ATTEST: usize = 9;
+                const ATTEST_BLOCK: usize = 5;
 
                 Self {
                     // Spectrum uses full window width (no margins)
                     logo_spectrum: Some(PixelRegion::new(0, v[SPECTRUM], width, v[SPECTRUM + 1] - v[SPECTRUM])),
                     photon_text: Some(PixelRegion::new(content_x, v[PHOTON_TEXT], content_w, v[PHOTON_TEXT + 1] - v[PHOTON_TEXT])),
-                    textbox: PixelRegion::new(content_x, v[TEXTBOX], content_w, v[TEXTBOX + 1] - v[TEXTBOX]),
-                    hint: Some(PixelRegion::new(content_x, v[HINT], content_w, v[HINT + 1] - v[HINT])),
-                    attest_button: Some(PixelRegion::new(content_x, v[ATTEST], content_w, v[ATTEST + 1] - v[ATTEST])),
+                    textbox: None, // Launch uses attest_block instead
+                    attest_block: Some(PixelRegion::new(content_x, v[ATTEST_BLOCK], content_w, v[ATTEST_BLOCK + 1] - v[ATTEST_BLOCK])),
                     avatar: None,
                     contacts_list: None,
                     header: None,
@@ -426,9 +505,8 @@ impl Layout {
                 Self {
                     logo_spectrum: None,
                     photon_text: None,
-                    textbox: PixelRegion::new(content_x, v[TEXTBOX], content_w, v[TEXTBOX + 1] - v[TEXTBOX]),
-                    hint: None,
-                    attest_button: None,
+                    textbox: Some(PixelRegion::new(content_x, v[TEXTBOX], content_w, v[TEXTBOX + 1] - v[TEXTBOX])),
+                    attest_block: None,
                     avatar: Some(PixelRegion::new(avatar_x, v[AVATAR], avatar_w, avatar_h)),
                     contacts_list: Some(PixelRegion::new(content_x, v[CONTACTS], content_w, v[CONTACTS + 1] - v[CONTACTS])),
                     header: None,
@@ -451,9 +529,8 @@ impl Layout {
                 Self {
                     logo_spectrum: None,
                     photon_text: None,
-                    textbox: PixelRegion::new(content_x, v[TEXTBOX], content_w, v[TEXTBOX + 1] - v[TEXTBOX]),
-                    hint: None,
-                    attest_button: None,
+                    textbox: Some(PixelRegion::new(content_x, v[TEXTBOX], content_w, v[TEXTBOX + 1] - v[TEXTBOX])),
+                    attest_block: None,
                     avatar: None,
                     contacts_list: None,
                     header: Some(PixelRegion::new(0, v[HEADER], width, v[HEADER + 1] - v[HEADER])),
@@ -598,6 +675,11 @@ pub struct PhotonApp {
     pub frame_times: Vec<f32>, // Recent frame delta times for FPS averaging
     pub target_frame_duration_ms: u64, // Target frame duration based on monitor refresh rate
     pub next_animation_frame: std::time::Instant, // When next animation frame should be drawn
+
+    // Zoom hint overlay (differential rendering)
+    pub zoom_hint_visible: bool,      // True when zoom hint is currently drawn
+    pub zoom_hint_hide_time: Option<std::time::Instant>, // When to hide the zoom hint
+    pub zoom_hint_ru: f32,            // The ru value currently displayed in the hint
 
     // Text state for differential rendering
     pub current_text_state: TextState,
@@ -826,6 +908,9 @@ impl PhotonApp {
             frame_times: Vec::with_capacity(60),
             target_frame_duration_ms,
             next_animation_frame: std::time::Instant::now(),
+            zoom_hint_visible: false,
+            zoom_hint_hide_time: None,
+            zoom_hint_ru: 1.0,
             current_text_state: TextState::new(),
             previous_text_state: TextState::new(),
             textbox_mask: vec![0; (size.width * size.height) as usize],
@@ -1014,6 +1099,9 @@ impl PhotonApp {
             clutch_ceremony_rx,
             clutch_ceremony_tx,
             friendship_chains: Vec::new(),
+            zoom_hint_visible: false,
+            zoom_hint_hide_time: None,
+            zoom_hint_ru: 1.0,
         }
     }
 
@@ -1677,6 +1765,12 @@ impl PhotonApp {
         );
 
         self.recalculate_char_widths();
+
+        // Show zoom hint (will be hidden after 1 second via differential rendering)
+        self.zoom_hint_visible = true;
+        self.zoom_hint_hide_time =
+            Some(std::time::Instant::now() + std::time::Duration::from_secs(1));
+        self.zoom_hint_ru = self.ru;
     }
 
     /// Resize the application to new dimensions (shared by all platforms)

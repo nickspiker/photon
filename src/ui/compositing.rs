@@ -38,6 +38,17 @@ impl PhotonApp {
             self.window_dirty = true;
         }
 
+        // Check if zoom hint should be hidden (timer expired)
+        let mut zoom_hint_dirty = false;
+        if self.zoom_hint_visible {
+            if let Some(hide_time) = self.zoom_hint_hide_time {
+                if now >= hide_time {
+                    // Timer expired - need to subtract the hint text
+                    zoom_hint_dirty = true;
+                }
+            }
+        }
+
         // Check if text became empty (button disappears, need full redraw to clear the area)
         let current_is_empty = self.current_text_state.chars.is_empty();
         let prev_is_empty = self.previous_text_state.is_empty;
@@ -74,7 +85,7 @@ impl PhotonApp {
                 || self.current_text_state.scroll_offset != self.previous_text_state.scroll_offset;
         }
 
-        if self.text_dirty || self.selection_dirty || self.window_dirty || self.controls_dirty {
+        if self.text_dirty || self.selection_dirty || self.window_dirty || self.controls_dirty || zoom_hint_dirty {
             self.update_counter += 1;
 
             // Pre-compute scaled avatar before locking buffer (to avoid borrow conflict)
@@ -226,58 +237,64 @@ impl PhotonApp {
                         );
                     }
 
-                    // Handle textbox - width from layout, height scales with ru
-                    let tb = &self.layout.textbox;
-                    let tb_height = (self.span as f32 / 8.0 * self.ru) as usize;
-                    Self::draw_textbox(
-                        pixels,
-                        &mut self.hit_test_map,
-                        HIT_HANDLE_TEXTBOX,
-                        &mut self.textbox_mask,
-                        self.width as usize,
-                        tb.x + tb.w / 2,           // center_x from layout
-                        tb.y + tb.h / 2,           // center_y from layout
-                        tb.w,                       // full width from layout
-                        tb_height,                  // height scales with ru
-                    );
+                    // Attest block: unified region containing textbox (top), hint (middle), attest (bottom)
+                    // Uses AttestBlockLayout for proportional slicing - fiddle with slices in app.rs
+                    if let Some(ref block) = self.layout.attest_block {
+                        let sub = super::app::AttestBlockLayout::new(block, self.ru);
 
-                    // Always update glow_colour based on state (for correct subtract on defocus)
-                    self.glow_colour =
-                        if matches!(self.app_state, AppState::Launch(LaunchState::Attesting)) {
-                            theme::GLOW_ATTESTING // Yellow for attesting
-                        } else if matches!(self.app_state, AppState::Launch(LaunchState::Error(_)))
-                        {
-                            theme::GLOW_ERROR // Red for error
-                        } else {
-                            theme::GLOW_DEFAULT // White default
-                        };
+                        // Textbox: full width of region, height scales with ru
+                        let tb_height = (self.span as f32 / 8.0 * self.ru) as usize;
+                        let tb_center_x = sub.textbox.x + sub.textbox.w / 2;
+                        let tb_center_y = sub.textbox.y + sub.textbox.h / 2;
 
-                    if self.current_text_state.textbox_focused {
-                        Self::apply_textbox_glow(
+                        // Draw textbox (top region, full width)
+                        Self::draw_textbox(
                             pixels,
-                            &self.textbox_mask,
+                            &mut self.hit_test_map,
+                            HIT_HANDLE_TEXTBOX,
+                            &mut self.textbox_mask,
                             self.width as usize,
-                            textbox_y,
-                            box_width,
-                            box_height,
-                            true,
-                            self.glow_colour,
+                            tb_center_x,
+                            tb_center_y,
+                            sub.textbox.w,
+                            tb_height,
                         );
-                    }
 
-                    // "handle" label using hint region
-                    if let Some(ref hint) = self.layout.hint {
+                        // Draw "handle" label (middle region, centered)
                         self.text_renderer.draw_text_center_u32(
                             pixels,
                             self.width as usize,
                             "handle",
-                            (hint.x + hint.w / 2) as f32,
-                            (hint.y + hint.h / 2) as f32,
+                            (sub.hint.x + sub.hint.w / 2) as f32,
+                            (sub.hint.y + sub.hint.h / 2) as f32,
                             font_size,
                             300,
                             theme::LABEL_COLOUR,
                             theme::FONT_UI,
                         );
+
+                        // Always update glow_colour based on state
+                        self.glow_colour =
+                            if matches!(self.app_state, AppState::Launch(LaunchState::Attesting)) {
+                                theme::GLOW_ATTESTING
+                            } else if matches!(self.app_state, AppState::Launch(LaunchState::Error(_))) {
+                                theme::GLOW_ERROR
+                            } else {
+                                theme::GLOW_DEFAULT
+                            };
+
+                        if self.current_text_state.textbox_focused {
+                            Self::apply_textbox_glow(
+                                pixels,
+                                &self.textbox_mask,
+                                self.width as usize,
+                                tb_center_y,
+                                sub.textbox.w,
+                                tb_height,
+                                true,
+                                self.glow_colour,
+                            );
+                        }
                     }
                 } else if matches!(self.app_state, AppState::Ready | AppState::Searching) {
                     // Ready/Searching screen: Draw avatar at top center
@@ -333,19 +350,20 @@ impl PhotonApp {
                     }
 
                     // Query friends textbox - width from layout, height scales with ru
-                    let tb = &self.layout.textbox;
-                    let tb_height = (self.span as f32 / 8.0 * self.ru) as usize;
-                    Self::draw_textbox(
-                        pixels,
-                        &mut self.hit_test_map,
-                        HIT_HANDLE_TEXTBOX,
-                        &mut self.textbox_mask,
-                        self.width as usize,
-                        tb.x + tb.w / 2,
-                        tb.y + tb.h / 2,
-                        tb.w,
-                        tb_height,
-                    );
+                    if let Some(ref tb) = self.layout.textbox {
+                        let tb_height = (self.span as f32 / 8.0 * self.ru) as usize;
+                        Self::draw_textbox(
+                            pixels,
+                            &mut self.hit_test_map,
+                            HIT_HANDLE_TEXTBOX,
+                            &mut self.textbox_mask,
+                            self.width as usize,
+                            tb.x + tb.w / 2,
+                            tb.y + tb.h / 2,
+                            tb.w,
+                            tb_height,
+                        );
+                    }
 
                     // Glow colour: yellow during search, green/red based on result, white default
                     self.glow_colour = if matches!(self.app_state, AppState::Searching) {
@@ -826,19 +844,20 @@ impl PhotonApp {
                                     }
 
                                     // Draw bottom textbox for message input - width from layout, height scales with ru
-                                    let tb = &self.layout.textbox;
-                                    let tb_height = (self.span as f32 / 8.0 * self.ru) as usize;
-                                    Self::draw_textbox(
-                                        pixels,
-                                        &mut self.hit_test_map,
-                                        HIT_HANDLE_TEXTBOX,
-                                        &mut self.textbox_mask,
-                                        self.width as usize,
-                                        tb.x + tb.w / 2,
-                                        tb.y + tb.h / 2,
-                                        tb.w,
-                                        tb_height,
-                                    );
+                                    if let Some(ref tb) = self.layout.textbox {
+                                        let tb_height = (self.span as f32 / 8.0 * self.ru) as usize;
+                                        Self::draw_textbox(
+                                            pixels,
+                                            &mut self.hit_test_map,
+                                            HIT_HANDLE_TEXTBOX,
+                                            &mut self.textbox_mask,
+                                            self.width as usize,
+                                            tb.x + tb.w / 2,
+                                            tb.y + tb.h / 2,
+                                            tb.w,
+                                            tb_height,
+                                        );
+                                    }
 
                                     // Draw send button inset in bottom-right corner of textbox (only if text entered)
                                     if !self.current_text_state.chars.is_empty() {
@@ -1647,12 +1666,11 @@ impl PhotonApp {
                 let w = self.width as usize;
                 let h = self.height as usize;
 
-                let regions: [Option<&super::app::PixelRegion>; 9] = [
-                    Some(&self.layout.textbox),
+                let regions: [Option<&super::app::PixelRegion>; 8] = [
+                    self.layout.textbox.as_ref(),
                     self.layout.logo_spectrum.as_ref(),
                     self.layout.photon_text.as_ref(),
-                    self.layout.hint.as_ref(),
-                    self.layout.attest_button.as_ref(),
+                    self.layout.attest_block.as_ref(),
                     self.layout.avatar.as_ref(),
                     self.layout.contacts_list.as_ref(),
                     self.layout.header.as_ref(),
@@ -1684,6 +1702,42 @@ impl PhotonApp {
                         let right_x = region.right() - 1;
                         for y in region.y..region.bottom().min(h) {
                             pixels[y * w + right_x] = magenta;
+                        }
+                    }
+                }
+
+                // Draw yellow hairlines for attest_block subdivisions
+                if let Some(ref block) = self.layout.attest_block {
+                    let yellow = 0xFE_FF_FF_00; // ARGB yellow
+                    let sub = super::app::AttestBlockLayout::new(block, self.ru);
+                    let sub_regions = [&sub.textbox, &sub.hint, &sub.attest];
+
+                    for region in sub_regions {
+                        // Top edge
+                        if region.y < h {
+                            for x in region.x..region.right().min(w) {
+                                pixels[region.y * w + x] = yellow;
+                            }
+                        }
+                        // Bottom edge
+                        if region.bottom() > 0 && region.bottom() <= h {
+                            let bottom_y = region.bottom() - 1;
+                            for x in region.x..region.right().min(w) {
+                                pixels[bottom_y * w + x] = yellow;
+                            }
+                        }
+                        // Left edge
+                        if region.x < w {
+                            for y in region.y..region.bottom().min(h) {
+                                pixels[y * w + region.x] = yellow;
+                            }
+                        }
+                        // Right edge
+                        if region.right() > 0 && region.right() <= w {
+                            let right_x = region.right() - 1;
+                            for y in region.y..region.bottom().min(h) {
+                                pixels[y * w + right_x] = yellow;
+                            }
                         }
                     }
                 }
@@ -1764,19 +1818,20 @@ impl PhotonApp {
                 match &self.app_state {
                     AppState::Launch(launch_state) => match launch_state {
                         LaunchState::Fresh => {
-                            // Show "Attest" button using layout region
-                            if let Some(ref attest) = self.layout.attest_button {
-                                let button_center_x = attest.x + attest.w / 2;
-                                let button_center_y = attest.y + attest.h / 2;
-                                // Size constrained to fit region using harmonic mean, scaled by ru
-                                const BUTTON_ASPECT: f32 = 2.7; // ~2.7:1 width:height
-                                let max_size_by_width = attest.w as f32 / BUTTON_ASPECT;
-                                let max_size_by_height = attest.h as f32;
-                                // Harmonic mean: 2*a*b/(a+b) - smoothly blends constraints
-                                let base_height = 2.0 * max_size_by_width * max_size_by_height
-                                    / (max_size_by_width + max_size_by_height);
-                                let button_height = (base_height * self.ru) as usize;
+                            // Show "Attest" button in bottom region of attest_block
+                            if let Some(ref block) = self.layout.attest_block {
+                                let sub = super::app::AttestBlockLayout::new(block, self.ru);
+
+                                // Button centered in attest region
+                                let button_center_x = sub.attest.x + sub.attest.w / 2;
+                                let button_center_y = sub.attest.y + sub.attest.h / 2;
+
+                                // Button height scales with ru
+                                let tb_height = (self.span as f32 / 8.0 * self.ru) as usize;
+                                const BUTTON_ASPECT: f32 = 2.7;
+                                let button_height = (tb_height as f32 * 0.75) as usize;
                                 let button_width = (button_height as f32 * BUTTON_ASPECT) as usize;
+
                                 Self::draw_button(
                                     pixels,
                                     &mut self.hit_test_map,
@@ -1840,6 +1895,57 @@ impl PhotonApp {
                     }
                     _ => {}
                 }
+            }
+
+            // Zoom hint differential rendering - shows current zoom level at top center
+            if zoom_hint_dirty {
+                // Timer expired - subtract the old zoom hint text
+                let zoom_text = format!("{:.0}%", self.zoom_hint_ru * 100.0);
+                let hint_font_size = font_size * 0.8;
+                let hint_y = (self.span as f32 * self.ru / 10.0).max(hint_font_size) as f32;
+                let text_width = self.text_renderer.measure_text_width(
+                    &zoom_text,
+                    hint_font_size,
+                    500,
+                    theme::FONT_UI,
+                );
+                self.text_renderer.draw_text_left_additive_u32(
+                    pixels,
+                    self.width as usize,
+                    &zoom_text,
+                    center_x as f32 - text_width / 2.0,
+                    hint_y,
+                    hint_font_size,
+                    500,
+                    theme::ZOOM_HINT_TEXT,
+                    theme::FONT_UI,
+                    false, // subtract
+                );
+                self.zoom_hint_visible = false;
+                self.zoom_hint_hide_time = None;
+            } else if self.zoom_hint_visible && self.window_dirty {
+                // Full redraw while hint is visible - draw it
+                let zoom_text = format!("{:.0}%", self.zoom_hint_ru * 100.0);
+                let hint_font_size = font_size * 0.8;
+                let hint_y = (self.span as f32 * self.ru / 10.0).max(hint_font_size) as f32;
+                let text_width = self.text_renderer.measure_text_width(
+                    &zoom_text,
+                    hint_font_size,
+                    500,
+                    theme::FONT_UI,
+                );
+                self.text_renderer.draw_text_left_additive_u32(
+                    pixels,
+                    self.width as usize,
+                    &zoom_text,
+                    center_x as f32 - text_width / 2.0,
+                    hint_y,
+                    hint_font_size,
+                    500,
+                    theme::ZOOM_HINT_TEXT,
+                    theme::FONT_UI,
+                    true, // add
+                );
             }
 
             // Debug: overlay hit test map visualization with random colours

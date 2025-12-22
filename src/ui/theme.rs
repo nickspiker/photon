@@ -94,6 +94,7 @@ pub const COUNTER_TEXT: u32 = fmt(0xFF_FF_FF_FF); // Frame counter text (white)
 pub const PLACEHOLDER_TEXT: u32 = fmt(0xFF_80_80_80); // Placeholder symbol text (gray)
 pub const STATUS_TEXT_ATTESTING: u32 = fmt(0xFF_FF_FF_00); // "Attesting..." status text (yellow)
 pub const STATUS_TEXT_ERROR: u32 = fmt(0xFF_FF_00_00); // Error message text (red)
+pub const ZOOM_HINT_TEXT: u32 = fmt(0xFF_80_80_80); // Zoom level hint text (gray)
 
 // Debug colours
 pub const DEBUG_MARKER: u32 = fmt(0xFE_FF_00_FF); // Magenta marker for debugging (alpha=254)
