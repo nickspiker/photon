@@ -85,7 +85,12 @@ impl PhotonApp {
                 || self.current_text_state.scroll_offset != self.previous_text_state.scroll_offset;
         }
 
-        if self.text_dirty || self.selection_dirty || self.window_dirty || self.controls_dirty || zoom_hint_dirty {
+        if self.text_dirty
+            || self.selection_dirty
+            || self.window_dirty
+            || self.controls_dirty
+            || zoom_hint_dirty
+        {
             self.update_counter += 1;
 
             // Pre-compute scaled avatar before locking buffer (to avoid borrow conflict)
@@ -94,11 +99,12 @@ impl PhotonApp {
                 self.update_avatar_scaled(avatar_radius * 2);
             }
 
+            let eff_ru = self.effective_ru();
+
             let mut buffer = self.renderer.lock_buffer();
             let pixels = buffer.as_mut();
-
-            let indicator_radius = (self.span as f32 * self.ru / 80.).max(1.) as usize;
-            let indicator_x = (self.span as f32 * self.ru / 20.).max(1.) as usize;
+            let indicator_radius = (self.span as f32 * eff_ru / 80.).max(1.) as usize;
+            let indicator_x = (self.span as f32 * eff_ru / 20.).max(1.) as usize;
             let indicator_y = indicator_x;
 
             if self.window_dirty {
@@ -135,7 +141,7 @@ impl PhotonApp {
                     &mut self.hit_test_map,
                     self.width,
                     self.height,
-                    self.ru,
+                    eff_ru,
                 );
 
                 // Draw FGTW connectivity indicator (small circle in top-left)
@@ -277,7 +283,10 @@ impl PhotonApp {
                         self.glow_colour =
                             if matches!(self.app_state, AppState::Launch(LaunchState::Attesting)) {
                                 theme::GLOW_ATTESTING
-                            } else if matches!(self.app_state, AppState::Launch(LaunchState::Error(_))) {
+                            } else if matches!(
+                                self.app_state,
+                                AppState::Launch(LaunchState::Error(_))
+                            ) {
                                 theme::GLOW_ERROR
                             } else {
                                 theme::GLOW_DEFAULT
@@ -351,7 +360,7 @@ impl PhotonApp {
 
                     // Query friends textbox - width from layout, height scales with ru
                     if let Some(ref tb) = self.layout.textbox {
-                        let tb_height = (self.span as f32 / 8.0 * self.ru) as usize;
+                        let tb_height = (self.span as f32 / 8.0 * eff_ru) as usize;
                         Self::draw_textbox(
                             pixels,
                             &mut self.hit_test_map,
@@ -845,7 +854,7 @@ impl PhotonApp {
 
                                     // Draw bottom textbox for message input - width from layout, height scales with ru
                                     if let Some(ref tb) = self.layout.textbox {
-                                        let tb_height = (self.span as f32 / 8.0 * self.ru) as usize;
+                                        let tb_height = (self.span as f32 / 8.0 * eff_ru) as usize;
                                         Self::draw_textbox(
                                             pixels,
                                             &mut self.hit_test_map,
@@ -1297,7 +1306,7 @@ impl PhotonApp {
                 // Handle hover state changes
                 if self.prev_hovered_button != self.hovered_button {
                     // Calculate button centers for centerpoint fill
-                    let button_height = (self.span as f32 / 16.0 * self.ru).ceil() as usize;
+                    let button_height = (self.span as f32 / 16.0 * eff_ru).ceil() as usize;
                     let button_width = button_height;
                     let total_width = button_width * 7 / 2;
                     let x_start = self.width as usize - total_width;
@@ -1552,7 +1561,7 @@ impl PhotonApp {
             // This runs OUTSIDE controls_dirty so it works during animation
             if self.window_dirty && self.hovered_button != HoveredButton::None {
                 // Calculate button centers for centerpoint fill
-                let button_height = (self.span as f32 / 16.0 * self.ru).ceil() as usize;
+                let button_height = (self.span as f32 / 16.0 * eff_ru).ceil() as usize;
                 let button_width = button_height;
                 let total_width = button_width * 7 / 2;
                 let x_start = self.width as usize - total_width;
@@ -1866,7 +1875,8 @@ impl PhotonApp {
                                 // Font size from error slice height
                                 let text_size = sub.error.h as f32 * 0.7;
                                 // draw_text_center centers on y, so offset up by half text height
-                                let error_text_y = (sub.error.y + sub.error.h) as f32 - text_size / 2.0;
+                                let error_text_y =
+                                    (sub.error.y + sub.error.h) as f32 - text_size / 2.0;
                                 self.text_renderer.draw_text_center_u32(
                                     pixels,
                                     self.width as usize,
@@ -1888,7 +1898,8 @@ impl PhotonApp {
                                 // Font size from error slice height
                                 let text_size = sub.error.h as f32 * 0.7;
                                 // draw_text_center centers on y, so offset up by half text height
-                                let error_text_y = (sub.error.y + sub.error.h) as f32 - text_size / 2.0;
+                                let error_text_y =
+                                    (sub.error.y + sub.error.h) as f32 - text_size / 2.0;
                                 self.text_renderer.draw_text_center_u32(
                                     pixels,
                                     self.width as usize,
@@ -1918,7 +1929,7 @@ impl PhotonApp {
                 let hint_font_size = font_size * 0.8;
                 // Top of text is 1/2 font size from top edge
                 let hint_y = hint_font_size / 2.0 + hint_font_size / 2.0; // top edge + half font (for center baseline)
-                // At the 1/3 mark
+                                                                          // At the 1/3 mark
                 let hint_x = self.width as f32 / 3.0;
                 let text_width = self.text_renderer.measure_text_width(
                     &zoom_text,

@@ -195,7 +195,7 @@ impl PhotonApp {
                                 self.width as usize,
                                 self.height as usize,
                                 self.span,
-                                self.ru,
+                                self.effective_ru(),
                                 &self.app_state,
                             );
                             self.selected_contact = None;
@@ -344,7 +344,7 @@ impl PhotonApp {
                                     self.width as usize,
                                     self.height as usize,
                                     self.span,
-                                    self.ru,
+                                    self.effective_ru(),
                                     &self.app_state,
                                 );
                                 self.window_dirty = true;

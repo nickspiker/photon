@@ -284,31 +284,37 @@ Three-layer inner encryption + standard VSF outer signature:
 
 ```
 Message (text)
-    ↓ Layer 1: Build VSF section [x(text), hM(confirm_smear)]
-    ↓ Layer 2: Encrypt section.flatten() with ChaCha20
+    ↓ Layer 1: Build VSF field (d{message}:x{text},hp{inc_hp},hR{pad})
+    ↓ Layer 1b: Shuffle field values (enforces type-marker parsing)
+    ↓ Layer 2: Encrypt field.flatten() with ChaCha20
     ↓ Layer 3: XOR with scratch pad
 Inner ciphertext (opaque blob)
     ↓ Layer 4: Standard VSF Ed25519 signature (outer integrity)
 VSF Document
 ```
 
-**Plaintext is a VSF section:**
+**Plaintext is a VSF field with shuffled values:**
 ```
-[
-    x(message_text),     // UTF-8 user message (Huffman compressed)
-    hM(confirm_smear),   // 32B chain-bound smear hash
-]
+(d{message}:x{Hey man},hp{32 bytes...},hR{random padding})
 ```
+
+Field components (order randomized before encryption):
+- `d{message}` - Field name (always first, before colon)
+- `x{text}` - UTF-8 user message (Huffman compressed)
+- `hp{inc_hp}` - Incorporated hash pointer (32B, bidirectional weave)
+- `hR{pad}` - Random padding (0-255 bytes, traffic analysis resistance)
 
 This gives us:
-- **Domain separation**: VSF type prefixes (`x`, `hM`) baked into plaintext
-- **Clean parsing**: Decrypt → parse VSF → get typed `x` and `hM`
-- **Extensible**: Add fields later (media attachments, reactions, etc.)
-- **Type safety**: Can't confuse message bytes with smear bytes
+- **Type-marker parsing**: Receiver matches on type prefix, not position
+- **Bidirectional weave**: `hp` contains hash of peer's last message we incorporated
+- **Traffic analysis resistance**: Random `hR` padding obscures message length
+- **VSF-spec compliant**: Standard field syntax `(d{name}:val1,val2,...)`
+- **Shuffle enforcement**: Randomized order ensures parsers can't rely on position
 
-**Why both inner and outer integrity?**
-- Inner (hM smear): Encrypted, chain-bound, proves possession of chain state
-- Outer (se signature): Standard Ed25519 in header, device-bound, passes normal VSF integrity checks
+**Why shuffle field values?**
+- Enforces correct parsing: receiver MUST use type markers (`x`, `hp`, `hR`)
+- VSF-spec compliant: field values are order-independent by design
+- Defense in depth: even if encryption broken, parser must handle any order
 
 **Standard VSF structure:**
 - Header contains: version, Created timestamp, provenance hash, signature, pubkey, labels
@@ -322,16 +328,36 @@ This gives us:
 fn encrypt_message(
     message_text: &str,
     chain: &ParticipantChain,
+    their_last_hp: &[u8; 32],  // Hash of peer's last message we received
     scratch: &ScratchPad,
     eagle_time: EagleTime,
     device_key: &Ed25519Key,
 ) -> VsfDocument {
-    // Layer 1: Build plaintext VSF section [x(text), hM(smear)]
-    let confirm = generate_confirmation_smear(message_text.as_bytes(), chain);
-    let plaintext_section = VsfSection::new()
-        .with(VsfType::x(message_text.to_string()))  // UTF-8 text
-        .with(VsfType::hM(confirm.to_vec()));        // Chain-bound smear
-    let plaintext = plaintext_section.flatten();
+    use vsf::schema::section::FieldValue;
+    use rand::seq::SliceRandom;
+
+    // Layer 1: Build field values
+    let mut values = vec![
+        VsfType::x(message_text.to_string()),  // UTF-8 text
+        VsfType::hp(their_last_hp.to_vec()),   // Bidirectional weave
+    ];
+
+    // Add random padding for traffic analysis resistance
+    // Length = min of 3 random u8s → biased toward short (median ~53 bytes)
+    let pad_len = rand::random::<u8>()
+        .min(rand::random::<u8>())
+        .min(rand::random::<u8>()) as usize;
+    if pad_len > 0 {
+        let random_bytes: Vec<u8> = (0..pad_len).map(|_| rand::random()).collect();
+        values.push(VsfType::hR(random_bytes));
+    }
+
+    // Layer 1b: Shuffle field order - enforces type-marker parsing
+    values.shuffle(&mut rand::thread_rng());
+
+    // Build field: (d{message}:x{...},hp{...},hR{...})
+    let field = FieldValue::new("message", values);
+    let plaintext = field.flatten();
 
     // Derive ChaCha20 key from current link (rightmost = newest)
     let chacha_key = blake3::derive_key("photon.chain.chacha.v0", &chain.links[511]);
@@ -354,26 +380,15 @@ fn encrypt_message(
         .with(VsfType::v(b'P', ciphertext));  // v(vP, ciphertext)
 
     // Layer 4: Create VSF document with standard header
-    // Timestamp goes in header (Created field), signature covers body
     VsfDocument::new()
         .with_created(eagle_time)                    // Header: Created timestamp
         .with_signature(device_key, &body_section)   // Header: se(sig), ke(pubkey)
         .with_body(body_section)                     // Body: [message v(vP, ...)]
     // Note: salt not included - receiver derives it from prev_plaintext
 }
-
-fn generate_confirmation_smear(message: &[u8], chain: &ParticipantChain) -> [u8; 32] {
-    // Inner integrity - chain-bound, encrypted
-    // Uses hM (smear hash) for algorithm diversity
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(b"PHOTON_CONFIRM_v0");
-    hasher.update(message);
-    hasher.update(chain.links[509..512].as_flattened());  // Last 3 links (96B)
-    smear_hash(hasher.finalize().as_bytes())  // hM type: BLAKE3 ⊕ SHA3 ⊕ SHA512
-}
 ```
 
-**Note:** `generate_auth_smear` removed - outer integrity now uses standard VSF Ed25519 signature.
+**Note:** Outer integrity uses standard VSF Ed25519 signature. Inner integrity comes from chain-bound decryption (only holder of chain state can decrypt).
 
 ### 5.2 Decryption Process
 
@@ -424,7 +439,7 @@ fn try_decrypt_at_offset(
     chain: &ParticipantChain,
     salt: &[u8; 32],
     history_offset: usize,
-) -> Result<String, ChainError> {
+) -> Result<(String, [u8; 32]), ChainError> {
     // Current key is at [511], history at [511 - offset]
     let key_index = 511 - history_offset;
     if key_index < 256 {
@@ -446,25 +461,54 @@ fn try_decrypt_at_offset(
     let mut cipher = ChaCha20::new(&chacha_key.into(), &nonce.into());
     cipher.apply_keystream(&mut intermediate);
 
-    // Layer 1 (reverse): Parse VSF section [x(text), hM(smear)]
-    let plaintext_section = VsfSection::parse(&intermediate)
-        .map_err(|_| ChainError::DecryptionFailed)?;
+    // Layer 1 (reverse): Parse VSF field (d{message}:x{...},hp{...},hR{...})
+    // Uses type-marker parsing - values can appear in any order
+    let mut ptr = 0usize;
+    let mut message_text = String::new();
+    let mut incorporated_hp = [0u8; 32];
 
-    // Extract typed fields
-    let message_text: String = plaintext_section.get::<String>()  // x(text)
-        .map_err(|_| ChainError::DecryptionFailed)?;
-    let received_smear: Vec<u8> = plaintext_section.get::<Vec<u8>>()  // hM(smear)
-        .map_err(|_| ChainError::DecryptionFailed)?;
+    // Expect '(' to start field
+    if intermediate.get(ptr) != Some(&b'(') {
+        return Err(ChainError::DecryptionFailed);
+    }
+    ptr += 1;
 
-    // Verify confirmation smear (inner integrity, chain-bound)
-    let expected_smear = generate_confirmation_smear_at_offset(
-        message_text.as_bytes(), chain, history_offset
-    );
-    if !constant_time_eq(&expected_smear, &received_smear) {
-        return Err(ChainError::DecryptionFailed);  // Tampered or wrong key
+    // Parse field name (d{message})
+    match vsf::parse(&intermediate, &mut ptr) {
+        Ok(VsfType::d(name)) if name == "message" => {}
+        _ => return Err(ChainError::DecryptionFailed),
     }
 
-    Ok(message_text)
+    // Expect ':' separator
+    if intermediate.get(ptr) != Some(&b':') {
+        return Err(ChainError::DecryptionFailed);
+    }
+    ptr += 1;
+
+    // Parse comma-separated values by type marker (not position)
+    loop {
+        match vsf::parse(&intermediate, &mut ptr) {
+            Ok(VsfType::x(s)) => message_text = s,
+            Ok(VsfType::hp(hash)) if hash.len() == 32 => {
+                incorporated_hp.copy_from_slice(&hash);
+            }
+            Ok(VsfType::hR(_)) => {} // Random padding - ignore
+            _ => break,
+        }
+
+        // Check for ',' (more values) or ')' (end of field)
+        match intermediate.get(ptr) {
+            Some(b',') => ptr += 1,
+            Some(b')') => break,
+            _ => break,
+        }
+    }
+
+    if message_text.is_empty() {
+        return Err(ChainError::DecryptionFailed);
+    }
+
+    Ok((message_text, incorporated_hp))
 }
 ```
 
@@ -501,27 +545,37 @@ Signature covers: BLAKE3(body.flatten())
 **The `v(vP, ciphertext)` wrapper:**
 - `v` = VSF wrapped data type
 - `vP` = Photon encoding byte (application-specific)
-- `ciphertext` = encrypted VSF section (plaintext below)
+- `ciphertext` = encrypted VSF field (plaintext below)
 
-**Plaintext section (encrypted inside v):**
+**Plaintext field (encrypted inside v):**
 ```
 ┌────────────────────────────────────────────────────────────┐
-│ x(message_text)      - UTF-8 user message (Huffman)        │
-│ hM(confirm_smear)    - 32B chain-bound smear hash          │
+│ (d{message}:                - Field start with name        │
+│   x{text},                  - UTF-8 user message (Huffman) │
+│   hp{inc_hp},               - 32B incorporated hash        │
+│   hR{pad}                   - 0-255B random padding        │
+│ )                           - Field end                    │
 └────────────────────────────────────────────────────────────┘
+Note: Field values are shuffled before encryption.
+      Receiver parses by type marker, not position.
 ```
 
 **Wire overhead:**
-- Plaintext section: ~3 (x header) + message + 33 (hM) = message + ~36 bytes
-- Body section: ~4 (v header) = ~4 bytes
+- Field overhead: ~12 bytes (parens, d{message}:, commas)
+- x header: ~3 bytes
+- hp: 33 bytes (1 type + 32 hash)
+- hR: 0-256 bytes (median ~53, biased short via min of 3 random u8s)
+- Body section: ~4 (v header)
 - Header: ~132 bytes (version, timestamp, hash, sig, pubkey, labels)
-- Total: message + ~172 bytes (no salt - derived)
+- Total: message + ~185 bytes + padding (no salt - derived)
 
 **Why this structure?**
 - **Single timestamp**: VSF header `Created` field, not duplicated
 - **Standard VSF**: Any VSF tool can verify signature, inspect header
 - **Clean wrapping**: `v(vP, ...)` marks Photon-specific content
-- **Extensible**: Add fields to plaintext section without format changes
+- **Type-marker parsing**: Shuffle enforces correct VSF-spec parsing
+- **Bidirectional weave**: `hp` links to peer's last message
+- **Traffic analysis resistance**: Random `hR` padding obscures length
 
 ### 6.1 ACK Message Section
 
@@ -1101,23 +1155,27 @@ const L1_SIZE: usize = 30_720;  // 30KB
 const L1_ROUNDS: usize = 3;
 
 // Wire format (VSF with standard header)
-const PLAINTEXT_OVERHEAD: usize = 36;   // x header (~3B) + hM smear (33B)
+// Field: (d{message}:x{text},hp{inc_hp},hR{pad})
+const FIELD_OVERHEAD: usize = 12;       // parens, d{message}:, commas
+const X_HEADER: usize = 3;              // x header bytes
+const HP_SIZE: usize = 33;              // hp type (1) + hash (32)
+const HR_MEDIAN: usize = 53;            // hR padding median (min of 3 random u8s)
 const BODY_OVERHEAD: usize = 4;         // v(vP, ...) header
 const HEADER_SIZE: usize = 132;         // version, timestamp, hash, sig, pubkey, labels
-const MSG_OVERHEAD: usize = 172;        // plaintext + body + header (no salt - derived)
+const MSG_OVERHEAD: usize = 185;        // field + body + header (no salt - derived)
+// Note: Add HR_MEDIAN (~53) for typical total overhead
 
 // Domain separation strings
 const DOMAIN_ADVANCE: &[u8] = b"PHOTON_ADVANCE_v0";    // Chain advancement (spaghettify)
 const DOMAIN_ACK: &[u8] = b"PHOTON_ACK_v0";            // ACK proof (fast smear)
-const DOMAIN_CONFIRM: &[u8] = b"PHOTON_CONFIRM_v0";    // Inner integrity (smear hash)
 const DOMAIN_SALT: &[u8] = b"PHOTON_SALT_v0";          // Salt derivation (empty prev = first msg)
 const DOMAIN_FIRST_MSG: &[u8] = b"PHOTON_FIRST_MSG_v0"; // First message anchor
 const DOMAIN_NETWORK_ID: &[u8] = b"PHOTON_NETWORK_ID_v0"; // Storage/request identifier
 // Note: Outer integrity uses standard VSF Ed25519 signature (no custom domain)
+// Note: DOMAIN_CONFIRM removed - inner integrity via chain-bound decryption
 
 // Each domain uses different link ranges for additional separation
 const ACK_LINK_RANGE: Range<usize> = 507..512;      // 5 links (160B)
-const CONFIRM_LINK_RANGE: Range<usize> = 509..512;  // 3 links (96B)
 const SALT_LINK_RANGE: Range<usize> = 500..512;     // 12 links for salt derivation
 // Note: Outer integrity is standard VSF header signature (device key, no chain links)
 ```
@@ -1128,29 +1186,40 @@ Photon uses application-defined VSF types with **uppercase second character**:
 
 ```rust
 // Standard VSF types (lowercase = VSF-defined)
-hp(Vec<u8>),  // BLAKE3 provenance hash
-hb(Vec<u8>),  // BLAKE3 rolling hash
-hs(Vec<u8>),  // SHA hash family
-ke(Vec<u8>),  // Ed25519 public key
-se(Vec<u8>),  // Ed25519 signature
+d(String),       // Dictionary key (field name)
+x(String),       // UTF-8 text (Huffman compressed)
+hp(Vec<u8>),     // BLAKE3 provenance hash
+hb(Vec<u8>),     // BLAKE3 rolling hash
+hs(Vec<u8>),     // SHA hash family
+ke(Vec<u8>),     // Ed25519 public key
+se(Vec<u8>),     // Ed25519 signature
 v(u8, Vec<u8>),  // Wrapped data with encoding byte
 
 // Application-defined hash types (UPPERCASE = app-specific)
-hM(Vec<u8>),  // Smear hash: BLAKE3 ⊕ SHA3 ⊕ SHA512 (multi-algorithm)
+hR(Vec<u8>),  // Random padding (traffic analysis resistance)
 hD(Vec<u8>),  // Handle proof output (memory-hard ~25MB, ~1s)
 hG(Vec<u8>),  // Spaghettify output (chaotic Rube Goldberg, ~1.7KB state)
+hM(Vec<u8>),  // Smear hash: BLAKE3 ⊕ SHA3 ⊕ SHA512 (multi-algorithm)
 
 // Application-defined v encoding bytes
 v(b'P', ...),  // Photon encrypted message (vP)
-               // Body contains: encrypted [x(text), hM(smear)] section
+               // Body contains: encrypted (d{message}:x{},hp{},hR{}) field
 ```
 
 **Convention:** `a-z` = reserved for VSF standard types, `A-Z` = application extensions.
 
 **The `v` wrapper type:**
 - First byte is the encoding identifier (application-defined meaning)
-- `vP` = Photon-encrypted content (decrypt to get VSF section)
+- `vP` = Photon-encrypted content (decrypt to get VSF field)
 - Generic VSF tools see opaque wrapped bytes, Photon tools know to decrypt
+
+**Message field format:**
+```
+(d{message}:x{Hey man},hp{32 bytes...},hR{random padding})
+```
+- Field values shuffled before encryption
+- Receiver parses by type marker (`x`, `hp`, `hR`), not position
+- Shuffle enforces VSF-spec-compliant parsing
 
 ## Appendix D: Test Vectors
 
@@ -1160,7 +1229,7 @@ TODO: Add test vectors for:
 - Chained salt derivation from plaintext
 - Scratch generation from known chain + salt
 - Message encryption/decryption roundtrip
-- Confirmation smear (inner integrity, hM type)
+- Field parsing with shuffled order
 - VSF signature verification (outer integrity)
 - ACK proof generation
 - Chain advancement

@@ -169,32 +169,47 @@ impl TextLayout {
 
         // For Launch screens, sizes come from slice rectangle heights
         // For other screens, sizes come from span*ru
-        let (textbox_left, textbox_right, textbox_width, textbox_y, box_height, font_size, button_area) =
-            if matches!(app_state, AppState::Launch(_)) {
-                // Launch: sizes from AttestBlockLayout slice heights
-                let block = layout.attest_block.as_ref().unwrap();
-                let sub = AttestBlockLayout::new(block);
-                let tb_left = sub.textbox.x;
-                let tb_right = sub.textbox.x + sub.textbox.w;
-                let tb_width = sub.textbox.w;
-                let tb_y = sub.textbox.y + sub.textbox.h / 2;
-                let box_h = sub.textbox.h;
-                let font_sz = box_h as f32 / 2.0;
-                (tb_left, tb_right, tb_width, tb_y, box_h, font_sz, 0)
-            } else {
-                // Non-launch: sizes from span*ru
-                let tb = layout.textbox.as_ref().unwrap();
-                let tb_left = tb.x;
-                let tb_right = tb.x + tb.w;
-                let tb_width = tb.w;
-                let tb_y = tb.y + tb.h / 2;
-                let box_h = (span as f32 / 8.0 * ru) as usize;
-                let font_sz = span as f32 / 16.0 * ru;
-                let button_size = box_h * 7 / 8;
-                let inset = box_h / 16;
-                let button_area = button_size + inset * 2;
-                (tb_left, tb_right, tb_width, tb_y, box_h, font_sz, button_area)
-            };
+        let (
+            textbox_left,
+            textbox_right,
+            textbox_width,
+            textbox_y,
+            box_height,
+            font_size,
+            button_area,
+        ) = if matches!(app_state, AppState::Launch(_)) {
+            // Launch: sizes from AttestBlockLayout slice heights
+            let block = layout.attest_block.as_ref().unwrap();
+            let sub = AttestBlockLayout::new(block);
+            let tb_left = sub.textbox.x;
+            let tb_right = sub.textbox.x + sub.textbox.w;
+            let tb_width = sub.textbox.w;
+            let tb_y = sub.textbox.y + sub.textbox.h / 2;
+            let box_h = sub.textbox.h;
+            let font_sz = box_h as f32 / 2.0;
+            (tb_left, tb_right, tb_width, tb_y, box_h, font_sz, 0)
+        } else {
+            // Non-launch: sizes from span*ru
+            let tb = layout.textbox.as_ref().unwrap();
+            let tb_left = tb.x;
+            let tb_right = tb.x + tb.w;
+            let tb_width = tb.w;
+            let tb_y = tb.y + tb.h / 2;
+            let box_h = (span as f32 / 8.0 * ru) as usize;
+            let font_sz = span as f32 / 16.0 * ru;
+            let button_size = box_h * 7 / 8;
+            let inset = box_h / 16;
+            let button_area = button_size + inset * 2;
+            (
+                tb_left,
+                tb_right,
+                tb_width,
+                tb_y,
+                box_h,
+                font_sz,
+                button_area,
+            )
+        };
         let line_height = box_height;
 
         let usable_width = textbox_width - button_area;
@@ -649,9 +664,18 @@ pub struct PhotonApp {
     pub perimeter: usize,   // width + height
     pub diagonal_sq: usize, // width² + height²
 
-    /// RU: dimensionless zoom multiplier for content scaling. Starts at 1.0.
-    /// Content sizes multiply by ru: font_size = span/16 * ru, box_height = span/8 * ru
+    /// RU: user's zoom multiplier for content scaling. Starts at 1.0.
+    /// Content sizes multiply by effective_ru(): font_size = span/16 * ru, box_height = span/8 * ru
     pub ru: f32,
+
+    /// Keyboard scale compensation (Android only). When keyboard shrinks window,
+    /// this compensates to keep UI elements the same visual size.
+    /// effective_ru() = ru * keyboard_scale
+    pub keyboard_scale: f32,
+
+    /// Initial height at app creation (Android only). Used to compute keyboard_scale.
+    #[cfg(target_os = "android")]
+    pub initial_height: u32,
 
     /// Text layout geometry - single source of truth for text/blinkey positioning
     pub text_layout: TextLayout,
@@ -828,6 +852,13 @@ pub enum ResizeEdge {
 }
 
 impl PhotonApp {
+    /// Effective zoom multiplier for sizing calculations.
+    /// Combines user's zoom (ru) with keyboard scale compensation.
+    #[inline]
+    pub fn effective_ru(&self) -> f32 {
+        self.ru * self.keyboard_scale
+    }
+
     /// Desktop constructor (Linux + Windows)
     #[cfg(not(target_os = "android"))]
     pub fn new(
@@ -872,7 +903,8 @@ impl PhotonApp {
             span: 2 * w * h / (w + h), // Harmonic mean - smooth at w==h, biased toward smaller
             perimeter: w + h,
             diagonal_sq: w * w + h * h,
-            ru: 1.0, // Dimensionless zoom multiplier, starts at 1.0
+            ru: 1.0,             // User's zoom multiplier, starts at 1.0
+            keyboard_scale: 1.0, // Keyboard compensation (Android only), starts at 1.0
             text_layout: TextLayout::new(
                 w,
                 h,
@@ -1028,7 +1060,9 @@ impl PhotonApp {
             span: 2 * w * h / (w + h), // Harmonic mean - smooth at w==h, biased toward smaller
             perimeter: w + h,
             diagonal_sq: w * w + h * h,
-            ru: 1.0, // Dimensionless zoom multiplier, starts at 1.0
+            ru: 1.0,                // User's zoom multiplier, starts at 1.0
+            keyboard_scale: 1.0,    // Keyboard compensation, starts at 1.0
+            initial_height: height, // Store initial height for keyboard_scale calculation
             text_layout: TextLayout::new(
                 w,
                 h,
@@ -1364,7 +1398,7 @@ impl PhotonApp {
                     self.width as usize,
                     self.height as usize,
                     self.span,
-                    self.ru,
+                    self.effective_ru(),
                     &self.app_state,
                 );
                 self.selected_contact = None;
@@ -1411,7 +1445,7 @@ impl PhotonApp {
                     self.width as usize,
                     self.height as usize,
                     self.span,
-                    self.ru,
+                    self.effective_ru(),
                     &self.app_state,
                 );
                 self.reset_textbox();
@@ -1581,7 +1615,7 @@ impl PhotonApp {
                 self.width as usize,
                 self.height as usize,
                 self.span,
-                self.ru,
+                self.effective_ru(),
                 &self.app_state,
             );
             self.selected_contact = None;
@@ -1773,16 +1807,22 @@ impl PhotonApp {
     /// Uses logarithmic scaling: each step multiplies by 33/32 (in) or 32/33 (out).
     /// Clamps to range [1/32, 32] for full design exploration.
     pub fn adjust_zoom(&mut self, steps: f32) {
-        let factor = (33.0_f32 / 32.0).powf(steps);
-        self.ru = (self.ru * factor).clamp(1.0 / 32.0, 32.0);
+        let factor = if steps.is_sign_negative() {
+            (33f32 / 32.).powf(steps)
+        } else {
+            (31f32 / 32.).powf(-steps)
+        };
+        self.ru = self.ru * factor;
         self.window_dirty = true;
+
+        let eff_ru = self.effective_ru();
 
         // Update text layout with new ru
         self.text_layout = TextLayout::new(
             self.width as usize,
             self.height as usize,
             self.span,
-            self.ru,
+            eff_ru,
             &self.app_state,
         );
 
@@ -1791,17 +1831,30 @@ impl PhotonApp {
             self.width as usize,
             self.height as usize,
             self.span,
-            self.ru,
+            eff_ru,
             &self.app_state,
         );
 
         self.recalculate_char_widths();
 
         // Show zoom hint (will be hidden after 1 second via differential rendering)
+        // Shows user's ru, not effective_ru (keyboard compensation is transparent)
         self.zoom_hint_visible = true;
         self.zoom_hint_hide_time =
             Some(std::time::Instant::now() + std::time::Duration::from_secs(1));
         self.zoom_hint_ru = self.ru;
+    }
+
+    /// Handle pinch-to-zoom scale gesture from Android
+    /// scale_factor: >1.0 = zoom in, <1.0 = zoom out
+    #[cfg(target_os = "android")]
+    pub fn handle_scale(&mut self, scale_factor: f32) {
+        // Convert scale factor to zoom steps using logarithm
+        // log2(scale_factor) gives: pinch out (1.5x) -> +0.58, pinch in (0.7x) -> -0.51
+        // Sensitivity multiplier controls how responsive the zoom feels
+        const SENSITIVITY: f32 = 10.0;
+        let steps = scale_factor.log2() * SENSITIVITY;
+        self.adjust_zoom(steps);
     }
 
     /// Resize the application to new dimensions (shared by all platforms)
@@ -1812,6 +1865,13 @@ impl PhotonApp {
         self.width = width;
         self.height = height;
 
+        // On Android, compensate for keyboard resize by adjusting keyboard_scale
+        // This keeps UI elements the same visual size when keyboard appears
+        #[cfg(target_os = "android")]
+        {
+            self.keyboard_scale = self.initial_height as f32 / height as f32;
+        }
+
         // Update cached scaling units
         // Span: harmonic mean of width and height - smooth at w==h, biased toward smaller
         // 2wh/(w+h) has finite slope at axes, slope exactly 1, tastes delicious
@@ -1819,11 +1879,13 @@ impl PhotonApp {
         self.perimeter = w + h;
         self.diagonal_sq = w * w + h * h;
 
+        let eff_ru = self.effective_ru();
+
         // Update text layout geometry
-        self.text_layout = TextLayout::new(w, h, self.span, self.ru, &self.app_state);
+        self.text_layout = TextLayout::new(w, h, self.span, eff_ru, &self.app_state);
 
         // Update region layout
-        self.layout = Layout::new(w, h, self.span, self.ru, &self.app_state);
+        self.layout = Layout::new(w, h, self.span, eff_ru, &self.app_state);
 
         self.renderer.resize(width, height);
         self.hit_test_map.resize((width * height) as usize, 0);
@@ -1844,8 +1906,12 @@ impl PhotonApp {
         }
 
         // Clear textbox focus on resize - user must click to refocus
-        self.current_text_state.textbox_focused = false;
-        self.blinkey_visible = false;
+        // On Android, preserve focus during keyboard resize (keyboard_scale != 1.0 means keyboard is up)
+        #[cfg(not(target_os = "android"))]
+        {
+            self.current_text_state.textbox_focused = false;
+            self.blinkey_visible = false;
+        }
 
         // Trigger full redraw - differential rendering will be skipped automatically
         self.window_dirty = true;
@@ -2653,7 +2719,7 @@ impl PhotonApp {
             self.width as usize,
             self.height as usize,
             self.span,
-            self.ru,
+            self.effective_ru(),
             &self.app_state,
         );
         self.query_start_time = None;
@@ -3007,29 +3073,75 @@ impl PhotonApp {
                             &plaintext
                         ));
 
-                        // Decompress Huffman-encoded message (VSF x type)
+                        // Parse VSF field: (d{message}:x{text},hp{inc_hp},hR{pad})
+                        // Uses type-marker parsing (not positional) per AGENT.md
                         let mut ptr = 0usize;
-                        let message_text = match vsf::parse(&plaintext, &mut ptr) {
-                            Ok(vsf::VsfType::x(s)) => s,
+                        let mut message_text = String::new();
+                        let mut incorporated_hp = [0u8; 32];
+
+                        // Expect '(' to start field
+                        if plaintext.get(ptr) != Some(&b'(') {
+                            crate::log("CHAT: Expected '(' to start message field");
+                            continue;
+                        }
+                        ptr += 1;
+
+                        // Parse field name (d{message})
+                        match vsf::parse(&plaintext, &mut ptr) {
+                            Ok(vsf::VsfType::d(name)) if name == "message" => {}
+                            Ok(vsf::VsfType::d(name)) => {
+                                crate::log(&format!(
+                                    "CHAT: Expected field name 'message', got '{}'",
+                                    name
+                                ));
+                                continue;
+                            }
                             Ok(other) => {
-                                crate::log(&format!("CHAT: Expected x type, got {:?}", other));
+                                crate::log(&format!("CHAT: Expected d type, got {:?}", other));
                                 continue;
                             }
                             Err(e) => {
                                 crate::log(&format!("CHAT: VSF parse error: {:?}", e));
                                 continue;
                             }
-                        };
+                        }
 
-                        // Extract incorporated_hp (32 bytes after the x type)
-                        // This tells us which of OUR messages they incorporated into their weave
-                        let incorporated_hp: [u8; 32] = if ptr + 32 <= plaintext.len() {
-                            let mut hp = [0u8; 32];
-                            hp.copy_from_slice(&plaintext[ptr..ptr + 32]);
-                            hp
-                        } else {
-                            [0u8; 32] // No incorporated_hp (legacy or first message)
-                        };
+                        // Expect ':' separator
+                        if plaintext.get(ptr) != Some(&b':') {
+                            crate::log("CHAT: Expected ':' after field name");
+                            continue;
+                        }
+                        ptr += 1;
+
+                        // Parse comma-separated values by type marker (not position)
+                        loop {
+                            match vsf::parse(&plaintext, &mut ptr) {
+                                Ok(vsf::VsfType::x(s)) => message_text = s,
+                                Ok(vsf::VsfType::hp(hash)) if hash.len() == 32 => {
+                                    incorporated_hp.copy_from_slice(&hash);
+                                }
+                                Ok(vsf::VsfType::hR(_)) => {} // Random padding - ignore
+                                Ok(other) => {
+                                    crate::log(&format!(
+                                        "CHAT: Unexpected type in message: {:?}",
+                                        other
+                                    ));
+                                }
+                                Err(_) => break,
+                            }
+
+                            // Check for ',' (more values) or ')' (end of field)
+                            match plaintext.get(ptr) {
+                                Some(b',') => ptr += 1, // Continue to next value
+                                Some(b')') => break,    // End of field
+                                _ => break,
+                            }
+                        }
+
+                        if message_text.is_empty() {
+                            crate::log("CHAT: No message text found in payload");
+                            continue;
+                        }
 
                         crate::log(&format!(
                             "CHAT: Decrypted message from {}: \"{}\" (incorporated_hp={}...)",
@@ -4501,10 +4613,32 @@ impl PhotonApp {
             .and_then(|their_hash| chains.last_received_hash(their_hash).copied())
             .unwrap_or([0u8; 32]);
 
-        // Build payload: x(message) + incorporated_hp (32B) + random_extension
-        let mut payload = vsf::VsfType::x(message_text.to_string()).flatten();
-        payload.extend_from_slice(&incorporated_hp);
-        // TODO: Add random extension here
+        // Build payload as VSF field: (d{message}:x{text},hp{inc_hp},hR{pad})
+        // This is VSF-spec compliant with type-marker parsing (not positional)
+        use vsf::schema::section::FieldValue;
+
+        let mut values = vec![
+            vsf::VsfType::x(message_text.to_string()),
+            vsf::VsfType::hp(incorporated_hp.to_vec()),
+        ];
+
+        // Add random padding for traffic analysis resistance
+        // Length = min of 3 random u8s → biased toward short (median ~53 bytes)
+        let pad_len = rand::random::<u8>()
+            .min(rand::random::<u8>())
+            .min(rand::random::<u8>()) as usize;
+        if pad_len > 0 {
+            let random_bytes: Vec<u8> = (0..pad_len).map(|_| rand::random()).collect();
+            values.push(vsf::VsfType::hR(random_bytes));
+        }
+
+        // Shuffle field order - enforces type-marker parsing (VSF-spec compliant)
+        use rand::seq::SliceRandom;
+        values.shuffle(&mut rand::thread_rng());
+
+        // Build the field and flatten to bytes
+        let field = FieldValue::new("message", values);
+        let payload = field.flatten();
 
         let eagle_time = vsf::datetime_to_eagle_time(chrono::Utc::now());
 

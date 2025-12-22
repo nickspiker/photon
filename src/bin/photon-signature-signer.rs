@@ -26,16 +26,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut binary_data = fs::read(binary_path)?;
     println!("  Binary size: {} bytes", binary_data.len());
 
-    // Load private key
-    let keys_dir = PathBuf::from("/home/nick/MEGA/code/keys");
-    let private_key_path = keys_dir.join("photon-signing-key");
+    // Load private key - try multiple locations
+    let key_locations = [
+        "/mnt/Chiton/MEGA/Code/keys/photon-signing-key",
+        "/home/nick/MEGA/code/keys/photon-signing-key",
+    ];
 
-    if !private_key_path.exists() {
-        eprintln!("\nERROR: Private key not found!");
-        eprintln!("  Expected: {}", private_key_path.display());
-        eprintln!("\nRun 'photon-keygen' first to generate keys.");
-        std::process::exit(1);
-    }
+    let private_key_path = key_locations
+        .iter()
+        .map(PathBuf::from)
+        .find(|p| p.exists());
+
+    let private_key_path = match private_key_path {
+        Some(path) => path,
+        None => {
+            eprintln!("\nERROR: Private key not found!");
+            eprintln!("  Searched:");
+            for loc in &key_locations {
+                eprintln!("    {}", loc);
+            }
+            eprintln!("\nRun 'photon-keygen' first to generate keys.");
+            std::process::exit(1);
+        }
+    };
 
     let private_key_bytes = fs::read(&private_key_path)?;
     let signing_key = SigningKey::from_bytes(

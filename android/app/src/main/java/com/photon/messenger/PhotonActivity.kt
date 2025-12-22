@@ -15,6 +15,8 @@ import android.os.IBinder
 import android.util.Log
 import android.view.Choreographer
 import android.view.KeyEvent
+import android.view.MotionEvent
+import android.view.ScaleGestureDetector
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.inputmethod.InputMethodManager
@@ -56,6 +58,9 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     private var fullHeight: Int = 0
     private var keyboardVisible = false
 
+    // Scale gesture detector for pinch-to-zoom
+    private lateinit var scaleGestureDetector: ScaleGestureDetector
+
     // Service connection callbacks
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
@@ -82,6 +87,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     private external fun nativeOnTextInput(contextPtr: Long, text: String)  // Text from soft keyboard
     private external fun nativeOnKeyEvent(contextPtr: Long, keyCode: Int): Boolean  // Special keys (backspace, enter)
     private external fun nativeOnBackPressed(contextPtr: Long): Boolean  // Back button - returns true if handled
+    private external fun nativeOnScale(contextPtr: Long, scaleFactor: Float)  // Pinch-to-zoom scale factor
     private external fun nativeSetAvatarFromFile(contextPtr: Long, fileBytes: ByteArray)  // Raw image file bytes (preserves ICC profile)
     private external fun nativeDestroy(contextPtr: Long)
 
@@ -144,14 +150,35 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         surfaceView.holder.setFormat(PixelFormat.RGBA_8888)
         surfaceView.holder.addCallback(this)
 
+        // Initialize scale gesture detector for pinch-to-zoom
+        scaleGestureDetector = ScaleGestureDetector(this, object : ScaleGestureDetector.OnScaleGestureListener {
+            override fun onScale(detector: ScaleGestureDetector): Boolean {
+                if (nativePtr != 0L) {
+                    nativeOnScale(nativePtr, detector.scaleFactor)
+                }
+                return true
+            }
+
+            override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
+                return true  // Accept gesture
+            }
+
+            override fun onScaleEnd(detector: ScaleGestureDetector) {
+                // No-op
+            }
+        })
+
         // Handle touch events with action types
         surfaceView.setOnTouchListener { _, event ->
+            // Pass to scale detector first
+            scaleGestureDetector.onTouchEvent(event)
+
             if (nativePtr != 0L) {
-                val action = when (event.action) {
-                    android.view.MotionEvent.ACTION_DOWN -> 0
-                    android.view.MotionEvent.ACTION_UP -> 1
-                    android.view.MotionEvent.ACTION_MOVE -> 2
-                    android.view.MotionEvent.ACTION_CANCEL -> 3
+                val action = when (event.action and MotionEvent.ACTION_MASK) {
+                    MotionEvent.ACTION_DOWN -> 0
+                    MotionEvent.ACTION_UP -> 1
+                    MotionEvent.ACTION_MOVE -> 2
+                    MotionEvent.ACTION_CANCEL -> 3
                     else -> -1
                 }
                 if (action >= 0) {

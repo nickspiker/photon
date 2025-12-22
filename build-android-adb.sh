@@ -1,6 +1,8 @@
 #!/bin/bash
 set -e
 
+cp /mnt/Chiton/MEGA/Code/keys/google-services.json /mnt/Octopus/Code/photon/android/app/
+
 # Keystore config - try multiple locations
 if [ -f "/mnt/Chiton/MEGA/Code/keys/nicks-apps.keystore" ]; then
     KEYSTORE_PATH="/mnt/Chiton/MEGA/Code/keys/nicks-apps.keystore"

@@ -355,6 +355,22 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeOnBackPressed(
     }
 }
 
+/// Handle pinch-to-zoom scale gesture
+/// scale_factor: >1.0 = zoom in, <1.0 = zoom out
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeOnScale(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    context_ptr: jlong,
+    scale_factor: jfloat,
+) {
+    let Some(context) = get_context(context_ptr) else {
+        return;
+    };
+    context.app.handle_scale(scale_factor);
+}
+
 /// Handle avatar file from image picker
 /// Receives raw file bytes (JPEG/PNG/WebP) for proper ICC profile color management
 #[cfg(target_os = "android")]

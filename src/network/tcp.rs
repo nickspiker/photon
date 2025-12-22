@@ -1,8 +1,8 @@
 //! TCP Transport Layer
 //!
 //! Handles reliable TCP connections with centralized logging.
-//! Used for: CLUTCH key exchange, attachments, large file transfers.
-//! Fallback when Photon Transport is unavailable.
+//! Fallback for: CLUTCH key exchange, attachments, large file transfers.
+//! Only used when Photon Transport (UDP) fails after retries.
 //!
 //! VSF files contain an L (file length) field in the header, so TCP
 //! just streams raw VSF bytes - no external framing needed.
