@@ -195,14 +195,15 @@ impl TextLayout {
             let box_h = sub.textbox.h;
             let font_sz = box_h as f32 / 2.0;
             (tb_left, tb_right, tb_width, tb_y, box_h, font_sz, 0)
-        } else if let Some(contacts_header) = layout.contacts_header.as_ref() {
-            // Ready/Searching: from ContactsHeaderLayout (already scaled with ru by Layout::new)
-            let sub = ContactsHeaderLayout::new(contacts_header);
+        } else if let Some(contacts) = layout.contacts.as_ref() {
+            // Ready/Searching: from ContactsUnifiedLayout (all scaled with span-based row_height)
+            let sub = ContactsUnifiedLayout::new(contacts, span, ru, 0);
             let tb_left = sub.textbox.x;
             let tb_right = sub.textbox.x + sub.textbox.w;
             let tb_width = sub.textbox.w;
             let tb_y = sub.textbox.y + sub.textbox.h / 2; // center of textbox slice
-            let box_h = sub.textbox.h; // already scaled - no extra ru needed
+            let box_h = sub.textbox.h;
+            // Font size from textbox height (like attest), not from row_height
             let font_sz = box_h as f32 / 2.0;
             // Button area same as conversation - keeps text from overlapping search button
             let button_size = box_h * 7 / 8;
@@ -357,12 +358,9 @@ pub struct Layout {
     /// Unified block containing hint + textbox + attest button - launch screens only
     /// Subdivided via AttestBlockLayout
     pub attest_block: Option<PixelRegion>,
-    /// Unified block containing avatar + handle + textbox + separator - ready/searching states
-    /// Subdivided via ContactsHeaderLayout. Scales with ru as a unit.
-    pub contacts_header: Option<PixelRegion>,
-    /// Scrollable contact rows region - ready/searching states
-    /// Subdivided via ContactsRowsLayout. Does NOT scale with ru.
-    pub contacts_rows: Option<PixelRegion>,
+    /// Unified contacts block (Ready/Searching states) - contains user section + contact rows.
+    /// Subdivided via ContactsUnifiedLayout. All elements scale with span-based row_height.
+    pub contacts: Option<PixelRegion>,
     /// Header with back arrow and contact info - conversation state
     pub header: Option<PixelRegion>,
     /// Message display area - conversation state
@@ -576,6 +574,189 @@ impl ContactsRowsLayout {
     }
 }
 
+/// Unified layout for contacts screen (Ready/Searching states).
+/// Combines user section (avatar, handle, hint, textbox, separator) and contact rows
+/// into a single layout where everything scales with the same unit_height base.
+#[derive(Clone, Copy)]
+pub struct ContactsUnifiedLayout {
+    // User section (at top)
+    /// User avatar region (5 units, centered horizontally)
+    pub user_avatar: PixelRegion,
+    /// Handle text region (2 units)
+    pub handle: PixelRegion,
+    /// Hint text region (1.5 units)
+    pub hint: PixelRegion,
+    /// Search textbox region (1.5 units)
+    pub textbox: PixelRegion,
+    /// Separator line region (0.5 units, centered)
+    pub separator: PixelRegion,
+
+    // Contact rows section (below user section)
+    /// Scrollable contact rows region
+    pub rows: PixelRegion,
+
+    // Sizing
+    /// Base unit height from span - user section elements are multiples of this
+    pub unit_height: usize,
+    /// Contact row height (1.5x unit_height for better readability)
+    pub row_height: usize,
+    /// Avatar diameter for contact rows
+    pub avatar_diameter: usize,
+    /// Text left offset after avatar + spacing
+    pub text_left_offset: usize,
+    /// Text size for contact names
+    pub text_size: f32,
+    /// X offset for centering based on longest contact
+    pub center_offset: usize,
+
+    // User avatar sizing
+    /// User avatar diameter (much larger than contact avatars)
+    pub user_avatar_diameter: usize,
+}
+
+impl ContactsUnifiedLayout {
+    /// Create unified layout from a block region.
+    /// span and ru determine unit_height (base scaling unit), then all sizes derive from it.
+    /// Slices define how many units each element occupies (e.g., user_avatar = 5 units).
+    pub fn new(block: &PixelRegion, span: usize, ru: f32, center_offset: usize) -> Self {
+        // User section uses proportional slices
+        const V_SLICES: [Slice; 11] = [
+            Slice::new("gap0", 1.),
+            Slice::new("avatar", 5.),
+            Slice::new("gap1", 0.5),
+            Slice::new("handle", 2.),
+            Slice::new("gap2", 0.0),
+            Slice::new("hint", 1.5),
+            Slice::new("gap3", 0.0),
+            Slice::new("textbox", 1.5),
+            Slice::new("gap4", 0.25),
+            Slice::new("separator", 0.5),
+            Slice::new("gap5", 0.25),
+        ];
+        let total_units: f64 = V_SLICES.iter().map(|s| s.units).sum();
+
+        // Two constraints for unit_height:
+        // 1. span-based: span/32 * ru (halved to match other UI elements)
+        // 2. height-based: block.h / total_units (fits user section in window)
+        // Harmonic mean 2ab/(a+b) smoothly blends both constraints
+        let unit_from_span = (span / 32) as f32 * ru;
+        let unit_from_height = block.h as f32 / total_units as f32;
+        let unit_height = (2.0 * unit_from_span * unit_from_height
+            / (unit_from_span + unit_from_height)) as usize;
+
+        // Contact row sizing: 1.5x unit_height for better readability
+        let row_height = unit_height * 3 / 2;
+        let avatar_diameter = row_height / 2;
+        let avatar_spacing = avatar_diameter / 2;
+        let text_size = row_height as f32 / 2.;
+
+        // User section height = sum of slice units × unit_height
+        let user_section_h = (total_units * unit_height as f64) as usize;
+
+        // Slice within user section
+        let v = slice_positions(user_section_h, &V_SLICES);
+
+        // Avatar region full width; circle uses height for diameter
+        let avatar_h = v[2] - v[1];
+        let user_avatar_region = PixelRegion::new(block.x, block.y + v[1], block.w, avatar_h);
+        let user_avatar_diameter = avatar_h;
+
+        let handle_region = PixelRegion::new(block.x, block.y + v[3], block.w, v[4] - v[3]);
+        let hint_region = PixelRegion::new(block.x, block.y + v[5], block.w, v[6] - v[5]);
+        let textbox_region = PixelRegion::new(block.x, block.y + v[7], block.w, v[8] - v[7]);
+
+        let sep_w = block.w / 2;
+        let separator_region = PixelRegion::new(
+            block.x + (block.w - sep_w) / 2, // Centered
+            block.y + v[9],
+            sep_w,
+            v[10] - v[9],
+        );
+
+        // Remaining space is for contact rows
+        let rows_y = block.y + user_section_h;
+        let rows_h = if block.bottom() > rows_y {
+            block.bottom() - rows_y
+        } else {
+            0
+        };
+        let rows_region = PixelRegion::new(block.x, rows_y, block.w, rows_h);
+
+        Self {
+            user_avatar: user_avatar_region,
+            handle: handle_region,
+            hint: hint_region,
+            textbox: textbox_region,
+            separator: separator_region,
+            rows: rows_region,
+            unit_height,
+            row_height,
+            avatar_diameter,
+            text_left_offset: avatar_diameter + avatar_spacing,
+            text_size,
+            center_offset,
+            user_avatar_diameter,
+        }
+    }
+
+    /// Get user avatar center and radius.
+    pub fn user_avatar_center_radius(&self) -> (usize, usize, usize) {
+        // Circle uses height for diameter, centered in region
+        let radius = self.user_avatar.h / 2;
+        let cx = self.user_avatar.x + self.user_avatar.w / 2;
+        let cy = self.user_avatar.y + self.user_avatar.h / 2;
+        (cx, cy, radius)
+    }
+
+    /// Get the region for a specific contact row by index.
+    pub fn row_region(&self, index: usize) -> Option<PixelRegion> {
+        let row_y = self.rows.y + index * self.row_height;
+        if row_y + self.row_height > self.rows.bottom() {
+            None
+        } else {
+            Some(PixelRegion::new(
+                self.rows.x,
+                row_y,
+                self.rows.w,
+                self.row_height,
+            ))
+        }
+    }
+
+    /// Get avatar center position for a contact row.
+    pub fn row_avatar_center(&self, index: usize) -> Option<(usize, usize)> {
+        let row_y = self.rows.y + index * self.row_height;
+        if row_y + self.row_height > self.rows.bottom() {
+            None
+        } else {
+            let cx = self.rows.x + self.center_offset + self.avatar_diameter / 2;
+            let cy = row_y + self.row_height / 2;
+            Some((cx, cy))
+        }
+    }
+
+    /// Get text position for a contact row.
+    pub fn row_text_position(&self, index: usize) -> Option<(f32, f32)> {
+        let row_y = self.rows.y + index * self.row_height;
+        if row_y + self.row_height > self.rows.bottom() {
+            None
+        } else {
+            let x = (self.rows.x + self.center_offset + self.text_left_offset) as f32;
+            let y = (row_y + self.row_height / 2) as f32;
+            Some((x, y))
+        }
+    }
+
+    /// Get the number of visible contact rows.
+    pub fn visible_row_count(&self) -> usize {
+        if self.row_height == 0 {
+            0
+        } else {
+            self.rows.h / self.row_height
+        }
+    }
+}
+
 /// A named slice in a proportional layout grid.
 /// Each slice has a name (for documentation) and a unit size.
 struct Slice {
@@ -671,49 +852,21 @@ impl Layout {
                         content_w as isize,
                         scaled_block_h,
                     )),
-                    contacts_header: None,
-                    contacts_rows: None,
+                    contacts: None,
                     header: None,
                     message_area: None,
                 }
             }
             AppState::Ready | AppState::Searching => {
-                // Two blocks: contacts_header (scaled with ru) and contacts_rows (remaining)
-                // Header contains: avatar, handle, hint, textbox, separator
-                // Rows contains: scrollable contact list
-                const V_SLICES: [Slice; 3] = [
-                    Slice::new("gap0", 0.5),
-                    Slice::new("contacts_header", 4.8), // 60% of original 8.0
-                    Slice::new("contacts_rows", 11.),
-                ];
-                let v = slice_positions(height, &V_SLICES);
-
-                const CONTACTS_HEADER: usize = 1;
-                const CONTACTS_ROWS: usize = 2;
-
-                // contacts_header: height scales with ru, anchored at top
-                // With ru bounded to [0.125, 2.0], scaled_header_h is at most 2x base (~60% of height)
-                // so rows always have space (no clamp needed)
-                let header_y = v[CONTACTS_HEADER];
-                let base_header_h = v[CONTACTS_HEADER + 1] - v[CONTACTS_HEADER];
-                let scaled_header_h = (base_header_h as f32 * ru) as usize;
-
-                // contacts_rows starts where the scaled header ends
-                let rows_y = header_y + scaled_header_h;
-                let rows_h = height - rows_y;
-
+                // Single unified block from top of screen
+                // ContactsUnifiedLayout subdivides into user section + contact rows
+                // Everything scales with span-based row_height
                 Self {
                     logo_spectrum: None,
                     photon_text: None,
-                    textbox: None, // Ready/Searching uses contacts_header subdivision
+                    textbox: None,
                     attest_block: None,
-                    contacts_header: Some(PixelRegion::new(
-                        content_x,
-                        header_y,
-                        content_w,
-                        scaled_header_h,
-                    )),
-                    contacts_rows: Some(PixelRegion::new(content_x, rows_y, content_w, rows_h)),
+                    contacts: Some(PixelRegion::new(content_x, 0, content_w, height)),
                     header: None,
                     message_area: None,
                 }
@@ -741,8 +894,7 @@ impl Layout {
                         v[TEXTBOX + 1] - v[TEXTBOX],
                     )),
                     attest_block: None,
-                    contacts_header: None,
-                    contacts_rows: None,
+                    contacts: None,
                     header: Some(PixelRegion::new(
                         0,
                         v[HEADER],
@@ -2554,10 +2706,7 @@ impl PhotonApp {
                 }
 
                 // Assign pre-loaded contacts
-                crate::log(&format!(
-                    "UI: Assigning {} contacts",
-                    data.contacts.len()
-                ));
+                crate::log(&format!("UI: Assigning {} contacts", data.contacts.len()));
                 // Store peers for initial ping below
                 initial_peers = data.peers.clone();
 
@@ -2569,8 +2718,7 @@ impl PhotonApp {
                     }
 
                     // Start CLUTCH keygen if not complete AND no persisted keypairs
-                    let needs_keygen = contact.clutch_state
-                        != crate::types::ClutchState::Complete
+                    let needs_keygen = contact.clutch_state != crate::types::ClutchState::Complete
                         && contact.clutch_our_keypairs.is_none();
                     let contact_id = contact.id.clone();
                     let their_handle_hash = contact.handle_hash;

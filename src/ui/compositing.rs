@@ -97,14 +97,22 @@ impl PhotonApp {
             // Pre-compute scaled avatar before locking buffer (to avoid borrow conflict)
             // Use the same radius calculation as the layout to ensure avatar fits perfectly
             if matches!(self.app_state, AppState::Ready | AppState::Searching) {
-                if let Some(ref header_block) = self.layout.contacts_header {
-                    let header = super::app::ContactsHeaderLayout::new(header_block);
-                    let (_, _, avatar_radius) = header.avatar_center_radius();
+                if let Some(ref contacts_block) = self.layout.contacts {
+                    let unified = super::app::ContactsUnifiedLayout::new(
+                        contacts_block,
+                        self.span,
+                        self.effective_ru(),
+                        0,
+                    );
+                    let (_, _, avatar_radius) = unified.user_avatar_center_radius();
                     self.update_avatar_scaled(avatar_radius * 2);
                 }
             }
 
             let eff_ru = self.effective_ru();
+
+            // Pre-compute selection skip rect for hover effect (to avoid borrow conflict with buffer)
+            let selection_skip = self.selection_skip_rect();
 
             let mut buffer = self.renderer.lock_buffer();
             let pixels = buffer.as_mut();
@@ -308,14 +316,46 @@ impl PhotonApp {
                         }
                     }
                 } else if matches!(self.app_state, AppState::Ready | AppState::Searching) {
-                    // Ready/Searching screen uses two unified blocks:
-                    // - contacts_header: avatar + handle + hint + textbox + separator (scaled with ru)
-                    // - contacts_rows: scrollable contact rows
+                    // Ready/Searching screen uses unified layout:
+                    // - user section: avatar + handle + hint + textbox + separator
+                    // - contacts rows: scrollable contact list
+                    // All elements scale with span-based unit_height
 
-                    // === CONTACTS HEADER BLOCK ===
-                    if let Some(ref header_block) = self.layout.contacts_header {
-                        let header = super::app::ContactsHeaderLayout::new(header_block);
-                        let (avatar_cx, avatar_cy, avatar_radius) = header.avatar_center_radius();
+                    if let Some(ref contacts_block) = self.layout.contacts {
+                        // Compute center offset based on longest contact name
+                        let temp_unified = super::app::ContactsUnifiedLayout::new(
+                            contacts_block,
+                            self.span,
+                            ru,
+                            0,
+                        );
+                        let mut longest_name_width = 0.0f32;
+                        for contact in self.contacts.iter() {
+                            let w = self.text_renderer.measure_text_width(
+                                contact.handle.as_str(),
+                                temp_unified.text_size,
+                                theme::FONT_WEIGHT_USER_CONTENT,
+                                theme::FONT_USER_CONTENT,
+                            );
+                            if w > longest_name_width {
+                                longest_name_width = w;
+                            }
+                        }
+                        let content_width =
+                            temp_unified.text_left_offset as f32 + longest_name_width;
+                        let center_offset =
+                            ((contacts_block.w as f32 - content_width) / 2.0) as usize;
+
+                        let unified = super::app::ContactsUnifiedLayout::new(
+                            contacts_block,
+                            self.span,
+                            ru,
+                            center_offset,
+                        );
+
+                        // === USER SECTION ===
+                        let (avatar_cx, avatar_cy, avatar_radius) =
+                            unified.user_avatar_center_radius();
 
                         // Draw user avatar (no ring, with hit testing)
                         Self::draw_avatar(
@@ -332,14 +372,16 @@ impl PhotonApp {
 
                         // Draw handle text centered in handle region
                         if let Some(ref handle) = self.user_handle {
-                            let handle_cy = header.handle.y + header.handle.h / 2;
+                            let handle_cy = unified.handle.y + unified.handle.h / 2;
+                            // Font size from region height (not text_size which is for contact rows)
+                            let handle_font = unified.handle.h as f32 * 0.8;
                             self.text_renderer.draw_text_center_u32(
                                 pixels,
                                 self.width as usize,
                                 handle,
-                                header.handle.center().0 as f32,
+                                unified.handle.center().0 as f32,
                                 handle_cy as f32,
-                                font_size * 1.5,
+                                handle_font,
                                 700,
                                 theme::TEXT_COLOUR,
                                 theme::FONT_USER_CONTENT,
@@ -348,14 +390,16 @@ impl PhotonApp {
 
                         // Draw hint text if needed
                         if self.show_avatar_hint {
-                            let hint_cy = header.hint.y + header.hint.h / 2;
+                            let hint_cy = unified.hint.y + unified.hint.h / 2;
+                            // Font size from region height
+                            let hint_font = unified.hint.h as f32 * 0.5;
                             self.text_renderer.draw_text_center_u32(
                                 pixels,
                                 self.width as usize,
                                 "drag and drop an image to upload avatar",
-                                header.hint.center().0 as f32,
+                                unified.hint.center().0 as f32,
                                 hint_cy as f32,
-                                font_size * 0.5,
+                                hint_font,
                                 300,
                                 theme::LABEL_COLOUR,
                                 theme::FONT_UI,
@@ -459,7 +503,7 @@ impl PhotonApp {
 
                         // Show search result in hint region (replaces avatar hint during search)
                         if let Some(ref result) = self.search_result {
-                            let result_cy = header.hint.y + header.hint.h / 2;
+                            let result_cy = unified.hint.y + unified.hint.h / 2;
                             let (text, colour) = match result {
                                 SearchResult::Found(peer) => {
                                     (format!("added {}", peer.handle), theme::SEARCH_RESULT_ADDED)
@@ -475,9 +519,9 @@ impl PhotonApp {
                                 pixels,
                                 self.width as usize,
                                 &text,
-                                header.hint.center().0 as f32,
+                                unified.hint.center().0 as f32,
                                 result_cy as f32,
-                                font_size,
+                                unified.hint.h as f32 * 0.5,
                                 500,
                                 colour,
                                 theme::FONT_USER_CONTENT,
@@ -485,7 +529,7 @@ impl PhotonApp {
                         }
 
                         // Draw separator hairline
-                        let sep = &header.separator;
+                        let sep = &unified.separator;
                         let sep_y = sep.y + sep.h / 2;
                         for x in sep.x..sep.right() {
                             if sep_y < self.height as usize {
@@ -494,48 +538,16 @@ impl PhotonApp {
                                     pixels[idx].wrapping_add(theme::CONTACT_BRIGHTEN_DELTA);
                             }
                         }
-                    }
 
-                    // === CONTACTS ROWS BLOCK ===
-                    if let Some(ref rows_block) = self.layout.contacts_rows {
-                        // Compute center offset based on longest contact name
-                        // First create a temp layout to get text_size
-                        let temp_rows =
-                            super::app::ContactsRowsLayout::new(rows_block, self.span, ru, 0);
-                        let mut longest_name_width = 0.0f32;
-                        for contact in self.contacts.iter() {
-                            let w = self.text_renderer.measure_text_width(
-                                contact.handle.as_str(),
-                                temp_rows.text_size,
-                                theme::FONT_WEIGHT_USER_CONTENT,
-                                theme::FONT_USER_CONTENT,
-                            );
-                            if w > longest_name_width {
-                                longest_name_width = w;
-                            }
-                        }
-                        // Total content width: avatar + text_left_offset + longest name
-                        let content_width = temp_rows.text_left_offset as f32 + longest_name_width;
-                        // Center offset: (block width - content width) / 2
-                        let center_offset = ((rows_block.w as f32 - content_width) / 2.0) as usize;
-
-                        let rows = super::app::ContactsRowsLayout::new(
-                            rows_block,
-                            self.span,
-                            ru,
-                            center_offset,
-                        );
-
-                        // Draw contact rows
-                        // IMPORTANT: derive diameter from radius to match draw_avatar's expectation
-                        // draw_avatar computes diameter = radius * 2, so we must scale to that
-                        let avatar_radius = rows.avatar_diameter / 2;
-                        let avatar_diameter = avatar_radius * 2;
+                        // === CONTACT ROWS (part of unified layout) ===
+                        // Draw contact rows using same unit_height as user section
+                        let contact_avatar_radius = unified.avatar_diameter / 2;
+                        let contact_avatar_diameter = contact_avatar_radius * 2;
                         for (i, contact) in self.contacts.iter_mut().enumerate() {
-                            let Some((avatar_cx, avatar_cy)) = rows.row_avatar_center(i) else {
+                            let Some((avatar_cx, avatar_cy)) = unified.row_avatar_center(i) else {
                                 break; // Row outside visible area
                             };
-                            let Some((text_x, text_y)) = rows.row_text_position(i) else {
+                            let Some((text_x, text_y)) = unified.row_text_position(i) else {
                                 break;
                             };
 
@@ -548,14 +560,14 @@ impl PhotonApp {
                             // Scale contact avatar if needed
                             if contact.avatar_pixels.is_some()
                                 && (contact.avatar_scaled.is_none()
-                                    || contact.avatar_scaled_diameter != avatar_diameter)
+                                    || contact.avatar_scaled_diameter != contact_avatar_diameter)
                             {
                                 if let Some(scaled) = crate::avatar::scale_avatar(
                                     contact.avatar_pixels.as_ref().unwrap(),
-                                    avatar_diameter,
+                                    contact_avatar_diameter,
                                 ) {
                                     contact.avatar_scaled = Some(scaled);
-                                    contact.avatar_scaled_diameter = avatar_diameter;
+                                    contact.avatar_scaled_diameter = contact_avatar_diameter;
                                 }
                             }
 
@@ -571,7 +583,7 @@ impl PhotonApp {
                                 self.width as usize,
                                 avatar_cx,
                                 avatar_cy,
-                                avatar_radius,
+                                contact_avatar_radius,
                                 contact.avatar_scaled.as_deref(),
                                 Some(ring),
                                 false, // no brighten
@@ -592,14 +604,14 @@ impl PhotonApp {
                                 contact.handle.as_str(),
                                 text_x,
                                 text_y,
-                                rows.text_size,
+                                unified.text_size,
                                 theme::FONT_WEIGHT_USER_CONTENT,
                                 text_color,
                                 theme::FONT_USER_CONTENT,
                             );
 
                             // Add hit region for this contact row
-                            if let Some(row) = rows.row_region(i) {
+                            if let Some(row) = unified.row_region(i) {
                                 let hit_id = HIT_CONTACT_BASE.wrapping_add(i as u8);
                                 for hy in row.y..row.bottom().min(self.height as usize) {
                                     for hx in row.x..row.right().min(self.width as usize) {
@@ -609,7 +621,7 @@ impl PhotonApp {
                             }
                         }
                         // Cache text size for differential updates
-                        self.contact_text_size = rows.text_size;
+                        self.contact_text_size = unified.text_size;
                         self.prev_hovered_contact = self.hovered_contact;
                     }
                 } else if matches!(self.app_state, AppState::Conversation) {
@@ -1317,7 +1329,8 @@ impl PhotonApp {
                 // Handle hover state changes
                 if self.prev_hovered_button != self.hovered_button {
                     // Calculate button centers for centerpoint fill
-                    let button_height = (self.span as f32 / 16.0 * eff_ru).ceil() as usize;
+                    // Must match draw_window_controls: span/32 * ru
+                    let button_height = (self.span as f32 / 32.0 * eff_ru).ceil() as usize;
                     let button_width = button_height;
                     let total_width = button_width * 7 / 2;
                     let x_start = self.width as usize - total_width;
@@ -1348,6 +1361,7 @@ impl PhotonApp {
                                 false,
                                 theme::CLOSE_HOVER,
                                 self.debug,
+                                None,
                             );
                         }
                         HoveredButton::Maximize => {
@@ -1362,6 +1376,7 @@ impl PhotonApp {
                                 false,
                                 theme::MAXIMIZE_HOVER,
                                 self.debug,
+                                None,
                             );
                         }
                         HoveredButton::Minimize => {
@@ -1376,6 +1391,7 @@ impl PhotonApp {
                                 false,
                                 theme::MINIMIZE_HOVER,
                                 self.debug,
+                                None,
                             );
                         }
                         HoveredButton::Textbox => {
@@ -1390,6 +1406,7 @@ impl PhotonApp {
                                 false,
                                 theme::TEXTBOX_HOVER,
                                 self.debug,
+                                selection_skip,
                             );
                         }
                         HoveredButton::QueryButton => {
@@ -1410,6 +1427,7 @@ impl PhotonApp {
                                 false,
                                 theme::QUERY_BUTTON_HOVER,
                                 self.debug,
+                                None,
                             );
                         }
                         HoveredButton::BackHeader => {
@@ -1439,6 +1457,7 @@ impl PhotonApp {
                                 true,
                                 theme::CLOSE_HOVER,
                                 self.debug,
+                                None,
                             );
                         }
                         HoveredButton::Maximize => {
@@ -1453,6 +1472,7 @@ impl PhotonApp {
                                 true,
                                 theme::MAXIMIZE_HOVER,
                                 self.debug,
+                                None,
                             );
                         }
                         HoveredButton::Minimize => {
@@ -1467,6 +1487,7 @@ impl PhotonApp {
                                 true,
                                 theme::MINIMIZE_HOVER,
                                 self.debug,
+                                None,
                             );
                         }
                         HoveredButton::Textbox => {
@@ -1481,6 +1502,7 @@ impl PhotonApp {
                                 true,
                                 theme::TEXTBOX_HOVER,
                                 self.debug,
+                                selection_skip,
                             );
                         }
                         HoveredButton::QueryButton => {
@@ -1501,6 +1523,7 @@ impl PhotonApp {
                                 true,
                                 theme::QUERY_BUTTON_HOVER,
                                 self.debug,
+                                None,
                             );
                         }
                         HoveredButton::BackHeader => {
@@ -1572,7 +1595,8 @@ impl PhotonApp {
             // This runs OUTSIDE controls_dirty so it works during animation
             if self.window_dirty && self.hovered_button != HoveredButton::None {
                 // Calculate button centers for centerpoint fill
-                let button_height = (self.span as f32 / 16.0 * eff_ru).ceil() as usize;
+                // Must match draw_window_controls: span/32 * ru
+                let button_height = (self.span as f32 / 32.0 * eff_ru).ceil() as usize;
                 let button_width = button_height;
                 let total_width = button_width * 7 / 2;
                 let x_start = self.width as usize - total_width;
@@ -1603,6 +1627,7 @@ impl PhotonApp {
                             true,
                             theme::CLOSE_HOVER,
                             self.debug,
+                            None,
                         );
                     }
                     HoveredButton::Maximize => {
@@ -1617,6 +1642,7 @@ impl PhotonApp {
                             true,
                             theme::MAXIMIZE_HOVER,
                             self.debug,
+                            None,
                         );
                     }
                     HoveredButton::Minimize => {
@@ -1631,6 +1657,7 @@ impl PhotonApp {
                             true,
                             theme::MINIMIZE_HOVER,
                             self.debug,
+                            None,
                         );
                     }
                     HoveredButton::Textbox => {
@@ -1645,6 +1672,7 @@ impl PhotonApp {
                             true,
                             theme::TEXTBOX_HOVER,
                             self.debug,
+                            selection_skip,
                         );
                     }
                     HoveredButton::QueryButton => {
@@ -1665,6 +1693,7 @@ impl PhotonApp {
                             true,
                             theme::QUERY_BUTTON_HOVER,
                             self.debug,
+                            None,
                         );
                     }
                     HoveredButton::BackHeader => {
@@ -1686,13 +1715,12 @@ impl PhotonApp {
                 let w = self.width as usize;
                 let h = self.height as usize;
 
-                let regions: [Option<&super::app::PixelRegion>; 8] = [
+                let regions: [Option<&super::app::PixelRegion>; 7] = [
                     self.layout.textbox.as_ref(),
                     self.layout.logo_spectrum.as_ref(),
                     self.layout.photon_text.as_ref(),
                     self.layout.attest_block.as_ref(),
-                    self.layout.contacts_header.as_ref(),
-                    self.layout.contacts_rows.as_ref(),
+                    self.layout.contacts.as_ref(),
                     self.layout.header.as_ref(),
                     self.layout.message_area.as_ref(),
                 ];
@@ -1768,24 +1796,19 @@ impl PhotonApp {
                     }
                 }
 
-                // Contacts header subdivisions
-                if let Some(ref block) = self.layout.contacts_header {
-                    let sub = super::app::ContactsHeaderLayout::new(block);
+                // Contacts unified layout subdivisions
+                if let Some(ref block) = self.layout.contacts {
+                    let sub = super::app::ContactsUnifiedLayout::new(block, self.span, ru, 0);
                     for region in [
-                        &sub.avatar,
+                        &sub.user_avatar,
                         &sub.handle,
                         &sub.hint,
                         &sub.textbox,
                         &sub.separator,
+                        &sub.rows,
                     ] {
                         draw_region_border(pixels, region, yellow);
                     }
-                }
-
-                // Contacts rows subdivisions
-                if let Some(ref block) = self.layout.contacts_rows {
-                    let sub = super::app::ContactsRowsLayout::new(block, self.span, ru, 0);
-                    draw_region_border(pixels, &sub.rows, yellow);
                 }
 
                 // Draw black strip at bottom for debug counters
@@ -2062,6 +2085,14 @@ impl PhotonApp {
 
             // Always present buffer once per frame
             buffer.present().unwrap();
+        } else {
+            // macOS with transparent windows + softbuffer doesn't retain buffer contents
+            // between frames. Must re-present even when nothing changed or window goes black.
+            #[cfg(target_os = "macos")]
+            {
+                let mut buffer = self.renderer.lock_buffer();
+                buffer.present().unwrap();
+            }
         }
         self.window_dirty = false;
         self.text_dirty = false;
@@ -3264,6 +3295,39 @@ impl PhotonApp {
         }
     }
 
+    /// Calculate selection rectangle bounds for hover skip logic
+    /// Returns (x_start, x_end, y_top, y_bottom) or None if no selection
+    fn selection_skip_rect(&self) -> Option<(usize, usize, usize, usize)> {
+        let anchor = self.current_text_state.selection_anchor?;
+        let (sel_start, sel_end) = if anchor < self.current_text_state.blinkey_index {
+            (anchor, self.current_text_state.blinkey_index)
+        } else if anchor > self.current_text_state.blinkey_index {
+            (self.current_text_state.blinkey_index, anchor)
+        } else {
+            return None; // No selection (anchor == cursor)
+        };
+
+        if sel_start >= sel_end || sel_start >= self.current_text_state.widths.len() {
+            return None;
+        }
+
+        let text = &self.current_text_state;
+        let layout = &self.text_layout;
+
+        let sel_start_px: usize = text.widths[..sel_start].iter().sum();
+        let sel_end_px: usize = text.widths[..sel_end.min(text.widths.len())].iter().sum();
+
+        let text_half = (text.width / 2) as f32;
+        let text_start_x = layout.usable_center as f32 - text_half + text.scroll_offset;
+        let sel_x_start = (text_start_x + sel_start_px as f32).max(0.0) as usize;
+        let sel_x_end = (text_start_x + sel_end_px as f32).max(0.0) as usize;
+
+        let sel_y_top = (layout.center_y as f32 - layout.font_size / 2.0).max(0.0) as usize;
+        let sel_y_bottom = (layout.center_y as f32 + layout.font_size / 2.0).max(0.0) as usize;
+
+        Some((sel_x_start, sel_x_end, sel_y_top, sel_y_bottom))
+    }
+
     /// Apply hover effect using centerpoint fill algorithm
     /// Starts from element center, scans vertically then horizontally based on hit test map
     pub fn draw_hover_centerpoint(
@@ -3277,6 +3341,7 @@ impl PhotonApp {
         hover: bool,
         hover_delta: u32,
         debug: bool,
+        skip_rect: Option<(usize, usize, usize, usize)>, // (x_start, x_end, y_top, y_bottom)
     ) {
         // Debug: draw magenta pixel at centerpoint
         // Use alpha=254 so we can distinguish it from actual magenta UI elements
@@ -3337,6 +3402,13 @@ impl PhotonApp {
 
             // Apply hover effect to this row
             for x in left_x..=right_x {
+                // Skip pixels inside selection rect (avoid double-XOR with selection invert)
+                if let Some((sel_x_start, sel_x_end, sel_y_top, sel_y_bottom)) = skip_rect {
+                    if x >= sel_x_start && x < sel_x_end && y >= sel_y_top && y < sel_y_bottom {
+                        continue;
+                    }
+                }
+
                 let idx = row_start + x;
                 if hit_test_map[idx] == hit_id {
                     if debug {
@@ -4868,9 +4940,8 @@ impl PhotonApp {
         brighten: bool,
     ) {
         let r = radius as isize;
-        let r2 = r * r;
         let diameter = radius * 2;
-        let stroke_width = radius / 16 + 1;
+        let stroke_width = radius / 16;
 
         // Ring radii: 1px inside + 1px outside = 2px total
         let r_inner = r - 1;
