@@ -1,5 +1,5 @@
-use crate::debug_println;
 use crate::ui::{app::*, colour::*, text_rasterizing::*, theme};
+use crate::{debug_println, DEBUG_ENABLED};
 
 impl PhotonApp {
     pub fn render(&mut self) {
@@ -12,7 +12,8 @@ impl PhotonApp {
         let box_width = self.textbox_width();
         let box_height = self.textbox_height();
         let center_x = self.width as usize / 2;
-        let textbox_y = self.textbox_y();
+        let textbox_y = self.textbox_center_y();
+        let ru = self.effective_ru();
 
         // Update spectrum phase and speckle animation while attesting or searching
         if matches!(
@@ -94,9 +95,13 @@ impl PhotonApp {
             self.update_counter += 1;
 
             // Pre-compute scaled avatar before locking buffer (to avoid borrow conflict)
+            // Use the same radius calculation as the layout to ensure avatar fits perfectly
             if matches!(self.app_state, AppState::Ready | AppState::Searching) {
-                let avatar_radius = self.span / 8;
-                self.update_avatar_scaled(avatar_radius * 2);
+                if let Some(ref header_block) = self.layout.contacts_header {
+                    let header = super::app::ContactsHeaderLayout::new(header_block);
+                    let (_, _, avatar_radius) = header.avatar_center_radius();
+                    self.update_avatar_scaled(avatar_radius * 2);
+                }
             }
 
             let eff_ru = self.effective_ru();
@@ -245,24 +250,21 @@ impl PhotonApp {
 
                     // Attest block: unified region containing textbox (top), hint (middle), attest (bottom)
                     // Uses AttestBlockLayout for proportional slicing - fiddle with slices in app.rs
-                    // All sizes come from slice rectangle heights
                     if let Some(ref block) = self.layout.attest_block {
                         let sub = super::app::AttestBlockLayout::new(block);
 
-                        let tb_center_x = sub.textbox.x + sub.textbox.w / 2;
-                        let tb_center_y = sub.textbox.y + sub.textbox.h / 2;
-
-                        // Draw textbox - size from slice
+                        // Draw textbox - USE TEXT_LAYOUT (single source of truth)
+                        let tl = &self.text_layout;
                         Self::draw_textbox(
                             pixels,
                             &mut self.hit_test_map,
                             HIT_HANDLE_TEXTBOX,
                             &mut self.textbox_mask,
                             self.width as usize,
-                            tb_center_x,
-                            tb_center_y,
-                            sub.textbox.w,
-                            sub.textbox.h,
+                            tl.center_x,
+                            tl.center_y,
+                            tl.box_width,
+                            tl.box_height,
                         );
 
                         // Draw "handle" label - font size from hint slice height
@@ -297,287 +299,283 @@ impl PhotonApp {
                                 pixels,
                                 &self.textbox_mask,
                                 self.width as usize,
-                                tb_center_y,
-                                sub.textbox.w,
-                                sub.textbox.h,
+                                tl.center_y,
+                                tl.box_width,
+                                tl.box_height,
                                 true,
                                 self.glow_colour,
                             );
                         }
                     }
                 } else if matches!(self.app_state, AppState::Ready | AppState::Searching) {
-                    // Ready/Searching screen: Draw avatar at top center
-                    let avatar_radius = self.span / 8;
-                    let avatar_y = avatar_radius + self.span / 16; // Slight padding from top
+                    // Ready/Searching screen uses two unified blocks:
+                    // - contacts_header: avatar + handle + hint + textbox + separator (scaled with ru)
+                    // - contacts_rows: scrollable contact rows
 
-                    Self::draw_avatar(
-                        pixels,
-                        &mut self.hit_test_map,
-                        self.width as usize,
-                        center_x,
-                        avatar_y,
-                        avatar_radius,
-                        self.avatar_scaled.as_deref(),
-                        self.file_hovering_avatar,
-                    );
+                    // === CONTACTS HEADER BLOCK ===
+                    if let Some(ref header_block) = self.layout.contacts_header {
+                        let header = super::app::ContactsHeaderLayout::new(header_block);
+                        let (avatar_cx, avatar_cy, avatar_radius) = header.avatar_center_radius();
 
-                    // Draw handle text below avatar
-                    if let Some(ref handle) = self.user_handle {
-                        let handle_y = avatar_y + avatar_radius + self.span / 16;
-                        self.text_renderer.draw_text_center_u32(
+                        // Draw user avatar (no ring, with hit testing)
+                        Self::draw_avatar(
                             pixels,
+                            Some(&mut self.hit_test_map),
                             self.width as usize,
-                            handle,
-                            center_x as f32,
-                            handle_y as f32,
-                            font_size as f32 * 1.5,
-                            700,
-                            theme::TEXT_COLOUR,
-                            theme::FONT_USER_CONTENT,
+                            avatar_cx,
+                            avatar_cy,
+                            avatar_radius,
+                            self.avatar_scaled.as_deref(),
+                            None, // no ring
+                            self.file_hovering_avatar,
                         );
-                    }
 
-                    // Draw hint text if needed
-                    if self.show_avatar_hint {
-                        let hint_y = avatar_y + avatar_radius + self.span / 20;
-                        let hint_y = if self.user_handle.is_some() {
-                            hint_y + (font_size as f32 * 0.6) as usize
-                        } else {
-                            hint_y
-                        };
-                        self.text_renderer.draw_text_center_u32(
-                            pixels,
-                            self.width as usize,
-                            "drag and drop an image to upload avatar",
-                            center_x as f32,
-                            hint_y as f32,
-                            font_size as f32 * 0.5, // Small hint text
-                            300,
-                            theme::LABEL_COLOUR,
-                            theme::FONT_UI,
-                        );
-                    }
+                        // Draw handle text centered in handle region
+                        if let Some(ref handle) = self.user_handle {
+                            let handle_cy = header.handle.y + header.handle.h / 2;
+                            self.text_renderer.draw_text_center_u32(
+                                pixels,
+                                self.width as usize,
+                                handle,
+                                header.handle.center().0 as f32,
+                                handle_cy as f32,
+                                font_size * 1.5,
+                                700,
+                                theme::TEXT_COLOUR,
+                                theme::FONT_USER_CONTENT,
+                            );
+                        }
 
-                    // Query friends textbox - width from layout, height scales with ru
-                    if let Some(ref tb) = self.layout.textbox {
-                        let tb_height = (self.span as f32 / 8.0 * eff_ru) as usize;
+                        // Draw hint text if needed
+                        if self.show_avatar_hint {
+                            let hint_cy = header.hint.y + header.hint.h / 2;
+                            self.text_renderer.draw_text_center_u32(
+                                pixels,
+                                self.width as usize,
+                                "drag and drop an image to upload avatar",
+                                header.hint.center().0 as f32,
+                                hint_cy as f32,
+                                font_size * 0.5,
+                                300,
+                                theme::LABEL_COLOUR,
+                                theme::FONT_UI,
+                            );
+                        }
+
+                        // Draw search textbox - USE TEXT_LAYOUT (single source of truth)
+                        let tl = &self.text_layout;
                         Self::draw_textbox(
                             pixels,
                             &mut self.hit_test_map,
                             HIT_HANDLE_TEXTBOX,
                             &mut self.textbox_mask,
                             self.width as usize,
-                            tb.x + tb.w / 2,
-                            tb.y + tb.h / 2,
-                            tb.w,
-                            tb_height,
+                            tl.center_x,
+                            tl.center_y,
+                            tl.box_width,
+                            tl.box_height,
                         );
-                    }
 
-                    // Glow colour: yellow during search, green/red based on result, white default
-                    self.glow_colour = if matches!(self.app_state, AppState::Searching) {
-                        theme::GLOW_ATTESTING // Yellow during search
-                    } else {
-                        match &self.search_result {
-                            Some(SearchResult::Found(_)) => theme::GLOW_SUCCESS, // Green for found
-                            Some(SearchResult::NotFound) => theme::GLOW_ERROR, // Red for not found
-                            Some(SearchResult::Error(_)) => theme::GLOW_ERROR, // Red for error
-                            None => theme::GLOW_DEFAULT,                       // White default
-                        }
-                    };
-
-                    // Apply glow BEFORE button (glow needs full textbox mask bounds)
-                    if self.current_text_state.textbox_focused
-                        || matches!(self.app_state, AppState::Searching)
-                    {
-                        Self::apply_textbox_glow(
-                            pixels,
-                            &self.textbox_mask,
-                            self.width as usize,
-                            textbox_y,
-                            box_width,
-                            box_height,
-                            true,
-                            self.glow_colour,
-                        );
-                    }
-
-                    // Draw search button AFTER glow (button knocks out mask for text clipping)
-                    if !self.current_text_state.chars.is_empty() {
-                        let button_size = box_height * 7 / 8;
-                        let inset = box_height / 16;
-                        let button_center_x = center_x + box_width / 2 - inset - button_size / 2;
-                        let textbox_bottom = textbox_y + box_height / 2;
-                        let button_center_y = textbox_bottom - inset - button_size / 2;
-
-                        // Button colour based on search state
-                        let button_colour = if matches!(self.app_state, AppState::Searching) {
-                            theme::BUTTON_YELLOW
+                        // Glow colour: yellow during search, green/red based on result
+                        self.glow_colour = if matches!(self.app_state, AppState::Searching) {
+                            theme::GLOW_ATTESTING
                         } else {
-                            theme::BUTTON_BLUE
+                            match &self.search_result {
+                                Some(SearchResult::Found(_)) => theme::GLOW_SUCCESS,
+                                Some(SearchResult::NotFound) => theme::GLOW_ERROR,
+                                Some(SearchResult::Error(_)) => theme::GLOW_ERROR,
+                                None => theme::GLOW_DEFAULT,
+                            }
                         };
 
-                        Self::draw_button(
-                            pixels,
-                            &mut self.hit_test_map,
-                            Some(&mut self.textbox_mask), // Knock out mask for text clipping
-                            self.width as usize,
-                            self.height as usize,
-                            button_center_x,
-                            button_center_y,
-                            button_size,
-                            button_size,
-                            HIT_PRIMARY_BUTTON,
-                            button_colour,
-                            theme::BUTTON_LIGHT_EDGE,
-                            theme::BUTTON_SHADOW_EDGE,
-                        );
-
-                        // Draw magnifying glass or hourglass during search
-                        let (r, g, b, _a) = unpack_argb(theme::BUTTON_TEXT);
-                        if matches!(self.app_state, AppState::Searching) {
-                            Self::draw_hourglass_symbol(
+                        // Apply glow BEFORE button
+                        if self.current_text_state.textbox_focused
+                            || matches!(self.app_state, AppState::Searching)
+                        {
+                            Self::apply_textbox_glow(
                                 pixels,
+                                &self.textbox_mask,
                                 self.width as usize,
-                                button_center_x,
-                                button_center_y,
-                                button_size * 3 / 4,
-                                self.hourglass_angle,
-                                (r, g, b),
-                            );
-                        } else {
-                            Self::draw_magnify_symbol(
-                                pixels,
-                                self.width as usize,
-                                button_center_x,
-                                button_center_y,
-                                button_size * 3 / 4,
-                                (r, g, b),
+                                tl.center_y,
+                                tl.box_width,
+                                tl.box_height,
+                                true,
+                                self.glow_colour,
                             );
                         }
-                    }
 
-                    // Show search result half line above textbox
-                    if let Some(ref result) = self.search_result {
-                        let result_y = textbox_y - box_height;
-                        let (text, colour) = match result {
-                            SearchResult::Found(peer) => {
-                                (format!("added {}", peer.handle), theme::SEARCH_RESULT_ADDED)
-                            }
-                            SearchResult::NotFound => {
-                                ("not found".to_string(), theme::SEARCH_RESULT_NOT_FOUND)
-                            }
-                            SearchResult::Error(e) => {
-                                (format!("error: {}", e), theme::SEARCH_RESULT_NOT_FOUND)
-                            }
-                        };
-                        self.text_renderer.draw_text_center_u32(
-                            pixels,
-                            self.width as usize,
-                            &text,
-                            center_x as f32,
-                            result_y as f32,
-                            font_size,
-                            500,
-                            colour,
-                            theme::FONT_USER_CONTENT,
-                        );
-                    }
+                        // Draw search button AFTER glow
+                        if !self.current_text_state.chars.is_empty() {
+                            let button_size = tl.box_height * 7 / 8;
+                            let inset = tl.box_height / 16;
+                            let button_center_x =
+                                tl.center_x + tl.box_width / 2 - inset - button_size / 2;
+                            let button_center_y = tl.center_y;
 
-                    // Draw contacts list below textbox if we have any
-                    if !self.contacts.is_empty() {
-                        // Separator line below the textbox
-                        let separator_y = textbox_y + box_height;
-                        let separator_width = box_width / 2;
-                        let separator_x = center_x - separator_width / 2;
+                            let button_colour = if matches!(self.app_state, AppState::Searching) {
+                                theme::BUTTON_YELLOW
+                            } else {
+                                theme::BUTTON_BLUE
+                            };
 
-                        // Add separator hairline (additive for reversibility)
-                        for x in separator_x..(separator_x + separator_width) {
-                            let idx = separator_y * self.width as usize + x;
-                            pixels[idx] = pixels[idx].wrapping_add(theme::CONTACT_BRIGHTEN_DELTA);
+                            Self::draw_button(
+                                pixels,
+                                &mut self.hit_test_map,
+                                Some(&mut self.textbox_mask),
+                                self.width as usize,
+                                self.height as usize,
+                                button_center_x,
+                                button_center_y,
+                                button_size,
+                                button_size,
+                                HIT_PRIMARY_BUTTON,
+                                button_colour,
+                                theme::BUTTON_LIGHT_EDGE,
+                                theme::BUTTON_SHADOW_EDGE,
+                            );
+
+                            let (r, g, b, _a) = unpack_argb(theme::BUTTON_TEXT);
+                            if matches!(self.app_state, AppState::Searching) {
+                                Self::draw_hourglass_symbol(
+                                    pixels,
+                                    self.width as usize,
+                                    button_center_x,
+                                    button_center_y,
+                                    button_size * 3 / 4,
+                                    self.hourglass_angle,
+                                    (r, g, b),
+                                );
+                            } else {
+                                Self::draw_magnify_symbol(
+                                    pixels,
+                                    self.width as usize,
+                                    button_center_x,
+                                    button_center_y,
+                                    button_size * 3 / 4,
+                                    (r, g, b),
+                                );
+                            }
                         }
 
-                        // Find widest handle to calculate list width
-                        let mut max_handle_width = 0.0f32;
-                        for contact in &self.contacts {
-                            let width = self.text_renderer.measure_text_width(
-                                contact.handle.as_str(),
+                        // Show search result in hint region (replaces avatar hint during search)
+                        if let Some(ref result) = self.search_result {
+                            let result_cy = header.hint.y + header.hint.h / 2;
+                            let (text, colour) = match result {
+                                SearchResult::Found(peer) => {
+                                    (format!("added {}", peer.handle), theme::SEARCH_RESULT_ADDED)
+                                }
+                                SearchResult::NotFound => {
+                                    ("not found".to_string(), theme::SEARCH_RESULT_NOT_FOUND)
+                                }
+                                SearchResult::Error(e) => {
+                                    (format!("error: {}", e), theme::SEARCH_RESULT_NOT_FOUND)
+                                }
+                            };
+                            self.text_renderer.draw_text_center_u32(
+                                pixels,
+                                self.width as usize,
+                                &text,
+                                header.hint.center().0 as f32,
+                                result_cy as f32,
                                 font_size,
+                                500,
+                                colour,
+                                theme::FONT_USER_CONTENT,
+                            );
+                        }
+
+                        // Draw separator hairline
+                        let sep = &header.separator;
+                        let sep_y = sep.y + sep.h / 2;
+                        for x in sep.x..sep.right() {
+                            if sep_y < self.height as usize {
+                                let idx = sep_y * self.width as usize + x;
+                                pixels[idx] =
+                                    pixels[idx].wrapping_add(theme::CONTACT_BRIGHTEN_DELTA);
+                            }
+                        }
+                    }
+
+                    // === CONTACTS ROWS BLOCK ===
+                    if let Some(ref rows_block) = self.layout.contacts_rows {
+                        // Compute center offset based on longest contact name
+                        // First create a temp layout to get text_size
+                        let temp_rows =
+                            super::app::ContactsRowsLayout::new(rows_block, self.span, ru, 0);
+                        let mut longest_name_width = 0.0f32;
+                        for contact in self.contacts.iter() {
+                            let w = self.text_renderer.measure_text_width(
+                                contact.handle.as_str(),
+                                temp_rows.text_size,
                                 theme::FONT_WEIGHT_USER_CONTENT,
                                 theme::FONT_USER_CONTENT,
                             );
-                            if width > max_handle_width {
-                                max_handle_width = width;
+                            if w > longest_name_width {
+                                longest_name_width = w;
                             }
                         }
+                        // Total content width: avatar + text_left_offset + longest name
+                        let content_width = temp_rows.text_left_offset as f32 + longest_name_width;
+                        // Center offset: (block width - content width) / 2
+                        let center_offset = ((rows_block.w as f32 - content_width) / 2.0) as usize;
 
-                        // Indicator sizing (same as top-left connectivity indicator)
-                        let indicator_radius = (self.span / 64).max(1);
-                        let indicator_spacing = indicator_radius * 3; // Space between dot and text
+                        let rows = super::app::ContactsRowsLayout::new(
+                            rows_block,
+                            self.span,
+                            ru,
+                            center_offset,
+                        );
 
-                        // Total list width: dot + spacing + widest handle
-                        let list_width =
-                            (indicator_radius * 2 + indicator_spacing) as f32 + max_handle_width;
-                        let list_left = center_x as f32 - list_width / 2.0;
-
-                        // Draw contacts below separator
-                        let contact_start_y = separator_y + box_height / 2;
-                        let line_height = (font_size * 1.4) as usize;
-
-                        let avatar_diameter = indicator_radius * 2;
-
+                        // Draw contact rows
+                        let avatar_radius = rows.avatar_diameter / 2;
                         for (i, contact) in self.contacts.iter_mut().enumerate() {
-                            let contact_y = contact_start_y + i * line_height;
-                            if contact_y > self.height as usize - line_height {
-                                break; // Don't draw off screen
-                            }
+                            let Some((avatar_cx, avatar_cy)) = rows.row_avatar_center(i) else {
+                                break; // Row outside visible area
+                            };
+                            let Some((text_x, text_y)) = rows.row_text_position(i) else {
+                                break;
+                            };
 
-                            // Avatar center position
-                            let avatar_cx = list_left as usize + indicator_radius / 2;
-                            let avatar_cy = contact_y;
-
-                            // Cache indicator position for differential updates
+                            // Cache positions for differential updates
                             contact.indicator_x = avatar_cx;
                             contact.indicator_y = avatar_cy;
+                            contact.text_x = text_x;
+                            contact.text_y = text_y;
 
                             // Scale contact avatar if needed
                             if contact.avatar_pixels.is_some()
                                 && (contact.avatar_scaled.is_none()
-                                    || contact.avatar_scaled_diameter != avatar_diameter)
+                                    || contact.avatar_scaled_diameter != rows.avatar_diameter)
                             {
                                 if let Some(scaled) = crate::avatar::scale_avatar(
                                     contact.avatar_pixels.as_ref().unwrap(),
-                                    avatar_diameter,
+                                    rows.avatar_diameter,
                                 ) {
                                     contact.avatar_scaled = Some(scaled);
-                                    contact.avatar_scaled_diameter = avatar_diameter;
+                                    contact.avatar_scaled_diameter = rows.avatar_diameter;
                                 }
                             }
 
                             // Draw contact avatar with online/offline ring
-                            Self::draw_contact_avatar(
+                            let ring = if contact.is_online {
+                                theme::CONTACT_ONLINE
+                            } else {
+                                theme::CONTACT_OFFLINE
+                            };
+                            Self::draw_avatar(
                                 pixels,
+                                None, // no hit testing
                                 self.width as usize,
                                 avatar_cx,
                                 avatar_cy,
-                                indicator_radius,
+                                avatar_radius,
                                 contact.avatar_scaled.as_deref(),
-                                contact.is_online,
+                                Some(ring),
+                                false, // no brighten
                             );
-
-                            // Sync prev state after full draw to prevent differential double-apply
                             contact.prev_is_online = contact.is_online;
 
-                            // Draw handle text (left-aligned)
-                            let text_x =
-                                list_left + (indicator_radius * 2 + indicator_spacing) as f32;
-                            let text_y = contact_y as f32;
-
-                            // Cache text position for differential hover updates
-                            contact.text_x = text_x;
-                            contact.text_y = text_y;
-
-                            // Use brighter text for hovered contact
+                            // Draw handle text - font size derived from row height
                             let is_hovered = self.hovered_contact == Some(i);
                             let text_color = if is_hovered {
                                 theme::CONTACT_NAME
@@ -590,32 +588,25 @@ impl PhotonApp {
                                 self.width as usize,
                                 contact.handle.as_str(),
                                 text_x,
-                                contact_y as f32,
-                                font_size,
+                                text_y,
+                                rows.text_size,
                                 theme::FONT_WEIGHT_USER_CONTENT,
                                 text_color,
                                 theme::FONT_USER_CONTENT,
                             );
 
-                            // Add hit region for this contact (extended by half line height on each side)
-                            let hit_id = HIT_CONTACT_BASE.wrapping_add(i as u8);
-                            let handle_width = self.text_renderer.measure_text_width(
-                                contact.handle.as_str(),
-                                font_size,
-                                theme::FONT_WEIGHT_USER_CONTENT,
-                                theme::FONT_USER_CONTENT,
-                            );
-                            let hit_left = (list_left as usize).wrapping_sub(line_height / 4);
-                            let hit_right = (text_x + handle_width) as usize + line_height / 4;
-                            let hit_top = contact_y.wrapping_sub(line_height / 2);
-                            let hit_bottom = contact_y + line_height / 2;
-                            for hy in hit_top..hit_bottom.min(self.height as usize) {
-                                for hx in hit_left..hit_right.min(self.width as usize) {
-                                    self.hit_test_map[hy * self.width as usize + hx] = hit_id;
+                            // Add hit region for this contact row
+                            if let Some(row) = rows.row_region(i) {
+                                let hit_id = HIT_CONTACT_BASE.wrapping_add(i as u8);
+                                for hy in row.y..row.bottom().min(self.height as usize) {
+                                    for hx in row.x..row.right().min(self.width as usize) {
+                                        self.hit_test_map[hy * self.width as usize + hx] = hit_id;
+                                    }
                                 }
                             }
                         }
-                        // Sync prev hovered state after full draw
+                        // Cache text size for differential updates
+                        self.contact_text_size = rows.text_size;
                         self.prev_hovered_contact = self.hovered_contact;
                     }
                 } else if matches!(self.app_state, AppState::Conversation) {
@@ -650,14 +641,21 @@ impl PhotonApp {
                             }
 
                             // Draw contact avatar with online/offline ring
-                            Self::draw_contact_avatar(
+                            let ring = if contact.is_online {
+                                theme::CONTACT_ONLINE
+                            } else {
+                                theme::CONTACT_OFFLINE
+                            };
+                            Self::draw_avatar(
                                 pixels,
+                                None, // no hit testing
                                 self.width as usize,
                                 avatar_x,
                                 avatar_y,
                                 avatar_radius,
                                 contact.avatar_scaled.as_deref(),
-                                contact.is_online,
+                                Some(ring),
+                                false, // no brighten
                             );
 
                             // Draw green "<" back arrow in top-left
@@ -1050,12 +1048,18 @@ impl PhotonApp {
                                         500,
                                         theme::FONT_USER_CONTENT,
                                     );
+                                    // Center placeholder like empty blinkey: usable_left + (usable_width + button_area) / 2
+                                    let empty_center = self.text_layout.usable_left as f32
+                                        + (self.text_layout.usable_width
+                                            + self.text_layout.button_area)
+                                            as f32
+                                            / 2.0;
                                     self.text_renderer.draw_text_left_additive_u32(
                                         pixels,
                                         self.width as usize,
                                         text,
-                                        self.text_layout.usable_center as f32 - text_width / 2.0,
-                                        self.text_layout.textbox_y as f32,
+                                        empty_center - text_width / 2.0,
+                                        self.text_layout.center_y as f32,
                                         self.text_layout.font_size,
                                         500,
                                         theme::PLACEHOLDER_TEXT,
@@ -1082,7 +1086,7 @@ impl PhotonApp {
                                 contact.handle.as_str(),
                                 contact.text_x,
                                 contact.text_y,
-                                font_size,
+                                self.contact_text_size,
                                 theme::FONT_WEIGHT_USER_CONTENT,
                                 HOVER_DELTA,
                                 theme::FONT_USER_CONTENT,
@@ -1101,7 +1105,7 @@ impl PhotonApp {
                                 contact.handle.as_str(),
                                 contact.text_x,
                                 contact.text_y,
-                                font_size,
+                                self.contact_text_size,
                                 theme::FONT_WEIGHT_USER_CONTENT,
                                 HOVER_DELTA,
                                 theme::FONT_USER_CONTENT,
@@ -1141,12 +1145,16 @@ impl PhotonApp {
                             500,
                             theme::FONT_USER_CONTENT,
                         );
+                        // Center placeholder like empty blinkey: usable_left + (usable_width + button_area) / 2
+                        let empty_center = self.text_layout.usable_left as f32
+                            + (self.text_layout.usable_width + self.text_layout.button_area) as f32
+                                / 2.0;
                         self.text_renderer.draw_text_left_additive_u32(
                             pixels,
                             self.width as usize,
                             text,
-                            self.text_layout.usable_center as f32 - text_width / 2.0,
-                            self.text_layout.textbox_y as f32,
+                            empty_center - text_width / 2.0,
+                            self.text_layout.center_y as f32,
                             self.text_layout.font_size,
                             500,
                             theme::PLACEHOLDER_TEXT,
@@ -1680,8 +1688,8 @@ impl PhotonApp {
                     self.layout.logo_spectrum.as_ref(),
                     self.layout.photon_text.as_ref(),
                     self.layout.attest_block.as_ref(),
-                    self.layout.avatar.as_ref(),
-                    self.layout.contacts_list.as_ref(),
+                    self.layout.contacts_header.as_ref(),
+                    self.layout.contacts_rows.as_ref(),
                     self.layout.header.as_ref(),
                     self.layout.message_area.as_ref(),
                 ];
@@ -1715,40 +1723,66 @@ impl PhotonApp {
                     }
                 }
 
-                // Draw yellow hairlines for attest_block subdivisions
-                if let Some(ref block) = self.layout.attest_block {
-                    let yellow = 0xFE_FF_FF_00; // ARGB yellow
-                    let sub = super::app::AttestBlockLayout::new(block);
-                    let sub_regions = [&sub.error, &sub.textbox, &sub.hint, &sub.attest];
+                // Draw yellow hairlines for block subdivisions
+                let yellow = 0xFE_FF_FF_00; // ARGB yellow
 
-                    for region in sub_regions {
+                // Helper to draw region borders
+                let draw_region_border =
+                    |pixels: &mut [u32], region: &super::app::PixelRegion, color: u32| {
                         // Top edge
                         if region.y < h {
                             for x in region.x..region.right().min(w) {
-                                pixels[region.y * w + x] = yellow;
+                                pixels[region.y * w + x] = color;
                             }
                         }
                         // Bottom edge
                         if region.bottom() > 0 && region.bottom() <= h {
                             let bottom_y = region.bottom() - 1;
                             for x in region.x..region.right().min(w) {
-                                pixels[bottom_y * w + x] = yellow;
+                                pixels[bottom_y * w + x] = color;
                             }
                         }
                         // Left edge
                         if region.x < w {
                             for y in region.y..region.bottom().min(h) {
-                                pixels[y * w + region.x] = yellow;
+                                pixels[y * w + region.x] = color;
                             }
                         }
                         // Right edge
                         if region.right() > 0 && region.right() <= w {
                             let right_x = region.right() - 1;
                             for y in region.y..region.bottom().min(h) {
-                                pixels[y * w + right_x] = yellow;
+                                pixels[y * w + right_x] = color;
                             }
                         }
+                    };
+
+                // Attest block subdivisions
+                if let Some(ref block) = self.layout.attest_block {
+                    let sub = super::app::AttestBlockLayout::new(block);
+                    for region in [&sub.error, &sub.textbox, &sub.hint, &sub.attest] {
+                        draw_region_border(pixels, region, yellow);
                     }
+                }
+
+                // Contacts header subdivisions
+                if let Some(ref block) = self.layout.contacts_header {
+                    let sub = super::app::ContactsHeaderLayout::new(block);
+                    for region in [
+                        &sub.avatar,
+                        &sub.handle,
+                        &sub.hint,
+                        &sub.textbox,
+                        &sub.separator,
+                    ] {
+                        draw_region_border(pixels, region, yellow);
+                    }
+                }
+
+                // Contacts rows subdivisions
+                if let Some(ref block) = self.layout.contacts_rows {
+                    let sub = super::app::ContactsRowsLayout::new(block, self.span, ru, 0);
+                    draw_region_border(pixels, &sub.rows, yellow);
                 }
 
                 // Draw black strip at bottom for debug counters
@@ -2299,6 +2333,7 @@ impl PhotonApp {
         r: usize,
         stroke_colour: (u8, u8, u8),
     ) {
+        let r = r + 1;
         let r_render = r / 4 + 1;
         let r_2 = r_render * r_render;
         let r_4 = r_2 * r_2;
@@ -2361,6 +2396,7 @@ impl PhotonApp {
         stroke_colour: (u8, u8, u8),
         fill_colour: (u8, u8, u8),
     ) {
+        let r = r + 1;
         let mut r_4 = r * r;
         r_4 *= r_4;
         let r_3 = r * r * r;
@@ -2460,6 +2496,7 @@ impl PhotonApp {
         r: usize,
         stroke_colour: (u8, u8, u8),
     ) {
+        let r = r + 1;
         // Draw X with antialiased rounded-end diagonals (capsule/pill shaped)
         let thickness = (r / 3).max(1) as f32;
         let radius = thickness / 2.;
@@ -3033,7 +3070,7 @@ impl PhotonApp {
 
             // Left edge outer pixel
             let pixel_idx = y_top * width as usize + inset as usize;
-            pixels[pixel_idx] = blend_alpha(light_colour, h);
+            pixels[pixel_idx] = scale_alpha(light_colour, h);
             if h < 255 {
                 hit_test_map[pixel_idx] = HIT_NONE; // NEEDS FIXED!!!
             }
@@ -3048,7 +3085,7 @@ impl PhotonApp {
 
             // Right edge outer pixel
             let pixel_idx = pixel_idx + 1;
-            pixels[pixel_idx] = blend_alpha(shadow_colour, h);
+            pixels[pixel_idx] = scale_alpha(shadow_colour, h);
             if h < 255 {
                 hit_test_map[pixel_idx] = HIT_NONE;
             }
@@ -3076,7 +3113,7 @@ impl PhotonApp {
 
             // Left outer edge pixel
             let pixel_idx = y_bottom * width as usize + inset as usize;
-            pixels[pixel_idx] = blend_alpha(light_colour, h);
+            pixels[pixel_idx] = scale_alpha(light_colour, h);
             if h < 255 {
                 hit_test_map[pixel_idx] = HIT_NONE;
             }
@@ -3091,7 +3128,7 @@ impl PhotonApp {
 
             // Right edge outer pixel
             let pixel_idx = pixel_idx + 1;
-            pixels[pixel_idx] = blend_alpha(shadow_colour, h);
+            pixels[pixel_idx] = scale_alpha(shadow_colour, h);
             if h < 255 {
                 hit_test_map[pixel_idx] = HIT_NONE;
             }
@@ -3121,7 +3158,7 @@ impl PhotonApp {
 
             // Top outer edge pixel
             let pixel_idx = inset as usize * width as usize + x_left;
-            pixels[pixel_idx] = blend_alpha(light_colour, h);
+            pixels[pixel_idx] = scale_alpha(light_colour, h);
             if h < 255 {
                 hit_test_map[pixel_idx] = HIT_NONE;
             }
@@ -3132,7 +3169,7 @@ impl PhotonApp {
 
             // Bottom outer edge pixel
             let pixel_idx = (height as usize - 1 - inset as usize) * width as usize + x_left;
-            pixels[pixel_idx] = blend_alpha(shadow_colour, h);
+            pixels[pixel_idx] = scale_alpha(shadow_colour, h);
             if h < 255 {
                 hit_test_map[pixel_idx] = HIT_NONE;
             }
@@ -3165,7 +3202,7 @@ impl PhotonApp {
 
             // Top outer edge pixel
             let pixel_idx = inset as usize * width as usize + x_right;
-            pixels[pixel_idx] = blend_alpha(light_colour, h);
+            pixels[pixel_idx] = scale_alpha(light_colour, h);
             if h < 255 {
                 hit_test_map[pixel_idx] = HIT_NONE;
             }
@@ -3176,7 +3213,7 @@ impl PhotonApp {
 
             // Bottom outer edge pixel
             let pixel_idx = (height as usize - 1 - inset as usize) * width as usize + x_right;
-            pixels[pixel_idx] = blend_alpha(shadow_colour, h);
+            pixels[pixel_idx] = scale_alpha(shadow_colour, h);
             if h < 255 {
                 hit_test_map[pixel_idx] = HIT_NONE;
             }
@@ -4358,7 +4395,7 @@ impl PhotonApp {
                 // Frequency ramps up toward blue end (logarithmic)
                 let freq_ramp = 2f32.powf(-x_norm + 2.); // ~1x at red, ~3x at blue
                 let wave_phase =
-                    x_norm * std::f32::consts::TAU * waves_per_region * freq_ramp + phase_offset;
+                    x_norm * std::f32::consts::TAU * waves_per_region * freq_ramp - phase_offset;
                 let wave_offset = wave_phase.sin() * amplitude;
 
                 let mut scale = (y as f32 + wave_offset - logo_height as f32) / logo_height as f32;
@@ -4807,213 +4844,166 @@ impl PhotonApp {
         self.avatar_scaled_diameter = diameter;
     }
 
-    /// Draw user avatar circle at top center of Ready screen
-    /// avatar_scaled: Pre-scaled RGB data at diameter×diameter resolution
+    /// Unified avatar drawing function
+    /// - hit_test_map: Some = fill with HIT_AVATAR, None = skip hit testing
+    /// - ring_colour: Some = draw status ring, None = no ring
+    /// - brighten: brighten avatar when file hovering (self avatar only)
+    /// avatar_scaled must be pre-scaled to diameter×diameter (diameter = radius * 2)
+    ///
+    /// CONTRACT: Caller MUST ensure avatar fits on screen:
+    ///   cx >= r_outer && cy >= r_outer && cx + r_outer < width && cy + r_outer < height
+    /// Violation = layout bug → panic is correct behavior
     pub fn draw_avatar(
         pixels: &mut [u32],
-        hit_test_map: &mut [u8],
+        mut hit_test_map: Option<&mut [u8]>,
         width: usize,
         cx: usize,
         cy: usize,
         radius: usize,
         avatar_scaled: Option<&[u8]>,
+        ring_colour: Option<u32>,
         brighten: bool,
     ) {
-        let r_outer = radius as isize;
+        let r = radius as isize;
+        let r2 = r * r;
         let diameter = radius * 2;
+        let stroke_width = radius / 16 + 1;
 
-        // Clip circle: 2px smaller to trim edge artifacts
-        let r_clip = r_outer - 2;
-        let r_clip2 = r_clip * r_clip;
-        let r_inner2 = (r_clip - 1) * (r_clip - 1);
-        let diff = r_clip2 - r_inner2; // ≈ 2*r_clip - 1
+        // Ring radii: 1px inside + 1px outside = 2px total
+        let r_inner = r - 1;
+        let r_inner2 = r_inner * r_inner;
+        let r_inner_inner = r - 2;
+        let r_inner_inner2 = r_inner_inner * r_inner_inner;
+        let r_outer = r + stroke_width as isize;
+        let r_outer2 = r_outer * r_outer;
+        let r_outer_outer = r_outer + 1;
+        let r_outer_outer2 = r_outer_outer * r_outer_outer;
 
-        for dy in -r_outer..r_outer {
-            let y = cy as isize + dy;
-            if y < 0 || y >= (pixels.len() / width) as isize {
-                continue;
-            }
-            let dy2 = dy * dy;
+        // AA diff for outer ring edge: maps [r_outer2, r_outer_outer2) to [255, 0]
+        let diff_outer = r_outer_outer2 - r_outer2;
+        // AA diff for inner edge (no-ring case): maps [r_inner_inner2, r_inner2) to [255, 0]
+        let diff_inner = r_inner2 - r_inner_inner2;
 
-            for dx in -r_outer..r_outer {
-                let x = (cx as isize + dx) as usize;
-                let idx = y as usize * width + x;
+        if let Some(ring) = ring_colour {
+            // === WITH RING ===
+            // Loop over ring's outer AA bound
+            for dy in -r_outer_outer..=r_outer_outer {
+                let y = (cy as isize + dy) as usize;
+                let dy2 = dy * dy;
 
-                let dist2 = dx * dx + dy2;
+                for dx in -r_outer_outer..=r_outer_outer {
+                    let x = (cx as isize + dx) as usize;
+                    let dist2 = dx * dx + dy2;
+                    let idx = y * width + x;
 
-                // AA circle mask
-                let alpha = if dist2 <= r_inner2 {
-                    255
-                } else if dist2 < r_clip2 {
-                    (((r_clip2 - dist2) << 8) / diff) as u32
-                } else {
-                    0
-                };
+                    // Hit test covers ring area (not the AA fringe)
+                    if let Some(htm) = hit_test_map.as_mut() {
+                        if dist2 <= r_outer2 {
+                            htm[idx] = HIT_AVATAR;
+                        }
+                    }
 
-                if alpha == 0 {
-                    continue;
+                    if dist2 <= r_inner_inner2 {
+                        // Inside inner AA edge - avatar only
+                        let colour = sample_avatar(avatar_scaled, dx, dy, r, diameter, brighten);
+                        pixels[idx] = 0xFF000000 | colour;
+                    } else if dist2 < r_inner2 {
+                        // Inner AA edge - blend ring over avatar
+                        let colour = sample_avatar(avatar_scaled, dx, dy, r, diameter, brighten);
+                        // PROOF: dist2 ∈ (r_inner_inner2, r_inner2), so numerator ∈ (0, diff_inner<<8)
+                        // Division maps to (0, 256), cast to u8 is safe (max 255)
+                        let alpha = (((dist2 - r_inner_inner2) << 8) / diff_inner) as u8;
+                        pixels[idx] = blend_rgb_only(0xFF000000 | colour, ring, 255 - alpha, alpha);
+                    } else if dist2 <= r_outer2 {
+                        // Solid ring (r_inner to r_outer)
+                        pixels[idx] = 0xFF000000 | ring;
+                    } else if dist2 <= r_outer_outer2 {
+                        // Outer AA edge (r_outer to r_outer_outer) - blend ring to background
+                        // PROOF: dist2 ∈ (r_outer2, r_outer_outer2], so numerator ∈ [0, diff_outer<<8)
+                        // Division maps to [0, 256), cast to u8 is safe (max 255)
+                        let alpha = (((r_outer_outer2 - dist2) << 8) / diff_outer) as u8;
+                        pixels[idx] = blend_rgb_only(pixels[idx], ring, 255 - alpha, alpha);
+                    }
                 }
+            }
+        } else {
+            // === NO RING ===
+            // Trim 1px smaller to hide burned-in circle artifact
+            for dy in -r_inner..=r_inner {
+                let y = (cy as isize + dy) as usize;
+                let dy2 = dy * dy;
 
-                // Fill hit test map
-                hit_test_map[idx] = HIT_AVATAR;
+                for dx in -r_inner..=r_inner {
+                    let x = (cx as isize + dx) as usize;
+                    let idx = y * width + x;
+                    let dist2 = dx * dx + dy2;
 
-                // Draw avatar pixel if available, otherwise black
-                if let Some(avatar_data) = avatar_scaled {
-                    // 1:1 blit from pre-scaled buffer
-                    let tex_x = (dx + r_outer) as usize;
-                    let tex_y = (dy + r_outer) as usize;
-                    let tex_idx = (tex_y * diameter + tex_x) * 3;
-
-                    let mut r = avatar_data[tex_idx] as u32;
-                    let mut g = avatar_data[tex_idx + 1] as u32;
-                    let mut b = avatar_data[tex_idx + 2] as u32;
-
-                    // Brighten when file is hovering
-                    if brighten {
-                        r = (r * 3 / 2).min(255);
-                        g = (g * 3 / 2).min(255);
-                        b = (b * 3 / 2).min(255);
+                    // DEBUG: Left half = raw square texture, right half = AA circle
+                    if DEBUG_ENABLED.load(std::sync::atomic::Ordering::Relaxed) && dx.is_negative()
+                    {
+                        let colour = sample_avatar(avatar_scaled, dx, dy, r, diameter, brighten);
+                        pixels[idx] = 0xFF000000 | colour;
+                        continue;
                     }
 
-                    if alpha == 255 {
-                        pixels[idx] = 0xFF000000 | (r << 16) | (g << 8) | b;
-                    } else {
-                        // Blend with background
-                        let bg = pixels[idx];
-                        let inv_alpha = 255 - alpha;
-                        let bg_r = (bg >> 16) & 0xFF;
-                        let bg_g = (bg >> 8) & 0xFF;
-                        let bg_b = bg & 0xFF;
-                        let out_r = (r * alpha + bg_r * inv_alpha) >> 8;
-                        let out_g = (g * alpha + bg_g * inv_alpha) >> 8;
-                        let out_b = (b * alpha + bg_b * inv_alpha) >> 8;
-                        pixels[idx] = 0xFF000000 | (out_r << 16) | (out_g << 8) | out_b;
+                    // Circle check - loop is square bounding box, clip to circle
+                    if dist2 > r_inner2 {
+                        continue;
                     }
-                } else {
-                    // No avatar loaded - draw black circle (brighten to dark grey when hovering)
-                    let fill = if brighten { 0x40u32 } else { 0u32 };
-                    if alpha == 255 {
-                        pixels[idx] = 0xFF000000 | (fill << 16) | (fill << 8) | fill;
+
+                    // Hit test (trimmed radius) - already inside circle
+                    if let Some(htm) = hit_test_map.as_mut() {
+                        htm[idx] = HIT_AVATAR;
+                    }
+
+                    if dist2 <= r_inner_inner2 {
+                        let colour = sample_avatar(avatar_scaled, dx, dy, r, diameter, brighten);
+                        pixels[idx] = 0xFF000000 | colour;
                     } else {
-                        let bg = pixels[idx];
-                        let inv_alpha = 255 - alpha;
-                        let bg_r = (bg >> 16) & 0xFF;
-                        let bg_g = (bg >> 8) & 0xFF;
-                        let bg_b = bg & 0xFF;
-                        let out_r = (fill * alpha + bg_r * inv_alpha) >> 8;
-                        let out_g = (fill * alpha + bg_g * inv_alpha) >> 8;
-                        let out_b = (fill * alpha + bg_b * inv_alpha) >> 8;
-                        pixels[idx] = 0xFF000000 | (out_r << 16) | (out_g << 8) | out_b;
+                        // AA edge - blend avatar to background
+                        let colour = sample_avatar(avatar_scaled, dx, dy, r, diameter, brighten);
+                        // PROOF: dist2 ∈ (r_inner_inner2, r_inner2], so numerator ∈ [0, diff_inner<<8)
+                        // Division maps to [0, 256), cast to u8 is safe (max 255)
+                        let alpha = (((r_inner2 - dist2) << 8) / diff_inner) as u8;
+                        pixels[idx] = blend_rgb_only(pixels[idx], colour, 255 - alpha, alpha);
                     }
                 }
             }
         }
     }
+}
 
-    /// Draw contact avatar with online/offline ring indicator
-    /// Similar to draw_avatar but without hit testing, with status ring
-    pub fn draw_contact_avatar(
-        pixels: &mut [u32],
-        width: usize,
-        cx: usize,
-        cy: usize,
-        radius: usize,
-        avatar_scaled: Option<&[u8]>,
-        is_online: bool,
-    ) {
-        // Avatar occupies the given radius
-        let r_avatar = radius as isize;
-        let r_avatar2 = r_avatar * r_avatar;
-        let r_avatar_inner = r_avatar - 1;
-        let r_avatar_inner2 = r_avatar_inner * r_avatar_inner;
-        let avatar_edge_range = r_avatar2 - r_avatar_inner2;
-        let diameter = radius * 2;
-
-        // Ring extends beyond avatar by 1/8
-        let r_outer = radius + radius / 16 + 1;
-        let r_outer_i = r_outer as isize;
-        let r_outer2 = r_outer_i * r_outer_i;
-        let r_inner = r_outer_i - 1;
-        let r_inner2 = r_inner * r_inner;
-        let ring_edge_range = r_outer2 - r_inner2;
-
-        let ring_colour = if is_online {
-            theme::CONTACT_ONLINE
+/// Sample avatar texture at offset (dx, dy) from center
+/// Texture is diameter×diameter, centered at (r, r)
+#[inline]
+fn sample_avatar(
+    avatar_data: Option<&[u8]>,
+    dx: isize,
+    dy: isize,
+    r: isize,
+    diameter: usize,
+    brighten: bool,
+) -> u32 {
+    if let Some(data) = avatar_data {
+        let tex_x = (dx + r) as usize;
+        let tex_y = (dy + r) as usize;
+        let tex_idx = (tex_y * diameter + tex_x) * 3;
+        let mut red = data[tex_idx] as u32;
+        let mut green = data[tex_idx + 1] as u32;
+        let mut blue = data[tex_idx + 2] as u32;
+        if brighten {
+            // PROOF: red/green/blue are u8 (0-255), multiplied by 3/2 gives max 382.
+            // .min(255) is REQUIRED to prevent overflow when packing to u32 RGB.
+            red = (red * 3 / 2).min(255);
+            green = (green * 3 / 2).min(255);
+            blue = (blue * 3 / 2).min(255);
+        }
+        (red << 16) | (green << 8) | blue
+    } else {
+        if brighten {
+            0x404040
         } else {
-            theme::CONTACT_OFFLINE
-        };
-
-        for dy in -(r_outer_i)..=r_outer_i {
-            let y = cy as isize + dy;
-            let dy2 = dy * dy;
-
-            for dx in -(r_outer_i)..=r_outer_i {
-                let dist2 = dx * dx + dy2;
-                if dist2 > r_outer2 {
-                    continue;
-                }
-
-                let x = cx as isize + dx;
-                let idx = y as usize * width + x as usize;
-
-                // Get avatar colour (or fallback) - needed for blending in transition zone
-                let avatar_colour = if let Some(avatar_data) = avatar_scaled {
-                    let tex_x = (dx + r_avatar) as usize;
-                    let tex_y = (dy + r_avatar) as usize;
-                    if tex_x < diameter && tex_y < diameter {
-                        let tex_idx = (tex_y * diameter + tex_x) * 3;
-                        let av_r = avatar_data[tex_idx] as u32;
-                        let av_g = avatar_data[tex_idx + 1] as u32;
-                        let av_b = avatar_data[tex_idx + 2] as u32;
-                        (av_r << 16) | (av_g << 8) | av_b
-                    } else {
-                        0x202020
-                    }
-                } else {
-                    0x202020
-                };
-
-                // Determine what we're drawing and at what alpha
-                let (src_colour, alpha) = if dist2 <= r_avatar_inner2 {
-                    // Solid avatar zone - no blending needed
-                    (avatar_colour, 255u32)
-                } else if dist2 <= r_avatar2 {
-                    // Avatar-to-ring transition: blend avatar with ring
-                    let avatar_alpha = if avatar_edge_range > 0 {
-                        (((r_avatar2 - dist2) << 8) / avatar_edge_range) as u32
-                    } else {
-                        255
-                    };
-                    // Pre-blend avatar over ring, output as solid
-                    let blended = blend_rgb_only(
-                        ring_colour,
-                        avatar_colour,
-                        (255 - avatar_alpha) as u8,
-                        avatar_alpha as u8,
-                    );
-                    (blended & 0x00FFFFFF, 255u32)
-                } else if dist2 <= r_inner2 {
-                    // Solid ring zone
-                    (ring_colour, 255u32)
-                } else {
-                    // Ring-to-background transition: AA against background
-                    let ring_alpha = if ring_edge_range > 0 {
-                        (((r_outer2 - dist2) << 8) / ring_edge_range) as u32
-                    } else {
-                        255
-                    };
-                    (ring_colour, ring_alpha)
-                };
-
-                // Blend with background (only matters for ring outer edge)
-                if alpha == 255 {
-                    pixels[idx] = 0xFF000000 | src_colour;
-                } else {
-                    let bg = pixels[idx];
-                    let inv_alpha = (255 - alpha) as u8;
-                    pixels[idx] = blend_rgb_only(bg, src_colour, inv_alpha, alpha as u8);
-                }
-            }
+            0x202020
         }
     }
 }
@@ -5053,21 +5043,20 @@ fn unpack_argb(pixel: u32) -> (u8, u8, u8, u8) {
     (r, g, b, a)
 }
 
-/// Blend two packed ARGB colours with alpha transparency.
-/// Used for outer edge pixels with variable alpha.
-/// Formula: (bg_colour * (255 - alpha) + fg_colour * alpha) >> 8
+/// Scale a packed ARGB colour by alpha (premultiply).
+/// Formula: colour * alpha >> 8
 #[inline]
-fn blend_alpha(fg_colour: u32, alpha: u8) -> u32 {
-    let mut fg = fg_colour as u64;
-    fg = (fg | (fg << 16)) & 0x0000FFFF0000FFFF;
-    fg = (fg | (fg << 8)) & 0x00FF00FF00FF00FF;
+fn scale_alpha(colour: u32, alpha: u8) -> u32 {
+    let mut c = colour as u64;
+    c = (c | (c << 16)) & 0x0000FFFF0000FFFF;
+    c = (c | (c << 8)) & 0x00FF00FF00FF00FF;
 
-    let mut blended = fg * alpha as u64;
-    blended = (blended >> 8) & 0x00FF00FF00FF00FF;
-    blended = (blended | (blended >> 8)) & 0x0000FFFF0000FFFF;
-    blended = blended | (blended >> 16);
+    let mut scaled = c * alpha as u64;
+    scaled = (scaled >> 8) & 0x00FF00FF00FF00FF;
+    scaled = (scaled | (scaled >> 8)) & 0x0000FFFF0000FFFF;
+    scaled = scaled | (scaled >> 16);
 
-    blended as u32
+    scaled as u32
 }
 
 #[inline]
