@@ -21,12 +21,26 @@ use crate::ui::PhotonEvent;
 #[cfg(not(target_os = "android"))]
 use winit::event_loop::EventLoopProxy;
 
+/// Data loaded during attestation (all blocking work done in background)
+#[derive(Debug, Clone)]
+pub struct AttestationData {
+    pub handle: String,
+    pub handle_proof: [u8; 32],
+    pub identity_seed: [u8; 32],
+    pub contacts: Vec<crate::types::Contact>,
+    pub friendships: Vec<(crate::types::friendship::FriendshipId, crate::types::friendship::FriendshipChains)>,
+    pub avatar_pixels: Option<Vec<u8>>,  // Local avatar if exists
+    pub peers: Vec<PeerRecord>,
+}
+
 /// Result of a handle query
 #[derive(Debug, Clone)]
 pub enum QueryResult {
-    Success(Vec<PeerRecord>), // Successfully attested/registered, with peer list for broadcast
+    /// Successfully attested/registered, with all data pre-loaded in background
+    /// This includes contacts, friendships, avatar - everything needed to flip to Ready state
+    Success(Box<AttestationData>),
     AlreadyAttested(PeerRecord), // Handle is claimed by another device
-    Error(String),            // Error during attestation
+    Error(String),               // Error during attestation
 }
 
 /// Result of a re-announce (refresh) operation
@@ -514,7 +528,122 @@ impl HandleQuery {
                             "Network: Handle '{}' registered to this device",
                             handle
                         ));
-                        QueryResult::Success(result.peers)
+
+                        // === Load all data in background (proof → network → disk → cloud) ===
+                        let device_secret = keypair.secret.as_bytes();
+                        let identity_seed = crate::storage::contacts::derive_identity_seed(&handle);
+
+                        // Load contacts from disk
+                        crate::log("Network: Loading contacts from disk...");
+                        let mut contacts = crate::storage::contacts::load_all_contacts(&identity_seed, device_secret);
+
+                        // Load messages for each contact
+                        for contact in &mut contacts {
+                            if let Err(e) = crate::storage::contacts::load_messages(
+                                contact,
+                                &identity_seed,
+                                device_secret,
+                            ) {
+                                crate::log(&format!(
+                                    "Network: Failed to load messages for {}: {}",
+                                    contact.handle.as_str(),
+                                    e
+                                ));
+                            }
+
+                            // Load CLUTCH state if ceremony incomplete
+                            if contact.clutch_state != crate::types::ClutchState::Complete {
+                                if let Ok(Some(state)) = crate::storage::contacts::load_clutch_slots(
+                                    contact.handle.as_str(),
+                                    &identity_seed,
+                                    device_secret,
+                                ) {
+                                    contact.clutch_slots = state.slots;
+                                    contact.offer_provenances = state.offer_provenances;
+                                    contact.ceremony_id = state.ceremony_id;
+                                }
+                                if let Ok(Some(keypairs)) = crate::storage::contacts::load_clutch_keypairs(
+                                    contact.handle.as_str(),
+                                    &identity_seed,
+                                    device_secret,
+                                ) {
+                                    contact.clutch_our_keypairs = Some(keypairs);
+                                    if contact.clutch_slots.is_empty() {
+                                        contact.init_clutch_slots(identity_seed);
+                                    }
+                                    // Store local offer in local slot if not already present
+                                    if let Some(ref kp) = contact.clutch_our_keypairs {
+                                        use crate::crypto::clutch::ClutchOfferPayload;
+                                        let our_offer = ClutchOfferPayload::from_keypairs(kp);
+                                        if let Some(local_slot) = contact.get_slot_mut(&identity_seed) {
+                                            if local_slot.offer.is_none() {
+                                                local_slot.offer = Some(our_offer);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        crate::log(&format!("Network: Loaded {} contacts", contacts.len()));
+
+                        // Load friendship chains from disk
+                        crate::log("Network: Loading friendship chains...");
+                        let friendships = crate::storage::friendship::load_all_friendships(&identity_seed, device_secret);
+                        crate::log(&format!("Network: Loaded {} friendships", friendships.len()));
+
+                        // Load local avatar
+                        let avatar_pixels = crate::avatar::load_avatar(&handle).map(|(_, p)| p);
+
+                        // Cloud sync (download + merge)
+                        crate::log("Network: Syncing with cloud...");
+                        if let Ok(Some(cloud_contacts)) = crate::storage::cloud::load_contacts_from_cloud(
+                            &identity_seed,
+                            &keypair,
+                        ) {
+                            // Merge cloud contacts we don't have locally
+                            for cc in cloud_contacts {
+                                let exists = contacts.iter().any(|c| c.handle_proof == cc.handle_proof);
+                                if !exists {
+                                    let mut contact = cc.to_contact();
+                                    // Load CLUTCH state for cloud contact too
+                                    if contact.clutch_state != crate::types::ClutchState::Complete {
+                                        if let Ok(Some(state)) = crate::storage::contacts::load_clutch_slots(
+                                            contact.handle.as_str(),
+                                            &identity_seed,
+                                            device_secret,
+                                        ) {
+                                            contact.clutch_slots = state.slots;
+                                            contact.offer_provenances = state.offer_provenances;
+                                            contact.ceremony_id = state.ceremony_id;
+                                        }
+                                    }
+                                    // Save to local storage
+                                    let _ = crate::storage::contacts::save_contact(&contact, &identity_seed, device_secret);
+                                    contacts.push(contact);
+                                }
+                            }
+                        }
+
+                        // Upload to cloud if we have more contacts locally
+                        if !contacts.is_empty() {
+                            let _ = crate::storage::cloud::sync_contacts_to_cloud(
+                                &contacts,
+                                &identity_seed,
+                                &keypair,
+                                &handle_proof,
+                            );
+                        }
+                        crate::log("Network: Background loading complete");
+
+                        QueryResult::Success(Box::new(AttestationData {
+                            handle: handle.clone(),
+                            handle_proof,
+                            identity_seed,
+                            contacts,
+                            friendships,
+                            avatar_pixels,
+                            peers: result.peers,
+                        }))
                     } else {
                         crate::log(&format!(
                             "Network: Handle '{}' is CLAIMED by another device",

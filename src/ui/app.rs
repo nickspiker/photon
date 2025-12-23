@@ -129,15 +129,22 @@ impl TextState {
     }
 }
 
-/// Text layout geometry for the usable text area (excludes button on non-attest screens).
-/// Single source of truth for all text/blinkey position calculations.
+/// Text layout geometry - THE SINGLE SOURCE OF TRUTH for all textbox rendering.
+/// Used by both compositing (draw_textbox) and text input (blinkey position).
 /// Designed to be extensible for future multi-line text entry.
 #[derive(Clone, Copy)]
 pub struct TextLayout {
-    /// Left edge of full textbox (pixels from window left)
-    pub textbox_left: usize,
-    /// Right edge of full textbox (pixels from window left)
-    pub textbox_right: usize,
+    // === Drawing coordinates (for compositing) ===
+    /// Center X of textbox (for draw_textbox)
+    pub center_x: usize,
+    /// Center Y of textbox (for draw_textbox)
+    pub center_y: usize,
+    /// Full width of textbox (for draw_textbox)
+    pub box_width: usize,
+    /// Full height of textbox (for draw_textbox)
+    pub box_height: usize,
+
+    // === Text area (excludes button) ===
     /// Left edge of usable text area (pixels from window left)
     pub usable_left: usize,
     /// Right edge of usable text area (pixels from window left)
@@ -148,10 +155,8 @@ pub struct TextLayout {
     pub usable_width: usize,
     /// Margin from usable edges (for blinkey limits)
     pub margin: usize,
-    /// Top of textbox (y coordinate for text baseline)
-    pub textbox_y: usize,
-    /// Height of textbox
-    pub box_height: usize,
+
+    // === Text rendering ===
     /// Font size for text rendering
     pub font_size: f32,
     /// Line height (for future multi-line support)
@@ -167,8 +172,10 @@ impl TextLayout {
         // Get region from Layout (single source of truth)
         let layout = Layout::new(width, height, span, ru, app_state);
 
-        // For Launch screens, sizes come from slice rectangle heights
-        // For other screens, sizes come from span*ru
+        // Textbox sizing depends on state:
+        // - Launch: from AttestBlockLayout slice heights
+        // - Ready/Searching: from ContactsHeaderLayout slice heights (already scaled with ru)
+        // - Conversation: from layout.textbox with span*ru sizing
         let (
             textbox_left,
             textbox_right,
@@ -188,8 +195,30 @@ impl TextLayout {
             let box_h = sub.textbox.h;
             let font_sz = box_h as f32 / 2.0;
             (tb_left, tb_right, tb_width, tb_y, box_h, font_sz, 0)
+        } else if let Some(contacts_header) = layout.contacts_header.as_ref() {
+            // Ready/Searching: from ContactsHeaderLayout (already scaled with ru by Layout::new)
+            let sub = ContactsHeaderLayout::new(contacts_header);
+            let tb_left = sub.textbox.x;
+            let tb_right = sub.textbox.x + sub.textbox.w;
+            let tb_width = sub.textbox.w;
+            let tb_y = sub.textbox.y + sub.textbox.h / 2; // center of textbox slice
+            let box_h = sub.textbox.h; // already scaled - no extra ru needed
+            let font_sz = box_h as f32 / 2.0;
+            // Button area same as conversation - keeps text from overlapping search button
+            let button_size = box_h * 7 / 8;
+            let inset = box_h / 16;
+            let button_area = button_size + inset * 2;
+            (
+                tb_left,
+                tb_right,
+                tb_width,
+                tb_y,
+                box_h,
+                font_sz,
+                button_area,
+            )
         } else {
-            // Non-launch: sizes from span*ru
+            // Conversation: sizes from span*ru
             let tb = layout.textbox.as_ref().unwrap();
             let tb_left = tb.x;
             let tb_right = tb.x + tb.w;
@@ -212,6 +241,11 @@ impl TextLayout {
         };
         let line_height = box_height;
 
+        // Drawing coordinates
+        let center_x = textbox_left + textbox_width / 2;
+        let center_y = textbox_y; // textbox_y is already center
+
+        // Usable text area (excludes button)
         let usable_width = textbox_width - button_area;
         let usable_left = textbox_left;
         let usable_right = textbox_right - button_area;
@@ -219,15 +253,18 @@ impl TextLayout {
         let margin = usable_width / 40;
 
         Self {
-            textbox_left,
-            textbox_right,
+            // Drawing coordinates
+            center_x,
+            center_y,
+            box_width: textbox_width,
+            box_height,
+            // Text area
             usable_left,
             usable_right,
             usable_center,
             usable_width,
             margin,
-            textbox_y,
-            box_height,
+            // Text rendering
             font_size,
             line_height,
             button_area,
@@ -252,7 +289,7 @@ impl TextLayout {
 
     /// Calculate blinkey y position (top of cursor)
     pub fn blinkey_y(&self) -> usize {
-        (self.textbox_y as f32 - self.box_height as f32 * 0.25) as usize
+        (self.center_y as f32 - self.box_height as f32 * 0.25) as usize
     }
 
     /// Calculate text start x from text state
@@ -315,15 +352,17 @@ pub struct Layout {
     pub logo_spectrum: Option<PixelRegion>,
     /// "Photon" text area - launch screens only
     pub photon_text: Option<PixelRegion>,
-    /// Text input box - present in non-launch states
+    /// Text input box - present in non-launch states (conversation only)
     pub textbox: Option<PixelRegion>,
     /// Unified block containing hint + textbox + attest button - launch screens only
-    /// Subdivided during rendering: hint/attest scale uniformly, textbox scales vertically only
+    /// Subdivided via AttestBlockLayout
     pub attest_block: Option<PixelRegion>,
-    /// User avatar - ready/searching states
-    pub avatar: Option<PixelRegion>,
-    /// Contact list area - ready state
-    pub contacts_list: Option<PixelRegion>,
+    /// Unified block containing avatar + handle + textbox + separator - ready/searching states
+    /// Subdivided via ContactsHeaderLayout. Scales with ru as a unit.
+    pub contacts_header: Option<PixelRegion>,
+    /// Scrollable contact rows region - ready/searching states
+    /// Subdivided via ContactsRowsLayout. Does NOT scale with ru.
+    pub contacts_rows: Option<PixelRegion>,
     /// Header with back arrow and contact info - conversation state
     pub header: Option<PixelRegion>,
     /// Message display area - conversation state
@@ -377,6 +416,162 @@ impl AttestBlockLayout {
             // Hint and attest: centered, narrower
             hint: PixelRegion::new(narrow_x, block.y + v[4], narrow_w, v[5] - v[4]),
             attest: PixelRegion::new(narrow_x, block.y + v[6], narrow_w, v[7] - v[6]),
+        }
+    }
+}
+
+/// Subdivision of contacts_header block into avatar, handle, textbox, separator.
+/// This is the top scaled block on the contacts screen (Ready/Searching states).
+/// The whole block scales with ru as a unit.
+#[derive(Clone, Copy)]
+pub struct ContactsHeaderLayout {
+    /// Avatar circle region (square, centered)
+    pub avatar: PixelRegion,
+    /// Handle text region (below avatar)
+    pub handle: PixelRegion,
+    /// Avatar hint text region (below handle, for drag-drop hint)
+    pub hint: PixelRegion,
+    /// Search textbox region
+    pub textbox: PixelRegion,
+    /// Separator line region (thin hairline)
+    pub separator: PixelRegion,
+}
+
+impl ContactsHeaderLayout {
+    /// Subdivide contacts_header block into avatar, handle, hint, textbox, separator.
+    /// Block is already scaled with ru by Layout::new().
+    pub fn new(block: &PixelRegion) -> Self {
+        const V_SLICES: [Slice; 11] = [
+            Slice::new("gap0", 1.),
+            Slice::new("avatar", 4.),
+            Slice::new("gap1", 0.25),
+            Slice::new("handle", 1.0),
+            Slice::new("gap2", 0.25),
+            Slice::new("hint", 1.),
+            Slice::new("gap3", 0.25),
+            Slice::new("textbox", 1.5),
+            Slice::new("gap4", 0.25),
+            Slice::new("separator", 0.5),
+            Slice::new("gap5", 0.25),
+        ];
+        let v = slice_positions(block.h, &V_SLICES);
+
+        // Avatar is square, centered horizontally
+        let avatar_h = v[2] - v[1];
+        let avatar_w = avatar_h.min(block.w);
+        let avatar_x = block.x + (block.w - avatar_w) / 2;
+
+        // Separator is centered horizontally, narrower than full width
+        let sep_w = block.w / 2;
+        let sep_x = block.x + (block.w - sep_w) / 2;
+
+        Self {
+            avatar: PixelRegion::new(avatar_x, block.y + v[1], avatar_w, avatar_h),
+            handle: PixelRegion::new(block.x, block.y + v[3], block.w, v[4] - v[3]),
+            hint: PixelRegion::new(block.x, block.y + v[5], block.w, v[6] - v[5]),
+            textbox: PixelRegion::new(block.x, block.y + v[7], block.w, v[8] - v[7]),
+            separator: PixelRegion::new(sep_x, block.y + v[9], sep_w, v[10] - v[9]),
+        }
+    }
+
+    /// Get avatar center and radius from the avatar region.
+    pub fn avatar_center_radius(&self) -> (usize, usize, usize) {
+        // Harmonic mean avoids discontinuity when w ≈ h
+        let radius = self.avatar.w * self.avatar.h / (self.avatar.w + self.avatar.h);
+        let cx = self.avatar.x + self.avatar.w / 2;
+        let cy = self.avatar.y + self.avatar.h / 2;
+        (cx, cy, radius)
+    }
+}
+
+/// Subdivision of contacts_rows block into scrollable contact rows.
+/// Used on the contacts screen (Ready/Searching states).
+/// Note: Header elements (avatar, handle, textbox, separator) are in ContactsHeaderLayout.
+#[derive(Clone, Copy)]
+pub struct ContactsRowsLayout {
+    /// Scrollable contact rows region (the whole block)
+    pub rows: PixelRegion,
+    /// Row height for contact entries
+    pub row_height: usize,
+    /// Avatar diameter for contact entries (derived from row_height)
+    pub avatar_diameter: usize,
+    /// Text left offset (after avatar + spacing)
+    pub text_left_offset: usize,
+    /// Text size derived from row height
+    pub text_size: f32,
+    /// X offset for centering based on longest contact (0 = left-aligned)
+    pub center_offset: usize,
+}
+
+impl ContactsRowsLayout {
+    /// Subdivide contacts_rows block into contact rows.
+    /// span and ru are used to determine row height, then all other sizes derive from row_height.
+    /// center_offset allows centering the contact list based on longest name width.
+    pub fn new(block: &PixelRegion, span: usize, ru: f32, center_offset: usize) -> Self {
+        // Row height is the primary unit - everything derives from it
+        let row_height = ((span * 1 / 16) as f32 * ru) as usize;
+
+        let avatar_diameter = row_height / 2;
+        let avatar_spacing = avatar_diameter / 2;
+
+        let text_size = row_height as f32 / 2.;
+
+        Self {
+            rows: *block,
+            row_height,
+            avatar_diameter,
+            text_left_offset: avatar_diameter + avatar_spacing,
+            text_size,
+            center_offset,
+        }
+    }
+
+    /// Get the region for a specific contact row by index.
+    /// Returns None if the row would be outside the rows region.
+    pub fn row_region(&self, index: usize) -> Option<PixelRegion> {
+        let row_y = self.rows.y + index * self.row_height;
+        if row_y + self.row_height > self.rows.bottom() {
+            None
+        } else {
+            Some(PixelRegion::new(
+                self.rows.x,
+                row_y,
+                self.rows.w,
+                self.row_height,
+            ))
+        }
+    }
+
+    /// Get avatar center position for a row.
+    pub fn row_avatar_center(&self, index: usize) -> Option<(usize, usize)> {
+        let row_y = self.rows.y + index * self.row_height;
+        if row_y + self.row_height > self.rows.bottom() {
+            None
+        } else {
+            let cx = self.rows.x + self.center_offset + self.avatar_diameter / 2;
+            let cy = row_y + self.row_height / 2;
+            Some((cx, cy))
+        }
+    }
+
+    /// Get text position for a row.
+    pub fn row_text_position(&self, index: usize) -> Option<(f32, f32)> {
+        let row_y = self.rows.y + index * self.row_height;
+        if row_y + self.row_height > self.rows.bottom() {
+            None
+        } else {
+            let x = (self.rows.x + self.center_offset + self.text_left_offset) as f32;
+            let y = (row_y + self.row_height / 2) as f32;
+            Some((x, y))
+        }
+    }
+
+    /// Get the number of visible rows that fit in the rows region.
+    pub fn visible_row_count(&self) -> usize {
+        if self.row_height == 0 {
+            0
+        } else {
+            self.rows.h / self.row_height
         }
     }
 }
@@ -476,49 +671,49 @@ impl Layout {
                         content_w as isize,
                         scaled_block_h,
                     )),
-                    avatar: None,
-                    contacts_list: None,
+                    contacts_header: None,
+                    contacts_rows: None,
                     header: None,
                     message_area: None,
                 }
             }
             AppState::Ready | AppState::Searching => {
-                const V_SLICES: [Slice; 6] = [
-                    Slice::new("gap0", 1.0),
-                    Slice::new("avatar", 4.0),
-                    Slice::new("gap1", 1.0),
-                    Slice::new("textbox", 1.0),
-                    Slice::new("gap2", 0.5),
-                    Slice::new("contacts", 8.0),
+                // Two blocks: contacts_header (scaled with ru) and contacts_rows (remaining)
+                // Header contains: avatar, handle, hint, textbox, separator
+                // Rows contains: scrollable contact list
+                const V_SLICES: [Slice; 3] = [
+                    Slice::new("gap0", 0.5),
+                    Slice::new("contacts_header", 4.8), // 60% of original 8.0
+                    Slice::new("contacts_rows", 11.),
                 ];
                 let v = slice_positions(height, &V_SLICES);
 
-                const AVATAR: usize = 1;
-                const TEXTBOX: usize = 3;
-                const CONTACTS: usize = 5;
+                const CONTACTS_HEADER: usize = 1;
+                const CONTACTS_ROWS: usize = 2;
 
-                // Avatar is centered horizontally, square
-                let avatar_h = v[AVATAR + 1] - v[AVATAR];
-                let avatar_w = avatar_h.min(content_w);
-                let avatar_x = content_x + (content_w - avatar_w) / 2;
+                // contacts_header: height scales with ru, anchored at top
+                // With ru bounded to [0.125, 2.0], scaled_header_h is at most 2x base (~60% of height)
+                // so rows always have space (no clamp needed)
+                let header_y = v[CONTACTS_HEADER];
+                let base_header_h = v[CONTACTS_HEADER + 1] - v[CONTACTS_HEADER];
+                let scaled_header_h = (base_header_h as f32 * ru) as usize;
+
+                // contacts_rows starts where the scaled header ends
+                let rows_y = header_y + scaled_header_h;
+                let rows_h = height - rows_y;
 
                 Self {
                     logo_spectrum: None,
                     photon_text: None,
-                    textbox: Some(PixelRegion::new(
-                        content_x,
-                        v[TEXTBOX],
-                        content_w,
-                        v[TEXTBOX + 1] - v[TEXTBOX],
-                    )),
+                    textbox: None, // Ready/Searching uses contacts_header subdivision
                     attest_block: None,
-                    avatar: Some(PixelRegion::new(avatar_x, v[AVATAR], avatar_w, avatar_h)),
-                    contacts_list: Some(PixelRegion::new(
+                    contacts_header: Some(PixelRegion::new(
                         content_x,
-                        v[CONTACTS],
+                        header_y,
                         content_w,
-                        v[CONTACTS + 1] - v[CONTACTS],
+                        scaled_header_h,
                     )),
+                    contacts_rows: Some(PixelRegion::new(content_x, rows_y, content_w, rows_h)),
                     header: None,
                     message_area: None,
                 }
@@ -546,8 +741,8 @@ impl Layout {
                         v[TEXTBOX + 1] - v[TEXTBOX],
                     )),
                     attest_block: None,
-                    avatar: None,
-                    contacts_list: None,
+                    contacts_header: None,
+                    contacts_rows: None,
                     header: Some(PixelRegion::new(
                         0,
                         v[HEADER],
@@ -762,6 +957,8 @@ pub struct PhotonApp {
     // Currently hovered contact index (None if not hovering any)
     pub hovered_contact: Option<usize>,
     pub prev_hovered_contact: Option<usize>,
+    // Contact row text size (derived from row height, cached for differential updates)
+    pub contact_text_size: f32,
     // Selected contact for conversation view (None = main view)
     pub selected_contact: Option<usize>,
 
@@ -989,6 +1186,7 @@ impl PhotonApp {
             sync_records_provider: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             hovered_contact: None,
             prev_hovered_contact: None,
+            contact_text_size: 16.0, // Will be set during first render
             selected_contact: None,
             status_checker: None, // Initialized AFTER attestation succeeds
             next_status_ping: std::time::Instant::now(),
@@ -1133,6 +1331,7 @@ impl PhotonApp {
             sync_records_provider: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             hovered_contact: None,
             prev_hovered_contact: None,
+            contact_text_size: 16.0, // Will be set during first render
             selected_contact: None,
             status_checker: None,
             next_status_ping: std::time::Instant::now(),
@@ -1394,11 +1593,19 @@ impl PhotonApp {
             HoveredButton::BackHeader => {
                 // Go back to contacts list
                 self.app_state = AppState::Ready;
+                let eff_ru = self.effective_ru();
                 self.text_layout = TextLayout::new(
                     self.width as usize,
                     self.height as usize,
                     self.span,
-                    self.effective_ru(),
+                    eff_ru,
+                    &self.app_state,
+                );
+                self.layout = Layout::new(
+                    self.width as usize,
+                    self.height as usize,
+                    self.span,
+                    eff_ru,
                     &self.app_state,
                 );
                 self.selected_contact = None;
@@ -1611,11 +1818,19 @@ impl PhotonApp {
         // If in a chat, go back to contacts list (same as tapping back header button)
         if self.selected_contact.is_some() {
             self.app_state = AppState::Ready;
+            let eff_ru = self.effective_ru();
             self.text_layout = TextLayout::new(
                 self.width as usize,
                 self.height as usize,
                 self.span,
-                self.effective_ru(),
+                eff_ru,
+                &self.app_state,
+            );
+            self.layout = Layout::new(
+                self.width as usize,
+                self.height as usize,
+                self.span,
+                eff_ru,
                 &self.app_state,
             );
             self.selected_contact = None;
@@ -1813,6 +2028,14 @@ impl PhotonApp {
             (31f32 / 32.).powf(-steps)
         };
         self.ru = self.ru * factor;
+
+        // Clamp ru to sane bounds (release only - dev builds are unbounded for testing)
+        #[cfg(not(feature = "development"))]
+        {
+            const RU_MIN: f32 = 0.125; // 1/8
+            const RU_MAX: f32 = 2.0;
+            self.ru = self.ru.max(RU_MIN).min(RU_MAX);
+        }
         self.window_dirty = true;
 
         let eff_ru = self.effective_ru();
@@ -2263,24 +2486,26 @@ impl PhotonApp {
 
     /// Check if attestation response is ready and update app_state
     pub fn check_attestation_response(&mut self) -> bool {
+        use crate::network::handle_query::AttestationData;
+
         let result = self.handle_query.as_ref().and_then(|hq| hq.try_recv());
         let Some(result) = result else { return false };
 
-        let (new_state, initial_peers) = match result {
-            QueryResult::Success(peers) => {
+        let (new_state, attestation_data) = match result {
+            QueryResult::Success(data) => {
                 crate::log("UI: Attestation SUCCESS - transitioning to Ready state");
-                (AppState::Ready, peers)
+                (AppState::Ready, Some(data))
             }
             QueryResult::AlreadyAttested(_peers) => {
                 crate::log("UI: Handle already attested - showing error");
                 (
                     AppState::Launch(LaunchState::Error("Handle already attested".to_string())),
-                    vec![],
+                    None,
                 )
             }
             QueryResult::Error(msg) => {
                 crate::log(&format!("UI: Attestation error - {}", msg));
-                (AppState::Launch(LaunchState::Error(msg)), vec![])
+                (AppState::Launch(LaunchState::Error(msg)), None)
             }
         };
 
@@ -2303,201 +2528,94 @@ impl PhotonApp {
             self.controls_dirty = true;
             self.selection_dirty = true;
 
-            // Store handle_proof for periodic refresh, CLUTCH, and save user handle for display
-            if let Some(ref handle) = self.attesting_handle {
-                use crate::types::Handle;
-                let handle_proof = Handle::username_to_handle_proof(handle);
-                // Derive identity_seed using VSF normalization for consistent key derivation
-                let identity_seed = crate::storage::contacts::derive_identity_seed(handle);
+            // Store peers for initial ping (will be set if attestation_data is Some)
+            let mut initial_peers = Vec::new();
+
+            // All data was pre-loaded in background thread - just assign it
+            if let Some(data) = attestation_data {
+                let handle = data.handle.clone();
+                let handle_proof = data.handle_proof;
+                let identity_seed = data.identity_seed;
                 if let Some(hq) = &self.handle_query {
-                    hq.set_handle_proof(handle_proof, handle);
+                    hq.set_handle_proof(handle_proof, &handle);
                 }
                 self.user_handle = Some(handle.clone());
                 self.user_handle_proof = Some(handle_proof);
                 self.user_identity_seed = Some(identity_seed);
-                crate::log("UI: Stored handle_proof and identity_seed for refresh/CLUTCH/storage");
+                crate::log("UI: All data pre-loaded in background - no UI freeze");
 
-                // Load contacts from encrypted storage
-                let device_secret = self.device_keypair.secret.as_bytes();
-                let loaded_contacts =
-                    crate::storage::contacts::load_all_contacts(&identity_seed, device_secret);
-
-                // Load friendship chains from encrypted storage
-                crate::log("UI: Loading friendship chains from disk...");
-                let loaded_friendships =
-                    crate::storage::friendship::load_all_friendships(&identity_seed, device_secret);
-                if !loaded_friendships.is_empty() {
+                // Assign pre-loaded friendships
+                if !data.friendships.is_empty() {
                     crate::log(&format!(
-                        "UI: Loaded {} friendship chains from storage",
-                        loaded_friendships.len()
+                        "UI: Assigning {} friendship chains",
+                        data.friendships.len()
                     ));
-                    for (fid, _) in &loaded_friendships {
-                        crate::log(&format!(
-                            "  - Friendship: {}",
-                            hex::encode(&fid.as_bytes()[..8])
-                        ));
-                    }
-                    // Already a Vec, just extend
-                    self.friendship_chains.extend(loaded_friendships);
-                    // Note: sync records updated when StatusChecker is created below
-                } else {
-                    crate::log("UI: No friendship chains found on disk");
+                    self.friendship_chains.extend(data.friendships);
                 }
 
-                if !loaded_contacts.is_empty() {
-                    crate::log(&format!(
-                        "UI: Loaded {} contacts from storage",
-                        loaded_contacts.len()
-                    ));
-                    for mut contact in loaded_contacts {
-                        // Load messages for this contact
-                        if let Err(e) = crate::storage::contacts::load_messages(
-                            &mut contact,
-                            &identity_seed,
-                            device_secret,
-                        ) {
-                            crate::log(&format!(
-                                "STORAGE: Failed to load messages for {}: {}",
-                                contact.handle.as_str(),
-                                e
-                            ));
-                        }
+                // Assign pre-loaded contacts
+                crate::log(&format!(
+                    "UI: Assigning {} contacts",
+                    data.contacts.len()
+                ));
+                // Store peers for initial ping below
+                initial_peers = data.peers.clone();
 
-                        // Update shared pubkey list for StatusChecker
-                        {
-                            let mut pubkeys = self.contact_pubkeys.lock().unwrap();
-                            pubkeys.push(contact.public_identity.clone());
-                        }
-
-                        // Load persisted CLUTCH state if ceremony incomplete
-                        if contact.clutch_state != crate::types::ClutchState::Complete {
-                            // Load slot state (offers, KEM secrets, provenances, ceremony_id)
-                            match crate::storage::contacts::load_clutch_slots(
-                                contact.handle.as_str(),
-                                &identity_seed,
-                                device_secret,
-                            ) {
-                                Ok(Some(state)) => {
-                                    crate::log(&format!(
-                                        "CLUTCH: Loaded persisted slots for {} ({} slots, {} provenances)",
-                                        contact.handle,
-                                        state.slots.len(),
-                                        state.offer_provenances.len()
-                                    ));
-                                    contact.clutch_slots = state.slots;
-                                    contact.offer_provenances = state.offer_provenances;
-                                    contact.ceremony_id = state.ceremony_id;
-                                }
-                                Ok(None) => {
-                                    // No slots on disk yet
-                                }
-                                Err(e) => {
-                                    crate::log(&format!(
-                                        "CLUTCH: Failed to load slots for {}: {}",
-                                        contact.handle, e
-                                    ));
-                                }
-                            }
-
-                            // Load keypairs
-                            match crate::storage::contacts::load_clutch_keypairs(
-                                contact.handle.as_str(),
-                                &identity_seed,
-                                device_secret,
-                            ) {
-                                Ok(Some(keypairs)) => {
-                                    crate::log(&format!(
-                                        "CLUTCH: Loaded persisted keypairs for {}",
-                                        contact.handle
-                                    ));
-                                    contact.clutch_our_keypairs = Some(keypairs);
-
-                                    // Initialize slots if not loaded from disk, and store local offer
-                                    if contact.clutch_slots.is_empty() {
-                                        contact.init_clutch_slots(identity_seed);
-                                    }
-                                    // Store local offer in local slot if not already present
-                                    if let Some(ref kp) = contact.clutch_our_keypairs {
-                                        use crate::crypto::clutch::ClutchOfferPayload;
-                                        let our_offer = ClutchOfferPayload::from_keypairs(kp);
-                                        if let Some(local_slot) =
-                                            contact.get_slot_mut(&identity_seed)
-                                        {
-                                            if local_slot.offer.is_none() {
-                                                local_slot.offer = Some(our_offer);
-                                                crate::log(&format!(
-                                                    "CLUTCH: Stored local offer in slot for {} (from disk keypairs)",
-                                                    contact.handle
-                                                ));
-                                            }
-                                        }
-                                    }
-                                }
-                                Ok(None) => {
-                                    // No keypairs on disk - will trigger keygen below
-                                }
-                                Err(e) => {
-                                    crate::log(&format!(
-                                        "CLUTCH: Failed to load keypairs for {}: {}",
-                                        contact.handle, e
-                                    ));
-                                }
-                            }
-                        }
-
-                        // Start CLUTCH keygen if not complete AND no persisted keypairs
-                        let needs_keygen = contact.clutch_state
-                            != crate::types::ClutchState::Complete
-                            && contact.clutch_our_keypairs.is_none();
-                        let contact_id = contact.id.clone();
-                        let their_handle_hash = contact.handle_hash;
-                        if needs_keygen {
-                            // Set flag BEFORE spawning to prevent race condition
-                            contact.clutch_keygen_in_progress = true;
-                        }
-                        self.contacts.push(contact);
-                        if needs_keygen {
-                            self.spawn_clutch_keygen(contact_id, identity_seed, their_handle_hash);
-                        }
+                for mut contact in data.contacts {
+                    // Update shared pubkey list for StatusChecker
+                    {
+                        let mut pubkeys = self.contact_pubkeys.lock().unwrap();
+                        pubkeys.push(contact.public_identity.clone());
                     }
 
-                    // Proactive avatar loading: fetch all contact avatars immediately
-                    // This makes the contact list snappy - avatars ready before user clicks
-                    crate::log(&format!(
-                        "Avatar: Proactively fetching avatars for {} contact(s)",
-                        self.contacts.len()
-                    ));
-                    for contact in &self.contacts {
-                        if contact.avatar_pixels.is_none() {
-                            let handle = contact.handle.as_str().to_string();
-                            #[cfg(not(target_os = "android"))]
-                            crate::avatar::download_avatar_background(
-                                handle,
-                                self.contact_avatar_tx.clone(),
-                                Some(self.event_proxy.clone()),
-                            );
-                            #[cfg(target_os = "android")]
-                            crate::avatar::download_avatar_background(
-                                handle,
-                                self.contact_avatar_tx.clone(),
-                                None,
-                            );
-                        }
+                    // Start CLUTCH keygen if not complete AND no persisted keypairs
+                    let needs_keygen = contact.clutch_state
+                        != crate::types::ClutchState::Complete
+                        && contact.clutch_our_keypairs.is_none();
+                    let contact_id = contact.id.clone();
+                    let their_handle_hash = contact.handle_hash;
+                    if needs_keygen {
+                        contact.clutch_keygen_in_progress = true;
+                    }
+                    self.contacts.push(contact);
+                    if needs_keygen {
+                        self.spawn_clutch_keygen(contact_id, identity_seed, their_handle_hash);
                     }
                 }
 
-                // Load local avatar for immediate display (if exists)
-                if let Some((_, pixels)) = crate::avatar::load_avatar(handle) {
+                // Proactive avatar loading: fetch all contact avatars in background
+                crate::log(&format!(
+                    "Avatar: Proactively fetching avatars for {} contact(s)",
+                    self.contacts.len()
+                ));
+                for contact in &self.contacts {
+                    if contact.avatar_pixels.is_none() {
+                        let handle_str = contact.handle.as_str().to_string();
+                        #[cfg(not(target_os = "android"))]
+                        crate::avatar::download_avatar_background(
+                            handle_str,
+                            self.contact_avatar_tx.clone(),
+                            Some(self.event_proxy.clone()),
+                        );
+                        #[cfg(target_os = "android")]
+                        crate::avatar::download_avatar_background(
+                            handle_str,
+                            self.contact_avatar_tx.clone(),
+                            None,
+                        );
+                    }
+                }
+
+                // Use pre-loaded avatar if available
+                if let Some(pixels) = data.avatar_pixels {
                     self.avatar_pixels = Some(
                         crate::display_profile::DisplayConverter::new().convert_avatar(&pixels),
                     );
-                    self.avatar_scaled = None; // Force re-scale
-                    crate::log("UI: Loaded avatar from local cache");
+                    self.avatar_scaled = None;
+                    crate::log("UI: Using pre-loaded avatar");
                 }
 
-                // Start bidirectional sync in background (newest wins)
-                // This will upload if local is newer, or download if server is newer
-                crate::log("UI: Starting bidirectional avatar sync with FGTW");
+                // Start bidirectional avatar sync in background
                 #[cfg(not(target_os = "android"))]
                 crate::avatar::sync_avatar_background(
                     *self.device_keypair.secret.as_bytes(),
@@ -2514,127 +2632,6 @@ impl PhotonApp {
                     self.contact_avatar_tx.clone(),
                     None,
                 );
-
-                // Sync contacts with cloud (check if cloud has more contacts)
-                crate::log("UI: Checking cloud contacts sync");
-                match crate::storage::cloud::load_contacts_from_cloud(
-                    &identity_seed,
-                    &self.device_keypair,
-                ) {
-                    Ok(Some(cloud_contacts)) => {
-                        let local_count = self.contacts.len();
-                        let cloud_count = cloud_contacts.len();
-                        crate::log(&format!(
-                            "Cloud: {} contacts (local: {})",
-                            cloud_count, local_count
-                        ));
-
-                        // Simple merge: add any cloud contacts we don't have locally
-                        let mut added = 0;
-                        for cc in cloud_contacts {
-                            let exists = self
-                                .contacts
-                                .iter()
-                                .any(|c| c.handle_proof == cc.handle_proof);
-                            if !exists {
-                                let mut contact = cc.to_contact();
-                                // Update shared pubkey list
-                                {
-                                    let mut pubkeys = self.contact_pubkeys.lock().unwrap();
-                                    pubkeys.push(contact.public_identity.clone());
-                                }
-                                // Save to local storage
-                                let device_secret = self.device_keypair.secret.as_bytes();
-                                if let Err(e) = crate::storage::contacts::save_contact(
-                                    &contact,
-                                    &identity_seed,
-                                    device_secret,
-                                ) {
-                                    crate::log(&format!(
-                                        "Failed to save cloud contact locally: {}",
-                                        e
-                                    ));
-                                }
-
-                                // Fetch avatar for cloud-synced contact
-                                let handle = contact.handle.as_str().to_string();
-                                #[cfg(not(target_os = "android"))]
-                                crate::avatar::download_avatar_background(
-                                    handle,
-                                    self.contact_avatar_tx.clone(),
-                                    Some(self.event_proxy.clone()),
-                                );
-                                #[cfg(target_os = "android")]
-                                crate::avatar::download_avatar_background(
-                                    handle,
-                                    self.contact_avatar_tx.clone(),
-                                    None,
-                                );
-
-                                // Start CLUTCH keygen if not complete
-                                // Keypairs are ephemeral (not persisted), so regenerate if missing
-                                let needs_keygen =
-                                    contact.clutch_state != crate::types::ClutchState::Complete;
-                                let contact_id = contact.id.clone();
-                                let their_handle_hash = contact.handle_hash;
-                                let our_handle_hash = self
-                                    .user_handle
-                                    .as_ref()
-                                    .map(|h| crate::storage::contacts::derive_identity_seed(h))
-                                    .unwrap_or([0u8; 32]);
-                                if needs_keygen {
-                                    // Set flag BEFORE spawning to prevent race condition
-                                    contact.clutch_keygen_in_progress = true;
-                                }
-                                self.contacts.push(contact);
-                                if needs_keygen {
-                                    self.spawn_clutch_keygen(
-                                        contact_id,
-                                        our_handle_hash,
-                                        their_handle_hash,
-                                    );
-                                }
-                                added += 1;
-                            }
-                        }
-                        if added > 0 {
-                            crate::log(&format!("Cloud: Added {} contacts from cloud", added));
-                        }
-
-                        // If we have more contacts locally, upload to cloud
-                        if self.contacts.len() > cloud_count {
-                            crate::log("Cloud: Uploading local contacts to cloud");
-                            if let Err(e) = crate::storage::cloud::sync_contacts_to_cloud(
-                                &self.contacts,
-                                &identity_seed,
-                                &self.device_keypair,
-                                &handle_proof,
-                            ) {
-                                crate::log(&format!("Failed to sync contacts to cloud: {}", e));
-                            }
-                        }
-                    }
-                    Ok(None) => {
-                        // No cloud contacts yet - upload if we have any
-                        if !self.contacts.is_empty() {
-                            crate::log(&format!(
-                                "Cloud: No cloud contacts, uploading {} local contacts",
-                                self.contacts.len()
-                            ));
-                            if let Err(e) = crate::storage::cloud::sync_contacts_to_cloud(
-                                &self.contacts,
-                                &identity_seed,
-                                &self.device_keypair,
-                                &handle_proof,
-                            ) {
-                                crate::log(&format!("Failed to upload contacts to cloud: {}", e));
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        crate::log(&format!("Failed to load cloud contacts: {}", e));
-                    }
-                }
             }
             self.attesting_handle = None;
 
@@ -2714,12 +2711,20 @@ impl PhotonApp {
             self.glow_colour = theme::GLOW_DEFAULT;
         }
         self.app_state = new_state;
-        // Recalculate text_layout since button area changes between Launch and other states
+        // Recalculate layouts since regions change between Launch and Ready states
+        let eff_ru = self.effective_ru();
         self.text_layout = TextLayout::new(
             self.width as usize,
             self.height as usize,
             self.span,
-            self.effective_ru(),
+            eff_ru,
+            &self.app_state,
+        );
+        self.layout = Layout::new(
+            self.width as usize,
+            self.height as usize,
+            self.span,
+            eff_ru,
             &self.app_state,
         );
         self.query_start_time = None;

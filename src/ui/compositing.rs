@@ -108,8 +108,8 @@ impl PhotonApp {
 
             let mut buffer = self.renderer.lock_buffer();
             let pixels = buffer.as_mut();
-            let indicator_radius = (self.span as f32 * eff_ru / 80.).max(1.) as usize;
-            let indicator_x = (self.span as f32 * eff_ru / 20.).max(1.) as usize;
+            let indicator_radius = (self.span as f32 * eff_ru / 160.).max(1.) as usize;
+            let indicator_x = (self.span as f32 * eff_ru / 40.).max(1.) as usize;
             let indicator_y = indicator_x;
 
             if self.window_dirty {
@@ -527,7 +527,10 @@ impl PhotonApp {
                         );
 
                         // Draw contact rows
+                        // IMPORTANT: derive diameter from radius to match draw_avatar's expectation
+                        // draw_avatar computes diameter = radius * 2, so we must scale to that
                         let avatar_radius = rows.avatar_diameter / 2;
+                        let avatar_diameter = avatar_radius * 2;
                         for (i, contact) in self.contacts.iter_mut().enumerate() {
                             let Some((avatar_cx, avatar_cy)) = rows.row_avatar_center(i) else {
                                 break; // Row outside visible area
@@ -545,14 +548,14 @@ impl PhotonApp {
                             // Scale contact avatar if needed
                             if contact.avatar_pixels.is_some()
                                 && (contact.avatar_scaled.is_none()
-                                    || contact.avatar_scaled_diameter != rows.avatar_diameter)
+                                    || contact.avatar_scaled_diameter != avatar_diameter)
                             {
                                 if let Some(scaled) = crate::avatar::scale_avatar(
                                     contact.avatar_pixels.as_ref().unwrap(),
-                                    rows.avatar_diameter,
+                                    avatar_diameter,
                                 ) {
                                     contact.avatar_scaled = Some(scaled);
-                                    contact.avatar_scaled_diameter = rows.avatar_diameter;
+                                    contact.avatar_scaled_diameter = avatar_diameter;
                                 }
                             }
 
@@ -2094,10 +2097,10 @@ impl PhotonApp {
         let window_height = window_height as usize;
 
         // Calculate button dimensions using harmonic mean (span) scaled by ru
-        // span = 2wh/(w+h), base button size = span/16, scaled by ru (zoom multiplier)
+        // span = 2wh/(w+h), base button size = span/32, scaled by ru (zoom multiplier)
         let span = 2.0 * window_width as f32 * window_height as f32
             / (window_width as f32 + window_height as f32);
-        let button_height = (span / 16.0 * ru).ceil() as usize;
+        let button_height = (span / 32.0 * ru).ceil() as usize;
         let button_width = button_height;
         let total_width = button_width * 7 / 2;
 
@@ -2106,7 +2109,7 @@ impl PhotonApp {
         let y_start = 0;
 
         // Build squircle crossings for bottom-left corner
-        let radius = span * ru / 2.;
+        let radius = span * ru / 4.;
         let squirdleyness = 24;
 
         let mut crossings: Vec<(u16, u8, u8)> = Vec::new();
