@@ -22,7 +22,7 @@ impl PhotonApp {
 
     /// Returns the textbox width (from text_layout)
     pub fn textbox_width(&self) -> usize {
-        self.text_layout.textbox_right - self.text_layout.textbox_left
+        self.text_layout.box_width
     }
 
     /// Returns the textbox height (from text_layout)
@@ -30,19 +30,19 @@ impl PhotonApp {
         self.text_layout.box_height
     }
 
-    /// Returns the textbox Y position (from text_layout)
-    pub fn textbox_y(&self) -> usize {
-        self.text_layout.textbox_y
+    /// Returns the textbox center Y position (from text_layout)
+    pub fn textbox_center_y(&self) -> usize {
+        self.text_layout.center_y
     }
 
-    /// Returns the left x limit for blinkey/text (from text_layout)
+    /// Returns the left x edge of the textbox (from text_layout)
     pub fn textbox_left(&self) -> usize {
-        self.text_layout.textbox_left
+        self.text_layout.center_x - self.text_layout.box_width / 2
     }
 
-    /// Returns the right x limit of the textbox visual bounds (from text_layout)
+    /// Returns the right x edge of the textbox (from text_layout)
     pub fn textbox_right(&self) -> usize {
-        self.text_layout.textbox_right
+        self.text_layout.center_x + self.text_layout.box_width / 2
     }
 
     /// Recalculate all character widths (e.g., after font size change on resize)
@@ -85,8 +85,8 @@ impl PhotonApp {
 
         let text_start_x = layout.text_start_x(text);
         // Use full textbox bounds for rendering - text can flow under button area
-        let textbox_left = layout.textbox_left as f32;
-        let textbox_right = layout.textbox_right as f32;
+        let textbox_left = (layout.center_x - layout.box_width / 2) as f32;
+        let textbox_right = (layout.center_x + layout.box_width / 2) as f32;
 
         let mut x_offset = text_start_x;
 
@@ -101,7 +101,7 @@ impl PhotonApp {
                     window_width,
                     ch,
                     x_offset,
-                    layout.textbox_y as f32,
+                    layout.center_y as f32,
                     layout.font_size,
                     500,
                     theme::FONT_USER_CONTENT,
@@ -618,8 +618,8 @@ impl PhotonApp {
         let sel_x_start = (text_start_x + sel_start_px as f32) as isize;
         let sel_x_end = (text_start_x + sel_end_px as f32) as isize;
 
-        let sel_y_top = (layout.textbox_y as f32 - layout.font_size / 2.0) as isize;
-        let sel_y_bottom = (layout.textbox_y as f32 + layout.font_size / 2.0) as isize;
+        let sel_y_top = (layout.center_y as f32 - layout.font_size / 2.0) as isize;
+        let sel_y_bottom = (layout.center_y as f32 + layout.font_size / 2.0) as isize;
 
         let textbox_left = layout.usable_left as isize;
         let textbox_right = layout.usable_right as isize;

@@ -20,7 +20,8 @@ wrangler r2 object put "$R2_BUCKET/$R2_PATH/photon-messenger-linux-development" 
     --file target/debug/photon-messenger --remote
 
 # Also upload the install script
-wrangler r2 object put "$R2_BUCKET/$R2_PATH/install-development.sh" --file install-development.sh --remote
+wrangler r2 object put "$R2_BUCKET/$R2_PATH/install-development.sh" \
+    --file install-development.sh --content-type text/plain --remote
 
 echo ""
 echo "Linux dev build deployed to R2"

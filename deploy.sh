@@ -74,16 +74,21 @@ wrangler r2 object put "$R2_BUCKET/$R2_PATH/photon-messenger-macos-intel-release
 wrangler r2 object put "$R2_BUCKET/$R2_PATH/photon-messenger-macos-arm64-release" \
     --file target/aarch64-apple-darwin/release/photon-messenger --remote
 wrangler r2 object put "$R2_BUCKET/$R2_PATH/photon-messenger-android-release.apk" \
-    --file android/app/build/outputs/apk/release/app-release.apk --remote
+    --file android/app/build/outputs/apk/release/app-release.apk \
+    --content-type application/vnd.android.package-archive --remote
 
 # Upload install scripts and assets
-wrangler r2 object put "$R2_BUCKET/$R2_PATH/install-release.sh" --file install-release.sh --remote
-wrangler r2 object put "$R2_BUCKET/$R2_PATH/icon-1024.png" --file assets/icon-1024.png --remote
-wrangler r2 object put "$R2_BUCKET/$R2_PATH/app.png" --file assets/icon-256.png --remote
+wrangler r2 object put "$R2_BUCKET/$R2_PATH/install-release.sh" \
+    --file install-release.sh --content-type text/plain --remote
+wrangler r2 object put "$R2_BUCKET/$R2_PATH/icon-1024.png" \
+    --file assets/icon-1024.png --content-type image/png --remote
+wrangler r2 object put "$R2_BUCKET/$R2_PATH/app.png" \
+    --file assets/icon-256.png --content-type image/png --remote
 
 # Patch and upload install-release.ps1 with correct hash
 sed "s/\$expectedHash = \"[A-F0-9]*\"/\$expectedHash = \"$WINDOWS_SHA256\"/" install-release.ps1 > /tmp/install-release.ps1
-wrangler r2 object put "$R2_BUCKET/$R2_PATH/install-release.ps1" --file /tmp/install-release.ps1 --remote
+wrangler r2 object put "$R2_BUCKET/$R2_PATH/install-release.ps1" \
+    --file /tmp/install-release.ps1 --content-type text/plain --remote
 
 echo ""
 echo "Linux, Windows, Redox, macOS Intel, macOS ARM64, Android binaries deployed to R2"

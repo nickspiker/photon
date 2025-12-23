@@ -116,7 +116,7 @@ impl PhotonApp {
                             // Calculate blinkey pixel position using TextLayout (single source of truth)
                             let box_width = self.textbox_width();
                             let box_height = self.textbox_height();
-                            let textbox_y = self.textbox_y();
+                            let textbox_y = self.textbox_center_y();
                             let font_size = self.text_layout.font_size;
 
                             let new_blinkey_x =
@@ -221,7 +221,7 @@ impl PhotonApp {
                                 if self.blinkey_visible {
                                     let box_width = self.textbox_width();
                                     let box_height = self.textbox_height();
-                                    let textbox_y = self.textbox_y();
+                                    let textbox_y = self.textbox_center_y();
                                     let font_size = self.font_size();
                                     let mut buffer = self.renderer.lock_buffer();
                                     let pixels = buffer.as_mut();
@@ -368,7 +368,7 @@ impl PhotonApp {
                                 if self.blinkey_visible {
                                     let box_width = self.textbox_width();
                                     let box_height = self.textbox_height();
-                                    let textbox_y = self.textbox_y();
+                                    let textbox_y = self.textbox_center_y();
                                     let font_size = self.font_size();
                                     let mut buffer = self.renderer.lock_buffer();
                                     let pixels = buffer.as_mut();

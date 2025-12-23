@@ -186,7 +186,7 @@ pub fn encode_avatar_from_image(image_data: &[u8]) -> Result<Vec<u8>, String> {
     // Apply circular mask in linear space and encode to gamma
     let mut vsf_rgb_f32 = vec![0.0f32; size * size * 3];
     let center = size as isize / 2;
-    let r_outer = size as isize / 2;
+    let r_outer = size as isize / 2 + 1;
     let r_outer2 = r_outer * r_outer;
     let r_inner = r_outer - 1;
     let r_inner2 = r_inner * r_inner;
@@ -1608,9 +1608,7 @@ pub fn sync_avatar_bidirectional(
                     Err(e) => AvatarSyncResult::Error(format!("Upload failed: {}", e)),
                 }
             } else {
-                crate::log(
-                    "Avatar sync: Server missing timestamp, but no handle_proof for upload",
-                );
+                crate::log("Avatar sync: Server missing timestamp, but no handle_proof for upload");
                 AvatarSyncResult::Error("No handle_proof for upload".to_string())
             }
         }

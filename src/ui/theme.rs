@@ -33,6 +33,7 @@ pub const FILL: u32 = fmt(0xFF_40_40_40);
 pub const LABEL_COLOUR: u32 = fmt(0xFF_80_80_80);
 pub const CURSOR_BRIGHTNESS: f32 = 100.; // Cursor wave brightness multiplier
 pub const TEXT_COLOUR: u32 = fmt(0xFF_D0_D0_D0);
+pub const TEXT_SELECTION_COLOUR: u32 = fmt(0xFF_D0_D0_D0);
 
 // Button colours
 pub const BUTTON_BASE: u32 = fmt(0xFF_40_40_40);

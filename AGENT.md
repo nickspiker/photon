@@ -1,11 +1,41 @@
 # AGENT.md - Code Generation Rules
-
 ## Rule 0: Bounds Checks and Saturating Arithmetic
-
 **IF YOU ADD ANY BOUNDS CHECK OR SATURATING ARITHMETIC, YOU ARE REQUIRED TO:**
 0. **STATE WHY** it was added
 1. **PROVE** it was necessary
 2. **EXPLAIN** what undefined behavior or memory unsafety it prevents
+
+### Complete List of Operations That Require Justification:
+
+**Saturating Arithmetic:**
+- `saturating_add`, `saturating_sub`, `saturating_mul`, `saturating_div`, `saturating_pow`
+- `wrapping_add`, `wrapping_sub`, `wrapping_mul` (when used to prevent overflow)
+- `checked_add`, `checked_sub`, `checked_mul`, `checked_div`, `checked_rem`, `checked_pow`
+- `overflowing_*` operations
+
+**Clamping/Range Limiting:**
+- `clamp(min, max)`
+- `min(a, b)`, `max(a, b)` when used to constrain values
+- Manual clamping: `if x > max { max } else { x }`
+
+**Bounds Checks:**
+- `if idx < vec.len()` or any length/capacity check
+- `.get(idx)` instead of `[idx]`
+- `.get_mut(idx)` instead of `[idx]`
+- Range checks before indexing: `if x < width && y < height`
+
+**Safe Access Patterns:**
+- `.get().unwrap_or()`, `.get().unwrap_or_default()`
+- `.get().map()`, `.and_then()`
+- Pattern matching on `.get()` results
+
+**Division/Modulo Guards:**
+- `if divisor != 0` before division
+- `checked_div`, `checked_rem`
+
+**Bit Shift Validation:**
+- Checking shift amount < type bit width
+- `checked_shl`, `checked_shr`
 
 ### What Counts as a Bounds Check:
 - `if idx < vec.len()`
@@ -43,7 +73,7 @@ blended = (blended >> 8) & 0x00FF00FF00FF00FF;     // Bit ops handle the overflo
 
 ### When to Panic Instead:
 ```rust
-// Debug visualization - if buffer is wrong size, FAIL LOUD
+// Debug visualization - if buffer is wrong size, FAIL LOUD, that means WE FUCKED UP SOMEWHERE ELSE, bounds checks hide problems!
 if self.show_textbox_mask {
     for y in 0..self.height as usize {
         for x in 0..self.width as usize {
@@ -552,3 +582,4 @@ Eagle Time is the physically correct, unambiguous, monotonic time standard. Use 
 
 Oh, and if you haven't noticed by now but when indexing in //'s and variable names, starte with the first number (0), not the second number (1)
 Development builds? use ./build-development.sh DO NOT DO RELEASE BUILDS UNLESS THE USER EXPLICITLY ASKS!
+Agent to test builds with ./build-development.sh and user will run.

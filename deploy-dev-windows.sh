@@ -24,7 +24,8 @@ wrangler r2 object put "$R2_BUCKET/$R2_PATH/photon-messenger-windows-development
 
 # Generate and upload install-development.ps1 with correct hash
 sed "s/\$expectedHash = \"[A-F0-9]*\"/\$expectedHash = \"$WINDOWS_SHA256\"/" install-development.ps1 > /tmp/install-development.ps1
-wrangler r2 object put "$R2_BUCKET/$R2_PATH/install-development.ps1" --file /tmp/install-development.ps1 --remote
+wrangler r2 object put "$R2_BUCKET/$R2_PATH/install-development.ps1" \
+    --file /tmp/install-development.ps1 --content-type text/plain --remote
 
 echo ""
 echo "Windows dev build deployed to R2"

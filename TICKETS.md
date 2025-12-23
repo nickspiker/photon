@@ -7,6 +7,25 @@ Extra hash on executable?
 self updates need added
 network broadcast gets stuck/lost
 needs to keep text entry box selected whilist sending messageths
+chrome downloads rename to .zip and trigger extract, not install instead of apk on Android
+
+● Update(src/ui/compositing.rs) Gotta actually test this
+  ⎿  Updated src/ui/compositing.rs with 8 additions                                                          
+       2061    
+       2062                // Always present buffer once per frame
+       2063                buffer.present().unwrap();
+       2064 +          } else {
+       2065 +              // macOS with transparent windows + softbuffer doesn't retain buffer contents
+       2066 +              // between frames. Must re-present even when nothing changed or window goes black.
+       2067 +              #[cfg(target_os = "macos")]
+       2068 +              {
+       2069 +                  let mut buffer = self.renderer.lock_buffer();
+       2070 +                  buffer.present().unwrap();
+       2071 +              }
+       2072            }
+       2073            self.window_dirty = false;
+       2074            self.text_dirty = false;
+
 
 Need to colourize handles
 fn colourize(hash: [u8; 32], num_handles: usize) -> [f32; 3] {
