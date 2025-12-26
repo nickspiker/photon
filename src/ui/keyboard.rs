@@ -263,6 +263,10 @@ impl PhotonApp {
                             }
                             self.set_launch_state(LaunchState::Fresh);
                         }
+                        if matches!(self.app_state, AppState::Ready | AppState::Searching) {
+                            self.window_dirty = true; // Redraw for contact filtering
+                            self.contacts_scroll_offset = 0; // Reset scroll when filter changes
+                        }
                         if self.search_result.is_some() {
                             self.window_dirty = true;
                         }
@@ -290,6 +294,10 @@ impl PhotonApp {
                             }
                             self.set_launch_state(LaunchState::Fresh);
                         }
+                        if matches!(self.app_state, AppState::Ready | AppState::Searching) {
+                            self.window_dirty = true; // Redraw for contact filtering
+                            self.contacts_scroll_offset = 0; // Reset scroll when filter changes
+                        }
                         if self.search_result.is_some() {
                             self.window_dirty = true;
                         }
@@ -311,6 +319,10 @@ impl PhotonApp {
                             }
                             self.set_launch_state(LaunchState::Fresh);
                         }
+                        if matches!(self.app_state, AppState::Ready | AppState::Searching) {
+                            self.window_dirty = true; // Redraw for contact filtering
+                            self.contacts_scroll_offset = 0; // Reset scroll when filter changes
+                        }
                         if self.search_result.is_some() {
                             self.window_dirty = true;
                         }
@@ -328,6 +340,10 @@ impl PhotonApp {
                                 self.window_dirty = true; // Force redraw to update button
                             }
                             self.set_launch_state(LaunchState::Fresh);
+                        }
+                        if matches!(self.app_state, AppState::Ready | AppState::Searching) {
+                            self.window_dirty = true; // Redraw for contact filtering
+                            self.contacts_scroll_offset = 0; // Reset scroll when filter changes
                         }
                         if self.search_result.is_some() {
                             self.window_dirty = true;
@@ -348,9 +364,33 @@ impl PhotonApp {
                                 self.start_attestation();
                             }
                             AppState::Ready => {
-                                // In Ready state: search for this handle
-                                let handle: String = self.current_text_state.chars.iter().collect();
-                                self.start_handle_search(&handle);
+                                // In Ready state: add contact (same as + button)
+                                let handle: String =
+                                    self.current_text_state.chars.iter().collect();
+                                let handle_lower = handle.to_lowercase();
+
+                                // Check if contact already exists (exact match)
+                                let existing_idx = self.contacts.iter().position(|c| {
+                                    c.handle.as_str().to_lowercase() == handle_lower
+                                });
+
+                                if let Some(idx) = existing_idx {
+                                    // Contact already exists - open conversation
+                                    self.selected_contact = Some(idx);
+                                    self.app_state = AppState::Conversation;
+                                    self.reset_textbox();
+                                    self.text_layout = TextLayout::new(
+                                        self.width as usize,
+                                        self.height as usize,
+                                        self.span,
+                                        self.effective_ru(),
+                                        &self.app_state,
+                                    );
+                                } else {
+                                    // New handle - search network
+                                    self.start_handle_search(&handle);
+                                }
+                                self.window_dirty = true;
                             }
                             AppState::Searching => {
                                 // Already searching, ignore Enter
@@ -444,6 +484,11 @@ impl PhotonApp {
                         self.window_dirty = true; // Force redraw to update button
                     }
                     self.set_launch_state(LaunchState::Fresh);
+                }
+                // Force redraw for contact filtering in Ready/Searching states
+                if matches!(self.app_state, AppState::Ready | AppState::Searching) {
+                    self.window_dirty = true;
+                    self.contacts_scroll_offset = 0; // Reset scroll when filter changes
                 }
                 // Clear search result and force redraw if we had a result showing
                 if self.search_result.is_some() {

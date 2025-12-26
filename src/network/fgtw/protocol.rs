@@ -117,7 +117,8 @@ pub enum FgtwMessage {
 pub struct PeerRecord {
     pub handle_proof: [u8; 32], // Memory-hard PoW output (24MB, 17 rounds)
     pub device_pubkey: DevicePubkey, // Device's X25519 public key (used as device identifier)
-    pub ip: SocketAddr,         // Where to reach this device
+    pub ip: SocketAddr,         // Where to reach this device (public IP)
+    pub local_ip: Option<std::net::IpAddr>, // LAN IP for hairpin NAT (peers behind same public IP)
     pub last_seen: f64,         // Timestamp (f64, serializes as VSF type f6)
 }
 
@@ -752,6 +753,7 @@ impl PeerRecord {
             handle_proof,
             device_pubkey,
             ip,
+            local_ip: None,
             last_seen: vsf::eagle_time_nanos(),
         }
     }
@@ -877,6 +879,7 @@ fn extract_peer_list(
             handle_proof,
             device_pubkey,
             ip,
+            local_ip: None, // Legacy path - local_ip parsed in bootstrap.rs
             last_seen,
         });
     }
@@ -1030,10 +1033,10 @@ use crate::crypto::clutch::{ClutchCompletePayload, ClutchKemResponsePayload, Clu
 /// conversation_token: Privacy-preserving smear_hash of sorted participant identity seeds.
 /// Replaces handle_hashes to prevent identity correlation by network observers.
 ///
-/// Note: The VSF provenance hash (hp) is auto-computed by sign_file and serves as the
-/// unique offer provenance (includes timestamp + content hash). The ceremony_id is
-/// computed later from all parties' offer provenances via spaghettify.
-/// Returns (vsf_bytes, offer_provenance) - the signed VSF and its unique hp hash.
+/// Note: The offer_provenance is computed deterministically from the public keys.
+/// This ensures both parties compute identical provenances regardless of timestamp.
+/// The ceremony_id is computed later from all parties' offer provenances via spaghettify.
+/// Returns (vsf_bytes, offer_provenance) - the signed VSF and the key-based provenance.
 pub fn build_clutch_offer_vsf(
     conversation_token: &[u8; 32],
     payload: &ClutchOfferPayload,
@@ -1075,11 +1078,20 @@ pub fn build_clutch_offer_vsf(
     // Sign the file (computes file hash, signs it, patches ge)
     let signed = vsf::verification::sign_file(unsigned, device_secret)?;
 
-    // Extract the offer_provenance (hp field) from the signed VSF
-    use vsf::file_format::VsfHeader;
-    let (header, _) =
-        VsfHeader::decode(&signed).map_err(|e| format!("Failed to parse signed header: {}", e))?;
-    let offer_provenance = extract_header_provenance(&header)?;
+    // Compute offer_provenance from keys (deterministic, no timestamp)
+    // Hash all pubkeys in fixed order: x25519, p384, secp256k1, p256, frodo, ntru, mceliece, hqc
+    let offer_provenance = {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(&payload.x25519_public);
+        hasher.update(&payload.p384_public);
+        hasher.update(&payload.secp256k1_public);
+        hasher.update(&payload.p256_public);
+        hasher.update(&payload.frodo976_public);
+        hasher.update(&payload.ntru701_public);
+        hasher.update(&payload.mceliece_public);
+        hasher.update(&payload.hqc256_public);
+        *hasher.finalize().as_bytes()
+    };
 
     Ok((signed, offer_provenance))
 }
@@ -1092,7 +1104,7 @@ pub fn build_clutch_offer_vsf(
 /// 3. conversation_token matches expected token for our conversation
 ///
 /// Returns (payload, sender_pubkey, offer_provenance, conversation_token)
-/// - offer_provenance: Unique per offer (VSF hp field = content hash with timestamp)
+/// - offer_provenance: Deterministic hash of the offer's public keys (no timestamp)
 /// - conversation_token: Privacy-preserving smear_hash of sorted participant identity seeds
 pub fn parse_clutch_offer_vsf(
     vsf_bytes: &[u8],
@@ -1106,12 +1118,12 @@ pub fn parse_clutch_offer_vsf(
     // Extract signer pubkey
     let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
 
-    // Parse header for offer_provenance (hp field - unique per offer due to timestamp)
+    // Parse header to get section start position
     use vsf::file_format::VsfHeader;
-    let (header, header_end) =
+    let (_header, header_end) =
         VsfHeader::decode(vsf_bytes).map_err(|e| format!("Failed to parse header: {}", e))?;
 
-    let offer_provenance = extract_header_provenance(&header)?;
+    // offer_provenance will be computed from keys after parsing (deterministic, no timestamp)
 
     // Parse section
     let mut ptr = header_end;
@@ -1236,6 +1248,21 @@ pub fn parse_clutch_offer_vsf(
         hqc256_public,
     };
 
+    // Compute offer_provenance from keys (deterministic, no timestamp)
+    // Hash all pubkeys in fixed order: x25519, p384, secp256k1, p256, frodo, ntru, mceliece, hqc
+    let offer_provenance = {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(&payload.x25519_public);
+        hasher.update(&payload.p384_public);
+        hasher.update(&payload.secp256k1_public);
+        hasher.update(&payload.p256_public);
+        hasher.update(&payload.frodo976_public);
+        hasher.update(&payload.ntru701_public);
+        hasher.update(&payload.mceliece_public);
+        hasher.update(&payload.hqc256_public);
+        *hasher.finalize().as_bytes()
+    };
+
     #[cfg(feature = "development")]
     {
         let prov_hex: String = offer_provenance
@@ -1244,7 +1271,7 @@ pub fn parse_clutch_offer_vsf(
             .map(|b| format!("{:02x}", b))
             .collect();
         crate::log(&format!(
-            "CLUTCH: Received offer ({} bytes) offer_provenance={}...",
+            "CLUTCH: Received offer ({} bytes) offer_provenance={}... (key-based)",
             vsf_bytes.len(),
             prov_hex
         ));
@@ -1582,7 +1609,7 @@ pub fn parse_clutch_kem_response_vsf(
 /// 2. Ed25519 signature (header-level)
 ///
 /// Returns (payload, sender_pubkey, offer_provenance, conversation_token)
-/// - offer_provenance: Unique per offer (VSF hp field = content hash with timestamp)
+/// - offer_provenance: Deterministic hash of the offer's public keys (no timestamp)
 pub fn parse_clutch_offer_vsf_without_recipient_check(
     vsf_bytes: &[u8],
 ) -> Result<(ClutchOfferPayload, [u8; 32], [u8; 32], [u8; 32]), String> {
@@ -1594,12 +1621,12 @@ pub fn parse_clutch_offer_vsf_without_recipient_check(
     // Extract signer pubkey
     let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
 
-    // Parse header for offer_provenance (hp field - unique per offer due to timestamp)
+    // Parse header to get section start position
     use vsf::file_format::VsfHeader;
-    let (header, header_end) =
+    let (_header, header_end) =
         VsfHeader::decode(vsf_bytes).map_err(|e| format!("Failed to parse header: {}", e))?;
 
-    let offer_provenance = extract_header_provenance(&header)?;
+    // offer_provenance will be computed from keys after parsing (deterministic, no timestamp)
 
     // Parse section
     let mut ptr = header_end;
@@ -1719,10 +1746,26 @@ pub fn parse_clutch_offer_vsf_without_recipient_check(
         hqc256_public,
     };
 
+    // Compute offer_provenance from keys (deterministic, no timestamp)
+    // Hash all pubkeys in fixed order: x25519, p384, secp256k1, p256, frodo, ntru, mceliece, hqc
+    let offer_provenance = {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(&payload.x25519_public);
+        hasher.update(&payload.p384_public);
+        hasher.update(&payload.secp256k1_public);
+        hasher.update(&payload.p256_public);
+        hasher.update(&payload.frodo976_public);
+        hasher.update(&payload.ntru701_public);
+        hasher.update(&payload.mceliece_public);
+        hasher.update(&payload.hqc256_public);
+        *hasher.finalize().as_bytes()
+    };
+
     #[cfg(feature = "development")]
     crate::log(&format!(
-        "CLUTCH: Parsed offer (no recipient check) HQC pub[..8]={}",
-        hex::encode(&payload.hqc256_public[..8])
+        "CLUTCH: Parsed offer (no recipient check) HQC pub[..8]={} provenance={}...",
+        hex::encode(&payload.hqc256_public[..8]),
+        hex::encode(&offer_provenance[..8])
     ));
 
     Ok((payload, sender_pubkey, offer_provenance, conversation_token))

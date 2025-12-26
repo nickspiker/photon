@@ -1,5 +1,5 @@
 #!/bin/bash
-# Release build without logging (smaller binary, no logcat output)
+# Development build with logging enabled for debugging via logcat
 set -e
 
 cp /home/nick/MEGA/code/keys/google-services.json /home/nick/code/photon/android/app/
@@ -52,8 +52,8 @@ export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C link-arg=-fuse-ld=mol
 export CC="clang"
 export CXX="clang++"
 
-echo "Building Photon for Android (arm64) - RELEASE (no logging)..."
-PHOTON_ALLOW_RELEASE=1 cargo build --release --lib --target aarch64-linux-android
+echo "Building Photon for Android (arm64) with LOGGING enabled..."
+PHOTON_ALLOW_RELEASE=1 cargo build --release --lib --target aarch64-linux-android --features logging
 
 # Copy to Android project jniLibs
 echo "Copying .so to Android project..."
@@ -71,4 +71,5 @@ echo "APK created at android/app/build/outputs/apk/release/"
 echo "Installing via ADB..."
 $ANDROID_HOME/platform-tools/adb install -r android/app/build/outputs/apk/release/app-release.apk
 
-echo "RELEASE build complete! (no logging)"
+echo ""
+echo "DEV build complete! View logs with: adb logcat -s photon"

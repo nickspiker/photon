@@ -699,52 +699,57 @@ impl ContactsUnifiedLayout {
         }
     }
 
-    /// Get user avatar center and radius.
-    pub fn user_avatar_center_radius(&self) -> (usize, usize, usize) {
+    /// Get user avatar center and radius (isize for scroll support).
+    pub fn user_avatar_center_radius(&self) -> (isize, isize, isize) {
         // Circle uses height for diameter, centered in region
-        let radius = self.user_avatar.h / 2;
-        let cx = self.user_avatar.x + self.user_avatar.w / 2;
-        let cy = self.user_avatar.y + self.user_avatar.h / 2;
+        let radius = (self.user_avatar.h / 2) as isize;
+        let cx = self.user_avatar.x as isize + (self.user_avatar.w / 2) as isize;
+        let cy = self.user_avatar.y as isize + (self.user_avatar.h / 2) as isize;
         (cx, cy, radius)
     }
 
-    /// Get the region for a specific contact row by index.
-    pub fn row_region(&self, index: usize) -> Option<PixelRegion> {
-        let row_y = self.rows.y + index * self.row_height;
-        if row_y + self.row_height > self.rows.bottom() {
-            None
-        } else {
-            Some(PixelRegion::new(
-                self.rows.x,
-                row_y,
-                self.rows.w,
-                self.row_height,
-            ))
-        }
+    /// Get avatar center position for a contact row (isize for scroll support).
+    /// Returns positions unconditionally - visibility determined at render time with scroll offset.
+    pub fn row_avatar_center(&self, index: usize) -> (isize, isize) {
+        let row_y = self.rows.y as isize + index as isize * self.row_height as isize;
+        let cx = self.rows.x as isize + self.center_offset as isize + (self.avatar_diameter / 2) as isize;
+        let cy = row_y + (self.row_height / 2) as isize;
+        (cx, cy)
     }
 
-    /// Get avatar center position for a contact row.
-    pub fn row_avatar_center(&self, index: usize) -> Option<(usize, usize)> {
-        let row_y = self.rows.y + index * self.row_height;
-        if row_y + self.row_height > self.rows.bottom() {
-            None
-        } else {
-            let cx = self.rows.x + self.center_offset + self.avatar_diameter / 2;
-            let cy = row_y + self.row_height / 2;
-            Some((cx, cy))
-        }
+    /// Get text position for a contact row (isize for scroll support).
+    /// Returns positions unconditionally - visibility determined at render time with scroll offset.
+    pub fn row_text_position(&self, index: usize) -> (isize, isize) {
+        let row_y = self.rows.y as isize + index as isize * self.row_height as isize;
+        let x = self.rows.x as isize + self.center_offset as isize + self.text_left_offset as isize;
+        let y = row_y + (self.row_height / 2) as isize;
+        (x, y)
     }
 
-    /// Get text position for a contact row.
-    pub fn row_text_position(&self, index: usize) -> Option<(f32, f32)> {
-        let row_y = self.rows.y + index * self.row_height;
-        if row_y + self.row_height > self.rows.bottom() {
-            None
-        } else {
-            let x = (self.rows.x + self.center_offset + self.text_left_offset) as f32;
-            let y = (row_y + self.row_height / 2) as f32;
-            Some((x, y))
-        }
+    /// Get handle text center position (isize for scroll support).
+    pub fn handle_center(&self) -> (isize, isize) {
+        let cx = self.handle.x as isize + (self.handle.w / 2) as isize;
+        let cy = self.handle.y as isize + (self.handle.h / 2) as isize;
+        (cx, cy)
+    }
+
+    /// Get hint text center position (isize for scroll support).
+    pub fn hint_center(&self) -> (isize, isize) {
+        let cx = self.hint.x as isize + (self.hint.w / 2) as isize;
+        let cy = self.hint.y as isize + (self.hint.h / 2) as isize;
+        (cx, cy)
+    }
+
+    /// Get textbox center position (isize for scroll support).
+    pub fn textbox_center(&self) -> (isize, isize) {
+        let cx = self.textbox.x as isize + (self.textbox.w / 2) as isize;
+        let cy = self.textbox.y as isize + (self.textbox.h / 2) as isize;
+        (cx, cy)
+    }
+
+    /// Get separator Y position (isize for scroll support).
+    pub fn separator_y(&self) -> isize {
+        self.separator.y as isize + (self.separator.h / 2) as isize
     }
 
     /// Get the number of visible contact rows.
@@ -1102,6 +1107,8 @@ pub struct PhotonApp {
 
     // Contacts list (handles we've searched and found)
     pub contacts: Vec<Contact>,
+    // Scroll offset for contacts list (pixels, negative = scrolled up)
+    pub contacts_scroll_offset: isize,
     // Shared pubkey list for StatusChecker (synced with contacts)
     pub contact_pubkeys: crate::network::status::ContactPubkeys,
     // Shared sync records for pong responses (last_received_ef6 per conversation)
@@ -1117,6 +1124,7 @@ pub struct PhotonApp {
     // P2P status checker for contact online status
     pub status_checker: Option<StatusChecker>,
     pub next_status_ping: std::time::Instant, // When to ping contacts next
+    pub our_public_ip: Option<std::net::IpAddr>, // Our public IP from FGTW (for same-NAT detection)
 
     // Periodic FGTW refresh
     pub next_fgtw_refresh: std::time::Instant, // When to re-announce to FGTW
@@ -1334,6 +1342,7 @@ impl PhotonApp {
             debug: false,
             is_fullscreen,
             contacts: Vec::new(),
+            contacts_scroll_offset: 0,
             contact_pubkeys: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             sync_records_provider: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             hovered_contact: None,
@@ -1342,6 +1351,7 @@ impl PhotonApp {
             selected_contact: None,
             status_checker: None, // Initialized AFTER attestation succeeds
             next_status_ping: std::time::Instant::now(),
+            our_public_ip: None,
             next_fgtw_refresh: std::time::Instant::now() + std::time::Duration::from_secs(60),
             attesting_handle: None,
             avatar_pixels,
@@ -1373,6 +1383,22 @@ impl PhotonApp {
             let handle_query = HandleQuery::new(app.device_keypair.clone(), event_proxy.clone());
             let peer_store = std::sync::Arc::new(std::sync::Mutex::new(PeerStore::new()));
             handle_query.set_transport(peer_store);
+
+            // Start StatusChecker early so PT receiver is ready before attestation
+            // This allows us to receive ClutchOffers from peers who come online before us
+            use crate::network::status::StatusChecker;
+            app.status_checker = StatusChecker::new(
+                handle_query.socket().clone(),
+                app.device_keypair.clone(),
+                app.contact_pubkeys.clone(),
+                app.sync_records_provider.clone(),
+                event_proxy.clone(),
+            )
+            .ok();
+            if app.status_checker.is_some() {
+                crate::log("UI: Status checker started early (PT receiver ready)");
+            }
+
             app.handle_query = Some(handle_query);
         }
 
@@ -1479,6 +1505,7 @@ impl PhotonApp {
             debug: false,
             is_fullscreen: true, // Android is always fullscreen
             contacts: Vec::new(),
+            contacts_scroll_offset: 0,
             contact_pubkeys: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             sync_records_provider: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             hovered_contact: None,
@@ -1487,6 +1514,7 @@ impl PhotonApp {
             selected_contact: None,
             status_checker: None,
             next_status_ping: std::time::Instant::now(),
+            our_public_ip: None,
             next_fgtw_refresh: std::time::Instant::now() + std::time::Duration::from_secs(60),
             attesting_handle: None,
             avatar_pixels: None,
@@ -1697,7 +1725,11 @@ impl PhotonApp {
         };
 
         // Special case: tap on textbox when already focused = position cursor
-        if element == HIT_HANDLE_TEXTBOX && self.current_text_state.textbox_focused {
+        // But not during attestation - handle is locked in
+        if element == HIT_HANDLE_TEXTBOX
+            && self.current_text_state.textbox_focused
+            && !matches!(self.app_state, AppState::Launch(LaunchState::Attesting))
+        {
             self.current_text_state.blinkey_index = self.blinkey_index_from_x(self.mouse_x);
             self.current_text_state.selection_anchor = None;
             self.text_dirty = true;
@@ -1717,14 +1749,19 @@ impl PhotonApp {
         // Only execute action if we're still in hover state (didn't drag off)
         match self.hovered_button {
             HoveredButton::Textbox => {
-                // Focus textbox and show keyboard
-                // Always return 1 even if already focused - keyboard may have been dismissed
-                self.current_text_state.textbox_focused = true;
-                self.blinkey_visible = true;
-                self.text_dirty = true;
-                #[cfg(target_os = "android")]
-                {
-                    keyboard_action = 1; // Always request keyboard on Android
+                // Don't allow textbox focus during attestation - handle is locked in
+                if matches!(self.app_state, AppState::Launch(LaunchState::Attesting)) {
+                    // Ignore textbox taps while attesting
+                } else {
+                    // Focus textbox and show keyboard
+                    // Always return 1 even if already focused - keyboard may have been dismissed
+                    self.current_text_state.textbox_focused = true;
+                    self.blinkey_visible = true;
+                    self.text_dirty = true;
+                    #[cfg(target_os = "android")]
+                    {
+                        keyboard_action = 1; // Always request keyboard on Android
+                    }
                 }
             }
             HoveredButton::QueryButton => {
@@ -1732,6 +1769,10 @@ impl PhotonApp {
                 match &self.app_state {
                     AppState::Launch(LaunchState::Fresh) => {
                         self.start_attestation();
+                        // Hide keyboard - user is done entering handle
+                        self.current_text_state.textbox_focused = false;
+                        self.blinkey_visible = false;
+                        keyboard_action = -1;
                     }
                     AppState::Ready => {
                         let handle: String = self.current_text_state.chars.iter().collect();
@@ -2000,6 +2041,23 @@ impl PhotonApp {
     /// Set the handle query system (called from JNI after keypair is available on Android,
     /// or can be used to reinitialize on any platform)
     pub fn set_handle_query(&mut self, handle_query: HandleQuery) {
+        // Start StatusChecker early so PT receiver is ready before attestation
+        // This allows us to receive ClutchOffers from peers who come online before us
+        #[cfg(target_os = "android")]
+        if self.status_checker.is_none() {
+            use crate::network::status::StatusChecker;
+            self.status_checker = StatusChecker::new(
+                handle_query.socket().clone(),
+                self.device_keypair.clone(),
+                self.contact_pubkeys.clone(),
+                self.sync_records_provider.clone(),
+            )
+            .ok();
+            if self.status_checker.is_some() {
+                crate::log("UI: Status checker started early (PT receiver ready)");
+            }
+        }
+
         self.handle_query = Some(handle_query);
     }
 
@@ -2234,11 +2292,18 @@ impl PhotonApp {
 
     /// Resize the application to new dimensions (shared by all platforms)
     pub fn resize_to(&mut self, width: u32, height: u32) {
+        let old_height = self.height as isize;
         let w = width as usize;
         let h = height as usize;
 
         self.width = width;
         self.height = height;
+
+        // Adjust scroll to keep content centered during resize
+        // Content at old center (old_height/2 - scroll) should stay at new center
+        // new_scroll = scroll + (new_height - old_height) / 2
+        let height_delta = (height as isize - old_height) / 2;
+        self.contacts_scroll_offset += height_delta;
 
         // On Android, compensate for keyboard resize by adjusting keyboard_scale
         // This keeps UI elements the same visual size when keyboard appears
@@ -2261,6 +2326,33 @@ impl PhotonApp {
 
         // Update region layout
         self.layout = Layout::new(w, h, self.span, eff_ru, &self.app_state);
+
+        // Clamp scroll to new content bounds (unless debug mode)
+        if !self.debug && matches!(self.app_state, AppState::Ready | AppState::Searching) {
+            let contacts_block = PixelRegion { x: 0, y: 0, w, h };
+            let layout = ContactsUnifiedLayout::new(&contacts_block, self.span, eff_ru, 0);
+            let user_section_bottom = layout.separator.y + layout.separator.h;
+
+            // Count visible contacts (respecting search filter)
+            let filter_text: String = self.current_text_state.chars.iter().collect();
+            let filter_lower = filter_text.to_lowercase();
+            let num_contacts = if filter_lower.is_empty() {
+                self.contacts.len()
+            } else {
+                self.contacts
+                    .iter()
+                    .filter(|c| c.handle.as_str().to_lowercase().contains(&filter_lower))
+                    .count()
+            };
+
+            let contacts_height = num_contacts * layout.row_height;
+            // +2 rows for padding and version number at bottom
+            let total_content_height = user_section_bottom + contacts_height + (2 * layout.row_height);
+
+            let max_scroll_up: isize = 0;
+            let max_scroll_down: isize = -((total_content_height as isize - h as isize).max(0));
+            self.contacts_scroll_offset = self.contacts_scroll_offset.clamp(max_scroll_down, max_scroll_up);
+        }
 
         self.renderer.resize(width, height);
         self.hit_test_map.resize((width * height) as usize, 0);
@@ -2629,6 +2721,14 @@ impl PhotonApp {
                 self.searching_handle = None;
                 self.query_start_time = None;
                 self.app_state = AppState::Ready;
+
+                // Update layout after contact list change - textbox position depends on contact count
+                let w = self.width as usize;
+                let h = self.height as usize;
+                let eff_ru = self.effective_ru();
+                self.layout = Layout::new(w, h, self.span, eff_ru, &self.app_state);
+                self.text_layout = TextLayout::new(w, h, self.span, eff_ru, &self.app_state);
+
                 self.window_dirty = true;
                 return true;
             }
@@ -2783,62 +2883,66 @@ impl PhotonApp {
             }
             self.attesting_handle = None;
 
-            // Initialize status checker for P2P contact pinging
+            // Initialize status checker for P2P contact pinging (if not already started early)
             if self.user_handle.is_some() {
-                // Populate sync_records_provider before creating StatusChecker
+                // Populate sync_records_provider (StatusChecker may already be running)
                 self.update_sync_records();
 
-                if let Some(hq) = &self.handle_query {
-                    #[cfg(not(target_os = "android"))]
-                    {
-                        self.status_checker = StatusChecker::new(
-                            hq.socket().clone(),
-                            self.device_keypair.clone(),
-                            self.contact_pubkeys.clone(),
-                            self.sync_records_provider.clone(),
-                            self.event_proxy.clone(),
-                        )
-                        .ok();
-                    }
-                    #[cfg(target_os = "android")]
-                    {
-                        self.status_checker = StatusChecker::new(
-                            hq.socket().clone(),
-                            self.device_keypair.clone(),
-                            self.contact_pubkeys.clone(),
-                            self.sync_records_provider.clone(),
-                        )
-                        .ok();
-                    }
-                    crate::log("UI: Status checker initialized after attestation");
-
-                    // Start WebSocket client for real-time peer IP updates (desktop only)
-                    #[cfg(not(target_os = "android"))]
-                    {
-                        use crate::network::PeerUpdateClient;
-                        self.peer_update_client =
-                            Some(PeerUpdateClient::new(self.event_proxy.clone()));
-                        crate::log("UI: PeerUpdateClient started for real-time IP updates");
-                    }
-
-                    // Broadcast StatusPing to all peers so they learn our IP (NAT hole punching)
-                    // Filter out our own pubkey - FGTW returns all peers including ourselves
-                    let our_pubkey_bytes = self.device_keypair.public.to_bytes();
-                    let other_peers: Vec<_> = initial_peers
-                        .iter()
-                        .filter(|p| p.device_pubkey.as_bytes() != &our_pubkey_bytes)
-                        .collect();
-
-                    if !other_peers.is_empty() {
-                        if let Some(ref checker) = self.status_checker {
-                            for peer in &other_peers {
-                                checker.ping(peer.ip, peer.device_pubkey.clone());
-                            }
-                            crate::log(&format!(
-                                "Network: Initial broadcast ping to {} peer(s)",
-                                other_peers.len()
-                            ));
+                if self.status_checker.is_none() {
+                    if let Some(hq) = &self.handle_query {
+                        #[cfg(not(target_os = "android"))]
+                        {
+                            self.status_checker = StatusChecker::new(
+                                hq.socket().clone(),
+                                self.device_keypair.clone(),
+                                self.contact_pubkeys.clone(),
+                                self.sync_records_provider.clone(),
+                                self.event_proxy.clone(),
+                            )
+                            .ok();
                         }
+                        #[cfg(target_os = "android")]
+                        {
+                            self.status_checker = StatusChecker::new(
+                                hq.socket().clone(),
+                                self.device_keypair.clone(),
+                                self.contact_pubkeys.clone(),
+                                self.sync_records_provider.clone(),
+                            )
+                            .ok();
+                        }
+                        crate::log("UI: Status checker initialized after attestation");
+                    }
+                } else {
+                    crate::log("UI: Status checker already running (started early)");
+                }
+
+                // Start WebSocket client for real-time peer IP updates (desktop only)
+                #[cfg(not(target_os = "android"))]
+                {
+                    use crate::network::PeerUpdateClient;
+                    self.peer_update_client =
+                        Some(PeerUpdateClient::new(self.event_proxy.clone()));
+                    crate::log("UI: PeerUpdateClient started for real-time IP updates");
+                }
+
+                // Broadcast StatusPing to all peers so they learn our IP (NAT hole punching)
+                // Filter out our own pubkey - FGTW returns all peers including ourselves
+                let our_pubkey_bytes = self.device_keypair.public.to_bytes();
+                let other_peers: Vec<_> = initial_peers
+                    .iter()
+                    .filter(|p| p.device_pubkey.as_bytes() != &our_pubkey_bytes)
+                    .collect();
+
+                if !other_peers.is_empty() {
+                    if let Some(ref checker) = self.status_checker {
+                        for peer in &other_peers {
+                            checker.ping(peer.ip, peer.device_pubkey.clone());
+                        }
+                        crate::log(&format!(
+                            "Network: Initial broadcast ping to {} peer(s)",
+                            other_peers.len()
+                        ));
                     }
                 }
             }
@@ -3614,6 +3718,12 @@ impl PhotonApp {
                     use crate::network::status::ClutchOfferRequest;
                     use crate::types::ClutchState;
 
+                    crate::log(&format!(
+                        "CLUTCH: Processing ClutchOfferReceived from {} (contacts={})",
+                        raw_sender_addr,
+                        self.contacts.len()
+                    ));
+
                     // Normalize to port 4383 (TCP source port is ephemeral)
                     let sender_addr =
                         std::net::SocketAddr::new(raw_sender_addr.ip(), crate::PHOTON_PORT);
@@ -4117,13 +4227,41 @@ impl PhotonApp {
                                         rekey_request =
                                             Some((contact.id.clone(), contact.handle_hash));
                                     } else if contact.clutch_state == ClutchState::AwaitingProof {
-                                        // We've already computed EGGS and sent proof - just waiting for theirs
-                                        // This is a retransmitted offer, ignore it
+                                        // We're waiting for their proof, but they sent an offer.
+                                        // Check if same keys (retransmit) or different (peer reset)
+                                        let their_slot = contact.get_slot(&their_handle_hash);
+                                        let stored_hqc = their_slot
+                                            .and_then(|s| s.offer.as_ref())
+                                            .map(|o| &o.hqc256_public);
+                                        let is_same_keys = stored_hqc
+                                            .map(|h| h == &their_offer.hqc256_public)
+                                            .unwrap_or(false);
+
+                                        if is_same_keys {
+                                            crate::log(&format!(
+                                                "CLUTCH: Ignoring retransmit from {} (already AwaitingProof)",
+                                                contact.handle
+                                            ));
+                                            break;
+                                        }
+
+                                        // Different keys = peer reset. Clear their slot and reset to Pending.
                                         crate::log(&format!(
-                                            "CLUTCH: Ignoring retransmit from {} (already AwaitingProof)",
+                                            "CLUTCH: Peer {} reset while we were AwaitingProof - resetting",
                                             contact.handle
                                         ));
-                                        break; // Skip - don't trigger keygen
+                                        if let Some(slot) = contact.get_slot_mut(&their_handle_hash) {
+                                            slot.offer = None;
+                                            slot.kem_secrets_from_them = None;
+                                        }
+                                        contact.clutch_state = ClutchState::Pending;
+                                        contact.clutch_offer_sent = false;
+                                        contact.ceremony_id = None;
+                                        contact.clutch_our_eggs_proof = None;
+                                        contact.clutch_their_eggs_proof = None;
+                                        // Remove their old provenance (keep ours)
+                                        contact.offer_provenances.retain(|p| p != &offer_provenance);
+                                        // Fall through - normal flow will store new offer and trigger keygen
                                     } else {
                                         crate::log(&format!(
                                             "CLUTCH: Received offer from {} but no keypairs (state={:?}) - triggering keygen",
@@ -6058,10 +6196,35 @@ impl PhotonApp {
             result.peers.len()
         ));
 
-        // Broadcast StatusPing to all peers so they learn our new IP (NAT hole punching)
+        // Get our public IP to detect same-network peers (for local_ip preference)
+        // Do this BEFORE pinging so we can use local_ip for same-NAT peers
+        let our_public_ip = result.peers.iter()
+            .find(|p| p.device_pubkey.as_bytes() == self.device_keypair.public.as_bytes())
+            .map(|p| p.ip.ip());
+        self.our_public_ip = our_public_ip;
+
+        // Ping all peers - for same-NAT peers, ping BOTH local and public IP
+        // (first responder wins - handles both AP isolation and subnet isolation)
         if let Some(ref checker) = self.status_checker {
             for peer in &result.peers {
+                // Always ping public IP
                 checker.ping(peer.ip, peer.device_pubkey.clone());
+
+                // For same-NAT peers, ALSO ping local IP (covers AP isolation case)
+                if let (Some(our_ip), Some(std::net::IpAddr::V4(local_v4))) = (our_public_ip, peer.local_ip) {
+                    if peer.ip.ip() == our_ip {
+                        let local_addr = std::net::SocketAddr::new(
+                            std::net::IpAddr::V4(local_v4),
+                            peer.ip.port(),
+                        );
+                        checker.ping(local_addr, peer.device_pubkey.clone());
+                        crate::log(&format!(
+                            "Network: Same-NAT peer {} - pinging both {} and {}",
+                            hex::encode(&peer.device_pubkey.as_bytes()[..4]),
+                            peer.ip, local_addr
+                        ));
+                    }
+                }
             }
             crate::log(&format!(
                 "Network: Broadcast ping to {} peer(s)",
@@ -6098,6 +6261,35 @@ impl PhotonApp {
                         ));
                         contact.ip = Some(peer.ip);
                         updated += 1;
+                    }
+
+                    // Update local_ip from FGTW (for hairpin NAT when on same network)
+                    if let Some(std::net::IpAddr::V4(local_v4)) = peer.local_ip {
+                        if contact.local_ip != Some(local_v4) {
+                            crate::log(&format!(
+                                "Network: Updated {} local_ip: {:?} -> {}",
+                                contact.handle, contact.local_ip, local_v4
+                            ));
+                            contact.local_ip = Some(local_v4);
+                        }
+
+                        // If same public IP (same NAT), use local_ip for all communication
+                        // This bypasses AP isolation on hotel/public WiFi
+                        if let Some(our_ip) = our_public_ip {
+                            if peer.ip.ip() == our_ip {
+                                let local_addr = std::net::SocketAddr::new(
+                                    std::net::IpAddr::V4(local_v4),
+                                    peer.ip.port(),
+                                );
+                                if contact.ip != Some(local_addr) {
+                                    crate::log(&format!(
+                                        "Network: Same NAT detected for {} - using local IP {} instead of {}",
+                                        contact.handle, local_addr, peer.ip
+                                    ));
+                                    contact.ip = Some(local_addr);
+                                }
+                            }
+                        }
                     }
 
                     // If we just got an IP and have keys ready, queue offer to send
@@ -6141,14 +6333,16 @@ impl PhotonApp {
                                         ));
                                     }
 
+                                    // Use best_addr for same-NAT detection (local_ip if available)
+                                    let target_addr = contact.best_addr(our_public_ip).unwrap_or(peer.ip);
                                     offers_to_send.push(ClutchOfferRequest {
-                                        peer_addr: peer.ip,
+                                        peer_addr: target_addr,
                                         vsf_bytes,
                                     });
                                     contact.clutch_offer_sent = true;
                                     crate::log(&format!(
-                                        "CLUTCH: Queueing offer for {} (just got IP, prov={}...)",
-                                        contact.handle,
+                                        "CLUTCH: Queueing offer for {} (target={}, prov={}...)",
+                                        contact.handle, target_addr,
                                         hex::encode(&our_offer_provenance[..4])
                                     ));
                                 }

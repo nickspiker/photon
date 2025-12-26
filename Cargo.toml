@@ -157,11 +157,16 @@ harness = false
 [profile.dev]
 opt-level = 2              # Good optimization, fast compile
 overflow-checks = false    # No panic on overflow (wrapping behavior)
-debug = false              # No debug info (faster builds)
+debug = false              # No debug info (faster builds, use profile.debuggable for F5)
 debug-assertions = false   # No assertions
 lto = false                # Fast linking
 codegen-units = 16         # Parallel codegen (fast builds)
 incremental = true         # Incremental compilation
+
+# Custom profile for F5 debugging in VSCode (cargo build --profile debuggable)
+[profile.debuggable]
+inherits = "dev"
+debug = "line-tables-only" # Line info for debugger
 
 [profile.release]
 lto = true                 # Full LTO for final builds

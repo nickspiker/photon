@@ -69,6 +69,7 @@ impl PhotonApp {
         self.current_text_state.widths = widths;
     }
     /// Render text with proper clipping to textbox bounds
+    /// y_offset: additional Y offset to apply (for scroll)
     pub fn render_text_clipped(
         pixels: &mut [u32],
         text: &TextState,
@@ -78,10 +79,24 @@ impl PhotonApp {
         window_width: usize,
         layout: &TextLayout,
         colour: u32,
+        y_offset: isize,
     ) {
         if text.chars.is_empty() {
             return;
         }
+
+        // Apply Y offset for scroll - skip only if textbox is completely off-screen
+        // WHY: Text can be partially visible when center is near edge
+        // PROOF: Glyph rendering clips per-pixel, so partial visibility is safe
+        // PREVENTS: Early return when text is still partially visible
+        let render_y_isize = layout.center_y as isize + y_offset;
+        let height = pixels.len() / window_width;
+        let half_h = (layout.box_height / 2) as isize;
+        // Skip only when textbox is COMPLETELY off-screen (center ± half_height)
+        if render_y_isize + half_h < 0 || render_y_isize - half_h >= height as isize {
+            return;
+        }
+        let render_y = render_y_isize as f32;
 
         let text_start_x = layout.text_start_x(text);
         // Use full textbox bounds for rendering - text can flow under button area
@@ -101,7 +116,7 @@ impl PhotonApp {
                     window_width,
                     ch,
                     x_offset,
-                    layout.center_y as f32,
+                    render_y,
                     layout.font_size,
                     500,
                     theme::FONT_USER_CONTENT,

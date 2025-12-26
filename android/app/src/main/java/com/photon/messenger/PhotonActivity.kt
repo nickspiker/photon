@@ -334,6 +334,10 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     // SurfaceHolder.Callback
     override fun surfaceCreated(holder: SurfaceHolder) {
         surfaceReady = true
+        // Capture full height on first surface creation (before any keyboard)
+        if (fullHeight == 0) {
+            fullHeight = holder.surfaceFrame.height()
+        }
         initializeNativeIfReady()
 
         // Resume render loop if we already have a context (app resume case)
@@ -343,8 +347,9 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     }
 
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-        // Track full height when keyboard is not visible
-        if (!keyboardVisible) {
+        // Track full height only when keyboard is not visible AND height is larger
+        // (prevents capturing reduced height if surfaceChanged races with keyboard)
+        if (!keyboardVisible && height > fullHeight) {
             fullHeight = height
         }
         if (nativePtr != 0L) {

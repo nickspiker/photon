@@ -1,6 +1,39 @@
 use crate::ui::{app::*, colour::*, text_rasterizing::*, theme};
 use crate::{debug_println, DEBUG_ENABLED};
 
+/// Deploy version as binary (1 byte = u8, 2 bytes = u16 little-endian)
+const DEPLOY_VERSION_BYTES: &[u8] = include_bytes!("../../v");
+
+fn get_deploy_version() -> u32 {
+    match DEPLOY_VERSION_BYTES.len() {
+        1 => DEPLOY_VERSION_BYTES[0] as u32,
+        2 => u16::from_le_bytes([DEPLOY_VERSION_BYTES[0], DEPLOY_VERSION_BYTES[1]]) as u32,
+        _ => 0,
+    }
+}
+
+fn decimal_to_dozenal_names(n: u32) -> String {
+    const DIGITS: [&str; 12] = [
+        "Zil", "Zila", "Zilor", "Ter", "Tera", "Teror",
+        "Lun", "Luna", "Lunor", "Stel", "Stela", "Stelor",
+    ];
+
+    if n == 0 {
+        return DIGITS[0].to_string();
+    }
+
+    let mut result = Vec::new();
+    let mut remaining = n;
+
+    while remaining > 0 {
+        result.push(DIGITS[(remaining % 12) as usize]);
+        remaining /= 12;
+    }
+
+    result.reverse();
+    result.join(" ")
+}
+
 impl PhotonApp {
     pub fn render(&mut self) {
         let now = std::time::Instant::now();
@@ -105,7 +138,7 @@ impl PhotonApp {
                         0,
                     );
                     let (_, _, avatar_radius) = unified.user_avatar_center_radius();
-                    self.update_avatar_scaled(avatar_radius * 2);
+                    self.update_avatar_scaled((avatar_radius * 2) as usize);
                 }
             }
 
@@ -127,12 +160,19 @@ impl PhotonApp {
                 self.hit_test_map.fill(HIT_NONE);
                 self.textbox_mask.fill(0);
 
+                // Scroll offset only applies to contacts screen (Ready/Searching)
+                let bg_scroll = if matches!(self.app_state, AppState::Ready | AppState::Searching) {
+                    self.contacts_scroll_offset
+                } else {
+                    0
+                };
                 Self::draw_background_texture(
                     pixels,
                     self.width as usize,
                     self.height as usize,
                     self.speckle_counter as usize,
                     self.is_fullscreen,
+                    bg_scroll,
                 );
 
                 // Fill header with back button hit area BEFORE window controls
@@ -147,15 +187,11 @@ impl PhotonApp {
                     }
                 }
 
-                // Window controls (minimize, maximize, close) - not needed on Android
+                // Calculate window control bounds (needed for edges/hairlines)
+                // Controls are drawn AFTER content (below)
                 #[cfg(not(target_os = "android"))]
-                let (start, edges, button_x_start, button_height) = Self::draw_window_controls(
-                    pixels,
-                    &mut self.hit_test_map,
-                    self.width,
-                    self.height,
-                    eff_ru,
-                );
+                let (start, edges, button_x_start, button_height) =
+                    Self::window_controls_bounds(self.width, self.height, eff_ru);
 
                 // Draw FGTW connectivity indicator (small circle in top-left)
                 // AA black base circle
@@ -209,33 +245,6 @@ impl PhotonApp {
                     );
                 }
 
-                // Skip drawing window edges and button hairlines on Android (fullscreen only)
-                #[cfg(not(target_os = "android"))]
-                {
-                    // Skip drawing window edges when fullscreen or maximized
-                    if !self.is_fullscreen {
-                        Self::draw_window_edges_and_mask(
-                            pixels,
-                            &mut self.hit_test_map,
-                            self.width,
-                            self.height,
-                            start,
-                            &edges,
-                        );
-                    }
-
-                    Self::draw_button_hairlines(
-                        pixels,
-                        &mut self.hit_test_map,
-                        self.width,
-                        self.height,
-                        button_x_start,
-                        button_height,
-                        start,
-                        &edges,
-                    );
-                }
-
                 // Different UI based on app state
                 if matches!(self.app_state, AppState::Launch(_)) {
                     // Launch screen: spectrum, logo, handle entry
@@ -270,7 +279,7 @@ impl PhotonApp {
                             &mut self.textbox_mask,
                             self.width as usize,
                             tl.center_x,
-                            tl.center_y,
+                            tl.center_y as isize,
                             tl.box_width,
                             tl.box_height,
                         );
@@ -307,7 +316,7 @@ impl PhotonApp {
                                 pixels,
                                 &self.textbox_mask,
                                 self.width as usize,
-                                tl.center_y,
+                                tl.center_y as isize,
                                 tl.box_width,
                                 tl.box_height,
                                 true,
@@ -322,7 +331,11 @@ impl PhotonApp {
                     // All elements scale with span-based unit_height
 
                     if let Some(ref contacts_block) = self.layout.contacts {
-                        // Compute center offset based on longest contact name
+                        // Get filter text for contact filtering
+                        let filter_text: String = self.current_text_state.chars.iter().collect();
+                        let filter_lower = filter_text.to_lowercase();
+
+                        // Compute center offset based on longest VISIBLE contact name
                         let temp_unified = super::app::ContactsUnifiedLayout::new(
                             contacts_block,
                             self.span,
@@ -331,6 +344,12 @@ impl PhotonApp {
                         );
                         let mut longest_name_width = 0.0f32;
                         for contact in self.contacts.iter() {
+                            // Skip filtered-out contacts
+                            if !filter_lower.is_empty()
+                                && !contact.handle.as_str().to_lowercase().contains(&filter_lower)
+                            {
+                                continue;
+                            }
                             let w = self.text_renderer.measure_text_width(
                                 contact.handle.as_str(),
                                 temp_unified.text_size,
@@ -354,14 +373,17 @@ impl PhotonApp {
                         );
 
                         // === USER SECTION ===
-                        let (avatar_cx, avatar_cy, avatar_radius) =
+                        let scroll = self.contacts_scroll_offset;
+                        let (avatar_cx, base_avatar_cy, avatar_radius) =
                             unified.user_avatar_center_radius();
+                        let avatar_cy = base_avatar_cy + scroll;
 
                         // Draw user avatar (no ring, with hit testing)
                         Self::draw_avatar(
                             pixels,
                             Some(&mut self.hit_test_map),
                             self.width as usize,
+                            self.height as usize,
                             avatar_cx,
                             avatar_cy,
                             avatar_radius,
@@ -370,44 +392,64 @@ impl PhotonApp {
                             self.file_hovering_avatar,
                         );
 
-                        // Draw handle text centered in handle region
+                        // Draw handle text centered in handle region (with scroll)
                         if let Some(ref handle) = self.user_handle {
-                            let handle_cy = unified.handle.y + unified.handle.h / 2;
-                            // Font size from region height (not text_size which is for contact rows)
-                            let handle_font = unified.handle.h as f32 * 0.8;
-                            self.text_renderer.draw_text_center_u32(
-                                pixels,
-                                self.width as usize,
-                                handle,
-                                unified.handle.center().0 as f32,
-                                handle_cy as f32,
-                                handle_font,
-                                700,
-                                theme::TEXT_COLOUR,
-                                theme::FONT_USER_CONTENT,
-                            );
+                            let (handle_cx, base_handle_cy) = unified.handle_center();
+                            let handle_cy = base_handle_cy + scroll;
+                            let handle_h = unified.handle.h as isize;
+                            // Only draw if visible
+                            if handle_cy + handle_h / 2 > 0 && handle_cy - handle_h / 2 < self.height as isize {
+                                // Font size from region height (not text_size which is for contact rows)
+                                let handle_font = unified.handle.h as f32 * 0.8;
+                                self.text_renderer.draw_text_center_u32(
+                                    pixels,
+                                    self.width as usize,
+                                    handle,
+                                    handle_cx as f32,
+                                    handle_cy as f32,
+                                    handle_font,
+                                    700,
+                                    theme::TEXT_COLOUR,
+                                    theme::FONT_USER_CONTENT,
+                                );
+                            }
                         }
 
-                        // Draw hint text if needed
+                        // Draw hint text if needed (with scroll)
                         if self.show_avatar_hint {
-                            let hint_cy = unified.hint.y + unified.hint.h / 2;
-                            // Font size from region height
-                            let hint_font = unified.hint.h as f32 * 0.5;
-                            self.text_renderer.draw_text_center_u32(
-                                pixels,
-                                self.width as usize,
-                                "drag and drop an image to upload avatar",
-                                unified.hint.center().0 as f32,
-                                hint_cy as f32,
-                                hint_font,
-                                300,
-                                theme::LABEL_COLOUR,
-                                theme::FONT_UI,
-                            );
+                            let (hint_cx, base_hint_cy) = unified.hint_center();
+                            let hint_cy = base_hint_cy + scroll;
+                            let hint_h = unified.hint.h as isize;
+                            // Only draw if visible
+                            if hint_cy + hint_h / 2 > 0 && hint_cy - hint_h / 2 < self.height as isize {
+                                // Font size from region height
+                                let hint_font = unified.hint.h as f32 * 0.5;
+                                self.text_renderer.draw_text_center_u32(
+                                    pixels,
+                                    self.width as usize,
+                                    "drag and drop an image to upload avatar",
+                                    hint_cx as f32,
+                                    hint_cy as f32,
+                                    hint_font,
+                                    300,
+                                    theme::LABEL_COLOUR,
+                                    theme::FONT_UI,
+                                );
+                            }
                         }
 
-                        // Draw search textbox - USE TEXT_LAYOUT (single source of truth)
+                        // Draw search textbox (with scroll)
+                        // TextLayout provides base positions; we apply scroll offset for rendering
                         let tl = &self.text_layout;
+                        let scrolled_textbox_cy = tl.center_y as isize + scroll;
+                        let half_box_h = (tl.box_height / 2) as isize;
+                        let screen_h = self.height as isize;
+
+                        // Textbox is always drawn (draw_textbox handles partial visibility)
+                        // But glow/focus/hover only allowed when FULLY on-screen
+                        let textbox_fully_visible = scrolled_textbox_cy >= half_box_h
+                            && scrolled_textbox_cy + half_box_h <= screen_h;
+
                         Self::draw_textbox(
                             pixels,
                             &mut self.hit_test_map,
@@ -415,7 +457,7 @@ impl PhotonApp {
                             &mut self.textbox_mask,
                             self.width as usize,
                             tl.center_x,
-                            tl.center_y,
+                            scrolled_textbox_cy,  // Already isize
                             tl.box_width,
                             tl.box_height,
                         );
@@ -432,7 +474,8 @@ impl PhotonApp {
                             }
                         };
 
-                        // Apply glow BEFORE button
+                        // Apply glow BEFORE button when focused or searching
+                        // Glow function handles partial visibility via per-column bounds checks
                         if self.current_text_state.textbox_focused
                             || matches!(self.app_state, AppState::Searching)
                         {
@@ -440,7 +483,7 @@ impl PhotonApp {
                                 pixels,
                                 &self.textbox_mask,
                                 self.width as usize,
-                                tl.center_y,
+                                scrolled_textbox_cy,
                                 tl.box_width,
                                 tl.box_height,
                                 true,
@@ -448,13 +491,13 @@ impl PhotonApp {
                             );
                         }
 
-                        // Draw search button AFTER glow
-                        if !self.current_text_state.chars.is_empty() {
+                        // Draw search button AFTER glow (only when fully visible)
+                        if textbox_fully_visible && !self.current_text_state.chars.is_empty() {
                             let button_size = tl.box_height * 7 / 8;
                             let inset = tl.box_height / 16;
                             let button_center_x =
                                 tl.center_x + tl.box_width / 2 - inset - button_size / 2;
-                            let button_center_y = tl.center_y;
+                            let button_center_y = scrolled_textbox_cy as usize;
 
                             let button_colour = if matches!(self.app_state, AppState::Searching) {
                                 theme::BUTTON_YELLOW
@@ -490,7 +533,7 @@ impl PhotonApp {
                                     (r, g, b),
                                 );
                             } else {
-                                Self::draw_magnify_symbol(
+                                Self::draw_plus_symbol(
                                     pixels,
                                     self.width as usize,
                                     button_center_x,
@@ -501,39 +544,46 @@ impl PhotonApp {
                             }
                         }
 
-                        // Show search result in hint region (replaces avatar hint during search)
+                        // Show search result in hint region (with scroll)
                         if let Some(ref result) = self.search_result {
-                            let result_cy = unified.hint.y + unified.hint.h / 2;
-                            let (text, colour) = match result {
-                                SearchResult::Found(peer) => {
-                                    (format!("added {}", peer.handle), theme::SEARCH_RESULT_ADDED)
-                                }
-                                SearchResult::NotFound => {
-                                    ("not found".to_string(), theme::SEARCH_RESULT_NOT_FOUND)
-                                }
-                                SearchResult::Error(e) => {
-                                    (format!("error: {}", e), theme::SEARCH_RESULT_NOT_FOUND)
-                                }
-                            };
-                            self.text_renderer.draw_text_center_u32(
-                                pixels,
-                                self.width as usize,
-                                &text,
-                                unified.hint.center().0 as f32,
-                                result_cy as f32,
-                                unified.hint.h as f32 * 0.5,
-                                500,
-                                colour,
-                                theme::FONT_USER_CONTENT,
-                            );
+                            let (result_cx, base_result_cy) = unified.hint_center();
+                            let result_cy = base_result_cy + scroll;
+                            let result_h = unified.hint.h as isize;
+                            // Only draw if visible
+                            if result_cy + result_h / 2 > 0 && result_cy - result_h / 2 < self.height as isize {
+                                let (text, colour) = match result {
+                                    SearchResult::Found(peer) => {
+                                        (format!("added {}", peer.handle), theme::SEARCH_RESULT_ADDED)
+                                    }
+                                    SearchResult::NotFound => {
+                                        ("not found".to_string(), theme::SEARCH_RESULT_NOT_FOUND)
+                                    }
+                                    SearchResult::Error(e) => {
+                                        (format!("error: {}", e), theme::SEARCH_RESULT_NOT_FOUND)
+                                    }
+                                };
+                                self.text_renderer.draw_text_center_u32(
+                                    pixels,
+                                    self.width as usize,
+                                    &text,
+                                    result_cx as f32,
+                                    result_cy as f32,
+                                    unified.hint.h as f32 * 0.5,
+                                    500,
+                                    colour,
+                                    theme::FONT_USER_CONTENT,
+                                );
+                            }
                         }
 
-                        // Draw separator hairline
-                        let sep = &unified.separator;
-                        let sep_y = sep.y + sep.h / 2;
-                        for x in sep.x..sep.right() {
-                            if sep_y < self.height as usize {
-                                let idx = sep_y * self.width as usize + x;
+                        // Draw separator hairline (with scroll)
+                        let base_sep_y = unified.separator_y();
+                        let sep_y = base_sep_y + scroll;
+                        // Only draw if separator is on screen
+                        if sep_y >= 0 && sep_y < self.height as isize {
+                            let sep_y_usize = sep_y as usize;
+                            for x in unified.separator.x..unified.separator.right() {
+                                let idx = sep_y_usize * self.width as usize + x;
                                 pixels[idx] =
                                     pixels[idx].wrapping_add(theme::CONTACT_BRIGHTEN_DELTA);
                             }
@@ -543,19 +593,46 @@ impl PhotonApp {
                         // Draw contact rows using same unit_height as user section
                         let contact_avatar_radius = unified.avatar_diameter / 2;
                         let contact_avatar_diameter = contact_avatar_radius * 2;
-                        for (i, contact) in self.contacts.iter_mut().enumerate() {
-                            let Some((avatar_cx, avatar_cy)) = unified.row_avatar_center(i) else {
-                                break; // Row outside visible area
-                            };
-                            let Some((text_x, text_y)) = unified.row_text_position(i) else {
-                                break;
-                            };
+                        let row_height = unified.row_height as isize;
+                        let screen_h = self.height as isize;
 
-                            // Cache positions for differential updates
-                            contact.indicator_x = avatar_cx;
-                            contact.indicator_y = avatar_cy;
-                            contact.text_x = text_x;
-                            contact.text_y = text_y;
+                        // Track visible row index separately from contact index (filter_lower defined above)
+                        let mut visible_row = 0usize;
+
+                        for (contact_idx, contact) in self.contacts.iter_mut().enumerate() {
+                            // Filter: skip contacts that don't match search text
+                            if !filter_lower.is_empty()
+                                && !contact.handle.as_str().to_lowercase().contains(&filter_lower)
+                            {
+                                continue;
+                            }
+
+                            // Use visible_row for positioning (not contact_idx)
+                            let (base_avatar_cx, base_avatar_cy) =
+                                unified.row_avatar_center(visible_row);
+                            let (base_text_x, base_text_y) = unified.row_text_position(visible_row);
+
+                            // Apply scroll offset
+                            let avatar_cx = base_avatar_cx;
+                            let avatar_cy = base_avatar_cy + scroll;
+                            let text_x = base_text_x;
+                            let text_y = base_text_y + scroll;
+
+                            // Skip rows entirely below screen (no point continuing)
+                            if avatar_cy - (contact_avatar_radius as isize) > screen_h {
+                                break;
+                            }
+                            // Skip rows entirely above screen (but keep iterating)
+                            if avatar_cy + (contact_avatar_radius as isize) < 0 {
+                                visible_row += 1;
+                                continue;
+                            }
+
+                            // Cache positions for differential updates (scrolled positions)
+                            contact.indicator_x = avatar_cx as usize;
+                            contact.indicator_y = avatar_cy as usize;
+                            contact.text_x = text_x as f32;
+                            contact.text_y = text_y as f32;
 
                             // Scale contact avatar if needed
                             if contact.avatar_pixels.is_some()
@@ -579,11 +656,12 @@ impl PhotonApp {
                             };
                             Self::draw_avatar(
                                 pixels,
-                                None, // no hit testing
+                                None, // no hit testing (handled separately below)
                                 self.width as usize,
+                                self.height as usize,
                                 avatar_cx,
                                 avatar_cy,
-                                contact_avatar_radius,
+                                contact_avatar_radius as isize,
                                 contact.avatar_scaled.as_deref(),
                                 Some(ring),
                                 false, // no brighten
@@ -591,7 +669,7 @@ impl PhotonApp {
                             contact.prev_is_online = contact.is_online;
 
                             // Draw handle text - font size derived from row height
-                            let is_hovered = self.hovered_contact == Some(i);
+                            let is_hovered = self.hovered_contact == Some(contact_idx);
                             let text_color = if is_hovered {
                                 theme::CONTACT_NAME
                             } else {
@@ -602,27 +680,94 @@ impl PhotonApp {
                                 pixels,
                                 self.width as usize,
                                 contact.handle.as_str(),
-                                text_x,
-                                text_y,
+                                text_x as f32,
+                                text_y as f32,
                                 unified.text_size,
                                 theme::FONT_WEIGHT_USER_CONTENT,
                                 text_color,
                                 theme::FONT_USER_CONTENT,
                             );
 
-                            // Add hit region for this contact row
-                            if let Some(row) = unified.row_region(i) {
-                                let hit_id = HIT_CONTACT_BASE.wrapping_add(i as u8);
-                                for hy in row.y..row.bottom().min(self.height as usize) {
-                                    for hx in row.x..row.right().min(self.width as usize) {
-                                        self.hit_test_map[hy * self.width as usize + hx] = hit_id;
-                                    }
+                            // Hit region with scroll offset
+                            // Compute row bounds and intersect with screen (use visible_row for positioning)
+                            let row_top =
+                                unified.rows.y as isize + visible_row as isize * row_height + scroll;
+                            let row_bottom = row_top + row_height;
+
+                            // Intersection bounds proof:
+                            // WHY: row_top can be negative (scrolled off top) or row_bottom > height (off bottom)
+                            // PROOF: .max(0) and .min(height) compute intersection with screen rectangle
+                            // PREVENTS: Out-of-bounds hit_test_map access
+                            let hit_top = row_top.max(0) as usize;
+                            let hit_bottom = row_bottom.min(screen_h) as usize;
+                            // Use contact_idx for hit ID (not visible_row) so clicking works correctly
+                            let hit_id = HIT_CONTACT_BASE.wrapping_add(contact_idx as u8);
+
+                            for hy in hit_top..hit_bottom {
+                                for hx in unified.rows.x..unified.rows.right() {
+                                    self.hit_test_map[hy * self.width as usize + hx] = hit_id;
                                 }
                             }
+
+                            visible_row += 1;
                         }
+
+                        // Draw version number below last contact row (with padding)
+                        let version_y = unified.rows.y as isize
+                            + (visible_row as isize + 1) * row_height // +1 for padding row
+                            + row_height / 2 // center in the version row
+                            + scroll;
+
+                        if version_y > 0 && version_y < screen_h {
+                            let version_text = decimal_to_dozenal_names(get_deploy_version());
+                            let version_size = unified.text_size * 0.75;
+                            let version_width = self.text_renderer.measure_text_width(
+                                &version_text,
+                                version_size,
+                                theme::FONT_WEIGHT_USER_CONTENT,
+                                theme::FONT_USER_CONTENT,
+                            );
+                            let version_x = (self.width as f32 - version_width) / 2.0;
+
+                            self.text_renderer.draw_text_left_u32(
+                                pixels,
+                                self.width as usize,
+                                &version_text,
+                                version_x,
+                                version_y as f32,
+                                version_size,
+                                theme::FONT_WEIGHT_USER_CONTENT,
+                                theme::VERSION_TEXT,
+                                theme::FONT_USER_CONTENT,
+                            );
+                        }
+
                         // Cache text size for differential updates
                         self.contact_text_size = unified.text_size;
                         self.prev_hovered_contact = self.hovered_contact;
+
+                        // Redraw window controls AFTER scrolled content (so controls stay on top)
+                        #[cfg(not(target_os = "android"))]
+                        Self::draw_window_controls(
+                            pixels,
+                            &mut self.hit_test_map,
+                            self.width,
+                            self.height,
+                            eff_ru,
+                        );
+
+                        // Redraw window edges/mask AFTER controls so corners stay transparent
+                        #[cfg(not(target_os = "android"))]
+                        if !self.is_fullscreen {
+                            Self::draw_window_edges_and_mask(
+                                pixels,
+                                &mut self.hit_test_map,
+                                self.width,
+                                self.height,
+                                start,
+                                &edges,
+                            );
+                        }
                     }
                 } else if matches!(self.app_state, AppState::Conversation) {
                     // Conversation view: header with contact name, message area, bottom textbox
@@ -665,9 +810,10 @@ impl PhotonApp {
                                 pixels,
                                 None, // no hit testing
                                 self.width as usize,
-                                avatar_x,
-                                avatar_y,
-                                avatar_radius,
+                                self.height as usize,
+                                avatar_x as isize,
+                                avatar_y as isize,
+                                avatar_radius as isize,
                                 contact.avatar_scaled.as_deref(),
                                 Some(ring),
                                 false, // no brighten
@@ -875,7 +1021,7 @@ impl PhotonApp {
                                             &mut self.textbox_mask,
                                             self.width as usize,
                                             tb.x + tb.w / 2,
-                                            tb.y + tb.h / 2,
+                                            (tb.y + tb.h / 2) as isize,
                                             tb.w,
                                             tb_height,
                                         );
@@ -927,7 +1073,7 @@ impl PhotonApp {
                                             pixels,
                                             &self.textbox_mask,
                                             self.width as usize,
-                                            textbox_y,
+                                            textbox_y as isize,
                                             box_width,
                                             box_height,
                                             true,
@@ -991,10 +1137,53 @@ impl PhotonApp {
                     }
                 }
 
+                // Draw window controls AFTER content (so controls are on top)
+                #[cfg(not(target_os = "android"))]
+                Self::draw_window_controls(
+                    pixels,
+                    &mut self.hit_test_map,
+                    self.width,
+                    self.height,
+                    eff_ru,
+                );
+
+                // Draw window edges and button hairlines AFTER controls
+                #[cfg(not(target_os = "android"))]
+                {
+                    if !self.is_fullscreen {
+                        Self::draw_window_edges_and_mask(
+                            pixels,
+                            &mut self.hit_test_map,
+                            self.width,
+                            self.height,
+                            start,
+                            &edges,
+                        );
+                    }
+
+                    Self::draw_button_hairlines(
+                        pixels,
+                        &mut self.hit_test_map,
+                        self.width,
+                        self.height,
+                        button_x_start,
+                        button_height,
+                        start,
+                        &edges,
+                    );
+                }
+
                 // Frame counter continues incrementing (not reset)
                 self.prev_hovered_button = HoveredButton::None;
             } else {
                 // Differential rendering blocks (only if window wasn't fully redrawn)
+                // Scroll offset for text rendering (Ready/Searching states only)
+                let text_scroll_offset = if matches!(self.app_state, AppState::Ready | AppState::Searching) {
+                    self.contacts_scroll_offset
+                } else {
+                    0
+                };
+
                 if self.selection_dirty || self.text_dirty {
                     // Remove old blinkey (if visible)
                     if self.blinkey_visible {
@@ -1048,39 +1237,46 @@ impl PhotonApp {
                                     self.width as usize,
                                     &self.text_layout,
                                     theme::TEXT_COLOUR,
+                                    text_scroll_offset,
                                 );
                             } else if !self.previous_text_state.textbox_focused {
                                 // Show placeholder when textbox is empty and not focused
                                 let placeholder = match self.app_state {
                                     AppState::Launch(_) => Some("∞"),
-                                    AppState::Ready | AppState::Searching => Some("find handle"),
+                                    AppState::Ready | AppState::Searching => Some("search | add"),
                                     _ => None,
                                 };
                                 if let Some(text) = placeholder {
-                                    let text_width = self.text_renderer.measure_text_width(
-                                        text,
-                                        self.text_layout.font_size,
-                                        500,
-                                        theme::FONT_USER_CONTENT,
-                                    );
-                                    // Center placeholder like empty blinkey: usable_left + (usable_width + button_area) / 2
-                                    let empty_center = self.text_layout.usable_left as f32
-                                        + (self.text_layout.usable_width
-                                            + self.text_layout.button_area)
-                                            as f32
-                                            / 2.0;
-                                    self.text_renderer.draw_text_left_additive_u32(
-                                        pixels,
-                                        self.width as usize,
-                                        text,
-                                        empty_center - text_width / 2.0,
-                                        self.text_layout.center_y as f32,
-                                        self.text_layout.font_size,
-                                        500,
-                                        theme::PLACEHOLDER_TEXT,
-                                        theme::FONT_USER_CONTENT,
-                                        false, // subtract
-                                    );
+                                    // Skip only if textbox is completely off-screen
+                                    let scrolled_y_isize = self.text_layout.center_y as isize + text_scroll_offset;
+                                    let half_h = (self.text_layout.box_height / 2) as isize;
+                                    let screen_h = self.height as isize;
+                                    if scrolled_y_isize + half_h > 0 && scrolled_y_isize - half_h < screen_h {
+                                        let text_width = self.text_renderer.measure_text_width(
+                                            text,
+                                            self.text_layout.font_size,
+                                            500,
+                                            theme::FONT_USER_CONTENT,
+                                        );
+                                        // Center placeholder like empty blinkey: usable_left + (usable_width + button_area) / 2
+                                        let empty_center = self.text_layout.usable_left as f32
+                                            + (self.text_layout.usable_width
+                                                + self.text_layout.button_area)
+                                                as f32
+                                                / 2.0;
+                                        self.text_renderer.draw_text_left_additive_u32(
+                                            pixels,
+                                            self.width as usize,
+                                            text,
+                                            empty_center - text_width / 2.0,
+                                            scrolled_y_isize as f32,
+                                            self.text_layout.font_size,
+                                            500,
+                                            theme::PLACEHOLDER_TEXT,
+                                            theme::FONT_USER_CONTENT,
+                                            false, // subtract
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -1134,6 +1330,13 @@ impl PhotonApp {
             }
 
             if self.text_dirty || self.window_dirty {
+                // Scroll offset for text rendering (Ready/Searching states only)
+                let text_scroll_offset = if matches!(self.app_state, AppState::Ready | AppState::Searching) {
+                    self.contacts_scroll_offset
+                } else {
+                    0
+                };
+
                 // Add new text
                 if !self.current_text_state.chars.is_empty() {
                     Self::render_text_clipped(
@@ -1145,37 +1348,44 @@ impl PhotonApp {
                         self.width as usize,
                         &self.text_layout,
                         theme::TEXT_COLOUR,
+                        text_scroll_offset,
                     );
                 } else if !self.current_text_state.textbox_focused {
                     // Show placeholder when textbox is empty and not focused
                     let placeholder = match self.app_state {
                         AppState::Launch(_) => Some("∞"),
-                        AppState::Ready | AppState::Searching => Some("find handle"),
+                        AppState::Ready | AppState::Searching => Some("search | add"),
                         _ => None,
                     };
                     if let Some(text) = placeholder {
-                        let text_width = self.text_renderer.measure_text_width(
-                            text,
-                            self.text_layout.font_size,
-                            500,
-                            theme::FONT_USER_CONTENT,
-                        );
-                        // Center placeholder like empty blinkey: usable_left + (usable_width + button_area) / 2
-                        let empty_center = self.text_layout.usable_left as f32
-                            + (self.text_layout.usable_width + self.text_layout.button_area) as f32
-                                / 2.0;
-                        self.text_renderer.draw_text_left_additive_u32(
-                            pixels,
-                            self.width as usize,
-                            text,
-                            empty_center - text_width / 2.0,
-                            self.text_layout.center_y as f32,
-                            self.text_layout.font_size,
-                            500,
-                            theme::PLACEHOLDER_TEXT,
-                            theme::FONT_USER_CONTENT,
-                            true, // add
-                        );
+                        // Skip only if textbox is completely off-screen
+                        let scrolled_y_isize = self.text_layout.center_y as isize + text_scroll_offset;
+                        let half_h = (self.text_layout.box_height / 2) as isize;
+                        let screen_h = self.height as isize;
+                        if scrolled_y_isize + half_h > 0 && scrolled_y_isize - half_h < screen_h {
+                            let text_width = self.text_renderer.measure_text_width(
+                                text,
+                                self.text_layout.font_size,
+                                500,
+                                theme::FONT_USER_CONTENT,
+                            );
+                            // Center placeholder like empty blinkey: usable_left + (usable_width + button_area) / 2
+                            let empty_center = self.text_layout.usable_left as f32
+                                + (self.text_layout.usable_width + self.text_layout.button_area) as f32
+                                    / 2.0;
+                            self.text_renderer.draw_text_left_additive_u32(
+                                pixels,
+                                self.width as usize,
+                                text,
+                                empty_center - text_width / 2.0,
+                                scrolled_y_isize as f32,
+                                self.text_layout.font_size,
+                                500,
+                                theme::PLACEHOLDER_TEXT,
+                                theme::FONT_USER_CONTENT,
+                                true, // add
+                            );
+                        }
                     }
                 }
             }
@@ -1214,17 +1424,29 @@ impl PhotonApp {
             {
                 // Recalculate blinkey position using TextLayout (single source of truth)
                 self.blinkey_pixel_x = self.text_layout.blinkey_x(&self.current_text_state);
-                self.blinkey_pixel_y = self.text_layout.blinkey_y();
+                let base_blinkey_y = self.text_layout.blinkey_y();
 
-                Self::draw_blinkey(
-                    pixels,
-                    self.width as usize,
-                    self.blinkey_pixel_x,
-                    self.blinkey_pixel_y,
-                    &mut self.blinkey_visible,
-                    &mut self.blinkey_wave_top_bright,
-                    self.text_layout.font_size as usize,
-                );
+                // Apply scroll offset for Ready/Searching states
+                let scroll_offset = if matches!(self.app_state, AppState::Ready | AppState::Searching) {
+                    self.contacts_scroll_offset
+                } else {
+                    0
+                };
+                let scrolled_blinkey_y = base_blinkey_y as isize + scroll_offset;
+
+                // Only draw if blinkey is on-screen
+                if scrolled_blinkey_y >= 0 && scrolled_blinkey_y < self.height as isize {
+                    self.blinkey_pixel_y = scrolled_blinkey_y as usize;
+                    Self::draw_blinkey(
+                        pixels,
+                        self.width as usize,
+                        self.blinkey_pixel_x,
+                        self.blinkey_pixel_y,
+                        &mut self.blinkey_visible,
+                        &mut self.blinkey_wave_top_bright,
+                        self.text_layout.font_size as usize,
+                    );
+                }
             }
 
             // Draw/remove send button in Conversation view (differential rendering for button appearance)
@@ -1285,8 +1507,10 @@ impl PhotonApp {
                     let button_size = box_height * 7 / 8;
                     let inset = box_height / 16;
                     let button_center_x = center_x + box_width / 2 - inset - button_size / 2;
-                    let textbox_bottom = textbox_y + box_height / 2;
-                    let button_center_y = textbox_bottom - inset - button_size / 2;
+                    // WHY: textbox_y is unscrolled, must apply scroll offset for correct position
+                    // PROOF: Full redraw path uses scrolled_textbox_cy, differential must match
+                    // PREVENTS: Button drawn at wrong Y when contacts are scrolled
+                    let button_center_y = (textbox_y as isize + self.contacts_scroll_offset) as usize;
 
                     let button_colour = if matches!(self.app_state, AppState::Searching) {
                         theme::BUTTON_YELLOW
@@ -1311,9 +1535,9 @@ impl PhotonApp {
                         theme::BUTTON_SHADOW_EDGE,
                     );
 
-                    // Draw magnifying glass on search button
+                    // Draw plus icon on add button
                     let (r, g, b, _a) = unpack_argb(theme::BUTTON_TEXT);
-                    Self::draw_magnify_symbol(
+                    Self::draw_plus_symbol(
                         pixels,
                         self.width as usize,
                         button_center_x,
@@ -2079,6 +2303,7 @@ impl PhotonApp {
                         self.width as usize,
                         &self.text_layout,
                         0x00FF00, // Green
+                        0,        // No scroll offset for debug view
                     );
                 }
             }
@@ -2115,6 +2340,55 @@ impl PhotonApp {
 
         // Update frame time for delta time calculation
         self.last_frame_time = now;
+    }
+
+    /// Calculate window control bounds without drawing.
+    /// Returns (start, crossings, button_x_start, button_height) needed for edges/hairlines.
+    pub fn window_controls_bounds(
+        window_width: u32,
+        window_height: u32,
+        ru: f32,
+    ) -> (usize, Vec<(u16, u8, u8)>, usize, usize) {
+        let window_width = window_width as usize;
+        let window_height = window_height as usize;
+
+        // Calculate button dimensions using harmonic mean (span) scaled by ru
+        let span = 2.0 * window_width as f32 * window_height as f32
+            / (window_width as f32 + window_height as f32);
+        let button_height = (span / 32.0 * ru).ceil() as usize;
+        let button_width = button_height;
+        let total_width = button_width * 7 / 2;
+
+        let x_start = window_width - total_width;
+
+        // Build squircle crossings for bottom-left corner
+        let radius = span * ru / 4.;
+        let squirdleyness = 24;
+
+        let mut crossings: Vec<(u16, u8, u8)> = Vec::new();
+        let mut y = 1f32;
+        loop {
+            let y_norm = y / radius;
+            let x_norm = (1.0 - y_norm.powi(squirdleyness)).powf(1.0 / squirdleyness as f32);
+            let x = x_norm * radius;
+            let inset = radius - x;
+            if inset > 0. {
+                crossings.push((
+                    inset as u16,
+                    (inset.fract().sqrt() * 256.) as u8,
+                    ((1. - inset.fract()).sqrt() * 256.) as u8,
+                ));
+            }
+            if x < y {
+                break;
+            }
+            y += 1.;
+        }
+        let start = (radius - y) as usize;
+        let crossings: Vec<(u16, u8, u8)> = crossings.into_iter().rev().collect();
+
+        // Return button_x_start with the offset applied (matches draw_window_controls)
+        (start, crossings, x_start + button_width / 4, button_height)
     }
 
     pub fn draw_window_controls(
@@ -2727,7 +3001,7 @@ impl PhotonApp {
     }
 
     /// Draw magnifying glass icon (circle with diagonal handle)
-    pub fn draw_magnify_symbol(
+    pub fn _draw_magnify_symbol(
         pixels: &mut [u32],
         width: usize,
         cx: usize,
@@ -2788,6 +3062,90 @@ impl PhotonApp {
 
                 // Use minimum distance (union of shapes)
                 let dist = dist_to_ring.min(dist_to_handle);
+
+                // Antialiased rendering
+                let alpha_f = if dist < -0.5 {
+                    1.0
+                } else if dist < 0.5 {
+                    0.5 - dist
+                } else {
+                    0.0
+                };
+
+                if alpha_f > 0.0 {
+                    let idx = py * width + px;
+                    let alpha = (alpha_f * 256.0) as u64;
+                    let inv_alpha = 256 - alpha;
+
+                    let mut bg = pixels[idx] as u64;
+                    bg = (bg | (bg << 16)) & 0x0000FFFF0000FFFF;
+                    bg = (bg | (bg << 8)) & 0x00FF00FF00FF00FF;
+
+                    let mut stroke = stroke_packed as u64;
+                    stroke = (stroke | (stroke << 16)) & 0x0000FFFF0000FFFF;
+                    stroke = (stroke | (stroke << 8)) & 0x00FF00FF00FF00FF;
+
+                    let mut blended = bg * inv_alpha + stroke * alpha;
+                    blended = (blended >> 8) & 0x00FF00FF00FF00FF;
+                    blended = (blended | (blended >> 8)) & 0x0000FFFF0000FFFF;
+                    blended = blended | (blended >> 16);
+                    pixels[idx] = blended as u32;
+                }
+            }
+        }
+    }
+
+    /// Draw plus icon (horizontal + vertical bars)
+    pub fn draw_plus_symbol(
+        pixels: &mut [u32],
+        width: usize,
+        cx: usize,
+        cy: usize,
+        size: usize,
+        stroke_colour: (u8, u8, u8),
+    ) {
+        let scale = size as f32 / 1000.0;
+        let stroke_width = 120.0 * scale; // Slightly thicker than magnify
+        let radius = stroke_width / 2.0;
+        let arm_length = 350.0 * scale; // Length from center to end
+
+        let cxf = cx as f32;
+        let cyf = cy as f32;
+
+        // Horizontal bar endpoints
+        let h_start_x = cxf - arm_length;
+        let h_end_x = cxf + arm_length;
+
+        // Vertical bar endpoints
+        let v_start_y = cyf - arm_length;
+        let v_end_y = cyf + arm_length;
+
+        let stroke_packed = pack_argb(stroke_colour.0, stroke_colour.1, stroke_colour.2, 255);
+
+        // Bounding box
+        let half_size = (size / 2 + 2) as isize;
+        let min_x = (cx as isize - half_size).max(0) as usize;
+        let max_x = (cx as isize + half_size).min(width as isize) as usize;
+        let min_y = (cy as isize - half_size).max(0) as usize;
+        let max_y = (cy as isize + half_size).min((pixels.len() / width) as isize) as usize;
+
+        for py in min_y..max_y {
+            for px in min_x..max_x {
+                let px_f = px as f32 + 0.5;
+                let py_f = py as f32 + 0.5;
+
+                // Distance to horizontal capsule
+                let dist_h = Self::distance_to_capsule(
+                    px_f, py_f, h_start_x, cyf, h_end_x, cyf, radius,
+                );
+
+                // Distance to vertical capsule
+                let dist_v = Self::distance_to_capsule(
+                    px_f, py_f, cxf, v_start_y, cxf, v_end_y, radius,
+                );
+
+                // Use minimum distance (union of shapes)
+                let dist = dist_h.min(dist_v);
 
                 // Antialiased rendering
                 let alpha_f = if dist < -0.5 {
@@ -3021,8 +3379,9 @@ impl PhotonApp {
         height: usize,
         speckle: usize,
         fullscreen: bool,
+        scroll_offset: isize,
     ) {
-        super::drawing::draw_background_texture(pixels, width, height, speckle, fullscreen);
+        super::drawing::draw_background_texture(pixels, width, height, speckle, fullscreen, scroll_offset);
     }
 
     /// Draw window edge hairlines and apply squircle alpha mask
@@ -3539,13 +3898,29 @@ impl PhotonApp {
         textbox_mask: &mut [u8],
         window_width: usize,
         center_x: usize,
-        center_y: usize,
+        center_y: isize,  // Signed to handle negative scroll positions
         box_width: usize,
         box_height: usize,
     ) {
-        // Convert from center coordinates to top-left
-        let x = center_x - box_width / 2;
-        let y = center_y - box_height / 2;
+        // Buffer length for bounds checking (scroll can push textbox partially off-screen)
+        let buf_len = pixels.len();
+        let height = buf_len / window_width;
+        let height_signed = height as isize;
+
+        // Convert from center coordinates to top-left (signed for correct off-screen handling)
+        let x = center_x.wrapping_sub(box_width / 2);
+        let y_signed = center_y - (box_height as isize / 2);
+        // Wrapped version for existing code that still uses usize (edge pixels)
+        let y = if y_signed >= 0 { y_signed as usize } else { 0usize.wrapping_sub((-y_signed) as usize) };
+
+        // WHY: Check if textbox overlaps visible region [0, height) using signed math
+        // PROOF: top = y_signed, bottom = y_signed + box_height; visible if top < height AND bottom > 0
+        // PREVENTS: Drawing when entirely off-screen, while allowing partial visibility
+        let box_top = y_signed;
+        let box_bottom = y_signed + box_height as isize;
+        if box_bottom <= 0 || box_top >= height_signed {
+            return; // Entirely off-screen
+        }
 
         let light_colour = theme::TEXTBOX_LIGHT_EDGE;
         let shadow_colour = theme::TEXTBOX_SHADOW_EDGE;
@@ -3578,236 +3953,340 @@ impl PhotonApp {
             offset += 1.;
         }
 
+        // (height already computed above for early-out check)
+
         // Top-left corner - vertical edge with diagonal fill
+        // WHY bounds checks: Scroll can push textbox partially off-screen (negative Y wraps to huge usize,
+        // or Y exceeds height). X could also exceed width on narrow windows.
+        // PROOF: wrapping_add/wrapping_sub produce wrapped coordinates when textbox is off-screen.
+        // PREVENTS: Out-of-bounds pixel buffer access when textbox is partially visible.
         for (i, &(inset, l, h)) in crossings.iter().enumerate() {
             // Stop at diagonal - when inset exceeds i, we've gone past the 45-degree point
             if inset as usize > i {
                 break;
             }
 
-            let py = y + radius as usize - i; // Start at horizontal center, go up
-            let px = x + inset as usize;
+            let py = y.wrapping_add(radius as usize).wrapping_sub(i); // Start at horizontal center, go up
+            let px = x.wrapping_add(inset as usize);
 
-            // Outer antialiased pixel
-            let idx = py * window_width + px;
-            pixels[idx] = blend_rgb_only(pixels[idx], light_colour, l, h);
+            // Outer antialiased pixel (bounds check justified above)
+            if py < height && px < window_width {
+                let idx = py * window_width + px;
+                pixels[idx] = blend_rgb_only(pixels[idx], light_colour, l, h);
+            }
 
             // Inner antialiased pixel
-            let idx = idx + 1;
-            pixels[idx] = blend_rgb_only(light_colour, fill_colour, l, h);
-            hit_test_map[idx] = hit_id;
-            textbox_mask[idx] = h;
+            let px1 = px.wrapping_add(1);
+            if py < height && px1 < window_width {
+                let idx = py * window_width + px1;
+                pixels[idx] = blend_rgb_only(light_colour, fill_colour, l, h);
+                hit_test_map[idx] = hit_id;
+                textbox_mask[idx] = h;
+            }
 
             // Fill horizontally to the diagonal (where horizontal edge would be)
-            let diag_x = (x + radius as usize - i).min(window_width);
-            for fill_x in (px + 2)..=diag_x {
-                let idx = py * window_width + fill_x;
-                pixels[idx] = fill_colour;
-                hit_test_map[idx] = hit_id;
-                textbox_mask[idx] = 255;
+            if py < height {
+                let diag_x = x.wrapping_add(radius as usize).wrapping_sub(i).min(window_width);
+                for fill_x in (px.wrapping_add(2))..=diag_x {
+                    if fill_x >= window_width { continue; }
+                    let idx = py * window_width + fill_x;
+                    pixels[idx] = fill_colour;
+                    hit_test_map[idx] = hit_id;
+                    textbox_mask[idx] = 255;
+                }
             }
 
             // Horizontal edge - Outer antialiased pixel
-            let hx = x + radius as usize - i; // Start at vertical center, go left
-            let hy = y + inset as usize; // Distance from top edge
+            let hx = x.wrapping_add(radius as usize).wrapping_sub(i); // Start at vertical center, go left
+            let hy = y.wrapping_add(inset as usize); // Distance from top edge
 
-            let idx = hy * window_width + hx;
-            pixels[idx] = blend_rgb_only(pixels[idx], light_colour, l, h);
+            if hy < height && hx < window_width {
+                let idx = hy * window_width + hx;
+                pixels[idx] = blend_rgb_only(pixels[idx], light_colour, l, h);
+            }
 
             // Horizontal edge - Inner antialiased pixel (below the outer)
-            let idx = (hy + 1) * window_width + hx;
-            pixels[idx] = blend_rgb_only(light_colour, fill_colour, l, h);
-            hit_test_map[idx] = hit_id;
-            textbox_mask[idx] = h;
-
-            // Fill vertically down from horizontal edge to diagonal
-            // Diagonal is where the vertical edge is at this same iteration
-            let diag_y = y + radius as usize - i;
-            for fill_y in (hy + 2)..diag_y {
-                let idx = fill_y * window_width + hx;
-                pixels[idx] = fill_colour;
+            let hy1 = hy.wrapping_add(1);
+            if hy1 < height && hx < window_width {
+                let idx = hy1 * window_width + hx;
+                pixels[idx] = blend_rgb_only(light_colour, fill_colour, l, h);
                 hit_test_map[idx] = hit_id;
-                textbox_mask[idx] = 255;
+                textbox_mask[idx] = h;
+            }
+
+            // Fill vertically between horizontal edge and diagonal
+            // WHY: Use signed arithmetic to handle negative Y when scrolled off top
+            // PROOF: y_signed can be negative, clamping to [0, height) gives visible portion
+            // PREVENTS: Infinite loop from wrapped usize, fills only visible pixels
+            let hy_signed = y_signed + inset as isize;
+            let diag_y_signed = y_signed + radius as isize - i as isize;
+            let fill_start = (hy_signed + 2).max(0).min(height_signed) as usize;
+            let fill_end = diag_y_signed.max(0).min(height_signed) as usize;
+            if hx < window_width && fill_start < fill_end {
+                for fill_y in fill_start..fill_end {
+                    let idx = fill_y * window_width + hx;
+                    pixels[idx] = fill_colour;
+                    hit_test_map[idx] = hit_id;
+                    textbox_mask[idx] = 255;
+                }
             }
         }
 
         // Top-right corner - mirror of top-left (flip x)
+        // (bounds checks justified in top-left comment: scroll causes partial visibility)
         for (i, &(inset, l, h)) in crossings.iter().enumerate() {
             if inset as usize > i {
                 break;
             }
 
-            let py = y + radius as usize - i;
-            let px = x + box_width - 1 - inset as usize;
+            let py = y.wrapping_add(radius as usize).wrapping_sub(i);
+            let px = x.wrapping_add(box_width).wrapping_sub(1).wrapping_sub(inset as usize);
 
             // Vertical edge - Outer antialiased pixel
-            let idx = py * window_width + px;
-            pixels[idx] = blend_rgb_only(pixels[idx], shadow_colour, l, h);
+            if py < height && px < window_width {
+                let idx = py * window_width + px;
+                pixels[idx] = blend_rgb_only(pixels[idx], shadow_colour, l, h);
+            }
 
             // Vertical edge - Inner antialiased pixel
-            let idx = idx - 1;
-            pixels[idx] = blend_rgb_only(shadow_colour, fill_colour, l, h);
-            hit_test_map[idx] = hit_id;
-            textbox_mask[idx] = h;
+            let px1 = px.wrapping_sub(1);
+            if py < height && px1 < window_width {
+                let idx = py * window_width + px1;
+                pixels[idx] = blend_rgb_only(shadow_colour, fill_colour, l, h);
+                hit_test_map[idx] = hit_id;
+                textbox_mask[idx] = h;
+            }
 
             // Fill horizontally to the diagonal
-            let diag_x = x + box_width - 1 - radius as usize + i;
-            for fill_x in diag_x..(px - 1) {
-                let idx = py * window_width + fill_x;
-                pixels[idx] = fill_colour;
-                hit_test_map[idx] = hit_id;
-                textbox_mask[idx] = 255;
+            if py < height {
+                let diag_x = x.wrapping_add(box_width).wrapping_sub(1).wrapping_sub(radius as usize).wrapping_add(i);
+                for fill_x in diag_x..px.wrapping_sub(1) {
+                    if fill_x >= window_width { continue; }
+                    let idx = py * window_width + fill_x;
+                    pixels[idx] = fill_colour;
+                    hit_test_map[idx] = hit_id;
+                    textbox_mask[idx] = 255;
+                }
             }
 
             // Horizontal edge - Outer antialiased pixel
-            let hx = x + box_width - 1 - radius as usize + i;
-            let hy = y + inset as usize;
+            let hx = x.wrapping_add(box_width).wrapping_sub(1).wrapping_sub(radius as usize).wrapping_add(i);
+            let hy = y.wrapping_add(inset as usize);
 
-            let idx = hy * window_width + hx;
-            pixels[idx] = blend_rgb_only(pixels[idx], light_colour, l, h);
+            if hy < height && hx < window_width {
+                let idx = hy * window_width + hx;
+                pixels[idx] = blend_rgb_only(pixels[idx], light_colour, l, h);
+            }
 
             // Horizontal edge - Inner antialiased pixel
-            let idx = (hy + 1) * window_width + hx;
-            pixels[idx] = blend_rgb_only(light_colour, fill_colour, l, h);
-            hit_test_map[idx] = hit_id;
-            textbox_mask[idx] = h;
-
-            // Fill vertically down from horizontal edge to diagonal
-            let diag_y = y + radius as usize - i;
-            for fill_y in (hy + 2)..diag_y {
-                let idx = fill_y * window_width + hx;
-                pixels[idx] = fill_colour;
+            let hy1 = hy.wrapping_add(1);
+            if hy1 < height && hx < window_width {
+                let idx = hy1 * window_width + hx;
+                pixels[idx] = blend_rgb_only(light_colour, fill_colour, l, h);
                 hit_test_map[idx] = hit_id;
-                textbox_mask[idx] = 255;
+                textbox_mask[idx] = h;
+            }
+
+            // Fill vertically between horizontal edge and diagonal
+            // WHY: Use signed arithmetic to handle negative Y when scrolled off top
+            // PROOF: y_signed can be negative, clamping to [0, height) gives visible portion
+            // PREVENTS: Infinite loop from wrapped usize, fills only visible pixels
+            let hy_signed = y_signed + inset as isize;
+            let diag_y_signed = y_signed + radius as isize - i as isize;
+            let fill_start = (hy_signed + 2).max(0).min(height_signed) as usize;
+            let fill_end = diag_y_signed.max(0).min(height_signed) as usize;
+            if hx < window_width && fill_start < fill_end {
+                for fill_y in fill_start..fill_end {
+                    let idx = fill_y * window_width + hx;
+                    pixels[idx] = fill_colour;
+                    hit_test_map[idx] = hit_id;
+                    textbox_mask[idx] = 255;
+                }
             }
         }
 
         // Bottom-left corner - mirror of top-left (flip y), shifted down 1 to avoid overlap
+        // (bounds checks justified in top-left comment: scroll causes partial visibility)
         for (i, &(inset, l, h)) in crossings.iter().enumerate() {
             if inset as usize > i {
                 break;
             }
 
-            let py = y + box_height - radius as usize + i;
-            let px = x + inset as usize;
+            let py = y.wrapping_add(box_height).wrapping_sub(radius as usize).wrapping_add(i);
+            let px = x.wrapping_add(inset as usize);
 
             // Vertical edge - Outer antialiased pixel
-            let idx = py * window_width + px;
-            pixels[idx] = blend_rgb_only(pixels[idx], light_colour, l, h);
+            if py < height && px < window_width {
+                let idx = py * window_width + px;
+                pixels[idx] = blend_rgb_only(pixels[idx], light_colour, l, h);
+            }
 
             // Vertical edge - Inner antialiased pixel
-            let idx = idx + 1;
-            pixels[idx] = blend_rgb_only(light_colour, fill_colour, l, h);
-            hit_test_map[idx] = hit_id;
-            textbox_mask[idx] = h;
+            let px1 = px.wrapping_add(1);
+            if py < height && px1 < window_width {
+                let idx = py * window_width + px1;
+                pixels[idx] = blend_rgb_only(light_colour, fill_colour, l, h);
+                hit_test_map[idx] = hit_id;
+                textbox_mask[idx] = h;
+            }
 
             // Fill horizontally to the diagonal
-            let diag_x = (x + radius as usize - i).min(window_width);
-            for fill_x in (px + 2)..=diag_x {
-                let idx = py * window_width + fill_x;
-                pixels[idx] = fill_colour;
-                hit_test_map[idx] = hit_id;
-                textbox_mask[idx] = 255;
+            if py < height {
+                let diag_x = x.wrapping_add(radius as usize).wrapping_sub(i).min(window_width);
+                for fill_x in (px.wrapping_add(2))..=diag_x {
+                    if fill_x >= window_width { continue; }
+                    let idx = py * window_width + fill_x;
+                    pixels[idx] = fill_colour;
+                    hit_test_map[idx] = hit_id;
+                    textbox_mask[idx] = 255;
+                }
             }
 
             // Horizontal edge - Outer antialiased pixel
-            let hx = x + radius as usize - i;
-            let hy = y + box_height - inset as usize;
+            let hx = x.wrapping_add(radius as usize).wrapping_sub(i);
+            let hy = y.wrapping_add(box_height).wrapping_sub(inset as usize);
 
-            let idx = hy * window_width + hx;
-            pixels[idx] = blend_rgb_only(pixels[idx], shadow_colour, l, h);
+            if hy < height && hx < window_width {
+                let idx = hy * window_width + hx;
+                pixels[idx] = blend_rgb_only(pixels[idx], shadow_colour, l, h);
+            }
 
             // Horizontal edge - Inner antialiased pixel
-            let idx = (hy - 1) * window_width + hx;
-            pixels[idx] = blend_rgb_only(shadow_colour, fill_colour, l, h);
-            hit_test_map[idx] = hit_id;
-            textbox_mask[idx] = h;
-
-            // Fill vertically up from horizontal edge to diagonal
-            let diag_y = y + box_height - radius as usize + i;
-            for fill_y in (diag_y + 1)..(hy - 1) {
-                let idx = fill_y * window_width + hx;
-                pixels[idx] = fill_colour;
+            let hy1 = hy.wrapping_sub(1);
+            if hy1 < height && hx < window_width {
+                let idx = hy1 * window_width + hx;
+                pixels[idx] = blend_rgb_only(shadow_colour, fill_colour, l, h);
                 hit_test_map[idx] = hit_id;
-                textbox_mask[idx] = 255;
+                textbox_mask[idx] = h;
+            }
+
+            // Fill vertically between diagonal and horizontal edge
+            // WHY: Use signed arithmetic to handle off-screen scroll
+            // PROOF: y_signed can be negative or exceed height, clamping gives visible portion
+            // PREVENTS: Infinite loop from wrapped usize, fills only visible pixels
+            let diag_y_signed = y_signed + box_height as isize - radius as isize + i as isize;
+            let hy_signed = y_signed + box_height as isize - inset as isize;
+            let fill_start = (diag_y_signed + 1).max(0).min(height_signed) as usize;
+            let fill_end = (hy_signed - 1).max(0).min(height_signed) as usize;
+            if hx < window_width && fill_start < fill_end {
+                for fill_y in fill_start..fill_end {
+                    let idx = fill_y * window_width + hx;
+                    pixels[idx] = fill_colour;
+                    hit_test_map[idx] = hit_id;
+                    textbox_mask[idx] = 255;
+                }
             }
         }
 
         // Bottom-right corner - mirror of top-left (flip both x and y), shifted down 1 to avoid overlap
+        // (bounds checks justified in top-left comment: scroll causes partial visibility)
         for (i, &(inset, l, h)) in crossings.iter().enumerate() {
             if inset as usize > i {
                 break;
             }
 
-            let py = y + box_height - radius as usize + i;
-            let px = x + box_width - 1 - inset as usize;
+            let py = y.wrapping_add(box_height).wrapping_sub(radius as usize).wrapping_add(i);
+            let px = x.wrapping_add(box_width).wrapping_sub(1).wrapping_sub(inset as usize);
 
             // Vertical edge - Outer antialiased pixel
-            let idx = py * window_width + px;
-            pixels[idx] = blend_rgb_only(pixels[idx], shadow_colour, l, h);
+            if py < height && px < window_width {
+                let idx = py * window_width + px;
+                pixels[idx] = blend_rgb_only(pixels[idx], shadow_colour, l, h);
+            }
 
             // Vertical edge - Inner antialiased pixel
-            let idx = idx - 1;
-            pixels[idx] = blend_rgb_only(shadow_colour, fill_colour, l, h);
-            hit_test_map[idx] = hit_id;
-            textbox_mask[idx] = h;
+            let px1 = px.wrapping_sub(1);
+            if py < height && px1 < window_width {
+                let idx = py * window_width + px1;
+                pixels[idx] = blend_rgb_only(shadow_colour, fill_colour, l, h);
+                hit_test_map[idx] = hit_id;
+                textbox_mask[idx] = h;
+            }
 
             // Fill horizontally to the diagonal
-            let diag_x = x + box_width - 1 - radius as usize + i;
-            for fill_x in diag_x..(px - 1) {
-                let idx = py * window_width + fill_x;
-                pixels[idx] = fill_colour;
-                hit_test_map[idx] = hit_id;
-                textbox_mask[idx] = 255;
+            if py < height {
+                let diag_x = x.wrapping_add(box_width).wrapping_sub(1).wrapping_sub(radius as usize).wrapping_add(i);
+                for fill_x in diag_x..px.wrapping_sub(1) {
+                    if fill_x >= window_width { continue; }
+                    let idx = py * window_width + fill_x;
+                    pixels[idx] = fill_colour;
+                    hit_test_map[idx] = hit_id;
+                    textbox_mask[idx] = 255;
+                }
             }
 
             // Horizontal edge - Outer antialiased pixel
-            let hx = x + box_width - 1 - radius as usize + i;
-            let hy = y + box_height - inset as usize;
+            let hx = x.wrapping_add(box_width).wrapping_sub(1).wrapping_sub(radius as usize).wrapping_add(i);
+            let hy = y.wrapping_add(box_height).wrapping_sub(inset as usize);
 
-            let idx = hy * window_width + hx;
-            pixels[idx] = blend_rgb_only(pixels[idx], shadow_colour, l, h);
+            if hy < height && hx < window_width {
+                let idx = hy * window_width + hx;
+                pixels[idx] = blend_rgb_only(pixels[idx], shadow_colour, l, h);
+            }
 
             // Horizontal edge - Inner antialiased pixel
-            let idx = (hy - 1) * window_width + hx;
-            pixels[idx] = blend_rgb_only(shadow_colour, fill_colour, l, h);
-            hit_test_map[idx] = hit_id;
-            textbox_mask[idx] = h;
-
-            // Fill vertically up from horizontal edge to diagonal
-            let diag_y = y + box_height - radius as usize + i;
-            for fill_y in (diag_y + 1)..(hy - 1) {
-                let idx = fill_y * window_width + hx;
-                pixels[idx] = fill_colour;
+            let hy1 = hy.wrapping_sub(1);
+            if hy1 < height && hx < window_width {
+                let idx = hy1 * window_width + hx;
+                pixels[idx] = blend_rgb_only(shadow_colour, fill_colour, l, h);
                 hit_test_map[idx] = hit_id;
-                textbox_mask[idx] = 255;
+                textbox_mask[idx] = h;
+            }
+
+            // Fill vertically between diagonal and horizontal edge
+            // WHY: Use signed arithmetic to handle off-screen scroll
+            // PROOF: y_signed can be negative or exceed height, clamping gives visible portion
+            // PREVENTS: Infinite loop from wrapped usize, fills only visible pixels
+            let diag_y_signed = y_signed + box_height as isize - radius as isize + i as isize;
+            let hy_signed = y_signed + box_height as isize - inset as isize;
+            let fill_start = (diag_y_signed + 1).max(0).min(height_signed) as usize;
+            let fill_end = (hy_signed - 1).max(0).min(height_signed) as usize;
+            if hx < window_width && fill_start < fill_end {
+                for fill_y in fill_start..fill_end {
+                    let idx = fill_y * window_width + hx;
+                    pixels[idx] = fill_colour;
+                    hit_test_map[idx] = hit_id;
+                    textbox_mask[idx] = 255;
+                }
             }
         }
 
         // Fill center and straight edges
-        let radius_int = radius as usize;
+        // Use signed arithmetic to clamp Y ranges to visible portion
+        let radius_int = radius as isize;
 
         if box_width > box_height {
             // Fat box: draw top and bottom straight edges
-            let left_edge = x + radius_int;
-            let right_edge = x + box_width - radius_int;
+            let left_edge = x.wrapping_add(radius as usize);
+            let right_edge = x.wrapping_add(box_width).wrapping_sub(radius as usize);
 
             // Top edge (horizontal hairline) - just outer pixel
-            for px in left_edge..right_edge {
-                let idx = y * window_width + px;
-                pixels[idx] = light_colour;
+            let top_y = y_signed.max(0).min(height_signed) as usize;
+            if y_signed >= 0 && y_signed < height_signed {
+                for px in left_edge..right_edge {
+                    if px >= window_width { continue; }
+                    let idx = top_y * window_width + px;
+                    pixels[idx] = light_colour;
+                }
             }
 
             // Bottom edge (horizontal hairline) - just outer pixel, shifted down 1
-            let bottom_y = y + box_height;
-            for px in left_edge..right_edge {
-                let idx = bottom_y * window_width + px;
-                pixels[idx] = shadow_colour;
+            let bottom_y_signed = y_signed + box_height as isize;
+            if bottom_y_signed >= 0 && bottom_y_signed < height_signed {
+                let bottom_y = bottom_y_signed as usize;
+                for px in left_edge..right_edge {
+                    if px >= window_width { continue; }
+                    let idx = bottom_y * window_width + px;
+                    pixels[idx] = shadow_colour;
+                }
             }
 
-            // Fill center rectangle
-            for py in (y + 1)..(y + box_height) {
+            // Fill center rectangle - clamp Y range to visible portion
+            let fill_top = (y_signed + 1).max(0).min(height_signed) as usize;
+            let fill_bottom = (y_signed + box_height as isize).max(0).min(height_signed) as usize;
+            for py in fill_top..fill_bottom {
                 for px in left_edge..right_edge {
+                    if px >= window_width { continue; }
                     let idx = py * window_width + px;
                     pixels[idx] = fill_colour;
                     hit_test_map[idx] = hit_id;
@@ -3816,25 +4295,30 @@ impl PhotonApp {
             }
         } else {
             // Skinny box: draw left and right straight edges
-            let top_edge = y + radius_int;
-            let bottom_edge = y + box_height - radius_int;
+            let top_edge = (y_signed + radius_int).max(0).min(height_signed) as usize;
+            let bottom_edge = (y_signed + box_height as isize - radius_int).max(0).min(height_signed) as usize;
 
             // Left edge (vertical hairline) - just outer pixel
-            for py in top_edge..bottom_edge {
-                let idx = py * window_width + x;
-                pixels[idx] = light_colour;
+            if x < window_width {
+                for py in top_edge..bottom_edge {
+                    let idx = py * window_width + x;
+                    pixels[idx] = light_colour;
+                }
             }
 
             // Right edge (vertical hairline) - just outer pixel
-            let right_x = x + box_width;
-            for py in top_edge..bottom_edge {
-                let idx = py * window_width + right_x;
-                pixels[idx] = shadow_colour;
+            let right_x = x.wrapping_add(box_width);
+            if right_x < window_width {
+                for py in top_edge..bottom_edge {
+                    let idx = py * window_width + right_x;
+                    pixels[idx] = shadow_colour;
+                }
             }
 
             // Fill center rectangle
             for py in top_edge..bottom_edge {
-                for px in (x + 1)..(x + box_width - 1) {
+                for px in (x.wrapping_add(1))..(x.wrapping_add(box_width).wrapping_sub(1)) {
+                    if px >= window_width { continue; }
                     let idx = py * window_width + px;
                     pixels[idx] = fill_colour;
                     hit_test_map[idx] = hit_id;
@@ -3850,7 +4334,7 @@ impl PhotonApp {
         pixels: &mut [u32],
         textbox_mask: &[u8],
         window_width: usize,
-        center_y: usize,
+        center_y: isize,
         box_width: usize,
         box_height: usize,
         add: bool,
@@ -3860,7 +4344,18 @@ impl PhotonApp {
         let blur_radius_horiz = 32;
         let blur_radius_vert = 16;
 
-        // Textbox bounds
+        // WHY: center_y can be negative or huge when scrolled off-screen
+        // PROOF: y_top/y_bottom computed from center_y - need center on-screen for valid usize
+        // PREVENTS: Underflow when computing y_top = center_y - box_height/2
+        // NOTE: Cast to usize wraps negatives to huge values, failing >= height check
+        let height = pixels.len() / window_width;
+        let half_h = (box_height / 2) as isize;
+        if (center_y - half_h) as usize >= height || (center_y + half_h) as usize >= height {
+            return;
+        }
+        let center_y = center_y as usize;
+
+        // Textbox bounds (guard above ensures these + blur_radius stay in bounds)
         let y_top = center_y - box_height / 2;
         let y_bottom = center_y + box_height / 2;
 
@@ -3946,8 +4441,14 @@ impl PhotonApp {
                 for y in y_bottom
                     - (x_vert_start as isize - x as isize).max(0) as usize
                     - (x as isize - x_vert_end as isize).max(0) as usize
-                    ..(y_bottom + blur_radius_vert).min(textbox_mask.len() / window_width)
+                    ..y_bottom + blur_radius_vert
                 {
+                    // WHY: Glow extends blur_radius_vert below textbox, may exceed screen
+                    // PROOF: Loop scans outward (increasing y), once y >= height all remaining y's also >=
+                    // PREVENTS: Out-of-bounds pixel access when glow extends past bottom edge
+                    if y >= height {
+                        break;
+                    }
                     let idx = y * window_width + x;
                     if y > 0 {
                         let idx_above = (y - 1) * window_width + x;
@@ -3967,16 +4468,25 @@ impl PhotonApp {
             // Vertical blur pass - up from top edge (with diagonal corner fill)
             for x in x_left..x_right {
                 adder = 0;
-                // PROOF saturating_sub: blur_radius_vert could exceed y_top
-                // Prevents underflow when blurring near top edge, saturating at 0
-                for y in (y_top.saturating_sub(blur_radius_vert)
-                    ..=y_top
-                        + (x_vert_start as isize - x as isize).max(0) as usize
-                        + (x as isize - x_vert_end as isize).max(0) as usize)
+                for y in (0..=y_top
+                    + (x_vert_start as isize - x as isize).max(0) as usize
+                    + (x as isize - x_vert_end as isize).max(0) as usize)
                     .rev()
                 {
+                    // WHY: Glow extends blur_radius_vert above textbox, may go negative (wrapped)
+                    // PROOF: Loop scans outward (decreasing y), once past y_top - blur_radius_vert we stop
+                    // PREVENTS: Processing pixels above glow region or wrapped negative values
+                    if y + blur_radius_vert < y_top {
+                        break;
+                    }
+                    // WHY: y_top + corner_adjust can exceed height when textbox is near bottom
+                    // PROOF: Loop starts at y_top + corner_adjust, which depends on textbox position
+                    // PREVENTS: Out-of-bounds access to textbox_mask[idx] and pixels[idx]
+                    if y >= height {
+                        continue;
+                    }
                     let idx = y * window_width + x;
-                    if y + 1 < textbox_mask.len() / window_width {
+                    if y + 1 < height {
                         let idx_below = (y + 1) * window_width + x;
                         if textbox_mask[idx] < textbox_mask[idx_below] {
                             adder += (textbox_mask[idx_below] - textbox_mask[idx]) as u32;
@@ -4042,8 +4552,14 @@ impl PhotonApp {
                 for y in y_bottom
                     - (x_vert_start as isize - x as isize).max(0) as usize
                     - (x as isize - x_vert_end as isize).max(0) as usize
-                    ..(y_bottom + blur_radius_vert).min(textbox_mask.len() / window_width)
+                    ..y_bottom + blur_radius_vert
                 {
+                    // WHY: Glow extends blur_radius_vert below textbox, may exceed screen
+                    // PROOF: Loop scans outward (increasing y), once y >= height all remaining y's also >=
+                    // PREVENTS: Out-of-bounds pixel access when glow extends past bottom edge
+                    if y >= height {
+                        break;
+                    }
                     let idx = y * window_width + x;
                     if y > 0 {
                         let idx_above = (y - 1) * window_width + x;
@@ -4063,16 +4579,25 @@ impl PhotonApp {
             // Vertical blur pass - up from top edge (with diagonal corner fill)
             for x in x_left..x_right {
                 adder = 0;
-                // PROOF saturating_sub: blur_radius_vert could exceed y_top
-                // Prevents underflow when blurring near top edge, saturating at 0
-                for y in (y_top.saturating_sub(blur_radius_vert)
-                    ..=y_top
-                        + (x_vert_start as isize - x as isize).max(0) as usize
-                        + (x as isize - x_vert_end as isize).max(0) as usize)
+                for y in (0..=y_top
+                    + (x_vert_start as isize - x as isize).max(0) as usize
+                    + (x as isize - x_vert_end as isize).max(0) as usize)
                     .rev()
                 {
+                    // WHY: Glow extends blur_radius_vert above textbox, may go negative (wrapped)
+                    // PROOF: Loop scans outward (decreasing y), once past y_top - blur_radius_vert we stop
+                    // PREVENTS: Processing pixels above glow region or wrapped negative values
+                    if y + blur_radius_vert < y_top {
+                        break;
+                    }
+                    // WHY: y_top + corner_adjust can exceed height when textbox is near bottom
+                    // PROOF: Loop starts at y_top + corner_adjust, which depends on textbox position
+                    // PREVENTS: Out-of-bounds access to textbox_mask[idx] and pixels[idx]
+                    if y >= height {
+                        continue;
+                    }
                     let idx = y * window_width + x;
-                    if y + 1 < textbox_mask.len() / window_width {
+                    if y + 1 < height {
                         let idx_below = (y + 1) * window_width + x;
                         if textbox_mask[idx] < textbox_mask[idx_below] {
                             adder += (textbox_mask[idx_below] - textbox_mask[idx]) as u32;
@@ -4925,22 +5450,22 @@ impl PhotonApp {
     /// - brighten: brighten avatar when file hovering (self avatar only)
     /// avatar_scaled must be pre-scaled to diameter×diameter (diameter = radius * 2)
     ///
-    /// CONTRACT: Caller MUST ensure avatar fits on screen:
-    ///   cx >= r_outer && cy >= r_outer && cx + r_outer < width && cy + r_outer < height
-    /// Violation = layout bug → panic is correct behavior
+    /// Coordinates are isize to support scrolling (can be partially/fully off-screen).
+    /// Computes intersection of avatar bounds with screen - loop bounds prove safety.
     pub fn draw_avatar(
         pixels: &mut [u32],
         mut hit_test_map: Option<&mut [u8]>,
         width: usize,
-        cx: usize,
-        cy: usize,
-        radius: usize,
+        height: usize,
+        cx: isize,
+        cy: isize,
+        radius: isize,
         avatar_scaled: Option<&[u8]>,
         ring_colour: Option<u32>,
         brighten: bool,
     ) {
-        let r = radius as isize;
-        let diameter = radius * 2;
+        let r = radius;
+        let diameter = (radius * 2) as usize;
         let stroke_width = radius / 16;
 
         // Ring radii: 1px inside + 1px outside = 2px total
@@ -4948,7 +5473,7 @@ impl PhotonApp {
         let r_inner2 = r_inner * r_inner;
         let r_inner_inner = r - 2;
         let r_inner_inner2 = r_inner_inner * r_inner_inner;
-        let r_outer = r + stroke_width as isize;
+        let r_outer = r + stroke_width;
         let r_outer2 = r_outer * r_outer;
         let r_outer_outer = r_outer + 1;
         let r_outer_outer2 = r_outer_outer * r_outer_outer;
@@ -4958,15 +5483,38 @@ impl PhotonApp {
         // AA diff for inner edge (no-ring case): maps [r_inner_inner2, r_inner2) to [255, 0]
         let diff_inner = r_inner2 - r_inner_inner2;
 
+        // Intersection bounds:
+        // WHY: cx/cy can be negative or exceed screen bounds due to scroll offset
+        // PROOF: We compute intersection of circle bounding box with screen (0..width, 0..height)
+        //        If intersection is empty (y_max <= y_min), avatar is off-screen, return early
+        //        Otherwise cast to usize is safe since values are in [0, width/height]
+        // PREVENTS: Negative isize cast to usize would wrap to huge value causing infinite loop
+
         if let Some(ring) = ring_colour {
             // === WITH RING ===
-            // Loop over ring's outer AA bound
-            for dy in -r_outer_outer..=r_outer_outer {
-                let y = (cy as isize + dy) as usize;
+            // Compute intersection of outer ring bounds with screen (keep as isize)
+            let y_min_i = (cy - r_outer_outer).max(0);
+            let y_max_i = (cy + r_outer_outer + 1).min(height as isize);
+            let x_min_i = (cx - r_outer_outer).max(0);
+            let x_max_i = (cx + r_outer_outer + 1).min(width as isize);
+
+            // Empty intersection = entirely off-screen
+            if y_max_i <= y_min_i || x_max_i <= x_min_i {
+                return;
+            }
+
+            // Safe to cast - values are in [0, width/height]
+            let y_min = y_min_i as usize;
+            let y_max = y_max_i as usize;
+            let x_min = x_min_i as usize;
+            let x_max = x_max_i as usize;
+
+            for y in y_min..y_max {
+                let dy = y as isize - cy;
                 let dy2 = dy * dy;
 
-                for dx in -r_outer_outer..=r_outer_outer {
-                    let x = (cx as isize + dx) as usize;
+                for x in x_min..x_max {
+                    let dx = x as isize - cx;
                     let dist2 = dx * dx + dy2;
                     let idx = y * width + x;
 
@@ -5002,13 +5550,29 @@ impl PhotonApp {
             }
         } else {
             // === NO RING ===
-            // Trim 1px smaller to hide burned-in circle artifact
-            for dy in -r_inner..=r_inner {
-                let y = (cy as isize + dy) as usize;
+            // Compute intersection of inner circle bounds with screen (keep as isize)
+            let y_min_i = (cy - r_inner).max(0);
+            let y_max_i = (cy + r_inner + 1).min(height as isize);
+            let x_min_i = (cx - r_inner).max(0);
+            let x_max_i = (cx + r_inner + 1).min(width as isize);
+
+            // Empty intersection = entirely off-screen
+            if y_max_i <= y_min_i || x_max_i <= x_min_i {
+                return;
+            }
+
+            // Safe to cast - values are in [0, width/height]
+            let y_min = y_min_i as usize;
+            let y_max = y_max_i as usize;
+            let x_min = x_min_i as usize;
+            let x_max = x_max_i as usize;
+
+            for y in y_min..y_max {
+                let dy = y as isize - cy;
                 let dy2 = dy * dy;
 
-                for dx in -r_inner..=r_inner {
-                    let x = (cx as isize + dx) as usize;
+                for x in x_min..x_max {
+                    let dx = x as isize - cx;
                     let idx = y * width + x;
                     let dist2 = dx * dx + dy2;
 

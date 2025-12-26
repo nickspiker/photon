@@ -185,8 +185,8 @@ pub fn encode_avatar_from_image(image_data: &[u8]) -> Result<Vec<u8>, String> {
 
     // Apply circular mask in linear space and encode to gamma
     let mut vsf_rgb_f32 = vec![0.0f32; size * size * 3];
-    let center = size as isize / 2;
-    let r_outer = size as isize / 2 + 1;
+    let center = (size / 2) as isize;
+    let r_outer = (size / 2) as isize + 1;
     let r_outer2 = r_outer * r_outer;
     let r_inner = r_outer - 1;
     let r_inner2 = r_inner * r_inner;

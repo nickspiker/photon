@@ -1,10 +1,13 @@
 #!/bin/bash
+# Release build without logging (smaller binary, no logcat output)
 
-cp /mnt/Chiton/MEGA/Code/keys/google-services.json /mnt/Octopus/Code/photon/android/app/
+cp /home/nick/MEGA/code/keys/google-services.json /mnt/Octopus/Code/photon/android/app/
+
+export PHOTON_ALLOW_RELEASE=1
 
 # Keystore config - try multiple locations
-if [ -f "/mnt/Chiton/MEGA/Code/keys/nicks-apps.keystore" ]; then
-    KEYSTORE_PATH="/mnt/Chiton/MEGA/Code/keys/nicks-apps.keystore"
+if [ -f "/home/nick/MEGA/code/keys/nicks-apps.keystore" ]; then
+    KEYSTORE_PATH="/home/nick/MEGA/code/keys/nicks-apps.keystore"
 elif [ -f "/home/nick/MEGA/code/keys/nicks-apps.keystore" ]; then
     KEYSTORE_PATH="/home/nick/MEGA/code/keys/nicks-apps.keystore"
 fi
@@ -50,8 +53,8 @@ export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C link-arg=-fuse-ld=mol
 export CC="clang"
 export CXX="clang++"
 
-echo "Building Photon for Android (arm64)..."
-cargo build --release --lib --target aarch64-linux-android --features logging
+echo "Building Photon for Android (arm64) - RELEASE (no logging)..."
+cargo build --release --lib --target aarch64-linux-android
 
 # Copy to Android project jniLibs
 echo "Copying .so to Android project..."
@@ -65,4 +68,4 @@ cd ..
 
 echo ""
 echo "APK created at android/app/build/outputs/apk/release/"
-echo "Build complete!"
+echo "RELEASE build complete! (no logging)"

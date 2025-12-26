@@ -72,6 +72,7 @@ pub const LOGO_TEXT: u32 = fmt(0xFF_00_00_00); // Logo text colour
 // Contact list colours
 pub const CONTACT_NAME: u32 = fmt(0xFF_F0_F0_F0); // Contact name (white)
 pub const CONTACT_NAME_UNHOVERED: u32 = fmt(0xFF_A0_A0_A0); // Contact name when not hovered
+pub const VERSION_TEXT: u32 = fmt(0xFF_66_66_66); // Version number at bottom (dim grey)
 pub const ONLINE_DOT: u32 = fmt(0x00_00_F0_00); // Self online status dot fill (no alpha, medium green)
 pub const OFFLINE_DOT: u32 = fmt(0x00_80_80_80); // Offline status hairline ring (gray)
 pub const CONTACT_ONLINE: u32 = fmt(0xFF_00_F0_00); // Online status indicator/back arrow (bright green)

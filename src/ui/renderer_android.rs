@@ -2,19 +2,14 @@ use ndk::native_window::NativeWindow;
 use ndk_sys::{ANativeWindow_Buffer, ANativeWindow_lock, ANativeWindow_unlockAndPost};
 
 /// Samsung devices have a compositor that breaks magic pixel optimization
-/// Set once at startup, never changes
 static mut SAMSUNG_MODE: bool = false;
 
 /// Set Samsung mode (called once from JNI init before any rendering)
 pub fn set_samsung_mode(is_samsung: bool) {
-    // SAFETY: Called once at startup before any rendering threads
-    unsafe {
-        SAMSUNG_MODE = is_samsung;
-    }
+    unsafe { SAMSUNG_MODE = is_samsung; }
 }
 
 fn is_samsung() -> bool {
-    // SAFETY: Read-only after init, no data race possible
     unsafe { SAMSUNG_MODE }
 }
 
@@ -56,9 +51,8 @@ pub struct Renderer {
     /// Internal pixel buffer - compositing draws here
     buffer: Vec<u32>,
 
-    /// Magic pixel counter for non-Samsung devices
-    /// Incremented on dirty frames, written to top-right pixel to detect stale buffers
-    magic_counter: u32,
+    /// Current content version - incremented on each dirty frame
+    content_version: u32,
 }
 
 impl Renderer {
@@ -67,7 +61,7 @@ impl Renderer {
             width,
             height,
             buffer: vec![0; (width * height) as usize],
-            magic_counter: 1, // Start at 1 so 0 (uninitialized) never matches
+            content_version: 1, // Start at 1 so 0 (uninitialized) never matches
         }
     }
 
@@ -76,11 +70,9 @@ impl Renderer {
             self.width = width;
             self.height = height;
             self.buffer.resize((width * height) as usize, 0);
-            // Force full redraw after resize
-            self.magic_counter = self.magic_counter.wrapping_add(1);
-            if self.magic_counter == 0 {
-                self.magic_counter = 1;
-            }
+            // Force update on resize
+            self.content_version = self.content_version.wrapping_add(1);
+            if self.content_version == 0 { self.content_version = 1; }
         }
     }
 
@@ -95,9 +87,9 @@ impl Renderer {
     /// Present internal buffer to Android NativeWindow surface
     /// Only call this after compositing has drawn to lock_buffer()
     ///
-    /// Always locks and posts every frame (Samsung requires this).
-    /// Samsung: always copies (their compositor breaks magic pixel optimization)
-    /// Non-Samsung: uses magic pixel in top-right to skip copy when buffer is current
+    /// Uses magic pixel in top-right corner to track per-buffer state.
+    /// Each of Android's 3 rotating buffers gets the content_version written
+    /// to it after copy, so we can detect if a buffer is already current.
     pub fn present(&mut self, window: &NativeWindow, dirty: bool) -> bool {
         unsafe {
             let mut android_buffer = std::mem::zeroed::<ANativeWindow_Buffer>();
@@ -124,8 +116,14 @@ impl Renderer {
             let copy_height = height.min(self.height as usize);
             let copy_width = width.min(src_width);
 
+            // Increment content version when dirty
+            if dirty {
+                self.content_version = self.content_version.wrapping_add(1);
+                if self.content_version == 0 { self.content_version = 1; }
+            }
+
             let copied = if is_samsung() {
-                // Samsung: always copy everything, their compositor is weird
+                // Samsung: always copy (their compositor breaks magic pixel)
                 for y in 0..copy_height {
                     let src_row = &self.buffer[y * src_width..y * src_width + copy_width];
                     let dst_row = &mut dst_pixels[y * stride..y * stride + copy_width];
@@ -133,38 +131,30 @@ impl Renderer {
                 }
                 true
             } else {
-                // Non-Samsung: use magic pixel optimization
+                // Check magic pixel: does THIS buffer already have current content?
                 let magic_idx = width.saturating_sub(1);
-                let buffer_is_current =
-                    !dirty && magic_idx < stride && dst_pixels[magic_idx] == self.magic_counter;
+                let buffer_is_current = magic_idx < stride
+                    && dst_pixels[magic_idx] == self.content_version;
 
                 if buffer_is_current {
-                    // Buffer already has correct content - skip the copy
+                    // This specific buffer already has the right content
                     false
                 } else {
-                    // Need to copy - either dirty or buffer is stale
-                    if dirty {
-                        self.magic_counter = self.magic_counter.wrapping_add(1);
-                        if self.magic_counter == 0 {
-                            self.magic_counter = 1;
-                        }
-                    }
-
+                    // Copy and stamp with current version
                     for y in 0..copy_height {
                         let src_row = &self.buffer[y * src_width..y * src_width + copy_width];
                         let dst_row = &mut dst_pixels[y * stride..y * stride + copy_width];
                         dst_row.copy_from_slice(src_row);
                     }
-
-                    // Write magic pixel
+                    // Write magic pixel so we recognize this buffer next time
                     if magic_idx < stride {
-                        dst_pixels[magic_idx] = self.magic_counter;
+                        dst_pixels[magic_idx] = self.content_version;
                     }
                     true
                 }
             };
 
-            // Always post - Samsung throttles Choreographer if we don't
+            // Always post - required for Choreographer timing
             ANativeWindow_unlockAndPost(window.ptr().as_ptr());
             copied
         }

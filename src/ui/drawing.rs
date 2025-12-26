@@ -23,6 +23,7 @@ pub fn draw_background_texture(
     height: usize,
     speckle: usize,
     fullscreen: bool,
+    scroll_offset: isize,
 ) {
     use rayon::prelude::*;
 
@@ -38,10 +39,14 @@ pub fn draw_background_texture(
     rows.par_chunks_mut(width)
         .enumerate()
         .for_each(|(row_idx, row_pixels)| {
+            // WHY: Scroll offset shifts which logical row this screen row represents
+            // PROOF: Adding scroll_offset to row index makes texture scroll with content
+            // PREVENTS: Background staying static while content scrolls
+            let logical_row = (row_start + row_idx) as isize - scroll_offset;
             draw_background_row(
                 row_pixels,
                 width,
-                row_start + row_idx,
+                logical_row,
                 height,
                 x_start,
                 x_end,
@@ -58,12 +63,14 @@ pub fn draw_background_texture(
     height: usize,
     speckle: usize,
     _fullscreen: bool, // Android is always fullscreen
+    scroll_offset: isize,
 ) {
     for row_idx in 0..height {
         let row_start = row_idx * width;
         let row_end = row_start + width;
         let row_pixels = &mut pixels[row_start..row_end];
-        draw_background_row(row_pixels, width, row_idx, height, 0, width, speckle);
+        let logical_row = row_idx as isize - scroll_offset;
+        draw_background_row(row_pixels, width, logical_row, height, 0, width, speckle);
     }
 }
 
@@ -73,14 +80,17 @@ pub fn draw_background_texture(
 fn draw_background_row(
     row_pixels: &mut [u32],
     width: usize,
-    actual_row: usize,
+    logical_row: isize,
     height: usize,
     x_start: usize,
     x_end: usize,
     speckle: usize,
 ) {
+    // WHY: logical_row can be negative when scrolled, use wrapping for RNG seed
+    // PROOF: wrapping_sub produces consistent hash for any scroll position
+    // PREVENTS: Different behavior for negative vs positive row indices
     let mut rng: usize = (0xDEADBEEF01234567)
-        ^ ((actual_row.wrapping_sub(height / 2)).wrapping_mul(0x9E3779B94517B397));
+        ^ ((logical_row as usize).wrapping_sub(height / 2).wrapping_mul(0x9E3779B94517B397));
     let mask = theme::BG_MASK;
     let alpha = theme::BG_ALPHA;
     let ones = 0x00010101;
@@ -104,7 +114,7 @@ fn draw_background_row(
 
     // Left half: right-to-left (mirror)
     rng = 0xDEADBEEF01234567
-        ^ ((actual_row.wrapping_sub(height / 2)).wrapping_mul(0x9E3779B94517B397));
+        ^ ((logical_row as usize).wrapping_sub(height / 2).wrapping_mul(0x9E3779B94517B397));
     colour = rng as u32 & mask | alpha;
 
     for x in (x_start..width / 2).rev() {

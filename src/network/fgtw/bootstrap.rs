@@ -385,11 +385,17 @@ fn build_announce_message(
     use vsf::verification::sign_file;
     use vsf::{VsfBuilder, VsfType};
 
-    // 1. Build encrypted payload: hb(challenge_hash) + hP(handle_proof) + u(port) + ke(avatar_pub)?
+    // 1. Build encrypted payload: hb(challenge_hash) + hP(handle_proof) + u(port) + t_u3(local_ip)? + ke(avatar_pub)?
     let mut plaintext = Vec::new();
     plaintext.extend(VsfType::hb(challenge_hash.to_vec()).flatten());
     plaintext.extend(VsfType::hP(handle_proof.to_vec()).flatten());
     plaintext.extend(VsfType::u(port as usize, false).flatten());
+
+    // Include local IP for hairpin NAT (peers behind same public IP)
+    if let Some(local_ip) = crate::network::udp::get_local_ip() {
+        let octets = local_ip.octets();
+        plaintext.extend(VsfType::t_u3(vsf::Tensor::new(vec![4], octets.to_vec())).flatten());
+    }
 
     // Optional: include avatar public key for avatar authentication
     if let Some(avatar_key) = avatar_pub_key {
@@ -548,10 +554,33 @@ fn parse_peer_from_field(field: &vsf::VsfField) -> Result<PeerRecord, String> {
         _ => return Err("Expected Eagle Time (e) type for timestamp".to_string()),
     };
 
+    // Parse optional local_ip (t_u3{4 or 16 bytes}) for hairpin NAT
+    let local_ip = if field.values.len() > 5 {
+        match &field.values[5] {
+            vsf::VsfType::t_u3(tensor) if tensor.data.len() == 4 => {
+                Some(IpAddr::V4(Ipv4Addr::new(
+                    tensor.data[0],
+                    tensor.data[1],
+                    tensor.data[2],
+                    tensor.data[3],
+                )))
+            }
+            vsf::VsfType::t_u3(tensor) if tensor.data.len() == 16 => {
+                let mut octets = [0u8; 16];
+                octets.copy_from_slice(&tensor.data);
+                Some(IpAddr::V6(Ipv6Addr::from(octets)))
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
+
     Ok(PeerRecord {
         handle_proof,
         device_pubkey,
         ip: SocketAddr::new(parsed_ip, port),
+        local_ip,
         last_seen,
     })
 }

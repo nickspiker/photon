@@ -278,6 +278,26 @@ impl Contact {
         self.last_seen = Some(timestamp);
     }
 
+    /// Get the best address to reach this contact.
+    /// If we share the same public IP (same NAT), use their local_ip to bypass AP isolation.
+    /// Otherwise use their public IP.
+    pub fn best_addr(&self, our_public_ip: Option<std::net::IpAddr>) -> Option<std::net::SocketAddr> {
+        let public_addr = self.ip?;
+
+        // If peer has a local_ip and we share the same public IP, use local_ip
+        if let (Some(local_v4), Some(our_ip)) = (self.local_ip, our_public_ip) {
+            if public_addr.ip() == our_ip {
+                // Same public IP = same NAT, use local_ip to bypass AP isolation
+                return Some(std::net::SocketAddr::new(
+                    std::net::IpAddr::V4(local_v4),
+                    public_addr.port(),
+                ));
+            }
+        }
+
+        Some(public_addr)
+    }
+
     pub fn can_be_custodian(&self) -> bool {
         matches!(self.trust_level, TrustLevel::Trusted | TrustLevel::Inner)
     }

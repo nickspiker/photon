@@ -79,6 +79,11 @@ impl PhotonApp {
 
                     match element_id {
                         HIT_HANDLE_TEXTBOX => {
+                            // Don't allow textbox focus during attestation - handle is locked in
+                            if matches!(self.app_state, AppState::Launch(LaunchState::Attesting)) {
+                                return;
+                            }
+
                             let was_focused = self.current_text_state.textbox_focused;
 
                             // Focus the textbox and set blinkey position based on click location
@@ -147,11 +152,16 @@ impl PhotonApp {
                             if !was_focused {
                                 // Add textbox glow on focus
                                 debug_println!("Textbox glow: ON");
+                                let scroll = if matches!(self.app_state, AppState::Ready | AppState::Searching) {
+                                    self.contacts_scroll_offset
+                                } else {
+                                    0
+                                };
                                 Self::apply_textbox_glow(
                                     pixels,
                                     &self.textbox_mask,
                                     self.width as usize,
-                                    textbox_y,
+                                    textbox_y as isize + scroll,
                                     box_width,
                                     box_height,
                                     true,
@@ -191,11 +201,19 @@ impl PhotonApp {
                         HIT_BACK_HEADER => {
                             // Back button in conversation header - return to contacts
                             self.app_state = AppState::Ready;
+                            let eff_ru = self.effective_ru();
                             self.text_layout = TextLayout::new(
                                 self.width as usize,
                                 self.height as usize,
                                 self.span,
-                                self.effective_ru(),
+                                eff_ru,
+                                &self.app_state,
+                            );
+                            self.layout = super::app::Layout::new(
+                                self.width as usize,
+                                self.height as usize,
+                                self.span,
+                                eff_ru,
                                 &self.app_state,
                             );
                             self.selected_contact = None;
@@ -223,6 +241,11 @@ impl PhotonApp {
                                     let box_height = self.textbox_height();
                                     let textbox_y = self.textbox_center_y();
                                     let font_size = self.font_size();
+                                    let scroll = if matches!(self.app_state, AppState::Ready | AppState::Searching) {
+                                        self.contacts_scroll_offset
+                                    } else {
+                                        0
+                                    };
                                     let mut buffer = self.renderer.lock_buffer();
                                     let pixels = buffer.as_mut();
 
@@ -230,7 +253,7 @@ impl PhotonApp {
                                         pixels,
                                         &self.textbox_mask,
                                         self.width as usize,
-                                        textbox_y,
+                                        textbox_y as isize + scroll,
                                         box_width,
                                         box_height,
                                         false,
@@ -272,9 +295,30 @@ impl PhotonApp {
                                     }
                                 }
                                 AppState::Ready => {
-                                    // "Query" button clicked - search for handle
-                                    debug_println!("Querying handle: {}", handle);
-                                    self.start_handle_search(&handle);
+                                    // "Add" button clicked - check if contact exists first
+                                    let handle_lower = handle.to_lowercase();
+                                    let existing_idx = self.contacts.iter().position(|c| {
+                                        c.handle.as_str().to_lowercase() == handle_lower
+                                    });
+
+                                    if let Some(idx) = existing_idx {
+                                        // Contact already exists - open conversation with them
+                                        debug_println!("Contact {} already exists, opening conversation", handle);
+                                        self.selected_contact = Some(idx);
+                                        self.app_state = AppState::Conversation;
+                                        self.reset_textbox();
+                                        self.text_layout = super::app::TextLayout::new(
+                                            self.width as usize,
+                                            self.height as usize,
+                                            self.span,
+                                            self.effective_ru(),
+                                            &self.app_state,
+                                        );
+                                    } else {
+                                        // New handle - search network
+                                        debug_println!("Querying handle: {}", handle);
+                                        self.start_handle_search(&handle);
+                                    }
                                     self.window_dirty = true;
                                 }
                                 AppState::Conversation => {
@@ -370,6 +414,11 @@ impl PhotonApp {
                                     let box_height = self.textbox_height();
                                     let textbox_y = self.textbox_center_y();
                                     let font_size = self.font_size();
+                                    let scroll = if matches!(self.app_state, AppState::Ready | AppState::Searching) {
+                                        self.contacts_scroll_offset
+                                    } else {
+                                        0
+                                    };
                                     let mut buffer = self.renderer.lock_buffer();
                                     let pixels = buffer.as_mut();
 
@@ -379,7 +428,7 @@ impl PhotonApp {
                                         pixels,
                                         &self.textbox_mask,
                                         self.width as usize,
-                                        textbox_y,
+                                        textbox_y as isize + scroll,
                                         box_width,
                                         box_height,
                                         false,
@@ -741,7 +790,7 @@ impl PhotonApp {
         // Extract scroll amount (pixels or lines)
         let scroll_pixels = match delta {
             MouseScrollDelta::LineDelta(_x, y) => {
-                // Line scrolling: convert lines to pixels (assume ~20 pixels per line)
+                // Line scrolling: convert lines to pixels (~20 pixels per line)
                 y * 20.0
             }
             MouseScrollDelta::PixelDelta(pos) => {
@@ -760,7 +809,71 @@ impl PhotonApp {
             return true;
         }
 
-        // Regular scroll only works in conversation view
+        // Contacts scroll (Ready/Searching states)
+        if matches!(self.app_state, AppState::Ready | AppState::Searching) {
+            self.contacts_scroll_offset += scroll_pixels as isize;
+
+            // Clamp scroll to content bounds (unless debug mode is enabled)
+            if !self.debug {
+                // Calculate content height: user section + contact rows
+                let ru = self.effective_ru();
+                let span = self.span as usize;
+                let contacts_block = super::app::PixelRegion {
+                    x: 0,
+                    y: 0,
+                    w: self.width as usize,
+                    h: self.height as usize,
+                };
+                let layout = super::app::ContactsUnifiedLayout::new(&contacts_block, span, ru, 0);
+
+                // User section height (from top to separator bottom)
+                let user_section_bottom = layout.separator.y + layout.separator.h;
+
+                // Count visible contacts (respecting search filter)
+                let filter_text: String = self.current_text_state.chars.iter().collect();
+                let filter_lower = filter_text.to_lowercase();
+                let num_contacts = if filter_lower.is_empty() {
+                    self.contacts.len()
+                } else {
+                    self.contacts
+                        .iter()
+                        .filter(|c| c.handle.as_str().to_lowercase().contains(&filter_lower))
+                        .count()
+                };
+
+                // Total content height = user section + (contact rows × row height) + padding + version row
+                let contacts_height = num_contacts * layout.row_height;
+                let total_content_height = user_section_bottom + contacts_height + (2 * layout.row_height);
+
+                // Scroll limits:
+                // - max_scroll_up (positive): user section top at screen top → 0
+                // - max_scroll_down (negative): content bottom at screen bottom
+                let max_scroll_up: isize = 0;
+                let max_scroll_down: isize =
+                    -((total_content_height as isize - self.height as isize).max(0));
+
+                self.contacts_scroll_offset =
+                    self.contacts_scroll_offset.clamp(max_scroll_down, max_scroll_up);
+            }
+
+            // Defocus textbox if it scrolls off-screen
+            let tl = &self.text_layout;
+            let scrolled_textbox_cy = tl.center_y as isize + self.contacts_scroll_offset;
+            let half_box_h = (tl.box_height / 2) as isize;
+
+            // Textbox must be FULLY on-screen to stay focused
+            if scrolled_textbox_cy < half_box_h || scrolled_textbox_cy >= self.height as isize - half_box_h {
+                if self.current_text_state.textbox_focused {
+                    self.current_text_state.textbox_focused = false;
+                    self.blinkey_visible = false;
+                }
+            }
+
+            self.window_dirty = true;
+            return true;
+        }
+
+        // Message scroll only works in conversation view
         if self.app_state != AppState::Conversation {
             return false;
         }

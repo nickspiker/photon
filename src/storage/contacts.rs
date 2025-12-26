@@ -30,6 +30,7 @@
 //!
 //! Encrypted with ChaCha20-Poly1305 using key derived from our identity_seed.
 
+use crate::crypto::clutch::ClutchKemResponsePayload;
 use crate::types::{
     ClutchState, Contact, ContactId, DevicePubkey, FriendshipId, HandleText, Seed, TrustLevel,
 };
@@ -872,7 +873,7 @@ pub fn save_clutch_slots(
     }
 
     // Each slot as a repeated "slot" field with multi-value
-    // Format: (slot: hb{handle_hash}, u0{has_offer}, u0{has_from}, u0{has_to}, ...offer_keys..., ...from_secrets..., ...to_secrets...)
+    // Format: (slot: hb{handle_hash}, u0{has_offer}, u0{has_from}, u0{has_to}, u0{has_resend}, ...offer_keys..., ...from_secrets..., ...to_secrets..., ...resend_payload...)
     for slot in slots {
         let mut values: Vec<VsfType> = Vec::new();
 
@@ -883,6 +884,7 @@ pub fn save_clutch_slots(
         values.push(VsfType::u0(slot.offer.is_some()));
         values.push(VsfType::u0(slot.kem_secrets_from_them.is_some()));
         values.push(VsfType::u0(slot.kem_secrets_to_them.is_some()));
+        values.push(VsfType::u0(slot.kem_response_for_resend.is_some()));
 
         // Offer data (if present) - 8 public keys in fixed order
         if let Some(ref offer) = slot.offer {
@@ -918,6 +920,22 @@ pub fn save_clutch_slots(
             values.push(VsfType::ksn(secrets.ntru.clone()));
             values.push(VsfType::ksl(secrets.mceliece.clone()));
             values.push(VsfType::ksh(secrets.hqc.clone()));
+        }
+
+        // KEM response for resend (if present) - 4 PQC ciphertexts + 4 EC ephemeral + target prefix
+        if let Some(ref resend) = slot.kem_response_for_resend {
+            // PQC ciphertexts (using v() wrapped type with algorithm marker)
+            values.push(VsfType::v(b'f', resend.frodo976_ciphertext.clone()));
+            values.push(VsfType::v(b'n', resend.ntru701_ciphertext.clone()));
+            values.push(VsfType::v(b'l', resend.mceliece_ciphertext.clone()));
+            values.push(VsfType::v(b'h', resend.hqc256_ciphertext.clone()));
+            // Target HQC prefix (8 bytes) - use v('t', ...) to distinguish from handle hb
+            values.push(VsfType::v(b't', resend.target_hqc_pub_prefix.to_vec()));
+            // EC ephemeral pubkeys - use v('e', ...) to distinguish from offer keys
+            values.push(VsfType::v(b'x', resend.x25519_ephemeral.to_vec()));
+            values.push(VsfType::v(b'3', resend.p384_ephemeral.clone()));
+            values.push(VsfType::v(b'k', resend.secp256k1_ephemeral.clone()));
+            values.push(VsfType::v(b'2', resend.p256_ephemeral.clone()));
         }
 
         section.add_field_multi("slot", values);
@@ -1037,6 +1055,20 @@ pub fn load_clutch_slots(
         slots.push(slot);
     }
 
+    // Sanity check: ceremony_id requires both parties' provenances to compute
+    // If we have a ceremony_id but fewer than 2 provenances, it's stale (peer reset)
+    let ceremony_id = if ceremony_id.is_some() && offer_provenances.len() < 2 {
+        #[cfg(feature = "development")]
+        crate::log(&format!(
+            "STORAGE: Clearing stale ceremony_id for {} (only {} provenances)",
+            handle,
+            offer_provenances.len()
+        ));
+        None
+    } else {
+        ceremony_id
+    };
+
     #[cfg(feature = "development")]
     crate::log(&format!(
         "STORAGE: Loaded CLUTCH slots for {} ({} slots, {} provenances, ceremony_id={})",
@@ -1057,8 +1089,9 @@ pub fn load_clutch_slots(
 
 /// Parse a PartySlot from multi-value field values.
 /// Type markers are self-describing - we match on kx/kf/kn/kl/kh/kk/kp, NOT position.
-/// Format: hb{handle}, u0{has_offer}, u0{has_from}, u0{has_to}, ...keys by type...
+/// Format: hb{handle}, u0{has_offer}, u0{has_from}, u0{has_to}, u0{has_resend}, ...keys by type...
 fn parse_slot_from_values(values: &[VsfType]) -> Result<PartySlot, StorageError> {
+    // Support old format (4 flags) and new format (5 flags with has_resend)
     if values.len() < 4 {
         return Err(StorageError::Parse("Slot field too short".into()));
     }
@@ -1073,7 +1106,7 @@ fn parse_slot_from_values(values: &[VsfType]) -> Result<PartySlot, StorageError>
         _ => return Err(StorageError::Parse("Invalid handle_hash in slot".into())),
     };
 
-    // Parse flags (values 1-3 - positional since they're just bools)
+    // Parse flags (values 1-3/4 - positional since they're just bools)
     let has_offer = match &values[1] {
         VsfType::u0(b) => *b,
         _ => return Err(StorageError::Parse("Invalid has_offer flag".into())),
@@ -1086,16 +1119,27 @@ fn parse_slot_from_values(values: &[VsfType]) -> Result<PartySlot, StorageError>
         VsfType::u0(b) => *b,
         _ => return Err(StorageError::Parse("Invalid has_to flag".into())),
     };
+    // New flag for resend payload (optional for backwards compat)
+    let has_resend = if values.len() > 4 {
+        match &values[4] {
+            VsfType::u0(b) => *b,
+            _ => false, // Old format - no resend flag
+        }
+    } else {
+        false
+    };
 
     let mut slot = PartySlot::new(handle_hash);
 
     // Parse keys and secrets by TYPE MARKER, not position
     // The type (kx, kf, kn, kl, kh, kk, kp, ks) tells us exactly what it is
+    // Start at index 5 (after 5 flags: handle, offer, from, to, resend)
+    let data_start = 5;
     if has_offer {
         let mut offer = ClutchOfferPayload::default();
         let mut found_keys = 0u8;
 
-        for v in &values[4..] {
+        for v in &values[data_start..] {
             match v {
                 VsfType::kx(b) if b.len() == 32 => {
                     offer.x25519_public.copy_from_slice(b);
@@ -1155,7 +1199,7 @@ fn parse_slot_from_values(values: &[VsfType]) -> Result<PartySlot, StorageError>
     // Parse typed shared secrets (ksx, ksp, ksk, ksf, ksn, ksl, ksh)
     // Secrets come in groups of 8, first group is "from_them", second is "to_them"
     if has_from || has_to {
-        let secrets: Vec<&VsfType> = values[4..]
+        let secrets: Vec<&VsfType> = values[data_start..]
             .iter()
             .filter(|v| {
                 matches!(
@@ -1191,6 +1235,11 @@ fn parse_slot_from_values(values: &[VsfType]) -> Result<PartySlot, StorageError>
                 &secrets[start..start + secrets_per_group],
             )?);
         }
+    }
+
+    // Parse KEM response for resend (cf, cn, cl, ch ciphertexts + hb prefix + kx, kp, kk, kp ephemerals)
+    if has_resend {
+        slot.kem_response_for_resend = parse_kem_response_payload(&values[data_start..])?;
     }
 
     Ok(slot)
@@ -1294,6 +1343,87 @@ fn parse_typed_secrets_group(secrets: &[&VsfType]) -> Result<ClutchKemSharedSecr
         mceliece,
         hqc,
     })
+}
+
+/// Parse ClutchKemResponsePayload from values (for resend persistence).
+/// Format: v('f',...), v('n',...), v('l',...), v('h',...) ciphertexts
+///       + v('t',...) target prefix + v('x',...), v('3',...), v('k',...), v('2',...) ephemerals
+fn parse_kem_response_payload(
+    values: &[VsfType],
+) -> Result<Option<ClutchKemResponsePayload>, StorageError> {
+    // Extract ciphertexts and ephemerals by v() marker byte
+    let mut frodo_ct = None;
+    let mut ntru_ct = None;
+    let mut mceliece_ct = None;
+    let mut hqc_ct = None;
+    let mut target_prefix = None;
+    let mut x25519_eph = None;
+    let mut p384_eph = None;
+    let mut secp256k1_eph = None;
+    let mut p256_eph = None;
+
+    for v in values {
+        if let VsfType::v(marker, data) = v {
+            match marker {
+                b'f' => frodo_ct = Some(data.clone()),
+                b'n' => ntru_ct = Some(data.clone()),
+                b'l' => mceliece_ct = Some(data.clone()),
+                b'h' => hqc_ct = Some(data.clone()),
+                b't' if data.len() == 8 => {
+                    let mut arr = [0u8; 8];
+                    arr.copy_from_slice(data);
+                    target_prefix = Some(arr);
+                }
+                b'x' if data.len() == 32 => {
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(data);
+                    x25519_eph = Some(arr);
+                }
+                b'3' => p384_eph = Some(data.clone()),
+                b'k' => secp256k1_eph = Some(data.clone()),
+                b'2' => p256_eph = Some(data.clone()),
+                _ => {}
+            }
+        }
+    }
+
+    // All fields required for a valid resend payload
+    if let (
+        Some(frodo),
+        Some(ntru),
+        Some(mce),
+        Some(hqc),
+        Some(prefix),
+        Some(x25519),
+        Some(p384),
+        Some(secp),
+        Some(p256),
+    ) = (
+        frodo_ct,
+        ntru_ct,
+        mceliece_ct,
+        hqc_ct,
+        target_prefix,
+        x25519_eph,
+        p384_eph,
+        secp256k1_eph,
+        p256_eph,
+    ) {
+        Ok(Some(ClutchKemResponsePayload {
+            frodo976_ciphertext: frodo,
+            ntru701_ciphertext: ntru,
+            mceliece_ciphertext: mce,
+            hqc256_ciphertext: hqc,
+            target_hqc_pub_prefix: prefix,
+            x25519_ephemeral: x25519,
+            p384_ephemeral: p384,
+            secp256k1_ephemeral: secp,
+            p256_ephemeral: p256,
+        }))
+    } else {
+        // Missing fields - no resend payload
+        Ok(None)
+    }
 }
 
 /// Delete CLUTCH slots file (called after ceremony completes)

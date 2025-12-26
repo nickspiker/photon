@@ -1147,12 +1147,21 @@ impl TextRenderer {
                     let glyph_width = image.placement.width as usize;
                     let glyph_height = image.placement.height as usize;
 
+                    let height = pixels.len() / width;
                     for cy in 0..glyph_height {
                         for cx in 0..glyph_width {
-                            let char_alpha = image.data[cy * glyph_width + cx];
                             let final_x = glyph_x + cx as i32;
                             let final_y = glyph_y + cy as i32;
+                            // WHY: Glyph can be partially off-screen when textbox is scrolled
+                            // PROOF: final_x/final_y are i32, can be negative or exceed bounds
+                            // PREVENTS: Index out of bounds panic on wrapped negative values
+                            if final_x < 0 || final_y < 0
+                                || final_x as usize >= width
+                                || final_y as usize >= height {
+                                continue;
+                            }
                             let idx = final_y as usize * width + final_x as usize;
+                            let char_alpha = image.data[cy * glyph_width + cx];
                             let mask_alpha = textbox_mask[idx];
 
                             let combined_alpha = (char_alpha as u32 * mask_alpha as u32) >> 8;
