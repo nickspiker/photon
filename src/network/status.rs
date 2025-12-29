@@ -14,7 +14,7 @@ use crate::network::fgtw::protocol::SyncRecord;
 use crate::network::fgtw::FgtwMessage;
 use crate::network::fgtw::Keypair;
 use crate::network::pt::{
-    is_pt_data, PTAck, PTComplete, PTControl, PTData, PTManager, PTNak, PTSpec, TcpTransport,
+    is_pt_data, PTAck, PTComplete, PTControl, PTData, PTManager, PTNak, PTSpec,
 };
 use crate::types::DevicePubkey;
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
@@ -65,6 +65,8 @@ pub struct PingRequest {
 #[derive(Clone)]
 pub struct MessageRequest {
     pub peer_addr: SocketAddr,
+    /// Recipient's device pubkey (for relay fallback)
+    pub recipient_pubkey: [u8; 32],
     /// Privacy-preserving conversation token (smear_hash of sorted participant seeds).
     /// Replaces cleartext handle_hash and friendship_id - only participants can compute.
     pub conversation_token: [u8; 32],
@@ -81,6 +83,8 @@ pub struct MessageRequest {
 #[derive(Clone)]
 pub struct AckRequest {
     pub peer_addr: SocketAddr,
+    /// Recipient's device pubkey (for relay fallback)
+    pub recipient_pubkey: [u8; 32],
     /// Privacy-preserving conversation token (smear_hash of sorted participant seeds).
     /// Replaces cleartext handle_hash - only participants can compute.
     pub conversation_token: [u8; 32],
@@ -902,12 +906,12 @@ async fn run_checker(
                 match listener.accept().await {
                     Ok((stream, src_addr)) => {
                         crate::log(&format!("Status: TCP connection from {}", src_addr));
-                        // Convert to std TcpStream for TcpTransport
+                        // Convert to std TcpStream for tcp::recv (uses VSF L field for framing)
                         let std_stream = stream.into_std();
                         match std_stream {
                             Ok(mut std_stream) => {
-                                // Read the payload
-                                match TcpTransport::recv_payload(&mut std_stream) {
+                                // Read payload using VSF L field
+                                match crate::network::tcp::recv(&mut std_stream) {
                                     Ok(data) => {
                                         crate::log(&format!(
                                             "Status: Received {} bytes via TCP from {}",
@@ -1556,17 +1560,7 @@ async fn run_checker(
         }
     });
 
-    // Track pending PT sends for TCP fallback: (transfer_id, peer, start_time, vsf_bytes, retry_count)
-    // Keyed by transfer_id to correctly track individual transfers (multiple can go to same peer)
-    let mut pending_pt_sends: Vec<(usize, SocketAddr, Instant, Vec<u8>, u8)> = Vec::new();
-    const PT_TIMEOUT: Duration = Duration::from_secs(30);
-    const PT_MAX_RETRIES: u8 = 1; // Retry UDP once before TCP fallback
-
-    // Peers where TCP fallback was denied (EACCES) - don't retry TCP for these
-    let mut tcp_denied_peers: std::collections::HashSet<SocketAddr> =
-        std::collections::HashSet::new();
-
-    // Process ping requests from UI
+    // Main event loop
     loop {
         match ping_rx.try_recv() {
             Ok(request) => {
@@ -1676,6 +1670,7 @@ async fn run_checker(
         // which are processed below using TCP/PT transport.
 
         // Process message requests (encrypted chat messages - CHAIN format)
+        // Routed through PT for unified transport (UDP → TCP after 1s → relay fallback)
         while let Ok(request) = message_rx.try_recv() {
             // Use the eagle_time from encryption - nonce is derived from this
             // so we MUST use the same timestamp the sender encrypted with
@@ -1689,7 +1684,7 @@ async fn run_checker(
             sig_bytes.copy_from_slice(&sig.to_bytes());
 
             crate::log(&format!(
-                "Status: Sending CHAT_MESSAGE to {} (tok {}...)",
+                "Status: Sending CHAT_MESSAGE to {} (tok {}...) via PT",
                 request.peer_addr,
                 hex::encode(&request.conversation_token[..4])
             ));
@@ -1705,11 +1700,22 @@ async fn run_checker(
 
             let msg_bytes = msg.to_vsf_bytes();
             if !msg_bytes.is_empty() {
-                udp::send(&socket, &msg_bytes, request.peer_addr).await;
+                // Route through PT - handles UDP, TCP after 1s, relay fallback
+                let pt_bytes = {
+                    let mut pt_mgr = pt.lock().unwrap();
+                    pt_mgr.send_with_pubkey(
+                        request.peer_addr,
+                        msg_bytes.clone(),
+                        Some(request.recipient_pubkey),
+                    )
+                };
+                // PT returns the bytes to send (for small payloads, same as input)
+                udp::send(&socket, &pt_bytes, request.peer_addr).await;
             }
         }
 
         // Process ACK requests (message acknowledgments - CHAIN format)
+        // Routed through PT for unified transport (UDP → TCP after 1s → relay fallback)
         while let Ok(request) = ack_rx.try_recv() {
             let timestamp = eagle_time_binary64();
 
@@ -1724,7 +1730,7 @@ async fn run_checker(
             sig_bytes.copy_from_slice(&sig.to_bytes());
 
             crate::log(&format!(
-                "Status: Sending MESSAGE_ACK to {} (eagle_time {})",
+                "Status: Sending MESSAGE_ACK to {} (eagle_time {}) via PT",
                 request.peer_addr, request.acked_eagle_time
             ));
 
@@ -1739,7 +1745,17 @@ async fn run_checker(
 
             let msg_bytes = msg.to_vsf_bytes();
             if !msg_bytes.is_empty() {
-                udp::send(&socket, &msg_bytes, request.peer_addr).await;
+                // Route through PT - handles UDP, TCP after 1s, relay fallback
+                let pt_bytes = {
+                    let mut pt_mgr = pt.lock().unwrap();
+                    pt_mgr.send_with_pubkey(
+                        request.peer_addr,
+                        msg_bytes.clone(),
+                        Some(request.recipient_pubkey),
+                    )
+                };
+                // PT returns the bytes to send (for small payloads, same as input)
+                udp::send(&socket, &pt_bytes, request.peer_addr).await;
             }
         }
 
@@ -1750,10 +1766,11 @@ async fn run_checker(
                 request.peer_addr,
                 request.data.len()
             ));
-            let mut pt_mgr = pt.lock().unwrap();
-            let (spec_bytes, _transfer_id) = pt_mgr.send(request.peer_addr, request.data);
-            drop(pt_mgr); // Drop lock before async call
-            udp::send(&socket, &spec_bytes, request.peer_addr).await;
+            let bytes_to_send = {
+                let mut pt_mgr = pt.lock().unwrap();
+                pt_mgr.send(request.peer_addr, request.data)
+            };
+            udp::send(&socket, &bytes_to_send, request.peer_addr).await;
         }
 
         // Process full CLUTCH offer requests (PT/UDP primary, TCP fallback)
@@ -1776,21 +1793,18 @@ async fn run_checker(
                 }
             }
 
-            // Send via PT/UDP (primary) - track for TCP fallback on timeout
-            let (spec_bytes, transfer_id) = {
+            // Send via PT - handles retries/fallback internally
+            let bytes_to_send = {
                 let mut pt_mgr = pt.lock().unwrap();
-                pt_mgr.send(request.peer_addr, vsf_bytes.clone())
+                pt_mgr.send(request.peer_addr, vsf_bytes)
             };
-            udp::send(&socket, &spec_bytes, request.peer_addr).await;
-            pending_pt_sends.push((transfer_id, request.peer_addr, Instant::now(), vsf_bytes, 0));
+            udp::send(&socket, &bytes_to_send, request.peer_addr).await;
         }
 
-        // Process CLUTCH KEM response requests (PT/UDP primary, TCP fallback)
-        // Uses VSF format with Ed25519 signature for verification
+        // Process CLUTCH KEM response requests
         while let Ok(request) = kem_response_rx.try_recv() {
             use crate::network::fgtw::protocol::build_clutch_kem_response_vsf;
 
-            // Build signed VSF message
             let vsf_bytes = match build_clutch_kem_response_vsf(
                 &request.conversation_token,
                 &request.ceremony_id,
@@ -1800,43 +1814,34 @@ async fn run_checker(
             ) {
                 Ok(bytes) => bytes,
                 Err(e) => {
-                    crate::log(&format!(
-                        "Status: Failed to build ClutchKemResponse VSF: {}",
-                        e
-                    ));
+                    crate::log(&format!("Status: Failed to build ClutchKemResponse: {}", e));
                     continue;
                 }
             };
 
             crate::log(&format!(
-                "Status: Sending ClutchKemResponse to {} ({} bytes VSF) via PT/UDP",
+                "Status: Sending ClutchKemResponse to {} ({} bytes)",
                 request.peer_addr,
                 vsf_bytes.len()
             ));
 
-            // VSF inspection for development builds
             #[cfg(feature = "development")]
-            {
-                if let Ok(inspection) = vsf::inspect::inspect_vsf(&vsf_bytes) {
-                    crate::log(&format!("Status: ClutchKemResponse VSF:\n{}", inspection));
-                }
+            if let Ok(inspection) = vsf::inspect::inspect_vsf(&vsf_bytes) {
+                crate::log(&format!("Status: ClutchKemResponse VSF:\n{}", inspection));
             }
 
-            // Send via PT/UDP (primary) - track for TCP fallback on timeout
-            let (spec_bytes, transfer_id) = {
+            // Send via PT - handles retries/fallback internally
+            let bytes_to_send = {
                 let mut pt_mgr = pt.lock().unwrap();
-                pt_mgr.send(request.peer_addr, vsf_bytes.clone())
+                pt_mgr.send(request.peer_addr, vsf_bytes)
             };
-            udp::send(&socket, &spec_bytes, request.peer_addr).await;
-            pending_pt_sends.push((transfer_id, request.peer_addr, Instant::now(), vsf_bytes, 0));
+            udp::send(&socket, &bytes_to_send, request.peer_addr).await;
         }
 
         // Process CLUTCH complete proof requests
-        // Routes through PT for reliable delivery with exponential backoff
         while let Ok(request) = complete_proof_rx.try_recv() {
             use crate::network::fgtw::protocol::build_clutch_complete_vsf;
 
-            // Build signed VSF message
             let vsf_bytes = match build_clutch_complete_vsf(
                 &request.conversation_token,
                 &request.ceremony_id,
@@ -1846,34 +1851,28 @@ async fn run_checker(
             ) {
                 Ok(bytes) => bytes,
                 Err(e) => {
-                    crate::log(&format!(
-                        "Status: Failed to build ClutchComplete VSF: {}",
-                        e
-                    ));
+                    crate::log(&format!("Status: Failed to build ClutchComplete: {}", e));
                     continue;
                 }
             };
 
-            // VSF inspection for development builds
-            #[cfg(feature = "development")]
-            {
-                if let Ok(inspection) = vsf::inspect::inspect_vsf(&vsf_bytes) {
-                    crate::log(&format!("Status: ClutchComplete VSF:\n{}", inspection));
-                }
-            }
-
-            // Route through PT stream for reliable delivery
             crate::log(&format!(
-                "Status: Sending ClutchComplete to {} ({} bytes) via PT",
+                "Status: Sending ClutchComplete to {} ({} bytes)",
                 request.peer_addr,
                 vsf_bytes.len()
             ));
-            let (spec_bytes, transfer_id) = {
+
+            #[cfg(feature = "development")]
+            if let Ok(inspection) = vsf::inspect::inspect_vsf(&vsf_bytes) {
+                crate::log(&format!("Status: ClutchComplete VSF:\n{}", inspection));
+            }
+
+            // Send via PT - handles retries/fallback internally
+            let bytes_to_send = {
                 let mut pt_mgr = pt.lock().unwrap();
-                pt_mgr.send(request.peer_addr, vsf_bytes.clone())
+                pt_mgr.send(request.peer_addr, vsf_bytes)
             };
-            udp::send(&socket, &spec_bytes, request.peer_addr).await;
-            pending_pt_sends.push((transfer_id, request.peer_addr, Instant::now(), vsf_bytes, 0));
+            udp::send(&socket, &bytes_to_send, request.peer_addr).await;
         }
 
         // Process LAN discovery requests via multicast (more reliable than broadcast)
@@ -1934,141 +1933,48 @@ async fn run_checker(
 
         // Process clear PT sends requests (when CLUTCH completes)
         while let Ok(request) = clear_pt_rx.try_recv() {
-            let before = pending_pt_sends.len();
-            pending_pt_sends.retain(|(_, addr, _, _, _)| *addr != request.peer_addr);
-            let removed = before - pending_pt_sends.len();
-            if removed > 0 {
-                crate::log(&format!(
-                    "PT: Cleared {} pending sends to {} (CLUTCH complete)",
-                    removed, request.peer_addr
-                ));
-            }
-            // Also clear from PT manager's outbound state
-            {
-                let mut pt_mgr = pt.lock().unwrap();
-                pt_mgr.clear_outbound(&request.peer_addr);
-            }
+            let mut pt_mgr = pt.lock().unwrap();
+            pt_mgr.clear_outbound(&request.peer_addr);
         }
 
-        // PT periodic tick - check timeouts and retransmit (SPEC/DATA packets)
+        // PT periodic tick - handles timeouts, retries, TCP+relay fallback
         {
             let mut pt_mgr = pt.lock().unwrap();
             let to_send = pt_mgr.tick();
-            drop(pt_mgr); // Drop lock before async calls
-            for (addr, pkt, use_tcp) in to_send {
-                if use_tcp {
-                    // TCP fallback for retries
-                    if let Err(e) = crate::network::tcp::send_tcp(&pkt, addr).await {
-                        crate::log(&format!("PT: TCP send failed to {}: {}", addr, e));
-                    }
-                } else {
-                    udp::send(&socket, &pkt, addr).await;
-                }
-            }
-        }
-
-        // Check for completed PT sends - remove from pending (by transfer_id for correctness)
-        {
-            let mut pt_mgr = pt.lock().unwrap();
-            let completed: Vec<(usize, SocketAddr)> = pending_pt_sends
-                .iter()
-                .filter(|(id, _, _, _, _)| pt_mgr.is_outbound_complete_by_id(*id))
-                .map(|(id, addr, _, _, _)| (*id, *addr))
-                .collect();
-            for (id, addr) in &completed {
-                pt_mgr.remove_outbound_by_id(*id);
-                crate::log(&format!(
-                    "PT: Transfer #{} to {} completed, removed from pending",
-                    id, addr
-                ));
-            }
+            let keypair_for_relay = pt_mgr.keypair().clone();
             drop(pt_mgr);
-            for (id, _) in completed {
-                pending_pt_sends.retain(|(i, _, _, _, _)| *i != id);
-            }
-        }
 
-        // Check for PT timeouts - retry UDP once, then fall back to TCP
-        {
-            let now = Instant::now();
-            let timed_out: Vec<(usize, SocketAddr, Vec<u8>, u8)> = pending_pt_sends
-                .iter()
-                .filter(|(_, _, start, _, _)| now.duration_since(*start) > PT_TIMEOUT)
-                .map(|(id, addr, _, vsf, retries)| (*id, *addr, vsf.clone(), *retries))
-                .collect();
+            for tick in to_send {
+                // Always send UDP first
+                udp::send(&socket, &tick.wire_bytes, tick.peer_addr).await;
 
-            for (old_transfer_id, addr, vsf_bytes, retries) in timed_out {
-                pending_pt_sends.retain(|(i, _, _, _, _)| *i != old_transfer_id);
-
-                if retries < PT_MAX_RETRIES {
-                    // Retry UDP transfer (gets new transfer_id)
-                    crate::log(&format!(
-                        "PT: Transfer #{} to {} timed out, retrying UDP ({}/{})",
-                        old_transfer_id,
-                        addr,
-                        retries + 1,
-                        PT_MAX_RETRIES
-                    ));
-
-                    // Resend SPEC and re-add to pending with new transfer_id and incremented retry count
-                    let (spec_bytes, new_transfer_id) = {
-                        let mut pt_mgr = pt.lock().unwrap();
-                        pt_mgr.send(addr, vsf_bytes.clone())
-                    };
-                    udp::send(&socket, &spec_bytes, addr).await;
-                    pending_pt_sends.push((
-                        new_transfer_id,
-                        addr,
-                        Instant::now(),
-                        vsf_bytes,
-                        retries + 1,
-                    ));
-                } else {
-                    // Retries exhausted - try TCP fallback (unless previously denied)
-                    if tcp_denied_peers.contains(&addr) {
-                        crate::log(&format!(
-                            "PT: Transfer to {} failed after {} retries (TCP fallback skipped - previously denied)",
-                            addr, retries
-                        ));
-                        continue;
+                // After 1s, also try TCP in parallel
+                if tick.also_tcp {
+                    if let Err(e) =
+                        crate::network::tcp::send_tcp(&tick.wire_bytes, tick.peer_addr).await
+                    {
+                        crate::log(&format!("PT: TCP send failed to {}: {}", tick.peer_addr, e));
                     }
+                }
 
+                // If both UDP and TCP exhausted, try relay via /conduit
+                if let Some(relay_info) = tick.relay {
                     crate::log(&format!(
-                        "PT: Transfer to {} timed out after {}s, falling back to TCP",
-                        addr,
-                        PT_TIMEOUT.as_secs()
+                        "PT: Relaying to {} via /conduit",
+                        hex::encode(&relay_info.recipient_pubkey[..4])
                     ));
-
-                    // Try TCP fallback
-                    match TcpTransport::connect(addr, Duration::from_secs(10)) {
-                        Ok(mut stream) => {
-                            if let Err(e) = TcpTransport::send_payload(&mut stream, &vsf_bytes) {
-                                crate::log(&format!(
-                                    "Status: TCP fallback failed to send to {}: {}",
-                                    addr, e
-                                ));
-                            } else {
-                                crate::log(&format!(
-                                    "Status: TCP fallback sent {} bytes to {} successfully",
-                                    vsf_bytes.len(),
-                                    addr
-                                ));
-                            }
+                    match crate::network::fgtw::relay::send_via_relay(
+                        &keypair_for_relay,
+                        &relay_info.recipient_pubkey,
+                        &relay_info.payload,
+                    )
+                    .await
+                    {
+                        Ok(()) => {
+                            crate::log("PT: Relay send succeeded");
                         }
                         Err(e) => {
-                            // Check if permission denied - don't retry TCP for this peer
-                            if e.kind() == std::io::ErrorKind::PermissionDenied {
-                                tcp_denied_peers.insert(addr);
-                                crate::log(&format!(
-                                    "Status: TCP fallback denied for {} (SELinux/firewall?), won't retry TCP",
-                                    addr
-                                ));
-                            } else {
-                                crate::log(&format!(
-                                    "Status: TCP fallback failed to connect to {}: {}",
-                                    addr, e
-                                ));
-                            }
+                            crate::log(&format!("PT: Relay send failed: {}", e));
                         }
                     }
                 }

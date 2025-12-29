@@ -1,39 +1,54 @@
-//! PT - Photon Large Transfer Protocol
+//! PT - Photon Transport
 //!
-//! Transport for large data transfers (CLUTCH key exchange, etc.)
+//! Unified transport for ALL Photon communication.
+//! Small payloads sent directly, large payloads sharded into 1KB DATA packets if needed.
 //!
-//! **Primary**: Raw IP protocol 254 (fast, minimal overhead)
-//! - Protocol number is the discriminator - no magic bytes needed
-//! - DATA packets: [4-byte seq][payload]
-//! - Control packets: VSF format (detected by VSF header magic)
+//! **Primary**: UDP
+//! - Small payloads (≤1400 bytes): Sent directly as VSF
+//! - Large payloads: Sharded with SPEC/DATA/ACK/COMPLETE flow
+//! - DATA packets: [stream_id:1][seq:varint][payload]
 //!
-//! **Fallback**: TCP
-//! - If raw sockets fail (permissions, network blocks it)
-//! - Just write() entire payload - TCP handles reliability
-//! - Length-prefixed: [4-byte len][payload]
+//! **Fallback**: TCP (after UDP retries exhausted)
+//! - Uses VSF L field for framing (no length prefix)
+//!
+//! **Last resort**: Relay via FGTW
 //!
 //! Features:
-//! - Adaptive windowing (TCP-like congestion control) for raw254
+//! - Adaptive windowing (TCP-like congestion control)
 //! - Per-packet ACKs with chunk hash verification
 //! - VSF-encoded control packets, minimal DATA headers
 //! - Bidirectional transfers (both parties can send simultaneously)
-//! - Multiple concurrent transfers per peer (keyed by data_hash)
+//! - Multiple concurrent transfers per peer (keyed by stream_id)
 
 pub mod buffer;
 pub mod packets;
 pub mod state;
-pub mod transport;
 pub mod window;
 
 pub use buffer::{ReceiveBuffer, SendBuffer};
 pub use packets::*;
 pub use state::*;
-pub use transport::*;
 pub use window::*;
 
 use crate::network::fgtw::Keypair;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
+
+/// Relay fallback info for when UDP+TCP both fail
+#[derive(Debug, Clone)]
+pub struct RelayInfo {
+    pub recipient_pubkey: [u8; 32],
+    pub payload: Vec<u8>,
+}
+
+/// Result from PT tick() for each packet to send
+#[derive(Debug)]
+pub struct TickSend {
+    pub peer_addr: SocketAddr,
+    pub wire_bytes: Vec<u8>,
+    pub also_tcp: bool,
+    pub relay: Option<RelayInfo>,
+}
 
 /// PT Manager - coordinates transfers for all peers
 pub struct PTManager {
@@ -64,6 +79,11 @@ impl PTManager {
         }
     }
 
+    /// Get reference to keypair (for relay fallback)
+    pub fn keypair(&self) -> &Keypair {
+        &self.keypair
+    }
+
     // =========================================================================
     // Transfer Stream Management ('a'-'z')
     // =========================================================================
@@ -79,14 +99,50 @@ impl PTManager {
         id
     }
 
-    /// Start sending data to peer
-    /// Returns (spec_bytes, transfer_id) - SPEC to send and ID for tracking
-    pub fn send(&mut self, peer_addr: SocketAddr, data: Vec<u8>) -> (Vec<u8>, usize) {
+    /// Max VSF size for single UDP packet (no sharding needed)
+    /// 1KB threshold - VSF this size or smaller sent directly
+    /// Larger VSF gets sharded into [lowercase letter][packet number][1KB DATA] packets
+    pub const SINGLE_PACKET_MAX: usize = 1024;
+
+    /// Queue data for reliable delivery to peer
+    ///
+    /// PT handles everything internally:
+    /// - Small payloads: Sent directly
+    /// - Large payloads: Sharded with SPEC/DATA/ACK/COMPLETE flow
+    /// - Retries, TCP fallback, relay fallback - all automatic via tick()
+    ///
+    /// Returns bytes to send immediately (the payload itself or SPEC for large transfers)
+    pub fn send(&mut self, peer_addr: SocketAddr, data: Vec<u8>) -> Vec<u8> {
+        self.send_with_pubkey(peer_addr, data, None)
+    }
+
+    /// Queue data for reliable delivery with recipient pubkey for relay fallback
+    ///
+    /// Same as send(), but stores recipient pubkey so relay can be used if UDP+TCP fail.
+    pub fn send_with_pubkey(
+        &mut self,
+        peer_addr: SocketAddr,
+        data: Vec<u8>,
+        recipient_pubkey: Option<[u8; 32]>,
+    ) -> Vec<u8> {
+        // Small payload - send directly, no sharding needed
+        // Note: For small payloads, relay fallback happens at the caller level
+        if data.len() <= Self::SINGLE_PACKET_MAX {
+            return data;
+        }
+
+        // Large payload - full SPEC/DATA/ACK/COMPLETE flow
         let stream_id = self.allocate_stream_id();
         let transfer_id = self.next_transfer_id;
         self.next_transfer_id += 1;
 
         let mut transfer = OutboundTransfer::new(peer_addr, data, stream_id, transfer_id);
+
+        // Store pubkey for relay fallback
+        if let Some(pubkey) = recipient_pubkey {
+            transfer.set_recipient_pubkey(pubkey);
+        }
+
         let spec = transfer.build_spec();
         let spec_bytes = spec.to_vsf_bytes(&self.keypair);
 
@@ -94,17 +150,18 @@ impl PTManager {
         transfer.mark_spec_sent();
 
         crate::log(&format!(
-            "PT: Starting outbound transfer #{} to {} ({} bytes, stream '{}')",
+            "PT: Starting outbound transfer #{} to {} ({} bytes, stream '{}', relay={})",
             transfer_id,
             peer_addr,
             transfer.send_buffer.total_size(),
             stream_id as char,
+            recipient_pubkey.is_some(),
         ));
 
         // Push to vec - allows multiple concurrent transfers to same peer
         self.outbound.push(transfer);
 
-        (spec_bytes, transfer_id)
+        spec_bytes
     }
 
     /// Handle received SPEC (start receiving)
@@ -422,8 +479,11 @@ impl PTManager {
     }
 
     /// Periodic tick - check timeouts, send retransmits
-    /// Returns: Vec<(peer_addr, wire_bytes, use_tcp)>
-    pub fn tick(&mut self) -> Vec<(SocketAddr, Vec<u8>, bool)> {
+    /// Returns TickSend structs with:
+    /// - peer_addr, wire_bytes: UDP packet to send
+    /// - also_tcp: if true, also send via TCP
+    /// - relay: if Some, UDP+TCP failed, relay via /conduit with this info
+    pub fn tick(&mut self) -> Vec<TickSend> {
         let mut to_send = Vec::new();
 
         // Check outbound transfers
@@ -439,40 +499,73 @@ impl PTManager {
 
             // SPEC retry with exponential backoff
             if transfer.spec_needs_retry() {
-                let use_tcp = transfer.spec_should_fallback_tcp();
-                if use_tcp && !transfer.spec_tcp_fallback {
+                // After 1s, also try TCP in parallel
+                let tcp_eligible = transfer.tcp_eligible();
+                if tcp_eligible && !transfer.spec_tcp_fallback {
                     transfer.set_spec_tcp_fallback();
                     crate::log(&format!(
-                        "PT: SPEC for stream '{}' to {} falling back to TCP",
+                        "PT: SPEC for stream '{}' to {} - adding TCP parallel",
                         transfer.stream_id as char, transfer.peer_addr
                     ));
                 }
 
+                // Check if we should try relay (both UDP and TCP exhausted)
+                let use_relay = transfer.should_relay_fallback();
+
                 transfer.mark_spec_sent();
                 let spec = transfer.build_spec();
-                to_send.push((
-                    transfer.peer_addr,
-                    spec.to_vsf_bytes(&self.keypair),
-                    transfer.spec_tcp_fallback,
-                ));
+                let spec_bytes = spec.to_vsf_bytes(&self.keypair);
 
-                crate::log(&format!(
-                    "PT: Retrying SPEC stream '{}' to {} (attempt {}, next delay {:?})",
-                    transfer.stream_id as char,
-                    transfer.peer_addr,
-                    transfer.spec_retry_count,
-                    transfer.spec_next_delay
-                ));
+                // Build relay info if needed (requires recipient pubkey and original payload)
+                let relay = if use_relay {
+                    match (transfer.recipient_pubkey, transfer.original_payload.as_ref()) {
+                        (Some(pubkey), Some(payload)) => {
+                            crate::log(&format!(
+                                "PT: SPEC stream '{}' to {} - falling back to relay",
+                                transfer.stream_id as char, transfer.peer_addr
+                            ));
+                            Some(RelayInfo {
+                                recipient_pubkey: pubkey,
+                                payload: payload.clone(),
+                            })
+                        }
+                        _ => {
+                            crate::log(&format!(
+                                "PT: SPEC stream '{}' to {} - relay needed but no pubkey/payload",
+                                transfer.stream_id as char, transfer.peer_addr
+                            ));
+                            None
+                        }
+                    }
+                } else {
+                    crate::log(&format!(
+                        "PT: Retrying SPEC stream '{}' to {} (attempt {}, tcp={})",
+                        transfer.stream_id as char,
+                        transfer.peer_addr,
+                        transfer.spec_retry_count,
+                        transfer.spec_tcp_fallback
+                    ));
+                    None
+                };
+
+                to_send.push(TickSend {
+                    peer_addr: transfer.peer_addr,
+                    wire_bytes: spec_bytes,
+                    also_tcp: transfer.spec_tcp_fallback,
+                    relay,
+                });
             }
 
             // Check for DATA packet timeouts (only during transfer phase)
             if transfer.state == TransferState::Transferring {
+                let tcp_eligible = transfer.tcp_eligible();
                 for data in transfer.check_timeouts() {
-                    to_send.push((
-                        transfer.peer_addr,
-                        data.to_bytes(),
-                        transfer.spec_tcp_fallback,
-                    ));
+                    to_send.push(TickSend {
+                        peer_addr: transfer.peer_addr,
+                        wire_bytes: data.to_bytes(),
+                        also_tcp: tcp_eligible,
+                        relay: None, // DATA packets don't use relay
+                    });
                 }
             }
         }

@@ -3033,12 +3033,13 @@ impl PhotonApp {
 
         let mut changed = false;
         let mut ceremony_completions: Vec<usize> = Vec::new(); // Contact indices to complete after loop
-                                                               // Collect pending message retransmit requests (friendship_id, ip, handle, last_received_ef6) to process after loop
+                                                               // Collect pending message retransmit requests (friendship_id, ip, handle, device_pubkey, last_received_ef6) to process after loop
                                                                // last_received_ef6 from pong tells us what they already have - only retransmit newer
         let mut retransmit_requests: Vec<(
             crate::types::FriendshipId,
             std::net::SocketAddr,
             String,
+            [u8; 32], // Recipient device pubkey for relay fallback
             Option<f64>,
         )> = Vec::new();
         // Flag to update sync records after the loop (when borrows are released)
@@ -3181,6 +3182,7 @@ impl PhotonApp {
                                         fid,
                                         ip,
                                         contact.handle.as_str().to_string(),
+                                        *contact.public_identity.as_bytes(),
                                         last_received,
                                     ));
                                 }
@@ -3497,9 +3499,14 @@ impl PhotonApp {
                         }
 
                         // *** THEN send ACK - if we crash here, sender will resend, we can dedup ***
+                        // Get recipient pubkey for relay fallback
+                        let recipient_pubkey = self.contacts.get(contact_idx)
+                            .map(|c| *c.public_identity.as_bytes())
+                            .unwrap_or([0u8; 32]);
                         if let Some(ref checker) = self.status_checker {
                             checker.send_ack(AckRequest {
                                 peer_addr: sender_addr,
+                                recipient_pubkey,
                                 conversation_token,
                                 acked_eagle_time: timestamp,
                                 plaintext_hash,
@@ -4743,7 +4750,7 @@ impl PhotonApp {
 
         // Retransmit pending messages to contacts that just came online
         // Use last_received_ef6 from pong to only retransmit messages they don't have
-        for (fid, peer_addr, handle, last_received_ef6) in retransmit_requests {
+        for (fid, peer_addr, handle, recipient_pubkey, last_received_ef6) in retransmit_requests {
             if let Some((_, chains)) = self.friendship_chains.iter().find(|(id, _)| *id == fid) {
                 let pending = chains.pending_messages();
                 if !pending.is_empty() {
@@ -4773,6 +4780,7 @@ impl PhotonApp {
                             if let Some(ref checker) = self.status_checker {
                                 checker.send_message(crate::network::status::MessageRequest {
                                     peer_addr,
+                                    recipient_pubkey,
                                     conversation_token,
                                     prev_msg_hp: msg.prev_msg_hp,
                                     ciphertext: msg.ciphertext.clone(),
@@ -4821,7 +4829,7 @@ impl PhotonApp {
         };
 
         // Get contact info we need
-        let (friendship_id, _our_handle_hash, ip) = {
+        let (friendship_id, _our_handle_hash, ip, recipient_pubkey) = {
             let contact = match self.contacts.get(contact_idx) {
                 Some(c) => c,
                 None => return false,
@@ -4864,7 +4872,7 @@ impl PhotonApp {
                 }
             };
 
-            (friendship_id, contact.handle_hash, ip)
+            (friendship_id, contact.handle_hash, ip, *contact.public_identity.as_bytes())
         };
 
         // Get our identity seed (handle_hash) for chain lookup
@@ -5025,6 +5033,7 @@ impl PhotonApp {
         if let Some(ref checker) = self.status_checker {
             checker.send_message(MessageRequest {
                 peer_addr: ip,
+                recipient_pubkey,
                 conversation_token,
                 prev_msg_hp,
                 ciphertext: ciphertext.clone(),

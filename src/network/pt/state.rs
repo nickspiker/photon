@@ -70,6 +70,10 @@ pub struct OutboundTransfer {
     pub spec_next_delay: Duration,
     /// Whether to use TCP fallback for SPEC
     pub spec_tcp_fallback: bool,
+    /// Recipient's device pubkey for relay fallback (optional)
+    pub recipient_pubkey: Option<[u8; 32]>,
+    /// Original payload for relay fallback (the full VSF before sharding)
+    pub original_payload: Option<Vec<u8>>,
 }
 
 impl OutboundTransfer {
@@ -78,6 +82,8 @@ impl OutboundTransfer {
 
     /// Create new outbound transfer with assigned stream_id and transfer_id
     pub fn new(peer_addr: SocketAddr, data: Vec<u8>, stream_id: u8, transfer_id: usize) -> Self {
+        // Store original payload for relay fallback (before sharding)
+        let original_payload = Some(data.clone());
         Self {
             peer_addr,
             stream_id,
@@ -98,7 +104,14 @@ impl OutboundTransfer {
             spec_retry_count: 0,
             spec_next_delay: Duration::from_secs(1),
             spec_tcp_fallback: false,
+            recipient_pubkey: None,
+            original_payload,
         }
+    }
+
+    /// Set recipient pubkey for relay fallback
+    pub fn set_recipient_pubkey(&mut self, pubkey: [u8; 32]) {
+        self.recipient_pubkey = Some(pubkey);
     }
 
     /// Check if SPEC needs retry (exponential backoff)
@@ -119,16 +132,21 @@ impl OutboundTransfer {
         );
     }
 
-    /// Check if we should switch to TCP fallback for SPEC
-    pub fn spec_should_fallback_tcp(&self) -> bool {
-        self.spec_retry_count >= Self::SPEC_MAX_RETRIES && !self.spec_tcp_fallback
+    /// Check if TCP should be used in parallel (after 1s)
+    /// Returns true when transfer is old enough that TCP should be tried alongside UDP
+    pub fn tcp_eligible(&self) -> bool {
+        self.created_at.elapsed() >= Duration::from_secs(1)
     }
 
-    /// Mark SPEC as using TCP fallback
+    /// Check if we should fall back to relay (both UDP and TCP exhausted)
+    pub fn should_relay_fallback(&self) -> bool {
+        // After 5 UDP retries + 5 TCP retries = about 62s total, try relay
+        self.spec_retry_count >= Self::SPEC_MAX_RETRIES * 2 && self.spec_tcp_fallback
+    }
+
+    /// Mark SPEC as using TCP fallback (for tracking that TCP has been tried)
     pub fn set_spec_tcp_fallback(&mut self) {
         self.spec_tcp_fallback = true;
-        self.spec_retry_count = 0; // Reset for TCP retries
-        self.spec_next_delay = Duration::from_secs(1);
     }
 
     /// Build SPEC packet for this transfer
@@ -422,7 +440,7 @@ mod tests {
         let data = vec![0xAB; 3072]; // 3 packets of 1024 bytes
         let peer = "127.0.0.1:12345".parse().unwrap();
 
-        let mut transfer = OutboundTransfer::new(peer, data.clone(), b'a');
+        let mut transfer = OutboundTransfer::new(peer, data.clone(), b'a', 0);
 
         assert_eq!(transfer.state, TransferState::AwaitingSpec);
         assert_eq!(transfer.stream_id, b'a');
