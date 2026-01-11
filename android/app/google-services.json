@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "11650836478",
+    "project_id": "fgtw-90220",
+    "storage_bucket": "fgtw-90220.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:11650836478:android:0ee8dc05a5314f157ec2af",
+        "android_client_info": {
+          "package_name": "com.photon.messenger"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA8-RIycq_K_zS0r6n4kiOQJfinuxa_1_U"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
