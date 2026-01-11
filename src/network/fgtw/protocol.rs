@@ -53,6 +53,7 @@ fn clutch_kem_response_schema() -> SectionSchema {
 fn clutch_complete_schema() -> SectionSchema {
     SectionSchema::new("clutch_complete")
         .field("tok", TypeConstraint::Any) // conversation_token (hg)
+        .field("eggs_proof", TypeConstraint::Any) // EGGS proof (hg)
 }
 
 /// FGTW protocol messages (VSF serialized)
@@ -2114,51 +2115,23 @@ pub fn parse_clutch_complete_vsf(
 
     let ceremony_id = extract_header_provenance(&header)?;
 
-    // Parse section
-    let mut ptr = header_end;
-    if ptr >= vsf_bytes.len() || vsf_bytes[ptr] != b'[' {
-        return Err("No section body in ClutchComplete".to_string());
-    }
-    ptr += 1;
-
-    // Parse section name
-    let section_name = match vsf::parse(vsf_bytes, &mut ptr) {
-        Ok(VsfType::d(name)) => name,
-        _ => return Err("Invalid section name".to_string()),
-    };
-
-    if section_name != "clutch_complete" {
-        return Err(format!(
-            "Expected 'clutch_complete' section, got '{}'",
-            section_name
-        ));
-    }
-
-    // Parse fields
-    let mut fields: Vec<(String, VsfType)> = Vec::new();
-    while ptr < vsf_bytes.len() && vsf_bytes[ptr] != b']' {
-        if vsf_bytes[ptr] != b'(' {
-            return Err("Expected field start '('".to_string());
-        }
-        ptr += 1;
-        let field_name = match vsf::parse(vsf_bytes, &mut ptr) {
-            Ok(VsfType::d(name)) => name,
-            _ => return Err("Invalid field name".to_string()),
-        };
-        if ptr < vsf_bytes.len() && vsf_bytes[ptr] == b':' {
-            ptr += 1;
-            let value =
-                vsf::parse(vsf_bytes, &mut ptr).map_err(|e| format!("Parse field value: {}", e))?;
-            fields.push((field_name, value));
-        }
-        if ptr >= vsf_bytes.len() || vsf_bytes[ptr] != b')' {
-            return Err("Expected field end ')'".to_string());
-        }
-        ptr += 1;
-    }
+    // Parse section with schema validation
+    let section_bytes = &vsf_bytes[header_end..];
+    let schema = clutch_complete_schema();
+    let builder = SectionBuilder::parse(schema, section_bytes)
+        .map_err(|e| format!("Parse clutch_complete: {}", e))?;
 
     // Extract conversation_token
-    let conversation_token = extract_spaghetti_hash(&fields, "tok")?;
+    let tok_values = builder.get("tok")
+        .map_err(|e| format!("No tok field: {}", e))?;
+    let conversation_token = match tok_values.first() {
+        Some(VsfType::hg(hash)) if hash.len() == 32 => {
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(hash);
+            arr
+        }
+        _ => return Err("Invalid tok field type".to_string()),
+    };
 
     // Verify conversation_token matches expected
     if &conversation_token != expected_conversation_token {
@@ -2166,7 +2139,16 @@ pub fn parse_clutch_complete_vsf(
     }
 
     // Extract eggs_proof
-    let eggs_proof = extract_spaghetti_hash(&fields, "eggs_proof")?;
+    let eggs_proof_values = builder.get("eggs_proof")
+        .map_err(|e| format!("No eggs_proof field: {}", e))?;
+    let eggs_proof = match eggs_proof_values.first() {
+        Some(VsfType::hg(hash)) if hash.len() == 32 => {
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(hash);
+            arr
+        }
+        _ => return Err("Invalid eggs_proof field type".to_string()),
+    };
 
     let payload = ClutchCompletePayload { eggs_proof };
 
@@ -2210,54 +2192,35 @@ pub fn parse_clutch_complete_vsf_without_recipient_check(
 
     let ceremony_id = extract_header_provenance(&header)?;
 
-    // Parse section
-    let mut ptr = header_end;
-    if ptr >= vsf_bytes.len() || vsf_bytes[ptr] != b'[' {
-        return Err("No section body in ClutchComplete".to_string());
-    }
-    ptr += 1;
-
-    // Parse section name
-    let section_name = match vsf::parse(vsf_bytes, &mut ptr) {
-        Ok(VsfType::d(name)) => name,
-        _ => return Err("Invalid section name".to_string()),
-    };
-
-    if section_name != "clutch_complete" {
-        return Err(format!(
-            "Expected 'clutch_complete' section, got '{}'",
-            section_name
-        ));
-    }
-
-    // Parse fields
-    let mut fields: Vec<(String, VsfType)> = Vec::new();
-    while ptr < vsf_bytes.len() && vsf_bytes[ptr] != b']' {
-        if vsf_bytes[ptr] != b'(' {
-            return Err("Expected field start '('".to_string());
-        }
-        ptr += 1;
-        let field_name = match vsf::parse(vsf_bytes, &mut ptr) {
-            Ok(VsfType::d(name)) => name,
-            _ => return Err("Invalid field name".to_string()),
-        };
-        if ptr < vsf_bytes.len() && vsf_bytes[ptr] == b':' {
-            ptr += 1;
-            let value =
-                vsf::parse(vsf_bytes, &mut ptr).map_err(|e| format!("Parse field value: {}", e))?;
-            fields.push((field_name, value));
-        }
-        if ptr >= vsf_bytes.len() || vsf_bytes[ptr] != b')' {
-            return Err("Expected field end ')'".to_string());
-        }
-        ptr += 1;
-    }
+    // Parse section with schema validation
+    let section_bytes = &vsf_bytes[header_end..];
+    let schema = clutch_complete_schema();
+    let builder = SectionBuilder::parse(schema, section_bytes)
+        .map_err(|e| format!("Parse clutch_complete: {}", e))?;
 
     // Extract conversation_token (NO recipient check - caller verifies)
-    let conversation_token = extract_spaghetti_hash(&fields, "tok")?;
+    let tok_values = builder.get("tok")
+        .map_err(|e| format!("No tok field: {}", e))?;
+    let conversation_token = match tok_values.first() {
+        Some(VsfType::hg(hash)) if hash.len() == 32 => {
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(hash);
+            arr
+        }
+        _ => return Err("Invalid tok field type".to_string()),
+    };
 
     // Extract eggs_proof
-    let eggs_proof = extract_spaghetti_hash(&fields, "eggs_proof")?;
+    let eggs_proof_values = builder.get("eggs_proof")
+        .map_err(|e| format!("No eggs_proof field: {}", e))?;
+    let eggs_proof = match eggs_proof_values.first() {
+        Some(VsfType::hg(hash)) if hash.len() == 32 => {
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(hash);
+            arr
+        }
+        _ => return Err("Invalid eggs_proof field type".to_string()),
+    };
 
     let payload = ClutchCompletePayload { eggs_proof };
 
