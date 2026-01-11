@@ -56,6 +56,18 @@ fn clutch_complete_schema() -> SectionSchema {
         .field("eggs_proof", TypeConstraint::Any) // EGGS proof (hg)
 }
 
+/// Schema for fgtw section (multiple message types)
+fn fgtw_schema() -> SectionSchema {
+    SectionSchema::new("fgtw")
+        .field("msg_type", TypeConstraint::AnyUnsigned)
+        .field("device_pubkey", TypeConstraint::Ed25519Key)
+        .field("handle_proof", TypeConstraint::Any) // Hash
+        .field("requester_pubkey", TypeConstraint::Ed25519Key)
+        .field("peer", TypeConstraint::Any) // Multi-value peer list
+        .field("device", TypeConstraint::Any) // Multi-value device list
+        .field("port", TypeConstraint::AnyUnsigned)
+}
+
 /// FGTW protocol messages (VSF serialized)
 #[derive(Debug, Clone)]
 pub enum FgtwMessage {
@@ -674,7 +686,7 @@ impl FgtwMessage {
             }
         }
 
-        // Original fgtw section handling
+        // FGTW section handling
         if section_name != "fgtw" {
             return Err(format!(
                 "Expected 'fgtw', 'ping'/'pong', 'clutch_*', 'msg', or 'ack' section, got '{}'",
@@ -682,34 +694,20 @@ impl FgtwMessage {
             ));
         }
 
-        // Parse fields into a vec (small N, linear scan faster than hash)
+        // Parse section with schema validation
+        let section_bytes = &bytes[header_end..];
+        let schema = fgtw_schema();
+        let builder = SectionBuilder::parse(schema, section_bytes)
+            .map_err(|e| format!("Parse fgtw: {}", e))?;
+
+        // Convert to fields vec for existing extract_* functions
         let mut fields: Vec<(String, VsfType)> = Vec::new();
-
-        while ptr < bytes.len() && bytes[ptr] != b']' {
-            if bytes[ptr] != b'(' {
-                return Err("Expected field start '('".to_string());
+        for field_name in ["msg_type", "device_pubkey", "handle_proof", "requester_pubkey", "peer", "device", "port"] {
+            if let Ok(values) = builder.get(field_name) {
+                for value in values {
+                    fields.push((field_name.to_string(), value.clone()));
+                }
             }
-            ptr += 1;
-
-            // Parse field name
-            let field_name = match parse(bytes, &mut ptr) {
-                Ok(VsfType::d(name)) => name,
-                _ => return Err("Invalid field name".to_string()),
-            };
-
-            // Check for value (colon means there's a value)
-            if ptr < bytes.len() && bytes[ptr] == b':' {
-                ptr += 1;
-                let value =
-                    parse(bytes, &mut ptr).map_err(|e| format!("Parse field value: {}", e))?;
-                fields.push((field_name, value));
-            }
-
-            // Skip closing ')'
-            if ptr >= bytes.len() || bytes[ptr] != b')' {
-                return Err("Expected field end ')'".to_string());
-            }
-            ptr += 1;
         }
 
         // Extract msg_type
