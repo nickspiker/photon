@@ -38,7 +38,7 @@ fn ack_schema() -> SectionSchema {
 fn clutch_offer_schema() -> SectionSchema {
     SectionSchema::new("clutch_offer")
         .field("tok", TypeConstraint::Any) // conversation_token (hg)
-        .field("pubkey", TypeConstraint::Any) // Multi-value pubkeys (kx, kp, kk, kf, kn, kl, kh)
+        .field("pubkeys", TypeConstraint::Any) // Multi-value pubkeys (kx, kp, kk, kf, kn, kl, kh)
 }
 
 /// Schema for clutch_kem_response section
