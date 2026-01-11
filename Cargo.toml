@@ -1,0 +1,177 @@
+[package]
+name = "photon-messenger"
+version = "0.0.39"
+edition = "2021"
+authors = ["Nick Spiker <fractaldecoder@proton.me>"]
+license = "MIT OR Apache-2.0"
+description = "Decentralized messenger with rolling-chain encryption"
+repository = "https://github.com/nickspiker/photon"
+keywords = ["messenger", "encryption", "decentralized", "p2p", "privacy"]
+categories = ["cryptography", "network-programming"]
+exclude = [
+    ".wrangler/",
+    "*.txt",
+    "node_modules/",
+    "assets/Open_Sans/static/*Italic*",    # Italic variants not used
+    "assets/Open_Sans/static/*Condensed*", # Condensed variants not used
+    "android/",
+    "target/",
+]
+
+[features]
+default = []
+logging = []       # Enable log_info/log_error output
+debug-keys = []    # Enable Ctrl+D/H/T debug shortcuts
+verbose-network = []  # Log every ping/pong/broadcast (noisy)
+development = ["logging", "debug-keys"]  # All dev features
+
+[lib]
+# cdylib for Android JNI, rlib for desktop linking
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "photon-keygen"
+path = "src/bin/photon-keygen.rs"
+
+[[bin]]
+name = "photon-signature-signer"
+path = "src/bin/photon-signature-signer.rs"
+
+[[bin]]
+name = "test-device-key"
+path = "src/bin/test-device-key.rs"
+
+[dependencies]
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+
+# Crypto
+blake3 = "1.5"
+chacha20poly1305 = "0.11.0-rc.2"
+aes-gcm = "0.11.0-rc.2"
+x25519-dalek = { version = "2.0", features = ["static_secrets"] }
+rand = "0.8"
+rand_core = "0.9.3"  # For FrodoKEM compatibility (separate from rand 0.8's rand_core 0.6)
+rand_chacha = "0.3"  # ChaCha20Rng for PRNG salt generation
+rand_pcg = "0.3"     # Pcg64 for dual PRNG diversity
+zeroize = { version = "1.7", features = ["derive"] }
+subtle = "2.6"  # Constant-time comparisons
+
+# Post-quantum KEMs
+frodo-kem-rs = "0.5.0"
+pqcrypto-ntru = { version = "0.5.8", default-features = false }
+pqcrypto-hqc = "0.2.2"
+pqcrypto-traits = "0.3.5"
+classic-mceliece-rust = { version = "3.1.0", features = ["mceliece460896"] }
+
+# Classical curves (additional)
+p384 = { version = "0.14.0-rc.1", features = ["ecdh"] }
+p256 = { version = "0.14.0-rc.1", features = ["ecdh"] }
+k256 = { version = "0.14.0-rc.1", features = ["ecdh"] }
+
+# Post-quantum signatures
+pqc_dilithium = "0.2.0"
+falcon-rust = "0.1.2"
+
+# Network
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = { version = "0.28.0", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+
+# Utilities
+thiserror = "2.0.17"
+anyhow = "1.0"
+log = "0.4"
+env_logger = "0.11"
+hex = "0.4.3"
+bincode = "2.0.1"
+# winit specified per-platform below
+pollster = "0.4.0"
+cosmic-text = "0.14.2"
+rayon = "1.11.0"
+# softbuffer specified per-platform below
+# arboard specified per-platform below (pulls x11rb on Linux)
+vsf = { path = "../vsf", features = ["crypto", "text"] }
+spirix = { path = "../spirix" }
+rav1e = { version = "0.7", default-features = false }
+rav1d = { version = "1.1", default-features = false, features = ["bitdepth_8"] }
+icc-profile = "0.0.2"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "tiff"] }
+img-parts = "0.4"
+chrono = "0.4.42"
+reqwest = { version = "0.12.24", default-features = false, features = ["rustls-tls", "blocking"] }
+dirs = "6.0.0"
+curve25519-dalek = "4"
+sha2 = "0.10.9"
+sha3 = "0.11.0-rc.3"
+i256 = "0.2.3"
+chacha20 = { version = "0.9.1", features = ["std"] }
+futures = "0.3.31"
+resize = "0.8.8"
+rgb = "0.8.52"
+base64 = "0.22.1"
+bitvec = "1.0.1"
+libc = "0.2.178"
+# thread-priority doesn't support Redox yet
+[target.'cfg(not(target_os = "redox"))'.dependencies]
+thread-priority = "1.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+x11 = { version = "2.21.0", features = ["xlib"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Graphics_Dwm",
+    "Win32_Foundation",
+    "Win32_UI_Controls",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_ColorSystem",
+    "Win32_System_Console"
+] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk = { version = "0.9.0", features = ["api-level-26"] }
+ndk-sys = "0.6.0"
+android_logger = "0.15.0"
+
+# Redox uses Orbital, not X11
+[target.'cfg(target_os = "redox")'.dependencies]
+winit = { version = "0.30.12", default-features = false, features = ["rwh_06"] }
+softbuffer = { version = "0.4", default-features = false }
+
+# Desktop platforms (not Redox, not Android): default winit/softbuffer + if-watch + arboard
+[target.'cfg(not(any(target_os = "redox", target_os = "android")))'.dependencies]
+winit = "0.30.12"
+softbuffer = "0.4"
+if-watch = { version = "3.2.1", features = ["tokio"] }
+arboard = "3.4"
+
+
+[dev-dependencies]
+criterion = "0.7.0"
+
+[[bench]]
+name = "crypto_bench"
+harness = false
+
+[profile.dev]
+opt-level = 2              # Good optimization, fast compile
+overflow-checks = false    # No panic on overflow (wrapping behavior)
+debug = false              # No debug info (faster builds, use profile.debuggable for F5)
+debug-assertions = false   # No assertions
+lto = false                # Fast linking
+codegen-units = 16         # Parallel codegen (fast builds)
+incremental = true         # Incremental compilation
+
+# Custom profile for F5 debugging in VSCode (cargo build --profile debuggable)
+[profile.debuggable]
+inherits = "dev"
+debug = "line-tables-only" # Line info for debugger
+
+[profile.release]
+lto = true                 # Full LTO for final builds
+codegen-units = 1          # Single unit for max optimization
+opt-level = 3              # Maximum optimization
+strip = true               # Strip symbols
+overflow-checks = false    # Wrapping behavior in release too
+panic = "abort"            # No unwinding - smaller binary, crash on panic
