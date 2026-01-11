@@ -45,8 +45,9 @@ fn clutch_offer_schema() -> SectionSchema {
 fn clutch_kem_response_schema() -> SectionSchema {
     SectionSchema::new("clutch_kem_response")
         .field("tok", TypeConstraint::Any) // conversation_token (hg)
-        .field("target_hqc", TypeConstraint::Any) // HQC public prefix (hh)
-        .field("ciphertext", TypeConstraint::Any) // Multi-value ciphertexts (vf, vn, vl, vc)
+        .field("target_hqc", TypeConstraint::Any) // HQC public prefix (hb)
+        .field("ciphertexts", TypeConstraint::Any) // Multi-value ciphertexts (vf, vn, vl, vc)
+        .field("ephemerals", TypeConstraint::Any) // Multi-value ephemerals (kx, kp, kk, kp)
 }
 
 /// Schema for clutch_complete section
