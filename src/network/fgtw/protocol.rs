@@ -13,6 +13,7 @@ fn pong_schema() -> SectionSchema {
     SectionSchema::new("pong")
         .field("conversation_token", TypeConstraint::Any)
         .field("last_received_ef6", TypeConstraint::AnyFloat)
+        .field("sync_count", TypeConstraint::AnyUnsigned) // Number of sync records
 }
 
 /// Schema for msg (chat message) section
