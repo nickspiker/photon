@@ -1,8 +1,58 @@
 use crate::types::DevicePubkey;
 use std::net::{IpAddr, SocketAddr};
-use vsf::schema::FromVsfType;
+use vsf::schema::{FromVsfType, SectionBuilder, SectionSchema, TypeConstraint};
 use vsf::types::Vector;
 use vsf::VsfType;
+
+// ============================================================================
+// VSF Schemas for FGTW Protocol Messages
+// ============================================================================
+
+/// Schema for pong section with sync records
+fn pong_schema() -> SectionSchema {
+    SectionSchema::new("pong")
+        .field("conversation_token", TypeConstraint::Any)
+        .field("last_received_ef6", TypeConstraint::AnyFloat)
+}
+
+/// Schema for msg (chat message) section
+fn msg_schema() -> SectionSchema {
+    SectionSchema::new("msg")
+        .field("tok", TypeConstraint::Any) // conversation_token (hg)
+        .field("prev", TypeConstraint::Any) // prev_msg_hp (hp)
+        .field("data", TypeConstraint::Any) // ciphertext (v)
+        .field("time", TypeConstraint::AnyFloat) // eagle_time (f6)
+        .field("hash", TypeConstraint::Any) // plaintext_hash (hb)
+}
+
+/// Schema for ack (message acknowledgment) section
+fn ack_schema() -> SectionSchema {
+    SectionSchema::new("ack")
+        .field("tok", TypeConstraint::Any) // conversation_token (hg)
+        .field("time", TypeConstraint::AnyFloat) // acked_eagle_time (f6)
+        .field("hash", TypeConstraint::Any) // plaintext_hash (hb)
+}
+
+/// Schema for clutch_offer section
+fn clutch_offer_schema() -> SectionSchema {
+    SectionSchema::new("clutch_offer")
+        .field("tok", TypeConstraint::Any) // conversation_token (hg)
+        .field("pubkey", TypeConstraint::Any) // Multi-value pubkeys (kx, kp, kk, kf, kn, kl, kh)
+}
+
+/// Schema for clutch_kem_response section
+fn clutch_kem_response_schema() -> SectionSchema {
+    SectionSchema::new("clutch_kem_response")
+        .field("tok", TypeConstraint::Any) // conversation_token (hg)
+        .field("target_hqc", TypeConstraint::Any) // HQC public prefix (hh)
+        .field("ciphertext", TypeConstraint::Any) // Multi-value ciphertexts (vf, vn, vl, vc)
+}
+
+/// Schema for clutch_complete section
+fn clutch_complete_schema() -> SectionSchema {
+    SectionSchema::new("clutch_complete")
+        .field("tok", TypeConstraint::Any) // conversation_token (hg)
+}
 
 /// FGTW protocol messages (VSF serialized)
 #[derive(Debug, Clone)]
@@ -537,26 +587,19 @@ impl FgtwMessage {
                 });
             } else {
                 // Pong - parse sync records from section body
+                let section_bytes = &bytes[header_end..];
+                let schema = pong_schema();
+                let builder = SectionBuilder::parse(schema, section_bytes)
+                    .map_err(|e| format!("Parse pong: {}", e))?;
+
+                // Convert to fields vec for extract_sync_records
                 let mut fields: Vec<(String, VsfType)> = Vec::new();
-                while ptr < bytes.len() && bytes[ptr] != b']' {
-                    if bytes[ptr] != b'(' {
-                        return Err("Expected field start '('".to_string());
+                for field_name in ["conversation_token", "last_received_ef6"] {
+                    if let Ok(values) = builder.get(field_name) {
+                        for value in values {
+                            fields.push((field_name.to_string(), value.clone()));
+                        }
                     }
-                    ptr += 1;
-                    let field_name = match parse(bytes, &mut ptr) {
-                        Ok(VsfType::d(name)) => name,
-                        _ => return Err("Invalid pong field name".to_string()),
-                    };
-                    if ptr < bytes.len() && bytes[ptr] == b':' {
-                        ptr += 1;
-                        let value = parse(bytes, &mut ptr)
-                            .map_err(|e| format!("Parse pong field: {}", e))?;
-                        fields.push((field_name, value));
-                    }
-                    if ptr >= bytes.len() || bytes[ptr] != b')' {
-                        return Err("Expected field end ')'".to_string());
-                    }
-                    ptr += 1;
                 }
 
                 // Extract sync records
@@ -582,27 +625,20 @@ impl FgtwMessage {
             let sender_pubkey = extract_header_pubkey(&header)?;
             let signature = extract_header_signature(&header)?;
 
-            // Parse section fields
+            // Parse section with schema
+            let section_bytes = &bytes[header_end..];
+            let schema = if section_name == "msg" { msg_schema() } else { ack_schema() };
+            let builder = SectionBuilder::parse(schema, section_bytes)
+                .map_err(|e| format!("Parse {}: {}", section_name, e))?;
+
+            // Convert to fields vec for existing extract_* functions
             let mut fields: Vec<(String, VsfType)> = Vec::new();
-            while ptr < bytes.len() && bytes[ptr] != b']' {
-                if bytes[ptr] != b'(' {
-                    return Err("Expected field start '('".to_string());
+            for field_name in ["tok", "prev", "data", "time", "hash"] {
+                if let Ok(values) = builder.get(field_name) {
+                    for value in values {
+                        fields.push((field_name.to_string(), value.clone()));
+                    }
                 }
-                ptr += 1;
-                let field_name = match parse(bytes, &mut ptr) {
-                    Ok(VsfType::d(name)) => name,
-                    _ => return Err("Invalid msg/ack field name".to_string()),
-                };
-                if ptr < bytes.len() && bytes[ptr] == b':' {
-                    ptr += 1;
-                    let value = parse(bytes, &mut ptr)
-                        .map_err(|e| format!("Parse msg/ack field: {}", e))?;
-                    fields.push((field_name, value));
-                }
-                if ptr >= bytes.len() || bytes[ptr] != b')' {
-                    return Err("Expected field end ')'".to_string());
-                }
-                ptr += 1;
             }
 
             // CHAIN format: conversation_token (privacy-preserving), no sequence numbers
@@ -1125,33 +1161,22 @@ pub fn parse_clutch_offer_vsf(
 
     // offer_provenance will be computed from keys after parsing (deterministic, no timestamp)
 
-    // Parse section
-    let mut ptr = header_end;
-    if ptr >= vsf_bytes.len() || vsf_bytes[ptr] != b'[' {
-        return Err("No section body in ClutchOffer".to_string());
-    }
-    ptr += 1;
+    // Parse section with schema
+    let section_bytes = &vsf_bytes[header_end..];
+    let schema = clutch_offer_schema();
+    let builder = SectionBuilder::parse(schema, section_bytes)
+        .map_err(|e| format!("Parse clutch_offer: {}", e))?;
 
-    // Parse section name
-    let section_name = match vsf::parse(vsf_bytes, &mut ptr) {
-        Ok(VsfType::d(name)) => name,
-        _ => return Err("Invalid section name".to_string()),
-    };
-
-    if section_name != "clutch_offer" {
-        return Err(format!(
-            "Expected 'clutch_offer' section, got '{}'",
-            section_name
-        ));
-    }
-
-    // Parse fields with multi-value support
+    // Convert to VsfField vec for backwards compatibility with extraction code
     use vsf::file_format::VsfField;
     let mut fields: Vec<VsfField> = Vec::new();
-    while ptr < vsf_bytes.len() && vsf_bytes[ptr] != b']' {
-        let field =
-            VsfField::parse(vsf_bytes, &mut ptr).map_err(|e| format!("Parse field: {}", e))?;
-        fields.push(field);
+    for field_name in ["tok", "pubkey", "pubkeys"] {
+        if let Ok(values) = builder.get(field_name) {
+            fields.push(VsfField {
+                name: field_name.to_string(),
+                values: values.clone(),
+            });
+        }
     }
 
     // Extract conversation_token (single value field)
@@ -1386,33 +1411,22 @@ pub fn parse_clutch_kem_response_vsf(
 
     let ceremony_id = extract_header_provenance(&header)?;
 
-    // Parse section
-    let mut ptr = header_end;
-    if ptr >= vsf_bytes.len() || vsf_bytes[ptr] != b'[' {
-        return Err("No section body in ClutchKemResponse".to_string());
-    }
-    ptr += 1;
+    // Parse section with schema
+    let section_bytes = &vsf_bytes[header_end..];
+    let schema = clutch_kem_response_schema();
+    let builder = SectionBuilder::parse(schema, section_bytes)
+        .map_err(|e| format!("Parse clutch_kem_response: {}", e))?;
 
-    // Parse section name
-    let section_name = match vsf::parse(vsf_bytes, &mut ptr) {
-        Ok(VsfType::d(name)) => name,
-        _ => return Err("Invalid section name".to_string()),
-    };
-
-    if section_name != "clutch_kem_response" {
-        return Err(format!(
-            "Expected 'clutch_kem_response' section, got '{}'",
-            section_name
-        ));
-    }
-
-    // Parse fields with multi-value support
+    // Convert to VsfField vec for backwards compatibility with extraction code
     use vsf::file_format::VsfField;
     let mut fields: Vec<VsfField> = Vec::new();
-    while ptr < vsf_bytes.len() && vsf_bytes[ptr] != b']' {
-        let field =
-            VsfField::parse(vsf_bytes, &mut ptr).map_err(|e| format!("Parse field: {}", e))?;
-        fields.push(field);
+    for field_name in ["tok", "target_hqc", "ciphertext", "ciphertexts"] {
+        if let Ok(values) = builder.get(field_name) {
+            fields.push(VsfField {
+                name: field_name.to_string(),
+                values: values.clone(),
+            });
+        }
     }
 
     // Extract conversation_token (single value field)
@@ -1628,33 +1642,22 @@ pub fn parse_clutch_offer_vsf_without_recipient_check(
 
     // offer_provenance will be computed from keys after parsing (deterministic, no timestamp)
 
-    // Parse section
-    let mut ptr = header_end;
-    if ptr >= vsf_bytes.len() || vsf_bytes[ptr] != b'[' {
-        return Err("No section body in ClutchOffer".to_string());
-    }
-    ptr += 1;
+    // Parse section with schema
+    let section_bytes = &vsf_bytes[header_end..];
+    let schema = clutch_offer_schema();
+    let builder = SectionBuilder::parse(schema, section_bytes)
+        .map_err(|e| format!("Parse clutch_offer: {}", e))?;
 
-    // Parse section name
-    let section_name = match vsf::parse(vsf_bytes, &mut ptr) {
-        Ok(VsfType::d(name)) => name,
-        _ => return Err("Invalid section name".to_string()),
-    };
-
-    if section_name != "clutch_offer" {
-        return Err(format!(
-            "Expected 'clutch_offer' section, got '{}'",
-            section_name
-        ));
-    }
-
-    // Parse fields with multi-value support
+    // Convert to VsfField vec for backwards compatibility with extraction code
     use vsf::file_format::VsfField;
     let mut fields: Vec<VsfField> = Vec::new();
-    while ptr < vsf_bytes.len() && vsf_bytes[ptr] != b']' {
-        let field =
-            VsfField::parse(vsf_bytes, &mut ptr).map_err(|e| format!("Parse field: {}", e))?;
-        fields.push(field);
+    for field_name in ["tok", "pubkey", "pubkeys"] {
+        if let Ok(values) = builder.get(field_name) {
+            fields.push(VsfField {
+                name: field_name.to_string(),
+                values: values.clone(),
+            });
+        }
     }
 
     // Extract conversation_token (NO recipient check - caller verifies)
@@ -1799,33 +1802,22 @@ pub fn parse_clutch_kem_response_vsf_without_recipient_check(
 
     let ceremony_id = extract_header_provenance(&header)?;
 
-    // Parse section
-    let mut ptr = header_end;
-    if ptr >= vsf_bytes.len() || vsf_bytes[ptr] != b'[' {
-        return Err("No section body in ClutchKemResponse".to_string());
-    }
-    ptr += 1;
+    // Parse section with schema
+    let section_bytes = &vsf_bytes[header_end..];
+    let schema = clutch_kem_response_schema();
+    let builder = SectionBuilder::parse(schema, section_bytes)
+        .map_err(|e| format!("Parse clutch_kem_response: {}", e))?;
 
-    // Parse section name
-    let section_name = match vsf::parse(vsf_bytes, &mut ptr) {
-        Ok(VsfType::d(name)) => name,
-        _ => return Err("Invalid section name".to_string()),
-    };
-
-    if section_name != "clutch_kem_response" {
-        return Err(format!(
-            "Expected 'clutch_kem_response' section, got '{}'",
-            section_name
-        ));
-    }
-
-    // Parse fields with multi-value support
+    // Convert to VsfField vec for backwards compatibility with extraction code
     use vsf::file_format::VsfField;
     let mut fields: Vec<VsfField> = Vec::new();
-    while ptr < vsf_bytes.len() && vsf_bytes[ptr] != b']' {
-        let field =
-            VsfField::parse(vsf_bytes, &mut ptr).map_err(|e| format!("Parse field: {}", e))?;
-        fields.push(field);
+    for field_name in ["tok", "target_hqc", "ciphertext", "ciphertexts"] {
+        if let Ok(values) = builder.get(field_name) {
+            fields.push(VsfField {
+                name: field_name.to_string(),
+                values: values.clone(),
+            });
+        }
     }
 
     // Extract conversation_token (NO recipient check - caller verifies)
