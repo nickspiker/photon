@@ -1421,7 +1421,7 @@ pub fn parse_clutch_kem_response_vsf(
     // Convert to VsfField vec for backwards compatibility with extraction code
     use vsf::file_format::VsfField;
     let mut fields: Vec<VsfField> = Vec::new();
-    for field_name in ["tok", "target_hqc", "ciphertext", "ciphertexts"] {
+    for field_name in ["tok", "target_hqc", "ciphertext", "ciphertexts", "ephemerals"] {
         if let Ok(values) = builder.get(field_name) {
             fields.push(VsfField {
                 name: field_name.to_string(),
@@ -1812,7 +1812,7 @@ pub fn parse_clutch_kem_response_vsf_without_recipient_check(
     // Convert to VsfField vec for backwards compatibility with extraction code
     use vsf::file_format::VsfField;
     let mut fields: Vec<VsfField> = Vec::new();
-    for field_name in ["tok", "target_hqc", "ciphertext", "ciphertexts"] {
+    for field_name in ["tok", "target_hqc", "ciphertext", "ciphertexts", "ephemerals"] {
         if let Ok(values) = builder.get(field_name) {
             fields.push(VsfField {
                 name: field_name.to_string(),
