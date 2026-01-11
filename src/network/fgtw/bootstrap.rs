@@ -1,9 +1,17 @@
 use super::{fingerprint::Keypair, PeerRecord};
 use crate::types::DevicePubkey;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use vsf::{schema::FromVsfType, VsfHeader, VsfSection};
+use vsf::schema::{FromVsfType, SectionBuilder, SectionSchema, TypeConstraint};
+use vsf::{VsfHeader, VsfSection};
 
 const FGTW_URL: &str = "https://fgtw.org";
+
+/// Schema for error section from FGTW responses
+fn error_schema() -> SectionSchema {
+    SectionSchema::new("error")
+        .field("message", TypeConstraint::AnyString) // l or x
+        .field("error", TypeConstraint::AnyString) // l or x (alternative field name)
+}
 
 /// Result of a bootstrap query - includes peers even on error
 #[derive(Debug)]
@@ -27,7 +35,7 @@ pub const FGTW_ED25519_PUBLIC_KEY: [u8; 32] = [
 
 /// Try to parse a VSF error message from response bytes
 /// Returns Some(error_message) if the response is a valid VSF error, None otherwise
-/// Uses VsfHeader::decode() for robust parsing
+/// Uses SectionBuilder for robust parsing
 fn try_parse_vsf_error(bytes: &[u8]) -> Option<String> {
     use vsf::VsfType;
 
@@ -37,14 +45,14 @@ fn try_parse_vsf_error(bytes: &[u8]) -> Option<String> {
     // Look for "error" field in header fields
     for field in &header.fields {
         if field.name == "error" {
-            // Try to parse the error section at the field's offset
-            let mut ptr = field.offset_bytes;
-            if let Ok(section) = VsfSection::parse(bytes, &mut ptr) {
-                // Look for error message in section fields - try "message" first, then "error"
-                for field_name in &["message", "error"] {
-                    if let Some(section_field) = section.get_field(field_name) {
-                        // Return first text value (l for long text, x for VSF text)
-                        for value in &section_field.values {
+            // Try to parse the error section at the field's offset with schema
+            let section_bytes = &bytes[field.offset_bytes..];
+            let schema = error_schema();
+            if let Ok(builder) = SectionBuilder::parse(schema, section_bytes) {
+                // Try "message" field first, then "error" field
+                for field_name in ["message", "error"] {
+                    if let Ok(values) = builder.get(field_name) {
+                        for value in values {
                             match value {
                                 VsfType::l(msg) => return Some(msg.clone()),
                                 VsfType::x(msg) => return Some(msg.clone()),
@@ -58,28 +66,20 @@ fn try_parse_vsf_error(bytes: &[u8]) -> Option<String> {
     }
 
     // Fallback: check if there's an error section without header field
-    // (for simple inline error responses)
-    let mut ptr = header_len;
-    while ptr < bytes.len() {
-        if bytes[ptr] == b'[' {
-            if let Ok(section) = VsfSection::parse(bytes, &mut ptr) {
-                if section.name == "error" {
-                    // Look for message field
-                    for field_name in &["message", "error"] {
-                        if let Some(section_field) = section.get_field(field_name) {
-                            for value in &section_field.values {
-                                match value {
-                                    VsfType::l(msg) => return Some(msg.clone()),
-                                    VsfType::x(msg) => return Some(msg.clone()),
-                                    _ => {}
-                                }
-                            }
-                        }
+    let section_bytes = &bytes[header_len..];
+    let schema = error_schema();
+    if let Ok(builder) = SectionBuilder::parse(schema, section_bytes) {
+        // Try both field names
+        for field_name in ["message", "error"] {
+            if let Ok(values) = builder.get(field_name) {
+                for value in values {
+                    match value {
+                        VsfType::l(msg) => return Some(msg.clone()),
+                        VsfType::x(msg) => return Some(msg.clone()),
+                        _ => {}
                     }
                 }
             }
-        } else {
-            break;
         }
     }
 

@@ -9,11 +9,22 @@
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 use std::thread;
 use std::time::Duration;
+use vsf::schema::{SectionBuilder, SectionSchema, TypeConstraint};
 
 #[cfg(not(target_os = "android"))]
 use crate::ui::PhotonEvent;
 #[cfg(not(target_os = "android"))]
 use winit::event_loop::EventLoopProxy;
+
+/// Schema for peer_update section from FGTW WebSocket
+fn peer_update_schema() -> SectionSchema {
+    SectionSchema::new("peer_update")
+        .field("handle_proof", TypeConstraint::Any) // hP
+        .field("device_pubkey", TypeConstraint::Ed25519Key) // ke
+        .field("ip", TypeConstraint::Utf8Text) // x
+        .field("port", TypeConstraint::AnyUnsigned) // u/u3/u4/u5/u6
+        .field("timestamp", TypeConstraint::AnyEagleTime) // ef6
+}
 
 /// Parsed peer update from FGTW WebSocket
 #[derive(Debug, Clone)]
@@ -216,116 +227,66 @@ impl PeerUpdateClient {
     /// Parse VSF peer_update message into PeerUpdate struct
     fn parse_peer_update(data: &[u8]) -> Option<PeerUpdate> {
         use vsf::file_format::VsfHeader;
-        use vsf::parse;
         use vsf::types::VsfType;
 
         // Parse VSF header
         let (_header, header_end) = VsfHeader::decode(data).ok()?;
-        let mut ptr = header_end;
+        let section_bytes = &data[header_end..];
 
-        // Skip to section start '['
-        if ptr >= data.len() || data[ptr] != b'[' {
-            return None;
-        }
-        ptr += 1;
+        // Parse section with schema
+        let schema = peer_update_schema();
+        let builder = SectionBuilder::parse(schema, section_bytes).ok()?;
 
-        // Parse section name
-        let section_name = match parse(data, &mut ptr).ok()? {
-            VsfType::d(name) => name,
+        // Extract fields
+        let handle_proof_values = builder.get("handle_proof").ok()?;
+        let handle_proof = match handle_proof_values.first()? {
+            VsfType::hP(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(bytes);
+                arr
+            }
             _ => return None,
         };
 
-        if section_name != "peer_update" {
-            return None;
-        }
-
-        // Parse fields until section end ']'
-        let mut handle_proof = None;
-        let mut device_pubkey = None;
-        let mut ip = None;
-        let mut port = None;
-        let mut timestamp = None;
-
-        while ptr < data.len() && data[ptr] != b']' {
-            // Expect field start '('
-            if data[ptr] != b'(' {
-                ptr += 1;
-                continue;
+        let device_pubkey_values = builder.get("device_pubkey").ok()?;
+        let device_pubkey = match device_pubkey_values.first()? {
+            VsfType::ke(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(bytes);
+                arr
             }
-            ptr += 1;
+            _ => return None,
+        };
 
-            // Parse field name
-            let field_name = match parse(data, &mut ptr).ok()? {
-                VsfType::d(name) => name,
-                _ => continue,
-            };
+        let ip_values = builder.get("ip").ok()?;
+        let ip = match ip_values.first()? {
+            VsfType::x(s) => s.clone(),
+            _ => return None,
+        };
 
-            // Skip ':' separator
-            if ptr < data.len() && data[ptr] == b':' {
-                ptr += 1;
-            }
+        let port_values = builder.get("port").ok()?;
+        let port = match port_values.first()? {
+            VsfType::u(v, _) => *v as u16,
+            VsfType::u3(v) => *v as u16,
+            VsfType::u4(v) => *v,
+            VsfType::u5(v) => *v as u16,
+            VsfType::u6(v) => *v as u16,
+            VsfType::m(v) => *v as u16,
+            _ => return None,
+        };
 
-            // Parse field value
-            let value = parse(data, &mut ptr).ok()?;
-
-            // Skip field end ')'
-            if ptr < data.len() && data[ptr] == b')' {
-                ptr += 1;
-            }
-
-            match field_name.as_str() {
-                "handle_proof" => {
-                    if let VsfType::hP(bytes) = &value {
-                        if bytes.len() == 32 {
-                            let mut arr = [0u8; 32];
-                            arr.copy_from_slice(bytes);
-                            handle_proof = Some(arr);
-                        }
-                    }
-                }
-                "device_pubkey" => {
-                    if let VsfType::ke(bytes) = value {
-                        if bytes.len() == 32 {
-                            let mut arr = [0u8; 32];
-                            arr.copy_from_slice(&bytes);
-                            device_pubkey = Some(arr);
-                        }
-                    }
-                }
-                "ip" => {
-                    if let VsfType::x(s) = value {
-                        ip = Some(s);
-                    }
-                }
-                "port" => {
-                    let p = match value {
-                        VsfType::u(v, _) => Some(v),
-                        VsfType::u3(v) => Some(v as usize),
-                        VsfType::u4(v) => Some(v as usize),
-                        VsfType::u5(v) => Some(v as usize),
-                        VsfType::u6(v) => Some(v as usize),
-                        VsfType::m(v) => Some(v), // Legacy compat
-                        _ => None,
-                    };
-                    if let Some(v) = p {
-                        port = Some(v as u16);
-                    }
-                }
-                "timestamp" => {
-                    if let VsfType::e(vsf::types::EtType::f6(ts)) = value {
-                        timestamp = Some(ts);
-                    }
-                }
-                _ => {}
-            }
-        }
+        let timestamp_values = builder.get("timestamp").ok()?;
+        let timestamp = match timestamp_values.first()? {
+            VsfType::e(vsf::types::EtType::f6(ts)) => *ts,
+            _ => return None,
+        };
 
         Some(PeerUpdate {
-            handle_proof: handle_proof?,
-            device_pubkey: device_pubkey?,
-            ip: ip?,
-            port: port?,
-            timestamp: timestamp?,
+            handle_proof,
+            device_pubkey,
+            ip,
+            port,
+            timestamp,
         })
     }
 }
