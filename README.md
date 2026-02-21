@@ -1,5 +1,7 @@
 # Photon
 
+![Photon Messenger Screenshot](app.png)
+
 **Decentralized messenger with passless authentication and rolling-chain encryption**
 
 No servers. No passwords. No phone numbers. No corporate data harvesting.
