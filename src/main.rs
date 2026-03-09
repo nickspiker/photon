@@ -65,6 +65,13 @@ impl ApplicationHandler<PhotonEvent> for App {
             self.window = Some(event_loop.create_window(window_attributes).unwrap());
 
             if let Some(window) = &self.window {
+                // macOS: disable the system drop shadow (we draw our own edges)
+                #[cfg(target_os = "macos")]
+                {
+                    use winit::platform::macos::WindowExtMacOS;
+                    window.set_has_shadow(false);
+                }
+
                 // Windows: Set up layered window for transparency
                 #[cfg(target_os = "windows")]
                 {
