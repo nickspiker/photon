@@ -145,19 +145,14 @@ impl Renderer {
             .find(|f| *f == wgpu::TextureFormat::Bgra8Unorm)
             .unwrap_or(caps.formats[0]);
 
-        // PostMultiplied = straight alpha; matches our pixel layout where
-        // transparent pixels have alpha=0 and opaque pixels have alpha=0xFF.
+        // PostMultiplied = straight alpha. Metal/CAMetalLayer reports [Opaque, PostMultiplied].
+        // The fragment shader de-premultiplies the CPU buffer before output so the
+        // compositor sees straight alpha and composites correctly.
         let alpha_mode = caps
             .alpha_modes
             .iter()
             .copied()
             .find(|m| *m == wgpu::CompositeAlphaMode::PostMultiplied)
-            .or_else(|| {
-                caps.alpha_modes
-                    .iter()
-                    .copied()
-                    .find(|m| *m == wgpu::CompositeAlphaMode::PreMultiplied)
-            })
             .unwrap_or(caps.alpha_modes[0]);
 
         let config = wgpu::SurfaceConfiguration {
