@@ -1169,6 +1169,7 @@ pub struct PhotonApp {
     // WebSocket client for real-time peer IP updates (desktop only)
     #[cfg(not(target_os = "android"))]
     pub peer_update_client: Option<crate::network::PeerUpdateClient>,
+
 }
 
 // Hit test element IDs
@@ -4973,7 +4974,7 @@ impl PhotonApp {
             hex::encode(&our_identity_seed[..4]),
             hex::encode(&chain.current_key()[..4]),
             hex::encode(&salt[..4]),
-            eagle_time.to_f64(),
+            eagle_time.to_seconds_f64(),
             payload.len()
         ));
 
@@ -4994,7 +4995,7 @@ impl PhotonApp {
 
         // Derive this message's hash pointer (links to prev + content + time)
         use crate::types::friendship::derive_msg_hp;
-        let msg_hp = derive_msg_hp(&prev_msg_hp, &plaintext_hash, eagle_time.to_f64());
+        let msg_hp = derive_msg_hp(&prev_msg_hp, &plaintext_hash, eagle_time.to_seconds_f64());
 
         // Capture conversation_token before mutable borrow
         let conversation_token = chains.conversation_token;
@@ -5010,7 +5011,7 @@ impl PhotonApp {
             .find(|(id, _)| *id == friendship_id)
         {
             chains_mut.add_pending(
-                eagle_time.to_f64(),
+                eagle_time.to_seconds_f64(),
                 payload.to_vec(),
                 plaintext_hash,
                 prev_msg_hp,
@@ -5019,7 +5020,7 @@ impl PhotonApp {
             );
 
             // Track sent weave for bidirectional entropy (receiver uses this to advance our chain)
-            chains_mut.update_sent_for_mixing(eagle_time.to_f64(), msg_hp, &payload);
+            chains_mut.update_sent_for_mixing(eagle_time.to_seconds_f64(), msg_hp, &payload);
 
             // Get other party's last plaintext for bidirectional weave
             // Clone to avoid borrow issues with advance()
@@ -5056,7 +5057,7 @@ impl PhotonApp {
                 conversation_token,
                 prev_msg_hp,
                 ciphertext: ciphertext.clone(),
-                eagle_time: eagle_time.to_f64(),
+                eagle_time: eagle_time.to_seconds_f64(),
             });
 
             // Add to contact's message list and persist
@@ -5065,7 +5066,7 @@ impl PhotonApp {
                 contact.insert_message_sorted(ChatMessage::new_with_timestamp(
                     message_text.to_string(),
                     true,                // is_outgoing
-                    eagle_time.to_f64(), // Use message's actual eagle_time
+                    eagle_time.to_seconds_f64(), // Use message's actual eagle_time
                 ));
                 // Auto-scroll to bottom to show new message
                 contact.message_scroll_offset = 0.0;

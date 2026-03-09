@@ -136,5 +136,5 @@ impl Default for PeerStore {
 
 /// Get current Eagle Time (seconds since Apollo 11 landing)
 fn current_timestamp() -> f64 {
-    vsf::eagle_time_nanos()
+    vsf::EagleTime::from_oscillations(vsf::eagle_time_oscillations()).to_seconds_f64()
 }

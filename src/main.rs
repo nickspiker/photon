@@ -357,6 +357,7 @@ impl ApplicationHandler<PhotonEvent> for App {
                 }
                 event_loop.set_control_flow(ControlFlow::WaitUntil(wake_time));
             }
+
         }
     }
 

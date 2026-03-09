@@ -212,7 +212,7 @@ pub fn vsf_write(
 
     // Build VSF file with placeholder signature (zeros) - sign_file will fill it
     let unsigned_vsf = VsfBuilder::new()
-        .creation_time_nanos(vsf::eagle_time_nanos())
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
         .signature_ed25519(*device_pubkey.as_bytes(), [0u8; 64]) // Placeholder
         .add_section(
             "encrypted",

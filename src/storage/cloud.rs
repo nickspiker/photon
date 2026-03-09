@@ -156,7 +156,7 @@ pub fn decode_contacts(
                 _ => 0,
             };
             let added = match &field.values[4] {
-                VsfType::e(et) => vsf::EagleTime::new_from_vsf(VsfType::e(et.clone())).to_f64(),
+                VsfType::e(et) => vsf::EagleTime::new_from_vsf(VsfType::e(et.clone())).to_seconds_f64(),
                 VsfType::f6(v) => *v, // Legacy
                 _ => 0.0,
             };
