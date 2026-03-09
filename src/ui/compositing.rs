@@ -3455,7 +3455,7 @@ impl PhotonApp {
 
             // Left edge outer pixel
             let pixel_idx = y_top * width as usize + inset as usize;
-            pixels[pixel_idx] = (light_colour & 0x00FFFFFF) | ((h as u32) << 24);
+            pixels[pixel_idx] = scale_alpha(light_colour, h);
             if h < 255 {
                 hit_test_map[pixel_idx] = HIT_NONE; // NEEDS FIXED!!!
             }
@@ -3470,7 +3470,7 @@ impl PhotonApp {
 
             // Right edge outer pixel
             let pixel_idx = pixel_idx + 1;
-            pixels[pixel_idx] = (shadow_colour & 0x00FFFFFF) | ((h as u32) << 24);
+            pixels[pixel_idx] = scale_alpha(shadow_colour, h);
             if h < 255 {
                 hit_test_map[pixel_idx] = HIT_NONE;
             }
@@ -3498,7 +3498,7 @@ impl PhotonApp {
 
             // Left outer edge pixel
             let pixel_idx = y_bottom * width as usize + inset as usize;
-            pixels[pixel_idx] = (light_colour & 0x00FFFFFF) | ((h as u32) << 24);
+            pixels[pixel_idx] = scale_alpha(light_colour, h);
             if h < 255 {
                 hit_test_map[pixel_idx] = HIT_NONE;
             }
@@ -3513,7 +3513,7 @@ impl PhotonApp {
 
             // Right edge outer pixel
             let pixel_idx = pixel_idx + 1;
-            pixels[pixel_idx] = (shadow_colour & 0x00FFFFFF) | ((h as u32) << 24);
+            pixels[pixel_idx] = scale_alpha(shadow_colour, h);
             if h < 255 {
                 hit_test_map[pixel_idx] = HIT_NONE;
             }
@@ -3543,7 +3543,7 @@ impl PhotonApp {
 
             // Top outer edge pixel
             let pixel_idx = inset as usize * width as usize + x_left;
-            pixels[pixel_idx] = (light_colour & 0x00FFFFFF) | ((h as u32) << 24);
+            pixels[pixel_idx] = scale_alpha(light_colour, h);
             if h < 255 {
                 hit_test_map[pixel_idx] = HIT_NONE;
             }
@@ -3554,7 +3554,7 @@ impl PhotonApp {
 
             // Bottom outer edge pixel
             let pixel_idx = (height as usize - 1 - inset as usize) * width as usize + x_left;
-            pixels[pixel_idx] = (shadow_colour & 0x00FFFFFF) | ((h as u32) << 24);
+            pixels[pixel_idx] = scale_alpha(shadow_colour, h);
             if h < 255 {
                 hit_test_map[pixel_idx] = HIT_NONE;
             }
@@ -3587,7 +3587,7 @@ impl PhotonApp {
 
             // Top outer edge pixel
             let pixel_idx = inset as usize * width as usize + x_right;
-            pixels[pixel_idx] = (light_colour & 0x00FFFFFF) | ((h as u32) << 24);
+            pixels[pixel_idx] = scale_alpha(light_colour, h);
             if h < 255 {
                 hit_test_map[pixel_idx] = HIT_NONE;
             }
@@ -3598,7 +3598,7 @@ impl PhotonApp {
 
             // Bottom outer edge pixel
             let pixel_idx = (height as usize - 1 - inset as usize) * width as usize + x_right;
-            pixels[pixel_idx] = (shadow_colour & 0x00FFFFFF) | ((h as u32) << 24);
+            pixels[pixel_idx] = scale_alpha(shadow_colour, h);
             if h < 255 {
                 hit_test_map[pixel_idx] = HIT_NONE;
             }
@@ -5673,9 +5673,16 @@ fn unpack_argb(pixel: u32) -> (u8, u8, u8, u8) {
     (r, g, b, a)
 }
 
-/// Scale a packed ARGB colour by alpha (premultiply).
-/// Formula: colour * alpha >> 8
-#[inline]
+fn scale_alpha(colour: u32, alpha: u8) -> u32 {
+    let mut c = colour as u64;
+    c = (c | (c << 16)) & 0x0000FFFF0000FFFF;
+    c = (c | (c << 8)) & 0x00FF00FF00FF00FF;
+    let mut scaled = c * alpha as u64;
+    scaled = (scaled >> 8) & 0x00FF00FF00FF00FF;
+    scaled = (scaled | (scaled >> 8)) & 0x0000FFFF0000FFFF;
+    scaled = scaled | (scaled >> 16);
+    scaled as u32
+}
 
 #[inline]
 fn blend_rgb_only(bg_colour: u32, fg_colour: u32, weight_bg: u8, weight_fg: u8) -> u32 {
