@@ -16,7 +16,7 @@ export PHOTON_ALLOW_RELEASE=1
 export CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=clang
 
 echo "Building release binary (native macOS ARM)..."
-cargo build --release
+cargo build --release --features debug-keys
 
 echo ""
 echo "Signing binary..."
