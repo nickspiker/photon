@@ -30,7 +30,7 @@ impl Peer {
         Self {
             public_identity,
             address,
-            last_seen: vsf::eagle_time_nanos(),
+            last_seen: vsf::EagleTime::from_oscillations(vsf::eagle_time_oscillations()).to_seconds_f64(),
             connection_state: ConnectionState::Disconnected,
         }
     }
@@ -38,7 +38,7 @@ impl Peer {
     pub fn update_connection_state(&mut self, state: ConnectionState) {
         self.connection_state = state;
         if state == ConnectionState::Connected || state == ConnectionState::Authenticated {
-            self.last_seen = vsf::eagle_time_nanos();
+            self.last_seen = vsf::EagleTime::from_oscillations(vsf::eagle_time_oscillations()).to_seconds_f64();
         }
     }
 

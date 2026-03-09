@@ -40,6 +40,7 @@ impl PhotonApp {
 
         // Increment frame counter (every render() call)
         self.frame_counter += 1;
+
         // Calculate layout constants (needed by all rendering paths)
         let font_size = self.font_size();
         let box_width = self.textbox_width();
@@ -2308,16 +2309,7 @@ impl PhotonApp {
                 }
             }
 
-            // Always present buffer once per frame
             buffer.present().unwrap();
-        } else {
-            // macOS with transparent windows + softbuffer doesn't retain buffer contents
-            // between frames. Must re-present even when nothing changed or window goes black.
-            #[cfg(target_os = "macos")]
-            {
-                let mut buffer = self.renderer.lock_buffer();
-                buffer.present().unwrap();
-            }
         }
         self.window_dirty = false;
         self.text_dirty = false;

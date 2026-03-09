@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 
 /// Get current Eagle Time (seconds since Apollo 11 landing)
 fn eagle_time() -> f64 {
-    vsf::eagle_time_nanos()
+    vsf::EagleTime::from_oscillations(vsf::eagle_time_oscillations()).to_seconds_f64()
 }
 
 /// Node identifier for FGTW routing

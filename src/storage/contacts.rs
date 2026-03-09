@@ -207,7 +207,7 @@ fn encrypt_data(data: &[u8], key: &[u8; 32], section_name: &str) -> Result<Vec<u
 
     // Wrap in proper VSF file with header, timestamp, hashes (hp + hb)
     let vsf_bytes = vsf::VsfBuilder::new()
-        .creation_time_nanos(vsf::eagle_time_nanos())
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
         .add_section(
             section_name,
             vec![("data".to_string(), VsfType::v(b'e', encrypted_payload))],
@@ -536,7 +536,7 @@ pub fn load_contact_state(
         _ => return Err(StorageError::Parse("Missing pubkey".into())),
     };
     let added = match get_val("added") {
-        Some(v) => EagleTime::new_from_vsf(v.clone()).to_f64(),
+        Some(v) => EagleTime::new_from_vsf(v.clone()).to_seconds_f64(),
         None => 0.0,
     };
 
@@ -567,7 +567,7 @@ pub fn load_contact_state(
         }
     }
     if let Some(v) = get_val("last_seen") {
-        contact.last_seen = Some(EagleTime::new_from_vsf(v.clone()).to_f64());
+        contact.last_seen = Some(EagleTime::new_from_vsf(v.clone()).to_seconds_f64());
     }
     if let Some(VsfType::hb(v)) = get_val("id") {
         if v.len() == 32 {
@@ -1554,7 +1554,7 @@ pub fn load_messages(
                 _ => continue,
             };
             let timestamp = match &field.values[1] {
-                v => EagleTime::new_from_vsf(v.clone()).to_f64(),
+                v => EagleTime::new_from_vsf(v.clone()).to_seconds_f64(),
             };
             let is_outgoing = match &field.values[2] {
                 VsfType::u3(v) => *v != 0,

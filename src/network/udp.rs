@@ -166,7 +166,7 @@ pub(crate) fn build_lan_discovery(handle_proof: [u8; 32], port: u16) -> Vec<u8> 
     use vsf::{VsfBuilder, VsfType};
 
     VsfBuilder::new()
-        .creation_time_nanos(vsf::eagle_time_nanos())
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
         .provenance_hash(handle_proof) // Identity in header - no registry lookup needed
         .provenance_only() // No rolling hash - one-shot broadcast
         .add_section("pt_disc", vec![("port".to_string(), VsfType::u4(port))])

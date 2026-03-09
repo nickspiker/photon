@@ -55,7 +55,7 @@ impl ChatMessage {
     pub fn new(content: String, is_outgoing: bool) -> Self {
         Self {
             content,
-            timestamp: vsf::eagle_time_nanos(),
+            timestamp: vsf::EagleTime::from_oscillations(vsf::eagle_time_oscillations()).to_seconds_f64(),
             is_outgoing,
             delivered: false,
         }
@@ -244,7 +244,7 @@ impl Contact {
             completed_their_hqc_prefix: None, // Set when CLUTCH completes, persisted
             offer_provenances: Vec::new(), // Collected offer provenances for ceremony nonce
             trust_level: TrustLevel::Stranger,
-            added: vsf::eagle_time_nanos(),
+            added: vsf::EagleTime::from_oscillations(vsf::eagle_time_oscillations()).to_seconds_f64(),
             last_seen: None,
             is_online: false,           // Starts offline until we confirm comms
             messages: Vec::new(),       // No messages yet

@@ -304,7 +304,7 @@ pub fn generate_ack_proof(
     let mut hasher = blake3::Hasher::new();
     hasher.update(DOMAIN_ACK);
     hasher.update(plaintext_hash); // Hash first (opposite order from advance)
-    hasher.update(&eagle_time.to_f64().to_le_bytes());
+    hasher.update(&eagle_time.to_seconds_f64().to_le_bytes());
     hasher.update(chain.links[ACK_LINK_RANGE].as_flattened()); // Last 5 links (160B)
 
     smear_hash(hasher.finalize().as_bytes())
@@ -355,7 +355,7 @@ fn derive_fresh_link(
     );
 
     input.extend_from_slice(DOMAIN_ADVANCE);
-    input.extend_from_slice(&eagle_time.to_f64().to_le_bytes());
+    input.extend_from_slice(&eagle_time.to_seconds_f64().to_le_bytes());
     input.extend_from_slice(&(our_plaintext.len() as u32).to_le_bytes());
     input.extend_from_slice(our_plaintext);
     input.extend_from_slice(chain_portion);
@@ -378,7 +378,7 @@ fn derive_fresh_link(
 ///
 /// Uses first 12 bytes of BLAKE3 hash of timestamp.
 pub fn derive_nonce(eagle_time: &EagleTime) -> [u8; 12] {
-    let hash = blake3::hash(&eagle_time.to_f64().to_le_bytes());
+    let hash = blake3::hash(&eagle_time.to_seconds_f64().to_le_bytes());
     let mut nonce = [0u8; 12];
     nonce.copy_from_slice(&hash.as_bytes()[..12]);
     nonce
