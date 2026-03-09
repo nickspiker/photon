@@ -146,6 +146,9 @@ softbuffer = "0.4"
 if-watch = { version = "3.2.1", features = ["tokio"] }
 arboard = "3.4"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+wgpu = { version = "28", default-features = false, features = ["metal", "wgsl"] }
+
 
 [dev-dependencies]
 criterion = "0.7.0"

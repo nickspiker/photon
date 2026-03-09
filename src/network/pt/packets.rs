@@ -60,7 +60,7 @@ impl PTSpec {
         sig_bytes.copy_from_slice(&sig.to_bytes());
 
         VsfBuilder::new()
-            .creation_time_nanos(vsf::eagle_time_nanos())
+            .creation_time_oscillations(vsf::eagle_time_oscillations())
             .provenance_hash(provenance)
             .signature_ed25519(*keypair.public.as_bytes(), sig_bytes)
             .add_section(
@@ -256,7 +256,7 @@ impl PTAck {
 
         // Provenance hash IS the chunk hash - the integrity proof
         VsfBuilder::new()
-            .creation_time_nanos(vsf::eagle_time_nanos())
+            .creation_time_oscillations(vsf::eagle_time_oscillations())
             .provenance_hash(self.chunk_hash)
             .provenance_only() // No signature - provenance hash provides integrity
             .add_inline_field(
@@ -335,7 +335,7 @@ impl PTNak {
             .collect();
 
         VsfBuilder::new()
-            .creation_time_nanos(vsf::eagle_time_nanos())
+            .creation_time_oscillations(vsf::eagle_time_oscillations())
             .provenance_hash(provenance)
             .provenance_only() // No signature - provenance hash provides integrity
             .add_inline_field("pt_nak", values)
@@ -421,7 +421,7 @@ impl PTControl {
         let provenance = self.compute_provenance();
 
         VsfBuilder::new()
-            .creation_time_nanos(vsf::eagle_time_nanos())
+            .creation_time_oscillations(vsf::eagle_time_oscillations())
             .provenance_hash(provenance)
             .provenance_only() // No signature - provenance hash provides integrity
             .add_inline_field("pt_ctrl", vec![VsfType::u3(self.command as u8)])
@@ -475,7 +475,7 @@ impl PTComplete {
 
         // Provenance hash IS the final hash - the verification proof
         VsfBuilder::new()
-            .creation_time_nanos(vsf::eagle_time_nanos())
+            .creation_time_oscillations(vsf::eagle_time_oscillations())
             .provenance_hash(self.final_hash)
             .provenance_only() // No signature - provenance hash provides integrity
             .add_inline_field(

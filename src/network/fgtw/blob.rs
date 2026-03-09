@@ -65,7 +65,7 @@ pub async fn put_blob(
     let signature = device_keypair.secret.sign(&key_bytes);
 
     // Current Eagle Time for replay protection
-    let timestamp = vsf::eagle_time_nanos();
+    let timestamp = vsf::EagleTime::from_oscillations(vsf::eagle_time_oscillations()).to_seconds_f64();
 
     // Build VSF message for blob_put conduit operation
     let blob_put_fields = vec![
@@ -78,7 +78,7 @@ pub async fn put_blob(
     ];
 
     let blob_put_request = vsf::vsf_builder::VsfBuilder::new()
-        .creation_time_nanos(timestamp)
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
         .signed_only(VsfType::ke(device_keypair.public.as_bytes().to_vec()))
         .add_section("blob_put", blob_put_fields)
         .build()
@@ -128,7 +128,7 @@ pub async fn get_blob(storage_key: &str) -> Result<Option<Vec<u8>>, BlobError> {
     ];
 
     let blob_get_request = vsf::vsf_builder::VsfBuilder::new()
-        .creation_time_nanos(vsf::eagle_time_nanos())
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
         .provenance_only()
         .add_section("blob_get", blob_get_fields)
         .build()
@@ -241,7 +241,7 @@ pub fn put_blob_blocking(
     let signature = device_keypair.secret.sign(&key_bytes);
 
     // Current Eagle Time for replay protection
-    let timestamp = vsf::eagle_time_nanos();
+    let timestamp = vsf::EagleTime::from_oscillations(vsf::eagle_time_oscillations()).to_seconds_f64();
 
     // Build VSF message for blob_put conduit operation
     let blob_put_fields = vec![
@@ -254,7 +254,7 @@ pub fn put_blob_blocking(
     ];
 
     let blob_put_request = vsf::vsf_builder::VsfBuilder::new()
-        .creation_time_nanos(timestamp)
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
         .signed_only(VsfType::ke(device_keypair.public.as_bytes().to_vec()))
         .add_section("blob_put", blob_put_fields)
         .build()
@@ -303,7 +303,7 @@ pub fn get_blob_blocking(storage_key: &str) -> Result<Option<Vec<u8>>, BlobError
     ];
 
     let blob_get_request = vsf::vsf_builder::VsfBuilder::new()
-        .creation_time_nanos(vsf::eagle_time_nanos())
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
         .provenance_only()
         .add_section("blob_get", blob_get_fields)
         .build()
@@ -412,7 +412,7 @@ pub async fn delete_blob(storage_key: &str, device_keypair: &Keypair) -> Result<
     ];
 
     let blob_delete_request = vsf::vsf_builder::VsfBuilder::new()
-        .creation_time_nanos(vsf::eagle_time_nanos())
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
         .provenance_only()
         .add_section("blob_delete", blob_delete_fields)
         .build()

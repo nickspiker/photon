@@ -18,7 +18,7 @@ fn build_signed_vsf(
 ) -> Result<Vec<u8>, String> {
     // Build unsigned VSF
     let unsigned_bytes = vsf::VsfBuilder::new()
-        .creation_time_nanos(vsf::eagle_time_nanos())
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
         .signed_only(VsfType::ke(keypair.public.as_bytes().to_vec()))
         .add_section(section_name, fields)
         .build()

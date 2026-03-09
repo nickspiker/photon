@@ -37,7 +37,7 @@ pub type SyncRecordsProvider = Arc<Mutex<Vec<SyncRecord>>>;
 
 /// Get current Eagle Time as binary64 (seconds since Apollo 11 landing: July 20, 1969, 20:17:40 UTC)
 fn eagle_time_binary64() -> f64 {
-    vsf::eagle_time_nanos()
+    vsf::EagleTime::from_oscillations(vsf::eagle_time_oscillations()).to_seconds_f64()
 }
 
 /// Compute provenance hash = BLAKE3(sender_pubkey || timestamp_bytes)
