@@ -248,7 +248,7 @@ impl FgtwMessage {
     pub fn to_vsf_bytes(&self) -> Vec<u8> {
         use vsf::VsfBuilder;
 
-        let builder = VsfBuilder::new().creation_time_nanos(vsf::eagle_time_nanos());
+        let builder = VsfBuilder::new().creation_time_oscillations(vsf::eagle_time_oscillations());
 
         let result = match self {
             FgtwMessage::Ping { device_pubkey } => builder
@@ -412,7 +412,7 @@ impl FgtwMessage {
                 // All crypto is in header, section just identifies message type
                 // Avatar is NOT included - fetched by handle instead
                 builder
-                    .creation_time_nanos(*timestamp)
+                    .creation_time_oscillations(vsf::EagleTime::from_seconds_f64(*timestamp).oscillations().unwrap_or(0) as usize)
                     .provenance_hash(*provenance_hash)
                     .signature_ed25519(*sender_pubkey.as_bytes(), *signature)
                     .add_section("ping", vec![])
@@ -442,7 +442,7 @@ impl FgtwMessage {
                     ));
                 }
                 builder
-                    .creation_time_nanos(*timestamp)
+                    .creation_time_oscillations(vsf::EagleTime::from_seconds_f64(*timestamp).oscillations().unwrap_or(0) as usize)
                     .provenance_hash(*provenance_hash)
                     .signature_ed25519(*responder_pubkey.as_bytes(), *signature)
                     .add_section("pong", fields)
@@ -461,7 +461,7 @@ impl FgtwMessage {
                 // Provenance: BLAKE3(conversation_token || prev_msg_hp)
                 let provenance = compute_chat_provenance(conversation_token, prev_msg_hp);
                 builder
-                    .creation_time_nanos(*timestamp)
+                    .creation_time_oscillations(vsf::EagleTime::from_seconds_f64(*timestamp).oscillations().unwrap_or(0) as usize)
                     .provenance_hash(provenance)
                     .signature_ed25519(*sender_pubkey.as_bytes(), *signature)
                     .add_section(
@@ -495,7 +495,7 @@ impl FgtwMessage {
                     plaintext_hash,
                 );
                 builder
-                    .creation_time_nanos(*timestamp)
+                    .creation_time_oscillations(vsf::EagleTime::from_seconds_f64(*timestamp).oscillations().unwrap_or(0) as usize)
                     .provenance_hash(provenance)
                     .signature_ed25519(*sender_pubkey.as_bytes(), *signature)
                     .add_section(
@@ -791,7 +791,7 @@ impl PeerRecord {
             device_pubkey,
             ip,
             local_ip: None,
-            last_seen: vsf::eagle_time_nanos(),
+            last_seen: vsf::EagleTime::from_oscillations(vsf::eagle_time_oscillations()).to_seconds_f64(),
         }
     }
 }
@@ -1106,7 +1106,7 @@ pub fn build_clutch_offer_vsf(
     );
 
     let unsigned = VsfBuilder::new()
-        .creation_time_nanos(vsf::eagle_time_nanos())
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
         .signature_ed25519(*device_pubkey, [0u8; 64])
         .add_section_direct(section)
         .build()
@@ -1373,7 +1373,7 @@ pub fn build_clutch_kem_response_vsf(
 
     // Build unsigned VSF with signature placeholder
     let unsigned = VsfBuilder::new()
-        .creation_time_nanos(vsf::eagle_time_nanos())
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
         .provenance_hash(*ceremony_id)
         .signature_ed25519(*device_pubkey, [0u8; 64])
         .add_section_direct(section)
@@ -2067,7 +2067,7 @@ pub fn build_clutch_complete_vsf(
 
     // Build unsigned VSF with signature placeholder
     let unsigned = VsfBuilder::new()
-        .creation_time_nanos(vsf::eagle_time_nanos())
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
         .provenance_hash(*ceremony_id)
         .signature_ed25519(*device_pubkey, [0u8; 64])
         .add_section(

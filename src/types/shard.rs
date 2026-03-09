@@ -70,7 +70,7 @@ impl KeyShard {
             index,
             threshold,
             total_shards,
-            created_at: vsf::eagle_time_nanos(),
+            created_at: vsf::EagleTime::from_oscillations(vsf::eagle_time_oscillations()).to_seconds_f64(),
         }
     }
 }

@@ -63,7 +63,7 @@ struct IccColourConverter {
 pub fn encode_avatar_from_image(image_data: &[u8]) -> Result<Vec<u8>, String> {
     use resize::Type::Lanczos3;
     use rgb::FromSlice;
-    use vsf::colour::convert::delinearize_gamma2;
+    use vsf::colour::convert::delinearize_gamma2_f32;
 
     let size = AVATAR_SIZE;
 
@@ -115,13 +115,13 @@ pub fn encode_avatar_from_image(image_data: &[u8]) -> Result<Vec<u8>, String> {
                         // No ICC profile - assume sRGB (legacy but needed for compatibility)
                         #[allow(deprecated)]
                         {
-                            use vsf::colour::convert::apply_matrix_3x3;
+                            use vsf::colour::convert::apply_matrix_3x3_f32;
                             use vsf::colour::legacy::convert::linearize_srgb;
                             use vsf::colour::SRGB2VSF_RGB;
                             let r_lin = linearize_srgb(r as f32 / 65536.);
                             let g_lin = linearize_srgb(g as f32 / 65536.);
                             let b_lin = linearize_srgb(b as f32 / 65536.);
-                            apply_matrix_3x3(&SRGB2VSF_RGB, &[r_lin, g_lin, b_lin])
+                            apply_matrix_3x3_f32(&SRGB2VSF_RGB, &[r_lin, g_lin, b_lin])
                         }
                     };
 
@@ -149,13 +149,13 @@ pub fn encode_avatar_from_image(image_data: &[u8]) -> Result<Vec<u8>, String> {
                         // No ICC profile - assume sRGB (legacy but needed for compatibility)
                         #[allow(deprecated)]
                         {
-                            use vsf::colour::convert::apply_matrix_3x3;
+                            use vsf::colour::convert::apply_matrix_3x3_f32;
                             use vsf::colour::legacy::convert::linearize_srgb_u8;
                             use vsf::colour::SRGB2VSF_RGB;
                             let r_lin = linearize_srgb_u8(r);
                             let g_lin = linearize_srgb_u8(g);
                             let b_lin = linearize_srgb_u8(b);
-                            apply_matrix_3x3(&SRGB2VSF_RGB, &[r_lin, g_lin, b_lin])
+                            apply_matrix_3x3_f32(&SRGB2VSF_RGB, &[r_lin, g_lin, b_lin])
                         }
                     };
 
@@ -227,9 +227,9 @@ pub fn encode_avatar_from_image(image_data: &[u8]) -> Result<Vec<u8>, String> {
 
             // Apply VSF gamma 2 encoding
             // .max(0.) prevents NaN from sqrt() - Lanczos3 ringing can produce negatives
-            vsf_rgb_f32[idx] = delinearize_gamma2(masked_linear[0].max(0.));
-            vsf_rgb_f32[idx + 1] = delinearize_gamma2(masked_linear[1].max(0.));
-            vsf_rgb_f32[idx + 2] = delinearize_gamma2(masked_linear[2].max(0.));
+            vsf_rgb_f32[idx] = delinearize_gamma2_f32(masked_linear[0].max(0.));
+            vsf_rgb_f32[idx + 1] = delinearize_gamma2_f32(masked_linear[1].max(0.));
+            vsf_rgb_f32[idx + 2] = delinearize_gamma2_f32(masked_linear[2].max(0.));
         }
     }
 
@@ -515,7 +515,7 @@ fn apply_trc_normalized(normalized: f32, trc: &TrcCurve) -> f32 {
 /// Fast per-pixel conversion from ICC RGB (u8) to linear VSF RGB
 #[inline]
 fn convert_pixel_linear(r: u8, g: u8, b: u8, converter: &IccColourConverter) -> [f32; 3] {
-    use vsf::colour::convert::apply_matrix_3x3;
+    use vsf::colour::convert::apply_matrix_3x3_f32;
 
     // Linearize using TRC curves (normalize u8 to [0,1])
     let r_lin = apply_trc_normalized(r as f32 / 255., &converter.r_trc);
@@ -523,20 +523,20 @@ fn convert_pixel_linear(r: u8, g: u8, b: u8, converter: &IccColourConverter) -> 
     let b_lin = apply_trc_normalized(b as f32 / 255., &converter.b_trc);
 
     // Apply ICC_RGB → XYZ matrix
-    let xyz = apply_matrix_3x3(&converter.icc_to_xyz, &[r_lin, g_lin, b_lin]);
+    let xyz = apply_matrix_3x3_f32(&converter.icc_to_xyz, &[r_lin, g_lin, b_lin]);
 
     // Apply XYZ → VSF_RGB matrix
     // Clamp negative values: out-of-gamut colors can produce negatives, but
     // negative light intensity is physically impossible. This prevents NaN
     // from sqrt() in delinearize_gamma2.
-    let vsf = apply_matrix_3x3(&converter.xyz_to_vsf, &xyz);
+    let vsf = apply_matrix_3x3_f32(&converter.xyz_to_vsf, &xyz);
     [vsf[0].max(0.), vsf[1].max(0.), vsf[2].max(0.)]
 }
 
 /// Fast per-pixel conversion from ICC RGB (u16) to linear VSF RGB
 #[inline]
 fn convert_pixel_linear_u16(r: u16, g: u16, b: u16, converter: &IccColourConverter) -> [f32; 3] {
-    use vsf::colour::convert::apply_matrix_3x3;
+    use vsf::colour::convert::apply_matrix_3x3_f32;
 
     // Linearize using TRC curves (normalize u16 to [0,1])
     let r_lin = apply_trc_normalized(r as f32 / 65536., &converter.r_trc);
@@ -544,13 +544,13 @@ fn convert_pixel_linear_u16(r: u16, g: u16, b: u16, converter: &IccColourConvert
     let b_lin = apply_trc_normalized(b as f32 / 65536., &converter.b_trc);
 
     // Apply ICC_RGB → XYZ matrix
-    let xyz = apply_matrix_3x3(&converter.icc_to_xyz, &[r_lin, g_lin, b_lin]);
+    let xyz = apply_matrix_3x3_f32(&converter.icc_to_xyz, &[r_lin, g_lin, b_lin]);
 
     // Apply XYZ → VSF_RGB matrix
     // Clamp negative values: out-of-gamut colors can produce negatives, but
     // negative light intensity is physically impossible. This prevents NaN
     // from sqrt() in delinearize_gamma2.
-    let vsf = apply_matrix_3x3(&converter.xyz_to_vsf, &xyz);
+    let vsf = apply_matrix_3x3_f32(&converter.xyz_to_vsf, &xyz);
     [vsf[0].max(0.), vsf[1].max(0.), vsf[2].max(0.)]
 }
 
@@ -919,7 +919,7 @@ pub fn save_avatar(av1_data: &[u8], handle: &str) -> std::io::Result<()> {
 
     // Build VSF with v'e' wrapped encrypted payload
     let vsf_bytes = VsfBuilder::new()
-        .creation_time_nanos(vsf::eagle_time_nanos())
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
         .provenance_only()
         .add_section(
             "image",
@@ -999,7 +999,7 @@ pub fn get_local_avatar_timestamp(handle: &str) -> Option<f64> {
     let (header, _) = VsfHeader::decode(&vsf_data).ok()?;
     match header.creation_time {
         VsfType::e(et) => {
-            let ts = EagleTime::new(et).to_f64();
+            let ts = EagleTime::new(et).to_seconds_f64();
             #[cfg(feature = "development")]
             crate::log(&format!("Avatar: Local timestamp = {:.0}", ts));
             Some(ts)
@@ -1297,7 +1297,7 @@ pub fn build_signed_avatar_vsf(
     // Build VSF with avatar pubkey and signature placeholder
     // Uses "image" section with "pixels" v'e' field for encrypted data
     let vsf_bytes = VsfBuilder::new()
-        .creation_time_nanos(vsf::eagle_time_nanos())
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
         .signature_ed25519(
             *avatar_verifying_key.as_bytes(),
             [0u8; 64], // Placeholder - will be filled after hp computed
@@ -1387,7 +1387,7 @@ pub fn upload_avatar(
 
     // Build conduit request: avatar_put section with key, handle_proof, and avatar VSF
     let request_vsf = vsf::vsf_builder::VsfBuilder::new()
-        .creation_time_nanos(vsf::eagle_time_nanos())
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
         .signed_only(vsf::VsfType::ke(avatar_verifying.as_bytes().to_vec()))
         .add_section("avatar_put", vec![
             ("key".to_string(), vsf::VsfType::d(storage_key.clone())),
@@ -1467,7 +1467,7 @@ pub fn download_avatar(handle: &str) -> Option<(usize, Vec<u8>)> {
 
     // Build conduit request: avatar_get section with key
     let request_vsf = match vsf::vsf_builder::VsfBuilder::new()
-        .creation_time_nanos(vsf::eagle_time_nanos())
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
         .provenance_only()
         .add_section("avatar_get", vec![
             ("key".to_string(), vsf::VsfType::d(storage_key.clone())),
@@ -1544,7 +1544,7 @@ pub fn sync_avatar_bidirectional(
 
     // Build conduit request: avatar_get section with key
     let request_vsf = match vsf::vsf_builder::VsfBuilder::new()
-        .creation_time_nanos(vsf::eagle_time_nanos())
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
         .provenance_only()
         .add_section("avatar_get", vec![
             ("key".to_string(), vsf::VsfType::d(storage_key.clone())),
