@@ -56,20 +56,38 @@ impl PhotonApp {
                 // Check resize edges SECOND (higher priority than other UI elements)
                 let edge = self.get_resize_edge(self.mouse_x, self.mouse_y);
                 if edge != ResizeEdge::None {
-                    self.is_dragging_resize = true;
-                    self.resize_edge = edge;
-                    self.drag_start_size = (self.width, self.height);
-
-                    // Store the window position and global blinkey position at drag start
-                    if let Some(window_pos) = window.outer_position().ok() {
-                        self.drag_start_window_pos = (window_pos.x, window_pos.y);
-
-                        // Calculate global blinkey position from window-relative position
-                        let blinkey_screen_x = window_pos.x as f64 + self.mouse_x as f64;
-                        let blinkey_screen_y = window_pos.y as f64 + self.mouse_y as f64;
-                        self.drag_start_blinkey_screen_pos = (blinkey_screen_x, blinkey_screen_y);
+                    // On Wayland, the compositor owns positioning — use native resize protocol.
+                    #[cfg(target_os = "linux")]
+                    {
+                        use winit::window::ResizeDirection;
+                        let dir = match edge {
+                            ResizeEdge::Right       => ResizeDirection::East,
+                            ResizeEdge::Left        => ResizeDirection::West,
+                            ResizeEdge::Bottom      => ResizeDirection::South,
+                            ResizeEdge::Top         => ResizeDirection::North,
+                            ResizeEdge::TopRight    => ResizeDirection::NorthEast,
+                            ResizeEdge::TopLeft     => ResizeDirection::NorthWest,
+                            ResizeEdge::BottomRight => ResizeDirection::SouthEast,
+                            ResizeEdge::BottomLeft  => ResizeDirection::SouthWest,
+                            ResizeEdge::None        => unreachable!(),
+                        };
+                        let _ = window.drag_resize_window(dir);
+                        return;
                     }
-                    return;
+                    #[cfg(not(target_os = "linux"))]
+                    {
+                        self.is_dragging_resize = true;
+                        self.resize_edge = edge;
+                        self.drag_start_size = (self.width, self.height);
+
+                        if let Some(window_pos) = window.outer_position().ok() {
+                            self.drag_start_window_pos = (window_pos.x, window_pos.y);
+                            let blinkey_screen_x = window_pos.x as f64 + self.mouse_x as f64;
+                            let blinkey_screen_y = window_pos.y as f64 + self.mouse_y as f64;
+                            self.drag_start_blinkey_screen_pos = (blinkey_screen_x, blinkey_screen_y);
+                        }
+                        return;
+                    }
                 }
 
                 // Check other UI elements (textbox, buttons, contacts, back header)
@@ -479,16 +497,21 @@ impl PhotonApp {
                 }
 
                 // Not on a resize edge or UI element, start window drag
-                self.is_dragging_move = true;
+                #[cfg(target_os = "linux")]
+                {
+                    // On Wayland the compositor owns positioning — use native move protocol.
+                    let _ = window.drag_window();
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    self.is_dragging_move = true;
 
-                // Store the window position and global blinkey position at drag start
-                if let Some(window_pos) = window.outer_position().ok() {
-                    self.drag_start_window_pos = (window_pos.x, window_pos.y);
-
-                    // Calculate global blinkey position from window-relative position
-                    let blinkey_screen_x = window_pos.x as f64 + self.mouse_x as f64;
-                    let blinkey_screen_y = window_pos.y as f64 + self.mouse_y as f64;
-                    self.drag_start_blinkey_screen_pos = (blinkey_screen_x, blinkey_screen_y);
+                    if let Some(window_pos) = window.outer_position().ok() {
+                        self.drag_start_window_pos = (window_pos.x, window_pos.y);
+                        let blinkey_screen_x = window_pos.x as f64 + self.mouse_x as f64;
+                        let blinkey_screen_y = window_pos.y as f64 + self.mouse_y as f64;
+                        self.drag_start_blinkey_screen_pos = (blinkey_screen_x, blinkey_screen_y);
+                    }
                 }
             }
             ElementState::Released => {
