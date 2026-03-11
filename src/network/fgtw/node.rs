@@ -1,9 +1,9 @@
 use crate::types::DevicePubkey;
 use std::net::SocketAddr;
 
-/// Get current Eagle Time (seconds since Apollo 11 landing)
-fn eagle_time() -> f64 {
-    vsf::EagleTime::from_oscillations(vsf::eagle_time_oscillations()).to_seconds_f64()
+/// Get current Eagle Time oscillations
+fn eagle_time() -> i64 {
+    vsf::eagle_time_oscillations()
 }
 
 /// Node identifier for FGTW routing
@@ -79,7 +79,7 @@ pub struct NodeContact {
     pub node_id: NodeId,
     pub pubkey: DevicePubkey,
     pub addr: SocketAddr,
-    pub last_seen: f64,
+    pub last_seen: i64,
 }
 
 impl NodeContact {
@@ -96,9 +96,9 @@ impl NodeContact {
         self.last_seen = eagle_time();
     }
 
-    pub fn is_stale(&self, max_age_secs: f64) -> bool {
+    pub fn is_stale(&self, max_age_osc: i64) -> bool {
         let now = eagle_time();
-        now - self.last_seen > max_age_secs
+        now.saturating_sub(self.last_seen) > max_age_osc
     }
 }
 
@@ -140,7 +140,7 @@ impl KBucket {
         }
 
         // Bucket is full - check if we can evict a stale entry
-        if let Some(pos) = self.entries.iter().position(|c| c.is_stale(3600.0)) {
+        if let Some(pos) = self.entries.iter().position(|c| c.is_stale(crate::KBUCKET_STALE_OSC)) {
             // Evict stale entry (older than 1 hour)
             self.entries.remove(pos);
             self.entries.push(contact);

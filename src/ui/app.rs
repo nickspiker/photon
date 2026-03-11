@@ -1126,8 +1126,6 @@ pub struct PhotonApp {
     pub next_status_ping: std::time::Instant, // When to ping contacts next
     pub our_public_ip: Option<std::net::IpAddr>, // Our public IP from FGTW (for same-NAT detection)
 
-    // Periodic FGTW refresh
-    pub next_fgtw_refresh: std::time::Instant, // When to re-announce to FGTW
     pub attesting_handle: Option<String>,      // Handle being attested (for storing handle_proof)
 
     // User avatar and identity
@@ -1353,7 +1351,6 @@ impl PhotonApp {
             status_checker: None, // Initialized AFTER attestation succeeds
             next_status_ping: std::time::Instant::now(),
             our_public_ip: None,
-            next_fgtw_refresh: std::time::Instant::now() + std::time::Duration::from_secs(60),
             attesting_handle: None,
             avatar_pixels,
             avatar_scaled: None,
@@ -1516,7 +1513,6 @@ impl PhotonApp {
             status_checker: None,
             next_status_ping: std::time::Instant::now(),
             our_public_ip: None,
-            next_fgtw_refresh: std::time::Instant::now() + std::time::Duration::from_secs(60),
             attesting_handle: None,
             avatar_pixels: None,
             avatar_scaled: None,
@@ -1842,19 +1838,11 @@ impl PhotonApp {
             if contact_idx < self.contacts.len() {
                 self.selected_contact = Some(contact_idx);
                 self.app_state = AppState::Conversation;
-                let eff_ru = self.effective_ru();
                 self.text_layout = TextLayout::new(
                     self.width as usize,
                     self.height as usize,
                     self.span,
-                    eff_ru,
-                    &self.app_state,
-                );
-                self.layout = Layout::new(
-                    self.width as usize,
-                    self.height as usize,
-                    self.span,
-                    eff_ru,
+                    self.effective_ru(),
                     &self.app_state,
                 );
                 self.reset_textbox();
@@ -2518,11 +2506,6 @@ impl PhotonApp {
         self.next_animation_frame =
             now + std::time::Duration::from_millis(self.target_frame_duration_ms);
 
-        // Trigger FGTW refresh to get fresh peer list before searching
-        // Runs in parallel with handle_proof computation (~1s each)
-        if let Some(hq) = &self.handle_query {
-            hq.refresh();
-        }
 
         // Create channel for result
         let (tx, rx) = mpsc::channel();
@@ -2936,41 +2919,26 @@ impl PhotonApp {
                 }
 
                 // Broadcast StatusPing to all peers so they learn our IP (NAT hole punching)
-                // PRIVACY: Only ping peers who are in our contacts list
                 // Filter out our own pubkey - FGTW returns all peers including ourselves
                 let our_pubkey_bytes = self.device_keypair.public.to_bytes();
-                let contact_peers: Vec<_> = initial_peers
+                let other_peers: Vec<_> = initial_peers
                     .iter()
-                    .filter(|p| {
-                        // Skip our own pubkey
-                        if p.device_pubkey.as_bytes() == &our_pubkey_bytes {
-                            return false;
-                        }
-                        // Only ping if this peer is in our contacts
-                        self.contacts.iter().any(|c| c.public_identity == p.device_pubkey)
-                    })
+                    .filter(|p| p.device_pubkey.as_bytes() != &our_pubkey_bytes)
                     .collect();
 
-                if !contact_peers.is_empty() {
+                if !other_peers.is_empty() {
                     if let Some(ref checker) = self.status_checker {
-                        for peer in &contact_peers {
+                        for peer in &other_peers {
                             checker.ping(peer.ip, peer.device_pubkey.clone());
                         }
                         crate::log(&format!(
-                            "Network: Initial broadcast ping to {} contact(s)",
-                            contact_peers.len()
+                            "Network: Initial broadcast ping to {} peer(s)",
+                            other_peers.len()
                         ));
                     }
                 }
             }
 
-            // Schedule first FGTW refresh in 60-120 seconds
-            {
-                use rand::Rng;
-                let delay = rand::thread_rng().gen_range(60..=120);
-                self.next_fgtw_refresh =
-                    std::time::Instant::now() + std::time::Duration::from_secs(delay);
-            }
         }
 
         // Set glow colour based on new state
@@ -3099,12 +3067,11 @@ impl PhotonApp {
 
                             // Send full offer when contact comes online and keys are ready
                             // Keys are pre-generated in background when contact is added
-                            // Send offer when online, in Pending state, and have keypairs
-                            // PT handles all retry logic - will keep trying until peer ACKs
-                            // When we receive their offer, we'll clear outbound transfers
+                            // Slot-based: send if Pending, have keypairs, haven't sent yet
+                            // Note: ceremony_id is now computed AFTER offers are exchanged
                             if is_online
                                 && contact.clutch_state == ClutchState::Pending
-                                && contact.clutch_offer_transfer_id.is_none()
+                                && !contact.clutch_offer_sent
                             {
                                 if let Some(ref keypairs) = contact.clutch_our_keypairs {
                                     use crate::network::fgtw::protocol::build_clutch_offer_vsf;
@@ -3128,7 +3095,7 @@ impl PhotonApp {
                                         ) {
                                             Ok((vsf_bytes, our_offer_provenance)) => {
                                                 crate::log(&format!(
-                                                    "CLUTCH: Sending full offer to {} (prov={}...) - PT will retry until ACKed",
+                                                    "CLUTCH: Sending full offer to {} (prov={}...)",
                                                     contact.handle,
                                                     hex::encode(&our_offer_provenance[..4])
                                                 ));
@@ -3166,8 +3133,7 @@ impl PhotonApp {
                                                     peer_addr: ip,
                                                     vsf_bytes,
                                                 });
-                                                // Mark as sent (PT tracks the actual transfer state)
-                                                contact.clutch_offer_transfer_id = Some(0); // Placeholder - PT handles retries
+                                                contact.clutch_offer_sent = true;
                                                 changed = true;
                                             }
                                             Err(e) => {
@@ -3889,7 +3855,7 @@ impl PhotonApp {
                                         contact.ceremony_id = None;
                                         contact.offer_provenances.clear();
                                         contact.clutch_pending_kem = None;
-                                        contact.clutch_offer_transfer_id = None;
+                                        contact.clutch_offer_sent = false;
                                         contact.clutch_state = ClutchState::Pending;
                                         contact.completed_their_hqc_prefix = None;
                                         if let Some(old_friendship_id) =
@@ -4030,8 +3996,8 @@ impl PhotonApp {
                                     contact.handle_hash,
                                 ]);
 
-                                // Send our offer if not already sent (PT will retry)
-                                if contact.clutch_offer_transfer_id.is_none() {
+                                // Send our offer if not already sent
+                                if !contact.clutch_offer_sent {
                                     use crate::network::fgtw::protocol::build_clutch_offer_vsf;
 
                                     let our_offer = ClutchOfferPayload::from_keypairs(keypairs);
@@ -4058,7 +4024,7 @@ impl PhotonApp {
                                                 peer_addr: sender_addr,
                                                 vsf_bytes,
                                             });
-                                            contact.clutch_offer_transfer_id = Some(0);
+                                            contact.clutch_offer_sent = true;
                                             // Store local offer in local slot too
                                             if let Some(local_slot) =
                                                 contact.get_slot_mut(&our_handle_hash)
@@ -4218,7 +4184,7 @@ impl PhotonApp {
                                         contact.ceremony_id = None;
                                         contact.offer_provenances.clear(); // Clear for fresh ceremony nonce
                                         contact.clutch_pending_kem = None;
-                                        contact.clutch_offer_transfer_id = None;
+                                        contact.clutch_offer_sent = false;
                                         contact.clutch_our_eggs_proof = None;
                                         contact.clutch_their_eggs_proof = None;
                                         // Re-initialize slots and store their offer (was stored earlier but we just cleared)
@@ -4281,7 +4247,7 @@ impl PhotonApp {
                                             slot.kem_secrets_from_them = None;
                                         }
                                         contact.clutch_state = ClutchState::Pending;
-                                        contact.clutch_offer_transfer_id = None;
+                                        contact.clutch_offer_sent = false;
                                         contact.ceremony_id = None;
                                         contact.clutch_our_eggs_proof = None;
                                         contact.clutch_their_eggs_proof = None;
@@ -4634,7 +4600,6 @@ impl PhotonApp {
                                                 hex::encode(&our_proof[..8])
                                             ));
                                             contact.clutch_state = ClutchState::Complete;
-                                            self.window_dirty = true; // Force UI redraw to show chat textbox
                                             // Store their HQC pub prefix to detect stale offers after restart
                                             if let Some(their_slot) =
                                                 contact.get_slot(&contact.handle_hash)
@@ -5424,8 +5389,8 @@ impl PhotonApp {
                         }
                     }
 
-                    // Send our offer if not already sent (PT will retry until ACKed)
-                    if contact.clutch_offer_transfer_id.is_none() {
+                    // Send our offer if not already sent (don't wait for ceremony_id - that comes later)
+                    if !contact.clutch_offer_sent {
                         if let Some(ip) = contact.ip {
                             if let Some(ref keypairs) = contact.clutch_our_keypairs {
                                 use crate::network::fgtw::protocol::build_clutch_offer_vsf;
@@ -5472,7 +5437,7 @@ impl PhotonApp {
                                                 peer_addr: ip,
                                                 vsf_bytes,
                                             });
-                                            contact.clutch_offer_transfer_id = Some(0);
+                                            contact.clutch_offer_sent = true;
                                             crate::log(&format!(
                                                 "CLUTCH: Sent offer to {} (prov={}...)",
                                                 contact.handle,
@@ -5835,7 +5800,6 @@ impl PhotonApp {
                             hex::encode(&result.eggs_proof[..8])
                         ));
                         contact.clutch_state = ClutchState::Complete;
-                        self.window_dirty = true; // Force UI redraw to show chat textbox
                         // Store their HQC pub prefix to detect stale offers after restart
                         contact.completed_their_hqc_prefix = Some(result.their_hqc_prefix);
                         contact.clutch_our_eggs_proof = None;
@@ -6100,7 +6064,6 @@ impl PhotonApp {
                 pinged += 1;
             }
         }
-        #[cfg(feature = "verbose-network")]
         if pinged > 0 {
             crate::log(&format!("Status: Pinged {} contact(s)", pinged));
         }
@@ -6142,17 +6105,10 @@ impl PhotonApp {
         }
     }
 
-    /// Trigger peer IP refresh (FGTW query + ping all contacts)
+    /// Trigger peer IP refresh (ping all contacts)
     /// Called when returning to contacts screen for snappy updates
     pub fn trigger_peer_refresh(&mut self) {
         crate::log("Network: Triggering peer refresh on screen return");
-
-        // Refresh FGTW peer table
-        if let Some(hq) = &self.handle_query {
-            let _ = hq.refresh();
-        }
-
-        // Ping all contacts to refresh their status
         self.ping_contacts();
     }
 
@@ -6172,246 +6128,6 @@ impl PhotonApp {
         }
     }
 
-    /// Check if it's time to refresh FGTW and do so
-    /// Returns true if refresh was triggered
-    pub fn maybe_refresh_fgtw(&mut self) -> bool {
-        let now = std::time::Instant::now();
-        if now >= self.next_fgtw_refresh && matches!(self.app_state, AppState::Ready) {
-            if let Some(hq) = &self.handle_query {
-                if hq.refresh() {
-                    crate::log("Network: Triggering FGTW refresh");
-                    // Refresh every 60-120 seconds (randomized to avoid synchronized traffic)
-                    use rand::Rng;
-                    let delay = rand::thread_rng().gen_range(60..=120);
-                    self.next_fgtw_refresh = now + std::time::Duration::from_secs(delay);
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
-    /// Force an immediate FGTW refresh (called when FCM peer update received)
-    pub fn force_fgtw_refresh(&mut self) {
-        if matches!(self.app_state, AppState::Ready) {
-            if let Some(hq) = &self.handle_query {
-                if hq.refresh() {
-                    crate::log("Network: FCM-triggered FGTW refresh");
-                    // Reset timer so we don't double-refresh
-                    self.next_fgtw_refresh =
-                        std::time::Instant::now() + std::time::Duration::from_secs(60);
-                }
-            }
-        }
-    }
-
-    /// Check for FGTW refresh results and update contact IPs
-    /// Returns true if any contacts were updated
-    pub fn check_refresh_result(&mut self) -> bool {
-        let result = self
-            .handle_query
-            .as_ref()
-            .and_then(|hq| hq.try_recv_refresh());
-        let Some(result) = result else { return false };
-
-        if let Some(ref error) = result.error {
-            crate::log(&format!("Network: Refresh error: {}", error));
-        }
-
-        if result.peers.is_empty() {
-            return false;
-        }
-
-        crate::log(&format!(
-            "Network: Refresh got {} peer(s)",
-            result.peers.len()
-        ));
-
-        // Get our public IP to detect same-network peers (for local_ip preference)
-        // Do this BEFORE pinging so we can use local_ip for same-NAT peers
-        let our_public_ip = result.peers.iter()
-            .find(|p| p.device_pubkey.as_bytes() == self.device_keypair.public.as_bytes())
-            .map(|p| p.ip.ip());
-        self.our_public_ip = our_public_ip;
-
-        // Ping all peers - for same-NAT peers, ping BOTH local and public IP
-        // (first responder wins - handles both AP isolation and subnet isolation)
-        // PRIVACY: Only ping peers who are in our contacts list
-        if let Some(ref checker) = self.status_checker {
-            let mut pinged_count = 0;
-            for peer in &result.peers {
-                // Only ping if this peer is in our contacts
-                if !self.contacts.iter().any(|c| c.public_identity == peer.device_pubkey) {
-                    continue;
-                }
-
-                // Always ping public IP
-                checker.ping(peer.ip, peer.device_pubkey.clone());
-                pinged_count += 1;
-
-                // For same-NAT peers, ALSO ping local IP (covers AP isolation case)
-                if let (Some(our_ip), Some(std::net::IpAddr::V4(local_v4))) = (our_public_ip, peer.local_ip) {
-                    if peer.ip.ip() == our_ip {
-                        let local_addr = std::net::SocketAddr::new(
-                            std::net::IpAddr::V4(local_v4),
-                            peer.ip.port(),
-                        );
-                        checker.ping(local_addr, peer.device_pubkey.clone());
-                        crate::log(&format!(
-                            "Network: Same-NAT peer {} - pinging both {} and {}",
-                            hex::encode(&peer.device_pubkey.as_bytes()[..4]),
-                            peer.ip, local_addr
-                        ));
-                    }
-                }
-            }
-            crate::log(&format!(
-                "Network: Broadcast ping to {} contact(s)",
-                pinged_count
-            ));
-        }
-
-        // Update contact IPs from fresh peer data
-        // Also send CLUTCH offer if we have keys ready but haven't sent yet
-        use crate::crypto::clutch::{derive_conversation_token, ClutchOfferPayload};
-        use crate::network::fgtw::protocol::build_clutch_offer_vsf;
-        use crate::network::status::ClutchOfferRequest;
-        use crate::types::ClutchState;
-
-        let mut updated = 0;
-        let mut offers_to_send: Vec<ClutchOfferRequest> = Vec::new();
-
-        // Get our handle_hash for CLUTCH (PRIVATE identity seed used in VSF messages)
-        let our_handle_hash = match self.user_identity_seed {
-            Some(h) => h,
-            None => return false,
-        };
-        let device_pubkey = *self.device_keypair.public.as_bytes();
-        let device_secret = *self.device_keypair.secret.as_bytes();
-
-        for peer in &result.peers {
-            for contact in &mut self.contacts {
-                if contact.public_identity == peer.device_pubkey {
-                    let was_none = contact.ip.is_none();
-                    if contact.ip != Some(peer.ip) {
-                        crate::log(&format!(
-                            "Network: Updated {} IP: {:?} -> {}",
-                            contact.handle, contact.ip, peer.ip
-                        ));
-                        contact.ip = Some(peer.ip);
-                        updated += 1;
-                    }
-
-                    // Update local_ip from FGTW (for hairpin NAT when on same network)
-                    if let Some(std::net::IpAddr::V4(local_v4)) = peer.local_ip {
-                        if contact.local_ip != Some(local_v4) {
-                            crate::log(&format!(
-                                "Network: Updated {} local_ip: {:?} -> {}",
-                                contact.handle, contact.local_ip, local_v4
-                            ));
-                            contact.local_ip = Some(local_v4);
-                        }
-
-                        // If same public IP (same NAT), use local_ip for all communication
-                        // This bypasses AP isolation on hotel/public WiFi
-                        if let Some(our_ip) = our_public_ip {
-                            if peer.ip.ip() == our_ip {
-                                let local_addr = std::net::SocketAddr::new(
-                                    std::net::IpAddr::V4(local_v4),
-                                    peer.ip.port(),
-                                );
-                                if contact.ip != Some(local_addr) {
-                                    crate::log(&format!(
-                                        "Network: Same NAT detected for {} - using local IP {} instead of {}",
-                                        contact.handle, local_addr, peer.ip
-                                    ));
-                                    contact.ip = Some(local_addr);
-                                }
-                            }
-                        }
-                    }
-
-                    // If we just got an IP and have keys ready, queue offer to send
-                    // Send if Pending, have keypairs, and not already sent (PT will retry)
-                    // Note: don't wait for ceremony_id - that comes after offers are exchanged
-                    if was_none
-                        && contact.clutch_state == ClutchState::Pending
-                        && contact.clutch_offer_transfer_id.is_none()
-                    {
-                        if let Some(ref keypairs) = contact.clutch_our_keypairs {
-                            let offer = ClutchOfferPayload::from_keypairs(keypairs);
-                            // Compute conversation_token for privacy-preserving wire format
-                            let conv_token =
-                                derive_conversation_token(&[our_handle_hash, contact.handle_hash]);
-
-                            // Build VSF and capture our offer_provenance
-                            match build_clutch_offer_vsf(
-                                &conv_token,
-                                &offer,
-                                &device_pubkey,
-                                &device_secret,
-                            ) {
-                                Ok((vsf_bytes, our_offer_provenance)) => {
-                                    // Store our offer provenance (for ceremony_id derivation)
-                                    if !contact.offer_provenances.contains(&our_offer_provenance) {
-                                        contact.offer_provenances.push(our_offer_provenance);
-                                    }
-
-                                    // Persist provenance immediately
-                                    if let Err(e) = crate::storage::contacts::save_clutch_slots(
-                                        &contact.clutch_slots,
-                                        &contact.offer_provenances,
-                                        contact.ceremony_id,
-                                        contact.handle.as_str(),
-                                        &our_handle_hash,
-                                        &device_secret,
-                                    ) {
-                                        crate::log(&format!(
-                                            "Failed to persist CLUTCH provenance: {}",
-                                            e
-                                        ));
-                                    }
-
-                                    // Use best_addr for same-NAT detection (local_ip if available)
-                                    let target_addr = contact.best_addr(our_public_ip).unwrap_or(peer.ip);
-                                    offers_to_send.push(ClutchOfferRequest {
-                                        peer_addr: target_addr,
-                                        vsf_bytes,
-                                    });
-                                    contact.clutch_offer_transfer_id = Some(0);
-                                    crate::log(&format!(
-                                        "CLUTCH: Queueing offer for {} (target={}, prov={}...)",
-                                        contact.handle, target_addr,
-                                        hex::encode(&our_offer_provenance[..4])
-                                    ));
-                                }
-                                Err(e) => {
-                                    crate::log(&format!(
-                                        "CLUTCH: Failed to build offer VSF for {}: {}",
-                                        contact.handle, e
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                    break;
-                }
-            }
-        }
-
-        // Send queued offers (after releasing mutable borrow on contacts)
-        if let Some(ref checker) = self.status_checker {
-            for request in offers_to_send {
-                checker.send_offer(request);
-            }
-        }
-
-        if updated > 0 {
-            crate::log(&format!("Network: Updated {} contact IP(s)", updated));
-        }
-
-        updated > 0
-    }
 
     /// Check for peer updates from WebSocket (real-time IP changes)
     /// Returns true if any contact IP was updated

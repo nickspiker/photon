@@ -3,7 +3,7 @@
 //! Queries the display's ICC profile and converts VSF RGB to display colorspace.
 
 use icc_profile::{Data, DecodedICCProfile, ICCNumber};
-use vsf::colour::convert::{apply_matrix_3x3_f32, invert_matrix_3x3_f32, linearize_gamma2_u8_f32};
+use vsf::colour::convert::apply_matrix_3x3_f32;
 use vsf::colour::VSF_RGB2XYZ;
 
 /// Display color converter
@@ -62,7 +62,7 @@ impl DisplayConverter {
         ];
 
         // Invert to get XYZ→Display_RGB
-        let xyz_to_display = invert_matrix_3x3_f32(&display_to_xyz);
+        let xyz_to_display = invert_3x3(&display_to_xyz);
 
         // Parse TRC curves
         let r_trc = parse_trc(profile.tags.get("rTRC"))?;
@@ -110,10 +110,10 @@ impl DisplayConverter {
         for i in 0..pixel_count {
             let idx = i * 3;
 
-            // VSF RGB gamma-encoded → linear
-            let r_lin = linearize_gamma2_u8_f32(vsf_rgb[idx]);
-            let g_lin = linearize_gamma2_u8_f32(vsf_rgb[idx + 1]);
-            let b_lin = linearize_gamma2_u8_f32(vsf_rgb[idx + 2]);
+            // VSF RGB gamma-encoded → linear (gamma 2 = square)
+            let r_lin = (vsf_rgb[idx] as f32 / 256.).powi(2);
+            let g_lin = (vsf_rgb[idx + 1] as f32 / 256.).powi(2);
+            let b_lin = (vsf_rgb[idx + 2] as f32 / 256.).powi(2);
 
             // Linear VSF RGB → XYZ
             let xyz = apply_matrix_3x3_f32(&VSF_RGB2XYZ, &[r_lin, g_lin, b_lin]);
@@ -251,6 +251,46 @@ fn apply_trc(linear: f32, trc: &TrcCurve) -> u8 {
     (encoded.max(0.0).min(1.0) * 256.) as u8
 }
 
+/// Invert a 3×3 matrix (column-major format)
+fn invert_3x3(m: &[f32; 9]) -> [f32; 9] {
+    // For column-major: m[col*3 + row]
+    // m[0],m[1],m[2] = column 0
+    // m[3],m[4],m[5] = column 1
+    // m[6],m[7],m[8] = column 2
+
+    let a = m[0];
+    let b = m[3];
+    let c = m[6];
+    let d = m[1];
+    let e = m[4];
+    let f = m[7];
+    let g = m[2];
+    let h = m[5];
+    let i = m[8];
+
+    let det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+
+    if det.abs() < 1e-10 {
+        // Singular matrix - return identity
+        return [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+    }
+
+    let inv_det = 1.0 / det;
+
+    // Adjugate matrix elements
+    let a11 = (e * i - f * h) * inv_det;
+    let a12 = (c * h - b * i) * inv_det;
+    let a13 = (b * f - c * e) * inv_det;
+    let a21 = (f * g - d * i) * inv_det;
+    let a22 = (a * i - c * g) * inv_det;
+    let a23 = (c * d - a * f) * inv_det;
+    let a31 = (d * h - e * g) * inv_det;
+    let a32 = (b * g - a * h) * inv_det;
+    let a33 = (a * e - b * d) * inv_det;
+
+    // Return in column-major format
+    [a11, a21, a31, a12, a22, a32, a13, a23, a33]
+}
 
 /// Query display ICC profile from system
 #[cfg(target_os = "linux")]

@@ -45,6 +45,16 @@ use vsf::schema::{SectionBuilder, SectionSchema, TypeConstraint};
 use vsf::types::EagleTime;
 use vsf::{VsfSection, VsfType};
 
+/// Convert any VSF Eagle Time variant to i64 oscillations
+fn vsf_to_oscillations(v: &VsfType) -> i64 {
+    match v {
+        VsfType::e(vsf::types::EtType::i(osc)) => *osc,
+        VsfType::e(vsf::types::EtType::f6(secs)) => (*secs * 1_420_407_826.0) as i64,
+        VsfType::e(vsf::types::EtType::f5(secs)) => (*secs as f64 * 1_420_407_826.0) as i64,
+        _ => 0,
+    }
+}
+
 /// Errors from contact storage operations
 #[derive(Debug)]
 pub enum StorageError {
@@ -426,7 +436,7 @@ pub fn save_contact_state(
             contact.public_identity.to_vsf(), // Ed25519 (ke)
         )
         .map_err(|e| StorageError::Parse(e.to_string()))?
-        .set("added", VsfType::e(vsf::types::EtType::f6(contact.added)))
+        .set("added", VsfType::e(vsf::types::EtType::i(contact.added)))
         .map_err(|e| StorageError::Parse(e.to_string()))?
         .set("id", VsfType::hb(contact.id.as_bytes().to_vec()))
         .map_err(|e| StorageError::Parse(e.to_string()))?;
@@ -452,7 +462,7 @@ pub fn save_contact_state(
     }
     if let Some(last_seen) = contact.last_seen {
         builder = builder
-            .set("last_seen", VsfType::e(vsf::types::EtType::f6(last_seen)))
+            .set("last_seen", VsfType::e(vsf::types::EtType::i(last_seen)))
             .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
     if let Some(hqc_prefix) = &contact.completed_their_hqc_prefix {
@@ -536,8 +546,8 @@ pub fn load_contact_state(
         _ => return Err(StorageError::Parse("Missing pubkey".into())),
     };
     let added = match get_val("added") {
-        Some(v) => EagleTime::new_from_vsf(v.clone()).to_seconds_f64(),
-        None => 0.0,
+        Some(v) => vsf_to_oscillations(v),
+        None => 0,
     };
 
     let pubkey = DevicePubkey::from_bytes(pubkey_bytes);
@@ -567,7 +577,7 @@ pub fn load_contact_state(
         }
     }
     if let Some(v) = get_val("last_seen") {
-        contact.last_seen = Some(EagleTime::new_from_vsf(v.clone()).to_seconds_f64());
+        contact.last_seen = Some(vsf_to_oscillations(v));
     }
     if let Some(VsfType::hb(v)) = get_val("id") {
         if v.len() == 32 {

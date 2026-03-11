@@ -1,17 +1,9 @@
 use super::{fingerprint::Keypair, PeerRecord};
 use crate::types::DevicePubkey;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use vsf::schema::{FromVsfType, SectionBuilder, SectionSchema, TypeConstraint};
-use vsf::{VsfHeader, VsfSection};
+use vsf::{schema::FromVsfType, VsfHeader, VsfSection};
 
 const FGTW_URL: &str = "https://fgtw.org";
-
-/// Schema for error section from FGTW responses
-fn error_schema() -> SectionSchema {
-    SectionSchema::new("error")
-        .field("message", TypeConstraint::AnyString) // l or x
-        .field("error", TypeConstraint::AnyString) // l or x (alternative field name)
-}
 
 /// Result of a bootstrap query - includes peers even on error
 #[derive(Debug)]
@@ -35,7 +27,7 @@ pub const FGTW_ED25519_PUBLIC_KEY: [u8; 32] = [
 
 /// Try to parse a VSF error message from response bytes
 /// Returns Some(error_message) if the response is a valid VSF error, None otherwise
-/// Uses SectionBuilder for robust parsing
+/// Uses VsfHeader::decode() for robust parsing
 fn try_parse_vsf_error(bytes: &[u8]) -> Option<String> {
     use vsf::VsfType;
 
@@ -45,14 +37,14 @@ fn try_parse_vsf_error(bytes: &[u8]) -> Option<String> {
     // Look for "error" field in header fields
     for field in &header.fields {
         if field.name == "error" {
-            // Try to parse the error section at the field's offset with schema
-            let section_bytes = &bytes[field.offset_bytes..];
-            let schema = error_schema();
-            if let Ok(builder) = SectionBuilder::parse(schema, section_bytes) {
-                // Try "message" field first, then "error" field
-                for field_name in ["message", "error"] {
-                    if let Ok(values) = builder.get(field_name) {
-                        for value in values {
+            // Try to parse the error section at the field's offset
+            let mut ptr = field.offset_bytes;
+            if let Ok(section) = VsfSection::parse(bytes, &mut ptr) {
+                // Look for error message in section fields - try "message" first, then "error"
+                for field_name in &["message", "error"] {
+                    if let Some(section_field) = section.get_field(field_name) {
+                        // Return first text value (l for long text, x for VSF text)
+                        for value in &section_field.values {
                             match value {
                                 VsfType::l(msg) => return Some(msg.clone()),
                                 VsfType::x(msg) => return Some(msg.clone()),
@@ -66,20 +58,28 @@ fn try_parse_vsf_error(bytes: &[u8]) -> Option<String> {
     }
 
     // Fallback: check if there's an error section without header field
-    let section_bytes = &bytes[header_len..];
-    let schema = error_schema();
-    if let Ok(builder) = SectionBuilder::parse(schema, section_bytes) {
-        // Try both field names
-        for field_name in ["message", "error"] {
-            if let Ok(values) = builder.get(field_name) {
-                for value in values {
-                    match value {
-                        VsfType::l(msg) => return Some(msg.clone()),
-                        VsfType::x(msg) => return Some(msg.clone()),
-                        _ => {}
+    // (for simple inline error responses)
+    let mut ptr = header_len;
+    while ptr < bytes.len() {
+        if bytes[ptr] == b'[' {
+            if let Ok(section) = VsfSection::parse(bytes, &mut ptr) {
+                if section.name == "error" {
+                    // Look for message field
+                    for field_name in &["message", "error"] {
+                        if let Some(section_field) = section.get_field(field_name) {
+                            for value in &section_field.values {
+                                match value {
+                                    VsfType::l(msg) => return Some(msg.clone()),
+                                    VsfType::x(msg) => return Some(msg.clone()),
+                                    _ => {}
+                                }
+                            }
+                        }
                     }
                 }
             }
+        } else {
+            break;
         }
     }
 
@@ -119,40 +119,31 @@ async fn load_bootstrap_peers_inner(
 ) -> Result<Vec<PeerRecord>, String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
-        .pool_max_idle_per_host(0) // Disable connection pooling to avoid stale connections
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
-    // Get challenge from FGTW (via conduit with empty challenge section)
-    let challenge_request = vsf::vsf_builder::VsfBuilder::new()
-        .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .provenance_only()
-        .add_section("challenge", vec![])
-        .build()
-        .map_err(|e| format!("Build challenge request: {}", e))?;
-
-    let challenge_url = format!("{}/conduit", FGTW_URL);
-
-    #[cfg(feature = "development")]
-    crate::log(&format!("FGTW: Sending challenge to {}", challenge_url));
+    // Get challenge from FGTW (POST / with VSF section "challenge")
+    let challenge_vsf = {
+        let unsigned = vsf::VsfBuilder::new()
+            .creation_time_oscillations(vsf::eagle_time_oscillations())
+            .add_section("challenge", vec![])
+            .build()
+            .map_err(|e| format!("Build challenge request: {}", e))?;
+        unsigned
+    };
 
     let challenge_response = client
-        .post(&challenge_url)
+        .post(FGTW_URL)
         .header("Content-Type", "application/octet-stream")
-        .body(challenge_request)
+        .body(challenge_vsf)
         .send()
         .await
         .map_err(|e| format!("Failed to fetch challenge: {}", e))?;
 
-    let challenge_status = challenge_response.status();
-
-    #[cfg(feature = "development")]
-    crate::log(&format!("FGTW: Challenge response status: {}", challenge_status));
-
-    if !challenge_status.is_success() {
+    if !challenge_response.status().is_success() {
         return Err(format!(
             "Challenge HTTP error: {}",
-            challenge_status
+            challenge_response.status()
         ));
     }
 
@@ -166,7 +157,7 @@ async fn load_bootstrap_peers_inner(
         &challenge_bytes,
         "FGTW",
         "RX",
-        "conduit/challenge",
+        "challenge",
     ));
 
     // Parse challenge to extract provenance hash
@@ -186,14 +177,9 @@ async fn load_bootstrap_peers_inner(
         avatar_pub_key,
     )?;
 
-    // Send announce to FGTW via conduit
-    let announce_url = format!("{}/conduit", FGTW_URL);
-
-    #[cfg(feature = "development")]
-    crate::log(&format!("FGTW: Sending announce to {}", announce_url));
-
+    // Send announce to FGTW
     let announce_response = client
-        .post(&announce_url)
+        .post(FGTW_URL)
         .header("Content-Type", "application/octet-stream")
         .body(announce_bytes)
         .send()
@@ -201,9 +187,6 @@ async fn load_bootstrap_peers_inner(
         .map_err(|e| format!("Failed to send announce: {}", e))?;
 
     let status = announce_response.status();
-
-    #[cfg(feature = "development")]
-    crate::log(&format!("FGTW: Announce response status: {}", status));
     let is_success = status.is_success();
 
     let response_bytes = announce_response
@@ -216,7 +199,7 @@ async fn load_bootstrap_peers_inner(
         &response_bytes,
         "FGTW",
         "RX",
-        "conduit/announce",
+        "announce",
     ));
 
     if !is_success {
@@ -451,7 +434,7 @@ fn build_announce_message(
         &vsf_bytes,
         "FGTW",
         "TX",
-        "/announce",
+        "announce",
     ));
 
     Ok(vsf_bytes)
@@ -573,11 +556,12 @@ fn parse_peer_from_field(field: &vsf::VsfField) -> Result<PeerRecord, String> {
     // Parse port (u3 or generic u)
     let port = u16::from_vsf_type(&field.values[3]).map_err(|e| format!("Invalid port: {}", e))?;
 
-    // Parse timestamp (e with EtType::f6)
+    // Parse timestamp (Eagle Time oscillations)
     let last_seen = match &field.values[4] {
         vsf::VsfType::e(et) => match et {
-            vsf::types::EtType::f6(timestamp) => *timestamp,
-            _ => return Err("Expected f6 Eagle Time timestamp".to_string()),
+            vsf::types::EtType::i(osc) => *osc,
+            vsf::types::EtType::f6(secs) => (*secs * 1_420_407_826.0) as i64,
+            vsf::types::EtType::f5(secs) => (*secs as f64 * 1_420_407_826.0) as i64,
         },
         _ => return Err("Expected Eagle Time (e) type for timestamp".to_string()),
     };

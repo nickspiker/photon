@@ -7,7 +7,7 @@
 //! VSF files contain an L (file length) field in the header, so TCP
 //! just streams raw VSF bytes - no external framing needed.
 
-#[cfg(feature = "verbose-network")]
+#[cfg(feature = "development")]
 use super::inspect::vsf_inspect;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
@@ -25,7 +25,7 @@ pub fn send(stream: &mut TcpStream, data: &[u8]) -> std::io::Result<()> {
         .peer_addr()
         .unwrap_or_else(|_| "unknown".parse().unwrap());
 
-    #[cfg(feature = "verbose-network")]
+    #[cfg(feature = "development")]
     {
         let msg = vsf_inspect(data, "TCP", "TX", &_addr.to_string());
         if !msg.is_empty() {
@@ -126,7 +126,7 @@ pub fn recv(stream: &mut TcpStream) -> std::io::Result<Vec<u8>> {
         data.truncate(file_length);
     }
 
-    #[cfg(feature = "verbose-network")]
+    #[cfg(feature = "development")]
     {
         let msg = vsf_inspect(&data, "TCP", "RX", &_addr.to_string());
         if !msg.is_empty() {
