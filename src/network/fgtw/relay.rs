@@ -70,7 +70,7 @@ pub async fn send_via_relay(
     )?;
 
     let response = client
-        .post(&format!("{}/conduit", FGTW_URL))
+        .post(&format!("{}", FGTW_URL))
         .header("Content-Type", "application/octet-stream")
         .body(vsf_bytes)
         .send()
@@ -107,7 +107,7 @@ pub async fn fetch_relay_messages(keypair: &Keypair) -> Result<Vec<u8>, String> 
     let vsf_bytes = build_signed_vsf(keypair, "fetch", vec![])?;
 
     let response = client
-        .post(&format!("{}/conduit", FGTW_URL))
+        .post(&format!("{}", FGTW_URL))
         .header("Content-Type", "application/octet-stream")
         .body(vsf_bytes)
         .send()
@@ -177,7 +177,7 @@ pub fn send_via_relay_sync(
     )?;
 
     let response = client
-        .post(&format!("{}/conduit", FGTW_URL))
+        .post(&format!("{}", FGTW_URL))
         .header("Content-Type", "application/octet-stream")
         .body(vsf_bytes)
         .send()
@@ -207,7 +207,7 @@ pub fn fetch_relay_messages_sync(keypair: &Keypair) -> Result<Vec<u8>, String> {
     let vsf_bytes = build_signed_vsf(keypair, "fetch", vec![])?;
 
     let response = client
-        .post(&format!("{}/conduit", FGTW_URL))
+        .post(&format!("{}", FGTW_URL))
         .header("Content-Type", "application/octet-stream")
         .body(vsf_bytes)
         .send()

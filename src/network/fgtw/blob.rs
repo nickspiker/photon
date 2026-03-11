@@ -1,18 +1,11 @@
 use super::fingerprint::Keypair;
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use vsf::schema::{SectionBuilder, SectionSchema, TypeConstraint};
+use ed25519_dalek::Signer;
+use vsf::VsfType;
 
 const FGTW_URL: &str = "https://fgtw.org";
 
-/// Schema for blob_data section returned by FGTW
-fn blob_data_schema() -> SectionSchema {
-    SectionSchema::new("blob_data")
-        .field("data", TypeConstraint::Any)  // v type with encryption encoding
-        .field("timestamp", TypeConstraint::AnyEagleTime)  // Optional server timestamp
-}
-
 // ============================================================================
-// Blob Storage API (GET/PUT/DELETE)
+// Blob Storage API (VSF section-based)
 // ============================================================================
 
 /// Error type for blob operations
@@ -35,62 +28,79 @@ impl std::fmt::Display for BlobError {
     }
 }
 
-/// Upload a blob to FGTW storage via conduit
+/// Build a signed VSF with ke in header and given section
+fn build_signed_blob_vsf(
+    keypair: &Keypair,
+    section_name: &str,
+    fields: Vec<(String, VsfType)>,
+) -> Result<Vec<u8>, BlobError> {
+    let unsigned_bytes = vsf::VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .signed_only(VsfType::ke(keypair.public.as_bytes().to_vec()))
+        .add_section(section_name, fields)
+        .build()
+        .map_err(|e| BlobError::Network(format!("Build VSF: {}", e)))?;
+
+    let hash_bytes = vsf::verification::compute_provenance_hash(&unsigned_bytes)
+        .map_err(|e| BlobError::Network(format!("Compute hash: {}", e)))?;
+
+    let signature = keypair.sign(&hash_bytes);
+
+    let mut signed_bytes = unsigned_bytes;
+    vsf::verification::fill_provenance_hash(&mut signed_bytes, &hash_bytes)
+        .map_err(|e| BlobError::Network(format!("Fill hash: {}", e)))?;
+    vsf::verification::fill_signature(&mut signed_bytes, &signature.to_bytes())
+        .map_err(|e| BlobError::Network(format!("Fill signature: {}", e)))?;
+
+    Ok(signed_bytes)
+}
+
+/// Upload a blob to FGTW storage
 ///
-/// # Arguments
-/// * `storage_key` - Base64url-encoded 32-byte key (43 chars)
-/// * `data` - Raw bytes to store (already encrypted by caller)
-/// * `device_keypair` - Ed25519 keypair for signing
-/// * `handle_proof` - 32-byte handle proof (proves registered user)
+/// Sends POST / with VSF section "blob_put" containing:
+/// - key (d): base64url storage key
+/// - signature (ge): Ed25519 signature over key bytes
+/// - timestamp (e): Eagle Time oscillations
+/// - handle_proof (hP): 32-byte handle proof
+/// - data (v'e'): encrypted blob data
 pub async fn put_blob(
     storage_key: &str,
     data: &[u8],
     device_keypair: &Keypair,
     handle_proof: &[u8; 32],
 ) -> Result<(), BlobError> {
-    use ed25519_dalek::Signer;
-    use vsf::VsfType;
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| BlobError::Network(format!("Failed to create HTTP client: {}", e)))?;
 
-    // Decode storage key to bytes for signing
+    // Sign the storage key bytes
     let key_bytes = URL_SAFE_NO_PAD
         .decode(storage_key.as_bytes())
         .map_err(|e| BlobError::Network(format!("Invalid storage key: {}", e)))?;
+    let key_signature = device_keypair.secret.sign(&key_bytes);
 
-    // Sign the storage key bytes
-    let signature = device_keypair.secret.sign(&key_bytes);
-
-    // Current Eagle Time for replay protection
-    let timestamp = vsf::EagleTime::from_oscillations(vsf::eagle_time_oscillations()).to_seconds_f64();
-
-    // Build VSF message for blob_put conduit operation
-    let blob_put_fields = vec![
-        ("key".to_string(), VsfType::d(storage_key.to_string())),
-        ("device_pubkey".to_string(), VsfType::ke(device_keypair.public.as_bytes().to_vec())),
-        ("signature".to_string(), VsfType::ge(signature.to_bytes().to_vec())),
-        ("timestamp".to_string(), VsfType::e(vsf::EtType::f6(timestamp))),
-        ("handle_proof".to_string(), VsfType::hP(handle_proof.to_vec())),
-        ("data".to_string(), VsfType::v(b'e', data.to_vec())),
-    ];
-
-    let blob_put_request = vsf::vsf_builder::VsfBuilder::new()
-        .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .signed_only(VsfType::ke(device_keypair.public.as_bytes().to_vec()))
-        .add_section("blob_put", blob_put_fields)
-        .build()
-        .map_err(|e| BlobError::Network(format!("Build blob_put request: {}", e)))?;
+    let vsf_bytes = build_signed_blob_vsf(
+        device_keypair,
+        "blob_put",
+        vec![
+            ("key".to_string(), VsfType::d(storage_key.to_string())),
+            ("signature".to_string(), VsfType::ge(key_signature.to_bytes().to_vec())),
+            ("timestamp".to_string(), VsfType::e(vsf::types::EtType::i(vsf::eagle_time_oscillations()))),
+            ("handle_proof".to_string(), VsfType::hP(handle_proof.to_vec())),
+            ("data".to_string(), VsfType::v(b'e', data.to_vec())),
+        ],
+    )?;
 
     let response = client
-        .post(&format!("{}/conduit", FGTW_URL))
+        .post(FGTW_URL)
         .header("Content-Type", "application/octet-stream")
-        .body(blob_put_request)
+        .body(vsf_bytes)
         .send()
         .await
-        .map_err(|e| BlobError::Network(format!("POST conduit failed: {}", e)))?;
+        .map_err(|e| BlobError::Network(format!("PUT request failed: {}", e)))?;
 
     let status = response.status();
     if status.is_success() {
@@ -105,102 +115,65 @@ pub async fn put_blob(
     }
 }
 
-/// Download a blob from FGTW storage via conduit (unauthenticated read)
+/// Download a blob from FGTW storage
 ///
-/// # Arguments
-/// * `storage_key` - Base64url-encoded 32-byte key (43 chars)
-///
-/// # Returns
-/// * `Ok(Some(bytes))` - Blob data
-/// * `Ok(None)` - Blob not found (404)
-/// * `Err(...)` - Other error
+/// Sends POST / with VSF section "blob_get" containing:
+/// - key (d): base64url storage key
 pub async fn get_blob(storage_key: &str) -> Result<Option<Vec<u8>>, BlobError> {
-    use vsf::VsfType;
-
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| BlobError::Network(format!("Failed to create HTTP client: {}", e)))?;
 
-    // Build VSF message for blob_get conduit operation
-    let blob_get_fields = vec![
-        ("key".to_string(), VsfType::d(storage_key.to_string())),
-    ];
-
-    let blob_get_request = vsf::vsf_builder::VsfBuilder::new()
+    // blob_get doesn't need signing — just a minimal VSF with the key
+    let vsf_bytes = vsf::VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .provenance_only()
-        .add_section("blob_get", blob_get_fields)
+        .add_section(
+            "blob_get",
+            vec![("key".to_string(), VsfType::d(storage_key.to_string()))],
+        )
         .build()
-        .map_err(|e| BlobError::Network(format!("Build blob_get request: {}", e)))?;
-
-    #[cfg(feature = "development")]
-    crate::log(&crate::network::inspect::vsf_inspect(
-        &blob_get_request,
-        "FGTW",
-        "TX",
-        &format!("conduit/blob_get {}", &storage_key[..8.min(storage_key.len())]),
-    ));
+        .map_err(|e| BlobError::Network(format!("Build VSF: {}", e)))?;
 
     let response = client
-        .post(&format!("{}/conduit", FGTW_URL))
+        .post(FGTW_URL)
         .header("Content-Type", "application/octet-stream")
-        .body(blob_get_request)
+        .body(vsf_bytes)
         .send()
         .await
-        .map_err(|e| BlobError::Network(format!("POST conduit failed: {}", e)))?;
+        .map_err(|e| BlobError::Network(format!("GET request failed: {}", e)))?;
 
     let status = response.status();
     if status.is_success() {
         let bytes = response
             .bytes()
             .await
-            .map_err(|e| BlobError::Network(format!("Failed to read response: {}", e)))?;
+            .map_err(|e| BlobError::Network(format!("Failed to read blob: {}", e)))?;
 
-        #[cfg(feature = "development")]
-        crate::log(&crate::network::inspect::vsf_inspect(
-            &bytes,
-            "FGTW",
-            "RX",
-            &format!("conduit/blob_get {}", &storage_key[..8.min(storage_key.len())]),
-        ));
-
-        // Parse VSF response using SectionBuilder
-        use vsf::file_format::VsfHeader;
-        use vsf::VsfType;
-
-        if bytes.len() < 4 || &bytes[0..3] != "RÅ".as_bytes() || bytes[3] != b'<' {
-            return Err(BlobError::ServerError("Invalid VSF response".to_string()));
-        }
-
+        // Parse VSF response to extract blob data from "blob_data" section
+        use vsf::file_format::{VsfHeader, VsfSection};
         let (_, header_end) = VsfHeader::decode(&bytes)
-            .map_err(|e| BlobError::ServerError(format!("Failed to parse VSF header: {}", e)))?;
+            .map_err(|e| BlobError::Network(format!("Parse response header: {}", e)))?;
 
-        let section_bytes = &bytes[header_end..];
+        let mut ptr = header_end;
+        let section = VsfSection::parse(&bytes, &mut ptr)
+            .map_err(|e| BlobError::Network(format!("Parse blob_data section: {}", e)))?;
 
-        let schema = blob_data_schema();
-        let builder = SectionBuilder::parse(schema, section_bytes)
-            .map_err(|e| BlobError::ServerError(format!("Parse blob_data: {}", e)))?;
+        let blob_data = section
+            .get_field("data")
+            .and_then(|f| f.values.first())
+            .and_then(|v| match v {
+                VsfType::v(_, data) => Some(data.clone()),
+                _ => None,
+            });
 
-        // Extract data field
-        let data_values = builder.get("data")
-            .map_err(|e| BlobError::ServerError(format!("No data field: {}", e)))?;
-
-        let blob_bytes = match data_values.first() {
-            Some(VsfType::v(_, bytes)) => bytes.clone(),
-            _ => return Err(BlobError::ServerError("Invalid data field type".to_string())),
-        };
-
-        // Optional: log timestamp if present
-        #[cfg(feature = "development")]
-        if let Ok(timestamp_values) = builder.get("timestamp") {
-            if let Some(VsfType::e(et)) = timestamp_values.first() {
-                crate::log(&format!("FGTW: Blob timestamp: {:?}", et));
+        match blob_data {
+            Some(data) => {
+                crate::log(&format!("FGTW: Downloaded blob ({} bytes)", data.len()));
+                Ok(Some(data))
             }
+            None => Ok(None),
         }
-
-        crate::log(&format!("FGTW: Downloaded blob ({} bytes)", blob_bytes.len()));
-        Ok(Some(blob_bytes))
     } else if status == reqwest::StatusCode::NOT_FOUND {
         Ok(None)
     } else {
@@ -209,17 +182,14 @@ pub async fn get_blob(storage_key: &str) -> Result<Option<Vec<u8>>, BlobError> {
     }
 }
 
-/// Upload a blob to FGTW storage via conduit (blocking version)
-///
-/// Same as put_blob but uses blocking HTTP client for sync contexts
+/// Upload a blob to FGTW storage (blocking version)
 pub fn put_blob_blocking(
     storage_key: &str,
     data: &[u8],
     device_keypair: &Keypair,
     handle_proof: &[u8; 32],
 ) -> Result<(), BlobError> {
-    use ed25519_dalek::Signer;
-    use vsf::VsfType;
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 
     #[cfg(feature = "development")]
     crate::log("Cloud: put_blob_blocking: creating HTTP client...");
@@ -232,43 +202,32 @@ pub fn put_blob_blocking(
     #[cfg(feature = "development")]
     crate::log("Cloud: put_blob_blocking: signing request...");
 
-    // Decode storage key to bytes for signing
     let key_bytes = URL_SAFE_NO_PAD
         .decode(storage_key.as_bytes())
         .map_err(|e| BlobError::Network(format!("Invalid storage key: {}", e)))?;
+    let key_signature = device_keypair.secret.sign(&key_bytes);
 
-    // Sign the storage key bytes
-    let signature = device_keypair.secret.sign(&key_bytes);
-
-    // Current Eagle Time for replay protection
-    let timestamp = vsf::EagleTime::from_oscillations(vsf::eagle_time_oscillations()).to_seconds_f64();
-
-    // Build VSF message for blob_put conduit operation
-    let blob_put_fields = vec![
-        ("key".to_string(), VsfType::d(storage_key.to_string())),
-        ("device_pubkey".to_string(), VsfType::ke(device_keypair.public.as_bytes().to_vec())),
-        ("signature".to_string(), VsfType::ge(signature.to_bytes().to_vec())),
-        ("timestamp".to_string(), VsfType::e(vsf::EtType::f6(timestamp))),
-        ("handle_proof".to_string(), VsfType::hP(handle_proof.to_vec())),
-        ("data".to_string(), VsfType::v(b'e', data.to_vec())),
-    ];
-
-    let blob_put_request = vsf::vsf_builder::VsfBuilder::new()
-        .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .signed_only(VsfType::ke(device_keypair.public.as_bytes().to_vec()))
-        .add_section("blob_put", blob_put_fields)
-        .build()
-        .map_err(|e| BlobError::Network(format!("Build blob_put request: {}", e)))?;
+    let vsf_bytes = build_signed_blob_vsf(
+        device_keypair,
+        "blob_put",
+        vec![
+            ("key".to_string(), VsfType::d(storage_key.to_string())),
+            ("signature".to_string(), VsfType::ge(key_signature.to_bytes().to_vec())),
+            ("timestamp".to_string(), VsfType::e(vsf::types::EtType::i(vsf::eagle_time_oscillations()))),
+            ("handle_proof".to_string(), VsfType::hP(handle_proof.to_vec())),
+            ("data".to_string(), VsfType::v(b'e', data.to_vec())),
+        ],
+    )?;
 
     #[cfg(feature = "development")]
-    crate::log(&format!("Cloud: put_blob_blocking: sending POST to conduit/blob_put (key: {}...)", &storage_key[..8.min(storage_key.len())]));
+    crate::log(&format!("Cloud: put_blob_blocking: sending blob_put VSF..."));
 
     let response = client
-        .post(&format!("{}/conduit", FGTW_URL))
+        .post(FGTW_URL)
         .header("Content-Type", "application/octet-stream")
-        .body(blob_put_request)
+        .body(vsf_bytes)
         .send()
-        .map_err(|e| BlobError::Network(format!("POST conduit failed: {}", e)))?;
+        .map_err(|e| BlobError::Network(format!("PUT request failed: {}", e)))?;
 
     #[cfg(feature = "development")]
     crate::log(&format!("Cloud: put_blob_blocking: response status {}", response.status()));
@@ -286,94 +245,58 @@ pub fn put_blob_blocking(
     }
 }
 
-/// Download a blob from FGTW storage via conduit (blocking version)
-///
-/// Same as get_blob but uses blocking HTTP client for sync contexts
+/// Download a blob from FGTW storage (blocking version)
 pub fn get_blob_blocking(storage_key: &str) -> Result<Option<Vec<u8>>, BlobError> {
-    use vsf::VsfType;
-
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| BlobError::Network(format!("Failed to create HTTP client: {}", e)))?;
 
-    // Build VSF message for blob_get conduit operation
-    let blob_get_fields = vec![
-        ("key".to_string(), VsfType::d(storage_key.to_string())),
-    ];
-
-    let blob_get_request = vsf::vsf_builder::VsfBuilder::new()
+    let vsf_bytes = vsf::VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .provenance_only()
-        .add_section("blob_get", blob_get_fields)
+        .add_section(
+            "blob_get",
+            vec![("key".to_string(), VsfType::d(storage_key.to_string()))],
+        )
         .build()
-        .map_err(|e| BlobError::Network(format!("Build blob_get request: {}", e)))?;
-
-    #[cfg(feature = "development")]
-    crate::log(&crate::network::inspect::vsf_inspect(
-        &blob_get_request,
-        "FGTW",
-        "TX",
-        &format!("conduit/blob_get {}", &storage_key[..8.min(storage_key.len())]),
-    ));
+        .map_err(|e| BlobError::Network(format!("Build VSF: {}", e)))?;
 
     let response = client
-        .post(&format!("{}/conduit", FGTW_URL))
+        .post(FGTW_URL)
         .header("Content-Type", "application/octet-stream")
-        .body(blob_get_request)
+        .body(vsf_bytes)
         .send()
-        .map_err(|e| BlobError::Network(format!("POST conduit failed: {}", e)))?;
+        .map_err(|e| BlobError::Network(format!("GET request failed: {}", e)))?;
 
     let status = response.status();
     if status.is_success() {
         let bytes = response
             .bytes()
-            .map_err(|e| BlobError::Network(format!("Failed to read response: {}", e)))?;
+            .map_err(|e| BlobError::Network(format!("Failed to read blob: {}", e)))?;
 
-        #[cfg(feature = "development")]
-        crate::log(&crate::network::inspect::vsf_inspect(
-            &bytes,
-            "FGTW",
-            "RX",
-            &format!("conduit/blob_get {}", &storage_key[..8.min(storage_key.len())]),
-        ));
-
-        // Parse VSF response using SectionBuilder
-        use vsf::file_format::VsfHeader;
-        use vsf::VsfType;
-
-        if bytes.len() < 4 || &bytes[0..3] != "RÅ".as_bytes() || bytes[3] != b'<' {
-            return Err(BlobError::ServerError("Invalid VSF response".to_string()));
-        }
-
+        use vsf::file_format::{VsfHeader, VsfSection};
         let (_, header_end) = VsfHeader::decode(&bytes)
-            .map_err(|e| BlobError::ServerError(format!("Failed to parse VSF header: {}", e)))?;
+            .map_err(|e| BlobError::Network(format!("Parse response header: {}", e)))?;
 
-        let section_bytes = &bytes[header_end..];
+        let mut ptr = header_end;
+        let section = VsfSection::parse(&bytes, &mut ptr)
+            .map_err(|e| BlobError::Network(format!("Parse blob_data section: {}", e)))?;
 
-        let schema = blob_data_schema();
-        let builder = SectionBuilder::parse(schema, section_bytes)
-            .map_err(|e| BlobError::ServerError(format!("Parse blob_data: {}", e)))?;
+        let blob_data = section
+            .get_field("data")
+            .and_then(|f| f.values.first())
+            .and_then(|v| match v {
+                VsfType::v(_, data) => Some(data.clone()),
+                _ => None,
+            });
 
-        // Extract data field
-        let data_values = builder.get("data")
-            .map_err(|e| BlobError::ServerError(format!("No data field: {}", e)))?;
-
-        let blob_bytes = match data_values.first() {
-            Some(VsfType::v(_, bytes)) => bytes.clone(),
-            _ => return Err(BlobError::ServerError("Invalid data field type".to_string())),
-        };
-
-        // Optional: log timestamp if present
-        #[cfg(feature = "development")]
-        if let Ok(timestamp_values) = builder.get("timestamp") {
-            if let Some(VsfType::e(et)) = timestamp_values.first() {
-                crate::log(&format!("FGTW: Blob timestamp: {:?}", et));
+        match blob_data {
+            Some(data) => {
+                crate::log(&format!("FGTW: Downloaded blob ({} bytes)", data.len()));
+                Ok(Some(data))
             }
+            None => Ok(None),
         }
-
-        crate::log(&format!("FGTW: Downloaded blob ({} bytes)", blob_bytes.len()));
-        Ok(Some(blob_bytes))
     } else if status == reqwest::StatusCode::NOT_FOUND {
         Ok(None)
     } else {
@@ -382,56 +305,46 @@ pub fn get_blob_blocking(storage_key: &str) -> Result<Option<Vec<u8>>, BlobError
     }
 }
 
-/// Delete a blob from FGTW storage via conduit
+/// Delete a blob from FGTW storage
 ///
-/// # Arguments
-/// * `storage_key` - Base64url-encoded 32-byte key (43 chars)
-/// * `device_keypair` - Ed25519 keypair for signing (must match stored auth)
+/// Sends POST / with VSF section "blob_delete" containing:
+/// - key (d): base64url storage key
+/// - signature (ge): Ed25519 signature over key bytes
 pub async fn delete_blob(storage_key: &str, device_keypair: &Keypair) -> Result<(), BlobError> {
-    use ed25519_dalek::Signer;
-    use vsf::VsfType;
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| BlobError::Network(format!("Failed to create HTTP client: {}", e)))?;
 
-    // Decode storage key to bytes for signing
     let key_bytes = URL_SAFE_NO_PAD
         .decode(storage_key.as_bytes())
         .map_err(|e| BlobError::Network(format!("Invalid storage key: {}", e)))?;
+    let key_signature = device_keypair.secret.sign(&key_bytes);
 
-    // Sign the storage key bytes
-    let signature = device_keypair.secret.sign(&key_bytes);
-
-    // Build VSF message for blob_delete conduit operation
-    let blob_delete_fields = vec![
-        ("key".to_string(), VsfType::d(storage_key.to_string())),
-        ("device_pubkey".to_string(), VsfType::ke(device_keypair.public.as_bytes().to_vec())),
-        ("signature".to_string(), VsfType::ge(signature.to_bytes().to_vec())),
-    ];
-
-    let blob_delete_request = vsf::vsf_builder::VsfBuilder::new()
-        .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .provenance_only()
-        .add_section("blob_delete", blob_delete_fields)
-        .build()
-        .map_err(|e| BlobError::Network(format!("Build blob_delete request: {}", e)))?;
+    let vsf_bytes = build_signed_blob_vsf(
+        device_keypair,
+        "blob_delete",
+        vec![
+            ("key".to_string(), VsfType::d(storage_key.to_string())),
+            ("signature".to_string(), VsfType::ge(key_signature.to_bytes().to_vec())),
+        ],
+    )?;
 
     let response = client
-        .post(&format!("{}/conduit", FGTW_URL))
+        .post(FGTW_URL)
         .header("Content-Type", "application/octet-stream")
-        .body(blob_delete_request)
+        .body(vsf_bytes)
         .send()
         .await
-        .map_err(|e| BlobError::Network(format!("POST conduit failed: {}", e)))?;
+        .map_err(|e| BlobError::Network(format!("DELETE request failed: {}", e)))?;
 
     let status = response.status();
     if status.is_success() {
         crate::log("FGTW: Deleted blob");
         Ok(())
     } else if status == reqwest::StatusCode::NOT_FOUND {
-        // Treat not found as success for delete
         Ok(())
     } else if status == reqwest::StatusCode::FORBIDDEN {
         let body = response.text().await.unwrap_or_default();

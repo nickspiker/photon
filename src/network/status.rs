@@ -1276,7 +1276,7 @@ async fn run_checker(
                     }
 
                     // Centralized UDP RX logging - THE ONLY place incoming packets are logged
-                    #[cfg(feature = "verbose-network")]
+                    #[cfg(feature = "development")]
                     udp::log_received(msg_bytes, &src_addr);
 
                     // Handle LAN discovery packets (same port as main socket now)
@@ -1343,14 +1343,6 @@ async fn run_checker(
                                         let list = contacts_recv.lock().unwrap();
                                         list.iter().any(|p| *p == sender_pubkey)
                                     };
-
-                                    #[cfg(feature = "verbose-network")]
-                                    crate::log(&format!(
-                                        "Status: PING from {} - is_contact={}",
-                                        hex::encode(&sender_pubkey.as_bytes()[..8]),
-                                        is_contact
-                                    ));
-
                                     if !is_contact {
                                         continue;
                                     }
@@ -1709,7 +1701,7 @@ async fn run_checker(
             let msg_bytes = msg.to_vsf_bytes();
             if !msg_bytes.is_empty() {
                 // Route through PT - handles UDP, TCP after 1s, relay fallback
-                let (pt_bytes, _transfer_id) = {
+                let pt_bytes = {
                     let mut pt_mgr = pt.lock().unwrap();
                     pt_mgr.send_with_pubkey(
                         request.peer_addr,
@@ -1717,7 +1709,7 @@ async fn run_checker(
                         Some(request.recipient_pubkey),
                     )
                 };
-                // PT returns the SPEC bytes to send (starts reliable transfer)
+                // PT returns the bytes to send (for small payloads, same as input)
                 udp::send(&socket, &pt_bytes, request.peer_addr).await;
             }
         }
@@ -1754,7 +1746,7 @@ async fn run_checker(
             let msg_bytes = msg.to_vsf_bytes();
             if !msg_bytes.is_empty() {
                 // Route through PT - handles UDP, TCP after 1s, relay fallback
-                let (pt_bytes, _transfer_id) = {
+                let pt_bytes = {
                     let mut pt_mgr = pt.lock().unwrap();
                     pt_mgr.send_with_pubkey(
                         request.peer_addr,
@@ -1762,7 +1754,7 @@ async fn run_checker(
                         Some(request.recipient_pubkey),
                     )
                 };
-                // PT returns the SPEC bytes to send (starts reliable transfer)
+                // PT returns the bytes to send (for small payloads, same as input)
                 udp::send(&socket, &pt_bytes, request.peer_addr).await;
             }
         }
@@ -1774,7 +1766,7 @@ async fn run_checker(
                 request.peer_addr,
                 request.data.len()
             ));
-            let (bytes_to_send, _transfer_id) = {
+            let bytes_to_send = {
                 let mut pt_mgr = pt.lock().unwrap();
                 pt_mgr.send(request.peer_addr, request.data)
             };
@@ -1802,7 +1794,7 @@ async fn run_checker(
             }
 
             // Send via PT - handles retries/fallback internally
-            let (bytes_to_send, _transfer_id) = {
+            let bytes_to_send = {
                 let mut pt_mgr = pt.lock().unwrap();
                 pt_mgr.send(request.peer_addr, vsf_bytes)
             };
@@ -1839,7 +1831,7 @@ async fn run_checker(
             }
 
             // Send via PT - handles retries/fallback internally
-            let (bytes_to_send, _transfer_id) = {
+            let bytes_to_send = {
                 let mut pt_mgr = pt.lock().unwrap();
                 pt_mgr.send(request.peer_addr, vsf_bytes)
             };
@@ -1876,7 +1868,7 @@ async fn run_checker(
             }
 
             // Send via PT - handles retries/fallback internally
-            let (bytes_to_send, _transfer_id) = {
+            let bytes_to_send = {
                 let mut pt_mgr = pt.lock().unwrap();
                 pt_mgr.send(request.peer_addr, vsf_bytes)
             };
@@ -1905,7 +1897,6 @@ async fn run_checker(
             if let Ok(mcast_sock) = UdpSocket::bind("0.0.0.0:0") {
                 let _ = mcast_sock.set_multicast_ttl_v4(1);
                 let _ = udp::send_sync(&mcast_sock, &packet, mcast_v4);
-                #[cfg(feature = "verbose-network")]
                 crate::log(&format!(
                     "LAN: Multicast {} bytes to {}",
                     packet.len(),
@@ -1916,7 +1907,6 @@ async fn run_checker(
             // Send to IPv6 multicast (hop limit is 1 by default for link-local)
             if let Ok(mcast_sock) = UdpSocket::bind("[::]:0") {
                 let _ = udp::send_sync(&mcast_sock, &packet, mcast_v6);
-                #[cfg(feature = "verbose-network")]
                 crate::log(&format!(
                     "LAN: Multicast {} bytes to {}",
                     packet.len(),
@@ -1931,7 +1921,6 @@ async fn run_checker(
                 if let Ok(bcast_sock) = UdpSocket::bind("0.0.0.0:0") {
                     let _ = bcast_sock.set_broadcast(true);
                     let _ = udp::send_sync(&bcast_sock, &packet, bcast_addr);
-                    #[cfg(feature = "verbose-network")]
                     crate::log(&format!(
                         "LAN: Broadcast {} bytes to {} (from {})",
                         packet.len(),

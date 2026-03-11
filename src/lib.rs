@@ -15,6 +15,15 @@ pub const PHOTON_PORT_FALLBACK: u16 = 3546;
 /// 4384 is IANA unassigned
 pub const MULTICAST_PORT: u16 = 4384;
 
+/// Eagle Time: oscillations per second (hydrogen hyperfine transition)
+pub const OSC_PER_SEC: i64 = vsf::OSCILLATIONS_PER_SECOND as i64;
+
+/// Peer expiry: 7 days
+pub const PEER_EXPIRY_OSC: i64 = 604_800 * OSC_PER_SEC;
+
+/// K-bucket stale entry eviction: 1 hour
+pub const KBUCKET_STALE_OSC: i64 = 3_600 * OSC_PER_SEC;
+
 // Debug print macro - only prints if DEBUG_ENABLED is true
 // Compiled out entirely in release builds
 #[cfg(debug_assertions)]

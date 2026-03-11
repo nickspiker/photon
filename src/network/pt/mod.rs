@@ -107,31 +107,31 @@ impl PTManager {
     /// Queue data for reliable delivery to peer
     ///
     /// PT handles everything internally:
-    /// - ALL payloads use SPEC/ACK flow for reliable delivery
-    /// - Small payloads sent in single DATA packet
-    /// - Large payloads sharded into multiple DATA packets
+    /// - Small payloads: Sent directly
+    /// - Large payloads: Sharded with SPEC/DATA/ACK/COMPLETE flow
     /// - Retries, TCP fallback, relay fallback - all automatic via tick()
     ///
-    /// Returns (bytes to send immediately, transfer_id for tracking)
-    pub fn send(&mut self, peer_addr: SocketAddr, data: Vec<u8>) -> (Vec<u8>, usize) {
+    /// Returns bytes to send immediately (the payload itself or SPEC for large transfers)
+    pub fn send(&mut self, peer_addr: SocketAddr, data: Vec<u8>) -> Vec<u8> {
         self.send_with_pubkey(peer_addr, data, None)
     }
 
     /// Queue data for reliable delivery with recipient pubkey for relay fallback
     ///
     /// Same as send(), but stores recipient pubkey so relay can be used if UDP+TCP fail.
-    /// ALL packets (even tiny ones) use PT's ACK tracking for reliability.
-    /// Returns (SPEC bytes to send, transfer_id for tracking completion)
     pub fn send_with_pubkey(
         &mut self,
         peer_addr: SocketAddr,
         data: Vec<u8>,
         recipient_pubkey: Option<[u8; 32]>,
-    ) -> (Vec<u8>, usize) {
-        // ALL packets now use SPEC/ACK flow for reliable delivery
-        // Small payloads are sent in a single DATA packet, but still ACKed
-        // This ensures CLUTCH offers, messages, etc. all have delivery confirmation
+    ) -> Vec<u8> {
+        // Small payload - send directly, no sharding needed
+        // Note: For small payloads, relay fallback happens at the caller level
+        if data.len() <= Self::SINGLE_PACKET_MAX {
+            return data;
+        }
 
+        // Large payload - full SPEC/DATA/ACK/COMPLETE flow
         let stream_id = self.allocate_stream_id();
         let transfer_id = self.next_transfer_id;
         self.next_transfer_id += 1;
@@ -161,7 +161,7 @@ impl PTManager {
         // Push to vec - allows multiple concurrent transfers to same peer
         self.outbound.push(transfer);
 
-        (spec_bytes, transfer_id)
+        spec_bytes
     }
 
     /// Handle received SPEC (start receiving)

@@ -1101,7 +1101,7 @@ impl PhotonApp {
                                     // Slot-based: only Pending and Complete states
                                     let hint = if contact.clutch_our_keypairs.is_none() {
                                         "generating ephemeral keys..."
-                                    } else if contact.clutch_offer_transfer_id.is_none() {
+                                    } else if !contact.clutch_offer_sent {
                                         "waiting for network..."
                                     } else if contact.clutch_slots.is_empty() {
                                         "waiting for them to add you back"
