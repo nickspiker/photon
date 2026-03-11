@@ -24,6 +24,12 @@ impl<'a> AndroidBuffer<'a> {
         self.pixels.as_mut_slice()
     }
 
+    /// Mark a row range as dirty (no-op — Android uses magic pixel generation tracking).
+    pub fn mark_rows(&self, _y_start: u32, _y_end: u32) {}
+
+    /// Mark the entire buffer as dirty (no-op — Android uses magic pixel generation tracking).
+    pub fn mark_all(&self) {}
+
     /// No-op present for Android - actual present happens via Renderer::present()
     /// This exists so compositing code's `buffer.present().unwrap()` compiles
     pub fn present(self) -> Result<(), ()> {
@@ -75,6 +81,9 @@ impl Renderer {
             if self.content_version == 0 { self.content_version = 1; }
         }
     }
+
+    pub fn mark_rows(&mut self, _y_start: u32, _y_end: u32) {}
+    pub fn mark_all(&mut self) {}
 
     /// Lock buffer for drawing - matches desktop interface
     /// Compositing code calls this to get a &mut [u32] to draw into
