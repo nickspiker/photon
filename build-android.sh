@@ -1,4 +1,5 @@
 #!/bin/bash
+set -e
 # Release build without logging (smaller binary, no logcat output)
 
 cp /home/nick/MEGA/code/keys/google-services.json /mnt/Octopus/Code/photon/android/app/
