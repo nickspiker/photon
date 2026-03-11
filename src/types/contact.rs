@@ -139,9 +139,8 @@ pub struct Contact {
     /// Pending KEM response received before our keygen completed
     /// Stored here and processed when ceremony_id becomes available
     pub clutch_pending_kem: Option<ClutchKemResponsePayload>,
-    /// PT transfer ID for our outbound offer (None = not sent, Some = in flight or ACKed)
-    /// We check PT's transfer state to know if peer ACKed our offer
-    pub clutch_offer_transfer_id: Option<usize>,
+    /// Track if we've sent our offer (to avoid resending)
+    pub clutch_offer_sent: bool,
     /// Our computed eggs_proof (stored while awaiting peer's proof for verification)
     pub clutch_our_eggs_proof: Option<[u8; 32]>,
     /// Peer's eggs_proof if received before we computed ours
@@ -164,8 +163,8 @@ pub struct Contact {
     pub offer_provenances: Vec<[u8; 32]>,
 
     pub trust_level: TrustLevel,
-    pub added: f64,
-    pub last_seen: Option<f64>,
+    pub added: i64,
+    pub last_seen: Option<i64>,
     pub is_online: bool, // True when we have confirmed bidirectional comms
     pub messages: Vec<ChatMessage>, // Conversation history
     pub message_scroll_offset: f32, // Vertical scroll offset for message area (pixels)
@@ -235,7 +234,7 @@ impl Contact {
             clutch_slots: Vec::new(),    // Initialized when ceremony starts
             ceremony_id: None,           // Computed from handle_hashes + ping provenances
             clutch_pending_kem: None,    // KEM response received before keygen completed
-            clutch_offer_transfer_id: None, // PT transfer ID for tracking offer delivery
+            clutch_offer_sent: false,    // Track if we've sent our offer
             clutch_our_eggs_proof: None, // Our proof (stored while awaiting peer's)
             clutch_their_eggs_proof: None, // Peer's proof (if received early)
             clutch_keygen_in_progress: false, // No keygen running yet
@@ -244,7 +243,7 @@ impl Contact {
             completed_their_hqc_prefix: None, // Set when CLUTCH completes, persisted
             offer_provenances: Vec::new(), // Collected offer provenances for ceremony nonce
             trust_level: TrustLevel::Stranger,
-            added: vsf::EagleTime::from_oscillations(vsf::eagle_time_oscillations()).to_seconds_f64(),
+            added: vsf::eagle_time_oscillations(),
             last_seen: None,
             is_online: false,           // Starts offline until we confirm comms
             messages: Vec::new(),       // No messages yet
@@ -275,7 +274,7 @@ impl Contact {
         self
     }
 
-    pub fn update_last_seen(&mut self, timestamp: f64) {
+    pub fn update_last_seen(&mut self, timestamp: i64) {
         self.last_seen = Some(timestamp);
     }
 

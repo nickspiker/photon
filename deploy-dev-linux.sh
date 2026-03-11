@@ -7,7 +7,15 @@ set -e
 R2_BUCKET="holdmyoscilloscope"
 R2_PATH="photon"
 
-echo "Building Linux development binary..."
+# Detect host architecture for naming
+ARCH=$(uname -m)
+if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
+    ARCH_NAME="arm64"
+else
+    ARCH_NAME="x86_64"
+fi
+
+echo "Building Linux $ARCH_NAME development binary..."
 cargo build --features development
 
 echo ""
@@ -16,7 +24,7 @@ echo "Signing Linux binary..."
 
 echo ""
 echo "Uploading to R2..."
-wrangler r2 object put "$R2_BUCKET/$R2_PATH/photon-messenger-linux-development" \
+wrangler r2 object put "$R2_BUCKET/$R2_PATH/photon-messenger-linux-$ARCH_NAME-development" \
     --file target/debug/photon-messenger --remote
 
 # Also upload the install script
@@ -24,8 +32,8 @@ wrangler r2 object put "$R2_BUCKET/$R2_PATH/install-development.sh" \
     --file install-development.sh --content-type text/plain --remote
 
 echo ""
-echo "Linux dev build deployed to R2"
-echo "  Binary: https://brobdingnagian.holdmyoscilloscope.com/$R2_PATH/photon-messenger-linux-development"
+echo "Linux $ARCH_NAME dev build deployed to R2"
+echo "  Binary: https://brobdingnagian.holdmyoscilloscope.com/$R2_PATH/photon-messenger-linux-$ARCH_NAME-development"
 echo ""
 echo "Install with:"
 echo "  curl -sSfL https://brobdingnagian.holdmyoscilloscope.com/$R2_PATH/install-development.sh | sh"

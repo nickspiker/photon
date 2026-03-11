@@ -44,12 +44,6 @@ fn main() {
         }
     }
 
-    // Redox: pqc_dilithium tries to build cdylib which requires libc.a
-    // We only need rlib, so tell linker to not error on missing libc
-    if target.contains("redox") {
-        println!("cargo:rustc-link-arg=-Wl,--allow-shlib-undefined");
-    }
-
     // Tell cargo to rerun if icon changes
     println!("cargo:rerun-if-changed=assets/photon-messenger.ico");
     println!("cargo:rerun-if-changed=assets/icon-256.png");

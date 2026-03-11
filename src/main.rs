@@ -293,11 +293,6 @@ impl ApplicationHandler<PhotonEvent> for App {
             // Periodically ping contacts to check online status
             app.maybe_ping_contacts();
 
-            // Periodically refresh FGTW to keep port info fresh
-            app.maybe_refresh_fgtw();
-
-            // Check for refresh results and update contact IPs
-            app.check_refresh_result();
 
             // Priority 2: If animating query, sync to display refresh rate
             if app.should_animate() {

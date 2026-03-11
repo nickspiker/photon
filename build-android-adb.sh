@@ -2,34 +2,13 @@
 # Release build without logging (smaller binary, no logcat output)
 set -e
 
-# Detect project directory (laptop vs desktop)
-if [ -d "/home/nick/code/photon" ]; then
-    PROJECT_DIR="/home/nick/code/photon"
-elif [ -d "/mnt/Octopus/Code/photon" ]; then
-    PROJECT_DIR="/mnt/Octopus/Code/photon"
-else
-    echo "Error: photon project directory not found"
-    exit 1
-fi
+cp /home/nick/MEGA/code/keys/google-services.json /home/nick/code/photon/android/app/
 
-# Try multiple locations for google-services.json (laptop uses lowercase, desktop uses uppercase)
-if [ -f "/home/nick/MEGA/code/keys/google-services.json" ]; then
-    cp /home/nick/MEGA/code/keys/google-services.json "$PROJECT_DIR/android/app/"
-elif [ -f "/mnt/Chiton/MEGA/Code/keys/google-services.json" ]; then
-    cp /mnt/Chiton/MEGA/Code/keys/google-services.json "$PROJECT_DIR/android/app/"
-else
-    echo "Error: google-services.json not found in /home/nick/MEGA/code or /mnt/Chiton/MEGA/Code"
-    exit 1
-fi
-
-# Keystore config - try multiple locations (laptop uses lowercase, desktop uses uppercase)
+# Keystore config - try multiple locations
 if [ -f "/home/nick/MEGA/code/keys/nicks-apps.keystore" ]; then
     KEYSTORE_PATH="/home/nick/MEGA/code/keys/nicks-apps.keystore"
-elif [ -f "/mnt/Chiton/MEGA/Code/keys/nicks-apps.keystore" ]; then
-    KEYSTORE_PATH="/mnt/Chiton/MEGA/Code/keys/nicks-apps.keystore"
-else
-    echo "Error: nicks-apps.keystore not found in /home/nick/MEGA/code or /mnt/Chiton/MEGA/Code"
-    exit 1
+elif [ -f "/home/nick/MEGA/code/keys/nicks-apps.keystore" ]; then
+    KEYSTORE_PATH="/home/nick/MEGA/code/keys/nicks-apps.keystore"
 fi
 KEY_ALIAS="photon"
 

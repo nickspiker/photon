@@ -19,23 +19,23 @@
 ┌─────────────────────────────────────────────────────────┐
 │                  PT (Photon Transport)                 │
 │     Reliable delivery over UDP with 'a'-'z' streams    │
+│              See PT.md for details                     │
 └─────────────────────────────────────────────────────────┘
                            │
                            ▼
 ┌─────────────────────────────────────────────────────────┐
-│ Raw Transport (private, ONLY PT CAN CALL INTERNALLY!!!! │
+│                    Raw Transport                       │
 │              UDP port 4383 (primary)                   │
 │              TCP port 4383 (fallback)                  │
-│              fgtw.org Cloudflare (fallback)            │
 └─────────────────────────────────────────────────────────┘
 ```
 
 ## Port Usage
 
-**Port 4383** - All Photon Transport (UDP + TCP dual-stack), fallback port 3546 if unable to bind to 4383, last case, AUTO!
+**Port 4383** - All Photon traffic (UDP + TCP dual-stack), fallback port 3546 if unable to bind to 4383, last case, AUTO!
 
-- PT/UDP: Primary transport, PT streams, LAN discovery broadcasts
-- PT/TCP: Fallback when UDP fails after retries
+- UDP: Primary transport, PT streams, LAN discovery broadcasts
+- TCP: Fallback when UDP fails after retries
 
 ## Packet Discrimination (RX)
 
@@ -112,7 +112,7 @@ Valid
 **One interface for everything:**
 
 ```rust
-// Small or large, doesn't matter - PT handles ALL of it!
+// Small or large, doesn't matter - PT handles it
 let spec_bytes = pt_manager.send(peer_addr, vsf_bytes);
 udp::send(&socket, &spec_bytes, peer_addr).await;
 ```

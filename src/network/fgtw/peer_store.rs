@@ -1,7 +1,7 @@
 use super::protocol::PeerRecord;
 use crate::types::DevicePubkey;
 
-const PEER_EXPIRY_SECONDS: f64 = 604800.0; // 7 days
+use crate::PEER_EXPIRY_OSC;
 
 /// In-memory peer storage for FGTW
 /// Stores PeerRecords in a sorted Vec (by handle_proof) for O(log n) lookup
@@ -55,13 +55,13 @@ impl PeerStore {
 
     /// Get all devices for a specific handle proof (binary search + scan)
     pub fn get_devices_for_handle(&self, handle_proof: &[u8; 32]) -> Vec<PeerRecord> {
-        let now = current_timestamp();
+        let now = vsf::eagle_time_oscillations();
         let pos = self.find_position(handle_proof);
 
         let mut result = Vec::new();
         let mut i = pos;
         while i < self.peers.len() && self.peers[i].handle_proof == *handle_proof {
-            if now - self.peers[i].last_seen < PEER_EXPIRY_SECONDS {
+            if now.saturating_sub(self.peers[i].last_seen) < PEER_EXPIRY_OSC {
                 result.push(self.peers[i].clone());
             }
             i += 1;
@@ -71,31 +71,31 @@ impl PeerStore {
 
     /// Get all peer records (all handles, all devices)
     pub fn get_all_peers(&self) -> Vec<PeerRecord> {
-        let now = current_timestamp();
+        let now = vsf::eagle_time_oscillations();
         self.peers
             .iter()
-            .filter(|p| now - p.last_seen < PEER_EXPIRY_SECONDS)
+            .filter(|p| now.saturating_sub(p.last_seen) < PEER_EXPIRY_OSC)
             .cloned()
             .collect()
     }
 
     /// Get total count of active peer records
     pub fn peer_count(&self) -> usize {
-        let now = current_timestamp();
+        let now = vsf::eagle_time_oscillations();
         self.peers
             .iter()
-            .filter(|p| now - p.last_seen < PEER_EXPIRY_SECONDS)
+            .filter(|p| now.saturating_sub(p.last_seen) < PEER_EXPIRY_OSC)
             .count()
     }
 
     /// Get count of unique handles
     pub fn handle_count(&self) -> usize {
-        let now = current_timestamp();
+        let now = vsf::eagle_time_oscillations();
         let mut count = 0;
         let mut prev_handle: Option<[u8; 32]> = None;
 
         for p in &self.peers {
-            if now - p.last_seen < PEER_EXPIRY_SECONDS {
+            if now.saturating_sub(p.last_seen) < PEER_EXPIRY_OSC {
                 if prev_handle.map_or(true, |h| h != p.handle_proof) {
                     count += 1;
                     prev_handle = Some(p.handle_proof);
@@ -111,19 +111,19 @@ impl PeerStore {
         let mut i = pos;
         while i < self.peers.len() && self.peers[i].handle_proof == *handle_proof {
             if self.peers[i].device_pubkey.as_bytes() == device_pubkey.as_bytes() {
-                self.peers[i].last_seen = current_timestamp();
+                self.peers[i].last_seen = vsf::eagle_time_oscillations();
                 return;
             }
             i += 1;
         }
     }
 
-    /// Remove stale peers (older than PEER_EXPIRY_SECONDS)
+    /// Remove stale peers (older than 7 days)
     pub fn cleanup_stale(&mut self) -> usize {
-        let now = current_timestamp();
+        let now = vsf::eagle_time_oscillations();
         let before = self.peers.len();
         self.peers
-            .retain(|p| now - p.last_seen < PEER_EXPIRY_SECONDS);
+            .retain(|p| now.saturating_sub(p.last_seen) < PEER_EXPIRY_OSC);
         before - self.peers.len()
     }
 }
@@ -132,9 +132,4 @@ impl Default for PeerStore {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Get current Eagle Time (seconds since Apollo 11 landing)
-fn current_timestamp() -> f64 {
-    vsf::EagleTime::from_oscillations(vsf::eagle_time_oscillations()).to_seconds_f64()
 }

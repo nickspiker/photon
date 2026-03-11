@@ -325,19 +325,11 @@ impl PhotonApp {
                                         self.selected_contact = Some(idx);
                                         self.app_state = AppState::Conversation;
                                         self.reset_textbox();
-                                        let eff_ru = self.effective_ru();
                                         self.text_layout = super::app::TextLayout::new(
                                             self.width as usize,
                                             self.height as usize,
                                             self.span,
-                                            eff_ru,
-                                            &self.app_state,
-                                        );
-                                        self.layout = super::app::Layout::new(
-                                            self.width as usize,
-                                            self.height as usize,
-                                            self.span,
-                                            eff_ru,
+                                            self.effective_ru(),
                                             &self.app_state,
                                         );
                                     } else {
@@ -410,19 +402,11 @@ impl PhotonApp {
 
                                 self.selected_contact = Some(contact_idx);
                                 self.app_state = AppState::Conversation;
-                                let eff_ru = self.effective_ru();
                                 self.text_layout = TextLayout::new(
                                     self.width as usize,
                                     self.height as usize,
                                     self.span,
-                                    eff_ru,
-                                    &self.app_state,
-                                );
-                                self.layout = super::app::Layout::new(
-                                    self.width as usize,
-                                    self.height as usize,
-                                    self.span,
-                                    eff_ru,
+                                    self.effective_ru(),
                                     &self.app_state,
                                 );
                                 self.window_dirty = true;

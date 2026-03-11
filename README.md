@@ -51,9 +51,11 @@ Photon is a peer-to-peer messaging application that replaces traditional authent
 
 | Platform | Status | Notes |
 |----------|--------|-------|
-| Linux | ✅ Working | X11/Wayland |
-| Windows | ✅ Working | DirectDraw |
-| macOS | ✅ Working | Intel + Apple Silicon |
+| Linux x86_64 | ✅ Working | wgpu/Vulkan, X11/Wayland |
+| Linux ARM64 | ✅ Working | wgpu/Vulkan (Asahi etc.) |
+| Windows | ✅ Working | GDI |
+| macOS Intel | ✅ Working | wgpu/Metal |
+| macOS Apple Silicon | ✅ Working | wgpu/Metal |
 | Android | ✅ Working | ARM64, tested on device |
 | Redox | 🟡 Compiles | Orbital, untested |
 | iOS | ❌ Blocked | See "Why No iOS?" below |
@@ -399,7 +401,7 @@ src/
 
 **Core:**
 - `winit` - Cross-platform windowing
-- `softbuffer` - Software rendering
+- `wgpu` - GPU rendering (Vulkan on Linux, Metal on macOS)
 - `cosmic-text` - Font rendering and text layout
 - `arboard` - Clipboard access
 
@@ -612,6 +614,6 @@ See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE)
 
 **Project Status:** 🟡 Early Development (GUI functional, P2P status working, messaging pending)
 
-**Platform Support:** Linux ✅ | Windows ✅ | macOS ✅ | Android ✅ | Redox 🟡 | iOS ❌
+**Platform Support:** Linux x86_64 ✅ | Linux ARM64 ✅ | Windows ✅ | macOS ✅ | Android ✅ | Redox 🟡 | iOS ❌
 
-**Last Updated:** 2025-12-10
+**Last Updated:** 2026-03-11

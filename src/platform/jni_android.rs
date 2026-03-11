@@ -85,11 +85,6 @@ impl PhotonContext {
         self.app.check_attestation_response();
         self.app.check_search_result();
 
-        // Check for FCM peer update poke - triggers immediate FGTW refresh
-        if check_fcm_peer_update() {
-            info!("FCM poke received - triggering FGTW refresh");
-            self.app.force_fgtw_refresh();
-        }
 
         // P2P status checking and FGTW refresh (unified with desktop)
         if self.app.check_status_updates() {
@@ -108,8 +103,6 @@ impl PhotonContext {
             self.app.window_dirty = true;
         }
         self.app.maybe_ping_contacts();
-        self.app.maybe_refresh_fgtw();
-        self.app.check_refresh_result();
 
         // Check dirty BEFORE render to decide if we need to present
         // BUT: animation sets window_dirty during render for NEXT frame

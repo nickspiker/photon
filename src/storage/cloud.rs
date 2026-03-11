@@ -50,7 +50,7 @@ pub struct CloudContact {
     pub handle: String,
     pub device_pubkey: [u8; 32],
     pub trust_level: u8,
-    pub added: f64,
+    pub added: i64,
 }
 
 impl From<&Contact> for CloudContact {
@@ -112,7 +112,7 @@ pub fn encode_contacts(
                     VsfType::x(c.handle.clone()),
                     VsfType::ke(c.device_pubkey.to_vec()),
                     VsfType::u3(c.trust_level),
-                    VsfType::e(vsf::types::EtType::f6(c.added)),
+                    VsfType::e(vsf::types::EtType::i(c.added)),
                 ],
             )
             .map_err(|e| CloudError::Parse(e.to_string()))?;
@@ -156,9 +156,9 @@ pub fn decode_contacts(
                 _ => 0,
             };
             let added = match &field.values[4] {
-                VsfType::e(et) => vsf::EagleTime::new_from_vsf(VsfType::e(et.clone())).to_seconds_f64(),
-                VsfType::f6(v) => *v, // Legacy
-                _ => 0.0,
+                VsfType::e(vsf::types::EtType::i(osc)) => *osc,
+                VsfType::e(vsf::types::EtType::f6(secs)) => (*secs * 1_420_407_826.0) as i64,
+                _ => 0,
             };
 
             contacts.push(CloudContact {
