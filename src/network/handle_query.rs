@@ -43,20 +43,12 @@ pub enum QueryResult {
     Error(String),               // Error during attestation
 }
 
-/// Result of a re-announce (refresh) operation
-#[derive(Debug, Clone)]
-pub struct RefreshResult {
-    pub peers: Vec<PeerRecord>, // Updated peer list from FGTW
-    pub error: Option<String>,  // Any error that occurred
-}
-
 /// Unified handle query system for all platforms
 ///
 /// Provides:
 /// - Handle attestation (query/attest)
 /// - Connectivity monitoring
 /// - Handle search
-/// - Periodic refresh (re-announcement to FGTW)
 pub struct HandleQuery {
     // Attestation channels
     query_sender: Sender<String>,
@@ -68,10 +60,6 @@ pub struct HandleQuery {
     // Search channels
     search_sender: Sender<String>,
     search_receiver: Receiver<SearchResult>,
-
-    // Refresh channels (re-announce to FGTW)
-    refresh_sender: Sender<([u8; 32], String)>,
-    refresh_receiver: Receiver<RefreshResult>,
 
     // Shared state
     transport: Arc<Mutex<Option<Arc<Mutex<PeerStore>>>>>,
@@ -154,9 +142,6 @@ impl HandleQuery {
         let (online_tx, online_rx) = channel::<bool>();
         let (search_tx, search_rx_worker) = channel::<String>();
         let (search_tx_result, search_rx) = channel::<SearchResult>();
-        let (refresh_tx, refresh_rx_worker) = channel::<([u8; 32], String)>();
-        let (refresh_tx_result, refresh_rx) = channel::<RefreshResult>();
-
         // Shared state
         let transport = Arc::new(Mutex::new(None::<Arc<Mutex<PeerStore>>>));
         let last_handle_proof = Arc::new(Mutex::new(None::<[u8; 32]>));
@@ -174,14 +159,11 @@ impl HandleQuery {
         // Clone for workers
         let transport_query = transport.clone();
         let transport_search = transport.clone();
-        let transport_refresh = transport.clone();
         let handle_proof_store = last_handle_proof.clone();
         let keypair_query = device_keypair.clone();
         let keypair_search = device_keypair.clone();
-        let keypair_refresh = device_keypair.clone();
         let socket_query = socket.clone();
         let port_query = port.clone();
-        let port_refresh = port.clone();
 
         // Spawn connectivity monitoring thread
         Self::spawn_connectivity_worker(online_tx, event_proxy);
@@ -205,23 +187,12 @@ impl HandleQuery {
             keypair_search,
         );
 
-        // Spawn refresh worker
-        Self::spawn_refresh_worker(
-            refresh_rx_worker,
-            refresh_tx_result,
-            transport_refresh,
-            keypair_refresh,
-            port_refresh,
-        );
-
         Self {
             query_sender: query_tx,
             query_receiver: query_rx,
             online_receiver: online_rx,
             search_sender: search_tx,
             search_receiver: search_rx,
-            refresh_sender: refresh_tx,
-            refresh_receiver: refresh_rx,
             transport,
             last_handle_proof,
             last_handle,
@@ -238,9 +209,6 @@ impl HandleQuery {
         let (online_tx, online_rx) = channel::<bool>();
         let (search_tx, search_rx_worker) = channel::<String>();
         let (search_tx_result, search_rx) = channel::<SearchResult>();
-        let (refresh_tx, refresh_rx_worker) = channel::<([u8; 32], String)>();
-        let (refresh_tx_result, refresh_rx) = channel::<RefreshResult>();
-
         // Shared state
         let transport = Arc::new(Mutex::new(None::<Arc<Mutex<PeerStore>>>));
         let last_handle_proof = Arc::new(Mutex::new(None::<[u8; 32]>));
@@ -258,14 +226,11 @@ impl HandleQuery {
         // Clone for workers
         let transport_query = transport.clone();
         let transport_search = transport.clone();
-        let transport_refresh = transport.clone();
         let handle_proof_store = last_handle_proof.clone();
         let keypair_query = device_keypair.clone();
         let keypair_search = device_keypair.clone();
-        let keypair_refresh = device_keypair.clone();
         let socket_query = socket.clone();
         let port_query = port.clone();
-        let port_refresh = port.clone();
 
         // Spawn connectivity monitoring thread (simplified for Android)
         Self::spawn_connectivity_worker_android(online_tx);
@@ -289,23 +254,12 @@ impl HandleQuery {
             keypair_search,
         );
 
-        // Spawn refresh worker
-        Self::spawn_refresh_worker(
-            refresh_rx_worker,
-            refresh_tx_result,
-            transport_refresh,
-            keypair_refresh,
-            port_refresh,
-        );
-
         Self {
             query_sender: query_tx,
             query_receiver: query_rx,
             online_receiver: online_rx,
             search_sender: search_tx,
             search_receiver: search_rx,
-            refresh_sender: refresh_tx,
-            refresh_receiver: refresh_rx,
             transport,
             last_handle_proof,
             last_handle,
@@ -596,16 +550,14 @@ impl HandleQuery {
 
                         // Cloud sync (download + merge)
                         crate::log("Network: Syncing with cloud...");
-                        match crate::storage::cloud::load_contacts_from_cloud(
+                        if let Ok(Some(cloud_contacts)) = crate::storage::cloud::load_contacts_from_cloud(
                             &identity_seed,
                             &keypair,
                         ) {
-                            Ok(Some(cloud_contacts)) => {
-                                crate::log(&format!("Network: Cloud returned {} contact(s)", cloud_contacts.len()));
-                                // Merge cloud contacts we don't have locally
-                                for cc in cloud_contacts {
-                                    let exists = contacts.iter().any(|c| c.handle_proof == cc.handle_proof);
-                                    if !exists {
+                            // Merge cloud contacts we don't have locally
+                            for cc in cloud_contacts {
+                                let exists = contacts.iter().any(|c| c.handle_proof == cc.handle_proof);
+                                if !exists {
                                     let mut contact = cc.to_contact();
                                     // Load CLUTCH state for cloud contact too
                                     if contact.clutch_state != crate::types::ClutchState::Complete {
@@ -622,14 +574,7 @@ impl HandleQuery {
                                     // Save to local storage
                                     let _ = crate::storage::contacts::save_contact(&contact, &identity_seed, device_secret);
                                     contacts.push(contact);
-                                    }
                                 }
-                            }
-                            Ok(None) => {
-                                crate::log("Network: No contacts found in cloud (blob doesn't exist)");
-                            }
-                            Err(e) => {
-                                crate::log(&format!("Network: Failed to load contacts from cloud: {:?}", e));
                             }
                         }
 
@@ -747,66 +692,6 @@ impl HandleQuery {
         });
     }
 
-    /// Spawn refresh (re-announcement) worker
-    fn spawn_refresh_worker(
-        rx: Receiver<([u8; 32], String)>,
-        tx: Sender<RefreshResult>,
-        transport: Arc<Mutex<Option<Arc<Mutex<PeerStore>>>>>,
-        keypair: Keypair,
-        port: Arc<Mutex<u16>>,
-    ) {
-        thread::spawn(move || {
-            crate::log("Network: Refresh worker initialized");
-
-            while let Ok((handle_proof, handle)) = rx.recv() {
-                crate::log("Network: Refreshing FGTW announcement...");
-
-                // Get current port
-                let current_port = *port.lock().unwrap();
-
-                // Wait for transport
-                let transport_arc = loop {
-                    let guard = transport.lock().unwrap();
-                    if let Some(t) = &*guard {
-                        break t.clone();
-                    }
-                    drop(guard);
-                    thread::sleep(Duration::from_millis(100));
-                };
-
-                // Re-announce to FGTW
-                let bootstrap_result = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("Failed to create tokio runtime")
-                    .block_on(load_bootstrap_peers(
-                        &keypair,
-                        handle_proof,
-                        current_port,
-                        &handle,
-                    ));
-
-                // Update local peer store
-                if !bootstrap_result.peers.is_empty() {
-                    let peer_store = transport_arc;
-                    let mut store = peer_store.lock().unwrap();
-                    for peer in &bootstrap_result.peers {
-                        store.add_peer(peer.clone());
-                    }
-                    crate::log(&format!(
-                        "Network: Refresh updated {} peer(s)",
-                        bootstrap_result.peers.len()
-                    ));
-                }
-
-                let _ = tx.send(RefreshResult {
-                    peers: bootstrap_result.peers,
-                    error: bootstrap_result.error,
-                });
-            }
-        });
-    }
-
     // ===== Public API =====
 
     /// Query/attest a handle (non-blocking)
@@ -834,27 +719,7 @@ impl HandleQuery {
         self.search_receiver.try_recv().ok()
     }
 
-    /// Trigger a refresh (re-announce to FGTW) using stored handle_proof and handle
-    /// Returns true if refresh was triggered, false if no handle_proof/handle stored
-    pub fn refresh(&self) -> bool {
-        let proof_guard = self.last_handle_proof.lock().unwrap();
-        let handle_guard = self.last_handle.lock().unwrap();
-        if let (Some(handle_proof), Some(handle)) = (*proof_guard, handle_guard.clone()) {
-            drop(proof_guard);
-            drop(handle_guard);
-            let _ = self.refresh_sender.send((handle_proof, handle));
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Check if a refresh result is ready (non-blocking)
-    pub fn try_recv_refresh(&self) -> Option<RefreshResult> {
-        self.refresh_receiver.try_recv().ok()
-    }
-
-    /// Store handle_proof and handle string after successful attestation (for periodic refresh)
+    /// Store handle_proof and handle string after successful attestation
     pub fn set_handle_proof(&self, handle_proof: [u8; 32], handle: &str) {
         let mut proof_guard = self.last_handle_proof.lock().unwrap();
         *proof_guard = Some(handle_proof);
@@ -862,7 +727,6 @@ impl HandleQuery {
 
         let mut handle_guard = self.last_handle.lock().unwrap();
         *handle_guard = Some(handle.to_string());
-        crate::log("Network: Handle proof stored for periodic refresh");
     }
 
     /// Get stored handle_proof (for computing handle searches)

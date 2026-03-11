@@ -4,14 +4,14 @@
 //! Used for: ping/pong, status updates, LAN discovery, small messages, streaming.
 //! Fallback when Photon Transport is unavailable.
 
-#[cfg(feature = "verbose-network")]
+#[cfg(feature = "development")]
 use super::inspect::vsf_inspect;
 use std::net::SocketAddr;
 
 /// Centralized UDP TX - logs via vsf_inspect then sends
 /// This is THE ONLY place UDP packets should be transmitted (except LAN broadcast)
-pub(crate) async fn send(socket: &tokio::net::UdpSocket, data: &[u8], addr: SocketAddr) {
-    #[cfg(feature = "verbose-network")]
+pub async fn send(socket: &tokio::net::UdpSocket, data: &[u8], addr: SocketAddr) {
+    #[cfg(feature = "development")]
     {
         let msg = vsf_inspect(data, "UDP", "TX", &addr.to_string());
         if !msg.is_empty() {
@@ -22,12 +22,12 @@ pub(crate) async fn send(socket: &tokio::net::UdpSocket, data: &[u8], addr: Sock
 }
 
 /// Synchronous version for non-async contexts (LAN broadcast uses std::net::UdpSocket)
-pub(crate) fn send_sync(
+pub fn send_sync(
     socket: &std::net::UdpSocket,
     data: &[u8],
     addr: SocketAddr,
 ) -> std::io::Result<usize> {
-    #[cfg(feature = "verbose-network")]
+    #[cfg(feature = "development")]
     {
         let msg = vsf_inspect(data, "UDP", "TX", &addr.to_string());
         if !msg.is_empty() {
@@ -38,8 +38,8 @@ pub(crate) fn send_sync(
 }
 
 /// Log received UDP packet (call this in the receive loop)
-#[cfg(feature = "verbose-network")]
-pub(crate) fn log_received(data: &[u8], addr: &SocketAddr) {
+#[cfg(feature = "development")]
+pub fn log_received(data: &[u8], addr: &SocketAddr) {
     let msg = vsf_inspect(data, "UDP", "RX", &addr.to_string());
     if !msg.is_empty() {
         crate::log(&msg);
@@ -48,7 +48,7 @@ pub(crate) fn log_received(data: &[u8], addr: &SocketAddr) {
 
 /// Get local LAN IP address by connecting to external address
 /// This finds which interface the OS would use to reach the internet
-pub(crate) fn get_local_ip() -> Option<std::net::Ipv4Addr> {
+pub fn get_local_ip() -> Option<std::net::Ipv4Addr> {
     let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
     // Connect to Cloudflare DNS - doesn't actually send packets, just sets up routing
     socket.connect("1.1.1.1:80").ok()?;
@@ -63,7 +63,7 @@ pub(crate) fn get_local_ip() -> Option<std::net::Ipv4Addr> {
 ///
 /// On Linux: parses `ip addr` output to find actual broadcast address
 /// Fallback: assumes /24 subnet and computes broadcast from local IP
-pub(crate) fn get_broadcast_addr() -> Option<(std::net::Ipv4Addr, std::net::Ipv4Addr)> {
+pub fn get_broadcast_addr() -> Option<(std::net::Ipv4Addr, std::net::Ipv4Addr)> {
     let local_ip = get_local_ip()?;
 
     // Try to get actual broadcast address from system
@@ -112,7 +112,7 @@ fn get_broadcast_from_system(local_ip: &std::net::Ipv4Addr) -> Option<std::net::
 /// Parse LAN discovery packet
 /// Returns (handle_proof, ip, port) if valid, None otherwise
 /// handle_proof is extracted from the VSF header's provenance hash (hp)
-pub(crate) fn parse_lan_discovery(
+pub fn parse_lan_discovery(
     packet: &[u8],
     src_addr: SocketAddr,
 ) -> Option<([u8; 32], std::net::Ipv4Addr, u16)> {
@@ -162,7 +162,7 @@ pub(crate) fn parse_lan_discovery(
 /// Build LAN discovery broadcast packet
 /// handle_proof is stored in VSF header as provenance hash (hp) for identity
 /// One-shot broadcast - no rolling hash needed (provenance_only)
-pub(crate) fn build_lan_discovery(handle_proof: [u8; 32], port: u16) -> Vec<u8> {
+pub fn build_lan_discovery(handle_proof: [u8; 32], port: u16) -> Vec<u8> {
     use vsf::{VsfBuilder, VsfType};
 
     VsfBuilder::new()

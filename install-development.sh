@@ -13,7 +13,11 @@ ARCH=$(uname -m)
 
 case "$OS" in
     Linux*)
-        PLATFORM="linux"
+        if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
+            PLATFORM="linux-arm64"
+        else
+            PLATFORM="linux-x86_64"
+        fi
         BINARY_NAME="photon-messenger"
         INSTALL_DIR="$HOME/.local/bin"
         ;;
@@ -207,7 +211,7 @@ if [ -n "$SHELL_RC" ]; then
 fi
 
 # Create desktop shortcut (Linux only)
-if [ "$PLATFORM" = "linux" ]; then
+if [ "$OS" = "Linux" ]; then
     echo "Creating desktop shortcut..."
 
     # Download icon

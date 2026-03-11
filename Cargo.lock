@@ -5394,7 +5394,7 @@ checksum = "051eb1abcf10076295e815102942cc58f9d5e3b4560e46e53c21e8ff6f3af7b1"
 
 [[package]]
 name = "vsf"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "aes-gcm 0.10.3",
  "bitvec",
@@ -5405,6 +5405,7 @@ dependencies = [
  "colored",
  "ed25519-dalek",
  "hex",
+ "i256",
  "num-complex",
  "num-traits",
  "rand 0.8.5",

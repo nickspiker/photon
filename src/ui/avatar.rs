@@ -63,7 +63,7 @@ struct IccColourConverter {
 pub fn encode_avatar_from_image(image_data: &[u8]) -> Result<Vec<u8>, String> {
     use resize::Type::Lanczos3;
     use rgb::FromSlice;
-    use vsf::colour::convert::delinearize_gamma2_f32;
+    use vsf::colour::convert::delinearize_gamma2_f32 as delinearize_gamma2;
 
     let size = AVATAR_SIZE;
 
@@ -227,9 +227,9 @@ pub fn encode_avatar_from_image(image_data: &[u8]) -> Result<Vec<u8>, String> {
 
             // Apply VSF gamma 2 encoding
             // .max(0.) prevents NaN from sqrt() - Lanczos3 ringing can produce negatives
-            vsf_rgb_f32[idx] = delinearize_gamma2_f32(masked_linear[0].max(0.));
-            vsf_rgb_f32[idx + 1] = delinearize_gamma2_f32(masked_linear[1].max(0.));
-            vsf_rgb_f32[idx + 2] = delinearize_gamma2_f32(masked_linear[2].max(0.));
+            vsf_rgb_f32[idx] = delinearize_gamma2(masked_linear[0].max(0.));
+            vsf_rgb_f32[idx + 1] = delinearize_gamma2(masked_linear[1].max(0.));
+            vsf_rgb_f32[idx + 2] = delinearize_gamma2(masked_linear[2].max(0.));
         }
     }
 
@@ -1381,61 +1381,42 @@ pub fn upload_avatar(
     // Derive avatar keypair
     let (avatar_signing, avatar_verifying) = derive_avatar_keypair(device_secret, handle);
 
-    // Build signed avatar VSF (contains compressed_image section)
-    let avatar_vsf =
+    // Build signed VSF for upload (re-encrypts the AV1 data)
+    let signed_vsf =
         build_signed_avatar_vsf(&av1_data, handle, &avatar_signing, &avatar_verifying)?;
 
-    // Build conduit request: avatar_put section with key, handle_proof, and avatar VSF
-    let request_vsf = vsf::vsf_builder::VsfBuilder::new()
-        .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .signed_only(vsf::VsfType::ke(avatar_verifying.as_bytes().to_vec()))
-        .add_section("avatar_put", vec![
-            ("key".to_string(), vsf::VsfType::d(storage_key.clone())),
-            ("handle_proof".to_string(), vsf::VsfType::hP(handle_proof.to_vec())),
-            ("avatar_vsf".to_string(), vsf::VsfType::v(b'r', avatar_vsf)),
-        ])
-        .build()
-        .map_err(|e| format!("Build avatar_put request: {}", e))?;
-
-    let url = format!("{}/conduit", FGTW_URL);
+    // storage_key already computed above when reading from cache
+    let url = format!("{}/avatar/{}", FGTW_URL, storage_key);
 
     #[cfg(feature = "development")]
     crate::log(&crate::network::inspect::vsf_inspect(
-        &request_vsf,
+        &signed_vsf,
         "FGTW",
         "TX",
-        &format!("/conduit avatar_put {}", &storage_key[..8]),
+        &format!("/avatar/{}", &storage_key[..8]),
     ));
+
+    // Encode handle_proof for header
+    let handle_proof_b64 = URL_SAFE_NO_PAD.encode(handle_proof);
 
     let client = reqwest::blocking::Client::new();
     let response = client
-        .post(&url)
+        .put(&url)
         .header("Content-Type", "application/octet-stream")
-        .body(request_vsf)
+        .header("X-Handle-Proof", handle_proof_b64)
+        .body(signed_vsf)
         .send()
         .map_err(|e| format!("Failed to upload avatar: {}", e))?;
 
-    let status = response.status();
-    let response_bytes = response.bytes().unwrap_or_default();
-
-    #[cfg(feature = "development")]
-    if !response_bytes.is_empty() {
-        crate::log(&crate::network::inspect::vsf_inspect(
-            &response_bytes,
-            "FGTW",
-            "RX",
-            &format!("conduit/avatar_put {}", &storage_key[..8]),
-        ));
-    }
-
-    if status.is_success() {
+    if response.status().is_success() {
         crate::log(&format!(
             "Avatar: Uploaded to FGTW (key: {}...)",
             &storage_key[..8]
         ));
         Ok(storage_key)
     } else {
-        let body = String::from_utf8_lossy(&response_bytes);
+        let status = response.status();
+        let body = response.text().unwrap_or_else(|_| String::new());
         Err(format!("Avatar upload failed: {} - {}", status, body))
     }
 }
@@ -1459,35 +1440,15 @@ pub fn download_avatar(handle: &str) -> Option<(usize, Vec<u8>)> {
 
     // Not cached locally, fetch from FGTW
     let storage_key = avatar_storage_key(handle);
+    let url = format!("{}/avatar/{}", FGTW_URL, storage_key);
     crate::log(&format!(
         "Avatar: Fetching {} from FGTW ({}...)",
         handle,
         &storage_key[..8]
     ));
 
-    // Build conduit request: avatar_get section with key
-    let request_vsf = match vsf::vsf_builder::VsfBuilder::new()
-        .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .provenance_only()
-        .add_section("avatar_get", vec![
-            ("key".to_string(), vsf::VsfType::d(storage_key.clone())),
-        ])
-        .build()
-    {
-        Ok(vsf) => vsf,
-        Err(e) => {
-            crate::log(&format!("Avatar: Failed to build avatar_get request: {}", e));
-            return None;
-        }
-    };
-
-    let url = format!("{}/conduit", FGTW_URL);
     let client = reqwest::blocking::Client::new();
-    let response = client
-        .post(&url)
-        .header("Content-Type", "application/octet-stream")
-        .body(request_vsf)
-        .send().ok()?;
+    let response = client.get(&url).send().ok()?;
 
     if !response.status().is_success() {
         crate::log(&format!("Avatar: FGTW returned {}", response.status()));
@@ -1501,7 +1462,7 @@ pub fn download_avatar(handle: &str) -> Option<(usize, Vec<u8>)> {
         &vsf_data,
         "FGTW",
         "RX",
-        &format!("/conduit avatar_get {}", &storage_key[..8]),
+        &format!("/avatar/{}", &storage_key[..8]),
     ));
 
     // Save to local cache before decoding
@@ -1538,40 +1499,14 @@ pub fn sync_avatar_bidirectional(
     handle_proof: Option<&[u8; 32]>,
 ) -> AvatarSyncResult {
     let storage_key = avatar_storage_key(handle);
+    let url = format!("{}/avatar/{}", FGTW_URL, storage_key);
 
     // Get local timestamp (if we have a local avatar)
     let local_ts = get_local_avatar_timestamp(handle);
 
-    // Build conduit request: avatar_get section with key
-    let request_vsf = match vsf::vsf_builder::VsfBuilder::new()
-        .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .provenance_only()
-        .add_section("avatar_get", vec![
-            ("key".to_string(), vsf::VsfType::d(storage_key.clone())),
-        ])
-        .build()
-    {
-        Ok(vsf) => vsf,
-        Err(e) => return AvatarSyncResult::Error(format!("Build avatar_get request: {}", e)),
-    };
-
     // Query server for avatar with timestamp header
-    #[cfg(feature = "development")]
-    crate::log(&crate::network::inspect::vsf_inspect(
-        &request_vsf,
-        "FGTW",
-        "TX",
-        &format!("conduit/avatar_get {}", &storage_key[..8]),
-    ));
-
-    let url = format!("{}/conduit", FGTW_URL);
     let client = reqwest::blocking::Client::new();
-    let response = match client
-        .post(&url)
-        .header("Content-Type", "application/octet-stream")
-        .body(request_vsf)
-        .send()
-    {
+    let response = match client.get(&url).send() {
         Ok(r) => r,
         Err(e) => return AvatarSyncResult::Error(format!("Network error: {}", e)),
     };
@@ -1619,7 +1554,7 @@ pub fn sync_avatar_bidirectional(
                 &vsf_data,
                 "FGTW",
                 "RX",
-                &format!("/conduit avatar_get {}", &storage_key[..8]),
+                &format!("/avatar/{}", &storage_key[..8]),
             ));
             let _ = save_avatar_to_cache(handle, &vsf_data);
             AvatarSyncResult::ServerNewer
@@ -1689,7 +1624,7 @@ pub fn sync_avatar_bidirectional(
                 &vsf_data,
                 "FGTW",
                 "RX",
-                &format!("/conduit avatar_get {}", &storage_key[..8]),
+                &format!("/avatar/{}", &storage_key[..8]),
             ));
             let _ = save_avatar_to_cache(handle, &vsf_data);
             AvatarSyncResult::ServerNewer

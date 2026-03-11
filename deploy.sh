@@ -59,8 +59,17 @@ echo "Dozenal version: $DOZENAL_VERSION"
 # Allow release builds (bypasses build.rs safety check)
 export PHOTON_ALLOW_RELEASE=1
 
-# Build and sign Linux ARM64 (native)
+# Build and sign Linux x86_64 (native)
 ./build-release.sh
+
+# Build Linux ARM64 (cross-compile)
+echo ""
+echo "Building Linux ARM64 release..."
+cargo build --release --target aarch64-unknown-linux-gnu
+
+echo ""
+echo "Signing Linux ARM64 binary..."
+./target/release/photon-signature-signer target/aarch64-unknown-linux-gnu/release/photon-messenger
 
 # Build Windows
 echo ""
@@ -118,8 +127,10 @@ echo ""
 echo "Uploading to R2 ($R2_BUCKET/$R2_PATH)..."
 
 # Upload all release binaries to R2 (flat naming with -release suffix)
-wrangler r2 object put "$R2_BUCKET/$R2_PATH/photon-messenger-linux-arm64-release" \
+wrangler r2 object put "$R2_BUCKET/$R2_PATH/photon-messenger-linux-x86_64-release" \
     --file target/release/photon-messenger --remote
+wrangler r2 object put "$R2_BUCKET/$R2_PATH/photon-messenger-linux-arm64-release" \
+    --file target/aarch64-unknown-linux-gnu/release/photon-messenger --remote
 wrangler r2 object put "$R2_BUCKET/$R2_PATH/photon-messenger-windows-release.exe" \
     --file target/x86_64-pc-windows-gnu/release/photon-messenger.exe --remote
 wrangler r2 object put "$R2_BUCKET/$R2_PATH/photon-messenger-redox-release" \
@@ -146,7 +157,7 @@ wrangler r2 object put "$R2_BUCKET/$R2_PATH/install-release.ps1" \
     --file /tmp/install-release.ps1 --content-type text/plain --remote
 
 echo ""
-echo "Linux ARM64, Windows, Redox, macOS Intel, macOS ARM64, Android binaries deployed to R2"
+echo "Linux ARM64, Linux x86_64, Windows, Redox, macOS Intel, macOS ARM64, Android binaries deployed to R2"
 echo "  Windows SHA256: $WINDOWS_SHA256"
 
 # Update website version and date

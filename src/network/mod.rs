@@ -8,7 +8,7 @@ pub mod status;
 pub mod tcp;
 pub mod udp;
 
-pub use handle_query::{HandleQuery, QueryResult, RefreshResult};
+pub use handle_query::{HandleQuery, QueryResult};
 #[cfg(not(target_os = "android"))]
 pub use peer_updates::{PeerUpdate, PeerUpdateClient};
 pub use pt::PTManager;
