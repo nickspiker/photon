@@ -146,6 +146,15 @@ impl PhotonApp {
                                 self.text_layout.blinkey_x(&self.current_text_state);
                             let new_blinkey_y = self.text_layout.blinkey_y();
 
+                            // Mark textbox rows dirty before locking buffer
+                            {
+                                let tl = &self.text_layout;
+                                let scroll = if matches!(self.app_state, AppState::Ready | AppState::Searching) { self.contacts_scroll_offset } else { 0 };
+                                let tb_top = (tl.center_y as isize - tl.box_height as isize / 2 + scroll).max(0) as u32;
+                                let tb_bot = (tl.center_y as isize + tl.box_height as isize / 2 + scroll + 1).max(0) as u32;
+                                self.renderer.mark_rows(tb_top, tb_bot.min(self.height));
+                            }
+
                             // Lock buffer for blinkey update (immediate-mode)
                             let mut buffer = self.renderer.lock_buffer();
                             let pixels = buffer.as_mut();
@@ -206,7 +215,7 @@ impl PhotonApp {
                                     font_size as usize,
                                 );
                             }
-                            buffer.present().unwrap();
+                        buffer.present().unwrap();
 
                             // Prepare for potential drag selection - set anchor to click position
                             // is_mouse_selecting will be set to true when mouse actually moves (in handle_mouse_move)
@@ -264,6 +273,13 @@ impl PhotonApp {
                                     } else {
                                         0
                                     };
+                                    // Mark textbox rows dirty before locking buffer
+                                    {
+                                        let tl = &self.text_layout;
+                                        let tb_top = (tl.center_y as isize - tl.box_height as isize / 2 + scroll).max(0) as u32;
+                                        let tb_bot = (tl.center_y as isize + tl.box_height as isize / 2 + scroll + 1).max(0) as u32;
+                                        self.renderer.mark_rows(tb_top, tb_bot.min(self.height));
+                                    }
                                     let mut buffer = self.renderer.lock_buffer();
                                     let pixels = buffer.as_mut();
 
@@ -437,6 +453,13 @@ impl PhotonApp {
                                     } else {
                                         0
                                     };
+                                    // Mark textbox rows dirty before locking buffer
+                                    {
+                                        let tl = &self.text_layout;
+                                        let tb_top = (tl.center_y as isize - tl.box_height as isize / 2 + scroll).max(0) as u32;
+                                        let tb_bot = (tl.center_y as isize + tl.box_height as isize / 2 + scroll + 1).max(0) as u32;
+                                        self.renderer.mark_rows(tb_top, tb_bot.min(self.height));
+                                    }
                                     let mut buffer = self.renderer.lock_buffer();
                                     let pixels = buffer.as_mut();
 
@@ -514,6 +537,14 @@ impl PhotonApp {
                         self.blinkey_pixel_x = self.text_layout.blinkey_x(&self.current_text_state);
                         self.blinkey_pixel_y = self.text_layout.blinkey_y();
 
+                        // Mark textbox rows dirty before locking buffer
+                        {
+                            let tl = &self.text_layout;
+                            let scroll = if matches!(self.app_state, AppState::Ready | AppState::Searching) { self.contacts_scroll_offset } else { 0 };
+                            let tb_top = (tl.center_y as isize - tl.box_height as isize / 2 + scroll).max(0) as u32;
+                            let tb_bot = (tl.center_y as isize + tl.box_height as isize / 2 + scroll + 1).max(0) as u32;
+                            self.renderer.mark_rows(tb_top, tb_bot.min(self.height));
+                        }
                         let mut buffer = self.renderer.lock_buffer();
                         let pixels = buffer.as_mut();
                         Self::start_blinkey(
@@ -682,6 +713,14 @@ impl PhotonApp {
                 // State transition: blinkey ON -> OFF (immediate-mode)
                 if self.blinkey_visible {
                     let font_size = self.font_size();
+                    // Mark textbox rows dirty before locking buffer
+                    {
+                        let tl = &self.text_layout;
+                        let scroll = if matches!(self.app_state, AppState::Ready | AppState::Searching) { self.contacts_scroll_offset } else { 0 };
+                        let tb_top = (tl.center_y as isize - tl.box_height as isize / 2 + scroll).max(0) as u32;
+                        let tb_bot = (tl.center_y as isize + tl.box_height as isize / 2 + scroll + 1).max(0) as u32;
+                        self.renderer.mark_rows(tb_top, tb_bot.min(self.height));
+                    }
                     let mut buffer = self.renderer.lock_buffer();
                     let pixels = buffer.as_mut();
                     Self::stop_blinkey(

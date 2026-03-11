@@ -148,11 +148,62 @@ impl PhotonApp {
             // Pre-compute selection skip rect for hover effect (to avoid borrow conflict with buffer)
             let selection_skip = self.selection_skip_rect();
 
-            let mut buffer = self.renderer.lock_buffer();
-            let pixels = buffer.as_mut();
+            // Pre-mark dirty rows on the renderer before locking the buffer.
+            // The GPU texture persists between frames; only dirty rows are uploaded.
             let indicator_radius = (self.span as f32 * eff_ru / 160.).max(1.) as usize;
             let indicator_x = (self.span as f32 * eff_ru / 40.).max(1.) as usize;
             let indicator_y = indicator_x;
+
+            if self.window_dirty || self.debug_hit_test || self.show_textbox_mask {
+                self.renderer.mark_all();
+            } else {
+                if self.text_dirty || self.selection_dirty {
+                    let text_scroll = if matches!(self.app_state, AppState::Ready | AppState::Searching) {
+                        self.contacts_scroll_offset
+                    } else { 0 };
+                    let tb_top = (textbox_y as isize - box_height as isize / 2 + text_scroll).max(0) as u32;
+                    let tb_bot = (textbox_y as isize + box_height as isize / 2 + text_scroll + 1).max(0) as u32;
+                    self.renderer.mark_rows(tb_top, tb_bot.min(self.height));
+                }
+                if self.controls_dirty {
+                    let ctrl_height = (self.span as f32 / 32.0 * eff_ru).ceil() as u32;
+                    self.renderer.mark_rows(0, ctrl_height);
+                    // Textbox/query button hovers also touch textbox rows
+                    let touches_textbox = matches!(self.hovered_button,
+                        HoveredButton::Textbox | HoveredButton::QueryButton | HoveredButton::BackHeader)
+                        || matches!(self.prev_hovered_button,
+                        HoveredButton::Textbox | HoveredButton::QueryButton | HoveredButton::BackHeader);
+                    if touches_textbox {
+                        let text_scroll = if matches!(self.app_state, AppState::Ready | AppState::Searching) {
+                            self.contacts_scroll_offset
+                        } else { 0 };
+                        let tb_top = (textbox_y as isize - box_height as isize / 2 + text_scroll).max(0) as u32;
+                        let tb_bot = (textbox_y as isize + box_height as isize + text_scroll + 1).max(0) as u32;
+                        self.renderer.mark_rows(tb_top, tb_bot.min(self.height));
+                    }
+                }
+                if self.fgtw_online != self.prev_fgtw_online {
+                    let ind_top = indicator_y.saturating_sub(indicator_radius);
+                    let ind_bot = (indicator_y + indicator_radius + 1).min(self.height as usize);
+                    self.renderer.mark_rows(ind_top as u32, ind_bot as u32);
+                }
+                if self.hovered_contact != self.prev_hovered_contact {
+                    for idx in [self.prev_hovered_contact, self.hovered_contact].iter().flatten() {
+                        if *idx < self.contacts.len() {
+                            let c = &self.contacts[*idx];
+                            let y = c.text_y as i32 - self.contact_text_size as i32;
+                            self.renderer.mark_rows(y.max(0) as u32, (c.text_y + self.contact_text_size + 1.0) as u32);
+                        }
+                    }
+                }
+                if zoom_hint_dirty {
+                    let hint_font_size = font_size * 0.8;
+                    self.renderer.mark_rows(0, (hint_font_size * 2.0) as u32);
+                }
+            }
+
+            let mut buffer = self.renderer.lock_buffer();
+            let pixels = buffer.as_mut();
 
             if self.window_dirty {
                 self.redraw_counter += 1;

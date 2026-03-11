@@ -7,6 +7,7 @@
 //! in-memory bytes are [B, G, R, A] = `Bgra8Unorm`, a direct upload with zero
 //! byte-swapping.
 
+use std::cell::Cell;
 use winit::window::Window;
 
 // ---------------------------------------------------------------------------
@@ -76,6 +77,10 @@ impl<'a> WgpuBuffer<'a> {
         self.inner.present_frame();
         Ok(())
     }
+
+    // No-ops for API compatibility with platforms that don't have mark on Renderer
+    pub fn mark_rows(&self, _y_start: u32, _y_end: u32) {}
+    pub fn mark_all(&self) {}
 }
 
 // ---------------------------------------------------------------------------
@@ -94,6 +99,12 @@ pub struct Renderer {
     cpu_buffer:        Vec<u32>,
     width:             u32,
     height:            u32,
+    /// Dirty row range — only these rows are uploaded to the GPU texture.
+    /// Reset to (u32::MAX, 0) after each present (clean = min > max).
+    /// Uses Cell for interior mutability so mark_rows can be called while
+    /// the cpu_buffer is borrowed through WgpuBuffer.
+    dirty_y_min:       Cell<u32>,
+    dirty_y_max:       Cell<u32>,
 }
 
 impl Renderer {
@@ -258,6 +269,8 @@ impl Renderer {
             cpu_buffer,
             width,
             height,
+            dirty_y_min: Cell::new(0),
+            dirty_y_max: Cell::new(height),
         }
     }
 
@@ -322,6 +335,21 @@ impl Renderer {
         self.bind_group = bg;
     }
 
+    /// Mark a row range as dirty. Only dirty rows are uploaded to the GPU on present.
+    pub fn mark_rows(&mut self, y_start: u32, y_end: u32) {
+        let y_end = y_end.min(self.height);
+        let cur_min = self.dirty_y_min.get();
+        let cur_max = self.dirty_y_max.get();
+        self.dirty_y_min.set(cur_min.min(y_start));
+        self.dirty_y_max.set(cur_max.max(y_end));
+    }
+
+    /// Mark the entire buffer as dirty (full upload on next present).
+    pub fn mark_all(&mut self) {
+        self.dirty_y_min.set(0);
+        self.dirty_y_max.set(self.height);
+    }
+
     /// Returns a guard whose DerefMut exposes the CPU pixel buffer as `&mut [u32]`.
     /// Call `.present()` on the guard to upload and display the frame.
     pub fn lock_buffer(&mut self) -> WgpuBuffer<'_> {
@@ -329,33 +357,49 @@ impl Renderer {
     }
 
     fn present_frame(&mut self) {
-        // Reinterpret &[u32] as &[u8] — safe on little-endian; ARGB u32 == BGRA bytes.
-        let bytes: &[u8] = unsafe {
-            std::slice::from_raw_parts(
-                self.cpu_buffer.as_ptr() as *const u8,
-                self.cpu_buffer.len() * 4,
-            )
-        };
+        let dy_min = self.dirty_y_min.get();
+        let dy_max = self.dirty_y_max.get().min(self.height);
 
-        self.queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture:   &self.frame_texture,
-                mip_level: 0,
-                origin:    wgpu::Origin3d::ZERO,
-                aspect:    wgpu::TextureAspect::All,
-            },
-            bytes,
-            wgpu::TexelCopyBufferLayout {
-                offset:         0,
-                bytes_per_row:  Some(self.width * 4),
-                rows_per_image: Some(self.height),
-            },
-            wgpu::Extent3d {
-                width:                 self.width,
-                height:                self.height,
-                depth_or_array_layers: 1,
-            },
-        );
+        // Reset dirty range for next frame
+        self.dirty_y_min.set(u32::MAX);
+        self.dirty_y_max.set(0);
+
+        // Nothing dirty — GPU texture already has the right content, just re-present
+        if dy_min >= dy_max {
+            // Still need to present the existing texture to the compositor
+        } else {
+            // Upload only the dirty rows
+            let row_bytes = (self.width * 4) as usize;
+            let offset_bytes = dy_min as usize * row_bytes;
+            let dirty_height = dy_max - dy_min;
+
+            let bytes: &[u8] = unsafe {
+                std::slice::from_raw_parts(
+                    (self.cpu_buffer.as_ptr() as *const u8).add(offset_bytes),
+                    dirty_height as usize * row_bytes,
+                )
+            };
+
+            self.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture:   &self.frame_texture,
+                    mip_level: 0,
+                    origin:    wgpu::Origin3d { x: 0, y: dy_min, z: 0 },
+                    aspect:    wgpu::TextureAspect::All,
+                },
+                bytes,
+                wgpu::TexelCopyBufferLayout {
+                    offset:         0,
+                    bytes_per_row:  Some(self.width * 4),
+                    rows_per_image: Some(dirty_height),
+                },
+                wgpu::Extent3d {
+                    width:                 self.width,
+                    height:                dirty_height,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
 
         let output = match self.surface.get_current_texture() {
             Ok(t) => t,
