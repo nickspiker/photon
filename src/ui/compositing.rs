@@ -1,9 +1,9 @@
 use crate::ui::{app::*, colour::*, text_rasterizing::*, theme};
 use crate::{debug_println, DEBUG_ENABLED};
 
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 const PREMULTIPLIED: bool = true;
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
 const PREMULTIPLIED: bool = false;
 
 /// Deploy version as binary (1 byte = u8, 2 bytes = u16 little-endian)
