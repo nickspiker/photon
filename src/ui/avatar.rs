@@ -990,7 +990,7 @@ pub fn get_local_avatar_timestamp(handle: &str) -> Option<f64> {
         Ok(data) => data,
         Err(_e) => {
             #[cfg(feature = "development")]
-            crate::log(&format!("Avatar: No local cache: {}", e));
+            crate::log(&format!("Avatar: No local cache: {}", _e));
             return None;
         }
     };

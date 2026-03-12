@@ -1,6 +1,11 @@
 // Keyboard input handling for PhotonApp
 
+use std::sync::atomic::Ordering;
+
+use rand::Rng;
+
 use crate::ui::theme;
+use crate::DEBUG_ENABLED;
 
 use super::app::{AppState, LaunchState, PhotonApp, TextLayout};
 use winit::{
