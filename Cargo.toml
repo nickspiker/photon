@@ -114,6 +114,9 @@ libc = "0.2.178"
 [target.'cfg(not(target_os = "redox"))'.dependencies]
 thread-priority = "1.2"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+wgpu = { version = "28", default-features = false, features = ["metal", "wgsl"] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 x11 = { version = "2.21.0", features = ["xlib"] }
 wgpu = { version = "28", default-features = false, features = ["vulkan", "wgsl"] }
@@ -168,8 +171,6 @@ incremental = true         # Incremental compilation
 inherits = "dev"
 debug = "line-tables-only" # Line info for debugger
 
-[patch.crates-io]
-softbuffer = { path = "../softbuffer" }
 
 [profile.release]
 lto = true                 # Full LTO for final builds
