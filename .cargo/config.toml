@@ -12,11 +12,3 @@ rustflags = ["-C", "link-arg=--sysroot=/usr/aarch64-redhat-linux/sys-root/fc42",
 # Redox cross-compilation (use when: cargo build --target x86_64-unknown-redox)
 [target.x86_64-unknown-redox]
 linker = "/mnt/Octopus/Code/redox/prefix/x86_64-unknown-redox/rust-install/bin/x86_64-unknown-redox-gcc"
-
-# macOS Intel cross-compilation via osxcross
-[target.x86_64-apple-darwin]
-linker = "/mnt/Octopus/Code/osxcross/target/bin/x86_64-apple-darwin-clang-wrapper"
-
-# macOS Apple Silicon cross-compilation via osxcross
-[target.aarch64-apple-darwin]
-linker = "/mnt/Octopus/Code/osxcross/target/bin/aarch64-apple-darwin-clang-wrapper"

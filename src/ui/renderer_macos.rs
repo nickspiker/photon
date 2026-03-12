@@ -158,7 +158,14 @@ impl Renderer {
             Ok(t)  => t,
             Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
                 self.surface.configure(&self.device, &self.config);
-                return;
+                // Retry immediately — the reconfigured surface is ready now.
+                // Without this, Metal clears the new swapchain to black and we
+                // return with nothing presented; the window stays black until
+                // the next event happens to fire (could be 250 ms or never).
+                match self.surface.get_current_texture() {
+                    Ok(t)  => t,
+                    Err(_) => return,
+                }
             }
             Err(_) => return,
         };
