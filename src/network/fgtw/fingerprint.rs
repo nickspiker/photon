@@ -108,14 +108,28 @@ pub fn get_machine_fingerprint() -> io::Result<Vec<u8>> {
 
 #[cfg(target_os = "macos")]
 pub fn get_machine_fingerprint() -> io::Result<Vec<u8>> {
-    // Read IOPlatformUUID - hardware-burned UUID that survives OS reinstalls
+    // Extract IOPlatformUUID - hardware-burned, survives OS reinstalls.
+    // Must extract ONLY this field; the full ioreg output contains dynamic
+    // fields (memory addresses, timestamps) that change between runs.
     use std::process::Command;
     let output = Command::new("ioreg")
         .args(["-rd1", "-c", "IOPlatformExpertDevice"])
         .output()?;
-    // Output contains IOPlatformUUID among other fields
-    // We hash the whole output - includes UUID and is deterministic
-    Ok(output.stdout)
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        if line.contains("IOPlatformUUID") {
+            // Line format: "IOPlatformUUID" = "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"
+            if let Some(start) = line.rfind('"') {
+                if let Some(end) = line[..start].rfind('"') {
+                    let uuid = &line[end + 1..start];
+                    if uuid.len() > 8 {
+                        return Ok(uuid.as_bytes().to_vec());
+                    }
+                }
+            }
+        }
+    }
+    Err(io::Error::new(io::ErrorKind::NotFound, "IOPlatformUUID not found"))
 }
 
 #[cfg(not(any(
