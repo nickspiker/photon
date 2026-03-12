@@ -364,30 +364,10 @@ impl PhotonApp {
                                 self.start_attestation();
                             }
                             AppState::Ready => {
-                                // In Ready state: add contact (same as + button)
+                                // In Ready state: always search network to add friend
                                 let handle: String =
                                     self.current_text_state.chars.iter().collect();
-                                let handle_lower = handle.to_lowercase();
-
-                                // Check if contact already exists (exact match)
-                                let existing_idx = self.contacts.iter().position(|c| {
-                                    c.handle.as_str().to_lowercase() == handle_lower
-                                });
-
-                                if let Some(idx) = existing_idx {
-                                    // Contact already exists - open conversation
-                                    self.selected_contact = Some(idx);
-                                    self.app_state = AppState::Conversation;
-                                    self.reset_textbox();
-                                    self.text_layout = TextLayout::new(
-                                        self.width as usize,
-                                        self.height as usize,
-                                        self.span,
-                                        self.effective_ru(),
-                                        &self.app_state,
-                                    );
-                                } else {
-                                    // New handle - search network
+                                if !handle.is_empty() {
                                     self.start_handle_search(&handle);
                                 }
                                 self.window_dirty = true;
