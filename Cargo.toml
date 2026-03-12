@@ -172,6 +172,9 @@ inherits = "dev"
 debug = "line-tables-only" # Line info for debugger
 
 
+[patch.crates-io]
+softbuffer = { git = "https://github.com/nickspiker/softbuffer", branch = "master" }
+
 [profile.release]
 lto = true                 # Full LTO for final builds
 codegen-units = 1          # Single unit for max optimization
