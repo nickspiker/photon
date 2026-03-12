@@ -849,7 +849,6 @@ fn extract_eagle_time(fields: &[(String, VsfType)], key: &str) -> Result<f64, St
         Some(VsfType::e(EtType::f6(v))) => Ok(*v),
         Some(VsfType::e(EtType::f5(v))) => Ok(*v as f64),
         Some(VsfType::e(EtType::i(v))) => Ok(*v as f64),
-        Some(VsfType::e(EtType::i(v))) => Ok(*v as f64),
         Some(VsfType::f6(v)) => Ok(*v), // Also accept raw f6
         _ => Err(format!("Missing or invalid eagle time: {}", key)),
     }
@@ -946,7 +945,6 @@ fn extract_header_timestamp(header: &vsf::file_format::VsfHeader) -> Result<f64,
     match &header.creation_time {
         VsfType::e(EtType::f6(v)) => Ok(*v),
         VsfType::e(EtType::f5(v)) => Ok(*v as f64),
-        VsfType::e(EtType::i(v)) => Ok(*v as f64),
         VsfType::e(EtType::i(v)) => Ok(*v as f64),
         _ => Err("Invalid header timestamp".to_string()),
     }
