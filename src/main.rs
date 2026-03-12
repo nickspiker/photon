@@ -196,6 +196,15 @@ impl ApplicationHandler<PhotonEvent> for App {
                     window.request_redraw();
                 }
             }
+            // On macOS, occlude/unocclude cycles are very common (switching apps,
+            // Mission Control, etc.). The Metal surface goes stale while occluded, so
+            // get_current_texture returns Outdated on the next frame. Requesting a
+            // redraw here ensures we re-present as soon as the window becomes visible.
+            WindowEvent::Occluded(false) => {
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            }
             _ => {}
         }
     }
