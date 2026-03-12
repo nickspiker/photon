@@ -3,7 +3,6 @@
 //! All FGTW communication goes through POST /conduit with VSF payloads.
 //! Section name in VSF determines operation.
 
-use ed25519_dalek::Signer;
 use vsf::VsfType;
 
 use super::Keypair;
