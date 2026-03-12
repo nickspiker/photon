@@ -406,7 +406,7 @@ impl HandleQuery {
         transport: Arc<Mutex<Option<Arc<Mutex<PeerStore>>>>>,
         handle_proof_store: Arc<Mutex<Option<[u8; 32]>>>,
         keypair: Keypair,
-        socket: Arc<Mutex<Arc<UdpSocket>>>,
+        _socket: Arc<Mutex<Arc<UdpSocket>>>,
         port: Arc<Mutex<u16>>,
     ) {
         thread::spawn(move || {

@@ -196,7 +196,7 @@ use vsf::VsfType;
 pub fn vsf_write(
     path: &Path,
     encrypted: &[u8],
-    label: &str,
+    _label: &str,
     #[allow(unused_variables)] decrypted: Option<&[u8]>,
     device_secret: &[u8; 32],
 ) -> std::io::Result<()> {
@@ -302,7 +302,7 @@ pub fn vsf_read(path: &Path, label: &str, device_secret: &[u8; 32]) -> std::io::
     }
 
     // Parse to extract encrypted payload
-    let (header, header_len) = vsf::VsfHeader::decode(&file_bytes)
+    let (_header, header_len) = vsf::VsfHeader::decode(&file_bytes)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{:?}", e)))?;
 
     let mut ptr = header_len;

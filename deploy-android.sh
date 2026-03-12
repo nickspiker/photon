@@ -20,11 +20,22 @@ fi
 
 APKSIGNER="$ANDROID_HOME/build-tools/$LATEST_BUILD_TOOLS/apksigner"
 
-# Keystore config - try multiple locations
-if [ -f "/mnt/Chiton/MEGA/Code/keys/nicks-apps.keystore" ]; then
-    KEYSTORE_PATH="/mnt/Chiton/MEGA/Code/keys/nicks-apps.keystore"
-elif [ -f "/home/nick/MEGA/code/keys/nicks-apps.keystore" ]; then
-    KEYSTORE_PATH="/home/nick/MEGA/code/keys/nicks-apps.keystore"
+# Find keys directory
+if [ -d "/mnt/Octopus/Code/keys" ]; then
+    KEYS_DIR="/mnt/Octopus/Code/keys"
+elif [ -d "/mnt/Chiton/MEGA/Code/keys" ]; then
+    KEYS_DIR="/mnt/Chiton/MEGA/Code/keys"
+elif [ -d "$HOME/MEGA/code/keys" ]; then
+    KEYS_DIR="$HOME/MEGA/code/keys"
+else
+    echo "ERROR: Cannot find keys directory"
+    exit 1
+fi
+
+KEYSTORE_PATH="$KEYS_DIR/nicks-apps.keystore"
+if [ ! -f "$KEYSTORE_PATH" ]; then
+    echo "ERROR: Keystore not found at $KEYSTORE_PATH"
+    exit 1
 fi
 KEY_ALIAS="photon"
 
