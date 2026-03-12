@@ -136,7 +136,7 @@ impl ApplicationHandler<PhotonEvent> for App {
             WindowEvent::KeyboardInput { event, .. } => {
                 if let (Some(app), Some(window)) = (&mut self.photon_app, &self.window) {
                     if event.state.is_pressed() {
-                        if let Some(text) = &event.text {
+                        if let Some(_text) = &event.text {
                             debug_println!("⌨️  KEYBOARD EVENT: key pressed, text={:?}", text);
                         }
                     }

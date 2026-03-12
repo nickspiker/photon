@@ -514,10 +514,30 @@ impl FgtwMessage {
 
         ptr += 1; // Skip '['
 
-        // Parse section name from section body
-        let section_name = match parse(bytes, &mut ptr) {
-            Ok(VsfType::d(name)) => name,
-            _ => return Err("Invalid section name".to_string()),
+        // Parse section name: either from section body (d"name") or from header field
+        // VsfBuilder puts the section name as a header field, so body may start with '(' fields
+        let section_name = if ptr < bytes.len() && bytes[ptr] == b'(' {
+            // Section body starts with fields — section name is in header fields
+            header
+                .fields
+                .first()
+                .map(|f| f.name.clone())
+                .ok_or_else(|| "No section name in header fields or body".to_string())?
+        } else {
+            match parse(bytes, &mut ptr) {
+                Ok(VsfType::d(name)) => name,
+                Ok(other) => return Err(format!(
+                    "Invalid section name: expected VsfType::d, got {:?} (byte at [{}]=0x{:02x})",
+                    other,
+                    ptr.saturating_sub(1),
+                    bytes.get(ptr.saturating_sub(1)).copied().unwrap_or(0)
+                )),
+                Err(e) => return Err(format!(
+                    "Invalid section name: parse failed at ptr={}/{}: {} (bytes: {:02x?})",
+                    ptr, bytes.len(), e,
+                    &bytes[ptr..std::cmp::min(ptr + 16, bytes.len())]
+                )),
+            }
         };
 
         // Handle ping/pong format

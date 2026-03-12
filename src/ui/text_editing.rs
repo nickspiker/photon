@@ -1,4 +1,3 @@
-use crate::debug_println;
 #[cfg(target_os = "android")]
 use crate::ui::renderer_android::Renderer;
 #[cfg(target_os = "linux")]
@@ -6,7 +5,7 @@ use crate::ui::renderer_linux_softbuffer::Renderer;
 #[cfg(target_os = "redox")]
 use crate::ui::renderer_redox::Renderer;
 #[cfg(target_os = "macos")]
-use crate::ui::renderer_macos::Renderer;
+use crate::ui::renderer_macos_softbuffer::Renderer;
 #[cfg(target_os = "windows")]
 use crate::ui::renderer_windows::Renderer;
 use crate::ui::{app::*, text_rasterizing::TextRenderer, theme};

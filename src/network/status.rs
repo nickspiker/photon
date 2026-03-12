@@ -1333,7 +1333,7 @@ async fn run_checker(
                         Ok(message) => {
                             match message {
                                 FgtwMessage::StatusPing {
-                                    timestamp,
+                                    timestamp: _,
                                     sender_pubkey,
                                     provenance_hash,
                                     signature,
@@ -1539,15 +1539,14 @@ async fn run_checker(
                             }
                         }
                         Err(e) => {
-                            // Log first 32 bytes for debugging
+                            // Log full packet hex for debugging
                             let preview: String = msg_bytes
                                 .iter()
-                                .take(32)
                                 .map(|b| format!("{:02x}", b))
                                 .collect::<Vec<_>>()
                                 .join(" ");
                             crate::log(&format!(
-                                "Status: Parse error: {} (len={}, first 32 bytes: {})",
+                                "Status: Parse error: {} (len={}, hex: {})",
                                 e,
                                 msg_bytes.len(),
                                 preview

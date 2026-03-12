@@ -37,6 +37,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         let home = std::env::var("HOME").unwrap_or_default();
         let key_locations = [
+            "/mnt/Octopus/Code/keys/photon-signing-key".to_string(),
             "/mnt/Chiton/MEGA/Code/keys/photon-signing-key".to_string(),
             "/home/nick/MEGA/code/keys/photon-signing-key".to_string(),
             format!("{}/MEGA/Code/keys/photon-signing-key", home),
