@@ -329,27 +329,8 @@ impl PhotonApp {
                                     }
                                 }
                                 AppState::Ready => {
-                                    // "Add" button clicked - check if contact exists first
-                                    let handle_lower = handle.to_lowercase();
-                                    let existing_idx = self.contacts.iter().position(|c| {
-                                        c.handle.as_str().to_lowercase() == handle_lower
-                                    });
-
-                                    if let Some(idx) = existing_idx {
-                                        // Contact already exists - open conversation with them
-                                        debug_println!("Contact {} already exists, opening conversation", handle);
-                                        self.selected_contact = Some(idx);
-                                        self.app_state = AppState::Conversation;
-                                        self.reset_textbox();
-                                        self.text_layout = super::app::TextLayout::new(
-                                            self.width as usize,
-                                            self.height as usize,
-                                            self.span,
-                                            self.effective_ru(),
-                                            &self.app_state,
-                                        );
-                                    } else {
-                                        // New handle - search network
+                                    // "Add" button clicked - always search network
+                                    if !handle.is_empty() {
                                         debug_println!("Querying handle: {}", handle);
                                         self.start_handle_search(&handle);
                                     }
