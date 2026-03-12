@@ -44,7 +44,8 @@ fn main() {
         }
     }
 
-    // Tell cargo to rerun if icon changes
+    // Tell cargo to rerun if icon or version changes
     println!("cargo:rerun-if-changed=assets/photon-messenger.ico");
     println!("cargo:rerun-if-changed=assets/icon-256.png");
+    println!("cargo:rerun-if-changed=v");
 }

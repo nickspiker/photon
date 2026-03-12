@@ -32,6 +32,7 @@ else
 fi
 
 echo "Deploy version: $NEW_VERSION"
+git add v && git commit -m "v$NEW_VERSION" && git push
 
 # Convert to dozenal names for display
 dozenal_names() {
