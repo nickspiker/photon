@@ -19,20 +19,19 @@ fi
 
 NEW_VERSION=$((VERSION + 1))
 
-# Upgrade to 16-bit if needed
-if [ "$NEW_VERSION" -gt 255 ] && [ "$FILE_SIZE" -eq 1 ]; then
-    # Write as 16-bit little-endian
-    printf "\\x$(printf '%02x' $((NEW_VERSION & 0xFF)))\\x$(printf '%02x' $((NEW_VERSION >> 8)))" > "$VERSION_FILE"
-elif [ "$FILE_SIZE" -eq 2 ]; then
-    # Write as 16-bit little-endian
-    printf "\\x$(printf '%02x' $((NEW_VERSION & 0xFF)))\\x$(printf '%02x' $((NEW_VERSION >> 8)))" > "$VERSION_FILE"
-else
-    # Write as 8-bit
-    printf "\\x$(printf '%02x' $NEW_VERSION)" > "$VERSION_FILE"
-fi
-
 echo "Deploy version: $NEW_VERSION"
 git add v && git commit -m "v$NEW_VERSION" && git push
+
+# Write version file function (called at end on success)
+write_version() {
+    if [ "$NEW_VERSION" -gt 255 ] && [ "$FILE_SIZE" -eq 1 ]; then
+        printf "\\x$(printf '%02x' $((NEW_VERSION & 0xFF)))\\x$(printf '%02x' $((NEW_VERSION >> 8)))" > "$VERSION_FILE"
+    elif [ "$FILE_SIZE" -eq 2 ]; then
+        printf "\\x$(printf '%02x' $((NEW_VERSION & 0xFF)))\\x$(printf '%02x' $((NEW_VERSION >> 8)))" > "$VERSION_FILE"
+    else
+        printf "\\x$(printf '%02x' $NEW_VERSION)" > "$VERSION_FILE"
+    fi
+}
 
 # Convert to dozenal names for display
 dozenal_names() {
@@ -66,6 +65,10 @@ export PHOTON_ALLOW_RELEASE=1
 # Build Linux ARM64 (cross-compile)
 echo ""
 echo "Building Linux ARM64 release..."
+CFLAGS_aarch64_unknown_linux_gnu="--sysroot=/usr/aarch64-redhat-linux/sys-root/fc42" \
+PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-redhat-linux/sys-root/fc42 \
+PKG_CONFIG_PATH=/usr/aarch64-redhat-linux/sys-root/fc42/usr/lib64/pkgconfig \
+PKG_CONFIG_ALLOW_CROSS=1 \
 cargo build --release --target aarch64-unknown-linux-gnu
 
 echo ""
@@ -171,6 +174,9 @@ echo "Updated website: Version $DOZENAL_VERSION, Date $DEPLOY_DATE"
 echo ""
 echo "Deploying website..."
 (cd /mnt/Chiton/MEGA/holdmyoscilloscope && ./deploy.sh)
+
+# Only increment version file after everything succeeds
+write_version
 
 echo ""
 echo "Install with:"
