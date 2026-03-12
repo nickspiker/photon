@@ -9,6 +9,7 @@ network broadcast gets stuck/lost
 needs to keep text entry box selected whilist sending messageths
 chrome downloads rename to .zip and trigger extract, not install instead of apk on Android
 rotated images that have exif flags set to rotate after decode needs implemented
+Wayland: drag-and-drop file support (avatar upload) — winit doesn't support HoveredFile/DroppedFile on native Wayland (issue #1881), need wl_data_device impl or wait for winit PR #4504
 
 ● Update(src/ui/compositing.rs) Gotta actually test this
   ⎿  Updated src/ui/compositing.rs with 8 additions                                                          
