@@ -16,6 +16,8 @@ mod renderer_windows;
 
 #[cfg(target_os = "linux")]
 mod renderer_linux_softbuffer;
+#[cfg(target_os = "linux")]
+mod renderer_linux_wgpu;
 
 #[cfg(target_os = "redox")]
 mod renderer_redox;
