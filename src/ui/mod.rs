@@ -16,14 +16,10 @@ mod renderer_windows;
 
 #[cfg(target_os = "linux")]
 mod renderer_linux_softbuffer;
-#[cfg(target_os = "linux")]
-mod renderer_linux_wgpu;
 
 #[cfg(target_os = "redox")]
 mod renderer_redox;
 
-#[cfg(target_os = "macos")]
-mod renderer_macos;
 #[cfg(target_os = "macos")]
 mod renderer_macos_softbuffer;
 
@@ -40,7 +36,7 @@ use renderer_linux_softbuffer as renderer;
 use renderer_redox as renderer;
 
 #[cfg(target_os = "macos")]
-use renderer_macos as renderer;
+use renderer_macos_softbuffer as renderer;
 
 #[cfg(target_os = "android")]
 pub use renderer_android as renderer;

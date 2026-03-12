@@ -1,11 +1,8 @@
 // Keyboard input handling for PhotonApp
 
 use crate::ui::theme;
-use crate::{debug_println, DEBUG_ENABLED};
-use std::sync::atomic::Ordering;
 
 use super::app::{AppState, LaunchState, PhotonApp, TextLayout};
-use rand::Rng;
 use winit::{
     event::{ElementState, KeyEvent},
     keyboard::{Key, NamedKey},
@@ -276,7 +273,7 @@ impl PhotonApp {
                         self.selection_dirty = true;
                     } else if self.current_text_state.blinkey_index > 0 {
                         let idx = self.current_text_state.blinkey_index - 1;
-                        let deleted_char = self.current_text_state.chars[idx];
+                        let _deleted_char = self.current_text_state.chars[idx];
                         debug_println!(
                             "BACKSPACE: deleting '{}' at index {}, blinkey: {} -> {}",
                             deleted_char,
@@ -286,7 +283,7 @@ impl PhotonApp {
                         );
                         self.current_text_state.remove(idx);
                         self.current_text_state.blinkey_index -= 1;
-                        let text: String = self.current_text_state.chars.iter().collect();
+                        let _text: String = self.current_text_state.chars.iter().collect();
                         debug_println!("  Text now: \"{}\" (len={})", text, text.len());
                         if matches!(self.app_state, AppState::Launch(_)) {
                             if !matches!(self.app_state, AppState::Launch(LaunchState::Fresh)) {
@@ -454,7 +451,7 @@ impl PhotonApp {
                     );
                     self.current_text_state.insert(blinkey_idx, ch, width);
                     self.current_text_state.blinkey_index += 1;
-                    let text: String = self.current_text_state.chars.iter().collect();
+                    let _text: String = self.current_text_state.chars.iter().collect();
                     debug_println!("  Text now: \"{}\" (len={})", text, text.len());
                 }
                 // Only reset to Fresh state if we're in Launch mode

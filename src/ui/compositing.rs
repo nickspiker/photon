@@ -1,5 +1,5 @@
 use crate::ui::{app::*, colour::*, text_rasterizing::*, theme};
-use crate::{debug_println, DEBUG_ENABLED};
+use crate::DEBUG_ENABLED;
 
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 const PREMULTIPLIED: bool = true;
@@ -1030,9 +1030,9 @@ impl PhotonApp {
                                         let padding = self.span / 32;
 
                                         // Calculate total height needed for all messages
-                                        let total_height =
+                                        let _total_height =
                                             contact.messages.len() * line_height + padding * 2;
-                                        let visible_height =
+                                        let _visible_height =
                                             (message_area_bottom - message_area_top) as usize;
 
                                         // Start from bottom (most recent messages)
@@ -1202,7 +1202,7 @@ impl PhotonApp {
                                         "waiting for them to add you back"
                                     } else {
                                         // Count filled slots for progress
-                                        let total = contact.clutch_slots.len();
+                                        let _total = contact.clutch_slots.len();
                                         let filled = contact
                                             .clutch_slots
                                             .iter()
@@ -3951,7 +3951,7 @@ impl PhotonApp {
         pixels: &mut [u32],
         hit_test_map: &mut [u8],
         window_width: u32,
-        window_height: u32,
+        _window_height: u32,
         button_x_start: usize,
         button_height: usize,
         _start: usize,

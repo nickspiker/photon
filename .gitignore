@@ -11,6 +11,7 @@
 *.so
 *.dylib
 *.dll
+!cross-libs/**
 
 # Android
 android/.gradle/

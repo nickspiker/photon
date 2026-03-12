@@ -1,15 +1,13 @@
 #!/bin/bash
 set -e
 
-# Read and increment binary version number
+# Read current binary version number
 VERSION_FILE="v"
 if [ -f "$VERSION_FILE" ]; then
     FILE_SIZE=$(stat -c%s "$VERSION_FILE")
     if [ "$FILE_SIZE" -eq 1 ]; then
-        # 8-bit version
         VERSION=$(od -An -tu1 "$VERSION_FILE" | tr -d ' ')
     else
-        # 16-bit version (little-endian)
         VERSION=$(od -An -tu2 "$VERSION_FILE" | tr -d ' ')
     fi
 else
@@ -20,9 +18,8 @@ fi
 NEW_VERSION=$((VERSION + 1))
 
 echo "Deploy version: $NEW_VERSION"
-git add v && git commit -m "v$NEW_VERSION" && git push
 
-# Write version file function (called at end on success)
+# Write version file (local only — git commit/push happens at the end after success)
 write_version() {
     if [ "$NEW_VERSION" -gt 255 ] && [ "$FILE_SIZE" -eq 1 ]; then
         printf "\\x$(printf '%02x' $((NEW_VERSION & 0xFF)))\\x$(printf '%02x' $((NEW_VERSION >> 8)))" > "$VERSION_FILE"
@@ -175,8 +172,9 @@ echo ""
 echo "Deploying website..."
 (cd /mnt/Chiton/MEGA/holdmyoscilloscope && ./deploy.sh)
 
-# Only increment version file after everything succeeds
+# Only increment version and commit after everything succeeds
 write_version
+git add v && git commit -m "v$NEW_VERSION" && git push
 
 echo ""
 echo "Install with:"

@@ -988,7 +988,7 @@ pub fn get_local_avatar_timestamp(handle: &str) -> Option<f64> {
 
     let vsf_data = match std::fs::read(&cache_path) {
         Ok(data) => data,
-        Err(e) => {
+        Err(_e) => {
             #[cfg(feature = "development")]
             crate::log(&format!("Avatar: No local cache: {}", e));
             return None;

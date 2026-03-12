@@ -1,6 +1,5 @@
 // Mouse input handling for PhotonApp
 
-use crate::debug_println;
 use crate::ui::app::{HoveredButton, TextLayout};
 
 use super::app::{
