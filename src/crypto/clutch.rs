@@ -636,6 +636,7 @@ pub fn x25519_ecdh(local_secret: &[u8; 32], peer_public: &[u8; 32]) -> [u8; 32] 
 /// Generate P-384 ephemeral keypair
 /// Returns (secret_bytes, public_bytes)
 pub fn generate_p384_ephemeral() -> (Vec<u8>, Vec<u8>) {
+    use p384::elliptic_curve::Generate;
     use p384::SecretKey;
 
     let secret = SecretKey::generate();
@@ -663,6 +664,7 @@ pub fn p384_ecdh(local_secret: &[u8], peer_public: &[u8]) -> Vec<u8> {
 /// Generate secp256k1 ephemeral keypair
 /// Returns (secret_bytes, public_bytes)
 pub fn generate_secp256k1_ephemeral() -> (Vec<u8>, Vec<u8>) {
+    use k256::elliptic_curve::Generate;
     use k256::SecretKey;
 
     let secret = SecretKey::generate();
@@ -690,6 +692,7 @@ pub fn secp256k1_ecdh(local_secret: &[u8], peer_public: &[u8]) -> Vec<u8> {
 /// Generate P-256 ephemeral keypair
 /// Returns (secret_bytes, public_bytes)
 pub fn generate_p256_ephemeral() -> (Vec<u8>, Vec<u8>) {
+    use p256::elliptic_curve::Generate;
     use p256::SecretKey;
 
     let secret = SecretKey::generate();
