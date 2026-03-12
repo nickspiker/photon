@@ -2,15 +2,29 @@
 set -e
 # Release build without logging (smaller binary, no logcat output)
 
-cp /home/nick/MEGA/code/keys/google-services.json /mnt/Octopus/Code/photon/android/app/
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Find keys directory
+if [ -d "/mnt/Octopus/Code/keys" ]; then
+    KEYS_DIR="/mnt/Octopus/Code/keys"
+elif [ -d "/mnt/Chiton/MEGA/Code/keys" ]; then
+    KEYS_DIR="/mnt/Chiton/MEGA/Code/keys"
+elif [ -d "$HOME/MEGA/code/keys" ]; then
+    KEYS_DIR="$HOME/MEGA/code/keys"
+else
+    echo "ERROR: Cannot find keys directory"
+    exit 1
+fi
+
+cp "$KEYS_DIR/google-services.json" "$SCRIPT_DIR/android/app/"
 
 export PHOTON_ALLOW_RELEASE=1
 
-# Keystore config - try multiple locations
-if [ -f "/home/nick/MEGA/code/keys/nicks-apps.keystore" ]; then
-    KEYSTORE_PATH="/home/nick/MEGA/code/keys/nicks-apps.keystore"
-elif [ -f "/home/nick/MEGA/code/keys/nicks-apps.keystore" ]; then
-    KEYSTORE_PATH="/home/nick/MEGA/code/keys/nicks-apps.keystore"
+# Keystore config
+KEYSTORE_PATH="$KEYS_DIR/nicks-apps.keystore"
+if [ ! -f "$KEYSTORE_PATH" ]; then
+    echo "ERROR: Keystore not found at $KEYSTORE_PATH"
+    exit 1
 fi
 KEY_ALIAS="photon"
 

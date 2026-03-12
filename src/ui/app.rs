@@ -2730,7 +2730,7 @@ impl PhotonApp {
 
     /// Check if attestation response is ready and update app_state
     pub fn check_attestation_response(&mut self) -> bool {
-        use crate::network::handle_query::AttestationData;
+        
 
         let result = self.handle_query.as_ref().and_then(|hq| hq.try_recv());
         let Some(result) = result else { return false };
@@ -3704,7 +3704,7 @@ impl PhotonApp {
                     sender_addr: raw_sender_addr,
                 } => {
                     use crate::crypto::clutch::{
-                        derive_conversation_token, ClutchKemResponsePayload,
+                        derive_conversation_token,
                         ClutchKemSharedSecrets, ClutchOfferPayload,
                     };
                     use crate::network::status::ClutchOfferRequest;
@@ -5302,10 +5302,10 @@ impl PhotonApp {
     /// Ceremony completes when all slots have offer + both KEM secret directions.
     pub fn check_clutch_keygens(&mut self) -> bool {
         use crate::crypto::clutch::{
-            derive_conversation_token, ClutchKemResponsePayload, ClutchKemSharedSecrets,
+            derive_conversation_token, ClutchKemSharedSecrets,
             ClutchOfferPayload,
         };
-        use crate::network::status::{ClutchKemResponseRequest, ClutchOfferRequest};
+        use crate::network::status::ClutchOfferRequest;
         use crate::types::CeremonyId;
 
         let mut changed = false;
@@ -5692,12 +5692,12 @@ impl PhotonApp {
     /// Process background CLUTCH ceremony completion results.
     /// When ceremony completes, store the friendship chains and send proof.
     pub fn check_clutch_ceremonies(&mut self) -> bool {
-        use crate::crypto::clutch::{derive_conversation_token, ClutchCompletePayload};
+        use crate::crypto::clutch::ClutchCompletePayload;
         use crate::network::status::ClutchCompleteRequest;
         use crate::types::ClutchState;
 
         let mut changed = false;
-        let our_handle_hash = match self.user_identity_seed {
+        let _our_handle_hash = match self.user_identity_seed {
             Some(h) => h,
             None => return changed,
         };
