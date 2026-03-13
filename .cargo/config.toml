@@ -9,6 +9,14 @@
 linker = "aarch64-linux-gnu-gcc"
 rustflags = ["-C", "link-arg=--sysroot=/usr/aarch64-redhat-linux/sys-root/fc42", "-C", "link-arg=-L/mnt/Octopus/Code/photon/cross-libs/aarch64", "-C", "link-arg=-Wl,-rpath-link,/mnt/Octopus/Code/photon/cross-libs/aarch64"]
 
+# macOS Intel cross-compilation via osxcross
+[target.x86_64-apple-darwin]
+linker = "/mnt/Octopus/Code/osxcross/target/bin/x86_64-apple-darwin-clang-wrapper"
+
+# macOS Apple Silicon cross-compilation via osxcross
+[target.aarch64-apple-darwin]
+linker = "/mnt/Octopus/Code/osxcross/target/bin/aarch64-apple-darwin-clang-wrapper"
+
 # Redox cross-compilation (use when: cargo build --target x86_64-unknown-redox)
 [target.x86_64-unknown-redox]
 linker = "/mnt/Octopus/Code/redox/prefix/x86_64-unknown-redox/rust-install/bin/x86_64-unknown-redox-gcc"
