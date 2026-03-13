@@ -19,16 +19,15 @@ NEW_VERSION=$((VERSION + 1))
 
 echo "Deploy version: $NEW_VERSION"
 
-# Write version file (local only — git commit/push happens at the end after success)
-write_version() {
-    if [ "$NEW_VERSION" -gt 255 ] && [ "$FILE_SIZE" -eq 1 ]; then
-        printf "\\x$(printf '%02x' $((NEW_VERSION & 0xFF)))\\x$(printf '%02x' $((NEW_VERSION >> 8)))" > "$VERSION_FILE"
-    elif [ "$FILE_SIZE" -eq 2 ]; then
-        printf "\\x$(printf '%02x' $((NEW_VERSION & 0xFF)))\\x$(printf '%02x' $((NEW_VERSION >> 8)))" > "$VERSION_FILE"
-    else
-        printf "\\x$(printf '%02x' $NEW_VERSION)" > "$VERSION_FILE"
-    fi
-}
+# Write version file NOW so it gets baked into binaries at compile time
+# Git commit/push happens at the end after everything succeeds
+if [ "$NEW_VERSION" -gt 255 ] && [ "$FILE_SIZE" -eq 1 ]; then
+    printf "\\x$(printf '%02x' $((NEW_VERSION & 0xFF)))\\x$(printf '%02x' $((NEW_VERSION >> 8)))" > "$VERSION_FILE"
+elif [ "$FILE_SIZE" -eq 2 ]; then
+    printf "\\x$(printf '%02x' $((NEW_VERSION & 0xFF)))\\x$(printf '%02x' $((NEW_VERSION >> 8)))" > "$VERSION_FILE"
+else
+    printf "\\x$(printf '%02x' $NEW_VERSION)" > "$VERSION_FILE"
+fi
 
 # Convert to dozenal names for display
 dozenal_names() {
@@ -172,8 +171,7 @@ echo ""
 echo "Deploying website..."
 (cd /mnt/Chiton/MEGA/holdmyoscilloscope && ./deploy.sh)
 
-# Only increment version and commit after everything succeeds
-write_version
+# Commit version bump only after everything succeeds
 git add v && git commit -m "v$NEW_VERSION" && git push
 
 echo ""
