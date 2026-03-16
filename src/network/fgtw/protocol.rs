@@ -1139,7 +1139,7 @@ pub fn parse_clutch_offer_vsf(
 
     // Parse header to get section start position
     use vsf::file_format::VsfHeader;
-    let (_header, header_end) =
+    let (header, header_end) =
         VsfHeader::decode(vsf_bytes).map_err(|e| format!("Failed to parse header: {}", e))?;
 
     // offer_provenance will be computed from keys after parsing (deterministic, no timestamp)
@@ -1151,10 +1151,14 @@ pub fn parse_clutch_offer_vsf(
     }
     ptr += 1;
 
-    // Parse section name
-    let section_name = match vsf::parse(vsf_bytes, &mut ptr) {
-        Ok(VsfType::d(name)) => name,
-        _ => return Err("Invalid section name".to_string()),
+    // Section name not written for sections within 1MB; fall back to header TOC
+    let section_name = if ptr < vsf_bytes.len() && vsf_bytes[ptr] != b'(' && vsf_bytes[ptr] != b']' {
+        match vsf::parse(vsf_bytes, &mut ptr) {
+            Ok(VsfType::d(name)) => name,
+            _ => return Err("Invalid section name".to_string()),
+        }
+    } else {
+        header.fields.first().map(|f| f.name.clone()).ok_or_else(|| "No section name in header".to_string())?
     };
 
     if section_name != "clutch_offer" {
@@ -1412,10 +1416,14 @@ pub fn parse_clutch_kem_response_vsf(
     }
     ptr += 1;
 
-    // Parse section name
-    let section_name = match vsf::parse(vsf_bytes, &mut ptr) {
-        Ok(VsfType::d(name)) => name,
-        _ => return Err("Invalid section name".to_string()),
+    // Section name not written for sections within 1MB; fall back to header TOC
+    let section_name = if ptr < vsf_bytes.len() && vsf_bytes[ptr] != b'(' && vsf_bytes[ptr] != b']' {
+        match vsf::parse(vsf_bytes, &mut ptr) {
+            Ok(VsfType::d(name)) => name,
+            _ => return Err("Invalid section name".to_string()),
+        }
+    } else {
+        header.fields.first().map(|f| f.name.clone()).ok_or_else(|| "No section name in header".to_string())?
     };
 
     if section_name != "clutch_kem_response" {
@@ -1642,7 +1650,7 @@ pub fn parse_clutch_offer_vsf_without_recipient_check(
 
     // Parse header to get section start position
     use vsf::file_format::VsfHeader;
-    let (_header, header_end) =
+    let (header, header_end) =
         VsfHeader::decode(vsf_bytes).map_err(|e| format!("Failed to parse header: {}", e))?;
 
     // offer_provenance will be computed from keys after parsing (deterministic, no timestamp)
@@ -1654,10 +1662,14 @@ pub fn parse_clutch_offer_vsf_without_recipient_check(
     }
     ptr += 1;
 
-    // Parse section name
-    let section_name = match vsf::parse(vsf_bytes, &mut ptr) {
-        Ok(VsfType::d(name)) => name,
-        _ => return Err("Invalid section name".to_string()),
+    // Section name not written for sections within 1MB; fall back to header TOC
+    let section_name = if ptr < vsf_bytes.len() && vsf_bytes[ptr] != b'(' && vsf_bytes[ptr] != b']' {
+        match vsf::parse(vsf_bytes, &mut ptr) {
+            Ok(VsfType::d(name)) => name,
+            _ => return Err("Invalid section name".to_string()),
+        }
+    } else {
+        header.fields.first().map(|f| f.name.clone()).ok_or_else(|| "No section name in header".to_string())?
     };
 
     if section_name != "clutch_offer" {
@@ -1825,10 +1837,14 @@ pub fn parse_clutch_kem_response_vsf_without_recipient_check(
     }
     ptr += 1;
 
-    // Parse section name
-    let section_name = match vsf::parse(vsf_bytes, &mut ptr) {
-        Ok(VsfType::d(name)) => name,
-        _ => return Err("Invalid section name".to_string()),
+    // Section name not written for sections within 1MB; fall back to header TOC
+    let section_name = if ptr < vsf_bytes.len() && vsf_bytes[ptr] != b'(' && vsf_bytes[ptr] != b']' {
+        match vsf::parse(vsf_bytes, &mut ptr) {
+            Ok(VsfType::d(name)) => name,
+            _ => return Err("Invalid section name".to_string()),
+        }
+    } else {
+        header.fields.first().map(|f| f.name.clone()).ok_or_else(|| "No section name in header".to_string())?
     };
 
     if section_name != "clutch_kem_response" {
@@ -2147,10 +2163,14 @@ pub fn parse_clutch_complete_vsf(
     }
     ptr += 1;
 
-    // Parse section name
-    let section_name = match vsf::parse(vsf_bytes, &mut ptr) {
-        Ok(VsfType::d(name)) => name,
-        _ => return Err("Invalid section name".to_string()),
+    // Section name not written for sections within 1MB; fall back to header TOC
+    let section_name = if ptr < vsf_bytes.len() && vsf_bytes[ptr] != b'(' && vsf_bytes[ptr] != b']' {
+        match vsf::parse(vsf_bytes, &mut ptr) {
+            Ok(VsfType::d(name)) => name,
+            _ => return Err("Invalid section name".to_string()),
+        }
+    } else {
+        header.fields.first().map(|f| f.name.clone()).ok_or_else(|| "No section name in header".to_string())?
     };
 
     if section_name != "clutch_complete" {
@@ -2243,10 +2263,14 @@ pub fn parse_clutch_complete_vsf_without_recipient_check(
     }
     ptr += 1;
 
-    // Parse section name
-    let section_name = match vsf::parse(vsf_bytes, &mut ptr) {
-        Ok(VsfType::d(name)) => name,
-        _ => return Err("Invalid section name".to_string()),
+    // Section name not written for sections within 1MB; fall back to header TOC
+    let section_name = if ptr < vsf_bytes.len() && vsf_bytes[ptr] != b'(' && vsf_bytes[ptr] != b']' {
+        match vsf::parse(vsf_bytes, &mut ptr) {
+            Ok(VsfType::d(name)) => name,
+            _ => return Err("Invalid section name".to_string()),
+        }
+    } else {
+        header.fields.first().map(|f| f.name.clone()).ok_or_else(|| "No section name in header".to_string())?
     };
 
     if section_name != "clutch_complete" {
