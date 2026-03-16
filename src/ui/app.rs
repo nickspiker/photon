@@ -1848,6 +1848,14 @@ impl PhotonApp {
                     self.effective_ru(),
                     &self.app_state,
                 );
+                self.layout = Layout::new(
+                    self.width as usize,
+                    self.height as usize,
+                    self.span,
+                    self.effective_ru(),
+                    &self.app_state,
+                );
+                self.prev_conversation_textbox_shown = false;
                 self.reset_textbox();
             }
         }
