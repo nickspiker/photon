@@ -358,9 +358,8 @@ impl ApplicationHandler<PhotonEvent> for App {
                 }
                 event_loop.set_control_flow(ControlFlow::WaitUntil(wake_time));
             } else {
-                // No active textbox - poll every 250ms for network updates
-                // But wake earlier if zoom hint needs to hide
-                let mut wake_time = now + std::time::Duration::from_millis(250);
+                // Sleep until next scheduled ping; NetworkUpdate events wake us early when data arrives
+                let mut wake_time = app.next_status_ping;
                 if let Some(hide_time) = app.zoom_hint_hide_time {
                     if hide_time < wake_time {
                         wake_time = hide_time;
