@@ -172,7 +172,7 @@ debug = "line-tables-only" # Line info for debugger
 
 
 [patch.crates-io]
-softbuffer = { git = "https://github.com/nickspiker/softbuffer", branch = "master" }
+softbuffer = { git = "https://github.com/nickspiker/softbuffer", branch = "main" }
 
 [profile.release]
 lto = true                 # Full LTO for final builds

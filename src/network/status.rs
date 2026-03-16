@@ -2240,10 +2240,16 @@ fn parse_pt_packet(bytes: &[u8]) -> Option<ParsedPtPacket> {
     }
     ptr += 1;
 
-    // Parse section name (this identifies packet type: pt_spec, pt_ack, etc.)
-    let section_name = match parse(bytes, &mut ptr).ok()? {
-        vsf::VsfType::d(name) => name,
-        _ => return None,
+    // Section name is only written for sections >1MB from file start; for small sections
+    // the name lives only in the header TOC. Fall back to the header field name.
+    let section_name = if ptr < bytes.len() && bytes[ptr] != b'(' && bytes[ptr] != b']' {
+        match parse(bytes, &mut ptr).ok()? {
+            vsf::VsfType::d(name) => name,
+            _ => return None,
+        }
+    } else {
+        // No name in body — get it from the header TOC
+        header.fields.first().map(|f| f.name.clone())?
     };
 
     let mut fields = Vec::new();
