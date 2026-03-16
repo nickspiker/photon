@@ -236,7 +236,7 @@
 // │ │   struct PixelRegion { x, y, w, h }                                           │
 // │ │     ::new(), from_signed(), contains(), right(), bottom(), center()            │
 // │ │   struct Layout { logo_spectrum, photon_text, textbox,                        │
-// │ │     attest_block, contacts, header, message_area }                             │
+// │ │     attest_block, contacts, header, message_area }                            │
 // │ │   struct AttestBlockLayout { error, textbox, hint, attest }                   │
 // │ │     ::new(block)                                                              │
 // │ │   struct ContactsHeaderLayout { avatar, handle, hint, textbox, separator }    │
@@ -245,7 +245,7 @@
 // │ │     ::new(), row_region(), row_avatar_center()                                │
 // │ │     ::row_text_position(), visible_row_count()                                │
 // │ │   struct ContactsUnifiedLayout { user_avatar, handle, hint, ... }             │
-// │ │   struct ClutchKeygenResult { contact_id, keypairs }                           │
+// │ │   struct ClutchKeygenResult { contact_id, keypairs }                          │
 // │ │   struct ClutchKemEncapResult { contact_id, kem_response, local_secrets, ... }│
 // │ │   struct ClutchCeremonyResult { contact_id, friendship_chains,                │
 // │ │     eggs_proof, their_handle_hash, ceremony_id, ... }                         │
@@ -275,9 +275,9 @@
 // │ ├── text_editing.rs ── text input methods on PhotonApp                          │
 // │ │   ::textbox_is_focused(), font_size(), textbox_width/height()                 │
 // │ │   ::textbox_center_y(), textbox_left/right()                                  │
-// │ │   ::recalculate_char_widths(), render_text_clipped()                           │
-// │ │   ::update_text_scroll(), update_selection_scroll()                            │
-// │ │   ::get_selection_range(), delete_selection(), get_selected_text()             │
+// │ │   ::recalculate_char_widths(), render_text_clipped()                          │
+// │ │   ::update_text_scroll(), update_selection_scroll()                           │
+// │ │   ::get_selection_range(), delete_selection(), get_selected_text()            │
 // │ │   ::paste_text(), handle_blinkey_left(), next_blink_wake_time()               │
 // │ │   ::start/stop/undraw/draw/flip_blinkey()                                     │
 // │ │   ::add/subtract_blinkey_top/bottom(), invert_selection()                     │
@@ -286,7 +286,7 @@
 // │ │                                                                               │
 // │ └── theme.rs ── colour palette                                                  │
 // │                                                                                 │
-// │ bin/                                                                             │
+// │ bin/                                                                            │
 // │ ├── photon-keygen.rs ── signing key generation                                  │
 // │ ├── photon-signature-signer.rs ── binary signing tool                           │
 // │ └── test-device-key.rs ── device key diagnostic                                 │
