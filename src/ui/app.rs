@@ -1070,6 +1070,7 @@ pub struct PhotonApp {
     // Text state for differential rendering
     pub current_text_state: TextState,
     pub previous_text_state: TextState,
+    pub prev_conversation_textbox_shown: bool, // Whether textbox was drawn last render (for CLUTCH→Complete differential)
 
     pub textbox_mask: Vec<u8>, // Single-channel alpha mask for textbox (0=outside, 255=inside, faded at edges)
     pub show_textbox_mask: bool, // Debug: show textbox mask visualization (Ctrl+T)
@@ -1317,6 +1318,7 @@ impl PhotonApp {
             zoom_hint_ru: 1.0,
             current_text_state: TextState::new(),
             previous_text_state: TextState::new(),
+            prev_conversation_textbox_shown: false,
             textbox_mask: vec![0; (size.width * size.height) as usize],
             show_textbox_mask: false,
             frame_counter: 0,
@@ -1479,6 +1481,7 @@ impl PhotonApp {
             next_animation_frame: std::time::Instant::now(),
             current_text_state: TextState::new(),
             previous_text_state: TextState::new(),
+            prev_conversation_textbox_shown: false,
             textbox_mask: vec![0; (width * height) as usize],
             show_textbox_mask: false,
             frame_counter: 0,
