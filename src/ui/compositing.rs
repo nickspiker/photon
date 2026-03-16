@@ -11,8 +11,8 @@ const DEPLOY_VERSION_BYTES: &[u8] = include_bytes!("../../v");
 
 fn get_deploy_version() -> u32 {
     match DEPLOY_VERSION_BYTES.len() {
-        1 => DEPLOY_VERSION_BYTES[0] as u32,
-        2 => u16::from_le_bytes([DEPLOY_VERSION_BYTES[0], DEPLOY_VERSION_BYTES[1]]) as u32,
+        1 => DEPLOY_VERSION_BYTES[0] as u32 + 1,
+        2 => u16::from_le_bytes([DEPLOY_VERSION_BYTES[0], DEPLOY_VERSION_BYTES[1]]) as u32 + 1,
         _ => 0,
     }
 }
