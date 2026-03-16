@@ -125,22 +125,11 @@ impl PhotonApp {
                 || self.current_text_state.scroll_offset != self.previous_text_state.scroll_offset;
         }
 
-        // CLUTCH just completed for the selected contact — textbox needs to appear
-        let conversation_textbox_just_appeared = matches!(self.app_state, AppState::Conversation)
-            && !self.window_dirty
-            && self
-                .selected_contact
-                .and_then(|idx| self.contacts.get(idx))
-                .map(|c| c.clutch_state == crate::types::ClutchState::Complete)
-                .unwrap_or(false)
-            && !self.prev_conversation_textbox_shown;
-
         if self.text_dirty
             || self.selection_dirty
             || self.window_dirty
             || self.controls_dirty
             || zoom_hint_dirty
-            || conversation_textbox_just_appeared
         {
             self.update_counter += 1;
 
@@ -238,14 +227,6 @@ impl PhotonApp {
                 if zoom_hint_dirty {
                     let hint_font_size = font_size * 0.8;
                     self.renderer.mark_rows(0, (hint_font_size * 2.0) as u32);
-                }
-                if conversation_textbox_just_appeared {
-                    if let Some(ref tb) = self.layout.textbox {
-                        let tb_height = (self.span as f32 / 8.0 * eff_ru) as usize;
-                        let tb_top = tb.y.saturating_sub(tb_height / 2) as u32;
-                        let tb_bot = (tb.y + tb_height) as u32;
-                        self.renderer.mark_rows(tb_top, tb_bot.min(self.height));
-                    }
                 }
             }
 
@@ -1617,36 +1598,6 @@ impl PhotonApp {
                         theme::BUTTON_TEXT,
                         theme::FONT_UI,
                     );
-                }
-            }
-
-            // Draw conversation textbox when CLUTCH just completed (differential rendering)
-            {
-                let current_has_textbox = matches!(self.app_state, AppState::Conversation)
-                    && self
-                        .selected_contact
-                        .and_then(|idx| self.contacts.get(idx))
-                        .map(|c| c.clutch_state == crate::types::ClutchState::Complete)
-                        .unwrap_or(false);
-
-                if conversation_textbox_just_appeared {
-                    if let Some(ref tb) = self.layout.textbox {
-                        let tb_height = (self.span as f32 / 8.0 * eff_ru) as usize;
-                        Self::draw_textbox(
-                            pixels,
-                            &mut self.hit_test_map,
-                            HIT_HANDLE_TEXTBOX,
-                            &mut self.textbox_mask,
-                            self.width as usize,
-                            tb.x + tb.w / 2,
-                            (tb.y + tb.h / 2) as isize,
-                            tb.w,
-                            tb_height,
-                        );
-                    }
-                }
-                if matches!(self.app_state, AppState::Conversation) {
-                    self.prev_conversation_textbox_shown = current_has_textbox;
                 }
             }
 
