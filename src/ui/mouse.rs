@@ -412,7 +412,6 @@ impl PhotonApp {
                                     self.effective_ru(),
                                     &self.app_state,
                                 );
-                                self.prev_conversation_textbox_shown = false;
                                 self.window_dirty = true;
                                 self.reset_textbox();
 
