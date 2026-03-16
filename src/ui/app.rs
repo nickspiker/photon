@@ -3018,6 +3018,7 @@ impl PhotonApp {
 
         let mut changed = false;
         let mut ceremony_completions: Vec<usize> = Vec::new(); // Contact indices to complete after loop
+        let mut lan_ping_indices: Vec<usize> = Vec::new(); // Contact indices to ping immediately on new LAN discovery
                                                                // Collect pending message retransmit requests (friendship_id, ip, handle, device_pubkey, last_received_ef6) to process after loop
                                                                // last_received_ef6 from pong tells us what they already have - only retransmit newer
         let mut retransmit_requests: Vec<(
@@ -4707,7 +4708,7 @@ impl PhotonApp {
                     port,
                 } => {
                     // Find contact by handle_proof and store their LAN IP + port
-                    for contact in &mut self.contacts {
+                    for (idx, contact) in self.contacts.iter_mut().enumerate() {
                         if contact.handle_proof == handle_proof {
                             let old_local = contact.local_ip;
                             let old_port = contact.local_port;
@@ -4718,6 +4719,8 @@ impl PhotonApp {
                                     "LAN: Discovered {} at local {}:{}",
                                     contact.handle, local_ip, port
                                 ));
+                                // Ping immediately so we don't wait for next scheduled cycle
+                                lan_ping_indices.push(idx);
                                 changed = true;
                             }
                             break;
@@ -4731,6 +4734,12 @@ impl PhotonApp {
         for idx in ceremony_completions {
             self.complete_clutch_ceremony_by_idx(idx, our_handle_hash);
             changed = true;
+        }
+
+        // Ping contacts immediately when a new LAN address is discovered
+        // Fixes timing gap: startup ping fires before first LAN discovery arrives
+        for idx in lan_ping_indices {
+            self.ping_contact(idx);
         }
 
         // Retransmit pending messages to contacts that just came online
