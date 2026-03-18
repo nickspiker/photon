@@ -186,8 +186,7 @@ impl FlatStorage {
         };
 
         let added = match get_val("added") {
-            Some(VsfType::e(vsf::types::EtType::u(osc))) => *osc,
-            Some(VsfType::e(vsf::types::EtType::f6(secs))) => (*secs * 1_420_407_826.0) as u64,
+            Some(VsfType::e(vsf::types::EtType::i(osc))) => *osc as u64,
             _ => 0,
         };
 
@@ -250,8 +249,7 @@ impl FlatStorage {
                     };
 
                     let last_seen = match get_dev("last_seen") {
-                        Some(VsfType::e(vsf::types::EtType::u(osc))) => Some(*osc),
-                        Some(VsfType::e(vsf::types::EtType::f6(secs))) => Some((*secs * 1_420_407_826.0) as u64),
+                        Some(VsfType::e(vsf::types::EtType::i(osc))) => Some(*osc as u64),
                         _ => None,
                     };
 
@@ -334,7 +332,7 @@ impl FlatStorage {
 
         section.add_field("identity_seed", VsfType::hb(blob.identity_seed.to_vec()));
         section.add_field("handle", VsfType::x(blob.handle.clone()));
-        section.add_field("added", VsfType::e(vsf::types::EtType::u(blob.added)));
+        section.add_field("added", VsfType::e(vsf::types::EtType::i(blob.added as i64)));
 
         if let Some(ref friendship_id) = blob.friendship_id {
             section.add_field(
@@ -374,7 +372,7 @@ impl FlatStorage {
                     if let Some(last_seen) = device.last_seen {
                         device_section.add_field(
                             "last_seen",
-                            VsfType::e(vsf::types::EtType::u(last_seen)),
+                            VsfType::e(vsf::types::EtType::i(last_seen as i64)),
                         );
                     }
 
@@ -503,7 +501,12 @@ impl FlatStorage {
         };
 
         let chain_last_ack_time = match get_val("chain_last_ack_time") {
-            Some(v) => Some(vsf::types::EagleTime::new_from_vsf(v.clone()).to_seconds_f64()),
+            Some(VsfType::e(vsf::types::EtType::i(osc))) => Some(*osc),
+            Some(v) => {
+                // Legacy: convert any EagleTime to oscillations
+                let et = vsf::types::EagleTime::new_from_vsf(v.clone());
+                et.oscillations()
+            },
             None => None,
         };
 
@@ -517,7 +520,11 @@ impl FlatStorage {
                         _ => return None,
                     };
                     let eagle_time = match &field.values[1] {
-                        v => vsf::types::EagleTime::new_from_vsf(v.clone()).to_seconds_f64(),
+                        VsfType::e(vsf::types::EtType::i(osc)) => *osc,
+                        v => {
+                            let et = vsf::types::EagleTime::new_from_vsf(v.clone());
+                            et.oscillations().unwrap_or(0)
+                        },
                     };
                     let author_index = usize::from_vsf_type(&field.values[2]).ok()?;
                     Some(MessageIndexEntry {
@@ -552,7 +559,7 @@ impl FlatStorage {
         if let Some(chain_last_ack_time) = blob.chain_last_ack_time {
             section.add_field(
                 "chain_last_ack_time",
-                VsfType::e(vsf::types::EtType::u(((chain_last_ack_time) * 1_420_407_826.0) as u64)),
+                VsfType::e(vsf::types::EtType::i(chain_last_ack_time)),
             );
         }
 
@@ -561,7 +568,7 @@ impl FlatStorage {
                 "message",
                 vec![
                     VsfType::hg(entry.network_id.to_vec()),
-                    VsfType::e(vsf::types::EtType::u(((entry.eagle_time) * 1_420_407_826.0) as u64)),
+                    VsfType::e(vsf::types::EtType::i(entry.eagle_time)),
                     VsfType::u(entry.author_index, false),
                 ],
             );
@@ -724,8 +731,12 @@ impl FlatStorage {
             .unwrap_or(0);
 
         let eagle_time = match get_val("eagle_time") {
-            Some(v) => vsf::types::EagleTime::new_from_vsf(v.clone()).to_seconds_f64(),
-            None => 0.0,
+            Some(VsfType::e(vsf::types::EtType::i(osc))) => *osc,
+            Some(v) => {
+                let et = vsf::types::EagleTime::new_from_vsf(v.clone());
+                et.oscillations().unwrap_or(0)
+            },
+            None => 0,
         };
 
         let plaintext = match get_val("plaintext") {
@@ -769,7 +780,7 @@ impl FlatStorage {
         section.add_field("status", VsfType::u(blob.status as usize, false));
         section.add_field(
             "eagle_time",
-            VsfType::e(vsf::types::EtType::u(((blob.eagle_time) * 1_420_407_826.0) as u64)),
+            VsfType::e(vsf::types::EtType::i(blob.eagle_time)),
         );
         section.add_field("plaintext", VsfType::x(blob.plaintext.clone()));
 
@@ -1102,7 +1113,7 @@ pub struct ContactBlob {
 #[derive(Clone, Debug, Default)]
 pub struct ChainBlob {
     pub chain_links: Option<Vec<u8>>, // Serialized 512 links
-    pub chain_last_ack_time: Option<f64>,
+    pub chain_last_ack_time: Option<i64>,
     pub message_index: Vec<MessageIndexEntry>,
 }
 
@@ -1110,7 +1121,7 @@ pub struct ChainBlob {
 #[derive(Clone, Debug)]
 pub struct MessageIndexEntry {
     pub network_id: [u8; 32],
-    pub eagle_time: f64,
+    pub eagle_time: i64,
     pub author_index: usize, // Index into ContactBlob.participants
 }
 
@@ -1119,7 +1130,7 @@ pub struct MessageIndexEntry {
 pub struct MessageBlob {
     pub author_index: usize,          // Index into ContactBlob.participants
     pub status: u8,                   // 0=pending, 1=sent, 2=delivered, 3=read
-    pub eagle_time: f64,
+    pub eagle_time: i64,
     pub plaintext: String,
     pub wire_format: Option<Vec<u8>>, // Encrypted wire bytes for re-send
     pub prev_msg_hp: Option<[u8; 32]>, // Hash chain link

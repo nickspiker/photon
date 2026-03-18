@@ -35,13 +35,13 @@ pub type ContactPubkeys = Arc<Mutex<Vec<DevicePubkey>>>;
 /// Maps conversation_token to last_received_ef6 (when we last received a message)
 pub type SyncRecordsProvider = Arc<Mutex<Vec<SyncRecord>>>;
 
-/// Get current Eagle Time as binary64 (seconds since Apollo 11 landing: July 20, 1969, 20:17:40 UTC)
-fn eagle_time_binary64() -> f64 {
-    vsf::EagleTime::from_oscillations(vsf::eagle_time_oscillations()).to_seconds_f64()
+/// Get current Eagle Time as i64 oscillations
+fn eagle_time_now() -> i64 {
+    vsf::eagle_time_oscillations()
 }
 
 /// Compute provenance hash = BLAKE3(sender_pubkey || timestamp_bytes)
-fn compute_provenance_hash(sender_pubkey: &DevicePubkey, timestamp: f64) -> [u8; 32] {
+fn compute_provenance_hash(sender_pubkey: &DevicePubkey, timestamp: i64) -> [u8; 32] {
     use blake3::Hasher;
     let mut hasher = Hasher::new();
     hasher.update(sender_pubkey.as_bytes());
@@ -74,9 +74,9 @@ pub struct MessageRequest {
     pub prev_msg_hp: [u8; 32],
     /// Encrypted message content
     pub ciphertext: Vec<u8>,
-    /// Eagle time used for encryption - MUST match for decryption
+    /// Eagle time oscillations used for encryption - MUST match for decryption
     /// The nonce is derived from this, so sender and receiver must use identical value
-    pub eagle_time: f64,
+    pub eagle_time: i64,
 }
 
 /// Request to send a message acknowledgment (CHAIN format)
@@ -88,8 +88,8 @@ pub struct AckRequest {
     /// Privacy-preserving conversation token (smear_hash of sorted participant seeds).
     /// Replaces cleartext handle_hash - only participants can compute.
     pub conversation_token: [u8; 32],
-    /// Eagle time of the message being ACKed (f64 from their VSF header)
-    pub acked_eagle_time: f64,
+    /// Eagle time oscillations of the message being ACKed (i64 from their VSF header)
+    pub acked_eagle_time: i64,
     /// Hash of the decrypted plaintext - proves we decrypted their message
     pub plaintext_hash: [u8; 32],
 }
@@ -180,16 +180,16 @@ pub enum StatusUpdate {
         prev_msg_hp: [u8; 32],
         /// Encrypted message content
         ciphertext: Vec<u8>,
-        /// Eagle time from VSF header (for ACK matching)
-        timestamp: f64,
+        /// Eagle time oscillations from VSF header (for ACK matching)
+        timestamp: i64,
         sender_addr: SocketAddr,
     },
     /// Message acknowledgment received (CHAIN format)
     MessageAck {
         /// Privacy-preserving conversation token (smear_hash of sorted participant seeds)
         conversation_token: [u8; 32],
-        /// Eagle time of the message being ACKed
-        acked_eagle_time: f64,
+        /// Eagle time oscillations of the message being ACKed
+        acked_eagle_time: i64,
         /// BLAKE3 hash of decrypted plaintext - proves they decrypted our message
         plaintext_hash: [u8; 32],
     },
@@ -1387,7 +1387,7 @@ async fn run_checker(
                                     };
 
                                     let pong = FgtwMessage::StatusPong {
-                                        timestamp: eagle_time_binary64(),
+                                        timestamp: eagle_time_now(),
                                         responder_pubkey: our_pubkey_recv.clone(),
                                         provenance_hash,
                                         signature: sig_bytes,
@@ -1563,7 +1563,7 @@ async fn run_checker(
     loop {
         match ping_rx.try_recv() {
             Ok(request) => {
-                let timestamp = eagle_time_binary64();
+                let timestamp = eagle_time_now();
                 let provenance_hash = compute_provenance_hash(&our_pubkey, timestamp);
 
                 let signature = keypair.sign(&provenance_hash);
@@ -1716,7 +1716,7 @@ async fn run_checker(
         // Process ACK requests (message acknowledgments - CHAIN format)
         // Routed through PT for unified transport (UDP → TCP after 1s → relay fallback)
         while let Ok(request) = ack_rx.try_recv() {
-            let timestamp = eagle_time_binary64();
+            let timestamp = eagle_time_now();
 
             // Compute provenance and sign (CHAIN format - no weave yet)
             let provenance = compute_ack_provenance_v2(
@@ -2017,7 +2017,7 @@ fn compute_chat_provenance(conversation_token: &[u8; 32], prev_msg_hp: &[u8; 32]
 /// provenance = BLAKE3(conversation_token || acked_eagle_time_bytes || plaintext_hash || "ack")
 fn compute_ack_provenance_v2(
     conversation_token: &[u8; 32],
-    acked_eagle_time: f64,
+    acked_eagle_time: i64,
     plaintext_hash: &[u8; 32],
 ) -> [u8; 32] {
     use blake3::Hasher;
@@ -2192,7 +2192,6 @@ enum ParsedPtPacket {
 /// Parse VSF PT packet - supports both header-only and section formats
 fn parse_pt_packet(bytes: &[u8]) -> Option<ParsedPtPacket> {
     use vsf::file_format::VsfHeader;
-    use vsf::parse;
 
     let (header, header_end) = VsfHeader::decode(bytes).ok()?;
 
@@ -2235,46 +2234,20 @@ fn parse_pt_packet(bytes: &[u8]) -> Option<ParsedPtPacket> {
 
     // Fall back to section body parsing
     let mut ptr = header_end;
-    if ptr >= bytes.len() || bytes[ptr] != b'[' {
-        return None;
-    }
-    ptr += 1;
+    let section = vsf::VsfSection::parse(bytes, &mut ptr).ok()?;
 
-    // Section name is only written for sections >1MB from file start; for small sections
-    // the name lives only in the header TOC. Fall back to the header field name.
-    let section_name = if ptr < bytes.len() && bytes[ptr] != b'(' && bytes[ptr] != b']' {
-        match parse(bytes, &mut ptr).ok()? {
-            vsf::VsfType::d(name) => name,
-            _ => return None,
-        }
-    } else {
-        // No name in body — get it from the header TOC
+    // Resolve section name (empty for small sections, falls back to header TOC)
+    let section_name = if section.name.is_empty() {
         header.fields.first().map(|f| f.name.clone())?
+    } else {
+        section.name.clone()
     };
 
-    let mut fields = Vec::new();
-    while ptr < bytes.len() && bytes[ptr] != b']' {
-        if bytes[ptr] != b'(' {
-            break;
-        }
-        ptr += 1;
-
-        let field_name = match parse(bytes, &mut ptr) {
-            Ok(vsf::VsfType::d(name)) => name,
-            _ => break,
-        };
-
-        if ptr < bytes.len() && bytes[ptr] == b':' {
-            ptr += 1;
-            if let Ok(value) = parse(bytes, &mut ptr) {
-                fields.push((field_name, value));
-            }
-        }
-
-        if ptr < bytes.len() && bytes[ptr] == b')' {
-            ptr += 1;
-        }
-    }
+    let fields: Vec<(String, vsf::VsfType)> = section
+        .fields
+        .iter()
+        .filter_map(|f| f.values.first().map(|v| (f.name.clone(), v.clone())))
+        .collect();
 
     Some(ParsedPtPacket::Section {
         name: section_name,
@@ -2286,67 +2259,16 @@ fn parse_pt_packet(bytes: &[u8]) -> Option<ParsedPtPacket> {
 /// Parse inline values from a header field by name
 /// Returns the values for (name:val1,val2,...) format
 fn parse_header_inline_values(bytes: &[u8], target_name: &str) -> Option<Vec<vsf::VsfType>> {
-    use vsf::parse;
+    use vsf::file_format::VsfHeader;
 
-    // Skip magic "RÅ<"
-    if bytes.len() < 4 || &bytes[0..3] != "RÅ".as_bytes() || bytes[3] != b'<' {
-        return None;
-    }
+    let (header, _) = VsfHeader::decode(bytes).ok()?;
 
-    let mut ptr = 4;
-
-    // Skip header fields until we hit '>' or find our field
-    while ptr < bytes.len() && bytes[ptr] != b'>' {
-        if bytes[ptr] == b'(' {
-            ptr += 1;
-
-            // Parse field name
-            let field_name = match parse(bytes, &mut ptr) {
-                Ok(vsf::VsfType::d(name)) => name,
-                _ => continue,
-            };
-
-            if field_name == target_name {
-                // Found it! Parse values after ':'
-                let mut values = Vec::new();
-                if ptr < bytes.len() && bytes[ptr] == b':' {
-                    ptr += 1;
-                    // Parse comma-separated values until ')'
-                    loop {
-                        if ptr >= bytes.len() || bytes[ptr] == b')' {
-                            break;
-                        }
-                        if let Ok(value) = parse(bytes, &mut ptr) {
-                            values.push(value);
-                        } else {
-                            break;
-                        }
-                        // Skip comma separator
-                        if ptr < bytes.len() && bytes[ptr] == b',' {
-                            ptr += 1;
-                        }
-                    }
-                }
-                return Some(values);
-            }
-
-            // Skip to end of this field
-            while ptr < bytes.len() && bytes[ptr] != b')' {
-                let _ = parse(bytes, &mut ptr);
-                if ptr < bytes.len() && bytes[ptr] == b',' {
-                    ptr += 1;
-                }
-            }
-            if ptr < bytes.len() && bytes[ptr] == b')' {
-                ptr += 1;
-            }
-        } else {
-            // Skip non-field elements in header
-            let _ = parse(bytes, &mut ptr);
-        }
-    }
-
-    None
+    // Find the target field in the header and return its inline values
+    header
+        .fields
+        .iter()
+        .find(|f| f.name == target_name)
+        .map(|f| f.inline_values.clone())
 }
 
 /// Parse VSF fields from bytes (legacy section-only format)

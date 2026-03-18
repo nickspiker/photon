@@ -49,9 +49,10 @@ use vsf::{VsfSection, VsfType};
 fn vsf_to_oscillations(v: &VsfType) -> i64 {
     match v {
         VsfType::e(vsf::types::EtType::i(osc)) => *osc,
-        VsfType::e(vsf::types::EtType::f6(secs)) => (*secs * 1_420_407_826.0) as i64,
-        VsfType::e(vsf::types::EtType::f5(secs)) => (*secs as f64 * 1_420_407_826.0) as i64,
-        _ => 0,
+        v => {
+            let et = EagleTime::new_from_vsf(v.clone());
+            et.oscillations().unwrap_or(0)
+        },
     }
 }
 
@@ -1497,7 +1498,7 @@ pub fn save_messages(
             "msg",
             vec![
                 VsfType::x(msg.content.clone()),
-                VsfType::e(vsf::types::EtType::f6(msg.timestamp)),
+                VsfType::e(vsf::types::EtType::i(msg.timestamp)),
                 VsfType::u3(if msg.is_outgoing { 1 } else { 0 }),
                 VsfType::u3(if msg.delivered { 1 } else { 0 }),
             ],
@@ -1569,7 +1570,11 @@ pub fn load_messages(
                 _ => continue,
             };
             let timestamp = match &field.values[1] {
-                v => EagleTime::new_from_vsf(v.clone()).to_seconds_f64(),
+                VsfType::e(vsf::types::EtType::i(osc)) => *osc,
+                v => {
+                    let et = EagleTime::new_from_vsf(v.clone());
+                    et.oscillations().unwrap_or(0)
+                },
             };
             let is_outgoing = match &field.values[2] {
                 VsfType::u3(v) => *v != 0,
