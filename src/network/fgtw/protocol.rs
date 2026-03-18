@@ -945,7 +945,10 @@ fn extract_header_timestamp(header: &vsf::file_format::VsfHeader) -> Result<f64,
     match &header.creation_time {
         VsfType::e(EtType::f6(v)) => Ok(*v),
         VsfType::e(EtType::f5(v)) => Ok(*v as f64),
-        VsfType::e(EtType::i(v)) => Ok(*v as f64),
+        VsfType::e(EtType::i(v)) => {
+            // EtType::i is raw oscillations — convert to seconds
+            Ok(vsf::EagleTime::from_oscillations(*v).to_seconds_f64())
+        }
         _ => Err("Invalid header timestamp".to_string()),
     }
 }
