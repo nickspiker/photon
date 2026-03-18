@@ -200,6 +200,7 @@ pub fn vsf_write(
     label: &str,
     #[allow(unused_variables)] decrypted: Option<&[u8]>,
     device_secret: &[u8; 32],
+    policy: crate::storage::WritePolicy,
 ) -> std::io::Result<()> {
     #[cfg(feature = "development")]
     crate::log(&format!("STORAGE: vsf_write: start {}", label));
@@ -242,7 +243,12 @@ pub fn vsf_write(
     #[cfg(feature = "development")]
     crate::log(&format!("STORAGE: vsf_write: writing to {:?}", path));
 
-    std::fs::write(path, &vsf_file)?;
+    crate::storage::write_file(
+        path,
+        &vsf_file,
+        label,
+        policy,
+    )?;
 
     #[cfg(feature = "development")]
     crate::log("STORAGE: vsf_write: write complete");
@@ -257,7 +263,7 @@ pub fn vsf_write(
 /// Returns the encrypted bytes. Caller is responsible for decryption.
 /// After decryption, call `vsf_read_decrypted` to log the decrypted content.
 pub fn vsf_read(path: &Path, label: &str, device_secret: &[u8; 32]) -> std::io::Result<Vec<u8>> {
-    let file_bytes = std::fs::read(path)?;
+    let file_bytes = crate::storage::read_file(path, label)?;
 
     #[cfg(feature = "development")]
     {

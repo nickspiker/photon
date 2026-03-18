@@ -71,7 +71,9 @@
 // │   struct AttestationData { handle, handle_proof, identity_seed,
 // │     contacts, friendships, avatar_pixels, peers }
 // │
-// ├── inspect.rs ── network diagnostic utilities
+// ├── inspect.rs ── network diagnostic utilities, VSF disk I/O
+// │   vsf_write(path, encrypted, label, decrypted, device_secret, policy)
+// │   vsf_read(path, label, device_secret)
 // │
 // ├── peer_updates.rs ── peer state change notifications
 // │   struct PeerUpdate, PeerUpdateClient
@@ -126,6 +128,11 @@
 // └── jni_android.rs ── Android JNI bridge
 //
 // storage/
+// ├── mod.rs ── unified storage I/O (all disk writes/reads go through here)
+// │   enum WritePolicy { MustSucceed, BestEffort }
+// │   write_file(path, data, label, policy) ── atomic write with fsync
+// │   read_file(path, label) ── unified read with error logging
+// │
 // ├── cloud.rs ── FGTW cloud backup (contacts sync)
 // │   struct CloudContact, enum CloudError
 // │   contacts_storage_key(identity_seed, device_secret)

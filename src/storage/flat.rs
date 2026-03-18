@@ -62,13 +62,13 @@ impl FlatStorage {
     /// Load contact list from disk
     pub fn load_contact_list(&self) -> Result<Vec<ContactListEntry>, StorageError> {
         let filename = derive_contact_list_filename(&self.identity_seed, &self.device_secret);
-        let path = self.root.join(filename);
+        let path = self.root.join(&filename);
 
         if !path.exists() {
             return Ok(Vec::new());
         }
 
-        let encrypted = fs::read(&path)?;
+        let encrypted = super::read_file(&path, &format!("flat/contact_list/{}", filename))?;
         let key = derive_contact_list_key(&self.identity_seed, &self.device_secret);
         let vsf_bytes = decrypt_data(&encrypted, &key)?;
 
@@ -124,7 +124,12 @@ impl FlatStorage {
 
         let filename = derive_contact_list_filename(&self.identity_seed, &self.device_secret);
         let path = self.root.join(&filename);
-        fs::write(&path, &encrypted)?;
+        super::write_file(
+            &path,
+            &encrypted,
+            &format!("flat/contact_list/{}", filename),
+            super::WritePolicy::BestEffort,
+        )?;
 
         #[cfg(feature = "development")]
         crate::log(&format!(
@@ -150,7 +155,7 @@ impl FlatStorage {
             their_identity_seed,
             &self.device_secret,
         );
-        let path = self.root.join(filename);
+        let path = self.root.join(&filename);
 
         if !path.exists() {
             return Err(StorageError::Io(std::io::Error::new(
@@ -159,7 +164,7 @@ impl FlatStorage {
             )));
         }
 
-        let encrypted = fs::read(&path)?;
+        let encrypted = super::read_file(&path, &format!("flat/contact_blob/{}", filename))?;
         let key =
             derive_contact_blob_key(&self.identity_seed, their_identity_seed, &self.device_secret);
         let vsf_bytes = decrypt_data(&encrypted, &key)?;
@@ -424,7 +429,12 @@ impl FlatStorage {
             &self.device_secret,
         );
         let path = self.root.join(&filename);
-        fs::write(&path, &encrypted)?;
+        super::write_file(
+            &path,
+            &encrypted,
+            &format!("flat/contact_blob/{}", filename),
+            super::WritePolicy::BestEffort,
+        )?;
 
         #[cfg(feature = "development")]
         crate::log(&format!(
@@ -467,7 +477,7 @@ impl FlatStorage {
             their_identity_seed,
             &self.device_secret,
         );
-        let path = self.root.join(filename);
+        let path = self.root.join(&filename);
 
         if !path.exists() {
             return Err(StorageError::Io(std::io::Error::new(
@@ -476,7 +486,7 @@ impl FlatStorage {
             )));
         }
 
-        let encrypted = fs::read(&path)?;
+        let encrypted = super::read_file(&path, &format!("flat/chain_blob/{}", filename))?;
         let key =
             derive_chain_blob_key(&self.identity_seed, their_identity_seed, &self.device_secret);
         let vsf_bytes = decrypt_data(&encrypted, &key)?;
@@ -569,7 +579,12 @@ impl FlatStorage {
             &self.device_secret,
         );
         let path = self.root.join(&filename);
-        fs::write(&path, &encrypted)?;
+        super::write_file(
+            &path,
+            &encrypted,
+            &format!("flat/chain_blob/{}", filename),
+            super::WritePolicy::MustSucceed,
+        )?;
 
         #[cfg(feature = "development")]
         crate::log(&format!("FLAT: Saved chain blob to {}", filename));
@@ -606,7 +621,7 @@ impl FlatStorage {
             their_identity_seed,
             &self.device_secret,
         );
-        let path = self.root.join(filename);
+        let path = self.root.join(&filename);
 
         if !path.exists() {
             return Err(StorageError::Io(std::io::Error::new(
@@ -615,7 +630,7 @@ impl FlatStorage {
             )));
         }
 
-        let encrypted = fs::read(&path)?;
+        let encrypted = super::read_file(&path, &format!("flat/avatar/{}", filename))?;
         let key =
             derive_avatar_key(&self.identity_seed, their_identity_seed, &self.device_secret);
         decrypt_data(&encrypted, &key)
@@ -637,7 +652,12 @@ impl FlatStorage {
             &self.device_secret,
         );
         let path = self.root.join(&filename);
-        fs::write(&path, &encrypted)?;
+        super::write_file(
+            &path,
+            &encrypted,
+            &format!("flat/avatar/{}", filename),
+            super::WritePolicy::BestEffort,
+        )?;
 
         #[cfg(feature = "development")]
         crate::log(&format!("FLAT: Saved avatar to {}", filename));
@@ -670,7 +690,7 @@ impl FlatStorage {
     /// Load message from disk
     pub fn load_message(&self, network_id: &[u8; 32]) -> Result<MessageBlob, StorageError> {
         let filename = derive_message_filename(network_id, &self.identity_seed, &self.device_secret);
-        let path = self.root.join(filename);
+        let path = self.root.join(&filename);
 
         if !path.exists() {
             return Err(StorageError::Io(std::io::Error::new(
@@ -679,7 +699,7 @@ impl FlatStorage {
             )));
         }
 
-        let encrypted = fs::read(&path)?;
+        let encrypted = super::read_file(&path, &format!("flat/message/{}", filename))?;
         let key = derive_message_key(&self.identity_seed, &self.device_secret);
         let vsf_bytes = decrypt_data(&encrypted, &key)?;
 
@@ -768,7 +788,12 @@ impl FlatStorage {
 
         let filename = derive_message_filename(network_id, &self.identity_seed, &self.device_secret);
         let path = self.root.join(&filename);
-        fs::write(&path, &encrypted)?;
+        super::write_file(
+            &path,
+            &encrypted,
+            &format!("flat/message/{}", filename),
+            super::WritePolicy::BestEffort,
+        )?;
 
         #[cfg(feature = "development")]
         crate::log(&format!("FLAT: Saved message to {}", filename));
