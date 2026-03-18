@@ -368,6 +368,13 @@ impl PhotonApp {
         self.render();
     }
 
+    pub fn cancel_drag(&mut self) {
+        self.is_dragging_resize = false;
+        self.is_dragging_move = false;
+        self.resize_edge = ResizeEdge::None;
+        self.mouse_button_pressed = false;
+    }
+
     /// Get next blinkey blink wake time (random interval 0..=125ms)
     pub fn next_blink_wake_time(&self) -> std::time::Instant {
         let interval_ms = rand::thread_rng().gen_range(0..=300);
