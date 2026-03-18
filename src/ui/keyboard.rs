@@ -56,21 +56,23 @@ impl PhotonApp {
                 }
             }
 
-            // Ctrl++/- for zoom (available in all states)
+            // Zoom shortcuts (available in all states)
             // Uses logarithmic scaling: 1 step = multiply by 33/32
-            if self.modifiers.control_key() {
+            // macOS: Cmd++/-/0  |  other platforms: Ctrl++/-/0
+            #[cfg(target_os = "macos")]
+            let zoom_key = self.modifiers.super_key();
+            #[cfg(not(target_os = "macos"))]
+            let zoom_key = self.modifiers.control_key();
+            if zoom_key {
                 if let Key::Character(ref c) = event.logical_key {
-                    // Ctrl++ or Ctrl+= : Zoom in (1 step)
                     if c == "+" || c == "=" {
                         self.adjust_zoom(1.0);
                         return;
                     }
-                    // Ctrl+- : Zoom out (1 step)
                     if c == "-" {
                         self.adjust_zoom(-1.0);
                         return;
                     }
-                    // Ctrl+0 : Reset zoom to 100%
                     if c == "0" {
                         self.ru = 1.0;
                         self.window_dirty = true;
@@ -382,8 +384,9 @@ impl PhotonApp {
                                 let message: String =
                                     self.current_text_state.chars.iter().collect();
                                 if self.send_message_to_selected_contact(&message) {
-                                    // Clear textbox after successful send
+                                    // Clear textbox after successful send, keep focus
                                     self.reset_textbox();
+                                    self.current_text_state.textbox_focused = true;
                                     self.window_dirty = true;
                                 }
                             }
