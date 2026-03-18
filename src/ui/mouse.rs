@@ -342,8 +342,9 @@ impl PhotonApp {
                                     if !message.is_empty() {
                                         debug_println!("Send button clicked, sending: {}", message);
                                         if self.send_message_to_selected_contact(&message) {
-                                            // Clear textbox after successful send
+                                            // Clear textbox after successful send, keep focus
                                             self.reset_textbox();
+                                            self.current_text_state.textbox_focused = true;
                                             self.window_dirty = true;
                                         }
                                     }
@@ -581,6 +582,13 @@ impl PhotonApp {
         self.mouse_x = position.x as f32;
         self.mouse_y = position.y as f32;
 
+        // Safety net: if we somehow missed a mouse release, clear stale drag state.
+        if !self.mouse_button_pressed {
+            self.is_dragging_resize = false;
+            self.is_dragging_move = false;
+            self.resize_edge = ResizeEdge::None;
+        }
+
         // Handle window move dragging
         if self.is_dragging_move {
             // Get current global blinkey position
@@ -599,95 +607,7 @@ impl PhotonApp {
             }
             false // No redraw needed for window move
         } else if self.is_dragging_resize {
-            // Get current global blinkey position
-            if let Some(window_pos) = window.outer_position().ok() {
-                let current_blinkey_screen_x = window_pos.x as f64 + self.mouse_x as f64;
-                let current_blinkey_screen_y = window_pos.y as f64 + self.mouse_y as f64;
-
-                // Calculate delta in global screen space
-                let dx = (current_blinkey_screen_x - self.drag_start_blinkey_screen_pos.0) as f32;
-                let dy = (current_blinkey_screen_y - self.drag_start_blinkey_screen_pos.1) as f32;
-
-                // Minimum window dimension: 32 pixels
-                let min_size = 128.;
-
-                let (new_width, new_height, should_move, new_x, new_y) = match self.resize_edge {
-                    ResizeEdge::Right => {
-                        let w = ((self.drag_start_size.0 as f32 + dx).max(min_size) as u32)
-                            .max(min_size as u32);
-                        let h = self.drag_start_size.1.max(min_size as u32);
-                        (w, h, false, 0, 0)
-                    }
-                    ResizeEdge::Left => {
-                        let w = ((self.drag_start_size.0 as f32 - dx).max(min_size) as u32)
-                            .max(min_size as u32);
-                        let h = self.drag_start_size.1.max(min_size as u32);
-                        let width_change = self.drag_start_size.0 as i32 - w as i32;
-                        let new_x = self.drag_start_window_pos.0 + width_change;
-                        (w, h, true, new_x, self.drag_start_window_pos.1)
-                    }
-                    ResizeEdge::Bottom => {
-                        let w = self.drag_start_size.0.max(min_size as u32);
-                        let h = ((self.drag_start_size.1 as f32 + dy).max(min_size) as u32)
-                            .max(min_size as u32);
-                        (w, h, false, 0, 0)
-                    }
-                    ResizeEdge::Top => {
-                        let w = self.drag_start_size.0.max(min_size as u32);
-                        let h = ((self.drag_start_size.1 as f32 - dy).max(min_size) as u32)
-                            .max(min_size as u32);
-                        let height_change = self.drag_start_size.1 as i32 - h as i32;
-                        let new_y = self.drag_start_window_pos.1 + height_change;
-                        (w, h, true, self.drag_start_window_pos.0, new_y)
-                    }
-                    ResizeEdge::TopRight => {
-                        let w = ((self.drag_start_size.0 as f32 + dx).max(min_size) as u32)
-                            .max(min_size as u32);
-                        let h = ((self.drag_start_size.1 as f32 - dy).max(min_size) as u32)
-                            .max(min_size as u32);
-                        let height_change = self.drag_start_size.1 as i32 - h as i32;
-                        let new_y = self.drag_start_window_pos.1 + height_change;
-                        (w, h, true, self.drag_start_window_pos.0, new_y)
-                    }
-                    ResizeEdge::TopLeft => {
-                        let w = ((self.drag_start_size.0 as f32 - dx).max(min_size) as u32)
-                            .max(min_size as u32);
-                        let h = ((self.drag_start_size.1 as f32 - dy).max(min_size) as u32)
-                            .max(min_size as u32);
-                        let width_change = self.drag_start_size.0 as i32 - w as i32;
-                        let height_change = self.drag_start_size.1 as i32 - h as i32;
-                        let new_x = self.drag_start_window_pos.0 + width_change;
-                        let new_y = self.drag_start_window_pos.1 + height_change;
-                        (w, h, true, new_x, new_y)
-                    }
-                    ResizeEdge::BottomRight => {
-                        let w = ((self.drag_start_size.0 as f32 + dx).max(min_size) as u32)
-                            .max(min_size as u32);
-                        let h = ((self.drag_start_size.1 as f32 + dy).max(min_size) as u32)
-                            .max(min_size as u32);
-                        (w, h, false, 0, 0)
-                    }
-                    ResizeEdge::BottomLeft => {
-                        let w = ((self.drag_start_size.0 as f32 - dx).max(min_size) as u32)
-                            .max(min_size as u32);
-                        let h = ((self.drag_start_size.1 as f32 + dy).max(min_size) as u32)
-                            .max(min_size as u32);
-                        let width_change = self.drag_start_size.0 as i32 - w as i32;
-                        let new_x = self.drag_start_window_pos.0 + width_change;
-                        (w, h, true, new_x, self.drag_start_window_pos.1)
-                    }
-                    _ => (self.drag_start_size.0, self.drag_start_size.1, false, 0, 0),
-                };
-
-                // Move window if resizing from left/top
-                if should_move {
-                    let _ =
-                        window.set_outer_position(winit::dpi::PhysicalPosition::new(new_x, new_y));
-                }
-
-                let _ =
-                    window.request_inner_size(winit::dpi::PhysicalSize::new(new_width, new_height));
-            }
+            self.apply_resize(window);
             false // No redraw needed for window resize (resize event handles it)
         } else {
             // Start mouse selection if we have an anchor, button is pressed, and mouse moved
@@ -962,4 +882,151 @@ impl PhotonApp {
 
         false
     }
+
+    /// Apply resize based on current mouse_x/mouse_y and drag_start state.
+    fn apply_resize(&self, window: &Window) {
+        if let Some(window_pos) = window.outer_position().ok() {
+            let current_screen_x = window_pos.x as f64 + self.mouse_x as f64;
+            let current_screen_y = window_pos.y as f64 + self.mouse_y as f64;
+
+            let dx = (current_screen_x - self.drag_start_blinkey_screen_pos.0) as f32;
+            let dy = (current_screen_y - self.drag_start_blinkey_screen_pos.1) as f32;
+
+            let min_size = 128.;
+
+            let (new_width, new_height, should_move, new_x, new_y) = match self.resize_edge {
+                ResizeEdge::Right => {
+                    let w = ((self.drag_start_size.0 as f32 + dx).max(min_size) as u32)
+                        .max(min_size as u32);
+                    let h = self.drag_start_size.1.max(min_size as u32);
+                    (w, h, false, 0, 0)
+                }
+                ResizeEdge::Left => {
+                    let w = ((self.drag_start_size.0 as f32 - dx).max(min_size) as u32)
+                        .max(min_size as u32);
+                    let h = self.drag_start_size.1.max(min_size as u32);
+                    let width_change = self.drag_start_size.0 as i32 - w as i32;
+                    let new_x = self.drag_start_window_pos.0 + width_change;
+                    (w, h, true, new_x, self.drag_start_window_pos.1)
+                }
+                ResizeEdge::Bottom => {
+                    let w = self.drag_start_size.0.max(min_size as u32);
+                    let h = ((self.drag_start_size.1 as f32 + dy).max(min_size) as u32)
+                        .max(min_size as u32);
+                    (w, h, false, 0, 0)
+                }
+                ResizeEdge::Top => {
+                    let w = self.drag_start_size.0.max(min_size as u32);
+                    let h = ((self.drag_start_size.1 as f32 - dy).max(min_size) as u32)
+                        .max(min_size as u32);
+                    let height_change = self.drag_start_size.1 as i32 - h as i32;
+                    let new_y = self.drag_start_window_pos.1 + height_change;
+                    (w, h, true, self.drag_start_window_pos.0, new_y)
+                }
+                ResizeEdge::TopRight => {
+                    let w = ((self.drag_start_size.0 as f32 + dx).max(min_size) as u32)
+                        .max(min_size as u32);
+                    let h = ((self.drag_start_size.1 as f32 - dy).max(min_size) as u32)
+                        .max(min_size as u32);
+                    let height_change = self.drag_start_size.1 as i32 - h as i32;
+                    let new_y = self.drag_start_window_pos.1 + height_change;
+                    (w, h, true, self.drag_start_window_pos.0, new_y)
+                }
+                ResizeEdge::TopLeft => {
+                    let w = ((self.drag_start_size.0 as f32 - dx).max(min_size) as u32)
+                        .max(min_size as u32);
+                    let h = ((self.drag_start_size.1 as f32 - dy).max(min_size) as u32)
+                        .max(min_size as u32);
+                    let width_change = self.drag_start_size.0 as i32 - w as i32;
+                    let height_change = self.drag_start_size.1 as i32 - h as i32;
+                    let new_x = self.drag_start_window_pos.0 + width_change;
+                    let new_y = self.drag_start_window_pos.1 + height_change;
+                    (w, h, true, new_x, new_y)
+                }
+                ResizeEdge::BottomRight => {
+                    let w = ((self.drag_start_size.0 as f32 + dx).max(min_size) as u32)
+                        .max(min_size as u32);
+                    let h = ((self.drag_start_size.1 as f32 + dy).max(min_size) as u32)
+                        .max(min_size as u32);
+                    (w, h, false, 0, 0)
+                }
+                ResizeEdge::BottomLeft => {
+                    let w = ((self.drag_start_size.0 as f32 - dx).max(min_size) as u32)
+                        .max(min_size as u32);
+                    let h = ((self.drag_start_size.1 as f32 + dy).max(min_size) as u32)
+                        .max(min_size as u32);
+                    let width_change = self.drag_start_size.0 as i32 - w as i32;
+                    let new_x = self.drag_start_window_pos.0 + width_change;
+                    (w, h, true, new_x, self.drag_start_window_pos.1)
+                }
+                _ => (self.drag_start_size.0, self.drag_start_size.1, false, 0, 0),
+            };
+
+            if should_move {
+                let _ =
+                    window.set_outer_position(winit::dpi::PhysicalPosition::new(new_x, new_y));
+            }
+
+            let _ =
+                window.request_inner_size(winit::dpi::PhysicalSize::new(new_width, new_height));
+        }
+    }
+
+    /// macOS: poll mouse position and button state directly from AppKit.
+    /// Called from about_to_wait() to track the cursor even when it's outside the window
+    /// (winit stops delivering CursorMoved once the cursor leaves during resize).
+    #[cfg(target_os = "macos")]
+    pub fn poll_macos_resize(&mut self, window: &Window, screen_height: u32) -> bool {
+        use std::ffi::{c_char, c_void};
+
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct NSPoint {
+            x: f64,
+            y: f64,
+        }
+
+        extern "C" {
+            fn objc_msgSend(receiver: *const c_void, sel: *const c_void) -> usize;
+            fn sel_registerName(name: *const c_char) -> *const c_void;
+            fn objc_getClass(name: *const c_char) -> *const c_void;
+        }
+
+        unsafe {
+            let cls = objc_getClass(b"NSEvent\0".as_ptr() as *const c_char);
+
+            // Get mouse location (logical points, bottom-left origin)
+            let sel_loc = sel_registerName(b"mouseLocation\0".as_ptr() as *const c_char);
+            let mouse_location: extern "C" fn(*const c_void, *const c_void) -> NSPoint =
+                std::mem::transmute(objc_msgSend as *const ());
+            let ns_point = mouse_location(cls, sel_loc);
+
+            // Get pressed buttons
+            let sel_btn = sel_registerName(b"pressedMouseButtons\0".as_ptr() as *const c_char);
+            let buttons = objc_msgSend(cls, sel_btn);
+            let left_held = buttons & 1 != 0;
+
+            // Convert AppKit coords (logical, bottom-left) to winit coords (physical, top-left)
+            let scale = window.scale_factor();
+            let phys_x = ns_point.x * scale;
+            let phys_y = screen_height as f64 - ns_point.y * scale;
+
+            // Update mouse position (window-relative)
+            if let Some(window_pos) = window.outer_position().ok() {
+                self.mouse_x = (phys_x - window_pos.x as f64) as f32;
+                self.mouse_y = (phys_y - window_pos.y as f64) as f32;
+            }
+
+            // If button released, end the drag
+            if !left_held {
+                self.cancel_drag();
+                return true;
+            }
+
+            // Apply resize with the polled position
+            self.apply_resize(window);
+        }
+        false
+    }
 }
+

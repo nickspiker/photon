@@ -60,7 +60,11 @@ impl ApplicationHandler<PhotonEvent> for App {
                 .with_inner_size(winit::dpi::PhysicalSize::new(window_width, window_height))
                 .with_position(winit::dpi::PhysicalPosition::new(x, y))
                 .with_decorations(false)
-                .with_transparent(true);
+                .with_transparent(true)
+                // macOS: start non-resizable so AppKit doesn't override our cursor near edges.
+                // We flip to resizable=true only while an actual resize drag is in progress
+                // (required for request_inner_size to work), then flip back on release.
+                .with_resizable(cfg!(not(target_os = "macos")));
 
             self.window = Some(event_loop.create_window(window_attributes).unwrap());
 
@@ -172,6 +176,13 @@ impl ApplicationHandler<PhotonEvent> for App {
                     window.request_redraw();
                 }
             }
+            WindowEvent::Focused(false) => {
+                // Cancel any in-progress drag/resize when the window loses focus —
+                // we won't receive a MouseInput Released event in that case.
+                if let Some(app) = &mut self.photon_app {
+                    app.cancel_drag();
+                }
+            }
             WindowEvent::HoveredFile(path) => {
                 if let (Some(window), Some(app)) = (&self.window, &mut self.photon_app) {
                     app.handle_file_hover(&path);
@@ -212,6 +223,23 @@ impl ApplicationHandler<PhotonEvent> for App {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(app) = &mut self.photon_app {
             use winit::event_loop::ControlFlow;
+
+            // Priority 0 (macOS only): poll mouse during resize drag.
+            // winit stops delivering CursorMoved when cursor leaves the window,
+            // so we query NSEvent.mouseLocation directly via AppKit.
+            #[cfg(target_os = "macos")]
+            if app.is_dragging_resize {
+                if let Some(window) = &self.window {
+                    if app.poll_macos_resize(window, self.screen_height) {
+                        window.request_redraw();
+                    }
+                }
+                let poll_interval = std::time::Duration::from_millis(app.target_frame_duration_ms);
+                event_loop.set_control_flow(ControlFlow::WaitUntil(
+                    std::time::Instant::now() + poll_interval,
+                ));
+                return;
+            }
 
             // Priority 1: If selecting, use Poll mode and update scroll continuously
             if app.is_mouse_selecting {
