@@ -3451,6 +3451,8 @@ impl PhotonApp {
                         // CRASH SAFETY: Persist to disk BEFORE sending ACK
                         // If we crash after ACK but before disk, sender thinks we have it but we don't.
                         // Disk write is the commit point - ACK is just notification.
+                        // If chain save fails, DO NOT send ACK. Sender will retransmit
+                        // and we can try again, preventing permanent desync.
                         if let Some(ref identity_seed) = self.user_identity_seed {
                             let device_secret = self.device_keypair.secret.as_bytes();
                             if let Err(e) = crate::storage::friendship::save_friendship_chains(
@@ -3459,9 +3461,10 @@ impl PhotonApp {
                                 device_secret,
                             ) {
                                 crate::log(&format!(
-                                    "STORAGE: Failed to save chains after recv: {}",
+                                    "STORAGE CRITICAL: Failed to save chains after recv, skipping ACK: {}",
                                     e
                                 ));
+                                continue;
                             }
                             // Flag to update sync records after borrow ends
                             need_sync_records_update = true;
@@ -3633,7 +3636,7 @@ impl PhotonApp {
                                     device_secret,
                                 ) {
                                     crate::log(&format!(
-                                        "STORAGE: Failed to save chains after ACK: {}",
+                                        "STORAGE CRITICAL: Failed to save chains after ACK: {}",
                                         e
                                     ));
                                 }
@@ -4895,6 +4898,14 @@ impl PhotonApp {
             }
         };
 
+        // Block new sends while waiting for ACK — chain doesn't advance until ACK,
+        // so a second message would encrypt with the same key but the receiver would
+        // have already advanced our chain after decrypting the first message.
+        if !chains.pending_messages().is_empty() {
+            crate::log("CHAT: Cannot send — waiting for ACK on previous message");
+            return false;
+        }
+
         // Get our chain and encrypt (sender uses their own chain)
         let chain = match chains.chain(&our_identity_seed) {
             Some(c) => c,
@@ -5003,21 +5014,16 @@ impl PhotonApp {
             // Track sent weave for bidirectional entropy (receiver uses this to advance our chain)
             chains_mut.update_sent_for_mixing(eagle_time.to_seconds_f64(), msg_hp, &payload);
 
-            // Get other party's last plaintext for bidirectional weave
-            // Clone to avoid borrow issues with advance()
-            let their_plaintext: Option<Vec<u8>> = chains_mut
-                .other_participant(&our_identity_seed)
-                .map(|their_hash| chains_mut.last_plaintext(their_hash).to_vec());
-
-            // Advance our chain immediately after sending, weaving in their last message
-            chains_mut.advance(
-                &our_identity_seed,
-                &eagle_time,
-                &payload,
-                their_plaintext.as_deref(),
-            );
+            // DO NOT advance chain here — wait for ACK.
+            // Advancing before ACK causes permanent desync if the message is never
+            // processed by the receiver (crash, offline, lost UDP). The receiver's
+            // copy of our chain won't match, and subsequent messages decrypt to garbage.
+            // Chain advancement happens in process_ack() when the receiver confirms
+            // they decrypted our message.
 
             // *** PERSIST to disk FIRST - this is the commit point ***
+            // If chain save fails, DO NOT send the message. The chain state would be
+            // out of sync with disk, causing permanent desync on crash/restart.
             if let Some(ref identity_seed) = self.user_identity_seed {
                 let device_secret = self.device_keypair.secret.as_bytes();
                 if let Err(e) = crate::storage::friendship::save_friendship_chains(
@@ -5025,7 +5031,11 @@ impl PhotonApp {
                     identity_seed,
                     device_secret,
                 ) {
-                    crate::log(&format!("STORAGE: Failed to save chains after send: {}", e));
+                    crate::log(&format!(
+                        "STORAGE CRITICAL: Failed to save chains after send, aborting message: {}",
+                        e
+                    ));
+                    return false;
                 }
             }
         }

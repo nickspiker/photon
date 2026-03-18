@@ -159,7 +159,6 @@ pub fn save_friendship_chains(
 ) -> Result<(), FriendshipStorageError> {
     let friendship_id = chains.id();
     let dir = friendship_dir(friendship_id);
-    fs::create_dir_all(&dir)?;
 
     // Build VSF section
     let schema = chains_schema();
@@ -293,7 +292,7 @@ pub fn save_friendship_chains(
         "friendships/{}/chains.vsf.enc",
         &friendship_id.to_base64()[..8]
     );
-    crate::network::inspect::vsf_write(&path, &encrypted, &label, Some(&vsf_bytes), device_secret)?;
+    crate::network::inspect::vsf_write(&path, &encrypted, &label, Some(&vsf_bytes), device_secret, crate::storage::WritePolicy::MustSucceed)?;
 
     Ok(())
 }
