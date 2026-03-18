@@ -1,0 +1,1034 @@
+LAN: Multicast 107 bytes to [ff02::68c7:9014]:4384
+═══ VSF UDP TX 192.168.0.255:4384 (107 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉7⦊ version
+  y3⦉7⦊ backward compat
+  ei⦉2026-MAR-18 10:30:35.740 AM⦊
+  b3⦉91⦊ Header size Bytes ✓
+  L3⦉107⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    9AED04CF5CCA0D80510C89C82BA036C928385D788E4CB63EA1701C2064DA7943
+  n3⦉1⦊ labels
+  (d3⦉7⦊pt_disc
+    o3⦉91⦊
+    b3⦉16⦊
+    n3⦉1⦊
+  )
+>╮
+ ╰[
+  ╰─(d3⦉4⦊port : u4⦉4383⦊)
+   ]
+
+LAN: Broadcast 107 bytes to 192.168.0.255:4384 (from 192.168.0.152)
+LAN: Multicast RX 107 bytes from 192.168.0.152:61925
+LAN: Multicast RX 107 bytes from 192.168.0.152:63301
+LAN: Multicast RX 107 bytes from 192.168.0.152:61925
+Status: TIMEOUT (3 consecutive) - 90e571bf906abc29 marked offline
+Status: TIMEOUT (1/3) - 90e571bf906abc29 (waiting for more failures before offline)
+Status: Pinged 1 contact(s)
+═══ VSF UDP TX 239.104.199.144:4384 (107 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉7⦊ version
+  y3⦉7⦊ backward compat
+  ei⦉2026-MAR-18 10:30:45.754 AM⦊
+  b3⦉91⦊ Header size Bytes ✓
+  L3⦉107⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    9AED04CF5CCA0D80510C89C82BA036C928385D788E4CB63EA1701C2064DA7943
+  n3⦉1⦊ labels
+  (d3⦉7⦊pt_disc
+    o3⦉91⦊
+    b3⦉16⦊
+    n3⦉1⦊
+  )
+>╮
+ ╰[
+  ╰─(d3⦉4⦊port : u4⦉4383⦊)
+   ]
+
+LAN: Multicast 107 bytes to 239.104.199.144:4384
+═══ VSF UDP TX [ff02::68c7:9014]:4384 (107 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉7⦊ version
+  y3⦉7⦊ backward compat
+  ei⦉2026-MAR-18 10:30:45.754 AM⦊
+  b3⦉91⦊ Header size Bytes ✓
+  L3⦉107⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    9AED04CF5CCA0D80510C89C82BA036C928385D788E4CB63EA1701C2064DA7943
+  n3⦉1⦊ labels
+  (d3⦉7⦊pt_disc
+    o3⦉91⦊
+    b3⦉16⦊
+    n3⦉1⦊
+  )
+>╮
+ ╰[
+  ╰─(d3⦉4⦊port : u4⦉4383⦊)
+   ]
+
+LAN: Multicast 107 bytes to [ff02::68c7:9014]:4384
+═══ VSF UDP TX 192.168.0.255:4384 (107 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉7⦊ version
+  y3⦉7⦊ backward compat
+  ei⦉2026-MAR-18 10:30:45.754 AM⦊
+  b3⦉91⦊ Header size Bytes ✓
+  L3⦉107⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    9AED04CF5CCA0D80510C89C82BA036C928385D788E4CB63EA1701C2064DA7943
+  n3⦉1⦊ labels
+  (d3⦉7⦊pt_disc
+    o3⦉91⦊
+    b3⦉16⦊
+    n3⦉1⦊
+  )
+>╮
+ ╰[
+  ╰─(d3⦉4⦊port : u4⦉4383⦊)
+   ]
+
+LAN: Broadcast 107 bytes to 192.168.0.255:4384 (from 192.168.0.152)
+LAN: Multicast RX 107 bytes from 192.168.0.152:65306
+LAN: Multicast RX 107 bytes from 192.168.0.152:58526
+LAN: Multicast RX 107 bytes from 192.168.0.152:65306
+Status: Pinged 1 contact(s)
+═══ VSF UDP TX 239.104.199.144:4384 (107 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉7⦊ version
+  y3⦉7⦊ backward compat
+  ei⦉2026-MAR-18 10:30:50.742 AM⦊
+  b3⦉91⦊ Header size Bytes ✓
+  L3⦉107⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    9AED04CF5CCA0D80510C89C82BA036C928385D788E4CB63EA1701C2064DA7943
+  n3⦉1⦊ labels
+  (d3⦉7⦊pt_disc
+    o3⦉91⦊
+    b3⦉16⦊
+    n3⦉1⦊
+  )
+>╮
+ ╰[
+  ╰─(d3⦉4⦊port : u4⦉4383⦊)
+   ]
+
+LAN: Multicast 107 bytes to 239.104.199.144:4384
+═══ VSF UDP TX [ff02::68c7:9014]:4384 (107 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉7⦊ version
+  y3⦉7⦊ backward compat
+  ei⦉2026-MAR-18 10:30:50.742 AM⦊
+  b3⦉91⦊ Header size Bytes ✓
+  L3⦉107⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    9AED04CF5CCA0D80510C89C82BA036C928385D788E4CB63EA1701C2064DA7943
+  n3⦉1⦊ labels
+  (d3⦉7⦊pt_disc
+    o3⦉91⦊
+    b3⦉16⦊
+    n3⦉1⦊
+  )
+>╮
+ ╰[
+  ╰─(d3⦉4⦊port : u4⦉4383⦊)
+   ]
+
+LAN: Multicast 107 bytes to [ff02::68c7:9014]:4384
+═══ VSF UDP TX 192.168.0.255:4384 (107 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉7⦊ version
+  y3⦉7⦊ backward compat
+  ei⦉2026-MAR-18 10:30:50.742 AM⦊
+  b3⦉91⦊ Header size Bytes ✓
+  L3⦉107⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    9AED04CF5CCA0D80510C89C82BA036C928385D788E4CB63EA1701C2064DA7943
+  n3⦉1⦊ labels
+  (d3⦉7⦊pt_disc
+    o3⦉91⦊
+    b3⦉16⦊
+    n3⦉1⦊
+  )
+>╮
+ ╰[
+  ╰─(d3⦉4⦊port : u4⦉4383⦊)
+   ]
+
+LAN: Broadcast 107 bytes to 192.168.0.255:4384 (from 192.168.0.152)
+LAN: Multicast RX 107 bytes from 192.168.0.152:53871
+LAN: Multicast RX 107 bytes from 192.168.0.152:54317
+LAN: Multicast RX 107 bytes from 192.168.0.152:53871
+Status: TIMEOUT (2/3) - 90e571bf906abc29 (waiting for more failures before offline)
+Status: Pinged 1 contact(s)
+Status: TIMEOUT (3 consecutive) - 90e571bf906abc29 marked offline
+═══ VSF UDP TX 239.104.199.144:4384 (107 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉7⦊ version
+  y3⦉7⦊ backward compat
+  ei⦉2026-MAR-18 10:30:55.773 AM⦊
+  b3⦉91⦊ Header size Bytes ✓
+  L3⦉107⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    9AED04CF5CCA0D80510C89C82BA036C928385D788E4CB63EA1701C2064DA7943
+  n3⦉1⦊ labels
+  (d3⦉7⦊pt_disc
+    o3⦉91⦊
+    b3⦉16⦊
+    n3⦉1⦊
+  )
+>╮
+ ╰[
+  ╰─(d3⦉4⦊port : u4⦉4383⦊)
+   ]
+
+LAN: Multicast 107 bytes to 239.104.199.144:4384
+═══ VSF UDP TX [ff02::68c7:9014]:4384 (107 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉7⦊ version
+  y3⦉7⦊ backward compat
+  ei⦉2026-MAR-18 10:30:55.773 AM⦊
+  b3⦉91⦊ Header size Bytes ✓
+  L3⦉107⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    9AED04CF5CCA0D80510C89C82BA036C928385D788E4CB63EA1701C2064DA7943
+  n3⦉1⦊ labels
+  (d3⦉7⦊pt_disc
+    o3⦉91⦊
+    b3⦉16⦊
+    n3⦉1⦊
+  )
+>╮
+ ╰[
+  ╰─(d3⦉4⦊port : u4⦉4383⦊)
+   ]
+
+LAN: Multicast 107 bytes to [ff02::68c7:9014]:4384
+═══ VSF UDP TX 192.168.0.255:4384 (107 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉7⦊ version
+  y3⦉7⦊ backward compat
+  ei⦉2026-MAR-18 10:30:55.773 AM⦊
+  b3⦉91⦊ Header size Bytes ✓
+  L3⦉107⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    9AED04CF5CCA0D80510C89C82BA036C928385D788E4CB63EA1701C2064DA7943
+  n3⦉1⦊ labels
+  (d3⦉7⦊pt_disc
+    o3⦉91⦊
+    b3⦉16⦊
+    n3⦉1⦊
+  )
+>╮
+ ╰[
+  ╰─(d3⦉4⦊port : u4⦉4383⦊)
+   ]
+
+LAN: Broadcast 107 bytes to 192.168.0.255:4384 (from 192.168.0.152)
+LAN: Multicast RX 107 bytes from 192.168.0.152:62865
+LAN: Multicast RX 107 bytes from 192.168.0.152:64847
+LAN: Multicast RX 107 bytes from 192.168.0.152:62865
+Status: TIMEOUT (1/3) - 90e571bf906abc29 (waiting for more failures before offline)
+Status: Pinged 1 contact(s)
+═══ VSF UDP TX 239.104.199.144:4384 (107 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉7⦊ version
+  y3⦉7⦊ backward compat
+  ei⦉2026-MAR-18 10:31:08.747 AM⦊
+  b3⦉91⦊ Header size Bytes ✓
+  L3⦉107⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    9AED04CF5CCA0D80510C89C82BA036C928385D788E4CB63EA1701C2064DA7943
+  n3⦉1⦊ labels
+  (d3⦉7⦊pt_disc
+    o3⦉91⦊
+    b3⦉16⦊
+    n3⦉1⦊
+  )
+>╮
+ ╰[
+  ╰─(d3⦉4⦊port : u4⦉4383⦊)
+   ]
+
+LAN: Multicast 107 bytes to 239.104.199.144:4384
+═══ VSF UDP TX [ff02::68c7:9014]:4384 (107 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉7⦊ version
+  y3⦉7⦊ backward compat
+  ei⦉2026-MAR-18 10:31:08.747 AM⦊
+  b3⦉91⦊ Header size Bytes ✓
+  L3⦉107⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    9AED04CF5CCA0D80510C89C82BA036C928385D788E4CB63EA1701C2064DA7943
+  n3⦉1⦊ labels
+  (d3⦉7⦊pt_disc
+    o3⦉91⦊
+    b3⦉16⦊
+    n3⦉1⦊
+  )
+>╮
+ ╰[
+  ╰─(d3⦉4⦊port : u4⦉4383⦊)
+   ]
+
+LAN: Multicast 107 bytes to [ff02::68c7:9014]:4384
+═══ VSF UDP TX 192.168.0.255:4384 (107 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉7⦊ version
+  y3⦉7⦊ backward compat
+  ei⦉2026-MAR-18 10:31:08.747 AM⦊
+  b3⦉91⦊ Header size Bytes ✓
+  L3⦉107⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    9AED04CF5CCA0D80510C89C82BA036C928385D788E4CB63EA1701C2064DA7943
+  n3⦉1⦊ labels
+  (d3⦉7⦊pt_disc
+    o3⦉91⦊
+    b3⦉16⦊
+    n3⦉1⦊
+  )
+>╮
+ ╰[
+  ╰─(d3⦉4⦊port : u4⦉4383⦊)
+   ]
+
+LAN: Broadcast 107 bytes to 192.168.0.255:4384 (from 192.168.0.152)
+LAN: Multicast RX 107 bytes from 192.168.0.152:50230
+LAN: Multicast RX 107 bytes from 192.168.0.152:60089
+LAN: Multicast RX 107 bytes from 192.168.0.152:50230
+Status: TIMEOUT (2/3) - 90e571bf906abc29 (waiting for more failures before offline)
+Status: Pinged 1 contact(s)
+═══ VSF UDP TX 239.104.199.144:4384 (107 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉7⦊ version
+  y3⦉7⦊ backward compat
+  ei⦉2026-MAR-18 10:31:14.773 AM⦊
+  b3⦉91⦊ Header size Bytes ✓
+  L3⦉107⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    9AED04CF5CCA0D80510C89C82BA036C928385D788E4CB63EA1701C2064DA7943
+  n3⦉1⦊ labels
+  (d3⦉7⦊pt_disc
+    o3⦉91⦊
+    b3⦉16⦊
+    n3⦉1⦊
+  )
+>╮
+ ╰[
+  ╰─(d3⦉4⦊port : u4⦉4383⦊)
+   ]
+
+LAN: Multicast 107 bytes to 239.104.199.144:4384
+═══ VSF UDP TX [ff02::68c7:9014]:4384 (107 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉7⦊ version
+  y3⦉7⦊ backward compat
+  ei⦉2026-MAR-18 10:31:14.773 AM⦊
+  b3⦉91⦊ Header size Bytes ✓
+  L3⦉107⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    9AED04CF5CCA0D80510C89C82BA036C928385D788E4CB63EA1701C2064DA7943
+  n3⦉1⦊ labels
+  (d3⦉7⦊pt_disc
+    o3⦉91⦊
+    b3⦉16⦊
+    n3⦉1⦊
+  )
+>╮
+ ╰[
+  ╰─(d3⦉4⦊port : u4⦉4383⦊)
+   ]
+
+LAN: Multicast 107 bytes to [ff02::68c7:9014]:4384
+═══ VSF UDP TX 192.168.0.255:4384 (107 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉7⦊ version
+  y3⦉7⦊ backward compat
+  ei⦉2026-MAR-18 10:31:14.773 AM⦊
+  b3⦉91⦊ Header size Bytes ✓
+  L3⦉107⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    9AED04CF5CCA0D80510C89C82BA036C928385D788E4CB63EA1701C2064DA7943
+  n3⦉1⦊ labels
+  (d3⦉7⦊pt_disc
+    o3⦉91⦊
+    b3⦉16⦊
+    n3⦉1⦊
+  )
+>╮
+ ╰[
+  ╰─(d3⦉4⦊port : u4⦉4383⦊)
+   ]
+
+LAN: Broadcast 107 bytes to 192.168.0.255:4384 (from 192.168.0.152)
+LAN: Multicast RX 107 bytes from 192.168.0.152:60448
+LAN: Multicast RX 107 bytes from 192.168.0.152:58614
+LAN: Multicast RX 107 bytes from 192.168.0.152:60448
+Status: Pinged 1 contact(s)
+═══ VSF UDP TX 239.104.199.144:4384 (107 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉7⦊ version
+  y3⦉7⦊ backward compat
+  ei⦉2026-MAR-18 10:31:19.757 AM⦊
+  b3⦉91⦊ Header size Bytes ✓
+  L3⦉107⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    9AED04CF5CCA0D80510C89C82BA036C928385D788E4CB63EA1701C2064DA7943
+  n3⦉1⦊ labels
+  (d3⦉7⦊pt_disc
+    o3⦉91⦊
+    b3⦉16⦊
+    n3⦉1⦊
+  )
+>╮
+ ╰[
+  ╰─(d3⦉4⦊port : u4⦉4383⦊)
+   ]
+
+LAN: Multicast 107 bytes to 239.104.199.144:4384
+═══ VSF UDP TX [ff02::68c7:9014]:4384 (107 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉7⦊ version
+  y3⦉7⦊ backward compat
+  ei⦉2026-MAR-18 10:31:19.757 AM⦊
+  b3⦉91⦊ Header size Bytes ✓
+  L3⦉107⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    9AED04CF5CCA0D80510C89C82BA036C928385D788E4CB63EA1701C2064DA7943
+  n3⦉1⦊ labels
+  (d3⦉7⦊pt_disc
+    o3⦉91⦊
+    b3⦉16⦊
+    n3⦉1⦊
+  )
+>╮
+ ╰[
+  ╰─(d3⦉4⦊port : u4⦉4383⦊)
+   ]
+
+LAN: Multicast 107 bytes to [ff02::68c7:9014]:4384
+═══ VSF UDP TX 192.168.0.255:4384 (107 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉7⦊ version
+  y3⦉7⦊ backward compat
+  ei⦉2026-MAR-18 10:31:19.757 AM⦊
+  b3⦉91⦊ Header size Bytes ✓
+  L3⦉107⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    9AED04CF5CCA0D80510C89C82BA036C928385D788E4CB63EA1701C2064DA7943
+  n3⦉1⦊ labels
+  (d3⦉7⦊pt_disc
+    o3⦉91⦊
+    b3⦉16⦊
+    n3⦉1⦊
+  )
+>╮
+ ╰[
+  ╰─(d3⦉4⦊port : u4⦉4383⦊)
+   ]
+
+LAN: Broadcast 107 bytes to 192.168.0.255:4384 (from 192.168.0.152)
+LAN: Multicast RX 107 bytes from 192.168.0.152:52901
+LAN: Multicast RX 107 bytes from 192.168.0.152:58659
+LAN: Multicast RX 107 bytes from 192.168.0.152:52901
+Status: TIMEOUT (3 consecutive) - 90e571bf906abc29 marked offline
+Status: TIMEOUT (1/3) - 90e571bf906abc29 (waiting for more failures before offline)
+Status: Pinged 1 contact(s)
+═══ VSF UDP TX 239.104.199.144:4384 (107 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉7⦊ version
+  y3⦉7⦊ backward compat
+  ei⦉2026-MAR-18 10:31:31.744 AM⦊
+  b3⦉91⦊ Header size Bytes ✓
+  L3⦉107⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    9AED04CF5CCA0D80510C89C82BA036C928385D788E4CB63EA1701C2064DA7943
+  n3⦉1⦊ labels
+  (d3⦉7⦊pt_disc
+    o3⦉91⦊
+    b3⦉16⦊
+    n3⦉1⦊
+  )
+>╮
+ ╰[
+  ╰─(d3⦉4⦊port : u4⦉4383⦊)
+   ]
+
+LAN: Multicast 107 bytes to 239.104.199.144:4384
+═══ VSF UDP TX [ff02::68c7:9014]:4384 (107 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉7⦊ version
+  y3⦉7⦊ backward compat
+  ei⦉2026-MAR-18 10:31:31.744 AM⦊
+  b3⦉91⦊ Header size Bytes ✓
+  L3⦉107⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    9AED04CF5CCA0D80510C89C82BA036C928385D788E4CB63EA1701C2064DA7943
+  n3⦉1⦊ labels
+  (d3⦉7⦊pt_disc
+    o3⦉91⦊
+    b3⦉16⦊
+    n3⦉1⦊
+  )
+>╮
+ ╰[
+  ╰─(d3⦉4⦊port : u4⦉4383⦊)
+   ]
+
+LAN: Multicast 107 bytes to [ff02::68c7:9014]:4384
+═══ VSF UDP TX 192.168.0.255:4384 (107 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉7⦊ version
+  y3⦉7⦊ backward compat
+  ei⦉2026-MAR-18 10:31:31.744 AM⦊
+  b3⦉91⦊ Header size Bytes ✓
+  L3⦉107⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    9AED04CF5CCA0D80510C89C82BA036C928385D788E4CB63EA1701C2064DA7943
+  n3⦉1⦊ labels
+  (d3⦉7⦊pt_disc
+    o3⦉91⦊
+    b3⦉16⦊
+    n3⦉1⦊
+  )
+>╮
+ ╰[
+  ╰─(d3⦉4⦊port : u4⦉4383⦊)
+   ]
+
+LAN: Broadcast 107 bytes to 192.168.0.255:4384 (from 192.168.0.152)
+LAN: Multicast RX 107 bytes from 192.168.0.152:51689
+LAN: Multicast RX 107 bytes from 192.168.0.152:54945
+LAN: Multicast RX 107 bytes from 192.168.0.152:51689
+Status: Pinged 1 contact(s)
+Status: TIMEOUT (2/3) - 90e571bf906abc29 (waiting for more failures before offline)
+═══ VSF UDP TX 239.104.199.144:4384 (107 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉7⦊ version
+  y3⦉7⦊ backward compat
+  ei⦉2026-MAR-18 10:31:36.779 AM⦊
+  b3⦉91⦊ Header size Bytes ✓
+  L3⦉107⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    9AED04CF5CCA0D80510C89C82BA036C928385D788E4CB63EA1701C2064DA7943
+  n3⦉1⦊ labels
+  (d3⦉7⦊pt_disc
+    o3⦉91⦊
+    b3⦉16⦊
+    n3⦉1⦊
+  )
+>╮
+ ╰[
+  ╰─(d3⦉4⦊port : u4⦉4383⦊)
+   ]
+
+LAN: Multicast 107 bytes to 239.104.199.144:4384
+═══ VSF UDP TX [ff02::68c7:9014]:4384 (107 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉7⦊ version
+  y3⦉7⦊ backward compat
+  ei⦉2026-MAR-18 10:31:36.779 AM⦊
+  b3⦉91⦊ Header size Bytes ✓
+  L3⦉107⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    9AED04CF5CCA0D80510C89C82BA036C928385D788E4CB63EA1701C2064DA7943
+  n3⦉1⦊ labels
+  (d3⦉7⦊pt_disc
+    o3⦉91⦊
+    b3⦉16⦊
+    n3⦉1⦊
+  )
+>╮
+ ╰[
+  ╰─(d3⦉4⦊port : u4⦉4383⦊)
+   ]
+
+LAN: Multicast 107 bytes to [ff02::68c7:9014]:4384
+═══ VSF UDP TX 192.168.0.255:4384 (107 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉7⦊ version
+  y3⦉7⦊ backward compat
+  ei⦉2026-MAR-18 10:31:36.779 AM⦊
+  b3⦉91⦊ Header size Bytes ✓
+  L3⦉107⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    9AED04CF5CCA0D80510C89C82BA036C928385D788E4CB63EA1701C2064DA7943
+  n3⦉1⦊ labels
+  (d3⦉7⦊pt_disc
+    o3⦉91⦊
+    b3⦉16⦊
+    n3⦉1⦊
+  )
+>╮
+ ╰[
+  ╰─(d3⦉4⦊port : u4⦉4383⦊)
+   ]
+
+LAN: Broadcast 107 bytes to 192.168.0.255:4384 (from 192.168.0.152)
+LAN: Multicast RX 107 bytes from 192.168.0.152:64511
+LAN: Multicast RX 107 bytes from 192.168.0.152:64089
+LAN: Multicast RX 107 bytes from 192.168.0.152:64511
+Status: TIMEOUT (3 consecutive) - 90e571bf906abc29 marked offline
+Status: Pinged 1 contact(s)
+═══ VSF UDP TX 239.104.199.144:4384 (107 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉7⦊ version
+  y3⦉7⦊ backward compat
+  ei⦉2026-MAR-18 10:31:51.772 AM⦊
+  b3⦉91⦊ Header size Bytes ✓
+  L3⦉107⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    9AED04CF5CCA0D80510C89C82BA036C928385D788E4CB63EA1701C2064DA7943
+  n3⦉1⦊ labels
+  (d3⦉7⦊pt_disc
+    o3⦉91⦊
+    b3⦉16⦊
+    n3⦉1⦊
+  )
+>╮
+ ╰[
+  ╰─(d3⦉4⦊port : u4⦉4383⦊)
+   ]
+
+LAN: Multicast 107 bytes to 239.104.199.144:4384
+═══ VSF UDP TX [ff02::68c7:9014]:4384 (107 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉7⦊ version
+  y3⦉7⦊ backward compat
+  ei⦉2026-MAR-18 10:31:51.772 AM⦊
+  b3⦉91⦊ Header size Bytes ✓
+  L3⦉107⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    9AED04CF5CCA0D80510C89C82BA036C928385D788E4CB63EA1701C2064DA7943
+  n3⦉1⦊ labels
+  (d3⦉7⦊pt_disc
+    o3⦉91⦊
+    b3⦉16⦊
+    n3⦉1⦊
+  )
+>╮
+ ╰[
+  ╰─(d3⦉4⦊port : u4⦉4383⦊)
+   ]
+
+LAN: Multicast 107 bytes to [ff02::68c7:9014]:4384
+═══ VSF UDP TX 192.168.0.255:4384 (107 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉7⦊ version
+  y3⦉7⦊ backward compat
+  ei⦉2026-MAR-18 10:31:51.772 AM⦊
+  b3⦉91⦊ Header size Bytes ✓
+  L3⦉107⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    9AED04CF5CCA0D80510C89C82BA036C928385D788E4CB63EA1701C2064DA7943
+  n3⦉1⦊ labels
+  (d3⦉7⦊pt_disc
+    o3⦉91⦊
+    b3⦉16⦊
+    n3⦉1⦊
+  )
+>╮
+ ╰[
+  ╰─(d3⦉4⦊port : u4⦉4383⦊)
+   ]
+
+LAN: Broadcast 107 bytes to 192.168.0.255:4384 (from 192.168.0.152)
+LAN: Multicast RX 107 bytes from 192.168.0.152:52668
+LAN: Multicast RX 107 bytes from 192.168.0.152:55644
+LAN: Multicast RX 107 bytes from 192.168.0.152:52668
+Status: TIMEOUT (1/3) - 90e571bf906abc29 (waiting for more failures before offline)
+Status: Pinged 1 contact(s)
+═══ VSF UDP TX 239.104.199.144:4384 (107 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉7⦊ version
+  y3⦉7⦊ backward compat
+  ei⦉2026-MAR-18 10:31:59.762 AM⦊
+  b3⦉91⦊ Header size Bytes ✓
+  L3⦉107⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    9AED04CF5CCA0D80510C89C82BA036C928385D788E4CB63EA1701C2064DA7943
+  n3⦉1⦊ labels
+  (d3⦉7⦊pt_disc
+    o3⦉91⦊
+    b3⦉16⦊
+    n3⦉1⦊
+  )
+>╮
+ ╰[
+  ╰─(d3⦉4⦊port : u4⦉4383⦊)
+   ]
+
+LAN: Multicast 107 bytes to 239.104.199.144:4384
+═══ VSF UDP TX [ff02::68c7:9014]:4384 (107 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉7⦊ version
+  y3⦉7⦊ backward compat
+  ei⦉2026-MAR-18 10:31:59.762 AM⦊
+  b3⦉91⦊ Header size Bytes ✓
+  L3⦉107⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    9AED04CF5CCA0D80510C89C82BA036C928385D788E4CB63EA1701C2064DA7943
+  n3⦉1⦊ labels
+  (d3⦉7⦊pt_disc
+    o3⦉91⦊
+    b3⦉16⦊
+    n3⦉1⦊
+  )
+>╮
+ ╰[
+  ╰─(d3⦉4⦊port : u4⦉4383⦊)
+   ]
+
+LAN: Multicast 107 bytes to [ff02::68c7:9014]:4384
+═══ VSF UDP TX 192.168.0.255:4384 (107 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉7⦊ version
+  y3⦉7⦊ backward compat
+  ei⦉2026-MAR-18 10:31:59.762 AM⦊
+  b3⦉91⦊ Header size Bytes ✓
+  L3⦉107⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    9AED04CF5CCA0D80510C89C82BA036C928385D788E4CB63EA1701C2064DA7943
+  n3⦉1⦊ labels
+  (d3⦉7⦊pt_disc
+    o3⦉91⦊
+    b3⦉16⦊
+    n3⦉1⦊
+  )
+>╮
+ ╰[
+  ╰─(d3⦉4⦊port : u4⦉4383⦊)
+   ]
+
+LAN: Broadcast 107 bytes to 192.168.0.255:4384 (from 192.168.0.152)
+LAN: Multicast RX 107 bytes from 192.168.0.152:49822
+LAN: Multicast RX 107 bytes from 192.168.0.152:57543
+LAN: Multicast RX 107 bytes from 192.168.0.152:49822
+Status: Pinged f on conversation enter
+Avatar: Entering conversation with f, fetching avatar
+Avatar: Fetching f from FGTW (PyjtCGuw...)
+Avatar: FGTW returned 404 Not Found
+Avatar: f download failed
+Status: TIMEOUT (2/3) - 90e571bf906abc29 (waiting for more failures before offline)
+LAN: Multicast RX 107 bytes from 192.168.0.197:53183
+LAN: Multicast RX 107 bytes from 192.168.0.197:36271
+Status: Updated f IP from ping/pong: Some([2600:100f:b072:6fe6:656f:3df8:b04:9388]:4383) -> [2600:100f:b038:8d29:daea:9017:225e:b055]:4383
+Status: f is now ONLINE
+═══ VSF UDP RX [2600:100f:b038:8d29:daea:9017:225e:b055]:4383 (366 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉7⦊ version
+  y3⦉7⦊ backward compat
+  ei⦉2026-MAR-15 9:40:16.332 PM⦊
+  b3⦉192⦊ Header size Bytes ✓
+  L3⦉366⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    F9F3EBFA26E767D2B5515FE8BF1911424519989CB363356FFFCE143CF729CDA7
+  ke3⦉31⦊ Ed25519 signer pubkey (32 Bytes)
+    90E571BF906ABC29B271ECD8E11B1589DE39636E0D7E89E427A0D9D785CD28C8
+  ge3⦉63⦊ Ed25519 signature (64 Bytes)
+    356A0CDEBD235C4DD0B37ED4F5BB688BDF58C09D7E91C4F6DEEA259582012804
+    CCCEC4CF30A9828246AC466F58175A7DD29F6EEF68C40067DB54EC336C9C0105
+  n3⦉1⦊ labels
+  (d3⦉3⦊msg
+    o3⦉192⦊
+    b3⦉174⦊
+    n3⦉3⦊
+  )
+>╮
+ ╰[
+  ├─(d3⦉3⦊tok : hg3⦉31⦊⦉G^0*
+  │       027B246CC39DA3EEBD64818F4AB2E027E5CFDB339972BD6CA697B2EADCA29D07
+  │       ⦊)
+  ├─(d3⦉4⦊prev : hp3⦉31⦊⦉G^0*
+  │       F459B255E3695025BEF48E7F44E1343F8AC65DC6948948D3433B2170B500807B
+  │       ⦊)
+  ╰─(d3⦉4⦊data : t3⦉1⦊u3 3⦉65⦊ [44,120,138,33,6,201,145,46,140,173,172,64,70,113,122,23,108,255,57,156,233,48,180,227,139,126,97,56,229,219,229,37,...] 65 u8 tensor)
+   ]
+
+CHAT: Received message from f (eagle_time 2539432037046404600), 65 bytes ciphertext
+CHAIN DECRYPT: sender_handle_hash=2b7a99e1..., key=ea4255f6..., salt=df54157c..., eagle_time=2539432037046404600, ciphertext_len=65
+CHAIN DECRYPT: raw plaintext bytes = [174, 211, 60, 219, 212, 25, 36, 94, 184, 218, 103, 254, 26, 200, 177, 46, 130, 255, 38, 254, 128, 2, 68, 46, 235, 220, 138, 214, 9, 19, 150, 205, 239, 130, 173, 12, 102, 16, 254, 13, 58, 221, 56, 188, 202, 112, 109, 25, 47, 89, 219, 176, 23, 248, 204, 253, 74, 135, 211, 166, 48, 64, 100, 104, 20]
+CHAT: Expected '(' to start message field
+Status: Pinged 1 contact(s)
+═══ VSF UDP TX 239.104.199.144:4384 (107 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉7⦊ version
+  y3⦉7⦊ backward compat
+  ei⦉2026-MAR-18 10:32:07.756 AM⦊
+  b3⦉91⦊ Header size Bytes ✓
+  L3⦉107⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    9AED04CF5CCA0D80510C89C82BA036C928385D788E4CB63EA1701C2064DA7943
+  n3⦉1⦊ labels
+  (d3⦉7⦊pt_disc
+    o3⦉91⦊
+    b3⦉16⦊
+    n3⦉1⦊
+  )
+>╮
+ ╰[
+  ╰─(d3⦉4⦊port : u4⦉4383⦊)
+   ]
+
+LAN: Multicast 107 bytes to 239.104.199.144:4384
+═══ VSF UDP TX [ff02::68c7:9014]:4384 (107 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉7⦊ version
+  y3⦉7⦊ backward compat
+  ei⦉2026-MAR-18 10:32:07.756 AM⦊
+  b3⦉91⦊ Header size Bytes ✓
+  L3⦉107⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    9AED04CF5CCA0D80510C89C82BA036C928385D788E4CB63EA1701C2064DA7943
+  n3⦉1⦊ labels
+  (d3⦉7⦊pt_disc
+    o3⦉91⦊
+    b3⦉16⦊
+    n3⦉1⦊
+  )
+>╮
+ ╰[
+  ╰─(d3⦉4⦊port : u4⦉4383⦊)
+   ]
+
+LAN: Multicast 107 bytes to [ff02::68c7:9014]:4384
+═══ VSF UDP TX 192.168.0.255:4384 (107 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉7⦊ version
+  y3⦉7⦊ backward compat
+  ei⦉2026-MAR-18 10:32:07.756 AM⦊
+  b3⦉91⦊ Header size Bytes ✓
+  L3⦉107⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    9AED04CF5CCA0D80510C89C82BA036C928385D788E4CB63EA1701C2064DA7943
+  n3⦉1⦊ labels
+  (d3⦉7⦊pt_disc
+    o3⦉91⦊
+    b3⦉16⦊
+    n3⦉1⦊
+  )
+>╮
+ ╰[
+  ╰─(d3⦉4⦊port : u4⦉4383⦊)
+   ]
+
+LAN: Broadcast 107 bytes to 192.168.0.255:4384 (from 192.168.0.152)
+LAN: Multicast RX 107 bytes from 192.168.0.152:62516
+LAN: Multicast RX 107 bytes from 192.168.0.152:64976
+LAN: Multicast RX 107 bytes from 192.168.0.152:62516
+═══ VSF UDP RX [2600:100f:b038:8d29:daea:9017:225e:b055]:4383 (366 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉7⦊ version
+  y3⦉7⦊ backward compat
+  ei⦉2026-MAR-15 9:40:16.332 PM⦊
+  b3⦉192⦊ Header size Bytes ✓
+  L3⦉366⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    F9F3EBFA26E767D2B5515FE8BF1911424519989CB363356FFFCE143CF729CDA7
+  ke3⦉31⦊ Ed25519 signer pubkey (32 Bytes)
+    90E571BF906ABC29B271ECD8E11B1589DE39636E0D7E89E427A0D9D785CD28C8
+  ge3⦉63⦊ Ed25519 signature (64 Bytes)
+    356A0CDEBD235C4DD0B37ED4F5BB688BDF58C09D7E91C4F6DEEA259582012804
+    CCCEC4CF30A9828246AC466F58175A7DD29F6EEF68C40067DB54EC336C9C0105
+  n3⦉1⦊ labels
+  (d3⦉3⦊msg
+    o3⦉192⦊
+    b3⦉174⦊
+    n3⦉3⦊
+  )
+>╮
+ ╰[
+  ├─(d3⦉3⦊tok : hg3⦉31⦊⦉G^0*
+  │       027B246CC39DA3EEBD64818F4AB2E027E5CFDB339972BD6CA697B2EADCA29D07
+  │       ⦊)
+  ├─(d3⦉4⦊prev : hp3⦉31⦊⦉G^0*
+  │       F459B255E3695025BEF48E7F44E1343F8AC65DC6948948D3433B2170B500807B
+  │       ⦊)
+  ╰─(d3⦉4⦊data : t3⦉1⦊u3 3⦉65⦊ [44,120,138,33,6,201,145,46,140,173,172,64,70,113,122,23,108,255,57,156,233,48,180,227,139,126,97,56,229,219,229,37,...] 65 u8 tensor)
+   ]
+
+CHAT: Received message from f (eagle_time 2539432037046404600), 65 bytes ciphertext
+CHAIN DECRYPT: sender_handle_hash=2b7a99e1..., key=ea4255f6..., salt=df54157c..., eagle_time=2539432037046404600, ciphertext_len=65
+CHAIN DECRYPT: raw plaintext bytes = [174, 211, 60, 219, 212, 25, 36, 94, 184, 218, 103, 254, 26, 200, 177, 46, 130, 255, 38, 254, 128, 2, 68, 46, 235, 220, 138, 214, 9, 19, 150, 205, 239, 130, 173, 12, 102, 16, 254, 13, 58, 221, 56, 188, 202, 112, 109, 25, 47, 89, 219, 176, 23, 248, 204, 253, 74, 135, 211, 166, 48, 64, 100, 104, 20]
+CHAT: Expected '(' to start message field
+Status: TIMEOUT (1/3) - 90e571bf906abc29 (waiting for more failures before offline)
+LAN: Multicast RX 107 bytes from 192.168.0.197:50498
+═══ VSF UDP RX [2600:100f:b038:8d29:daea:9017:225e:b055]:4383 (366 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉7⦊ version
+  y3⦉7⦊ backward compat
+  ei⦉2026-MAR-15 9:40:16.332 PM⦊
+  b3⦉192⦊ Header size Bytes ✓
+  L3⦉366⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    F9F3EBFA26E767D2B5515FE8BF1911424519989CB363356FFFCE143CF729CDA7
+  ke3⦉31⦊ Ed25519 signer pubkey (32 Bytes)
+    90E571BF906ABC29B271ECD8E11B1589DE39636E0D7E89E427A0D9D785CD28C8
+  ge3⦉63⦊ Ed25519 signature (64 Bytes)
+    356A0CDEBD235C4DD0B37ED4F5BB688BDF58C09D7E91C4F6DEEA259582012804
+    CCCEC4CF30A9828246AC466F58175A7DD29F6EEF68C40067DB54EC336C9C0105
+  n3⦉1⦊ labels
+  (d3⦉3⦊msg
+    o3⦉192⦊
+    b3⦉174⦊
+    n3⦉3⦊
+  )
+>╮
+ ╰[
+  ├─(d3⦉3⦊tok : hg3⦉31⦊⦉G^0*
+  │       027B246CC39DA3EEBD64818F4AB2E027E5CFDB339972BD6CA697B2EADCA29D07
+  │       ⦊)
+  ├─(d3⦉4⦊prev : hp3⦉31⦊⦉G^0*
+  │       F459B255E3695025BEF48E7F44E1343F8AC65DC6948948D3433B2170B500807B
+  │       ⦊)
+  ╰─(d3⦉4⦊data : t3⦉1⦊u3 3⦉65⦊ [44,120,138,33,6,201,145,46,140,173,172,64,70,113,122,23,108,255,57,156,233,48,180,227,139,126,97,56,229,219,229,37,...] 65 u8 tensor)
+   ]
+
+CHAT: Received message from f (eagle_time 2539432037046404600), 65 bytes ciphertext
+CHAIN DECRYPT: sender_handle_hash=2b7a99e1..., key=ea4255f6..., salt=df54157c..., eagle_time=2539432037046404600, ciphertext_len=65
+CHAIN DECRYPT: raw plaintext bytes = [174, 211, 60, 219, 212, 25, 36, 94, 184, 218, 103, 254, 26, 200, 177, 46, 130, 255, 38, 254, 128, 2, 68, 46, 235, 220, 138, 214, 9, 19, 150, 205, 239, 130, 173, 12, 102, 16, 254, 13, 58, 221, 56, 188, 202, 112, 109, 25, 47, 89, 219, 176, 23, 248, 204, 253, 74, 135, 211, 166, 48, 64, 100, 104, 20]
+CHAT: Expected '(' to start message field
+LAN: Multicast RX 107 bytes from 192.168.0.197:40131
+Status: Pinged 1 contact(s)
+═══ VSF UDP TX 239.104.199.144:4384 (107 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉7⦊ version
+  y3⦉7⦊ backward compat
+  ei⦉2026-MAR-18 10:32:18.801 AM⦊
+  b3⦉91⦊ Header size Bytes ✓
+  L3⦉107⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    9AED04CF5CCA0D80510C89C82BA036C928385D788E4CB63EA1701C2064DA7943
+  n3⦉1⦊ labels
+  (d3⦉7⦊pt_disc
+    o3⦉91⦊
+    b3⦉16⦊
+    n3⦉1⦊
+  )
+>╮
+ ╰[
+  ╰─(d3⦉4⦊port : u4⦉4383⦊)
+   ]
+
+LAN: Multicast 107 bytes to 239.104.199.144:4384
+═══ VSF UDP TX [ff02::68c7:9014]:4384 (107 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉7⦊ version
+  y3⦉7⦊ backward compat
+  ei⦉2026-MAR-18 10:32:18.801 AM⦊
+  b3⦉91⦊ Header size Bytes ✓
+  L3⦉107⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    9AED04CF5CCA0D80510C89C82BA036C928385D788E4CB63EA1701C2064DA7943
+  n3⦉1⦊ labels
+  (d3⦉7⦊pt_disc
+    o3⦉91⦊
+    b3⦉16⦊
+    n3⦉1⦊
+  )
+>╮
+ ╰[
+  ╰─(d3⦉4⦊port : u4⦉4383⦊)
+   ]
+
+LAN: Multicast 107 bytes to [ff02::68c7:9014]:4384
+═══ VSF UDP TX 192.168.0.255:4384 (107 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉7⦊ version
+  y3⦉7⦊ backward compat
+  ei⦉2026-MAR-18 10:32:18.801 AM⦊
+  b3⦉91⦊ Header size Bytes ✓
+  L3⦉107⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    9AED04CF5CCA0D80510C89C82BA036C928385D788E4CB63EA1701C2064DA7943
+  n3⦉1⦊ labels
+  (d3⦉7⦊pt_disc
+    o3⦉91⦊
+    b3⦉16⦊
+    n3⦉1⦊
+  )
+>╮
+ ╰[
+  ╰─(d3⦉4⦊port : u4⦉4383⦊)
+   ]
+
+LAN: Broadcast 107 bytes to 192.168.0.255:4384 (from 192.168.0.152)
+LAN: Multicast RX 107 bytes from 192.168.0.152:61269
+LAN: Multicast RX 107 bytes from 192.168.0.152:50063
+LAN: Multicast RX 107 bytes from 192.168.0.152:61269
+═══ VSF UDP RX [2600:100f:b038:8d29:daea:9017:225e:b055]:4383 (366 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉7⦊ version
+  y3⦉7⦊ backward compat
+  ei⦉2026-MAR-15 9:40:16.332 PM⦊
+  b3⦉192⦊ Header size Bytes ✓
+  L3⦉366⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    F9F3EBFA26E767D2B5515FE8BF1911424519989CB363356FFFCE143CF729CDA7
+  ke3⦉31⦊ Ed25519 signer pubkey (32 Bytes)
+    90E571BF906ABC29B271ECD8E11B1589DE39636E0D7E89E427A0D9D785CD28C8
+  ge3⦉63⦊ Ed25519 signature (64 Bytes)
+    356A0CDEBD235C4DD0B37ED4F5BB688BDF58C09D7E91C4F6DEEA259582012804
+    CCCEC4CF30A9828246AC466F58175A7DD29F6EEF68C40067DB54EC336C9C0105
+  n3⦉1⦊ labels
+  (d3⦉3⦊msg
+    o3⦉192⦊
+    b3⦉174⦊
+    n3⦉3⦊
+  )
+>╮
+ ╰[
+  ├─(d3⦉3⦊tok : hg3⦉31⦊⦉G^0*
+  │       027B246CC39DA3EEBD64818F4AB2E027E5CFDB339972BD6CA697B2EADCA29D07
+  │       ⦊)
+  ├─(d3⦉4⦊prev : hp3⦉31⦊⦉G^0*
+  │       F459B255E3695025BEF48E7F44E1343F8AC65DC6948948D3433B2170B500807B
+  │       ⦊)
+  ╰─(d3⦉4⦊data : t3⦉1⦊u3 3⦉65⦊ [44,120,138,33,6,201,145,46,140,173,172,64,70,113,122,23,108,255,57,156,233,48,180,227,139,126,97,56,229,219,229,37,...] 65 u8 tensor)
+   ]
+
+CHAT: Received message from f (eagle_time 2539432037046404600), 65 bytes ciphertext
+CHAIN DECRYPT: sender_handle_hash=2b7a99e1..., key=ea4255f6..., salt=df54157c..., eagle_time=2539432037046404600, ciphertext_len=65
+CHAIN DECRYPT: raw plaintext bytes = [174, 211, 60, 219, 212, 25, 36, 94, 184, 218, 103, 254, 26, 200, 177, 46, 130, 255, 38, 254, 128, 2, 68, 46, 235, 220, 138, 214, 9, 19, 150, 205, 239, 130, 173, 12, 102, 16, 254, 13, 58, 221, 56, 188, 202, 112, 109, 25, 47, 89, 219, 176, 23, 248, 204, 253, 74, 135, 211, 166, 48, 64, 100, 104, 20]
+CHAT: Expected '(' to start message field
