@@ -1558,14 +1558,14 @@ impl PhotonApp {
                 .last_received_times()
                 .iter()
                 .filter_map(|t| *t)
-                .fold(None, |acc: Option<f64>, t| {
+                .fold(None, |acc: Option<i64>, t| {
                     Some(acc.map_or(t, |a| if t > a { t } else { a }))
                 });
 
-            if let Some(last_received_ef6) = max_time {
+            if let Some(last_received_osc) = max_time {
                 records.push(SyncRecord {
                     conversation_token: chains.conversation_token,
-                    last_received_ef6,
+                    last_received_osc,
                 });
             }
         }
@@ -3033,7 +3033,7 @@ impl PhotonApp {
             std::net::SocketAddr,
             String,
             [u8; 32], // Recipient device pubkey for relay fallback
-            Option<f64>,
+            Option<i64>,
         )> = Vec::new();
         // Flag to update sync records after the loop (when borrows are released)
         let mut need_sync_update = false;
@@ -3167,7 +3167,7 @@ impl PhotonApp {
                                             .find(|r| {
                                                 r.conversation_token == chains.conversation_token
                                             })
-                                            .map(|r| r.last_received_ef6)
+                                            .map(|r| r.last_received_osc)
                                     } else {
                                         None
                                     };
@@ -3298,7 +3298,7 @@ impl PhotonApp {
                         let scratch = generate_scratch(&sender_chain, &salt);
 
                         // Convert eagle time for decryption
-                        let eagle_time = vsf::EagleTime::new(vsf::types::EtType::f6(timestamp));
+                        let eagle_time = vsf::EagleTime::from_oscillations(timestamp);
 
                         // DEBUG: Log decryption parameters
                         crate::log(&format!(
@@ -3326,67 +3326,41 @@ impl PhotonApp {
                         ));
 
                         // Parse VSF field: (d{message}:x{text},hp{inc_hp},hR{pad})
-                        // Uses type-marker parsing (not positional) per AGENT.md
+                        // Uses VsfField::parse() per AGENT.md
                         let mut ptr = 0usize;
                         let mut message_text = String::new();
                         let mut incorporated_hp = [0u8; 32];
 
-                        // Expect '(' to start field
-                        if plaintext.get(ptr) != Some(&b'(') {
-                            crate::log("CHAT: Expected '(' to start message field");
-                            continue;
-                        }
-                        ptr += 1;
-
-                        // Parse field name (d{message})
-                        match vsf::parse(&plaintext, &mut ptr) {
-                            Ok(vsf::VsfType::d(name)) if name == "message" => {}
-                            Ok(vsf::VsfType::d(name)) => {
-                                crate::log(&format!(
-                                    "CHAT: Expected field name 'message', got '{}'",
-                                    name
-                                ));
-                                continue;
-                            }
-                            Ok(other) => {
-                                crate::log(&format!("CHAT: Expected d type, got {:?}", other));
-                                continue;
-                            }
+                        let field = match vsf::file_format::VsfField::parse(&plaintext, &mut ptr) {
+                            Ok(f) => f,
                             Err(e) => {
-                                crate::log(&format!("CHAT: VSF parse error: {:?}", e));
+                                crate::log(&format!("CHAT: VsfField parse error: {}", e));
                                 continue;
                             }
-                        }
+                        };
 
-                        // Expect ':' separator
-                        if plaintext.get(ptr) != Some(&b':') {
-                            crate::log("CHAT: Expected ':' after field name");
+                        if field.name != "message" {
+                            crate::log(&format!(
+                                "CHAT: Expected field name 'message', got '{}'",
+                                field.name
+                            ));
                             continue;
                         }
-                        ptr += 1;
 
-                        // Parse comma-separated values by type marker (not position)
-                        loop {
-                            match vsf::parse(&plaintext, &mut ptr) {
-                                Ok(vsf::VsfType::x(s)) => message_text = s,
-                                Ok(vsf::VsfType::hp(hash)) if hash.len() == 32 => {
-                                    incorporated_hp.copy_from_slice(&hash);
+                        // Extract values by type marker (not position)
+                        for value in &field.values {
+                            match value {
+                                vsf::VsfType::x(s) => message_text = s.clone(),
+                                vsf::VsfType::hp(hash) if hash.len() == 32 => {
+                                    incorporated_hp.copy_from_slice(hash);
                                 }
-                                Ok(vsf::VsfType::hR(_)) => {} // Random padding - ignore
-                                Ok(other) => {
+                                vsf::VsfType::hR(_) => {} // Random padding - ignore
+                                other => {
                                     crate::log(&format!(
                                         "CHAT: Unexpected type in message: {:?}",
                                         other
                                     ));
                                 }
-                                Err(_) => break,
-                            }
-
-                            // Check for ',' (more values) or ')' (end of field)
-                            match plaintext.get(ptr) {
-                                Some(b',') => ptr += 1, // Continue to next value
-                                Some(b')') => break,    // End of field
-                                _ => break,
                             }
                         }
 
@@ -3429,7 +3403,7 @@ impl PhotonApp {
 
                         // Advance their chain with bidirectional weave
                         let eagle_time_for_advance =
-                            vsf::EagleTime::new(vsf::types::EtType::f6(timestamp));
+                            vsf::EagleTime::from_oscillations(timestamp);
                         chains.advance(
                             &from_handle_hash,
                             &eagle_time_for_advance,
@@ -3650,12 +3624,12 @@ impl PhotonApp {
 
                         // Mark message as delivered in UI
                         if let Some(contact) = self.contacts.get_mut(contact_idx) {
-                            // Find message by matching eagle_time (within tolerance)
+                            // Find message by matching eagle_time (exact i64 oscillations)
                             let mut found_msg = false;
                             for msg in contact.messages.iter_mut().rev() {
                                 if msg.is_outgoing && !msg.delivered {
-                                    // Match by eagle_time (same tolerance as process_ack)
-                                    if (msg.timestamp - acked_eagle_time).abs() < 0.001 {
+                                    // Match by eagle_time (exact i64 match)
+                                    if msg.timestamp == acked_eagle_time {
                                         msg.delivered = true;
                                         found_msg = true;
                                         changed = true;
@@ -4951,7 +4925,7 @@ impl PhotonApp {
         let field = FieldValue::new("message", values);
         let payload = field.flatten();
 
-        let eagle_time = vsf::datetime_to_eagle_time(chrono::Utc::now());
+        let eagle_time = vsf::EagleTime::from_oscillations(vsf::eagle_time_oscillations());
 
         // Derive salt from previous plaintext (use tracked plaintext from chains)
         let prev_plaintext = chains.current_send_plaintext(&our_identity_seed);
@@ -4966,7 +4940,7 @@ impl PhotonApp {
             hex::encode(&our_identity_seed[..4]),
             hex::encode(&chain.current_key()[..4]),
             hex::encode(&salt[..4]),
-            eagle_time.to_seconds_f64(),
+            eagle_time.oscillations().unwrap_or(0),
             payload.len()
         ));
 
@@ -4987,7 +4961,8 @@ impl PhotonApp {
 
         // Derive this message's hash pointer (links to prev + content + time)
         use crate::types::friendship::derive_msg_hp;
-        let msg_hp = derive_msg_hp(&prev_msg_hp, &plaintext_hash, eagle_time.to_seconds_f64());
+        let eagle_time_osc = eagle_time.oscillations().unwrap_or(0);
+        let msg_hp = derive_msg_hp(&prev_msg_hp, &plaintext_hash, eagle_time_osc);
 
         // Capture conversation_token before mutable borrow
         let conversation_token = chains.conversation_token;
@@ -5003,7 +4978,7 @@ impl PhotonApp {
             .find(|(id, _)| *id == friendship_id)
         {
             chains_mut.add_pending(
-                eagle_time.to_seconds_f64(),
+                eagle_time_osc,
                 payload.to_vec(),
                 plaintext_hash,
                 prev_msg_hp,
@@ -5012,7 +4987,7 @@ impl PhotonApp {
             );
 
             // Track sent weave for bidirectional entropy (receiver uses this to advance our chain)
-            chains_mut.update_sent_for_mixing(eagle_time.to_seconds_f64(), msg_hp, &payload);
+            chains_mut.update_sent_for_mixing(eagle_time_osc, msg_hp, &payload);
 
             // DO NOT advance chain here — wait for ACK.
             // Advancing before ACK causes permanent desync if the message is never
@@ -5048,7 +5023,7 @@ impl PhotonApp {
                 conversation_token,
                 prev_msg_hp,
                 ciphertext: ciphertext.clone(),
-                eagle_time: eagle_time.to_seconds_f64(),
+                eagle_time: eagle_time_osc,
             });
 
             // Add to contact's message list and persist
@@ -5056,8 +5031,8 @@ impl PhotonApp {
                 // Use actual eagle_time and sorted insert for correct chronological order
                 contact.insert_message_sorted(ChatMessage::new_with_timestamp(
                     message_text.to_string(),
-                    true,                // is_outgoing
-                    eagle_time.to_seconds_f64(), // Use message's actual eagle_time
+                    true,           // is_outgoing
+                    eagle_time_osc, // Use message's actual eagle_time
                 ));
                 // Auto-scroll to bottom to show new message
                 contact.message_scroll_offset = 0.0;

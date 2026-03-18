@@ -157,7 +157,6 @@ pub fn decode_contacts(
             };
             let added = match &field.values[4] {
                 VsfType::e(vsf::types::EtType::i(osc)) => *osc,
-                VsfType::e(vsf::types::EtType::f6(secs)) => (*secs * 1_420_407_826.0) as i64,
                 _ => 0,
             };
 
@@ -441,14 +440,14 @@ mod tests {
                 handle: "alice".to_string(),
                 device_pubkey: [2u8; 32],
                 trust_level: 1,
-                added: 1234567890.0,
+                added: 1234567890,
             },
             CloudContact {
                 handle_proof: [3u8; 32],
                 handle: "bob".to_string(),
                 device_pubkey: [4u8; 32],
                 trust_level: 2,
-                added: 1234567891.0,
+                added: 1234567891,
             },
         ];
 
@@ -470,7 +469,7 @@ mod tests {
             handle: "alice".to_string(),
             device_pubkey: [2u8; 32],
             trust_level: 1,
-            added: 1234567890.0,
+            added: 1234567890,
         }];
 
         let key1 = [42u8; 32];

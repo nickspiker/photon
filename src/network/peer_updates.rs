@@ -22,7 +22,7 @@ pub struct PeerUpdate {
     pub device_pubkey: [u8; 32],
     pub ip: String,
     pub port: u16,
-    pub timestamp: f64,
+    pub timestamp: i64,
 }
 
 /// WebSocket client for receiving peer updates
@@ -212,66 +212,39 @@ impl PeerUpdateClient {
     /// Parse VSF peer_update message into PeerUpdate struct
     fn parse_peer_update(data: &[u8]) -> Option<PeerUpdate> {
         use vsf::file_format::VsfHeader;
-        use vsf::parse;
+        use vsf::VsfSection;
         use vsf::types::VsfType;
 
         // Parse VSF header
-        let (_header, header_end) = VsfHeader::decode(data).ok()?;
+        let (header, header_end) = VsfHeader::decode(data).ok()?;
         let mut ptr = header_end;
 
-        // Skip to section start '['
-        if ptr >= data.len() || data[ptr] != b'[' {
-            return None;
-        }
-        ptr += 1;
+        // Parse section using VsfSection::parse()
+        let section = VsfSection::parse(data, &mut ptr).ok()?;
 
-        // Parse section name
-        let section_name = match parse(data, &mut ptr).ok()? {
-            VsfType::d(name) => name,
-            _ => return None,
+        // Resolve section name (empty for small sections, falls back to header TOC)
+        let section_name = if section.name.is_empty() {
+            header.fields.first().map(|f| f.name.clone())?
+        } else {
+            section.name.clone()
         };
 
         if section_name != "peer_update" {
             return None;
         }
 
-        // Parse fields until section end ']'
+        // Extract fields by name from parsed section
         let mut handle_proof = None;
         let mut device_pubkey = None;
         let mut ip = None;
         let mut port = None;
         let mut timestamp = None;
 
-        while ptr < data.len() && data[ptr] != b']' {
-            // Expect field start '('
-            if data[ptr] != b'(' {
-                ptr += 1;
-                continue;
-            }
-            ptr += 1;
-
-            // Parse field name
-            let field_name = match parse(data, &mut ptr).ok()? {
-                VsfType::d(name) => name,
-                _ => continue,
-            };
-
-            // Skip ':' separator
-            if ptr < data.len() && data[ptr] == b':' {
-                ptr += 1;
-            }
-
-            // Parse field value
-            let value = parse(data, &mut ptr).ok()?;
-
-            // Skip field end ')'
-            if ptr < data.len() && data[ptr] == b')' {
-                ptr += 1;
-            }
-
-            match field_name.as_str() {
+        for field in &section.fields {
+            let value = field.values.first()?;
+            match field.name.as_str() {
                 "handle_proof" => {
-                    if let VsfType::hP(bytes) = &value {
+                    if let VsfType::hP(bytes) = value {
                         if bytes.len() == 32 {
                             let mut arr = [0u8; 32];
                             arr.copy_from_slice(bytes);
@@ -283,24 +256,24 @@ impl PeerUpdateClient {
                     if let VsfType::ke(bytes) = value {
                         if bytes.len() == 32 {
                             let mut arr = [0u8; 32];
-                            arr.copy_from_slice(&bytes);
+                            arr.copy_from_slice(bytes);
                             device_pubkey = Some(arr);
                         }
                     }
                 }
                 "ip" => {
                     if let VsfType::x(s) = value {
-                        ip = Some(s);
+                        ip = Some(s.clone());
                     }
                 }
                 "port" => {
                     let p = match value {
-                        VsfType::u(v, _) => Some(v),
-                        VsfType::u3(v) => Some(v as usize),
-                        VsfType::u4(v) => Some(v as usize),
-                        VsfType::u5(v) => Some(v as usize),
-                        VsfType::u6(v) => Some(v as usize),
-                        VsfType::m(v) => Some(v), // Legacy compat
+                        VsfType::u(v, _) => Some(*v),
+                        VsfType::u3(v) => Some(*v as usize),
+                        VsfType::u4(v) => Some(*v as usize),
+                        VsfType::u5(v) => Some(*v as usize),
+                        VsfType::u6(v) => Some(*v as usize),
+                        VsfType::m(v) => Some(*v), // Legacy compat
                         _ => None,
                     };
                     if let Some(v) = p {
@@ -308,8 +281,8 @@ impl PeerUpdateClient {
                     }
                 }
                 "timestamp" => {
-                    if let VsfType::e(vsf::types::EtType::f6(ts)) = value {
-                        timestamp = Some(ts);
+                    if let VsfType::e(vsf::types::EtType::i(osc)) = value {
+                        timestamp = Some(*osc);
                     }
                 }
                 _ => {}

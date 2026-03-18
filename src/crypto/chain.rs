@@ -304,7 +304,7 @@ pub fn generate_ack_proof(
     let mut hasher = blake3::Hasher::new();
     hasher.update(DOMAIN_ACK);
     hasher.update(plaintext_hash); // Hash first (opposite order from advance)
-    hasher.update(&eagle_time.to_seconds_f64().to_le_bytes());
+    hasher.update(&eagle_time.oscillations().unwrap_or(0).to_le_bytes());
     hasher.update(chain.links[ACK_LINK_RANGE].as_flattened()); // Last 5 links (160B)
 
     smear_hash(hasher.finalize().as_bytes())
@@ -355,7 +355,7 @@ fn derive_fresh_link(
     );
 
     input.extend_from_slice(DOMAIN_ADVANCE);
-    input.extend_from_slice(&eagle_time.to_seconds_f64().to_le_bytes());
+    input.extend_from_slice(&eagle_time.oscillations().unwrap_or(0).to_le_bytes());
     input.extend_from_slice(&(our_plaintext.len() as u32).to_le_bytes());
     input.extend_from_slice(our_plaintext);
     input.extend_from_slice(chain_portion);
@@ -378,7 +378,7 @@ fn derive_fresh_link(
 ///
 /// Uses first 12 bytes of BLAKE3 hash of timestamp.
 pub fn derive_nonce(eagle_time: &EagleTime) -> [u8; 12] {
-    let hash = blake3::hash(&eagle_time.to_seconds_f64().to_le_bytes());
+    let hash = blake3::hash(&eagle_time.oscillations().unwrap_or(0).to_le_bytes());
     let mut nonce = [0u8; 12];
     nonce.copy_from_slice(&hash.as_bytes()[..12]);
     nonce
@@ -559,7 +559,7 @@ mod tests {
         let original_link256 = *chain.link(256).unwrap();
 
         // Advance (no bidirectional entropy)
-        let eagle_time = vsf::datetime_to_eagle_time(chrono::Utc::now());
+        let eagle_time = vsf::EagleTime::from_oscillations(vsf::eagle_time_oscillations());
         let plaintext_hash = [0xAA; 32];
         chain.advance(&eagle_time, &plaintext_hash, None);
 
@@ -575,7 +575,7 @@ mod tests {
         let mut chain1 = make_test_chain();
         let mut chain2 = make_test_chain();
 
-        let eagle_time = vsf::datetime_to_eagle_time(chrono::Utc::now());
+        let eagle_time = vsf::EagleTime::from_oscillations(vsf::eagle_time_oscillations());
         let plaintext_hash = [42u8; 32];
 
         chain1.advance(&eagle_time, &plaintext_hash, None);
@@ -591,7 +591,7 @@ mod tests {
         let mut chain2 = make_test_chain();
         let mut chain3 = make_test_chain();
 
-        let eagle_time = vsf::datetime_to_eagle_time(chrono::Utc::now());
+        let eagle_time = vsf::EagleTime::from_oscillations(vsf::eagle_time_oscillations());
         let plaintext_hash = [42u8; 32];
 
         // Advance without their_plaintext
@@ -614,7 +614,7 @@ mod tests {
         let mut chain1 = make_test_chain();
         let mut chain2 = make_test_chain();
 
-        let eagle_time = vsf::datetime_to_eagle_time(chrono::Utc::now());
+        let eagle_time = vsf::EagleTime::from_oscillations(vsf::eagle_time_oscillations());
         let plaintext_hash = [42u8; 32];
         let their_plaintext = b"their message for entropy";
 
@@ -681,7 +681,7 @@ mod tests {
     #[test]
     fn test_ack_proof() {
         let chain = make_test_chain();
-        let eagle_time = vsf::datetime_to_eagle_time(chrono::Utc::now());
+        let eagle_time = vsf::EagleTime::from_oscillations(vsf::eagle_time_oscillations());
         let plaintext_hash = [0xBB; 32];
 
         let proof = generate_ack_proof(&eagle_time, &plaintext_hash, &chain);
@@ -704,7 +704,7 @@ mod tests {
         let chain = make_test_chain();
         let salt = derive_salt(&[], &chain);
         let scratch = generate_scratch(&chain, &salt);
-        let eagle_time = vsf::datetime_to_eagle_time(chrono::Utc::now());
+        let eagle_time = vsf::EagleTime::from_oscillations(vsf::eagle_time_oscillations());
 
         let plaintext = b"Hello, secure world!";
         let ciphertext = encrypt_layers(plaintext, &chain, &scratch, &eagle_time);
@@ -732,7 +732,7 @@ mod tests {
 
         for i in 0..3 {
             let message = format!("Message {}", i);
-            let eagle_time = vsf::datetime_to_eagle_time(chrono::Utc::now());
+            let eagle_time = vsf::EagleTime::from_oscillations(vsf::eagle_time_oscillations());
 
             // Derive salt from previous plaintext
             let salt = derive_salt(&prev_plaintext, &sender);

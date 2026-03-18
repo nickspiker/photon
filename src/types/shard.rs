@@ -9,7 +9,7 @@ pub struct KeyShard {
     pub index: u8,
     pub threshold: u8,
     pub total_shards: u8,
-    pub created_at: f64,
+    pub created_at: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -25,7 +25,7 @@ pub struct DecryptedShard {
 pub struct RecoveryRequest {
     pub requester_public_key: [u8; 32],
     pub request_id: [u8; 16],
-    pub timestamp: f64,
+    pub timestamp: i64,
     pub verification_phrase: String,
 }
 
@@ -34,7 +34,7 @@ pub struct RecoveryApproval {
     pub request_id: [u8; 16],
     pub shard: KeyShard,
     pub approver: ContactId,
-    pub timestamp: f64,
+    pub timestamp: i64,
 }
 
 impl ShardId {
@@ -70,7 +70,7 @@ impl KeyShard {
             index,
             threshold,
             total_shards,
-            created_at: vsf::EagleTime::from_oscillations(vsf::eagle_time_oscillations()).to_seconds_f64(),
+            created_at: vsf::eagle_time_oscillations(),
         }
     }
 }

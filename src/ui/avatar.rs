@@ -972,7 +972,7 @@ pub fn get_avatar_provenance_hash(handle: &str) -> Option<[u8; 32]> {
 
 /// Get avatar's creation timestamp (Eagle Time) from local cache
 /// Returns None if not cached or parsing fails
-pub fn get_local_avatar_timestamp(handle: &str) -> Option<f64> {
+pub fn get_local_avatar_timestamp(handle: &str) -> Option<i64> {
     use vsf::file_format::VsfHeader;
     use vsf::types::EagleTime;
     use vsf::VsfType;
@@ -999,9 +999,9 @@ pub fn get_local_avatar_timestamp(handle: &str) -> Option<f64> {
     let (header, _) = VsfHeader::decode(&vsf_data).ok()?;
     match header.creation_time {
         VsfType::e(et) => {
-            let ts = EagleTime::new(et).to_seconds_f64();
+            let ts = EagleTime::new(et).oscillations().unwrap_or(0);
             #[cfg(feature = "development")]
-            crate::log(&format!("Avatar: Local timestamp = {:.0}", ts));
+            crate::log(&format!("Avatar: Local timestamp = {}", ts));
             Some(ts)
         }
         _ => None,
@@ -1535,7 +1535,7 @@ pub fn sync_avatar_bidirectional(
     }
 
     // Extract server timestamp from header
-    let server_ts: Option<f64> = response
+    let server_ts: Option<i64> = response
         .headers()
         .get("X-Avatar-Timestamp")
         .and_then(|v| v.to_str().ok())
