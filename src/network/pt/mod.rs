@@ -746,7 +746,6 @@ mod tests {
     // Helper to parse VSF section fields (for legacy format like pt_spec)
     fn parse_vsf_section_fields(bytes: &[u8]) -> Vec<(String, vsf::VsfType)> {
         use vsf::file_format::VsfHeader;
-        use vsf::parse;
 
         let (_, header_end) = match VsfHeader::decode(bytes) {
             Ok(h) => h,
@@ -754,46 +753,22 @@ mod tests {
         };
 
         let mut ptr = header_end;
-        if ptr >= bytes.len() || bytes[ptr] != b'[' {
-            return vec![];
-        }
-        ptr += 1;
+        let section = match vsf::VsfSection::parse(bytes, &mut ptr) {
+            Ok(s) => s,
+            Err(_) => return vec![],
+        };
 
-        // Skip section name
-        let _ = parse(bytes, &mut ptr);
-
-        let mut fields = Vec::new();
-        while ptr < bytes.len() && bytes[ptr] != b']' {
-            if bytes[ptr] != b'(' {
-                break;
-            }
-            ptr += 1;
-
-            let field_name = match parse(bytes, &mut ptr) {
-                Ok(vsf::VsfType::d(name)) => name,
-                _ => break,
-            };
-
-            if ptr < bytes.len() && bytes[ptr] == b':' {
-                ptr += 1;
-                if let Ok(value) = parse(bytes, &mut ptr) {
-                    fields.push((field_name, value));
-                }
-            }
-
-            if ptr < bytes.len() && bytes[ptr] == b')' {
-                ptr += 1;
-            }
-        }
-
-        fields
+        section
+            .fields
+            .iter()
+            .filter_map(|f| f.values.first().map(|v| (f.name.clone(), v.clone())))
+            .collect()
     }
 
     // Helper to parse header-only PT packet fields
     // Returns (provenance_hash, values) for the pt_* header field
     fn parse_pt_header_field(bytes: &[u8]) -> Option<([u8; 32], Vec<vsf::VsfType>)> {
         use vsf::file_format::VsfHeader;
-        use vsf::parse;
 
         let (header, _) = VsfHeader::decode(bytes).ok()?;
 
@@ -807,63 +782,10 @@ mod tests {
             _ => return None,
         };
 
-        // Find pt_* header field and extract its values
+        // Find pt_* header field and extract its inline values
         for field in &header.fields {
             if field.name.starts_with("pt_") && field.offset_bytes == 0 && field.size_bytes == 0 {
-                // Parse inline values from the raw bytes
-                // Skip magic "RÅ<"
-                if bytes.len() < 4 || &bytes[0..3] != "RÅ".as_bytes() || bytes[3] != b'<' {
-                    return None;
-                }
-
-                let mut ptr = 4;
-
-                // Find the inline field
-                while ptr < bytes.len() && bytes[ptr] != b'>' {
-                    if bytes[ptr] == b'(' {
-                        ptr += 1;
-
-                        let field_name = match parse(bytes, &mut ptr) {
-                            Ok(vsf::VsfType::d(name)) => name,
-                            _ => continue,
-                        };
-
-                        if field_name == field.name {
-                            // Found it! Parse values after ':'
-                            let mut values = Vec::new();
-                            if ptr < bytes.len() && bytes[ptr] == b':' {
-                                ptr += 1;
-                                loop {
-                                    if ptr >= bytes.len() || bytes[ptr] == b')' {
-                                        break;
-                                    }
-                                    if let Ok(value) = parse(bytes, &mut ptr) {
-                                        values.push(value);
-                                    } else {
-                                        break;
-                                    }
-                                    if ptr < bytes.len() && bytes[ptr] == b',' {
-                                        ptr += 1;
-                                    }
-                                }
-                            }
-                            return Some((provenance_hash, values));
-                        }
-
-                        // Skip to end of this field
-                        while ptr < bytes.len() && bytes[ptr] != b')' {
-                            let _ = parse(bytes, &mut ptr);
-                            if ptr < bytes.len() && bytes[ptr] == b',' {
-                                ptr += 1;
-                            }
-                        }
-                        if ptr < bytes.len() && bytes[ptr] == b')' {
-                            ptr += 1;
-                        }
-                    } else {
-                        let _ = parse(bytes, &mut ptr);
-                    }
-                }
+                return Some((provenance_hash, field.inline_values.clone()));
             }
         }
 

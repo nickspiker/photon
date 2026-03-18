@@ -135,7 +135,7 @@ fn chains_schema() -> SectionSchema {
         .field("last_sent_hash", TypeConstraint::AnyHash) // hp type: last msg_hp we sent
         .field("last_received_hash", TypeConstraint::AnyHash) // One per participant (hp or empty hb)
         // Pending messages (v2) - each message has 6 fields
-        .field("pending_eagle_time", TypeConstraint::AnyFloat)
+        .field("pending_eagle_time", TypeConstraint::Any)
         .field("pending_plaintext", TypeConstraint::Utf8Text) // x: UTF-8 message text
         .field("pending_plaintext_hash", TypeConstraint::AnyHash) // hp
         .field("pending_prev_msg_hp", TypeConstraint::AnyHash) // hp
@@ -148,7 +148,7 @@ fn chains_schema() -> SectionSchema {
         // Last plaintexts (v4) - needed for salt derivation after restart
         .field("last_plaintext", TypeConstraint::Utf8Text) // x: UTF-8 text, one per participant
         // Last received times (v5) - for duplicate detection after restart
-        .field("last_received_time", TypeConstraint::AnyFloat) // f6: one per participant
+        .field("last_received_time", TypeConstraint::Any) // i64 oscillations, one per participant
 }
 
 /// Save FriendshipChains to disk
@@ -216,7 +216,7 @@ pub fn save_friendship_chains(
         let plaintext_str = String::from_utf8_lossy(&pending.plaintext).into_owned();
 
         builder = builder
-            .append_multi("pending_eagle_time", vec![VsfType::f6(pending.eagle_time)])
+            .append_multi("pending_eagle_time", vec![VsfType::e(vsf::types::EtType::i(pending.eagle_time))])
             .map_err(|e| FriendshipStorageError::Parse(e.to_string()))?
             .append_multi("pending_plaintext", vec![VsfType::x(plaintext_str)])
             .map_err(|e| FriendshipStorageError::Parse(e.to_string()))?
@@ -273,9 +273,9 @@ pub fn save_friendship_chains(
 
     // === Last received times (v5) - one per participant, for duplicate detection ===
     for time_opt in chains.last_received_times() {
-        let time_val = time_opt.unwrap_or(0.0); // 0.0 means no messages received yet
+        let time_val = time_opt.unwrap_or(0); // 0 means no messages received yet
         builder = builder
-            .append_multi("last_received_time", vec![VsfType::f6(time_val)])
+            .append_multi("last_received_time", vec![VsfType::e(vsf::types::EtType::i(time_val))])
             .map_err(|e| FriendshipStorageError::Parse(e.to_string()))?;
     }
 
@@ -391,12 +391,12 @@ pub fn load_friendship_chains(
     }
 
     // === Pending messages (v2) ===
-    let eagle_times: Vec<f64> = section
+    let eagle_times: Vec<i64> = section
         .get_fields("pending_eagle_time")
         .iter()
         .filter_map(|f| f.values.first())
         .filter_map(|v| match v {
-            VsfType::f6(t) => Some(*t),
+            VsfType::e(vsf::types::EtType::i(osc)) => Some(*osc),
             _ => None,
         })
         .collect();
@@ -536,13 +536,13 @@ pub fn load_friendship_chains(
         .collect();
 
     // === Last received times (v5) - one per participant ===
-    let last_received_times: Vec<Option<f64>> = section
+    let last_received_times: Vec<Option<i64>> = section
         .get_fields("last_received_time")
         .iter()
         .filter_map(|f| f.values.first())
         .map(|v| match v {
-            VsfType::f6(t) if *t == 0.0 => None, // 0.0 means no messages received yet
-            VsfType::f6(t) => Some(*t),
+            VsfType::e(vsf::types::EtType::i(osc)) if *osc == 0 => None,
+            VsfType::e(vsf::types::EtType::i(osc)) => Some(*osc),
             _ => None,
         })
         .collect();

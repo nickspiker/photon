@@ -209,7 +209,7 @@ pub struct FriendshipChains {
     /// Last received message time per participant (for duplicate detection).
     /// Index matches chain index. None = no message received yet from that sender.
     /// If incoming message has eagle_time <= this value, it's a duplicate (skip).
-    last_received_times: Vec<Option<f64>>,
+    last_received_times: Vec<Option<i64>>,
 
     // ==================== HASH CHAIN STATE ====================
     /// First message anchor per participant (deterministic starting point).
@@ -283,8 +283,8 @@ pub struct BufferedMessage {
 /// Without ACK: can be resent from ciphertext (still have encrypted form).
 #[derive(Clone)]
 pub struct PendingMessage {
-    /// Eagle time of this message (for ACK matching and nonce)
-    pub eagle_time: f64,
+    /// Eagle time oscillations of this message (for ACK matching and nonce)
+    pub eagle_time: i64,
     /// Plaintext content (needed for salt derivation of next message)
     pub plaintext: Vec<u8>,
     /// BLAKE3 hash of plaintext (for ACK verification and chain advancement)
@@ -331,7 +331,7 @@ fn derive_anchor(handle_hash: &[u8; 32], chain: &Chain) -> [u8; 32] {
 pub fn derive_msg_hp(
     prev_msg_hp: &[u8; 32],
     plaintext_hash: &[u8; 32],
-    eagle_time: f64,
+    eagle_time: i64,
 ) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(DOMAIN_MSG_HP);
@@ -348,7 +348,7 @@ pub fn derive_msg_hp(
 /// guessable ("ok", "yes", etc.) because the exact timestamp acts as a nonce.
 ///
 /// Domain: PHOTON_WEAVE_v0
-pub fn derive_weave_hash(eagle_time: f64, msg_hp: &[u8; 32], plaintext: &[u8]) -> [u8; 32] {
+pub fn derive_weave_hash(eagle_time: i64, msg_hp: &[u8; 32], plaintext: &[u8]) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"PHOTON_WEAVE_v0");
     hasher.update(&eagle_time.to_le_bytes());
@@ -554,7 +554,7 @@ impl FriendshipChains {
         last_sent_weave: Option<[u8; 32]>,
         last_incorporated_hp: Option<[u8; 32]>,
         mut last_plaintexts: Vec<Vec<u8>>,
-        mut last_received_times: Vec<Option<f64>>,
+        mut last_received_times: Vec<Option<i64>>,
     ) -> Option<Self> {
         use crate::crypto::clutch::derive_conversation_token;
 
@@ -717,7 +717,7 @@ impl FriendshipChains {
 
     /// Check if a message is a duplicate (already received from this sender).
     /// Returns true if this is a duplicate and should be skipped.
-    pub fn is_duplicate(&self, sender_handle_hash: &[u8; 32], eagle_time: f64) -> bool {
+    pub fn is_duplicate(&self, sender_handle_hash: &[u8; 32], eagle_time: i64) -> bool {
         if let Some(idx) = self.participant_index(sender_handle_hash) {
             if let Some(last_time) = self.last_received_times[idx] {
                 // Duplicate if eagle_time <= last received (exact match or older)
@@ -728,7 +728,7 @@ impl FriendshipChains {
     }
 
     /// Mark a message as received (update last received time for deduplication).
-    pub fn mark_received(&mut self, sender_handle_hash: &[u8; 32], eagle_time: f64) {
+    pub fn mark_received(&mut self, sender_handle_hash: &[u8; 32], eagle_time: i64) {
         if let Some(idx) = self.participant_index(sender_handle_hash) {
             self.last_received_times[idx] = Some(eagle_time);
         }
@@ -798,7 +798,7 @@ impl FriendshipChains {
     /// Used for resync: peer says "I have hash X", we return messages after X.
     ///
     /// Returns Vec of (eagle_time, ciphertext, prev_msg_hp) for resending.
-    pub fn get_pending_after(&self, after_hash: &[u8; 32]) -> Vec<(f64, Vec<u8>, [u8; 32])> {
+    pub fn get_pending_after(&self, after_hash: &[u8; 32]) -> Vec<(i64, Vec<u8>, [u8; 32])> {
         let mut found_start = false;
         let mut result = Vec::new();
 
@@ -848,7 +848,7 @@ impl FriendshipChains {
     }
 
     /// Get all last_received_times (for serialization).
-    pub fn last_received_times(&self) -> &Vec<Option<f64>> {
+    pub fn last_received_times(&self) -> &Vec<Option<i64>> {
         &self.last_received_times
     }
 
@@ -877,7 +877,7 @@ impl FriendshipChains {
     /// - Next message derivation (plaintext for salt, msg_hp for prev)
     pub fn add_pending(
         &mut self,
-        eagle_time: f64,
+        eagle_time: i64,
         plaintext: Vec<u8>,
         plaintext_hash: [u8; 32],
         prev_msg_hp: [u8; 32],
@@ -904,12 +904,12 @@ impl FriendshipChains {
     pub fn process_ack(
         &mut self,
         our_handle_hash: &[u8; 32],
-        acked_eagle_time: f64,
+        acked_eagle_time: i64,
         acked_plaintext_hash: &[u8; 32],
     ) -> bool {
-        // Find the pending message by eagle_time and plaintext_hash
+        // Find the pending message by eagle_time and plaintext_hash (exact i64 match)
         let pos = self.pending_messages.iter().position(|m| {
-            (m.eagle_time - acked_eagle_time).abs() < 0.001 // ~1ms tolerance
+            m.eagle_time == acked_eagle_time
                 && &m.plaintext_hash == acked_plaintext_hash
         });
 
@@ -923,7 +923,7 @@ impl FriendshipChains {
 
             // NOW advance our chain — receiver has confirmed they decrypted our message,
             // so both sides can deterministically advance using the same inputs.
-            let eagle_time = vsf::EagleTime::new(vsf::types::EtType::f6(pending.eagle_time));
+            let eagle_time = vsf::EagleTime::from_oscillations(pending.eagle_time);
             self.advance(
                 our_handle_hash,
                 &eagle_time,
@@ -1007,7 +1007,7 @@ impl FriendshipChains {
     /// This prevents brute-forcing even if plaintext is guessable.
     pub fn update_received_for_mixing(
         &mut self,
-        eagle_time: f64,
+        eagle_time: i64,
         msg_hp: [u8; 32],
         plaintext: &[u8],
     ) {
@@ -1026,7 +1026,7 @@ impl FriendshipChains {
     /// Call this after add_pending() to track what weave the receiver will use.
     ///
     /// Derives a weave hash from the full message context (timestamp, msg_hp, plaintext).
-    pub fn update_sent_for_mixing(&mut self, eagle_time: f64, msg_hp: [u8; 32], plaintext: &[u8]) {
+    pub fn update_sent_for_mixing(&mut self, eagle_time: i64, msg_hp: [u8; 32], plaintext: &[u8]) {
         let weave = derive_weave_hash(eagle_time, &msg_hp, plaintext);
         self.last_sent_weave = Some(weave);
     }
@@ -1205,7 +1205,7 @@ mod tests {
         let bob_key_before = *chains.current_key(&bob).unwrap();
 
         // Advance Alice's chain (no bidirectional entropy for this test)
-        let eagle_time = vsf::datetime_to_eagle_time(chrono::Utc::now());
+        let eagle_time = vsf::EagleTime::from_oscillations(vsf::eagle_time_oscillations());
         let plaintext_hash = [0xAA; 32];
         assert!(chains.advance(&alice, &eagle_time, &plaintext_hash, None));
 
