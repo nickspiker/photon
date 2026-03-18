@@ -46,7 +46,7 @@ impl PartySlot {
 #[derive(Clone, Debug)]
 pub struct ChatMessage {
     pub content: String,
-    pub timestamp: f64,    // Eagle time (seconds since Apollo 11 landing)
+    pub timestamp: i64,    // Eagle time oscillations (i64, ~1.42 GHz since Apollo 11 landing)
     pub is_outgoing: bool, // true = we sent it, false = they sent it
     pub delivered: bool,   // true = confirmed delivered to recipient
 }
@@ -55,14 +55,14 @@ impl ChatMessage {
     pub fn new(content: String, is_outgoing: bool) -> Self {
         Self {
             content,
-            timestamp: vsf::EagleTime::from_oscillations(vsf::eagle_time_oscillations()).to_seconds_f64(),
+            timestamp: vsf::eagle_time_oscillations(),
             is_outgoing,
             delivered: false,
         }
     }
 
     /// Create a message with a specific timestamp (for received messages with known eagle_time)
-    pub fn new_with_timestamp(content: String, is_outgoing: bool, timestamp: f64) -> Self {
+    pub fn new_with_timestamp(content: String, is_outgoing: bool, timestamp: i64) -> Self {
         Self {
             content,
             timestamp,
@@ -354,11 +354,7 @@ impl Contact {
         // Binary search for insertion point (maintains ascending timestamp order)
         let pos = self
             .messages
-            .binary_search_by(|m| {
-                m.timestamp
-                    .partial_cmp(&msg.timestamp)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
+            .binary_search_by(|m| m.timestamp.cmp(&msg.timestamp))
             .unwrap_or_else(|pos| pos);
         self.messages.insert(pos, msg);
     }

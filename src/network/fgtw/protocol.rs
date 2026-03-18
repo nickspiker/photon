@@ -45,9 +45,9 @@ pub enum FgtwMessage {
     /// Note: Avatar is fetched by handle, not exchanged in ping/pong.
     /// Storage key = BLAKE3(BLAKE3(handle) || "avatar")
     StatusPing {
-        timestamp: f64, // Eagle time with nanosecond precision (ef6) but it's not an ef6?
+        timestamp: i64, // Eagle time oscillations (i64)
         sender_pubkey: DevicePubkey, // Who is pinging (for response routing)
-        provenance_hash: [u8; 32], // BLAKE3(sender_pubkey || timestamp_nanos)
+        provenance_hash: [u8; 32], // BLAKE3(sender_pubkey || timestamp_oscillations)
         signature: [u8; 64], // Ed25519 signature of provenance_hash
     },
     /// P2P status pong - "yes I'm online"
@@ -65,11 +65,11 @@ pub enum FgtwMessage {
     /// Note: Avatar is fetched by handle, not exchanged in ping/pong.
     /// Storage key = BLAKE3(BLAKE3(handle) || "avatar")
     StatusPong {
-        timestamp: f64,                 // Responder's current Eagle time (ef6)
+        timestamp: i64,                 // Responder's current Eagle time oscillations (i64)
         responder_pubkey: DevicePubkey, // Who is responding
         provenance_hash: [u8; 32],      // Same hash from ping (proves we received it)
         signature: [u8; 64],            // Ed25519 signature of provenance_hash
-        /// Per-conversation sync records: (conversation_token, last_received_ef6)
+        /// Per-conversation sync records: (conversation_token, last_received_osc)
         /// Tells peer: "For this conversation, your last message I received was at time X"
         /// Peer retransmits any pending messages with eagle_time > X
         sync_records: Vec<SyncRecord>,
@@ -85,7 +85,7 @@ pub enum FgtwMessage {
     /// - prev_msg_hp: hash chain link to previous message (or first_message_anchor)
     /// - ciphertext: encrypted [x(text), hM(confirm_smear)] section
     ChatMessage {
-        timestamp: f64,
+        timestamp: i64,
         /// Privacy-preserving conversation token (smear_hash of sorted participant seeds)
         conversation_token: [u8; 32],
         prev_msg_hp: [u8; 32],
@@ -97,14 +97,14 @@ pub enum FgtwMessage {
     ///
     /// Confirms receipt of a message by eagle_time (no sequence numbers).
     /// Per CHAIN.md Section 6.1:
-    /// - acked_eagle_time: which message we're ACKing (f64 from their header)
+    /// - acked_eagle_time: which message we're ACKing (i64 oscillations from their header)
     /// - plaintext_hash: proves we decrypted correctly (BLAKE3 of decrypted content)
     MessageAck {
-        timestamp: f64,
+        timestamp: i64,
         /// Privacy-preserving conversation token (smear_hash of sorted participant seeds)
         conversation_token: [u8; 32],
-        /// Eagle time of the message being ACKed (from their VSF header)
-        acked_eagle_time: f64,
+        /// Eagle time oscillations of the message being ACKed (from their VSF header)
+        acked_eagle_time: i64,
         /// BLAKE3 hash of decrypted plaintext - proves we decrypted correctly
         plaintext_hash: [u8; 32],
         sender_pubkey: DevicePubkey,
@@ -128,9 +128,9 @@ pub struct PeerRecord {
 pub struct SyncRecord {
     /// Privacy-preserving conversation token (smear_hash of sorted participant seeds)
     pub conversation_token: [u8; 32],
-    /// Eagle time of last message received from peer in this conversation
+    /// Eagle time oscillations of last message received from peer in this conversation
     /// Peer should retransmit any pending messages with eagle_time > this value
-    pub last_received_ef6: f64,
+    pub last_received_osc: i64,
 }
 
 /// Convert SocketAddr to binary format for VSF
@@ -347,7 +347,7 @@ impl FgtwMessage {
                 // All crypto is in header, section just identifies message type
                 // Avatar is NOT included - fetched by handle instead
                 builder
-                    .creation_time_oscillations(vsf::EagleTime::from_seconds_f64(*timestamp).oscillations().unwrap_or(0) as i64)
+                    .creation_time_oscillations(*timestamp)
                     .provenance_hash(*provenance_hash)
                     .signature_ed25519(*sender_pubkey.as_bytes(), *signature)
                     .add_section("ping", vec![])
@@ -372,12 +372,12 @@ impl FgtwMessage {
                         VsfType::hb(record.conversation_token.to_vec()),
                     ));
                     fields.push((
-                        format!("sync_{}_ef6", i),
-                        VsfType::f6(record.last_received_ef6),
+                        format!("sync_{}_osc", i),
+                        VsfType::e(vsf::types::EtType::i(record.last_received_osc)),
                     ));
                 }
                 builder
-                    .creation_time_oscillations(vsf::EagleTime::from_seconds_f64(*timestamp).oscillations().unwrap_or(0) as i64)
+                    .creation_time_oscillations(*timestamp)
                     .provenance_hash(*provenance_hash)
                     .signature_ed25519(*responder_pubkey.as_bytes(), *signature)
                     .add_section("pong", fields)
@@ -396,7 +396,7 @@ impl FgtwMessage {
                 // Provenance: BLAKE3(conversation_token || prev_msg_hp)
                 let provenance = compute_chat_provenance(conversation_token, prev_msg_hp);
                 builder
-                    .creation_time_oscillations(vsf::EagleTime::from_seconds_f64(*timestamp).oscillations().unwrap_or(0) as i64)
+                    .creation_time_oscillations(*timestamp)
                     .provenance_hash(provenance)
                     .signature_ed25519(*sender_pubkey.as_bytes(), *signature)
                     .add_section(
@@ -430,7 +430,7 @@ impl FgtwMessage {
                     plaintext_hash,
                 );
                 builder
-                    .creation_time_oscillations(vsf::EagleTime::from_seconds_f64(*timestamp).oscillations().unwrap_or(0) as i64)
+                    .creation_time_oscillations(*timestamp)
                     .provenance_hash(provenance)
                     .signature_ed25519(*sender_pubkey.as_bytes(), *signature)
                     .add_section(
@@ -439,7 +439,7 @@ impl FgtwMessage {
                             ("tok".to_string(), VsfType::hg(conversation_token.to_vec())),
                             (
                                 "time".to_string(),
-                                VsfType::e(vsf::types::EtType::f6(*acked_eagle_time)),
+                                VsfType::e(vsf::types::EtType::i(*acked_eagle_time)),
                             ),
                             ("hash".to_string(), VsfType::hb(plaintext_hash.to_vec())),
                         ],
@@ -467,17 +467,13 @@ impl FgtwMessage {
 
         // Use library's VsfHeader::decode() for proper VSF v4 parsing
         use vsf::file_format::VsfHeader;
-        use vsf::parse;
 
         let (header, header_end) =
             VsfHeader::decode(bytes).map_err(|e| format!("Failed to parse VSF header: {}", e))?;
 
-        // ptr is now right after '>'
-        let mut ptr = header_end;
-
         // Check for empty section (header-only format like ping/pong)
         // Empty sections have no '[' after '>' - the section name is in the header field
-        if ptr >= bytes.len() || bytes[ptr] != b'[' {
+        if header_end >= bytes.len() || bytes[header_end] != b'[' {
             // No section body - search header fields for message type (ping/pong)
             let section_name = header
                 .fields
@@ -512,33 +508,9 @@ impl FgtwMessage {
             return Err("No section found".to_string());
         }
 
-        ptr += 1; // Skip '['
-
-        // Parse section name: either from section body (d"name") or from header field
-        // VsfBuilder puts the section name as a header field, so body may start with '(' fields
-        let section_name = if ptr < bytes.len() && bytes[ptr] == b'(' {
-            // Section body starts with fields — section name is in header fields
-            header
-                .fields
-                .first()
-                .map(|f| f.name.clone())
-                .ok_or_else(|| "No section name in header fields or body".to_string())?
-        } else {
-            match parse(bytes, &mut ptr) {
-                Ok(VsfType::d(name)) => name,
-                Ok(other) => return Err(format!(
-                    "Invalid section name: expected VsfType::d, got {:?} (byte at [{}]=0x{:02x})",
-                    other,
-                    ptr.saturating_sub(1),
-                    bytes.get(ptr.saturating_sub(1)).copied().unwrap_or(0)
-                )),
-                Err(e) => return Err(format!(
-                    "Invalid section name: parse failed at ptr={}/{}: {} (bytes: {:02x?})",
-                    ptr, bytes.len(), e,
-                    &bytes[ptr..std::cmp::min(ptr + 16, bytes.len())]
-                )),
-            }
-        };
+        // Parse section using VsfSection::parse()
+        let (section, section_name) = parse_section_after_header(bytes, &header, header_end)
+            .map_err(|e| format!("Failed to parse section: {}", e))?;
 
         // Handle ping/pong format
         if section_name == "ping" || section_name == "pong" {
@@ -557,29 +529,7 @@ impl FgtwMessage {
                 });
             } else {
                 // Pong - parse sync records from section body
-                let mut fields: Vec<(String, VsfType)> = Vec::new();
-                while ptr < bytes.len() && bytes[ptr] != b']' {
-                    if bytes[ptr] != b'(' {
-                        return Err("Expected field start '('".to_string());
-                    }
-                    ptr += 1;
-                    let field_name = match parse(bytes, &mut ptr) {
-                        Ok(VsfType::d(name)) => name,
-                        _ => return Err("Invalid pong field name".to_string()),
-                    };
-                    if ptr < bytes.len() && bytes[ptr] == b':' {
-                        ptr += 1;
-                        let value = parse(bytes, &mut ptr)
-                            .map_err(|e| format!("Parse pong field: {}", e))?;
-                        fields.push((field_name, value));
-                    }
-                    if ptr >= bytes.len() || bytes[ptr] != b')' {
-                        return Err("Expected field end ')'".to_string());
-                    }
-                    ptr += 1;
-                }
-
-                // Extract sync records
+                let fields = section_fields_to_tuples(&section);
                 let sync_records = extract_sync_records(&fields)?;
 
                 return Ok(FgtwMessage::StatusPong {
@@ -602,28 +552,7 @@ impl FgtwMessage {
             let sender_pubkey = extract_header_pubkey(&header)?;
             let signature = extract_header_signature(&header)?;
 
-            // Parse section fields
-            let mut fields: Vec<(String, VsfType)> = Vec::new();
-            while ptr < bytes.len() && bytes[ptr] != b']' {
-                if bytes[ptr] != b'(' {
-                    return Err("Expected field start '('".to_string());
-                }
-                ptr += 1;
-                let field_name = match parse(bytes, &mut ptr) {
-                    Ok(VsfType::d(name)) => name,
-                    _ => return Err("Invalid msg/ack field name".to_string()),
-                };
-                if ptr < bytes.len() && bytes[ptr] == b':' {
-                    ptr += 1;
-                    let value = parse(bytes, &mut ptr)
-                        .map_err(|e| format!("Parse msg/ack field: {}", e))?;
-                    fields.push((field_name, value));
-                }
-                if ptr >= bytes.len() || bytes[ptr] != b')' {
-                    return Err("Expected field end ')'".to_string());
-                }
-                ptr += 1;
-            }
+            let fields = section_fields_to_tuples(&section);
 
             // CHAIN format: conversation_token (privacy-preserving), no sequence numbers
             let conversation_token = extract_spaghetti_hash(&fields, "tok")?;
@@ -664,35 +593,7 @@ impl FgtwMessage {
             ));
         }
 
-        // Parse fields into a vec (small N, linear scan faster than hash)
-        let mut fields: Vec<(String, VsfType)> = Vec::new();
-
-        while ptr < bytes.len() && bytes[ptr] != b']' {
-            if bytes[ptr] != b'(' {
-                return Err("Expected field start '('".to_string());
-            }
-            ptr += 1;
-
-            // Parse field name
-            let field_name = match parse(bytes, &mut ptr) {
-                Ok(VsfType::d(name)) => name,
-                _ => return Err("Invalid field name".to_string()),
-            };
-
-            // Check for value (colon means there's a value)
-            if ptr < bytes.len() && bytes[ptr] == b':' {
-                ptr += 1;
-                let value =
-                    parse(bytes, &mut ptr).map_err(|e| format!("Parse field value: {}", e))?;
-                fields.push((field_name, value));
-            }
-
-            // Skip closing ')'
-            if ptr >= bytes.len() || bytes[ptr] != b')' {
-                return Err("Expected field end ')'".to_string());
-            }
-            ptr += 1;
-        }
+        let fields = section_fields_to_tuples(&section);
 
         // Extract msg_type
         let msg_type = match get_field(&fields, "msg_type") {
@@ -779,6 +680,39 @@ impl PeerRecord {
     }
 }
 
+/// Convert VsfSection fields to (name, value) tuples for helper functions.
+/// Fields with no values are skipped; multi-value fields use only the first value.
+fn section_fields_to_tuples(section: &vsf::VsfSection) -> Vec<(String, VsfType)> {
+    section
+        .fields
+        .iter()
+        .filter_map(|f| f.values.first().map(|v| (f.name.clone(), v.clone())))
+        .collect()
+}
+
+/// Parse a VsfSection from VSF bytes after a header, resolving the section name
+/// from the header TOC when the body has no embedded name (small sections).
+fn parse_section_after_header(
+    data: &[u8],
+    header: &vsf::VsfHeader,
+    header_end: usize,
+) -> Result<(vsf::VsfSection, String), String> {
+    let mut ptr = header_end;
+    let mut section = vsf::VsfSection::parse(data, &mut ptr)
+        .map_err(|e| format!("Failed to parse section: {}", e))?;
+    let name = if section.name.is_empty() {
+        header
+            .fields
+            .first()
+            .map(|f| f.name.clone())
+            .unwrap_or_default()
+    } else {
+        section.name.clone()
+    };
+    section.name = name.clone();
+    Ok((section, name))
+}
+
 fn get_field<'a>(fields: &'a [(String, VsfType)], key: &str) -> Option<&'a VsfType> {
     fields.iter().find(|(k, _)| k == key).map(|(_, v)| v)
 }
@@ -842,14 +776,11 @@ fn extract_spaghetti_hash(fields: &[(String, VsfType)], key: &str) -> Result<[u8
     Ok(arr)
 }
 
-/// Extract Eagle time (f64) from VSF e() type
-fn extract_eagle_time(fields: &[(String, VsfType)], key: &str) -> Result<f64, String> {
+/// Extract Eagle time as i64 oscillations from VSF e() type
+fn extract_eagle_time(fields: &[(String, VsfType)], key: &str) -> Result<i64, String> {
     use vsf::types::EtType;
     match get_field(fields, key) {
-        Some(VsfType::e(EtType::f6(v))) => Ok(*v),
-        Some(VsfType::e(EtType::f5(v))) => Ok(*v as f64),
-        Some(VsfType::e(EtType::i(v))) => Ok(*v as f64),
-        Some(VsfType::f6(v)) => Ok(*v), // Also accept raw f6
+        Some(VsfType::e(EtType::i(v))) => Ok(*v),
         _ => Err(format!("Missing or invalid eagle time: {}", key)),
     }
 }
@@ -891,7 +822,6 @@ fn extract_peer_list(
         let last_seen_key = format!("{}_last_seen", peer_prefix);
         let last_seen = match get_field(fields, &last_seen_key) {
             Some(VsfType::e(vsf::types::EtType::i(osc))) => *osc,
-            Some(VsfType::e(vsf::types::EtType::f6(secs))) => (*secs * 1_420_407_826.0) as i64,
             _ => return Err(format!("Missing or invalid {}", last_seen_key)),
         };
 
@@ -921,17 +851,17 @@ fn extract_sync_records(fields: &[(String, VsfType)]) -> Result<Vec<SyncRecord>,
     let mut records = Vec::with_capacity(count);
     for i in 0..count {
         let tok_key = format!("sync_{}_tok", i);
-        let ef6_key = format!("sync_{}_ef6", i);
+        let osc_key = format!("sync_{}_osc", i);
 
         let conversation_token = extract_hash(fields, &tok_key)?;
-        let last_received_ef6 = match get_field(fields, &ef6_key) {
-            Some(VsfType::f6(v)) => *v,
-            _ => return Err(format!("Missing or invalid {}", ef6_key)),
+        let last_received_osc = match get_field(fields, &osc_key) {
+            Some(VsfType::e(vsf::types::EtType::i(v))) => *v,
+            _ => return Err(format!("Missing or invalid {}", osc_key)),
         };
 
         records.push(SyncRecord {
             conversation_token,
-            last_received_ef6,
+            last_received_osc,
         });
     }
 
@@ -940,15 +870,10 @@ fn extract_sync_records(fields: &[(String, VsfType)]) -> Result<Vec<SyncRecord>,
 
 // Helper functions to extract from VsfHeader for simplified ping/pong format
 
-fn extract_header_timestamp(header: &vsf::file_format::VsfHeader) -> Result<f64, String> {
+fn extract_header_timestamp(header: &vsf::file_format::VsfHeader) -> Result<i64, String> {
     use vsf::types::EtType;
     match &header.creation_time {
-        VsfType::e(EtType::f6(v)) => Ok(*v),
-        VsfType::e(EtType::f5(v)) => Ok(*v as f64),
-        VsfType::e(EtType::i(v)) => {
-            // EtType::i is raw oscillations — convert to seconds
-            Ok(vsf::EagleTime::from_oscillations(*v).to_seconds_f64())
-        }
+        VsfType::e(EtType::i(v)) => Ok(*v),
         _ => Err("Invalid header timestamp".to_string()),
     }
 }
@@ -1015,7 +940,7 @@ fn compute_chat_provenance(conversation_token: &[u8; 32], prev_msg_hp: &[u8; 32]
 /// provenance = BLAKE3(conversation_token || acked_eagle_time_bytes || plaintext_hash || "ack")
 fn compute_ack_provenance_v2(
     conversation_token: &[u8; 32],
-    acked_eagle_time: f64,
+    acked_eagle_time: i64,
     plaintext_hash: &[u8; 32],
 ) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
@@ -1140,29 +1065,14 @@ pub fn parse_clutch_offer_vsf(
     // Extract signer pubkey
     let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
 
-    // Parse header to get section start position
+    // Parse header and section
     use vsf::file_format::VsfHeader;
     let (header, header_end) =
         VsfHeader::decode(vsf_bytes).map_err(|e| format!("Failed to parse header: {}", e))?;
 
     // offer_provenance will be computed from keys after parsing (deterministic, no timestamp)
 
-    // Parse section
-    let mut ptr = header_end;
-    if ptr >= vsf_bytes.len() || vsf_bytes[ptr] != b'[' {
-        return Err("No section body in ClutchOffer".to_string());
-    }
-    ptr += 1;
-
-    // Section name not written for sections within 1MB; fall back to header TOC
-    let section_name = if ptr < vsf_bytes.len() && vsf_bytes[ptr] != b'(' && vsf_bytes[ptr] != b']' {
-        match vsf::parse(vsf_bytes, &mut ptr) {
-            Ok(VsfType::d(name)) => name,
-            _ => return Err("Invalid section name".to_string()),
-        }
-    } else {
-        header.fields.first().map(|f| f.name.clone()).ok_or_else(|| "No section name in header".to_string())?
-    };
+    let (section, section_name) = parse_section_after_header(vsf_bytes, &header, header_end)?;
 
     if section_name != "clutch_offer" {
         return Err(format!(
@@ -1171,14 +1081,7 @@ pub fn parse_clutch_offer_vsf(
         ));
     }
 
-    // Parse fields with multi-value support
-    use vsf::file_format::VsfField;
-    let mut fields: Vec<VsfField> = Vec::new();
-    while ptr < vsf_bytes.len() && vsf_bytes[ptr] != b']' {
-        let field =
-            VsfField::parse(vsf_bytes, &mut ptr).map_err(|e| format!("Parse field: {}", e))?;
-        fields.push(field);
-    }
+    let fields = &section.fields;
 
     // Extract conversation_token (single value field)
     let conversation_token: [u8; 32] = fields
@@ -1405,29 +1308,14 @@ pub fn parse_clutch_kem_response_vsf(
     // Extract signer pubkey
     let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
 
-    // Parse header for ceremony_id
+    // Parse header and section
     use vsf::file_format::VsfHeader;
     let (header, header_end) =
         VsfHeader::decode(vsf_bytes).map_err(|e| format!("Failed to parse header: {}", e))?;
 
     let ceremony_id = extract_header_provenance(&header)?;
 
-    // Parse section
-    let mut ptr = header_end;
-    if ptr >= vsf_bytes.len() || vsf_bytes[ptr] != b'[' {
-        return Err("No section body in ClutchKemResponse".to_string());
-    }
-    ptr += 1;
-
-    // Section name not written for sections within 1MB; fall back to header TOC
-    let section_name = if ptr < vsf_bytes.len() && vsf_bytes[ptr] != b'(' && vsf_bytes[ptr] != b']' {
-        match vsf::parse(vsf_bytes, &mut ptr) {
-            Ok(VsfType::d(name)) => name,
-            _ => return Err("Invalid section name".to_string()),
-        }
-    } else {
-        header.fields.first().map(|f| f.name.clone()).ok_or_else(|| "No section name in header".to_string())?
-    };
+    let (section, section_name) = parse_section_after_header(vsf_bytes, &header, header_end)?;
 
     if section_name != "clutch_kem_response" {
         return Err(format!(
@@ -1436,14 +1324,7 @@ pub fn parse_clutch_kem_response_vsf(
         ));
     }
 
-    // Parse fields with multi-value support
-    use vsf::file_format::VsfField;
-    let mut fields: Vec<VsfField> = Vec::new();
-    while ptr < vsf_bytes.len() && vsf_bytes[ptr] != b']' {
-        let field =
-            VsfField::parse(vsf_bytes, &mut ptr).map_err(|e| format!("Parse field: {}", e))?;
-        fields.push(field);
-    }
+    let fields = &section.fields;
 
     // Extract conversation_token (single value field)
     let conversation_token: [u8; 32] = fields
@@ -1651,29 +1532,14 @@ pub fn parse_clutch_offer_vsf_without_recipient_check(
     // Extract signer pubkey
     let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
 
-    // Parse header to get section start position
+    // Parse header and section
     use vsf::file_format::VsfHeader;
     let (header, header_end) =
         VsfHeader::decode(vsf_bytes).map_err(|e| format!("Failed to parse header: {}", e))?;
 
     // offer_provenance will be computed from keys after parsing (deterministic, no timestamp)
 
-    // Parse section
-    let mut ptr = header_end;
-    if ptr >= vsf_bytes.len() || vsf_bytes[ptr] != b'[' {
-        return Err("No section body in ClutchOffer".to_string());
-    }
-    ptr += 1;
-
-    // Section name not written for sections within 1MB; fall back to header TOC
-    let section_name = if ptr < vsf_bytes.len() && vsf_bytes[ptr] != b'(' && vsf_bytes[ptr] != b']' {
-        match vsf::parse(vsf_bytes, &mut ptr) {
-            Ok(VsfType::d(name)) => name,
-            _ => return Err("Invalid section name".to_string()),
-        }
-    } else {
-        header.fields.first().map(|f| f.name.clone()).ok_or_else(|| "No section name in header".to_string())?
-    };
+    let (section, section_name) = parse_section_after_header(vsf_bytes, &header, header_end)?;
 
     if section_name != "clutch_offer" {
         return Err(format!(
@@ -1682,14 +1548,7 @@ pub fn parse_clutch_offer_vsf_without_recipient_check(
         ));
     }
 
-    // Parse fields with multi-value support
-    use vsf::file_format::VsfField;
-    let mut fields: Vec<VsfField> = Vec::new();
-    while ptr < vsf_bytes.len() && vsf_bytes[ptr] != b']' {
-        let field =
-            VsfField::parse(vsf_bytes, &mut ptr).map_err(|e| format!("Parse field: {}", e))?;
-        fields.push(field);
-    }
+    let fields = &section.fields;
 
     // Extract conversation_token (NO recipient check - caller verifies)
     let conversation_token: [u8; 32] = fields
@@ -1826,29 +1685,14 @@ pub fn parse_clutch_kem_response_vsf_without_recipient_check(
     // Extract signer pubkey
     let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
 
-    // Parse header for ceremony_id
+    // Parse header and section
     use vsf::file_format::VsfHeader;
     let (header, header_end) =
         VsfHeader::decode(vsf_bytes).map_err(|e| format!("Failed to parse header: {}", e))?;
 
     let ceremony_id = extract_header_provenance(&header)?;
 
-    // Parse section
-    let mut ptr = header_end;
-    if ptr >= vsf_bytes.len() || vsf_bytes[ptr] != b'[' {
-        return Err("No section body in ClutchKemResponse".to_string());
-    }
-    ptr += 1;
-
-    // Section name not written for sections within 1MB; fall back to header TOC
-    let section_name = if ptr < vsf_bytes.len() && vsf_bytes[ptr] != b'(' && vsf_bytes[ptr] != b']' {
-        match vsf::parse(vsf_bytes, &mut ptr) {
-            Ok(VsfType::d(name)) => name,
-            _ => return Err("Invalid section name".to_string()),
-        }
-    } else {
-        header.fields.first().map(|f| f.name.clone()).ok_or_else(|| "No section name in header".to_string())?
-    };
+    let (section, section_name) = parse_section_after_header(vsf_bytes, &header, header_end)?;
 
     if section_name != "clutch_kem_response" {
         return Err(format!(
@@ -1857,14 +1701,7 @@ pub fn parse_clutch_kem_response_vsf_without_recipient_check(
         ));
     }
 
-    // Parse fields with multi-value support
-    use vsf::file_format::VsfField;
-    let mut fields: Vec<VsfField> = Vec::new();
-    while ptr < vsf_bytes.len() && vsf_bytes[ptr] != b']' {
-        let field =
-            VsfField::parse(vsf_bytes, &mut ptr).map_err(|e| format!("Parse field: {}", e))?;
-        fields.push(field);
-    }
+    let fields = &section.fields;
 
     // Extract conversation_token (NO recipient check - caller verifies)
     let conversation_token: [u8; 32] = fields
@@ -2152,29 +1989,14 @@ pub fn parse_clutch_complete_vsf(
     // Extract signer pubkey
     let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
 
-    // Parse header for ceremony_id
+    // Parse header and section
     use vsf::file_format::VsfHeader;
     let (header, header_end) =
         VsfHeader::decode(vsf_bytes).map_err(|e| format!("Failed to parse header: {}", e))?;
 
     let ceremony_id = extract_header_provenance(&header)?;
 
-    // Parse section
-    let mut ptr = header_end;
-    if ptr >= vsf_bytes.len() || vsf_bytes[ptr] != b'[' {
-        return Err("No section body in ClutchComplete".to_string());
-    }
-    ptr += 1;
-
-    // Section name not written for sections within 1MB; fall back to header TOC
-    let section_name = if ptr < vsf_bytes.len() && vsf_bytes[ptr] != b'(' && vsf_bytes[ptr] != b']' {
-        match vsf::parse(vsf_bytes, &mut ptr) {
-            Ok(VsfType::d(name)) => name,
-            _ => return Err("Invalid section name".to_string()),
-        }
-    } else {
-        header.fields.first().map(|f| f.name.clone()).ok_or_else(|| "No section name in header".to_string())?
-    };
+    let (section, section_name) = parse_section_after_header(vsf_bytes, &header, header_end)?;
 
     if section_name != "clutch_complete" {
         return Err(format!(
@@ -2183,28 +2005,7 @@ pub fn parse_clutch_complete_vsf(
         ));
     }
 
-    // Parse fields
-    let mut fields: Vec<(String, VsfType)> = Vec::new();
-    while ptr < vsf_bytes.len() && vsf_bytes[ptr] != b']' {
-        if vsf_bytes[ptr] != b'(' {
-            return Err("Expected field start '('".to_string());
-        }
-        ptr += 1;
-        let field_name = match vsf::parse(vsf_bytes, &mut ptr) {
-            Ok(VsfType::d(name)) => name,
-            _ => return Err("Invalid field name".to_string()),
-        };
-        if ptr < vsf_bytes.len() && vsf_bytes[ptr] == b':' {
-            ptr += 1;
-            let value =
-                vsf::parse(vsf_bytes, &mut ptr).map_err(|e| format!("Parse field value: {}", e))?;
-            fields.push((field_name, value));
-        }
-        if ptr >= vsf_bytes.len() || vsf_bytes[ptr] != b')' {
-            return Err("Expected field end ')'".to_string());
-        }
-        ptr += 1;
-    }
+    let fields = section_fields_to_tuples(&section);
 
     // Extract conversation_token
     let conversation_token = extract_spaghetti_hash(&fields, "tok")?;
@@ -2259,22 +2060,7 @@ pub fn parse_clutch_complete_vsf_without_recipient_check(
 
     let ceremony_id = extract_header_provenance(&header)?;
 
-    // Parse section
-    let mut ptr = header_end;
-    if ptr >= vsf_bytes.len() || vsf_bytes[ptr] != b'[' {
-        return Err("No section body in ClutchComplete".to_string());
-    }
-    ptr += 1;
-
-    // Section name not written for sections within 1MB; fall back to header TOC
-    let section_name = if ptr < vsf_bytes.len() && vsf_bytes[ptr] != b'(' && vsf_bytes[ptr] != b']' {
-        match vsf::parse(vsf_bytes, &mut ptr) {
-            Ok(VsfType::d(name)) => name,
-            _ => return Err("Invalid section name".to_string()),
-        }
-    } else {
-        header.fields.first().map(|f| f.name.clone()).ok_or_else(|| "No section name in header".to_string())?
-    };
+    let (section, section_name) = parse_section_after_header(vsf_bytes, &header, header_end)?;
 
     if section_name != "clutch_complete" {
         return Err(format!(
@@ -2283,28 +2069,7 @@ pub fn parse_clutch_complete_vsf_without_recipient_check(
         ));
     }
 
-    // Parse fields
-    let mut fields: Vec<(String, VsfType)> = Vec::new();
-    while ptr < vsf_bytes.len() && vsf_bytes[ptr] != b']' {
-        if vsf_bytes[ptr] != b'(' {
-            return Err("Expected field start '('".to_string());
-        }
-        ptr += 1;
-        let field_name = match vsf::parse(vsf_bytes, &mut ptr) {
-            Ok(VsfType::d(name)) => name,
-            _ => return Err("Invalid field name".to_string()),
-        };
-        if ptr < vsf_bytes.len() && vsf_bytes[ptr] == b':' {
-            ptr += 1;
-            let value =
-                vsf::parse(vsf_bytes, &mut ptr).map_err(|e| format!("Parse field value: {}", e))?;
-            fields.push((field_name, value));
-        }
-        if ptr >= vsf_bytes.len() || vsf_bytes[ptr] != b')' {
-            return Err("Expected field end ')'".to_string());
-        }
-        ptr += 1;
-    }
+    let fields = section_fields_to_tuples(&section);
 
     // Extract conversation_token (NO recipient check - caller verifies)
     let conversation_token = extract_spaghetti_hash(&fields, "tok")?;

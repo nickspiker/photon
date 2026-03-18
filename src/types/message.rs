@@ -1,5 +1,4 @@
-use chrono::Utc;
-use vsf::{datetime_to_eagle_time, EagleTime, VsfType};
+use vsf::{EagleTime, VsfType};
 
 /// Message identifier (BLAKE3 hash)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -190,7 +189,7 @@ impl Message {
             nonce: rand::random(),
             sequence,
             payload,
-            timestamp: datetime_to_eagle_time(Utc::now()),
+            timestamp: EagleTime::from_oscillations(vsf::eagle_time_oscillations()),
         }
     }
 }

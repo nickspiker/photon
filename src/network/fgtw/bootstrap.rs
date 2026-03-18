@@ -558,12 +558,8 @@ fn parse_peer_from_field(field: &vsf::VsfField) -> Result<PeerRecord, String> {
 
     // Parse timestamp (Eagle Time oscillations)
     let last_seen = match &field.values[4] {
-        vsf::VsfType::e(et) => match et {
-            vsf::types::EtType::i(osc) => *osc,
-            vsf::types::EtType::f6(secs) => (*secs * 1_420_407_826.0) as i64,
-            vsf::types::EtType::f5(secs) => (*secs as f64 * 1_420_407_826.0) as i64,
-        },
-        _ => return Err("Expected Eagle Time (e) type for timestamp".to_string()),
+        vsf::VsfType::e(vsf::types::EtType::i(osc)) => *osc,
+        _ => return Err("Expected Eagle Time i64 oscillations for timestamp".to_string()),
     };
 
     // Parse optional local_ip (t_u3{4 or 16 bytes}) for hairpin NAT
