@@ -1,12 +1,10 @@
-No uniform scaling code/variable, ctrl + and _ and pinch zoom on touch need added
-No notifications for messages
+Relative Unit (RU's) scaling code/variable, pinch zoom on touch need added (android)
+Need notifications for messages
 somewhat out of order for message display
 send button doesn't work (use enter key)
 Text on send overwrites the send button
-Extra hash on executable?
 self updates need added
 network broadcast gets stuck/lost
-needs to keep text entry box selected whilist sending messageths
 chrome downloads rename to .zip and trigger extract, not install instead of apk on Android
 rotated images that have exif flags set to rotate after decode needs implemented
 Wayland: drag-and-drop file support (avatar upload) — winit doesn't support HoveredFile/DroppedFile on native Wayland (issue #1881), need wl_data_device impl or wait for winit PR #4504

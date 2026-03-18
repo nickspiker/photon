@@ -13,9 +13,11 @@ rustflags = ["-C", "link-arg=--sysroot=/usr/aarch64-redhat-linux/sys-root/fc42",
 [target.x86_64-apple-darwin]
 linker = "/mnt/Octopus/Code/osxcross/target/bin/x86_64-apple-darwin-clang-wrapper"
 
-# macOS Apple Silicon cross-compilation via osxcross
+# macOS Apple Silicon — default to system clang for native builds on the Mac.
+# deploy.sh overrides this via CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER when
+# cross-compiling from Linux with osxcross.
 [target.aarch64-apple-darwin]
-linker = "/mnt/Octopus/Code/osxcross/target/bin/aarch64-apple-darwin-clang-wrapper"
+linker = "clang"
 
 # Redox cross-compilation (use when: cargo build --target x86_64-unknown-redox)
 [target.x86_64-unknown-redox]
