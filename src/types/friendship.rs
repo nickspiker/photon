@@ -897,9 +897,10 @@ impl FriendshipChains {
         self.last_sent_hash = Some(msg_hp);
     }
 
-    /// Process ACK: find pending message, update last_plaintext, clear pending.
-    /// Chain already advanced on send - this just confirms delivery.
-    /// Returns true if ACK was valid.
+    /// Process ACK: find pending message, advance our chain, update last_plaintext, clear pending.
+    /// Chain advancement is deferred to ACK to prevent desync — if we advanced on send and
+    /// the receiver never processed the message, both sides' copies of our chain would diverge.
+    /// Returns true if ACK was valid and chain was advanced.
     pub fn process_ack(
         &mut self,
         our_handle_hash: &[u8; 32],
@@ -915,8 +916,22 @@ impl FriendshipChains {
         if let Some(idx) = pos {
             let pending = self.pending_messages.remove(idx);
 
-            // Chain already advanced on send - just update last_plaintext for salt derivation
-            // (used when no pending messages remain)
+            // Get the other party's most recent plaintext for bidirectional weave
+            let their_plaintext: Option<Vec<u8>> = self
+                .other_participant(our_handle_hash)
+                .map(|their_hash| self.last_plaintext(their_hash).to_vec());
+
+            // NOW advance our chain — receiver has confirmed they decrypted our message,
+            // so both sides can deterministically advance using the same inputs.
+            let eagle_time = vsf::EagleTime::new(vsf::types::EtType::f6(pending.eagle_time));
+            self.advance(
+                our_handle_hash,
+                &eagle_time,
+                &pending.plaintext,
+                their_plaintext.as_deref(),
+            );
+
+            // Update last_plaintext for salt derivation on next message
             if let Some(chain_idx) = self.participant_index(our_handle_hash) {
                 self.last_plaintexts[chain_idx] = pending.plaintext;
                 return true;

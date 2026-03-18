@@ -344,6 +344,7 @@ pub fn save_contact_list(
         "contacts/index.vsf",
         Some(&vsf_bytes),
         device_secret,
+        crate::storage::WritePolicy::BestEffort,
     )?;
     Ok(())
 }
@@ -488,6 +489,7 @@ pub fn save_contact_state(
         &label,
         Some(&vsf_bytes),
         device_secret,
+        crate::storage::WritePolicy::BestEffort,
     )?;
     Ok(())
 }
@@ -747,6 +749,7 @@ pub fn save_clutch_keypairs(
         &label,
         Some(&vsf_bytes),
         device_secret,
+        crate::storage::WritePolicy::BestEffort,
     )?;
 
     #[cfg(feature = "development")]
@@ -966,6 +969,7 @@ pub fn save_clutch_slots(
         &label,
         Some(&vsf_bytes),
         device_secret,
+        crate::storage::WritePolicy::BestEffort,
     )?;
 
     #[cfg(feature = "development")]
@@ -1515,6 +1519,7 @@ pub fn save_messages(
         &label,
         Some(&vsf_bytes),
         device_secret,
+        crate::storage::WritePolicy::BestEffort,
     )?;
 
     #[cfg(feature = "development")]
