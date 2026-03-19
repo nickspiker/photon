@@ -768,9 +768,14 @@ impl PhotonApp {
             }
         };
 
-        // Ctrl+scroll = zoom (works in any state)
+        // Zoom scroll (works in any state)
+        // macOS: Cmd+scroll  |  other platforms: Ctrl+scroll
         // Logarithmic scaling: 1 step = multiply by 33/32
-        if self.modifiers.control_key() {
+        #[cfg(target_os = "macos")]
+        let zoom_key = self.modifiers.super_key();
+        #[cfg(not(target_os = "macos"))]
+        let zoom_key = self.modifiers.control_key();
+        if zoom_key {
             // scroll_pixels: ~20 per line notch, variable for pixel delta (touchpad)
             // Convert to steps: 1 notch = 1 step
             let steps = scroll_pixels / 20.0;
