@@ -138,17 +138,18 @@
 // │   contacts_storage_key(identity_seed, device_secret)
 // │   contacts_encryption_key(identity_seed, device_secret)
 // │
-// ├── contacts.rs ── local encrypted contact storage
-// │   struct ContactIdentity, enum StorageError
+// ├── contacts.rs ── local contact storage via FlatStorage
+// │   struct ContactIdentity
 // │   derive_identity_seed(handle)
+// │   save/load_contact_list(storage), save/load_contact_state(contact, storage)
+// │   save/load_all_contacts(storage), save/load_messages(contact, storage)
+// │   save/load/delete_clutch_keypairs(handle, storage)
+// │   save/load/delete_clutch_slots(slots, handle, storage)
 // │
-// ├── flat.rs ── flat file storage (root dir, identity_seed, device_secret)
-// │   struct FlatStorage
+// ├── flat.rs ── flat opaque storage (all disk I/O goes through here)
+// │   struct FlatStorage, enum StorageError { Io, Crypto, Parse }
 // │     ::new(identity_seed, device_secret)
-// │     ::load_contact_list(), save_contact_list()
-// │     ::load_contact_blob(), save_contact_blob(), delete_contact_blob()
-// │     ::load_chain_blob(), save_chain_blob(), delete_chain_blob()
-// │     ::load_avatar(), save_avatar(), delete_avatar()
+// │     ::write(key, data), ::read(key), ::delete(key)
 // │     ::load_message(), save_message(), delete_message()
 // │   struct ContactListEntry { handle, identity_seed }
 // │   struct ContactBlob { identity_seed, handle, added, friendship_id,
@@ -159,8 +160,10 @@
 // │   struct MessageBlob { author_index, status, eagle_time, plaintext, ... }
 // │   struct MessageIndexEntry { network_id, eagle_time, author_index }
 // │
-// └── friendship.rs ── per-friendship chain persistence
-//     enum FriendshipStorageError
+// └── friendship.rs ── per-friendship chain persistence via FlatStorage
+//     save/load_friendship_chains(chains/id, storage)
+//     load_all_friendships(friendship_ids, storage)
+//     delete_friendship_chains(friendship_id, storage)
 //
 // types/
 // ├── contact.rs ── contact/friendship re-exports

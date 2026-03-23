@@ -8,7 +8,7 @@
 //! On advance: left-shift all links, derive new link at [511] via spaghettify.
 //! This provides forward secrecy - past keys are destroyed.
 
-use super::clutch::{smear_hash, spaghettify};
+use ihi::{smear_hash, spaghettify};
 use chacha20::{
     cipher::{KeyIvInit, StreamCipher},
     ChaCha20,

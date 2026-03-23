@@ -484,19 +484,27 @@ impl HandleQuery {
                         ));
 
                         // === Load all data in background (proof → network → disk → cloud) ===
-                        let device_secret = keypair.secret.as_bytes();
+                        let device_secret_bytes = *keypair.secret.as_bytes();
                         let identity_seed = crate::storage::contacts::derive_identity_seed(&handle);
+
+                        // Initialize FlatStorage for this session
+                        let storage = match crate::storage::FlatStorage::new(identity_seed, device_secret_bytes) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                crate::log(&format!("Network: Failed to init storage: {}", e));
+                                return;
+                            }
+                        };
 
                         // Load contacts from disk
                         crate::log("Network: Loading contacts from disk...");
-                        let mut contacts = crate::storage::contacts::load_all_contacts(&identity_seed, device_secret);
+                        let mut contacts = crate::storage::contacts::load_all_contacts(&storage);
 
                         // Load messages for each contact
                         for contact in &mut contacts {
                             if let Err(e) = crate::storage::contacts::load_messages(
                                 contact,
-                                &identity_seed,
-                                device_secret,
+                                &storage,
                             ) {
                                 crate::log(&format!(
                                     "Network: Failed to load messages for {}: {}",
@@ -509,8 +517,7 @@ impl HandleQuery {
                             if contact.clutch_state != crate::types::ClutchState::Complete {
                                 if let Ok(Some(state)) = crate::storage::contacts::load_clutch_slots(
                                     contact.handle.as_str(),
-                                    &identity_seed,
-                                    device_secret,
+                                    &storage,
                                 ) {
                                     contact.clutch_slots = state.slots;
                                     contact.offer_provenances = state.offer_provenances;
@@ -518,8 +525,7 @@ impl HandleQuery {
                                 }
                                 if let Ok(Some(keypairs)) = crate::storage::contacts::load_clutch_keypairs(
                                     contact.handle.as_str(),
-                                    &identity_seed,
-                                    device_secret,
+                                    &storage,
                                 ) {
                                     contact.clutch_our_keypairs = Some(keypairs);
                                     if contact.clutch_slots.is_empty() {
@@ -540,9 +546,13 @@ impl HandleQuery {
                         }
                         crate::log(&format!("Network: Loaded {} contacts", contacts.len()));
 
-                        // Load friendship chains from disk
+                        // Load friendship chains from disk (by friendship_id stored in each contact)
                         crate::log("Network: Loading friendship chains...");
-                        let friendships = crate::storage::friendship::load_all_friendships(&identity_seed, device_secret);
+                        let friendship_ids: Vec<crate::types::FriendshipId> = contacts
+                            .iter()
+                            .filter_map(|c| c.friendship_id)
+                            .collect();
+                        let friendships = crate::storage::friendship::load_all_friendships(&friendship_ids, &storage);
                         crate::log(&format!("Network: Loaded {} friendships", friendships.len()));
 
                         // Load local avatar
@@ -563,8 +573,7 @@ impl HandleQuery {
                                     if contact.clutch_state != crate::types::ClutchState::Complete {
                                         if let Ok(Some(state)) = crate::storage::contacts::load_clutch_slots(
                                             contact.handle.as_str(),
-                                            &identity_seed,
-                                            device_secret,
+                                            &storage,
                                         ) {
                                             contact.clutch_slots = state.slots;
                                             contact.offer_provenances = state.offer_provenances;
@@ -572,7 +581,7 @@ impl HandleQuery {
                                         }
                                     }
                                     // Save to local storage
-                                    let _ = crate::storage::contacts::save_contact(&contact, &identity_seed, device_secret);
+                                    let _ = crate::storage::contacts::save_contact(&contact, &storage);
                                     contacts.push(contact);
                                 }
                             }

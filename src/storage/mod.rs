@@ -1,6 +1,25 @@
 pub mod cloud;
 pub mod contacts;
+pub mod flat;
 pub mod friendship;
+
+pub use flat::{FlatStorage, StorageError};
+
+/// Returns ~/.config/photon/ (or Android equivalent). All Photon files live here.
+pub fn photon_config_dir() -> Result<std::path::PathBuf, std::io::Error> {
+    #[cfg(target_os = "android")]
+    {
+        use crate::ui::avatar::get_android_data_dir;
+        get_android_data_dir()
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "Android data dir not set"))
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        dirs::config_dir()
+            .map(|p| p.join("photon"))
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "config dir not found"))
+    }
+}
 
 // ============================================================================
 // Unified Storage I/O
