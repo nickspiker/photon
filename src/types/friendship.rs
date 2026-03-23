@@ -56,7 +56,7 @@ impl CeremonyId {
     /// No memory-hard computation needed - nanosecond timestamps provide
     /// enough entropy to defeat rainbow table attacks.
     pub fn derive(handle_hashes: &[[u8; 32]], ping_provenances: &[[u8; 32]]) -> Self {
-        use crate::crypto::clutch::spaghettify;
+        use ihi::spaghettify;
 
         let base = Self::derive_base(handle_hashes);
 

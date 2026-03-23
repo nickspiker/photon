@@ -792,33 +792,10 @@ pub fn get_android_data_dir() -> Option<std::path::PathBuf> {
     ANDROID_DATA_DIR.get().map(|s| std::path::PathBuf::from(s))
 }
 
-/// Get the avatars directory
-/// - Android: /data/data/com.photon.messenger/files/avatars/
-/// - Desktop: ~/.config/photon/avatars/
-pub fn avatars_dir() -> std::io::Result<std::path::PathBuf> {
-    #[cfg(target_os = "android")]
-    let base_dir = {
-        let data_dir = ANDROID_DATA_DIR.get().ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::NotFound, "Android data dir not set")
-        })?;
-        std::path::PathBuf::from(data_dir)
-    };
-
-    #[cfg(not(target_os = "android"))]
-    let base_dir = dirs::config_dir()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "No config dir"))?
-        .join("photon");
-
-    let avatars_dir = base_dir.join("avatars");
-    std::fs::create_dir_all(&avatars_dir)?;
-
-    Ok(avatars_dir)
-}
-
-/// Get path for a cached avatar by its storage key
-/// Storage key = base64url(BLAKE3(BLAKE3(handle) || "avatar"))
+/// Get flat path for a cached avatar by its storage key.
+/// Avatars are public signed VSF — stored unencrypted directly in ~/.config/photon/.
 pub fn avatar_cache_path(storage_key: &str) -> std::io::Result<std::path::PathBuf> {
-    Ok(avatars_dir()?.join(format!("{}.vsf", storage_key)))
+    Ok(crate::storage::photon_config_dir()?.join(format!("av_{}", storage_key)))
 }
 
 /// Load avatar from local cache by handle (checks avatars/ directory)
@@ -831,7 +808,7 @@ pub fn load_cached_avatar(handle: &str) -> Option<(usize, Vec<u8>)> {
         return None;
     }
 
-    let vsf_data = std::fs::read(&cache_path).ok()?;
+    let vsf_data = crate::storage::read_file(&cache_path, &format!("avatar/{}", handle)).ok()?;
     crate::log(&format!("Avatar: Loading {} from local cache", handle));
     load_avatar_from_bytes(&vsf_data, handle)
 }
@@ -840,7 +817,7 @@ pub fn load_cached_avatar(handle: &str) -> Option<(usize, Vec<u8>)> {
 fn save_avatar_to_cache(handle: &str, vsf_data: &[u8]) -> std::io::Result<()> {
     let storage_key = avatar_storage_key(handle);
     let cache_path = avatar_cache_path(&storage_key)?;
-    std::fs::write(&cache_path, vsf_data)?;
+    crate::storage::write_file(&cache_path, vsf_data, &format!("avatar/{}", handle), crate::storage::WritePolicy::BestEffort)?;
     crate::log(&format!(
         "Avatar: Cached {} locally ({}...)",
         handle,
@@ -956,7 +933,7 @@ pub fn get_avatar_provenance_hash(handle: &str) -> Option<[u8; 32]> {
 
     let storage_key = avatar_storage_key(handle);
     let cache_path = avatar_cache_path(&storage_key).ok()?;
-    let vsf_data = std::fs::read(&cache_path).ok()?;
+    let vsf_data = crate::storage::read_file(&cache_path, &format!("avatar/{}", handle)).ok()?;
 
     // Parse header to extract provenance hash
     let (header, _) = VsfHeader::decode(&vsf_data).ok()?;
@@ -986,7 +963,7 @@ pub fn get_local_avatar_timestamp(handle: &str) -> Option<i64> {
         cache_path
     ));
 
-    let vsf_data = match std::fs::read(&cache_path) {
+    let vsf_data = match crate::storage::read_file(&cache_path, &format!("avatar/{}", handle)) {
         Ok(data) => data,
         Err(_e) => {
             #[cfg(feature = "development")]
@@ -1369,7 +1346,7 @@ pub fn upload_avatar(
     // Read from cache by handle
     let storage_key = avatar_storage_key(handle);
     let cache_path = avatar_cache_path(&storage_key).map_err(|e| e.to_string())?;
-    let local_vsf = std::fs::read(&cache_path)
+    let local_vsf = crate::storage::read_file(&cache_path, &format!("avatar/{}", handle))
         .map_err(|e| format!("Failed to read avatar for {}: {}", handle, e))?;
 
     // Verify local file is unmodified original

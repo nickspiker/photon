@@ -1,46 +1,21 @@
-//! Contact persistence with encrypted VSF storage.
+//! Contact persistence via FlatStorage.
 //!
-//! Storage layout:
-//! - ~/.config/photon/contacts/index.vsf - contact list (identity data)
-//! - ~/.config/photon/contacts/{identity_seed_hex}/state.vsf - mutable state
-//! - ~/.config/photon/contacts/{identity_seed_hex}/{provenance}.vsf - messages
-//! - ~/.config/photon/contacts/{identity_seed_hex}/avatar.vsf - avatar
+//! Logical key scheme:
+//! - Contact index: "contacts/index"
+//! - Contact state: "contacts/{hex8}/state"
+//! - Contact messages: "contacts/{hex8}/messages"
+//! - Contact keypairs: "contacts/{hex8}/keypairs"
+//! - Contact slots: "contacts/{hex8}/slots"
 //!
-//! Index file format:
-//! [contact_list
-//!   (contact: handle_proof, handle)
-//!   (contact: handle_proof, handle)
-//!   ...
-//! ]
+//! where hex8 = hex::encode(&their_identity_seed[..8])
 //!
-//! identity_seed is derived on the fly: BLAKE3(VsfType::x(handle).flatten())
-//!
-//! State file format:
-//! [contact_state
-//!   (clutch_state: u8)
-//!   (trust_level: u8)
-//!   (pubkey: ke)
-//!   (seed: hb)  // optional, after CLUTCH
-//!   (ephemeral_secret: hb)  // optional, during CLUTCH
-//!   (ephemeral_pubkey: kx)  // optional
-//!   (ephemeral_their: kx)   // optional
-//!   (last_seen: u6)  // optional
-//!   (ip: d)  // optional
-//! ]
-//!
-//! Encrypted with ChaCha20-Poly1305 using key derived from our identity_seed.
+//! All encryption, filename derivation, and atomicity is handled by FlatStorage.
 
 use crate::crypto::clutch::ClutchKemResponsePayload;
+use crate::storage::{FlatStorage, StorageError};
 use crate::types::{
     ClutchState, Contact, ContactId, DevicePubkey, FriendshipId, HandleText, Seed, TrustLevel,
 };
-use blake3::Hasher;
-use chacha20poly1305::{
-    aead::{Aead, KeyInit},
-    ChaCha20Poly1305, Nonce,
-};
-use std::fs;
-use std::path::PathBuf;
 use vsf::schema::{SectionBuilder, SectionSchema, TypeConstraint};
 use vsf::types::EagleTime;
 use vsf::{VsfSection, VsfType};
@@ -48,7 +23,7 @@ use vsf::{VsfSection, VsfType};
 /// Convert any VSF Eagle Time variant to i64 oscillations
 fn vsf_to_oscillations(v: &VsfType) -> i64 {
     match v {
-        VsfType::e(vsf::types::EtType::i(osc)) => *osc,
+        VsfType::e(vsf::types::EtType::e6(osc)) => *osc,
         v => {
             let et = EagleTime::new_from_vsf(v.clone());
             et.oscillations().unwrap_or(0)
@@ -56,33 +31,6 @@ fn vsf_to_oscillations(v: &VsfType) -> i64 {
     }
 }
 
-/// Errors from contact storage operations
-#[derive(Debug)]
-pub enum StorageError {
-    Io(std::io::Error),
-    Encryption(String),
-    Decryption(String),
-    Parse(String),
-    NoValidSlot,
-}
-
-impl std::fmt::Display for StorageError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            StorageError::Io(e) => write!(f, "IO error: {}", e),
-            StorageError::Encryption(s) => write!(f, "Encryption error: {}", s),
-            StorageError::Decryption(s) => write!(f, "Decryption error: {}", s),
-            StorageError::Parse(s) => write!(f, "Parse error: {}", s),
-            StorageError::NoValidSlot => write!(f, "No valid storage slot found"),
-        }
-    }
-}
-
-impl From<std::io::Error> for StorageError {
-    fn from(e: std::io::Error) -> Self {
-        StorageError::Io(e)
-    }
-}
 
 /// Static identity data stored in the contact list index
 #[derive(Clone, Debug)]
@@ -106,195 +54,9 @@ pub fn derive_identity_seed(handle: &str) -> [u8; 32] {
     *blake3::hash(&vsf_bytes).as_bytes()
 }
 
-/// Get the base photon config directory
-fn photon_config_dir() -> Result<PathBuf, StorageError> {
-    #[cfg(target_os = "android")]
-    let base_dir = {
-        crate::ui::avatar::get_android_data_dir().ok_or_else(|| {
-            StorageError::Io(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "Android data dir not set",
-            ))
-        })?
-    };
-
-    #[cfg(not(target_os = "android"))]
-    let base_dir = dirs::config_dir()
-        .ok_or_else(|| {
-            StorageError::Io(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "No config dir",
-            ))
-        })?
-        .join("photon");
-
-    Ok(base_dir)
-}
-
-/// Get the contacts directory, creating if needed
-fn contacts_dir() -> Result<PathBuf, StorageError> {
-    let contacts_dir = photon_config_dir()?.join("contacts");
-    fs::create_dir_all(&contacts_dir)?;
-    Ok(contacts_dir)
-}
-
-/// Get a specific contact's directory using identity_seed
-fn contact_dir_from_seed(identity_seed: &[u8; 32]) -> Result<PathBuf, StorageError> {
-    let dir_name = hex::encode(&identity_seed[..8]); // 16 hex chars
-    let dir = contacts_dir()?.join(dir_name);
-    fs::create_dir_all(&dir)?;
-    Ok(dir)
-}
-
-/// Encode provenance hash to URL-safe base64 for filename
-#[cfg(test)]
-fn provenance_to_filename(provenance: &[u8; 32]) -> String {
-    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-    URL_SAFE_NO_PAD.encode(provenance)
-}
-
-/// Derive encryption key for contact list index
-/// Requires device_secret so only this device can decrypt
-fn derive_list_key(our_identity_seed: &[u8; 32], device_secret: &[u8; 32]) -> [u8; 32] {
-    let mut hasher = Hasher::new();
-    hasher.update(b"photon_contact_list_v3"); // v3: now includes device_secret
-    hasher.update(our_identity_seed);
-    hasher.update(device_secret);
-    let key = *hasher.finalize().as_bytes();
-    #[cfg(feature = "development")]
-    crate::log(&format!(
-        "STORAGE: derive_list_key: seed[..8]={} dev[..8]={} → key[..8]={}",
-        hex::encode(&our_identity_seed[..8]),
-        hex::encode(&device_secret[..8]),
-        hex::encode(&key[..8])
-    ));
-    key
-}
-
-/// Derive encryption key for per-contact state
-/// Requires device_secret so only this device can decrypt
-fn derive_state_key(
-    our_identity_seed: &[u8; 32],
-    their_identity_seed: &[u8; 32],
-    device_secret: &[u8; 32],
-) -> [u8; 32] {
-    let mut hasher = Hasher::new();
-    hasher.update(b"photon_contact_state_v3"); // v3: now includes device_secret
-    hasher.update(our_identity_seed);
-    hasher.update(their_identity_seed);
-    hasher.update(device_secret);
-    *hasher.finalize().as_bytes()
-}
-
-/// Encrypt VSF section bytes with ChaCha20-Poly1305, wrapped in proper VSF file
-/// Output format: VSF file with encrypted_data section containing ve{nonce + ciphertext}
-fn encrypt_data(data: &[u8], key: &[u8; 32], section_name: &str) -> Result<Vec<u8>, StorageError> {
-    let cipher = ChaCha20Poly1305::new_from_slice(key)
-        .map_err(|e| StorageError::Encryption(e.to_string()))?;
-
-    let mut nonce_bytes = [0u8; 12];
-    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce_bytes);
-    let nonce: Nonce = nonce_bytes.into();
-
-    let ciphertext = cipher
-        .encrypt(&nonce, data)
-        .map_err(|e| StorageError::Encryption(e.to_string()))?;
-
-    // Combine nonce + ciphertext for the encrypted payload
-    let mut encrypted_payload = Vec::with_capacity(12 + ciphertext.len());
-    encrypted_payload.extend_from_slice(&nonce_bytes);
-    encrypted_payload.extend_from_slice(&ciphertext);
-
-    #[cfg(feature = "development")]
-    crate::log(&format!(
-        "STORAGE: encrypt: plaintext_len={} nonce[..8]={} ct[..8]={}",
-        data.len(),
-        hex::encode(&nonce_bytes[..8]),
-        hex::encode(&ciphertext[..8.min(ciphertext.len())])
-    ));
-
-    #[cfg(feature = "development")]
-    crate::log("STORAGE: encrypt: building VSF...");
-
-    // Wrap in proper VSF file with header, timestamp, hashes (hp + hb)
-    let vsf_bytes = vsf::VsfBuilder::new()
-        .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .add_section(
-            section_name,
-            vec![("data".to_string(), VsfType::v(b'e', encrypted_payload))],
-        )
-        .build()
-        .map_err(|e| StorageError::Encryption(format!("VSF build: {}", e)))?;
-
-    #[cfg(feature = "development")]
-    crate::log(&format!("STORAGE: encrypt: VSF built, {} bytes", vsf_bytes.len()));
-
-    Ok(vsf_bytes)
-}
-
-/// Decrypt data from VSF-wrapped encrypted file
-fn decrypt_data(vsf_bytes: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, StorageError> {
-    // Parse VSF file to extract encrypted payload
-    let header = vsf::verification::parse_full_header(vsf_bytes)
-        .map_err(|e| StorageError::Decryption(format!("VSF parse: {}", e)))?;
-
-    // Find the section with encrypted data
-    let section_field = header
-        .fields
-        .first()
-        .ok_or_else(|| StorageError::Decryption("No sections in VSF".to_string()))?;
-
-    let offset = section_field.offset_bytes;
-    let size = section_field.size_bytes;
-
-    if offset + size > vsf_bytes.len() {
-        return Err(StorageError::Decryption("Section beyond file".to_string()));
-    }
-
-    // Parse the section to get the encrypted data field
-    let mut ptr = offset;
-    let section = VsfSection::parse(vsf_bytes, &mut ptr)
-        .map_err(|e| StorageError::Decryption(format!("Section parse: {}", e)))?;
-
-    let data_field = section
-        .get_field("data")
-        .ok_or_else(|| StorageError::Decryption("No data field".to_string()))?;
-
-    let encrypted_payload = match data_field.values.first() {
-        Some(VsfType::v(b'e', payload)) => payload,
-        _ => {
-            return Err(StorageError::Decryption(
-                "Expected ve{} encrypted data".to_string(),
-            ))
-        }
-    };
-
-    #[cfg(feature = "development")]
-    crate::log(&format!(
-        "STORAGE: decrypt: payload_len={} nonce[..8]={} ct[..8]={}",
-        encrypted_payload.len(),
-        hex::encode(&encrypted_payload[..8.min(encrypted_payload.len())]),
-        hex::encode(&encrypted_payload[12..20.min(encrypted_payload.len())])
-    ));
-
-    if encrypted_payload.len() < 12 + 16 {
-        return Err(StorageError::Decryption(
-            "Encrypted payload too short".to_string(),
-        ));
-    }
-
-    let cipher = ChaCha20Poly1305::new_from_slice(key)
-        .map_err(|e| StorageError::Decryption(e.to_string()))?;
-
-    let nonce_bytes: [u8; 12] = encrypted_payload[..12]
-        .try_into()
-        .map_err(|_| StorageError::Decryption("Invalid nonce".to_string()))?;
-    let nonce: Nonce = nonce_bytes.into();
-    let ciphertext = &encrypted_payload[12..];
-
-    cipher
-        .decrypt(&nonce, ciphertext)
-        .map_err(|e| StorageError::Decryption(e.to_string()))
+/// Logical key for a contact's data
+fn contact_key(their_identity_seed: &[u8; 32], suffix: &str) -> String {
+    format!("contacts/{}/{}", hex::encode(&their_identity_seed[..8]), suffix)
 }
 
 // ============================================================================
@@ -309,14 +71,11 @@ fn contact_list_schema() -> SectionSchema {
         .field("contact", TypeConstraint::Any)
 }
 
-/// Save the contact list to encrypted index file with schema validation
+/// Save the contact list to encrypted index with schema validation
 pub fn save_contact_list(
     contacts: &[ContactIdentity],
-    our_identity_seed: &[u8; 32],
-    device_secret: &[u8; 32],
+    storage: &FlatStorage,
 ) -> Result<(), StorageError> {
-    let index_path = contacts_dir()?.join("index.vsf");
-
     let schema = contact_list_schema();
     let mut builder = schema.build();
 
@@ -336,39 +95,20 @@ pub fn save_contact_list(
         .encode()
         .map_err(|e| StorageError::Parse(e.to_string()))?;
 
-    let key = derive_list_key(our_identity_seed, device_secret);
-    let encrypted = encrypt_data(&vsf_bytes, &key, "encrypted_contact_list")?;
-
-    crate::network::inspect::vsf_write(
-        &index_path,
-        &encrypted,
-        "contacts/index.vsf",
-        Some(&vsf_bytes),
-        device_secret,
-        crate::storage::WritePolicy::BestEffort,
-    )?;
-    Ok(())
+    storage.write("contacts/index", &vsf_bytes)
 }
 
-/// Load the contact list from encrypted index file with schema validation
+/// Load the contact list from encrypted index with schema validation
 pub fn load_contact_list(
-    our_identity_seed: &[u8; 32],
-    device_secret: &[u8; 32],
+    storage: &FlatStorage,
 ) -> Result<Vec<ContactIdentity>, StorageError> {
-    let index_path = contacts_dir()?.join("index.vsf");
-
-    if !index_path.exists() {
-        return Ok(Vec::new());
-    }
-
-    let encrypted =
-        crate::network::inspect::vsf_read(&index_path, "contacts/index.vsf", device_secret)?;
-
-    let key = derive_list_key(our_identity_seed, device_secret);
-    let vsf_bytes = decrypt_data(&encrypted, &key)?;
+    let vsf_bytes = match storage.read("contacts/index")? {
+        Some(b) => b,
+        None => return Ok(Vec::new()),
+    };
 
     #[cfg(feature = "development")]
-    crate::network::inspect::vsf_read_decrypted(&vsf_bytes, "contacts/index.vsf");
+    crate::network::inspect::vsf_read_decrypted(&vsf_bytes, "contacts/index");
 
     let schema = contact_list_schema();
     let builder = SectionBuilder::parse(schema, &vsf_bytes)
@@ -416,15 +156,12 @@ fn contact_state_schema() -> SectionSchema {
         .field("completed_their_hqc_prefix", TypeConstraint::AnyHash) // Detects stale offers (8 bytes)
 }
 
-/// Save contact state (mutable data) to per-contact file with schema validation
+/// Save contact state (mutable data) with schema validation
 pub fn save_contact_state(
     contact: &Contact,
-    our_identity_seed: &[u8; 32],
-    device_secret: &[u8; 32],
+    storage: &FlatStorage,
 ) -> Result<(), StorageError> {
     let identity_seed = derive_identity_seed(contact.handle.as_str());
-    let dir = contact_dir_from_seed(&identity_seed)?;
-    let state_path = dir.join("state.vsf");
 
     let schema = contact_state_schema();
     let mut builder = schema
@@ -438,7 +175,7 @@ pub fn save_contact_state(
             contact.public_identity.to_vsf(), // Ed25519 (ke)
         )
         .map_err(|e| StorageError::Parse(e.to_string()))?
-        .set("added", VsfType::e(vsf::types::EtType::i(contact.added)))
+        .set("added", VsfType::e(vsf::types::EtType::e6(contact.added)))
         .map_err(|e| StorageError::Parse(e.to_string()))?
         .set("id", VsfType::hb(contact.id.as_bytes().to_vec()))
         .map_err(|e| StorageError::Parse(e.to_string()))?;
@@ -464,7 +201,7 @@ pub fn save_contact_state(
     }
     if let Some(last_seen) = contact.last_seen {
         builder = builder
-            .set("last_seen", VsfType::e(vsf::types::EtType::i(last_seen)))
+            .set("last_seen", VsfType::e(vsf::types::EtType::e6(last_seen)))
             .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
     if let Some(hqc_prefix) = &contact.completed_their_hqc_prefix {
@@ -480,53 +217,32 @@ pub fn save_contact_state(
         .encode()
         .map_err(|e| StorageError::Parse(e.to_string()))?;
 
-    let key = derive_state_key(our_identity_seed, &identity_seed, device_secret);
-    let encrypted = encrypt_data(&vsf_bytes, &key, "encrypted_contact_state")?;
-
-    let label = format!("contacts/{}/state.vsf", hex::encode(&identity_seed[..8]));
-    crate::network::inspect::vsf_write(
-        &state_path,
-        &encrypted,
-        &label,
-        Some(&vsf_bytes),
-        device_secret,
-        crate::storage::WritePolicy::BestEffort,
-    )?;
-    Ok(())
+    storage.write(&contact_key(&identity_seed, "state"), &vsf_bytes)
 }
 
-/// Load contact state from per-contact file
+/// Load contact state
 pub fn load_contact_state(
     identity: &ContactIdentity,
-    our_identity_seed: &[u8; 32],
-    device_secret: &[u8; 32],
+    storage: &FlatStorage,
 ) -> Result<Contact, StorageError> {
     let their_identity_seed = identity.identity_seed();
-    let dir = contact_dir_from_seed(&their_identity_seed)?;
-    let state_path = dir.join("state.vsf");
 
-    if !state_path.exists() {
-        // No state file yet - return contact with just identity info
-        let pubkey = DevicePubkey::from_bytes([0u8; 32]); // placeholder
-        let contact = Contact::new(
-            HandleText::new(&identity.handle),
-            identity.handle_proof,
-            pubkey,
-        );
-        return Ok(contact);
-    }
-
-    let label = format!(
-        "contacts/{}/state.vsf",
-        hex::encode(&their_identity_seed[..8])
-    );
-    let encrypted = crate::network::inspect::vsf_read(&state_path, &label, device_secret)?;
-
-    let key = derive_state_key(our_identity_seed, &their_identity_seed, device_secret);
-    let vsf_bytes = decrypt_data(&encrypted, &key)?;
+    let vsf_bytes = match storage.read(&contact_key(&their_identity_seed, "state"))? {
+        Some(b) => b,
+        None => {
+            // No state yet - return contact with just identity info
+            let pubkey = DevicePubkey::from_bytes([0u8; 32]); // placeholder
+            let contact = Contact::new(
+                HandleText::new(&identity.handle),
+                identity.handle_proof,
+                pubkey,
+            );
+            return Ok(contact);
+        }
+    };
 
     #[cfg(feature = "development")]
-    crate::network::inspect::vsf_read_decrypted(&vsf_bytes, &label);
+    crate::network::inspect::vsf_read_decrypted(&vsf_bytes, &contact_key(&their_identity_seed, "state"));
 
     let mut ptr = 0;
     let section = VsfSection::parse(&vsf_bytes, &mut ptr)
@@ -603,14 +319,13 @@ pub fn load_contact_state(
 /// Save a contact (updates both list and state)
 pub fn save_contact(
     contact: &Contact,
-    our_identity_seed: &[u8; 32],
-    device_secret: &[u8; 32],
+    storage: &FlatStorage,
 ) -> Result<(), StorageError> {
     // Save state file
-    save_contact_state(contact, our_identity_seed, device_secret)?;
+    save_contact_state(contact, storage)?;
 
     // Update contact list
-    let mut list = load_contact_list(our_identity_seed, device_secret).unwrap_or_default();
+    let mut list = load_contact_list(storage).unwrap_or_default();
 
     // Check if contact already exists in list (by handle)
     let exists = list.iter().any(|c| c.handle == contact.handle.as_str());
@@ -620,15 +335,15 @@ pub fn save_contact(
             handle_proof: contact.handle_proof,
             handle: contact.handle.as_str().to_string(),
         });
-        save_contact_list(&list, our_identity_seed, device_secret)?;
+        save_contact_list(&list, storage)?;
     }
 
     Ok(())
 }
 
 /// Load all contacts from disk
-pub fn load_all_contacts(our_identity_seed: &[u8; 32], device_secret: &[u8; 32]) -> Vec<Contact> {
-    let identities = match load_contact_list(our_identity_seed, device_secret) {
+pub fn load_all_contacts(storage: &FlatStorage) -> Vec<Contact> {
+    let identities = match load_contact_list(storage) {
         Ok(list) => list,
         Err(e) => {
             crate::log(&format!("Failed to load contact list: {}", e));
@@ -638,7 +353,7 @@ pub fn load_all_contacts(our_identity_seed: &[u8; 32], device_secret: &[u8; 32])
 
     let mut contacts = Vec::new();
     for identity in identities {
-        match load_contact_state(&identity, our_identity_seed, device_secret) {
+        match load_contact_state(&identity, storage) {
             Ok(contact) => contacts.push(contact),
             Err(e) => {
                 crate::log(&format!(
@@ -651,12 +366,12 @@ pub fn load_all_contacts(our_identity_seed: &[u8; 32], device_secret: &[u8; 32])
     contacts
 }
 
-/// Delete contact from disk
-pub fn delete_contact(identity_seed: &[u8; 32]) -> Result<(), StorageError> {
-    let dir = contact_dir_from_seed(identity_seed)?;
-    if dir.exists() {
-        fs::remove_dir_all(&dir)?;
-    }
+/// Delete contact state from storage
+pub fn delete_contact(identity_seed: &[u8; 32], storage: &FlatStorage) -> Result<(), StorageError> {
+    storage.delete(&contact_key(identity_seed, "state"))?;
+    storage.delete(&contact_key(identity_seed, "messages"))?;
+    storage.delete(&contact_key(identity_seed, "keypairs"))?;
+    storage.delete(&contact_key(identity_seed, "slots"))?;
     Ok(())
 }
 
@@ -703,31 +418,14 @@ fn u8_to_trust_level(v: u8) -> TrustLevel {
 
 use crate::crypto::clutch::ClutchAllKeypairs;
 
-/// Derive encryption key for keypairs
-fn derive_keypairs_key(
-    our_identity_seed: &[u8; 32],
-    their_identity_seed: &[u8; 32],
-    device_secret: &[u8; 32],
-) -> [u8; 32] {
-    let mut hasher = Hasher::new();
-    hasher.update(b"photon_clutch_keypairs_v1");
-    hasher.update(our_identity_seed);
-    hasher.update(their_identity_seed);
-    hasher.update(device_secret);
-    *hasher.finalize().as_bytes()
-}
-
 /// Save CLUTCH keypairs to disk (encrypted).
 /// Called after keygen completes - persists ~600KB of ephemeral keypairs.
 pub fn save_clutch_keypairs(
     keypairs: &ClutchAllKeypairs,
     handle: &str,
-    our_identity_seed: &[u8; 32],
-    device_secret: &[u8; 32],
+    storage: &FlatStorage,
 ) -> Result<(), StorageError> {
     let their_identity_seed = derive_identity_seed(handle);
-    let dir = contact_dir_from_seed(&their_identity_seed)?;
-    let keypairs_path = dir.join("keypairs.vsf");
 
     // Build VSF section from keypairs (two multi-value fields)
     let mut section = VsfSection::new("clutch_keypairs");
@@ -737,21 +435,7 @@ pub fn save_clutch_keypairs(
 
     let vsf_bytes = section.encode();
 
-    let key = derive_keypairs_key(our_identity_seed, &their_identity_seed, device_secret);
-    let encrypted = encrypt_data(&vsf_bytes, &key, "encrypted_clutch_keypairs")?;
-
-    let label = format!(
-        "contacts/{}/keypairs.vsf",
-        hex::encode(&their_identity_seed[..8])
-    );
-    crate::network::inspect::vsf_write(
-        &keypairs_path,
-        &encrypted,
-        &label,
-        Some(&vsf_bytes),
-        device_secret,
-        crate::storage::WritePolicy::BestEffort,
-    )?;
+    storage.write(&contact_key(&their_identity_seed, "keypairs"), &vsf_bytes)?;
 
     #[cfg(feature = "development")]
     crate::log(&format!(
@@ -767,28 +451,17 @@ pub fn save_clutch_keypairs(
 /// Returns None if no keypairs file exists or parsing fails.
 pub fn load_clutch_keypairs(
     handle: &str,
-    our_identity_seed: &[u8; 32],
-    device_secret: &[u8; 32],
+    storage: &FlatStorage,
 ) -> Result<Option<ClutchAllKeypairs>, StorageError> {
     let their_identity_seed = derive_identity_seed(handle);
-    let dir = contact_dir_from_seed(&their_identity_seed)?;
-    let keypairs_path = dir.join("keypairs.vsf");
 
-    if !keypairs_path.exists() {
-        return Ok(None);
-    }
-
-    let label = format!(
-        "contacts/{}/keypairs.vsf",
-        hex::encode(&their_identity_seed[..8])
-    );
-    let encrypted = crate::network::inspect::vsf_read(&keypairs_path, &label, device_secret)?;
-
-    let key = derive_keypairs_key(our_identity_seed, &their_identity_seed, device_secret);
-    let vsf_bytes = decrypt_data(&encrypted, &key)?;
+    let vsf_bytes = match storage.read(&contact_key(&their_identity_seed, "keypairs"))? {
+        Some(b) => b,
+        None => return Ok(None),
+    };
 
     #[cfg(feature = "development")]
-    crate::network::inspect::vsf_read_decrypted(&vsf_bytes, &label);
+    crate::network::inspect::vsf_read_decrypted(&vsf_bytes, &contact_key(&their_identity_seed, "keypairs"));
 
     let mut ptr = 0;
     let section = VsfSection::parse(&vsf_bytes, &mut ptr)
@@ -807,18 +480,12 @@ pub fn load_clutch_keypairs(
     Ok(Some(keypairs))
 }
 
-/// Delete CLUTCH keypairs file (called after ceremony completes or on zeroize)
-pub fn delete_clutch_keypairs(handle: &str) -> Result<(), StorageError> {
+/// Delete CLUTCH keypairs (called after ceremony completes or on zeroize)
+pub fn delete_clutch_keypairs(handle: &str, storage: &FlatStorage) -> Result<(), StorageError> {
     let their_identity_seed = derive_identity_seed(handle);
-    let dir = contact_dir_from_seed(&their_identity_seed)?;
-    let keypairs_path = dir.join("keypairs.vsf");
-
-    if keypairs_path.exists() {
-        fs::remove_file(&keypairs_path)?;
-        #[cfg(feature = "development")]
-        crate::log(&format!("STORAGE: Deleted CLUTCH keypairs for {}", handle));
-    }
-
+    storage.delete(&contact_key(&their_identity_seed, "keypairs"))?;
+    #[cfg(feature = "development")]
+    crate::log(&format!("STORAGE: Deleted CLUTCH keypairs for {}", handle));
     Ok(())
 }
 
@@ -828,20 +495,6 @@ pub fn delete_clutch_keypairs(handle: &str) -> Result<(), StorageError> {
 
 use crate::crypto::clutch::{ClutchKemSharedSecrets, ClutchOfferPayload};
 use crate::types::PartySlot;
-
-/// Derive encryption key for slots
-fn derive_slots_key(
-    our_identity_seed: &[u8; 32],
-    their_identity_seed: &[u8; 32],
-    device_secret: &[u8; 32],
-) -> [u8; 32] {
-    let mut hasher = Hasher::new();
-    hasher.update(b"photon_clutch_slots_v1");
-    hasher.update(our_identity_seed);
-    hasher.update(their_identity_seed);
-    hasher.update(device_secret);
-    *hasher.finalize().as_bytes()
-}
 
 /// Save CLUTCH slots to disk (encrypted).
 /// Persists ceremony progress: offers received, KEM secrets computed.
@@ -858,16 +511,13 @@ pub fn save_clutch_slots(
     offer_provenances: &[[u8; 32]],
     ceremony_id: Option<[u8; 32]>,
     handle: &str,
-    our_identity_seed: &[u8; 32],
-    device_secret: &[u8; 32],
+    storage: &FlatStorage,
 ) -> Result<(), StorageError> {
     if slots.is_empty() {
         return Ok(()); // Nothing to save
     }
 
     let their_identity_seed = derive_identity_seed(handle);
-    let dir = contact_dir_from_seed(&their_identity_seed)?;
-    let slots_path = dir.join("slots.vsf");
 
     // Build VSF section with all slots
     let mut section = VsfSection::new("clutch_slots");
@@ -957,21 +607,7 @@ pub fn save_clutch_slots(
 
     let vsf_bytes = section.encode();
 
-    let key = derive_slots_key(our_identity_seed, &their_identity_seed, device_secret);
-    let encrypted = encrypt_data(&vsf_bytes, &key, "encrypted_clutch_slots")?;
-
-    let label = format!(
-        "contacts/{}/slots.vsf",
-        hex::encode(&their_identity_seed[..8])
-    );
-    crate::network::inspect::vsf_write(
-        &slots_path,
-        &encrypted,
-        &label,
-        Some(&vsf_bytes),
-        device_secret,
-        crate::storage::WritePolicy::BestEffort,
-    )?;
+    storage.write(&contact_key(&their_identity_seed, "slots"), &vsf_bytes)?;
 
     #[cfg(feature = "development")]
     crate::log(&format!(
@@ -1003,28 +639,17 @@ pub struct ClutchCeremonyState {
 /// ```
 pub fn load_clutch_slots(
     handle: &str,
-    our_identity_seed: &[u8; 32],
-    device_secret: &[u8; 32],
+    storage: &FlatStorage,
 ) -> Result<Option<ClutchCeremonyState>, StorageError> {
     let their_identity_seed = derive_identity_seed(handle);
-    let dir = contact_dir_from_seed(&their_identity_seed)?;
-    let slots_path = dir.join("slots.vsf");
 
-    if !slots_path.exists() {
-        return Ok(None);
-    }
-
-    let label = format!(
-        "contacts/{}/slots.vsf",
-        hex::encode(&their_identity_seed[..8])
-    );
-    let encrypted = crate::network::inspect::vsf_read(&slots_path, &label, device_secret)?;
-
-    let key = derive_slots_key(our_identity_seed, &their_identity_seed, device_secret);
-    let vsf_bytes = decrypt_data(&encrypted, &key)?;
+    let vsf_bytes = match storage.read(&contact_key(&their_identity_seed, "slots"))? {
+        Some(b) => b,
+        None => return Ok(None),
+    };
 
     #[cfg(feature = "development")]
-    crate::network::inspect::vsf_read_decrypted(&vsf_bytes, &label);
+    crate::network::inspect::vsf_read_decrypted(&vsf_bytes, &contact_key(&their_identity_seed, "slots"));
 
     let mut ptr = 0;
     let section = VsfSection::parse(&vsf_bytes, &mut ptr)
@@ -1441,18 +1066,12 @@ fn parse_kem_response_payload(
     }
 }
 
-/// Delete CLUTCH slots file (called after ceremony completes)
-pub fn delete_clutch_slots(handle: &str) -> Result<(), StorageError> {
+/// Delete CLUTCH slots (called after ceremony completes)
+pub fn delete_clutch_slots(handle: &str, storage: &FlatStorage) -> Result<(), StorageError> {
     let their_identity_seed = derive_identity_seed(handle);
-    let dir = contact_dir_from_seed(&their_identity_seed)?;
-    let slots_path = dir.join("slots.vsf");
-
-    if slots_path.exists() {
-        fs::remove_file(&slots_path)?;
-        #[cfg(feature = "development")]
-        crate::log(&format!("STORAGE: Deleted CLUTCH slots for {}", handle));
-    }
-
+    storage.delete(&contact_key(&their_identity_seed, "slots"))?;
+    #[cfg(feature = "development")]
+    crate::log(&format!("STORAGE: Deleted CLUTCH slots for {}", handle));
     Ok(())
 }
 
@@ -1462,33 +1081,16 @@ pub fn delete_clutch_slots(handle: &str) -> Result<(), StorageError> {
 
 use crate::types::ChatMessage;
 
-/// Derive encryption key for messages
-fn derive_messages_key(
-    our_identity_seed: &[u8; 32],
-    their_identity_seed: &[u8; 32],
-    device_secret: &[u8; 32],
-) -> [u8; 32] {
-    let mut hasher = Hasher::new();
-    hasher.update(b"photon_messages_v1");
-    hasher.update(our_identity_seed);
-    hasher.update(their_identity_seed);
-    hasher.update(device_secret);
-    *hasher.finalize().as_bytes()
-}
-
 /// Save messages for a contact
 pub fn save_messages(
     contact: &Contact,
-    our_identity_seed: &[u8; 32],
-    device_secret: &[u8; 32],
+    storage: &FlatStorage,
 ) -> Result<(), StorageError> {
     if contact.messages.is_empty() {
         return Ok(()); // Nothing to save
     }
 
     let their_identity_seed = derive_identity_seed(contact.handle.as_str());
-    let dir = contact_dir_from_seed(&their_identity_seed)?;
-    let messages_path = dir.join("messages.vsf");
 
     // Build VSF section with messages
     let mut section = VsfSection::new("messages");
@@ -1498,7 +1100,7 @@ pub fn save_messages(
             "msg",
             vec![
                 VsfType::x(msg.content.clone()),
-                VsfType::e(vsf::types::EtType::i(msg.timestamp)),
+                VsfType::e(vsf::types::EtType::e6(msg.timestamp)),
                 VsfType::u3(if msg.is_outgoing { 1 } else { 0 }),
                 VsfType::u3(if msg.delivered { 1 } else { 0 }),
             ],
@@ -1507,21 +1109,7 @@ pub fn save_messages(
 
     let vsf_bytes = section.encode();
 
-    let key = derive_messages_key(our_identity_seed, &their_identity_seed, device_secret);
-    let encrypted = encrypt_data(&vsf_bytes, &key, "encrypted_messages")?;
-
-    let label = format!(
-        "contacts/{}/messages.vsf",
-        hex::encode(&their_identity_seed[..8])
-    );
-    crate::network::inspect::vsf_write(
-        &messages_path,
-        &encrypted,
-        &label,
-        Some(&vsf_bytes),
-        device_secret,
-        crate::storage::WritePolicy::BestEffort,
-    )?;
+    storage.write(&contact_key(&their_identity_seed, "messages"), &vsf_bytes)?;
 
     #[cfg(feature = "development")]
     crate::log(&format!(
@@ -1536,27 +1124,17 @@ pub fn save_messages(
 /// Load messages for a contact
 pub fn load_messages(
     contact: &mut Contact,
-    our_identity_seed: &[u8; 32],
-    device_secret: &[u8; 32],
+    storage: &FlatStorage,
 ) -> Result<(), StorageError> {
     let their_identity_seed = derive_identity_seed(contact.handle.as_str());
-    let dir = contact_dir_from_seed(&their_identity_seed)?;
-    let messages_path = dir.join("messages.vsf");
 
-    if !messages_path.exists() {
-        return Ok(()); // No messages yet
-    }
-
-    let label = format!(
-        "contacts/{}/messages.vsf",
-        hex::encode(&their_identity_seed[..8])
-    );
-    let encrypted = crate::network::inspect::vsf_read(&messages_path, &label, device_secret)?;
-    let key = derive_messages_key(our_identity_seed, &their_identity_seed, device_secret);
-    let vsf_bytes = decrypt_data(&encrypted, &key)?;
+    let vsf_bytes = match storage.read(&contact_key(&their_identity_seed, "messages"))? {
+        Some(b) => b,
+        None => return Ok(()), // No messages yet
+    };
 
     #[cfg(feature = "development")]
-    crate::network::inspect::vsf_read_decrypted(&vsf_bytes, &label);
+    crate::network::inspect::vsf_read_decrypted(&vsf_bytes, &contact_key(&their_identity_seed, "messages"));
 
     let mut ptr = 0;
     let section = VsfSection::parse(&vsf_bytes, &mut ptr)
@@ -1570,7 +1148,7 @@ pub fn load_messages(
                 _ => continue,
             };
             let timestamp = match &field.values[1] {
-                VsfType::e(vsf::types::EtType::i(osc)) => *osc,
+                VsfType::e(vsf::types::EtType::e6(osc)) => *osc,
                 v => {
                     let et = EagleTime::new_from_vsf(v.clone());
                     et.oscillations().unwrap_or(0)
@@ -1661,13 +1239,4 @@ mod tests {
         assert_eq!(derived_seed, expected_seed);
     }
 
-    #[test]
-    fn test_provenance_to_filename() {
-        let provenance = [0x42u8; 32];
-        let filename = provenance_to_filename(&provenance);
-
-        assert_eq!(filename.len(), 43);
-        assert!(!filename.contains('/'));
-        assert!(!filename.contains('+'));
-    }
 }
