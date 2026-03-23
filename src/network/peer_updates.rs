@@ -281,7 +281,7 @@ impl PeerUpdateClient {
                     }
                 }
                 "timestamp" => {
-                    if let VsfType::e(vsf::types::EtType::i(osc)) = value {
+                    if let VsfType::e(vsf::types::EtType::e6(osc)) = value {
                         timestamp = Some(*osc);
                     }
                 }

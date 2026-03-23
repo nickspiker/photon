@@ -6,6 +6,7 @@
 **License:** MIT OR Apache-2.0
 **Date:** December 2025
 **Dependency:** Requires completed CLUTCH ceremony (see CLUTCH.md)
+**Crypto primitives:** `spaghettify` and `smear_hash` are provided by the `ihi` crate (not defined locally)
 
 ---
 

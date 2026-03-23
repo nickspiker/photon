@@ -222,7 +222,7 @@ impl FgtwMessage {
                             data: socketaddr_to_bytes(&peer.ip),
                         }),
                     ));
-                    fields.push((format!("{}_last_seen", prefix), VsfType::e(vsf::types::EtType::i(peer.last_seen))));
+                    fields.push((format!("{}_last_seen", prefix), VsfType::e(vsf::types::EtType::e6(peer.last_seen))));
                 }
 
                 builder.add_section("fgtw", fields).build()
@@ -267,7 +267,7 @@ impl FgtwMessage {
                     ));
                     fields.push((
                         format!("{}_last_seen", prefix),
-                        VsfType::e(vsf::types::EtType::i(device.last_seen)),
+                        VsfType::e(vsf::types::EtType::e6(device.last_seen)),
                     ));
                 }
 
@@ -331,7 +331,7 @@ impl FgtwMessage {
                     ));
                     fields.push((
                         format!("{}_last_seen", prefix),
-                        VsfType::e(vsf::types::EtType::i(device.last_seen)),
+                        VsfType::e(vsf::types::EtType::e6(device.last_seen)),
                     ));
                 }
 
@@ -373,7 +373,7 @@ impl FgtwMessage {
                     ));
                     fields.push((
                         format!("sync_{}_osc", i),
-                        VsfType::e(vsf::types::EtType::i(record.last_received_osc)),
+                        VsfType::e(vsf::types::EtType::e6(record.last_received_osc)),
                     ));
                 }
                 builder
@@ -439,7 +439,7 @@ impl FgtwMessage {
                             ("tok".to_string(), VsfType::hg(conversation_token.to_vec())),
                             (
                                 "time".to_string(),
-                                VsfType::e(vsf::types::EtType::i(*acked_eagle_time)),
+                                VsfType::e(vsf::types::EtType::e6(*acked_eagle_time)),
                             ),
                             ("hash".to_string(), VsfType::hb(plaintext_hash.to_vec())),
                         ],
@@ -780,7 +780,7 @@ fn extract_spaghetti_hash(fields: &[(String, VsfType)], key: &str) -> Result<[u8
 fn extract_eagle_time(fields: &[(String, VsfType)], key: &str) -> Result<i64, String> {
     use vsf::types::EtType;
     match get_field(fields, key) {
-        Some(VsfType::e(EtType::i(v))) => Ok(*v),
+        Some(VsfType::e(EtType::e6(v))) => Ok(*v),
         _ => Err(format!("Missing or invalid eagle time: {}", key)),
     }
 }
@@ -821,7 +821,7 @@ fn extract_peer_list(
 
         let last_seen_key = format!("{}_last_seen", peer_prefix);
         let last_seen = match get_field(fields, &last_seen_key) {
-            Some(VsfType::e(vsf::types::EtType::i(osc))) => *osc,
+            Some(VsfType::e(vsf::types::EtType::e6(osc))) => *osc,
             _ => return Err(format!("Missing or invalid {}", last_seen_key)),
         };
 
@@ -855,7 +855,7 @@ fn extract_sync_records(fields: &[(String, VsfType)]) -> Result<Vec<SyncRecord>,
 
         let conversation_token = extract_hash(fields, &tok_key)?;
         let last_received_osc = match get_field(fields, &osc_key) {
-            Some(VsfType::e(vsf::types::EtType::i(v))) => *v,
+            Some(VsfType::e(vsf::types::EtType::e6(v))) => *v,
             _ => return Err(format!("Missing or invalid {}", osc_key)),
         };
 
@@ -873,7 +873,7 @@ fn extract_sync_records(fields: &[(String, VsfType)]) -> Result<Vec<SyncRecord>,
 fn extract_header_timestamp(header: &vsf::file_format::VsfHeader) -> Result<i64, String> {
     use vsf::types::EtType;
     match &header.creation_time {
-        VsfType::e(EtType::i(v)) => Ok(*v),
+        VsfType::e(EtType::e6(v)) => Ok(*v),
         _ => Err("Invalid header timestamp".to_string()),
     }
 }

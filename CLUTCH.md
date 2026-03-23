@@ -201,6 +201,8 @@ CLUTCH distinguishes between three levels of handle identity:
 
 ### 3.3 Handle Proof Computation
 
+> **Implementation note:** `handle_proof` and `spaghettify` are provided by the `ihi` crate, not defined locally in photon.
+
 ```rust
 const SIZE: usize = 24_873_856; // 24MB scratch buffer
 const ROUNDS: usize = 17;       // ~1 second on 2025 hardware

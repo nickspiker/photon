@@ -88,7 +88,7 @@ pub async fn put_blob(
         vec![
             ("key".to_string(), VsfType::d(storage_key.to_string())),
             ("signature".to_string(), VsfType::ge(key_signature.to_bytes().to_vec())),
-            ("timestamp".to_string(), VsfType::e(vsf::types::EtType::i(vsf::eagle_time_oscillations()))),
+            ("timestamp".to_string(), VsfType::e(vsf::types::EtType::e6(vsf::eagle_time_oscillations()))),
             ("handle_proof".to_string(), VsfType::hP(handle_proof.to_vec())),
             ("data".to_string(), VsfType::v(b'e', data.to_vec())),
         ],
@@ -213,7 +213,7 @@ pub fn put_blob_blocking(
         vec![
             ("key".to_string(), VsfType::d(storage_key.to_string())),
             ("signature".to_string(), VsfType::ge(key_signature.to_bytes().to_vec())),
-            ("timestamp".to_string(), VsfType::e(vsf::types::EtType::i(vsf::eagle_time_oscillations()))),
+            ("timestamp".to_string(), VsfType::e(vsf::types::EtType::e6(vsf::eagle_time_oscillations()))),
             ("handle_proof".to_string(), VsfType::hP(handle_proof.to_vec())),
             ("data".to_string(), VsfType::v(b'e', data.to_vec())),
         ],
