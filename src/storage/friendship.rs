@@ -1,121 +1,16 @@
 //! Friendship chain storage.
 //!
-//! Stores FriendshipChains (8KB per participant) to disk, encrypted with
-//! a key derived from identity_seed + device_secret + friendship_id.
+//! Stores FriendshipChains via FlatStorage with logical keys:
+//!   "friendship/{fid_hex8}/chains"
+//! where fid_hex8 = hex of first 8 bytes of friendship_id.
 //!
-//! Storage layout:
-//! ~/.config/photon/friendships/{base64(friendship_id)}/chains.vsf.enc
+//! All encryption, filename derivation, and atomicity is handled by FlatStorage.
 
-use blake3::Hasher;
-use chacha20poly1305::{
-    aead::{Aead, KeyInit},
-    ChaCha20Poly1305, Nonce,
-};
-use rand::RngCore;
-use std::fs;
-use std::path::PathBuf;
 use vsf::schema::{SectionSchema, TypeConstraint};
 use vsf::{VsfSection, VsfType};
 
+use crate::storage::{FlatStorage, StorageError};
 use crate::types::{FriendshipChains, FriendshipId};
-
-/// Errors from friendship storage operations
-#[derive(Debug)]
-pub enum FriendshipStorageError {
-    Io(std::io::Error),
-    Encryption(String),
-    Decryption(String),
-    Parse(String),
-    InvalidChains(String),
-}
-
-impl std::fmt::Display for FriendshipStorageError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Io(e) => write!(f, "IO error: {}", e),
-            Self::Encryption(s) => write!(f, "Encryption error: {}", s),
-            Self::Decryption(s) => write!(f, "Decryption error: {}", s),
-            Self::Parse(s) => write!(f, "Parse error: {}", s),
-            Self::InvalidChains(s) => write!(f, "Invalid chains: {}", s),
-        }
-    }
-}
-
-impl From<std::io::Error> for FriendshipStorageError {
-    fn from(e: std::io::Error) -> Self {
-        Self::Io(e)
-    }
-}
-
-/// Get the friendships directory
-fn friendships_dir() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("photon")
-        .join("friendships")
-}
-
-/// Get directory for a specific friendship
-fn friendship_dir(friendship_id: &FriendshipId) -> PathBuf {
-    friendships_dir().join(friendship_id.to_base64())
-}
-
-/// Derive encryption key for a friendship's chains
-fn chains_encryption_key(
-    identity_seed: &[u8; 32],
-    device_secret: &[u8; 32],
-    friendship_id: &FriendshipId,
-) -> [u8; 32] {
-    let mut hasher = Hasher::new();
-    hasher.update(identity_seed);
-    hasher.update(device_secret);
-    hasher.update(friendship_id.as_bytes());
-    hasher.update(b"friendship_chains_v1");
-    *hasher.finalize().as_bytes()
-}
-
-/// Encrypt data with ChaCha20-Poly1305
-fn encrypt_data(plaintext: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, FriendshipStorageError> {
-    let cipher = ChaCha20Poly1305::new_from_slice(key)
-        .map_err(|e| FriendshipStorageError::Encryption(e.to_string()))?;
-
-    // Random nonce
-    let mut nonce_bytes = [0u8; 12];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
-    let nonce: Nonce = nonce_bytes.into();
-
-    let ciphertext = cipher
-        .encrypt(&nonce, plaintext)
-        .map_err(|e| FriendshipStorageError::Encryption(e.to_string()))?;
-
-    // Prepend nonce to ciphertext
-    let mut result = Vec::with_capacity(12 + ciphertext.len());
-    result.extend_from_slice(&nonce_bytes);
-    result.extend(ciphertext);
-    Ok(result)
-}
-
-/// Decrypt data with ChaCha20-Poly1305
-fn decrypt_data(encrypted: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, FriendshipStorageError> {
-    if encrypted.len() < 12 + 16 {
-        return Err(FriendshipStorageError::Decryption(
-            "Data too short".to_string(),
-        ));
-    }
-
-    let cipher = ChaCha20Poly1305::new_from_slice(key)
-        .map_err(|e| FriendshipStorageError::Decryption(e.to_string()))?;
-
-    let nonce_bytes: [u8; 12] = encrypted[..12]
-        .try_into()
-        .map_err(|_| FriendshipStorageError::Decryption("Invalid nonce".to_string()))?;
-    let nonce: Nonce = nonce_bytes.into();
-    let ciphertext = &encrypted[12..];
-
-    cipher
-        .decrypt(&nonce, ciphertext)
-        .map_err(|e| FriendshipStorageError::Decryption(e.to_string()))
-}
 
 /// Schema for friendship_chains section
 ///
@@ -151,43 +46,46 @@ fn chains_schema() -> SectionSchema {
         .field("last_received_time", TypeConstraint::Any) // i64 oscillations, one per participant
 }
 
+/// Logical storage key for a friendship's chains
+fn chains_key(friendship_id: &FriendshipId) -> String {
+    format!("friendship/{}/chains", hex::encode(&friendship_id.as_bytes()[..8]))
+}
+
 /// Save FriendshipChains to disk
 pub fn save_friendship_chains(
     chains: &FriendshipChains,
-    identity_seed: &[u8; 32],
-    device_secret: &[u8; 32],
-) -> Result<(), FriendshipStorageError> {
+    storage: &FlatStorage,
+) -> Result<(), StorageError> {
     let friendship_id = chains.id();
-    let dir = friendship_dir(friendship_id);
 
     // Build VSF section
     let schema = chains_schema();
     let mut builder = schema
         .build()
         .set("version", 5u8) // v5: includes last_received_times for duplicate detection after restart
-        .map_err(|e| FriendshipStorageError::Parse(e.to_string()))?
+        .map_err(|e| StorageError::Parse(e.to_string()))?
         .set(
             "friendship_id",
             VsfType::hb(friendship_id.as_bytes().to_vec()),
         )
-        .map_err(|e| FriendshipStorageError::Parse(e.to_string()))?;
+        .map_err(|e| StorageError::Parse(e.to_string()))?;
 
     // Add each participant's handle_hash and their chain (vC with 512×32 tensor data)
     for participant in chains.participants() {
         builder = builder
             .append_multi("participant", vec![VsfType::hb(participant.to_vec())])
-            .map_err(|e| FriendshipStorageError::Parse(e.to_string()))?;
+            .map_err(|e| StorageError::Parse(e.to_string()))?;
 
         // Get this participant's chain as 512×32 tensor bytes
         let chain = chains
             .chain(participant)
-            .ok_or_else(|| FriendshipStorageError::InvalidChains("Missing chain".to_string()))?;
+            .ok_or_else(|| StorageError::Parse("Missing chain".to_string()))?;
         let chain_bytes = chain.to_bytes();
 
         // Store as vC (CLUTCH chain) - internally it's a 512×32 u8 tensor
         builder = builder
             .append_multi("chain", vec![VsfType::v(b'C', chain_bytes)])
-            .map_err(|e| FriendshipStorageError::Parse(e.to_string()))?;
+            .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
 
     // === Hash chain state (v2) ===
@@ -196,7 +94,7 @@ pub fn save_friendship_chains(
     if let Some(hash) = chains.last_sent_hash() {
         builder = builder
             .set("last_sent_hash", VsfType::hp(hash.to_vec()))
-            .map_err(|e| FriendshipStorageError::Parse(e.to_string()))?;
+            .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
 
     // last_received_hashes - one per participant (None serialized as empty hb)
@@ -207,7 +105,7 @@ pub fn save_friendship_chains(
         };
         builder = builder
             .append_multi("last_received_hash", vec![vsf_val])
-            .map_err(|e| FriendshipStorageError::Parse(e.to_string()))?;
+            .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
 
     // === Pending messages (v2) ===
@@ -216,27 +114,27 @@ pub fn save_friendship_chains(
         let plaintext_str = String::from_utf8_lossy(&pending.plaintext).into_owned();
 
         builder = builder
-            .append_multi("pending_eagle_time", vec![VsfType::e(vsf::types::EtType::i(pending.eagle_time))])
-            .map_err(|e| FriendshipStorageError::Parse(e.to_string()))?
+            .append_multi("pending_eagle_time", vec![VsfType::e(vsf::types::EtType::e6(pending.eagle_time))])
+            .map_err(|e| StorageError::Parse(e.to_string()))?
             .append_multi("pending_plaintext", vec![VsfType::x(plaintext_str)])
-            .map_err(|e| FriendshipStorageError::Parse(e.to_string()))?
+            .map_err(|e| StorageError::Parse(e.to_string()))?
             .append_multi(
                 "pending_plaintext_hash",
                 vec![VsfType::hp(pending.plaintext_hash.to_vec())],
             )
-            .map_err(|e| FriendshipStorageError::Parse(e.to_string()))?
+            .map_err(|e| StorageError::Parse(e.to_string()))?
             .append_multi(
                 "pending_prev_msg_hp",
                 vec![VsfType::hp(pending.prev_msg_hp.to_vec())],
             )
-            .map_err(|e| FriendshipStorageError::Parse(e.to_string()))?
+            .map_err(|e| StorageError::Parse(e.to_string()))?
             .append_multi("pending_msg_hp", vec![VsfType::hp(pending.msg_hp.to_vec())])
-            .map_err(|e| FriendshipStorageError::Parse(e.to_string()))?
+            .map_err(|e| StorageError::Parse(e.to_string()))?
             .append_multi(
                 "pending_ciphertext",
                 vec![VsfType::v(b'X', pending.ciphertext.clone())],
             )
-            .map_err(|e| FriendshipStorageError::Parse(e.to_string()))?;
+            .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
 
     // === Bidirectional entropy state (v3) ===
@@ -245,21 +143,21 @@ pub fn save_friendship_chains(
     if let Some(weave) = chains.last_received_weave() {
         builder = builder
             .set("last_received_weave", VsfType::hp(weave.to_vec()))
-            .map_err(|e| FriendshipStorageError::Parse(e.to_string()))?;
+            .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
 
     // last_sent_weave - what we sent (what they received) for their chain advancement
     if let Some(weave) = chains.last_sent_weave() {
         builder = builder
             .set("last_sent_weave", VsfType::hp(weave.to_vec()))
-            .map_err(|e| FriendshipStorageError::Parse(e.to_string()))?;
+            .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
 
     // last_incorporated_hp - which of their messages we mixed in
     if let Some(hp) = chains.last_incorporated_hp() {
         builder = builder
             .set("last_incorporated_hp", VsfType::hp(hp.to_vec()))
-            .map_err(|e| FriendshipStorageError::Parse(e.to_string()))?;
+            .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
 
     // === Last plaintexts (v4) - one per participant ===
@@ -268,64 +166,45 @@ pub fn save_friendship_chains(
         let plaintext_str = String::from_utf8_lossy(plaintext).into_owned();
         builder = builder
             .append_multi("last_plaintext", vec![VsfType::x(plaintext_str)])
-            .map_err(|e| FriendshipStorageError::Parse(e.to_string()))?;
+            .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
 
     // === Last received times (v5) - one per participant, for duplicate detection ===
     for time_opt in chains.last_received_times() {
         let time_val = time_opt.unwrap_or(0); // 0 means no messages received yet
         builder = builder
-            .append_multi("last_received_time", vec![VsfType::e(vsf::types::EtType::i(time_val))])
-            .map_err(|e| FriendshipStorageError::Parse(e.to_string()))?;
+            .append_multi("last_received_time", vec![VsfType::e(vsf::types::EtType::e6(time_val))])
+            .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
 
     let vsf_bytes = builder
         .encode()
-        .map_err(|e| FriendshipStorageError::Parse(e.to_string()))?;
+        .map_err(|e| StorageError::Parse(e.to_string()))?;
 
-    // Encrypt and write
-    let encryption_key = chains_encryption_key(identity_seed, device_secret, friendship_id);
-    let encrypted = encrypt_data(&vsf_bytes, &encryption_key)?;
-
-    let path = dir.join("chains.vsf.enc");
-    let label = format!(
-        "friendships/{}/chains.vsf.enc",
-        &friendship_id.to_base64()[..8]
-    );
-    crate::network::inspect::vsf_write(&path, &encrypted, &label, Some(&vsf_bytes), device_secret, crate::storage::WritePolicy::MustSucceed)?;
-
-    Ok(())
+    storage.write(&chains_key(friendship_id), &vsf_bytes)
 }
 
 /// Load FriendshipChains from disk
 pub fn load_friendship_chains(
     friendship_id: &FriendshipId,
-    identity_seed: &[u8; 32],
-    device_secret: &[u8; 32],
-) -> Result<FriendshipChains, FriendshipStorageError> {
+    storage: &FlatStorage,
+) -> Result<FriendshipChains, StorageError> {
     use crate::types::friendship::PendingMessage;
 
-    let dir = friendship_dir(friendship_id);
-    let path = dir.join("chains.vsf.enc");
-
-    // Read encrypted file
-    let label = format!(
-        "friendships/{}/chains.vsf.enc",
-        &friendship_id.to_base64()[..8]
-    );
-    let encrypted = crate::network::inspect::vsf_read(&path, &label, device_secret)?;
-
-    // Decrypt
-    let encryption_key = chains_encryption_key(identity_seed, device_secret, friendship_id);
-    let vsf_bytes = decrypt_data(&encrypted, &encryption_key)?;
+    let vsf_bytes = storage
+        .read(&chains_key(friendship_id))?
+        .ok_or_else(|| StorageError::Parse(format!(
+            "No chains found for friendship {}",
+            hex::encode(&friendship_id.as_bytes()[..8])
+        )))?;
 
     #[cfg(feature = "development")]
-    crate::network::inspect::vsf_read_decrypted(&vsf_bytes, &label);
+    crate::network::inspect::vsf_read_decrypted(&vsf_bytes, &chains_key(friendship_id));
 
     // Parse VSF
     let mut ptr = 0;
     let section = VsfSection::parse(&vsf_bytes, &mut ptr)
-        .map_err(|e| FriendshipStorageError::Parse(format!("VSF parse: {}", e)))?;
+        .map_err(|e| StorageError::Parse(format!("VSF parse: {}", e)))?;
 
     // Extract participants (handle hashes as hb)
     let mut participants: Vec<[u8; 32]> = Vec::new();
@@ -340,7 +219,7 @@ pub fn load_friendship_chains(
     }
 
     if participants.is_empty() {
-        return Err(FriendshipStorageError::InvalidChains(
+        return Err(StorageError::Parse(
             "No participants found".to_string(),
         ));
     }
@@ -353,7 +232,7 @@ pub fn load_friendship_chains(
         }
     }
     if chain_bytes.is_empty() {
-        return Err(FriendshipStorageError::InvalidChains(
+        return Err(StorageError::Parse(
             "Missing chain data".to_string(),
         ));
     }
@@ -396,7 +275,7 @@ pub fn load_friendship_chains(
         .iter()
         .filter_map(|f| f.values.first())
         .filter_map(|v| match v {
-            VsfType::e(vsf::types::EtType::i(osc)) => Some(*osc),
+            VsfType::e(vsf::types::EtType::e6(osc)) => Some(*osc),
             _ => None,
         })
         .collect();
@@ -541,8 +420,8 @@ pub fn load_friendship_chains(
         .iter()
         .filter_map(|f| f.values.first())
         .map(|v| match v {
-            VsfType::e(vsf::types::EtType::i(osc)) if *osc == 0 => None,
-            VsfType::e(vsf::types::EtType::i(osc)) => Some(*osc),
+            VsfType::e(vsf::types::EtType::e6(osc)) if *osc == 0 => None,
+            VsfType::e(vsf::types::EtType::e6(osc)) => Some(*osc),
             _ => None,
         })
         .collect();
@@ -562,41 +441,28 @@ pub fn load_friendship_chains(
         last_received_times,
     )
     .ok_or_else(|| {
-        FriendshipStorageError::InvalidChains("Failed to reconstruct chains".to_string())
+        StorageError::Parse("Failed to reconstruct chains".to_string())
     })
 }
 
-/// Load all friendships from disk
+/// Load all friendships for the given friendship IDs
 pub fn load_all_friendships(
-    identity_seed: &[u8; 32],
-    device_secret: &[u8; 32],
+    friendship_ids: &[FriendshipId],
+    storage: &FlatStorage,
 ) -> Vec<(FriendshipId, FriendshipChains)> {
     let mut result = Vec::new();
-    let dir = friendships_dir();
 
-    if !dir.exists() {
-        return result;
-    }
-
-    if let Ok(entries) = fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            if entry.path().is_dir() {
-                // Try to parse directory name as friendship_id
-                if let Some(name) = entry.file_name().to_str() {
-                    if let Some(friendship_id) = FriendshipId::from_base64(name) {
-                        match load_friendship_chains(&friendship_id, identity_seed, device_secret) {
-                            Ok(chains) => {
-                                result.push((friendship_id, chains));
-                            }
-                            Err(e) => {
-                                crate::log(&format!(
-                                    "Failed to load friendship {}: {}",
-                                    name, e
-                                ));
-                            }
-                        }
-                    }
-                }
+    for friendship_id in friendship_ids {
+        match load_friendship_chains(friendship_id, storage) {
+            Ok(chains) => {
+                result.push((*friendship_id, chains));
+            }
+            Err(e) => {
+                crate::log(&format!(
+                    "Failed to load friendship {}: {}",
+                    hex::encode(&friendship_id.as_bytes()[..8]),
+                    e
+                ));
             }
         }
     }
@@ -607,16 +473,9 @@ pub fn load_all_friendships(
 /// Delete friendship chains from disk (used on re-key)
 pub fn delete_friendship_chains(
     friendship_id: &FriendshipId,
-) -> Result<(), FriendshipStorageError> {
-    let dir = friendship_dir(friendship_id);
-    if dir.exists() {
-        fs::remove_dir_all(&dir)?;
-        crate::log(&format!(
-            "CLUTCH: Deleted old chains directory: {}",
-            dir.display()
-        ));
-    }
-    Ok(())
+    storage: &FlatStorage,
+) -> Result<(), StorageError> {
+    storage.delete(&chains_key(friendship_id))
 }
 
 #[cfg(test)]
@@ -635,11 +494,13 @@ mod tests {
         let identity_seed = [0xAA; 32];
         let device_secret = [0xBB; 32];
 
+        let storage = FlatStorage::new(identity_seed, device_secret).unwrap();
+
         // Save
-        save_friendship_chains(&chains, &identity_seed, &device_secret).unwrap();
+        save_friendship_chains(&chains, &storage).unwrap();
 
         // Load
-        let loaded = load_friendship_chains(chains.id(), &identity_seed, &device_secret).unwrap();
+        let loaded = load_friendship_chains(chains.id(), &storage).unwrap();
 
         // Verify
         assert_eq!(loaded.id().as_bytes(), chains.id().as_bytes());

@@ -112,7 +112,7 @@ pub fn encode_contacts(
                     VsfType::x(c.handle.clone()),
                     VsfType::ke(c.device_pubkey.to_vec()),
                     VsfType::u3(c.trust_level),
-                    VsfType::e(vsf::types::EtType::i(c.added)),
+                    VsfType::e(vsf::types::EtType::e6(c.added)),
                 ],
             )
             .map_err(|e| CloudError::Parse(e.to_string()))?;
@@ -156,7 +156,7 @@ pub fn decode_contacts(
                 _ => 0,
             };
             let added = match &field.values[4] {
-                VsfType::e(vsf::types::EtType::i(osc)) => *osc,
+                VsfType::e(vsf::types::EtType::e6(osc)) => *osc,
                 _ => 0,
             };
 

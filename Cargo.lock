@@ -126,6 +126,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "allocator-api2"
+version = "0.2.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
+
+[[package]]
 name = "android-activity"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1911,6 +1917,8 @@ version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
 dependencies = [
+ "allocator-api2",
+ "equivalent",
  "foldhash 0.1.5",
 ]
 
@@ -2257,6 +2265,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ihi"
+version = "0.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ee73a1fc890a1b818177502618140a5f9589392c78b0426550677ad5ebba30d"
+dependencies = [
+ "blake3",
+ "i256",
+ "sha2 0.10.9",
+ "sha3 0.10.8",
+ "spirix 0.0.8 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
 name = "image"
 version = "0.25.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2581,6 +2602,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
+name = "lru"
+version = "0.12.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "234cf4f4a04dc1f57e24b96cc0cd600cf2af460d4161ac5ecdd0af8e1f3b2a38"
+dependencies = [
+ "hashbrown 0.15.5",
+]
+
+[[package]]
 name = "lru-slab"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2833,6 +2863,7 @@ checksum = "a5e44f723f1133c9deac646763579fdb3ac745e418f2a7af9cd0c431da1f20b9"
 dependencies = [
  "num-integer",
  "num-traits",
+ "rand 0.8.5",
 ]
 
 [[package]]
@@ -2873,6 +2904,33 @@ dependencies = [
  "autocfg",
  "num-integer",
  "num-traits",
+]
+
+[[package]]
+name = "num-modular"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "64a5fe11d4135c3bcdf3a95b18b194afa9608a5f6ff034f5d857bc9a27fb0119"
+dependencies = [
+ "num-bigint",
+ "num-integer",
+ "num-traits",
+]
+
+[[package]]
+name = "num-prime"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e238432a7881ec7164503ccc516c014bf009be7984cde1ba56837862543bdec3"
+dependencies = [
+ "bitvec",
+ "either",
+ "lru",
+ "num-bigint",
+ "num-integer",
+ "num-modular",
+ "num-traits",
+ "rand 0.8.5",
 ]
 
 [[package]]
@@ -3352,6 +3410,7 @@ dependencies = [
  "i256",
  "icc-profile",
  "if-watch",
+ "ihi",
  "image",
  "img-parts",
  "jni",
@@ -3380,7 +3439,7 @@ dependencies = [
  "sha2 0.10.9",
  "sha3 0.11.0-rc.8",
  "softbuffer",
- "spirix",
+ "spirix 0.0.8",
  "subtle",
  "thiserror 2.0.18",
  "thread-priority",
@@ -4672,11 +4731,26 @@ dependencies = [
 
 [[package]]
 name = "spirix"
-version = "0.0.11"
+version = "0.0.8"
 dependencies = [
  "i256",
  "num-complex",
  "num-integer",
+ "num-prime",
+ "num-traits",
+ "rand 0.9.2",
+]
+
+[[package]]
+name = "spirix"
+version = "0.0.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e38fda8bfefb72fad5f6711ad340e8cee888c297c9d98042cfc2caa8c4482b1"
+dependencies = [
+ "i256",
+ "num-complex",
+ "num-integer",
+ "num-prime",
  "num-traits",
  "rand 0.9.2",
 ]
@@ -5397,7 +5471,7 @@ checksum = "051eb1abcf10076295e815102942cc58f9d5e3b4560e46e53c21e8ff6f3af7b1"
 
 [[package]]
 name = "vsf"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "aes-gcm 0.10.3",
  "bitvec",

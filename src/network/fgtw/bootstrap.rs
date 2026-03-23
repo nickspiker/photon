@@ -558,7 +558,7 @@ fn parse_peer_from_field(field: &vsf::VsfField) -> Result<PeerRecord, String> {
 
     // Parse timestamp (Eagle Time oscillations)
     let last_seen = match &field.values[4] {
-        vsf::VsfType::e(vsf::types::EtType::i(osc)) => *osc,
+        vsf::VsfType::e(vsf::types::EtType::e6(osc)) => *osc,
         _ => return Err("Expected Eagle Time i64 oscillations for timestamp".to_string()),
     };
 

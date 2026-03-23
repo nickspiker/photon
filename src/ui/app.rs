@@ -1157,6 +1157,9 @@ pub struct PhotonApp {
     // Device keypair for signing (needed by StatusChecker)
     pub device_keypair: crate::network::fgtw::Keypair,
 
+    // Flat storage — initialized at auth, None before auth completes
+    pub storage: Option<crate::storage::FlatStorage>,
+
     // Friendship chains (runtime-only, loaded from disk)
     pub friendship_chains: Vec<(FriendshipId, FriendshipChains)>,
 
@@ -1369,6 +1372,7 @@ impl PhotonApp {
             clutch_ceremony_rx,
             clutch_ceremony_tx,
             friendship_chains: Vec::new(),
+            storage: None, // Initialized at auth
             event_proxy: event_proxy.clone(),
             peer_update_client: None, // Started after attestation
         };
@@ -1531,6 +1535,7 @@ impl PhotonApp {
             clutch_ceremony_rx,
             clutch_ceremony_tx,
             friendship_chains: Vec::new(),
+            storage: None, // Initialized at auth
             zoom_hint_visible: false,
             zoom_hint_hide_time: None,
             zoom_hint_ru: 1.0,
@@ -2621,12 +2626,10 @@ impl PhotonApp {
 
                             // Save contact (updates both state file and contact list)
                             if let Some(ref identity_seed) = self.user_identity_seed {
-                                let device_secret = self.device_keypair.secret.as_bytes();
-                                if let Some(contact) = self.contacts.last() {
+                                if let (Some(contact), Some(storage)) = (self.contacts.last(), self.storage.as_ref()) {
                                     if let Err(e) = crate::storage::contacts::save_contact(
                                         contact,
-                                        identity_seed,
-                                        device_secret,
+                                        storage,
                                     ) {
                                         crate::log(&format!("Failed to save contact: {}", e));
                                     }
@@ -2793,6 +2796,10 @@ impl PhotonApp {
                 self.user_handle = Some(handle.clone());
                 self.user_handle_proof = Some(handle_proof);
                 self.user_identity_seed = Some(identity_seed);
+                let device_secret_bytes = *self.device_keypair.secret.as_bytes();
+                self.storage = crate::storage::FlatStorage::new(identity_seed, device_secret_bytes)
+                    .map_err(|e| crate::log(&format!("STORAGE: Failed to initialize FlatStorage: {}", e)))
+                    .ok();
                 crate::log("UI: All data pre-loaded in background - no UI freeze");
 
                 // Assign pre-loaded friendships
@@ -3119,22 +3126,21 @@ impl PhotonApp {
                                                 }
 
                                                 // Persist provenance immediately
-                                                let device_secret =
-                                                    *self.device_keypair.secret.as_bytes();
-                                                if let Err(e) =
-                                                    crate::storage::contacts::save_clutch_slots(
-                                                        &contact.clutch_slots,
-                                                        &contact.offer_provenances,
-                                                        contact.ceremony_id,
-                                                        contact.handle.as_str(),
-                                                        &our_handle_hash,
-                                                        &device_secret,
-                                                    )
-                                                {
-                                                    crate::log(&format!(
-                                                        "Failed to persist CLUTCH provenance: {}",
-                                                        e
-                                                    ));
+                                                if let Some(storage) = self.storage.as_ref() {
+                                                    if let Err(e) =
+                                                        crate::storage::contacts::save_clutch_slots(
+                                                            &contact.clutch_slots,
+                                                            &contact.offer_provenances,
+                                                            contact.ceremony_id,
+                                                            contact.handle.as_str(),
+                                                            storage,
+                                                        )
+                                                    {
+                                                        crate::log(&format!(
+                                                            "Failed to persist CLUTCH provenance: {}",
+                                                            e
+                                                        ));
+                                                    }
                                                 }
 
                                                 checker.send_offer(ClutchOfferRequest {
@@ -3427,12 +3433,10 @@ impl PhotonApp {
                         // Disk write is the commit point - ACK is just notification.
                         // If chain save fails, DO NOT send ACK. Sender will retransmit
                         // and we can try again, preventing permanent desync.
-                        if let Some(ref identity_seed) = self.user_identity_seed {
-                            let device_secret = self.device_keypair.secret.as_bytes();
+                        if let Some(storage) = self.storage.as_ref() {
                             if let Err(e) = crate::storage::friendship::save_friendship_chains(
                                 chains,
-                                identity_seed,
-                                device_secret,
+                                storage,
                             ) {
                                 crate::log(&format!(
                                     "STORAGE CRITICAL: Failed to save chains after recv, skipping ACK: {}",
@@ -3456,12 +3460,10 @@ impl PhotonApp {
                             changed = true;
 
                             // Persist messages for UI
-                            if let Some(ref identity_seed) = self.user_identity_seed {
-                                let device_secret = self.device_keypair.secret.as_bytes();
+                            if let Some(storage) = self.storage.as_ref() {
                                 if let Err(e) = crate::storage::contacts::save_messages(
                                     contact,
-                                    identity_seed,
-                                    device_secret,
+                                    storage,
                                 ) {
                                     crate::log(&format!("STORAGE: Failed to save messages: {}", e));
                                 }
@@ -3590,24 +3592,25 @@ impl PhotonApp {
                                     }
 
                                     // Delete persisted keypairs file (no longer needed)
-                                    if let Err(e) = crate::storage::contacts::delete_clutch_keypairs(
-                                        &handle_str,
-                                    ) {
-                                        crate::log(&format!(
-                                            "CLUTCH: Failed to delete keypairs file for {}: {}",
-                                            handle_str, e
-                                        ));
+                                    if let Some(storage) = self.storage.as_ref() {
+                                        if let Err(e) = crate::storage::contacts::delete_clutch_keypairs(
+                                            &handle_str,
+                                            storage,
+                                        ) {
+                                            crate::log(&format!(
+                                                "CLUTCH: Failed to delete keypairs file for {}: {}",
+                                                handle_str, e
+                                            ));
+                                        }
                                     }
                                 }
                             }
 
                             // Persist chains (AGENT.md: every change hits disk)
-                            if let Some(ref identity_seed) = self.user_identity_seed {
-                                let device_secret = self.device_keypair.secret.as_bytes();
+                            if let Some(storage) = self.storage.as_ref() {
                                 if let Err(e) = crate::storage::friendship::save_friendship_chains(
                                     chains,
-                                    identity_seed,
-                                    device_secret,
+                                    storage,
                                 ) {
                                     crate::log(&format!(
                                         "STORAGE CRITICAL: Failed to save chains after ACK: {}",
@@ -3640,12 +3643,10 @@ impl PhotonApp {
 
                             // Persist delivered status (AGENT.md: every change hits disk)
                             if found_msg {
-                                if let Some(ref identity_seed) = self.user_identity_seed {
-                                    let device_secret = self.device_keypair.secret.as_bytes();
+                                if let Some(storage) = self.storage.as_ref() {
                                     if let Err(e) = crate::storage::contacts::save_messages(
                                         contact,
-                                        identity_seed,
-                                        device_secret,
+                                        storage,
                                     ) {
                                         crate::log(&format!(
                                             "STORAGE: Failed to save delivered status: {}",
@@ -3958,19 +3959,19 @@ impl PhotonApp {
                             }
 
                             // Persist slot state (offer, provenances, ceremony_id)
-                            let device_secret = *self.device_keypair.secret.as_bytes();
-                            if let Err(e) = crate::storage::contacts::save_clutch_slots(
-                                &contact.clutch_slots,
-                                &contact.offer_provenances,
-                                contact.ceremony_id,
-                                contact.handle.as_str(),
-                                &our_handle_hash,
-                                &device_secret,
-                            ) {
-                                crate::log(&format!(
-                                    "CLUTCH: Failed to save slots for {}: {}",
-                                    contact.handle, e
-                                ));
+                            if let Some(storage) = self.storage.as_ref() {
+                                if let Err(e) = crate::storage::contacts::save_clutch_slots(
+                                    &contact.clutch_slots,
+                                    &contact.offer_provenances,
+                                    contact.ceremony_id,
+                                    contact.handle.as_str(),
+                                    storage,
+                                ) {
+                                    crate::log(&format!(
+                                        "CLUTCH: Failed to save slots for {}: {}",
+                                        contact.handle, e
+                                    ));
+                                }
                             }
 
                             // If we have keypairs, send our offer (if not sent) and KEM response
@@ -4041,22 +4042,21 @@ impl PhotonApp {
                                             }
 
                                             // Persist provenance/ceremony_id immediately
-                                            let device_secret =
-                                                *self.device_keypair.secret.as_bytes();
-                                            if let Err(e) =
-                                                crate::storage::contacts::save_clutch_slots(
-                                                    &contact.clutch_slots,
-                                                    &contact.offer_provenances,
-                                                    contact.ceremony_id,
-                                                    contact.handle.as_str(),
-                                                    &our_handle_hash,
-                                                    &device_secret,
-                                                )
-                                            {
-                                                crate::log(&format!(
-                                                    "Failed to persist CLUTCH provenance: {}",
-                                                    e
-                                                ));
+                                            if let Some(storage) = self.storage.as_ref() {
+                                                if let Err(e) =
+                                                    crate::storage::contacts::save_clutch_slots(
+                                                        &contact.clutch_slots,
+                                                        &contact.offer_provenances,
+                                                        contact.ceremony_id,
+                                                        contact.handle.as_str(),
+                                                        storage,
+                                                    )
+                                                {
+                                                    crate::log(&format!(
+                                                        "Failed to persist CLUTCH provenance: {}",
+                                                        e
+                                                    ));
+                                                }
                                             }
                                         }
                                         Err(e) => {
@@ -4184,19 +4184,19 @@ impl PhotonApp {
                                         }
 
                                         // Persist re-key state immediately
-                                        let device_secret = *self.device_keypair.secret.as_bytes();
-                                        if let Err(e) = crate::storage::contacts::save_clutch_slots(
-                                            &contact.clutch_slots,
-                                            &contact.offer_provenances,
-                                            contact.ceremony_id,
-                                            contact.handle.as_str(),
-                                            &our_handle_hash,
-                                            &device_secret,
-                                        ) {
-                                            crate::log(&format!(
-                                                "Failed to persist re-key CLUTCH state: {}",
-                                                e
-                                            ));
+                                        if let Some(storage) = self.storage.as_ref() {
+                                            if let Err(e) = crate::storage::contacts::save_clutch_slots(
+                                                &contact.clutch_slots,
+                                                &contact.offer_provenances,
+                                                contact.ceremony_id,
+                                                contact.handle.as_str(),
+                                                storage,
+                                            ) {
+                                                crate::log(&format!(
+                                                    "Failed to persist re-key CLUTCH state: {}",
+                                                    e
+                                                ));
+                                            }
                                         }
 
                                         // Trigger keygen for fresh re-key ceremony
@@ -4258,10 +4258,12 @@ impl PhotonApp {
                     for old_id in chains_to_remove {
                         self.friendship_chains.retain(|(id, _)| *id != old_id);
                         // Delete from disk
-                        if let Err(e) =
-                            crate::storage::friendship::delete_friendship_chains(&old_id)
-                        {
-                            crate::log(&format!("CLUTCH: Failed to delete old chains: {}", e));
+                        if let Some(storage) = self.storage.as_ref() {
+                            if let Err(e) =
+                                crate::storage::friendship::delete_friendship_chains(&old_id, storage)
+                            {
+                                crate::log(&format!("CLUTCH: Failed to delete old chains: {}", e));
+                            }
                         }
                     }
 
@@ -4454,19 +4456,19 @@ impl PhotonApp {
                                 }
 
                                 // Persist slot state after receiving KEM
-                                let device_secret = *self.device_keypair.secret.as_bytes();
-                                if let Err(e) = crate::storage::contacts::save_clutch_slots(
-                                    &contact.clutch_slots,
-                                    &contact.offer_provenances,
-                                    contact.ceremony_id,
-                                    contact.handle.as_str(),
-                                    &our_handle_hash,
-                                    &device_secret,
-                                ) {
-                                    crate::log(&format!(
-                                        "CLUTCH: Failed to save slots for {}: {}",
-                                        contact.handle, e
-                                    ));
+                                if let Some(storage) = self.storage.as_ref() {
+                                    if let Err(e) = crate::storage::contacts::save_clutch_slots(
+                                        &contact.clutch_slots,
+                                        &contact.offer_provenances,
+                                        contact.ceremony_id,
+                                        contact.handle.as_str(),
+                                        storage,
+                                    ) {
+                                        crate::log(&format!(
+                                            "CLUTCH: Failed to save slots for {}: {}",
+                                            contact.handle, e
+                                        ));
+                                    }
                                 }
                                 changed = true;
 
@@ -4606,16 +4608,11 @@ impl PhotonApp {
                                             // proof might still be in flight to them. Let it finish.
 
                                             // Save Complete state to disk immediately
-                                            if let Some(identity_seed) =
-                                                self.user_identity_seed.as_ref()
-                                            {
-                                                let device_secret =
-                                                    self.device_keypair.secret.as_bytes();
+                                            if let Some(storage) = self.storage.as_ref() {
                                                 if let Err(e) =
                                                     crate::storage::contacts::save_contact(
                                                         contact,
-                                                        identity_seed,
-                                                        device_secret,
+                                                        storage,
                                                     )
                                                 {
                                                     crate::log(&format!(
@@ -4999,12 +4996,10 @@ impl PhotonApp {
             // *** PERSIST to disk FIRST - this is the commit point ***
             // If chain save fails, DO NOT send the message. The chain state would be
             // out of sync with disk, causing permanent desync on crash/restart.
-            if let Some(ref identity_seed) = self.user_identity_seed {
-                let device_secret = self.device_keypair.secret.as_bytes();
+            if let Some(storage) = self.storage.as_ref() {
                 if let Err(e) = crate::storage::friendship::save_friendship_chains(
                     chains_mut,
-                    identity_seed,
-                    device_secret,
+                    storage,
                 ) {
                     crate::log(&format!(
                         "STORAGE CRITICAL: Failed to save chains after send, aborting message: {}",
@@ -5038,12 +5033,10 @@ impl PhotonApp {
                 contact.message_scroll_offset = 0.0;
 
                 // Persist immediately (AGENT.md: every change hits disk)
-                if let Some(ref identity_seed) = self.user_identity_seed {
-                    let device_secret = self.device_keypair.secret.as_bytes();
+                if let Some(storage) = self.storage.as_ref() {
                     if let Err(e) = crate::storage::contacts::save_messages(
                         contact,
-                        identity_seed,
-                        device_secret,
+                        storage,
                     ) {
                         crate::log(&format!("STORAGE: Failed to save messages: {}", e));
                     }
@@ -5348,12 +5341,11 @@ impl PhotonApp {
                     changed = true;
 
                     // Persist keypairs to disk immediately (crash recovery)
-                    if let Some(ref keypairs) = contact.clutch_our_keypairs {
+                    if let (Some(ref keypairs), Some(storage)) = (&contact.clutch_our_keypairs, self.storage.as_ref()) {
                         if let Err(e) = crate::storage::contacts::save_clutch_keypairs(
                             keypairs,
                             contact.handle.as_str(),
-                            &our_handle_hash,
-                            &device_secret,
+                            storage,
                         ) {
                             crate::log(&format!(
                                 "CLUTCH: Failed to save keypairs for {}: {}",
@@ -5419,18 +5411,19 @@ impl PhotonApp {
                                         }
 
                                         // Persist provenance immediately
-                                        if let Err(e) = crate::storage::contacts::save_clutch_slots(
-                                            &contact.clutch_slots,
-                                            &contact.offer_provenances,
-                                            contact.ceremony_id,
-                                            contact.handle.as_str(),
-                                            &our_handle_hash,
-                                            &device_secret,
-                                        ) {
-                                            crate::log(&format!(
-                                                "Failed to persist CLUTCH provenance: {}",
-                                                e
-                                            ));
+                                        if let Some(storage) = self.storage.as_ref() {
+                                            if let Err(e) = crate::storage::contacts::save_clutch_slots(
+                                                &contact.clutch_slots,
+                                                &contact.offer_provenances,
+                                                contact.ceremony_id,
+                                                contact.handle.as_str(),
+                                                storage,
+                                            ) {
+                                                crate::log(&format!(
+                                                    "Failed to persist CLUTCH provenance: {}",
+                                                    e
+                                                ));
+                                            }
                                         }
 
                                         if let Some(ref checker) = self.status_checker {
@@ -5539,18 +5532,19 @@ impl PhotonApp {
                             }
 
                             // Persist slot state after processing pending KEM
-                            if let Err(e) = crate::storage::contacts::save_clutch_slots(
-                                &contact.clutch_slots,
-                                &contact.offer_provenances,
-                                contact.ceremony_id,
-                                contact.handle.as_str(),
-                                &our_handle_hash,
-                                &device_secret,
-                            ) {
-                                crate::log(&format!(
-                                    "CLUTCH: Failed to save slots for {}: {}",
-                                    contact.handle, e
-                                ));
+                            if let Some(storage) = self.storage.as_ref() {
+                                if let Err(e) = crate::storage::contacts::save_clutch_slots(
+                                    &contact.clutch_slots,
+                                    &contact.offer_provenances,
+                                    contact.ceremony_id,
+                                    contact.handle.as_str(),
+                                    storage,
+                                ) {
+                                    crate::log(&format!(
+                                        "CLUTCH: Failed to save slots for {}: {}",
+                                        contact.handle, e
+                                    ));
+                                }
                             }
                         }
                     }
@@ -5629,18 +5623,19 @@ impl PhotonApp {
                     }
 
                     // Persist slot state before sending KEM
-                    if let Err(e) = crate::storage::contacts::save_clutch_slots(
-                        &contact.clutch_slots,
-                        &contact.offer_provenances,
-                        contact.ceremony_id,
-                        contact.handle.as_str(),
-                        &our_handle_hash,
-                        &device_secret,
-                    ) {
-                        crate::log(&format!(
-                            "CLUTCH: Failed to save slots for {}: {}",
-                            contact.handle, e
-                        ));
+                    if let Some(storage) = self.storage.as_ref() {
+                        if let Err(e) = crate::storage::contacts::save_clutch_slots(
+                            &contact.clutch_slots,
+                            &contact.offer_provenances,
+                            contact.ceremony_id,
+                            contact.handle.as_str(),
+                            storage,
+                        ) {
+                            crate::log(&format!(
+                                "CLUTCH: Failed to save slots for {}: {}",
+                                contact.handle, e
+                            ));
+                        }
                     }
 
                     // Send the KEM response
@@ -5715,15 +5710,14 @@ impl PhotonApp {
             let friendship_id = *result.friendship_chains.id();
 
             // Save chains to disk first
-            if let Some(identity_seed) = self.user_identity_seed.as_ref() {
+            if let Some(storage) = self.storage.as_ref() {
                 crate::log(&format!(
                     "CLUTCH: Saving friendship chains to disk (fid={}...)",
                     hex::encode(&friendship_id.as_bytes()[..8])
                 ));
                 if let Err(e) = crate::storage::friendship::save_friendship_chains(
                     &result.friendship_chains,
-                    identity_seed,
-                    &device_secret,
+                    storage,
                 ) {
                     crate::log(&format!("Failed to save friendship chains: {}", e));
                 } else {
@@ -5734,7 +5728,7 @@ impl PhotonApp {
             } else {
                 #[cfg(feature = "development")]
                 #[cfg(feature = "development")]
-                crate::log("CLUTCH: Cannot save chains - no identity_seed!");
+                crate::log("CLUTCH: Cannot save chains - no storage!");
             }
 
             // Cache chains in memory
@@ -5830,11 +5824,10 @@ impl PhotonApp {
                 }
 
                 // Save contact to persist friendship_id and clutch_state
-                if let Some(identity_seed) = self.user_identity_seed.as_ref() {
+                if let Some(storage) = self.storage.as_ref() {
                     if let Err(e) = crate::storage::contacts::save_contact(
                         contact,
-                        identity_seed,
-                        &device_secret,
+                        storage,
                     ) {
                         crate::log(&format!("Failed to save contact after CLUTCH: {}", e));
                     } else {
@@ -5845,7 +5838,7 @@ impl PhotonApp {
 
                     // Delete slots file - ceremony is complete, slots no longer needed
                     if let Err(e) =
-                        crate::storage::contacts::delete_clutch_slots(contact_handle.as_str())
+                        crate::storage::contacts::delete_clutch_slots(contact_handle.as_str(), storage)
                     {
                         crate::log(&format!("Failed to delete CLUTCH slots: {}", e));
                     }
