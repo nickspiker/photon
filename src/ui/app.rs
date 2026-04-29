@@ -5,8 +5,7 @@ use super::theme;
 use super::PhotonEvent;
 use crate::crypto::clutch::ClutchAllKeypairs;
 
-/// Asymptotic clamping: approaches max but never exceeds it.
-/// soft_limit(x, max) = max * x / (x + max)
+/// Asymptotic clamping: approaches max but never exceeds it. soft_limit(x, max) = max * x / (x + max)
 /// At x=0: returns 0. At x=max: returns max/2. As x→∞: approaches max.
 pub fn soft_limit(x: f32, max: f32) -> f32 {
     max * x / (x + max)
@@ -20,8 +19,7 @@ use crate::types::{ChatMessage, Contact, ContactId, FriendshipChains, Friendship
 pub struct ClutchKeygenResult {
     pub contact_id: ContactId,
     pub keypairs: ClutchAllKeypairs,
-    // NOTE: ceremony_id is now computed on-demand from handle_hashes + offer_provenances
-    // after we receive enough offers (2 for 2-party DM). No longer computed in background.
+    // NOTE: ceremony_id is now computed on-demand from handle_hashes + offer_provenances after we receive enough offers (2 for 2-party DM). No longer computed in background.
 }
 
 /// Result from background CLUTCH KEM encapsulation
@@ -129,9 +127,7 @@ impl TextState {
     }
 }
 
-/// Text layout geometry - THE SINGLE SOURCE OF TRUTH for all textbox rendering.
-/// Used by both compositing (draw_textbox) and text input (blinkey position).
-/// Designed to be extensible for future multi-line text entry.
+/// Text layout geometry - THE SINGLE SOURCE OF TRUTH for all textbox rendering. Used by both compositing (draw_textbox) and text input (blinkey position). Designed to be extensible for future multi-line text entry.
 #[derive(Clone, Copy)]
 pub struct TextLayout {
     // === Drawing coordinates (for compositing) ===
@@ -166,8 +162,7 @@ pub struct TextLayout {
 }
 
 impl TextLayout {
-    /// Create layout geometry from app dimensions and state
-    /// ru = dimensionless zoom multiplier (1.0 = default)
+    /// Create layout geometry from app dimensions and state ru = dimensionless zoom multiplier (1.0 = default)
     pub fn new(width: usize, height: usize, span: usize, ru: f32, app_state: &AppState) -> Self {
         // Get region from Layout (single source of truth)
         let layout = Layout::new(width, height, span, ru, app_state);
@@ -300,8 +295,7 @@ impl TextLayout {
     }
 }
 
-/// A rectangular region in pixel coordinates.
-/// Used for layout bounds - regions don't scale with ru, content within does.
+/// A rectangular region in pixel coordinates. Used for layout bounds - regions don't scale with ru, content within does.
 #[derive(Clone, Copy, Debug)]
 pub struct PixelRegion {
     pub x: usize,
@@ -345,9 +339,7 @@ impl PixelRegion {
     }
 }
 
-/// UI layout regions - fixed containers that don't scale with ru.
-/// Content within each region scales with ru, but the region bounds are fixed.
-/// Note: Window controls are NOT included - they're window chrome, not content regions.
+/// UI layout regions - fixed containers that don't scale with ru. Content within each region scales with ru, but the region bounds are fixed. Note: Window controls are NOT included - they're window chrome, not content regions.
 pub struct Layout {
     /// Logo and spectrum animation area - launch screens only
     pub logo_spectrum: Option<PixelRegion>,
@@ -358,8 +350,7 @@ pub struct Layout {
     /// Unified block containing hint + textbox + attest button - launch screens only
     /// Subdivided via AttestBlockLayout
     pub attest_block: Option<PixelRegion>,
-    /// Unified contacts block (Ready/Searching states) - contains user section + contact rows.
-    /// Subdivided via ContactsUnifiedLayout. All elements scale with span-based row_height.
+    /// Unified contacts block (Ready/Searching states) - contains user section + contact rows. Subdivided via ContactsUnifiedLayout. All elements scale with span-based row_height.
     pub contacts: Option<PixelRegion>,
     /// Header with back arrow and contact info - conversation state
     pub header: Option<PixelRegion>,
@@ -367,8 +358,7 @@ pub struct Layout {
     pub message_area: Option<PixelRegion>,
 }
 
-/// Subdivision of attest_block into textbox, hint label, and attest button regions.
-/// Uses proportional slicing so you can fiddle with gaps and proportions.
+/// Subdivision of attest_block into textbox, hint label, and attest button regions. Uses proportional slicing so you can fiddle with gaps and proportions.
 #[derive(Clone, Copy)]
 pub struct AttestBlockLayout {
     /// Error message region (top)
@@ -384,8 +374,7 @@ pub struct AttestBlockLayout {
 impl AttestBlockLayout {
     /// Subdivide an attest_block region into error, textbox, hint, and attest sub-regions.
     ///
-    /// The block is already scaled with ru by Layout::new().
-    /// This just slices it proportionally - no additional scaling needed.
+    /// The block is already scaled with ru by Layout::new(). This just slices it proportionally - no additional scaling needed.
     ///
     /// Textbox and error are full block width; hint and attest are centered.
     pub fn new(block: &PixelRegion) -> Self {
@@ -418,9 +407,7 @@ impl AttestBlockLayout {
     }
 }
 
-/// Subdivision of contacts_header block into avatar, handle, textbox, separator.
-/// This is the top scaled block on the contacts screen (Ready/Searching states).
-/// The whole block scales with ru as a unit.
+/// Subdivision of contacts_header block into avatar, handle, textbox, separator. This is the top scaled block on the contacts screen (Ready/Searching states). The whole block scales with ru as a unit.
 #[derive(Clone, Copy)]
 pub struct ContactsHeaderLayout {
     /// Avatar circle region (square, centered)
@@ -436,8 +423,7 @@ pub struct ContactsHeaderLayout {
 }
 
 impl ContactsHeaderLayout {
-    /// Subdivide contacts_header block into avatar, handle, hint, textbox, separator.
-    /// Block is already scaled with ru by Layout::new().
+    /// Subdivide contacts_header block into avatar, handle, hint, textbox, separator. Block is already scaled with ru by Layout::new().
     pub fn new(block: &PixelRegion) -> Self {
         const V_SLICES: [Slice; 11] = [
             Slice::new("gap0", 1.),
@@ -482,9 +468,7 @@ impl ContactsHeaderLayout {
     }
 }
 
-/// Subdivision of contacts_rows block into scrollable contact rows.
-/// Used on the contacts screen (Ready/Searching states).
-/// Note: Header elements (avatar, handle, textbox, separator) are in ContactsHeaderLayout.
+/// Subdivision of contacts_rows block into scrollable contact rows. Used on the contacts screen (Ready/Searching states). Note: Header elements (avatar, handle, textbox, separator) are in ContactsHeaderLayout.
 #[derive(Clone, Copy)]
 pub struct ContactsRowsLayout {
     /// Scrollable contact rows region (the whole block)
@@ -502,9 +486,7 @@ pub struct ContactsRowsLayout {
 }
 
 impl ContactsRowsLayout {
-    /// Subdivide contacts_rows block into contact rows.
-    /// span and ru are used to determine row height, then all other sizes derive from row_height.
-    /// center_offset allows centering the contact list based on longest name width.
+    /// Subdivide contacts_rows block into contact rows. span and ru are used to determine row height, then all other sizes derive from row_height. center_offset allows centering the contact list based on longest name width.
     pub fn new(block: &PixelRegion, span: usize, ru: f32, center_offset: usize) -> Self {
         // Row height is the primary unit - everything derives from it
         let row_height = ((span * 1 / 16) as f32 * ru) as usize;
@@ -524,8 +506,7 @@ impl ContactsRowsLayout {
         }
     }
 
-    /// Get the region for a specific contact row by index.
-    /// Returns None if the row would be outside the rows region.
+    /// Get the region for a specific contact row by index. Returns None if the row would be outside the rows region.
     pub fn row_region(&self, index: usize) -> Option<PixelRegion> {
         let row_y = self.rows.y + index * self.row_height;
         if row_y + self.row_height > self.rows.bottom() {
@@ -574,9 +555,7 @@ impl ContactsRowsLayout {
     }
 }
 
-/// Unified layout for contacts screen (Ready/Searching states).
-/// Combines user section (avatar, handle, hint, textbox, separator) and contact rows
-/// into a single layout where everything scales with the same unit_height base.
+/// Unified layout for contacts screen (Ready/Searching states). Combines user section (avatar, handle, hint, textbox, separator) and contact rows into a single layout where everything scales with the same unit_height base.
 #[derive(Clone, Copy)]
 pub struct ContactsUnifiedLayout {
     // User section (at top)
@@ -615,9 +594,7 @@ pub struct ContactsUnifiedLayout {
 }
 
 impl ContactsUnifiedLayout {
-    /// Create unified layout from a block region.
-    /// span and ru determine unit_height (base scaling unit), then all sizes derive from it.
-    /// Slices define how many units each element occupies (e.g., user_avatar = 5 units).
+    /// Create unified layout from a block region. span and ru determine unit_height (base scaling unit), then all sizes derive from it. Slices define how many units each element occupies (e.g., user_avatar = 5 units).
     pub fn new(block: &PixelRegion, span: usize, ru: f32, center_offset: usize) -> Self {
         // User section uses proportional slices
         const V_SLICES: [Slice; 11] = [
@@ -708,8 +685,7 @@ impl ContactsUnifiedLayout {
         (cx, cy, radius)
     }
 
-    /// Get avatar center position for a contact row (isize for scroll support).
-    /// Returns positions unconditionally - visibility determined at render time with scroll offset.
+    /// Get avatar center position for a contact row (isize for scroll support). Returns positions unconditionally - visibility determined at render time with scroll offset.
     pub fn row_avatar_center(&self, index: usize) -> (isize, isize) {
         let row_y = self.rows.y as isize + index as isize * self.row_height as isize;
         let cx = self.rows.x as isize + self.center_offset as isize + (self.avatar_diameter / 2) as isize;
@@ -717,8 +693,7 @@ impl ContactsUnifiedLayout {
         (cx, cy)
     }
 
-    /// Get text position for a contact row (isize for scroll support).
-    /// Returns positions unconditionally - visibility determined at render time with scroll offset.
+    /// Get text position for a contact row (isize for scroll support). Returns positions unconditionally - visibility determined at render time with scroll offset.
     pub fn row_text_position(&self, index: usize) -> (isize, isize) {
         let row_y = self.rows.y as isize + index as isize * self.row_height as isize;
         let x = self.rows.x as isize + self.center_offset as isize + self.text_left_offset as isize;
@@ -762,8 +737,7 @@ impl ContactsUnifiedLayout {
     }
 }
 
-/// A named slice in a proportional layout grid.
-/// Each slice has a name (for documentation) and a unit size.
+/// A named slice in a proportional layout grid. Each slice has a name (for documentation) and a unit size.
 struct Slice {
     #[allow(dead_code)]
     name: &'static str,
@@ -776,9 +750,7 @@ impl Slice {
     }
 }
 
-/// Compute pixel positions from named slices.
-/// Returns a Vec where positions[i] is the start pixel of slice i,
-/// and positions[len] is the end pixel of the last slice.
+/// Compute pixel positions from named slices. Returns a Vec where positions[i] is the start pixel of slice i, and positions[len] is the end pixel of the last slice.
 fn slice_positions(total_pixels: usize, slices: &[Slice]) -> Vec<usize> {
     let total_units: f64 = slices.iter().map(|s| s.units).sum();
     let mut positions = Vec::with_capacity(slices.len() + 1);
@@ -792,10 +764,7 @@ fn slice_positions(total_pixels: usize, slices: &[Slice]) -> Vec<usize> {
 }
 
 impl Layout {
-    /// Create layout from window dimensions and app state.
-    /// Uses proportional slicing: window divided into fixed unit bands vertically and horizontally.
-    /// Each element gets a rectangle from the intersection of bands.
-    /// attest_block scales with ru; other elements are window-proportional.
+    /// Create layout from window dimensions and app state. Uses proportional slicing: window divided into fixed unit bands vertically and horizontally. Each element gets a rectangle from the intersection of bands. attest_block scales with ru; other elements are window-proportional.
     pub fn new(width: usize, height: usize, _span: usize, ru: f32, app_state: &AppState) -> Self {
         // Common horizontal slicing: margin | content | margin
         const H_SLICES: [Slice; 3] = [
@@ -1010,19 +979,15 @@ pub struct PhotonApp {
 
     // Universal scaling units (cached for performance)
     /// Span: harmonic mean of width and height = 2wh/(w+h)
-    /// Smooth at w==h (no discontinuity), biased toward smaller dimension,
-    /// finite slope at axes, slope exactly 1 along diagonal. Base unit for all UI scaling.
+    /// Smooth at w==h (no discontinuity), biased toward smaller dimension, finite slope at axes, slope exactly 1 along diagonal. Base unit for all UI scaling.
     pub span: usize,
     pub perimeter: usize,   // width + height
     pub diagonal_sq: usize, // width² + height²
 
-    /// RU: user's zoom multiplier for content scaling. Starts at 1.0.
-    /// Content sizes multiply by effective_ru(): font_size = span/16 * ru, box_height = span/8 * ru
+    /// RU: user's zoom multiplier for content scaling. Starts at 1.0. Content sizes multiply by effective_ru(): font_size = span/16 * ru, box_height = span/8 * ru
     pub ru: f32,
 
-    /// Keyboard scale compensation (Android only). When keyboard shrinks window,
-    /// this compensates to keep UI elements the same visual size.
-    /// effective_ru() = ru * keyboard_scale
+    /// Keyboard scale compensation (Android only). When keyboard shrinks window, this compensates to keep UI elements the same visual size. effective_ru() = ru * keyboard_scale
     pub keyboard_scale: f32,
 
     /// Initial height at app creation (Android only). Used to compute keyboard_scale.
@@ -1211,8 +1176,7 @@ pub enum ResizeEdge {
 }
 
 impl PhotonApp {
-    /// Effective zoom multiplier for sizing calculations.
-    /// Combines user's zoom (ru) with keyboard scale compensation.
+    /// Effective zoom multiplier for sizing calculations. Combines user's zoom (ru) with keyboard scale compensation.
     #[inline]
     pub fn effective_ru(&self) -> f32 {
         self.ru * self.keyboard_scale
@@ -1236,8 +1200,7 @@ impl PhotonApp {
         let w = size.width as usize;
         let h = size.height as usize;
 
-        // Avatar is loaded after attestation when we have a handle
-        // (the storage key is derived from handle)
+        // Avatar is loaded after attestation when we have a handle (the storage key is derived from handle)
         let avatar_pixels: Option<Vec<u8>> = None;
 
         // Create channel for background avatar downloads
@@ -1550,8 +1513,7 @@ impl PhotonApp {
         }
     }
 
-    /// Update sync_records_provider from friendship_chains.
-    /// Called when chains change to keep pong responses up-to-date.
+    /// Update sync_records_provider from friendship_chains. Called when chains change to keep pong responses up-to-date.
     pub fn update_sync_records(&mut self) {
         use crate::network::fgtw::protocol::SyncRecord;
 
@@ -1596,8 +1558,7 @@ impl PhotonApp {
         self.selection_dirty = true;
     }
 
-    /// Handle touch events on Android
-    /// action: 0=DOWN, 1=UP, 2=MOVE, 3=CANCEL
+    /// Handle touch events on Android action: 0=DOWN, 1=UP, 2=MOVE, 3=CANCEL
     /// Returns: 1=show keyboard, -1=hide keyboard, 0=no change
     #[cfg(target_os = "android")]
     pub fn handle_touch(&mut self, action: i32, x: f32, y: f32) -> i32 {
@@ -2047,8 +2008,7 @@ impl PhotonApp {
 
     // ============ Network Methods ============
 
-    /// Set the handle query system (called from JNI after keypair is available on Android,
-    /// or can be used to reinitialize on any platform)
+    /// Set the handle query system (called from JNI after keypair is available on Android, or can be used to reinitialize on any platform)
     pub fn set_handle_query(&mut self, handle_query: HandleQuery) {
         // Start StatusChecker early so PT receiver is ready before attestation
         // This allows us to receive ClutchOffers from peers who come online before us
@@ -2072,9 +2032,7 @@ impl PhotonApp {
 
     /// Set avatar from raw image file bytes (Android image picker)
     ///
-    /// This receives the raw file bytes (JPEG/PNG/WebP) from Android's ContentResolver
-    /// and passes them to encode_avatar_from_image() which properly handles ICC profiles
-    /// for accurate color conversion to VSF RGB.
+    /// This receives the raw file bytes (JPEG/PNG/WebP) from Android's ContentResolver and passes them to encode_avatar_from_image() which properly handles ICC profiles for accurate color conversion to VSF RGB.
     #[cfg(target_os = "android")]
     pub fn set_avatar_from_file(&mut self, image_bytes: Vec<u8>) {
         use log::info;
@@ -2238,8 +2196,7 @@ impl PhotonApp {
     }
 
     /// Adjust zoom level by steps (positive = zoom in, negative = zoom out)
-    /// Uses logarithmic scaling: each step multiplies by 33/32 (in) or 32/33 (out).
-    /// Clamps to range [1/32, 32] for full design exploration.
+    /// Uses logarithmic scaling: each step multiplies by 33/32 (in) or 32/33 (out). Clamps to range [1/32, 32] for full design exploration.
     pub fn adjust_zoom(&mut self, steps: f32) {
         let factor = if steps.is_sign_negative() {
             (33f32 / 32.).powf(steps)
@@ -2287,12 +2244,10 @@ impl PhotonApp {
         self.zoom_hint_ru = self.ru;
     }
 
-    /// Handle pinch-to-zoom scale gesture from Android
-    /// scale_factor: >1.0 = zoom in, <1.0 = zoom out
+    /// Handle pinch-to-zoom scale gesture from Android scale_factor: >1.0 = zoom in, <1.0 = zoom out
     #[cfg(target_os = "android")]
     pub fn handle_scale(&mut self, scale_factor: f32) {
-        // Convert scale factor to zoom steps using logarithm
-        // log2(scale_factor) gives: pinch out (1.5x) -> +0.58, pinch in (0.7x) -> -0.51
+        // Convert scale factor to zoom steps using logarithm log2(scale_factor) gives: pinch out (1.5x) -> +0.58, pinch in (0.7x) -> -0.51
         // Sensitivity multiplier controls how responsive the zoom feels
         const SENSITIVITY: f32 = 10.0;
         let steps = scale_factor.log2() * SENSITIVITY;
@@ -2309,8 +2264,7 @@ impl PhotonApp {
         self.height = height;
 
         // Adjust scroll to keep content centered during resize
-        // Content at old center (old_height/2 - scroll) should stay at new center
-        // new_scroll = scroll + (new_height - old_height) / 2
+        // Content at old center (old_height/2 - scroll) should stay at new center new_scroll = scroll + (new_height - old_height) / 2
         let height_delta = (height as isize - old_height) / 2;
         self.contacts_scroll_offset += height_delta;
 
@@ -2322,8 +2276,7 @@ impl PhotonApp {
         }
 
         // Update cached scaling units
-        // Span: harmonic mean of width and height - smooth at w==h, biased toward smaller
-        // 2wh/(w+h) has finite slope at axes, slope exactly 1, tastes delicious
+        // Span: harmonic mean of width and height - smooth at w==h, biased toward smaller 2wh/(w+h) has finite slope at axes, slope exactly 1, tastes delicious
         self.span = 2 * w * h / (w + h);
         self.perimeter = w + h;
         self.diagonal_sq = w * w + h * h;
@@ -3020,8 +2973,7 @@ impl PhotonApp {
 
         // Get our handle_hash for CLUTCH (PRIVATE identity seed, used in VSF messages)
         // Formula: BLAKE3(VsfType::x(handle).flatten()) - VSF normalized for Unicode safety
-        // SECURITY: This IS sent in CLUTCH offers for contact matching, but only parties
-        // who already know our handle can compute it to match us
+        // SECURITY: This IS sent in CLUTCH offers for contact matching, but only parties who already know our handle can compute it to match us
         let our_handle_hash = match self.user_identity_seed {
             Some(h) => h,
             None => return false, // Can't do CLUTCH without our handle_hash
@@ -3033,8 +2985,7 @@ impl PhotonApp {
         let mut changed = false;
         let mut ceremony_completions: Vec<usize> = Vec::new(); // Contact indices to complete after loop
         let mut lan_ping_indices: Vec<usize> = Vec::new(); // Contact indices to ping immediately on new LAN discovery
-                                                               // Collect pending message retransmit requests (friendship_id, ip, handle, device_pubkey, last_received_ef6) to process after loop
-                                                               // last_received_ef6 from pong tells us what they already have - only retransmit newer
+                                                               // Collect pending message retransmit requests (friendship_id, ip, handle, device_pubkey, last_received_ef6) to process after loop last_received_ef6 from pong tells us what they already have - only retransmit newer
         let mut retransmit_requests: Vec<(
             crate::types::FriendshipId,
             std::net::SocketAddr,
@@ -3056,8 +3007,7 @@ impl PhotonApp {
                     // Find matching contact and update status
                     for contact in &mut self.contacts {
                         if contact.public_identity == peer_pubkey {
-                            // Note: ceremony_id is now computed from offer_provenances, not ping provenances.
-                            // Offer provenances are collected when ClutchOfferReceived messages arrive.
+                            // Note: ceremony_id is now computed from offer_provenances, not ping provenances. Offer provenances are collected when ClutchOfferReceived messages arrive.
 
                             // Update IP from the ping/pong source address
                             if let Some(addr) = peer_addr {
@@ -3082,8 +3032,7 @@ impl PhotonApp {
 
                             // Send full offer when contact comes online and keys are ready
                             // Keys are pre-generated in background when contact is added
-                            // Slot-based: send if Pending, have keypairs, haven't sent yet
-                            // Note: ceremony_id is now computed AFTER offers are exchanged
+                            // Slot-based: send if Pending, have keypairs, haven't sent yet Note: ceremony_id is now computed AFTER offers are exchanged
                             if is_online
                                 && contact.clutch_state == ClutchState::Pending
                                 && !contact.clutch_offer_sent
@@ -3192,8 +3141,7 @@ impl PhotonApp {
                     }
                 }
                 // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete handlers REMOVED
-                // Full 8-primitive CLUTCH uses ClutchOfferReceived and ClutchKemResponseReceived
-                // which are handled above (via TCP/PT transport).
+                // Full 8-primitive CLUTCH uses ClutchOfferReceived and ClutchKemResponseReceived which are handled above (via TCP/PT transport).
                 StatusUpdate::ChatMessage {
                     conversation_token,
                     prev_msg_hp,
@@ -3247,8 +3195,7 @@ impl PhotonApp {
                             }
                         };
 
-                        // Deduplication: skip if we've already processed this exact message
-                        // (UDP duplicates have identical eagle_time)
+                        // Deduplication: skip if we've already processed this exact message (UDP duplicates have identical eagle_time)
                         // Note: Sender learns our state via last_received_hp in ping/pong - no ACK needed for dupes
                         if chains.is_duplicate(&from_handle_hash, timestamp) {
                             crate::log(&format!(
@@ -3429,10 +3376,7 @@ impl PhotonApp {
                         ));
 
                         // CRASH SAFETY: Persist to disk BEFORE sending ACK
-                        // If we crash after ACK but before disk, sender thinks we have it but we don't.
-                        // Disk write is the commit point - ACK is just notification.
-                        // If chain save fails, DO NOT send ACK. Sender will retransmit
-                        // and we can try again, preventing permanent desync.
+                        // If we crash after ACK but before disk, sender thinks we have it but we don't. Disk write is the commit point - ACK is just notification. If chain save fails, DO NOT send ACK. Sender will retransmit and we can try again, preventing permanent desync.
                         if let Some(storage) = self.storage.as_ref() {
                             if let Err(e) = crate::storage::friendship::save_friendship_chains(
                                 chains,
@@ -3787,8 +3731,7 @@ impl PhotonApp {
                         if contact.handle_hash == their_handle_hash {
                             contact.ip = Some(sender_addr);
 
-                            // Simple re-key logic: if stored keys don't match received keys, re-key.
-                            // Same keys = duplicate/stale (ignore). Different/no keys = accept.
+                            // Simple re-key logic: if stored keys don't match received keys, re-key. Same keys = duplicate/stale (ignore). Different/no keys = accept.
                             let stored_hqc_pub = contact
                                 .get_slot(&their_handle_hash)
                                 .and_then(|slot| slot.offer.as_ref())
@@ -3820,16 +3763,13 @@ impl PhotonApp {
                                         continue;
                                     }
                                 } else {
-                                    // Different keys from them - but DON'T immediately nuke!
-                                    // This prevents infinite re-key loops where both sides keep regenerating.
+                                    // Different keys from them - but DON'T immediately nuke! This prevents infinite re-key loops where both sides keep regenerating.
                                     //
-                                    // Strategy: If we have keypairs, just update their offer and continue.
-                                    // We'll send our existing offer, they'll either:
+                                    // Strategy: If we have keypairs, just update their offer and continue. We'll send our existing offer, they'll either:
                                     // - Accept it (converge) if they're mid-ceremony
                                     // - Send KEM response (complete) if they're ahead
                                     //
-                                    // Only nuke if we're COMPLETE and they're sending fresh keys
-                                    // (meaning they lost their chains and need full re-key)
+                                    // Only nuke if we're COMPLETE and they're sending fresh keys (meaning they lost their chains and need full re-key)
                                     if contact.clutch_state == ClutchState::Complete {
                                         crate::log(&format!(
                                             "CLUTCH: Re-key from {} - we're Complete, they have new keys, nuking for fresh ceremony",
@@ -3867,8 +3807,7 @@ impl PhotonApp {
                                             slot.offer = None;
                                             slot.kem_secrets_from_them = None;
                                         }
-                                        // Clear our old KEM encap - it was for their OLD keys!
-                                        // We need fresh encapsulation against their new pubkeys.
+                                        // Clear our old KEM encap - it was for their OLD keys! We need fresh encapsulation against their new pubkeys.
                                         if let Some(slot) = contact.get_slot_mut(&our_handle_hash) {
                                             slot.kem_secrets_to_them = None;
                                             slot.kem_response_for_resend = None;
@@ -4102,8 +4041,7 @@ impl PhotonApp {
                                 } else if !already_sent_kem && !contact.clutch_kem_encap_in_progress
                                 {
                                     if let Some(ceremony_id) = contact.ceremony_id {
-                                        // Defer spawn for KEM encapsulation (to avoid borrow conflict)
-                                        // (PQ crypto is slow ~800ms, would block UI/network)
+                                        // Defer spawn for KEM encapsulation (to avoid borrow conflict) (PQ crypto is slow ~800ms, would block UI/network)
                                         contact.clutch_kem_encap_in_progress = true;
                                         kem_encap_spawn = Some((
                                             contact.id.clone(),
@@ -4142,16 +4080,13 @@ impl PhotonApp {
                                     // If Complete: peer lost their chains, accept re-key
                                     // If not Complete: restart mid-ceremony or fresh re-key
                                     if contact.clutch_state == ClutchState::Complete {
-                                        // Peer is sending an offer while we think we're Complete.
-                                        // This means either:
+                                        // Peer is sending an offer while we think we're Complete. This means either:
                                         // 1. Same HQC prefix: peer missed our KEM response (can't re-send without keypairs)
                                         // 2. Different HQC prefix: peer lost chains, wants re-key
                                         //
-                                        // Since we have NO keypairs here (we're in the is_none branch),
-                                        // we can't re-respond even to the same offer. Accept as re-key.
+                                        // Since we have NO keypairs here (we're in the is_none branch), we can't re-respond even to the same offer. Accept as re-key.
                                         //
-                                        // Note: If peer keeps re-sending same offer, both sides will eventually
-                                        // converge on a fresh ceremony (peer will regenerate keys after timeout).
+                                        // Note: If peer keeps re-sending same offer, both sides will eventually converge on a fresh ceremony (peer will regenerate keys after timeout).
                                         crate::log(&format!(
                                             "CLUTCH: Received offer from {} while Complete - peer lost chains, accepting re-key",
                                             contact.handle
@@ -4204,8 +4139,7 @@ impl PhotonApp {
                                         rekey_request =
                                             Some((contact.id.clone(), contact.handle_hash));
                                     } else if contact.clutch_state == ClutchState::AwaitingProof {
-                                        // We're waiting for their proof, but they sent an offer.
-                                        // Check if same keys (retransmit) or different (peer reset)
+                                        // We're waiting for their proof, but they sent an offer. Check if same keys (retransmit) or different (peer reset)
                                         let their_slot = contact.get_slot(&their_handle_hash);
                                         let stored_hqc = their_slot
                                             .and_then(|s| s.offer.as_ref())
@@ -4604,8 +4538,7 @@ impl PhotonApp {
                                             contact.clutch_their_eggs_proof = None;
                                             changed = true;
 
-                                            // NOTE: Don't clear PT sends here - our ClutchComplete
-                                            // proof might still be in flight to them. Let it finish.
+                                            // NOTE: Don't clear PT sends here - our ClutchComplete proof might still be in flight to them. Let it finish.
 
                                             // Save Complete state to disk immediately
                                             if let Some(storage) = self.storage.as_ref() {
@@ -4627,8 +4560,7 @@ impl PhotonApp {
                                                 }
                                             }
                                         } else {
-                                            // CRYPTOGRAPHIC FAILURE - proofs don't match!
-                                            // This should NEVER happen unless:
+                                            // CRYPTOGRAPHIC FAILURE - proofs don't match! This should NEVER happen unless:
                                             // 1. MITM attack
                                             // 2. Bug in ceremony
                                             // 3. Corruption
@@ -4650,8 +4582,7 @@ impl PhotonApp {
                                             );
                                         }
                                     } else {
-                                        // Race condition: proof arrived before check_clutch_ceremonies
-                                        // processed our ceremony result. Store theirs for when we're ready.
+                                        // Race condition: proof arrived before check_clutch_ceremonies processed our ceremony result. Store theirs for when we're ready.
                                         crate::log(&format!(
                                             "CLUTCH: Storing early proof from {} (AwaitingProof but our result not processed yet)",
                                             contact.handle
@@ -4869,9 +4800,7 @@ impl PhotonApp {
             }
         };
 
-        // Block new sends while waiting for ACK — chain doesn't advance until ACK,
-        // so a second message would encrypt with the same key but the receiver would
-        // have already advanced our chain after decrypting the first message.
+        // Block new sends while waiting for ACK — chain doesn't advance until ACK, so a second message would encrypt with the same key but the receiver would have already advanced our chain after decrypting the first message.
         if !chains.pending_messages().is_empty() {
             crate::log("CHAT: Cannot send — waiting for ACK on previous message");
             return false;
@@ -4965,8 +4894,7 @@ impl PhotonApp {
         let conversation_token = chains.conversation_token;
 
         // CRASH SAFETY: Persist to disk BEFORE sending to network
-        // If we crash after network but before disk, we desync permanently.
-        // Disk write is the commit point - network is just notification.
+        // If we crash after network but before disk, we desync permanently. Disk write is the commit point - network is just notification.
 
         // Track pending message for ACK matching and resync capability
         if let Some((_, chains_mut)) = self
@@ -4986,16 +4914,10 @@ impl PhotonApp {
             // Track sent weave for bidirectional entropy (receiver uses this to advance our chain)
             chains_mut.update_sent_for_mixing(eagle_time_osc, msg_hp, &payload);
 
-            // DO NOT advance chain here — wait for ACK.
-            // Advancing before ACK causes permanent desync if the message is never
-            // processed by the receiver (crash, offline, lost UDP). The receiver's
-            // copy of our chain won't match, and subsequent messages decrypt to garbage.
-            // Chain advancement happens in process_ack() when the receiver confirms
-            // they decrypted our message.
+            // DO NOT advance chain here — wait for ACK. Advancing before ACK causes permanent desync if the message is never processed by the receiver (crash, offline, lost UDP). The receiver's copy of our chain won't match, and subsequent messages decrypt to garbage. Chain advancement happens in process_ack() when the receiver confirms they decrypted our message.
 
             // *** PERSIST to disk FIRST - this is the commit point ***
-            // If chain save fails, DO NOT send the message. The chain state would be
-            // out of sync with disk, causing permanent desync on crash/restart.
+            // If chain save fails, DO NOT send the message. The chain state would be out of sync with disk, causing permanent desync on crash/restart.
             if let Some(storage) = self.storage.as_ref() {
                 if let Err(e) = crate::storage::friendship::save_friendship_chains(
                     chains_mut,
@@ -5115,10 +5037,7 @@ impl PhotonApp {
         changed
     }
 
-    /// Spawn background thread to generate CLUTCH keypairs for a contact.
-    /// McEliece keygen (~100ms+) is slow, so we do it off the main thread.
-    /// ceremony_id is now computed on-demand when ping provenances are available.
-    /// Results are received via clutch_keygen_rx and processed in check_clutch_keygens().
+    /// Spawn background thread to generate CLUTCH keypairs for a contact. McEliece keygen (~100ms+) is slow, so we do it off the main thread. ceremony_id is now computed on-demand when ping provenances are available. Results are received via clutch_keygen_rx and processed in check_clutch_keygens().
     pub fn spawn_clutch_keygen(
         &self,
         contact_id: ContactId,
@@ -5151,9 +5070,7 @@ impl PhotonApp {
         });
     }
 
-    /// Spawn background thread to perform CLUTCH KEM encapsulation.
-    /// The PQ KEMs (~800ms total) are slow, so we do them off the main thread.
-    /// Results are received via clutch_kem_encap_rx and processed in check_clutch_kem_encaps().
+    /// Spawn background thread to perform CLUTCH KEM encapsulation. The PQ KEMs (~800ms total) are slow, so we do them off the main thread. Results are received via clutch_kem_encap_rx and processed in check_clutch_kem_encaps().
     #[allow(clippy::too_many_arguments)]
     pub fn spawn_clutch_kem_encap(
         &self,
@@ -5210,9 +5127,7 @@ impl PhotonApp {
         }
     }
 
-    /// Spawn background thread to complete CLUTCH ceremony (avalanche_expand).
-    /// The 2MB memory-hard expansion (~850ms) is slow, so we do it off the main thread.
-    /// Results are received via clutch_ceremony_rx and processed in check_clutch_ceremonies().
+    /// Spawn background thread to complete CLUTCH ceremony (avalanche_expand). The 2MB memory-hard expansion (~850ms) is slow, so we do it off the main thread. Results are received via clutch_ceremony_rx and processed in check_clutch_ceremonies().
     #[allow(clippy::too_many_arguments)]
     pub fn spawn_clutch_ceremony(
         &self,
@@ -5292,8 +5207,7 @@ impl PhotonApp {
 
     /// Process background CLUTCH key generation results.
     ///
-    /// Slot-based design: keypairs stored once, slots filled as messages arrive.
-    /// Ceremony completes when all slots have offer + both KEM secret directions.
+    /// Slot-based design: keypairs stored once, slots filled as messages arrive. Ceremony completes when all slots have offer + both KEM secret directions.
     pub fn check_clutch_keygens(&mut self) -> bool {
         use crate::crypto::clutch::{
             derive_conversation_token, ClutchKemSharedSecrets,
@@ -5487,8 +5401,7 @@ impl PhotonApp {
                                         .and_then(|s| s.offer.clone());
 
                                     if let Some(remote_offer) = remote_offer {
-                                        // Defer spawn for KEM encapsulation (to avoid borrow conflict)
-                                        // (PQ crypto is slow ~800ms, would block UI/network)
+                                        // Defer spawn for KEM encapsulation (to avoid borrow conflict) (PQ crypto is slow ~800ms, would block UI/network)
                                         contact.clutch_kem_encap_in_progress = true;
                                         kem_encap_spawn = Some((
                                             contact.id.clone(),
@@ -5587,8 +5500,7 @@ impl PhotonApp {
         changed
     }
 
-    /// Process background CLUTCH KEM encapsulation results.
-    /// When KEM encap completes, store the secrets and send the KEM response.
+    /// Process background CLUTCH KEM encapsulation results. When KEM encap completes, store the secrets and send the KEM response.
     pub fn check_clutch_kem_encaps(&mut self) -> bool {
         use crate::network::status::ClutchKemResponseRequest;
 
@@ -5685,8 +5597,7 @@ impl PhotonApp {
         changed
     }
 
-    /// Process background CLUTCH ceremony completion results.
-    /// When ceremony completes, store the friendship chains and send proof.
+    /// Process background CLUTCH ceremony completion results. When ceremony completes, store the friendship chains and send proof.
     pub fn check_clutch_ceremonies(&mut self) -> bool {
         use crate::crypto::clutch::ClutchCompletePayload;
         use crate::network::status::ClutchCompleteRequest;
@@ -5858,8 +5769,7 @@ impl PhotonApp {
         changed
     }
 
-    /// Spawn background CLUTCH ceremony completion when all slots are filled.
-    /// Extracts data from contact and spawns background thread for heavy crypto.
+    /// Spawn background CLUTCH ceremony completion when all slots are filled. Extracts data from contact and spawns background thread for heavy crypto.
     ///
     /// Takes contact index to avoid borrow conflicts in the event loop.
     fn complete_clutch_ceremony_by_idx(&mut self, contact_idx: usize, our_handle_hash: [u8; 32]) {
@@ -6106,8 +6016,7 @@ impl PhotonApp {
         self.ping_contacts();
     }
 
-    /// Check if it's time to ping contacts and do so
-    /// Returns true if pings were sent
+    /// Check if it's time to ping contacts and do so Returns true if pings were sent
     pub fn maybe_ping_contacts(&mut self) -> bool {
         let now = std::time::Instant::now();
         if now >= self.next_status_ping && !self.contacts.is_empty() {

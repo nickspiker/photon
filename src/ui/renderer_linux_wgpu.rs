@@ -1,18 +1,13 @@
 //! Linux renderer — wgpu/Vulkan backend
 //!
-//! Owns a CPU-side pixel buffer (`Vec<u32>`, ARGB / `Bgra8Unorm` in memory).
-//! Each frame: uploads the buffer as a Vulkan texture and blits it full-screen.
+//! Owns a CPU-side pixel buffer (`Vec<u32>`, ARGB / `Bgra8Unorm` in memory). Each frame: uploads the buffer as a Vulkan texture and blits it full-screen.
 //!
-//! Pixel layout: `u32` stores `0xAARRGGBB`.  On little-endian ARM/x86 the
-//! in-memory bytes are [B, G, R, A] = `Bgra8Unorm`, a direct upload with zero
-//! byte-swapping.
+//! Pixel layout: `u32` stores `0xAARRGGBB`.  On little-endian ARM/x86 the in-memory bytes are [B, G, R, A] = `Bgra8Unorm`, a direct upload with zero byte-swapping.
 
 use std::cell::Cell;
 use winit::window::Window;
 
-// ---------------------------------------------------------------------------
-// Full-screen blit shader (large-triangle trick — no vertex buffer needed)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Full-screen blit shader (large-triangle trick — no vertex buffer needed) ---------------------------------------------------------------------------
 const BLIT_SHADER: &str = r#"
 struct VertOut {
     @builtin(position) pos: vec4<f32>,
@@ -48,13 +43,10 @@ fn fs_main(in: VertOut) -> @location(0) vec4<f32> {
 }
 "#;
 
-// ---------------------------------------------------------------------------
-// WgpuBuffer guard — matches the softbuffer API used by compositing.rs
+// --------------------------------------------------------------------------- WgpuBuffer guard — matches the softbuffer API used by compositing.rs
 //
 //   let mut buf = renderer.lock_buffer();
-//   buf[idx] = colour;           // DerefMut → &mut [u32]
-//   buf.present().unwrap();
-// ---------------------------------------------------------------------------
+// buf[idx] = colour;           // DerefMut → &mut [u32] buf.present().unwrap(); ---------------------------------------------------------------------------
 pub struct WgpuBuffer<'a> {
     inner: &'a mut Renderer,
 }
@@ -83,9 +75,7 @@ impl<'a> WgpuBuffer<'a> {
     pub fn mark_all(&self) {}
 }
 
-// ---------------------------------------------------------------------------
-// Renderer
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Renderer ---------------------------------------------------------------------------
 pub struct Renderer {
     surface:           wgpu::Surface<'static>,
     device:            wgpu::Device,
@@ -99,18 +89,14 @@ pub struct Renderer {
     cpu_buffer:        Vec<u32>,
     width:             u32,
     height:            u32,
-    /// Dirty row range — only these rows are uploaded to the GPU texture.
-    /// Reset to (u32::MAX, 0) after each present (clean = min > max).
-    /// Uses Cell for interior mutability so mark_rows can be called while
-    /// the cpu_buffer is borrowed through WgpuBuffer.
+    /// Dirty row range — only these rows are uploaded to the GPU texture. Reset to (u32::MAX, 0) after each present (clean = min > max). Uses Cell for interior mutability so mark_rows can be called while the cpu_buffer is borrowed through WgpuBuffer.
     dirty_y_min:       Cell<u32>,
     dirty_y_max:       Cell<u32>,
 }
 
 impl Renderer {
     pub fn new(window: &Window, width: u32, height: u32) -> Self {
-        // SAFETY: The surface lives inside Renderer, which is owned by PhotonApp.
-        // PhotonApp is dropped before Window is dropped in main.rs.
+        // SAFETY: The surface lives inside Renderer, which is owned by PhotonApp. PhotonApp is dropped before Window is dropped in main.rs.
         let static_window: &'static Window = unsafe { std::mem::transmute(window) };
         pollster::block_on(Self::init(static_window, width, height))
     }
@@ -146,8 +132,7 @@ impl Renderer {
 
         let caps = surface.get_capabilities(&adapter);
 
-        // Prefer Bgra8Unorm (direct upload, no swizzle).
-        // Avoid sRGB variants — our pixels are already display-ready.
+        // Prefer Bgra8Unorm (direct upload, no swizzle). Avoid sRGB variants — our pixels are already display-ready.
         let surface_format = caps
             .formats
             .iter()
@@ -155,8 +140,7 @@ impl Renderer {
             .find(|f| *f == wgpu::TextureFormat::Bgra8Unorm)
             .unwrap_or(caps.formats[0]);
 
-        // Wayland compositors expect premultiplied alpha; prefer PreMultiplied,
-        // fall back to PostMultiplied, then whatever the surface offers.
+        // Wayland compositors expect premultiplied alpha; prefer PreMultiplied, fall back to PostMultiplied, then whatever the surface offers.
         let alpha_mode = caps.alpha_modes.iter().copied()
             .find(|m| *m == wgpu::CompositeAlphaMode::PreMultiplied)
             .or_else(|| caps.alpha_modes.iter().copied()
@@ -287,8 +271,7 @@ impl Renderer {
             mip_level_count: 1,
             sample_count:    1,
             dimension:       wgpu::TextureDimension::D2,
-            // Bgra8Unorm: bytes in memory are [B, G, R, A].
-            // Our u32 pixels are 0xAARRGGBB → little-endian bytes [BB GG RR AA] = BGRA.
+            // Bgra8Unorm: bytes in memory are [B, G, R, A]. Our u32 pixels are 0xAARRGGBB → little-endian bytes [BB GG RR AA] = BGRA.
             format:          wgpu::TextureFormat::Bgra8Unorm,
             usage:           wgpu::TextureUsages::TEXTURE_BINDING
                            | wgpu::TextureUsages::COPY_DST,
@@ -321,8 +304,7 @@ impl Renderer {
         self.config.width = width;
         self.config.height = height;
         self.surface.configure(&self.device, &self.config);
-        // Keep the CPU buffer alive with zeros for new pixels — incremental draws
-        // will overwrite only the dirty regions, preserving the rest of the frame.
+        // Keep the CPU buffer alive with zeros for new pixels — incremental draws will overwrite only the dirty regions, preserving the rest of the frame.
         self.cpu_buffer.resize((width * height) as usize, 0);
         let (tex, bg) = Self::make_texture(
             &self.device,
@@ -350,8 +332,7 @@ impl Renderer {
         self.dirty_y_max.set(self.height);
     }
 
-    /// Returns a guard whose DerefMut exposes the CPU pixel buffer as `&mut [u32]`.
-    /// Call `.present()` on the guard to upload and display the frame.
+    /// Returns a guard whose DerefMut exposes the CPU pixel buffer as `&mut [u32]`. Call `.present()` on the guard to upload and display the frame.
     pub fn lock_buffer(&mut self) -> WgpuBuffer<'_> {
         WgpuBuffer { inner: self }
     }

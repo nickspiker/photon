@@ -1,7 +1,6 @@
 //! FGTW Conduit - Unified relay endpoint
 //!
-//! All FGTW communication goes through POST /conduit with VSF payloads.
-//! Section name in VSF determines operation.
+//! All FGTW communication goes through POST /conduit with VSF payloads. Section name in VSF determines operation.
 
 use vsf::VsfType;
 

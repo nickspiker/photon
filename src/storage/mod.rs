@@ -22,19 +22,16 @@ pub fn photon_config_dir() -> Result<std::path::PathBuf, std::io::Error> {
 }
 
 // ============================================================================
-// Unified Storage I/O
-// ============================================================================
+// Unified Storage I/O ============================================================================
 
 use std::fs;
 use std::path::Path;
 
 /// Controls error handling behavior for disk writes.
 pub enum WritePolicy {
-    /// Write MUST succeed or caller gets error back. Used for chain-critical paths
-    /// (friendship chain saves before network send/ACK).
+    /// Write MUST succeed or caller gets error back. Used for chain-critical paths (friendship chain saves before network send/ACK).
     MustSucceed,
-    /// Write failure is logged but Ok(()) returned. Used for best-effort saves
-    /// (avatars, UI message persistence, contact blobs, etc.).
+    /// Write failure is logged but Ok(()) returned. Used for best-effort saves (avatars, UI message persistence, contact blobs, etc.).
     BestEffort,
 }
 

@@ -1,7 +1,6 @@
 //! PT - Photon Transport
 //!
-//! Unified transport for ALL Photon communication.
-//! Small payloads sent directly, large payloads sharded into 1KB DATA packets if needed.
+//! Unified transport for ALL Photon communication. Small payloads sent directly, large payloads sharded into 1KB DATA packets if needed.
 //!
 //! **Primary**: UDP
 //! - Small payloads (≤1400 bytes): Sent directly as VSF
@@ -85,8 +84,7 @@ impl PTManager {
     }
 
     // =========================================================================
-    // Transfer Stream Management ('a'-'z')
-    // =========================================================================
+    // Transfer Stream Management ('a'-'z') =========================================================================
 
     /// Allocate next available stream_id ('a'-'z', wraps around)
     fn allocate_stream_id(&mut self) -> u8 {
@@ -99,8 +97,7 @@ impl PTManager {
         id
     }
 
-    /// Max VSF size for single UDP packet (no sharding needed)
-    /// 1KB threshold - VSF this size or smaller sent directly
+    /// Max VSF size for single UDP packet (no sharding needed) 1KB threshold - VSF this size or smaller sent directly
     /// Larger VSF gets sharded into [lowercase letter][packet number][1KB DATA] packets
     pub const SINGLE_PACKET_MAX: usize = 1024;
 

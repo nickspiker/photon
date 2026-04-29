@@ -1,7 +1,6 @@
 //! VSF packet inspection and logging
 //!
-//! Centralized packet inspection for all network transports (UDP, TCP, PT).
-//! Provides human-readable VSF packet formatting with optional noise filtering.
+//! Centralized packet inspection for all network transports (UDP, TCP, PT). Provides human-readable VSF packet formatting with optional noise filtering.
 
 /// Format a VSF packet as a human-readable inspection string (like vsfinfo)
 /// Public for use across network modules (FGTW transport, P2P, etc.)
@@ -176,8 +175,7 @@ fn strip_ansi_if_needed(s: &str) -> String {
 }
 
 // =============================================================================
-// Centralized VSF disk I/O with automatic dev-mode inspection
-// =============================================================================
+// Centralized VSF disk I/O with automatic dev-mode inspection =============================================================================
 
 use ed25519_dalek::SigningKey;
 use std::path::Path;
@@ -260,8 +258,7 @@ pub fn vsf_write(
 ///
 /// Uses VSF library's verify_file_signature to verify integrity, then extracts payload.
 ///
-/// Returns the encrypted bytes. Caller is responsible for decryption.
-/// After decryption, call `vsf_read_decrypted` to log the decrypted content.
+/// Returns the encrypted bytes. Caller is responsible for decryption. After decryption, call `vsf_read_decrypted` to log the decrypted content.
 pub fn vsf_read(path: &Path, label: &str, device_secret: &[u8; 32]) -> std::io::Result<Vec<u8>> {
     let file_bytes = crate::storage::read_file(path, label)?;
 

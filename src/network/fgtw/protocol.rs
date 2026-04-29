@@ -35,8 +35,7 @@ pub enum FgtwMessage {
     },
     /// P2P status ping - "are you online?"
     ///
-    /// Simplified header-only format:
-    /// RÅ< z4 y2 ef6[timestamp] hp[provenance] ke[pubkey] ge[signature] n1 (ping) >
+    /// Simplified header-only format: RÅ< z4 y2 ef6[timestamp] hp[provenance] ke[pubkey] ge[signature] n1 (ping) >
     ///
     /// - provenance_hash = BLAKE3(sender_pubkey || timestamp_nanos)
     /// - ke = sender's Ed25519 public key (for signature verification)
@@ -52,9 +51,7 @@ pub enum FgtwMessage {
     },
     /// P2P status pong - "yes I'm online"
     ///
-    /// Format:
-    /// RÅ< z4 y2 ef6[timestamp] hp[SAME provenance] ke[pubkey] ge[signature] n1 (pong) >
-    /// [pong (sync_count: N) (sync_0_tok: hb) (sync_0_ef6: f6) ...]
+    /// Format: RÅ< z4 y2 ef6[timestamp] hp[SAME provenance] ke[pubkey] ge[signature] n1 (pong) > [pong (sync_count: N) (sync_0_tok: hb) (sync_0_ef6: f6) ...]
     ///
     /// - Echoes same provenance_hash from ping (proves we saw it)
     /// - ke = responder's Ed25519 public key (for signature verification)
@@ -75,8 +72,7 @@ pub enum FgtwMessage {
         sync_records: Vec<SyncRecord>,
     },
     // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete REMOVED
-    // Full 8-primitive CLUTCH uses ClutchOffer and ClutchKemResponse
-    // which are handled via build_clutch_offer_vsf() and parse_clutch_offer_vsf()
+    // Full 8-primitive CLUTCH uses ClutchOffer and ClutchKemResponse which are handled via build_clutch_offer_vsf() and parse_clutch_offer_vsf()
     // See CLUTCH.md Section 4.2 for the slot-based ceremony protocol.
     /// Encrypted chat message
     ///
@@ -95,8 +91,7 @@ pub enum FgtwMessage {
     },
     /// Message acknowledgment
     ///
-    /// Confirms receipt of a message by eagle_time (no sequence numbers).
-    /// Per CHAIN.md Section 6.1:
+    /// Confirms receipt of a message by eagle_time (no sequence numbers). Per CHAIN.md Section 6.1:
     /// - acked_eagle_time: which message we're ACKing (i64 oscillations from their header)
     /// - plaintext_hash: proves we decrypted correctly (BLAKE3 of decrypted content)
     MessageAck {
@@ -543,8 +538,7 @@ impl FgtwMessage {
         }
 
         // NOTE: clutch_offer, clutch_init, clutch_resp, clutch_done deserialization REMOVED
-        // Full CLUTCH uses parse_clutch_offer_vsf() and parse_clutch_kem_response_vsf()
-        // which handle "clutch_offer" and "clutch_kem_response" sections
+        // Full CLUTCH uses parse_clutch_offer_vsf() and parse_clutch_kem_response_vsf() which handle "clutch_offer" and "clutch_kem_response" sections
 
         // Handle msg (encrypted chat message) and ack (acknowledgment)
         if section_name == "msg" || section_name == "ack" {
@@ -680,8 +674,7 @@ impl PeerRecord {
     }
 }
 
-/// Convert VsfSection fields to (name, value) tuples for helper functions.
-/// Fields with no values are skipped; multi-value fields use only the first value.
+/// Convert VsfSection fields to (name, value) tuples for helper functions. Fields with no values are skipped; multi-value fields use only the first value.
 fn section_fields_to_tuples(section: &vsf::VsfSection) -> Vec<(String, VsfType)> {
     section
         .fields
@@ -690,8 +683,7 @@ fn section_fields_to_tuples(section: &vsf::VsfSection) -> Vec<(String, VsfType)>
         .collect()
 }
 
-/// Parse a VsfSection from VSF bytes after a header, resolving the section name
-/// from the header TOC when the body has no embedded name (small sections).
+/// Parse a VsfSection from VSF bytes after a header, resolving the section name from the header TOC when the body has no embedded name (small sections).
 fn parse_section_after_header(
     data: &[u8],
     header: &vsf::VsfHeader,
@@ -952,14 +944,11 @@ fn compute_ack_provenance_v2(
 }
 
 // =============================================================================
-// VSF-WRAPPED CLUTCH MESSAGES (Full 8-Algorithm CLUTCH)
-// =============================================================================
+// VSF-WRAPPED CLUTCH MESSAGES (Full 8-Algorithm CLUTCH) =============================================================================
 
 use crate::crypto::clutch::{ClutchCompletePayload, ClutchKemResponsePayload, ClutchOfferPayload};
 
-// NOTE: ceremony_id is now computed deterministically via CeremonyId::derive()
-// from sorted participant handle_hashes. No memory-hard hashing needed.
-// See src/types/friendship.rs for the implementation.
+// NOTE: ceremony_id is now computed deterministically via CeremonyId::derive() from sorted participant handle_hashes. No memory-hard hashing needed. See src/types/friendship.rs for the implementation.
 
 /// Build a signed VSF ClutchOffer message (~548KB).
 ///
@@ -972,18 +961,13 @@ use crate::crypto::clutch::{ClutchCompletePayload, ClutchKemResponsePayload, Clu
 /// - kl: Classic McEliece-460896 (~512KB)
 /// - kh: HQC-256 (7285B)
 ///
-/// The ceremony_id is deterministic from CeremonyId::derive(&[handle_hashes]).
-/// Both parties compute the same value independently - no echo needed.
+/// The ceremony_id is deterministic from CeremonyId::derive(&[handle_hashes]). Both parties compute the same value independently - no echo needed.
 ///
 /// Returns signed VSF bytes ready for transmission.
 ///
-/// conversation_token: Privacy-preserving smear_hash of sorted participant identity seeds.
-/// Replaces handle_hashes to prevent identity correlation by network observers.
+/// conversation_token: Privacy-preserving smear_hash of sorted participant identity seeds. Replaces handle_hashes to prevent identity correlation by network observers.
 ///
-/// Note: The offer_provenance is computed deterministically from the public keys.
-/// This ensures both parties compute identical provenances regardless of timestamp.
-/// The ceremony_id is computed later from all parties' offer provenances via spaghettify.
-/// Returns (vsf_bytes, offer_provenance) - the signed VSF and the key-based provenance.
+/// Note: The offer_provenance is computed deterministically from the public keys. This ensures both parties compute identical provenances regardless of timestamp. The ceremony_id is computed later from all parties' offer provenances via spaghettify. Returns (vsf_bytes, offer_provenance) - the signed VSF and the key-based provenance.
 pub fn build_clutch_offer_vsf(
     conversation_token: &[u8; 32],
     payload: &ClutchOfferPayload,
@@ -992,8 +976,7 @@ pub fn build_clutch_offer_vsf(
 ) -> Result<(Vec<u8>, [u8; 32]), String> {
     use vsf::VsfBuilder;
 
-    // Build unsigned VSF with signature placeholder
-    // hp (provenance hash) will be auto-computed by sign_file from the content
+    // Build unsigned VSF with signature placeholder hp (provenance hash) will be auto-computed by sign_file from the content
     // This hash is unique per offer due to timestamp and content
     use vsf::file_format::VsfSection;
 
@@ -1294,8 +1277,7 @@ pub fn build_clutch_kem_response_vsf(
 /// 2. Ed25519 signature (header-level)
 /// 3. conversation_token matches expected token for our conversation
 ///
-/// Returns (payload, sender_pubkey, ceremony_id, conversation_token)
-/// conversation_token is the privacy-preserving smear_hash of sorted participant identity seeds.
+/// Returns (payload, sender_pubkey, ceremony_id, conversation_token) conversation_token is the privacy-preserving smear_hash of sorted participant identity seeds.
 pub fn parse_clutch_kem_response_vsf(
     vsf_bytes: &[u8],
     expected_conversation_token: &[u8; 32],
@@ -1512,8 +1494,7 @@ pub fn parse_clutch_kem_response_vsf(
 
 /// Parse and verify a VSF ClutchOffer message WITHOUT recipient check.
 ///
-/// This variant is used by the TCP receiver which doesn't know our conversation_token.
-/// The caller (app.rs) is responsible for verifying the message is addressed to them.
+/// This variant is used by the TCP receiver which doesn't know our conversation_token. The caller (app.rs) is responsible for verifying the message is addressed to them.
 ///
 /// Verifies:
 /// 1. VSF format and magic bytes
@@ -1666,8 +1647,7 @@ pub fn parse_clutch_offer_vsf_without_recipient_check(
 
 /// Parse and verify a VSF ClutchKemResponse message WITHOUT recipient check.
 ///
-/// This variant is used by the TCP receiver which doesn't know our conversation_token.
-/// The caller (app.rs) is responsible for verifying the message is addressed to them.
+/// This variant is used by the TCP receiver which doesn't know our conversation_token. The caller (app.rs) is responsible for verifying the message is addressed to them.
 ///
 /// Verifies:
 /// 1. VSF format and magic bytes
@@ -1929,13 +1909,11 @@ fn extract_v(fields: &[(String, VsfType)], key: &str, expected_tag: u8) -> Resul
 }
 
 // =============================================================================
-// CLUTCH COMPLETE (Proof Exchange)
-// =============================================================================
+// CLUTCH COMPLETE (Proof Exchange) =============================================================================
 
 /// Build a signed VSF ClutchComplete message (~200 bytes).
 ///
-/// Contains the eggs_proof hash for verification. Both parties send this
-/// after computing their eggs, and verify the peer's proof matches.
+/// Contains the eggs_proof hash for verification. Both parties send this after computing their eggs, and verify the peer's proof matches.
 ///
 /// conversation_token: Privacy-preserving smear_hash of sorted participant identity seeds.
 pub fn build_clutch_complete_vsf(
@@ -2040,8 +2018,7 @@ pub fn parse_clutch_complete_vsf(
 
 /// Parse and verify a VSF ClutchComplete message WITHOUT recipient check.
 ///
-/// This variant is used by the TCP receiver which doesn't know our conversation_token.
-/// The caller (app.rs) is responsible for verifying the message is addressed to them.
+/// This variant is used by the TCP receiver which doesn't know our conversation_token. The caller (app.rs) is responsible for verifying the message is addressed to them.
 pub fn parse_clutch_complete_vsf_without_recipient_check(
     vsf_bytes: &[u8],
 ) -> Result<(ClutchCompletePayload, [u8; 32], [u8; 32], [u8; 32]), String> {

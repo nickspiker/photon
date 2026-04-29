@@ -542,8 +542,7 @@ impl TextRenderer {
     }
 
     /// Draw left-aligned text with additive/subtractive compositing (u32 ARGB version)
-    /// Uses wrapping add/sub so it's reversible - subtract same colour to remove text
-    /// add_mode: true = add colour, false = subtract colour
+    /// Uses wrapping add/sub so it's reversible - subtract same colour to remove text add_mode: true = add colour, false = subtract colour
     pub fn draw_text_left_additive_u32(
         &mut self,
         pixels: &mut [u32],
@@ -593,8 +592,7 @@ impl TextRenderer {
     }
 
     /// Draw center-aligned text with additive/subtractive compositing (u32 ARGB version)
-    /// Uses wrapping add/sub so it's reversible - subtract same colour to remove text
-    /// add_mode: true = add colour, false = subtract colour
+    /// Uses wrapping add/sub so it's reversible - subtract same colour to remove text add_mode: true = add colour, false = subtract colour
     pub fn draw_text_center_additive_u32(
         &mut self,
         pixels: &mut [u32],
@@ -644,8 +642,7 @@ impl TextRenderer {
     }
 
     /// Draw right-aligned text with additive/subtractive compositing (u32 ARGB version)
-    /// Uses wrapping add/sub so it's reversible - subtract same colour to remove text
-    /// add_mode: true = add colour, false = subtract colour
+    /// Uses wrapping add/sub so it's reversible - subtract same colour to remove text add_mode: true = add colour, false = subtract colour
     pub fn draw_text_right_additive_u32(
         &mut self,
         pixels: &mut [u32],
@@ -1096,8 +1093,7 @@ impl TextRenderer {
         }
     }
 
-    /// Render single character with additive/subtractive compositing (u32 ARGB version)
-    /// pixel += char_alpha * mask_alpha * brightness (or -= for subtract)
+    /// Render single character with additive/subtractive compositing (u32 ARGB version) pixel += char_alpha * mask_alpha * brightness (or -= for subtract)
     pub fn render_char_additive_u32(
         &mut self,
         pixels: &mut [u32],

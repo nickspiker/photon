@@ -1,8 +1,6 @@
 //! Friendship chain storage.
 //!
-//! Stores FriendshipChains via FlatStorage with logical keys:
-//!   "friendship/{fid_hex8}/chains"
-//! where fid_hex8 = hex of first 8 bytes of friendship_id.
+//! Stores FriendshipChains via FlatStorage with logical keys: "friendship/{fid_hex8}/chains" where fid_hex8 = hex of first 8 bytes of friendship_id.
 //!
 //! All encryption, filename derivation, and atomicity is handled by FlatStorage.
 

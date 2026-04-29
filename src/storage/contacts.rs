@@ -60,8 +60,7 @@ fn contact_key(their_identity_seed: &[u8; 32], suffix: &str) -> String {
 }
 
 // ============================================================================
-// Contact List (Index) - Static Identity Data (Schema-validated)
-// ============================================================================
+// Contact List (Index) - Static Identity Data (Schema-validated) ============================================================================
 
 /// Schema for contact_list section
 /// Each contact field contains: (handle_proof: hb, handle: x)
@@ -137,8 +136,7 @@ pub fn load_contact_list(
 }
 
 // ============================================================================
-// Contact State - Mutable Session Data (Schema-validated)
-// ============================================================================
+// Contact State - Mutable Session Data (Schema-validated) ============================================================================
 
 /// Schema for contact_state section
 fn contact_state_schema() -> SectionSchema {
@@ -313,8 +311,7 @@ pub fn load_contact_state(
 }
 
 // ============================================================================
-// High-Level API
-// ============================================================================
+// High-Level API ============================================================================
 
 /// Save a contact (updates both list and state)
 pub fn save_contact(
@@ -413,13 +410,11 @@ fn u8_to_trust_level(v: u8) -> TrustLevel {
 }
 
 // ============================================================================
-// CLUTCH Keypairs Storage (~600KB, stored separately)
-// ============================================================================
+// CLUTCH Keypairs Storage (~600KB, stored separately) ============================================================================
 
 use crate::crypto::clutch::ClutchAllKeypairs;
 
-/// Save CLUTCH keypairs to disk (encrypted).
-/// Called after keygen completes - persists ~600KB of ephemeral keypairs.
+/// Save CLUTCH keypairs to disk (encrypted). Called after keygen completes - persists ~600KB of ephemeral keypairs.
 pub fn save_clutch_keypairs(
     keypairs: &ClutchAllKeypairs,
     handle: &str,
@@ -447,8 +442,7 @@ pub fn save_clutch_keypairs(
     Ok(())
 }
 
-/// Load CLUTCH keypairs from disk.
-/// Returns None if no keypairs file exists or parsing fails.
+/// Load CLUTCH keypairs from disk. Returns None if no keypairs file exists or parsing fails.
 pub fn load_clutch_keypairs(
     handle: &str,
     storage: &FlatStorage,
@@ -490,14 +484,12 @@ pub fn delete_clutch_keypairs(handle: &str, storage: &FlatStorage) -> Result<(),
 }
 
 // ============================================================================
-// CLUTCH Slots Storage (ceremony progress - offers, KEM secrets)
-// ============================================================================
+// CLUTCH Slots Storage (ceremony progress - offers, KEM secrets) ============================================================================
 
 use crate::crypto::clutch::{ClutchKemSharedSecrets, ClutchOfferPayload};
 use crate::types::PartySlot;
 
-/// Save CLUTCH slots to disk (encrypted).
-/// Persists ceremony progress: offers received, KEM secrets computed.
+/// Save CLUTCH slots to disk (encrypted). Persists ceremony progress: offers received, KEM secrets computed.
 ///
 /// VSF structure (proper multi-value fields):
 /// ```text
@@ -627,8 +619,7 @@ pub struct ClutchCeremonyState {
     pub ceremony_id: Option<[u8; 32]>,
 }
 
-/// Load CLUTCH slots from disk.
-/// Returns None if no slots file exists.
+/// Load CLUTCH slots from disk. Returns None if no slots file exists.
 ///
 /// Parses VSF structure with multi-value fields (no decimal string prefixes):
 /// ```text
@@ -727,9 +718,7 @@ pub fn load_clutch_slots(
     }))
 }
 
-/// Parse a PartySlot from multi-value field values.
-/// Type markers are self-describing - we match on kx/kf/kn/kl/kh/kk/kp, NOT position.
-/// Format: hb{handle}, u0{has_offer}, u0{has_from}, u0{has_to}, u0{has_resend}, ...keys by type...
+/// Parse a PartySlot from multi-value field values. Type markers are self-describing - we match on kx/kf/kn/kl/kh/kk/kp, NOT position. Format: hb{handle}, u0{has_offer}, u0{has_from}, u0{has_to}, u0{has_resend}, ...keys by type...
 fn parse_slot_from_values(values: &[VsfType]) -> Result<PartySlot, StorageError> {
     // Support old format (4 flags) and new format (5 flags with has_resend)
     if values.len() < 4 {
@@ -772,8 +761,7 @@ fn parse_slot_from_values(values: &[VsfType]) -> Result<PartySlot, StorageError>
     let mut slot = PartySlot::new(handle_hash);
 
     // Parse keys and secrets by TYPE MARKER, not position
-    // The type (kx, kf, kn, kl, kh, kk, kp, ks) tells us exactly what it is
-    // Start at index 5 (after 5 flags: handle, offer, from, to, resend)
+    // The type (kx, kf, kn, kl, kh, kk, kp, ks) tells us exactly what it is Start at index 5 (after 5 flags: handle, offer, from, to, resend)
     let data_start = 5;
     if has_offer {
         let mut offer = ClutchOfferPayload::default();
@@ -885,9 +873,7 @@ fn parse_slot_from_values(values: &[VsfType]) -> Result<PartySlot, StorageError>
     Ok(slot)
 }
 
-/// Parse a group of 8 typed shared secrets (ksx, ksp, ksk, ksf, ksn, ksl, ksh).
-/// Secrets are now typed, so we extract by VsfType variant.
-/// Order in file: x25519, p384, secp256k1, p256, frodo, ntru, mceliece, hqc
+/// Parse a group of 8 typed shared secrets (ksx, ksp, ksk, ksf, ksn, ksl, ksh). Secrets are now typed, so we extract by VsfType variant. Order in file: x25519, p384, secp256k1, p256, frodo, ntru, mceliece, hqc
 fn parse_typed_secrets_group(secrets: &[&VsfType]) -> Result<ClutchKemSharedSecrets, StorageError> {
     if secrets.len() != 8 {
         return Err(StorageError::Parse(format!(
@@ -985,8 +971,7 @@ fn parse_typed_secrets_group(secrets: &[&VsfType]) -> Result<ClutchKemSharedSecr
     })
 }
 
-/// Parse ClutchKemResponsePayload from values (for resend persistence).
-/// Format: v('f',...), v('n',...), v('l',...), v('h',...) ciphertexts
+/// Parse ClutchKemResponsePayload from values (for resend persistence). Format: v('f',...), v('n',...), v('l',...), v('h',...) ciphertexts
 ///       + v('t',...) target prefix + v('x',...), v('3',...), v('k',...), v('2',...) ephemerals
 fn parse_kem_response_payload(
     values: &[VsfType],
@@ -1076,8 +1061,7 @@ pub fn delete_clutch_slots(handle: &str, storage: &FlatStorage) -> Result<(), St
 }
 
 // ============================================================================
-// Message Storage
-// ============================================================================
+// Message Storage ============================================================================
 
 use crate::types::ChatMessage;
 

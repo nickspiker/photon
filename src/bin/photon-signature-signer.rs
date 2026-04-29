@@ -129,8 +129,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         signed_binary.len()
     );
 
-    // For Windows binaries, also compute SHA256 and write to .sha256 file
-    // (PowerShell uses SHA256 for verification since Defender blocks execution)
+    // For Windows binaries, also compute SHA256 and write to .sha256 file (PowerShell uses SHA256 for verification since Defender blocks execution)
     if binary_path.ends_with(".exe") {
         let mut hasher = Sha256::new();
         hasher.update(&signed_binary);

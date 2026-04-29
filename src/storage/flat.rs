@@ -1,7 +1,6 @@
 //! Flat opaque storage — all disk I/O for Photon goes through here.
 //!
-//! Files live in ~/.config/photon/ with opaque names derived from the logical key.
-//! No subdirectories. No predictable names. No metadata leakage.
+//! Files live in ~/.config/photon/ with opaque names derived from the logical key. No subdirectories. No predictable names. No metadata leakage.
 //!
 //! Filename derivation:
 //!   base64url(blake3("photon.storage.filename.v0" || key || identity_seed || device_secret))
@@ -23,8 +22,7 @@ use std::path::PathBuf;
 use crate::storage::{read_file, write_file, WritePolicy};
 
 // ============================================================================
-// Error
-// ============================================================================
+// Error ============================================================================
 
 #[derive(Debug)]
 pub enum StorageError {
@@ -50,13 +48,11 @@ impl std::fmt::Display for StorageError {
 }
 
 // ============================================================================
-// FlatStorage
-// ============================================================================
+// FlatStorage ============================================================================
 
 /// All Photon disk I/O goes through this struct.
 ///
-/// Initialized once at auth with identity_seed + device_secret.
-/// Callers only see logical keys — filenames and encryption are internal.
+/// Initialized once at auth with identity_seed + device_secret. Callers only see logical keys — filenames and encryption are internal.
 pub struct FlatStorage {
     root: PathBuf,
     identity_seed: [u8; 32],
@@ -71,8 +67,7 @@ impl FlatStorage {
         Ok(Self { root, identity_seed, device_secret })
     }
 
-    /// Write data to opaque file derived from logical key.
-    /// Atomic (tmp → rename), fsynced, read-back verified. Treat error as fatal.
+    /// Write data to opaque file derived from logical key. Atomic (tmp → rename), fsynced, read-back verified. Treat error as fatal.
     pub fn write(&self, key: &str, data: &[u8]) -> Result<(), StorageError> {
         let path = self.root.join(self.derive_filename(key));
         let ciphertext = encrypt(data, &self.derive_enc_key(key))?;
@@ -100,8 +95,7 @@ impl FlatStorage {
     }
 
     // ========================================================================
-    // Internal key derivation
-    // ========================================================================
+    // Internal key derivation ========================================================================
 
     fn derive_filename(&self, key: &str) -> String {
         let mut h = Hasher::new();
@@ -119,8 +113,7 @@ impl FlatStorage {
 }
 
 // ============================================================================
-// Encryption helpers
-// ============================================================================
+// Encryption helpers ============================================================================
 
 fn encrypt(plaintext: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, StorageError> {
     let cipher = ChaCha20Poly1305::new(key.into());
@@ -147,8 +140,7 @@ fn decrypt(data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, StorageError> {
 }
 
 // ============================================================================
-// Directory
-// ============================================================================
+// Directory ============================================================================
 
 fn photon_dir() -> Result<PathBuf, StorageError> {
     dirs::config_dir()

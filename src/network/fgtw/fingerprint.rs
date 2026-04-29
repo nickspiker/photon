@@ -1,7 +1,6 @@
 //! Device fingerprint and key derivation
 //!
-//! Keys are NEVER stored on disk - always derived deterministically from
-//! platform-specific fingerprint ORACLES (not fixed IDs - oracles are harder to steal):
+//! Keys are NEVER stored on disk - always derived deterministically from platform-specific fingerprint ORACLES (not fixed IDs - oracles are harder to steal):
 //! - Linux: /etc/machine-id (generated at install, unique per system)
 //! - Windows: Registry MachineGuid (generated at install)
 //! - macOS: IOPlatformUUID (hardware-burned, survives reinstalls)
@@ -13,8 +12,7 @@ use std::path::PathBuf;
 
 /// Ed25519 keypair for FGTW device/handle identity
 ///
-/// NEVER persisted to disk - derived deterministically from device fingerprint.
-/// On Android: BLAKE3(device_fingerprint) → Ed25519 seed
+/// NEVER persisted to disk - derived deterministically from device fingerprint. On Android: BLAKE3(device_fingerprint) → Ed25519 seed
 /// On Desktop: BLAKE3(machine-id) → Ed25519 seed
 #[derive(Clone)]
 pub struct Keypair {
@@ -72,8 +70,7 @@ impl Default for FgtwPaths {
 
 /// Derive device keypair from machine fingerprint (deterministic, never stored)
 ///
-/// Uses BLAKE3 to hash the fingerprint into a 32-byte Ed25519 seed.
-/// The same fingerprint always produces the same keypair.
+/// Uses BLAKE3 to hash the fingerprint into a 32-byte Ed25519 seed. The same fingerprint always produces the same keypair.
 pub fn derive_device_keypair(fingerprint: &[u8]) -> Keypair {
     let hash = blake3::hash(fingerprint);
     let seed: [u8; 32] = *hash.as_bytes();
@@ -83,8 +80,7 @@ pub fn derive_device_keypair(fingerprint: &[u8]) -> Keypair {
 /// Get machine fingerprint for deterministic key derivation
 ///
 /// Linux: /etc/machine-id (stable across reboots, unique per install)
-/// Windows: MachineGuid from registry
-/// macOS: IOPlatformUUID (hardware-burned, survives reinstalls)
+/// Windows: MachineGuid from registry macOS: IOPlatformUUID (hardware-burned, survives reinstalls)
 /// Android: Handled separately via JNI with device fingerprint
 #[cfg(target_os = "linux")]
 pub fn get_machine_fingerprint() -> io::Result<Vec<u8>> {
@@ -108,9 +104,7 @@ pub fn get_machine_fingerprint() -> io::Result<Vec<u8>> {
 
 #[cfg(target_os = "macos")]
 pub fn get_machine_fingerprint() -> io::Result<Vec<u8>> {
-    // Extract IOPlatformUUID - hardware-burned, survives OS reinstalls.
-    // Must extract ONLY this field; the full ioreg output contains dynamic
-    // fields (memory addresses, timestamps) that change between runs.
+    // Extract IOPlatformUUID - hardware-burned, survives OS reinstalls. Must extract ONLY this field; the full ioreg output contains dynamic fields (memory addresses, timestamps) that change between runs.
     use std::process::Command;
     let output = Command::new("ioreg")
         .args(["-rd1", "-c", "IOPlatformExpertDevice"])

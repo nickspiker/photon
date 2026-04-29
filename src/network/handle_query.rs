@@ -1,7 +1,6 @@
 // Handle query protocol for checking handle attestation status
 //
-// Network layer for querying the FGTW (Fractal Gradient Trust Web) to check if a handle
-// has been attested (claimed) or is available.
+// Network layer for querying the FGTW (Fractal Gradient Trust Web) to check if a handle has been attested (claimed) or is available.
 //
 // This is a unified implementation that works on all platforms (Linux, Windows, Android, Redox).
 

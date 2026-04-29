@@ -9,15 +9,12 @@ const CONVERSATION_TOKEN_DOMAIN: &[u8] = b"PHOTON_CONVERSATION_TOKEN_v0";
 
 /// Derive a privacy-preserving conversation token from participant identity seeds.
 ///
-/// Works for N-party conversations (2-party, 3-party, etc.).
-/// All participants derive the SAME token by sorting seeds lexicographically
-/// before hashing. The token:
+/// Works for N-party conversations (2-party, 3-party, etc.). All participants derive the SAME token by sorting seeds lexicographically before hashing. The token:
 /// - Only participants can compute (requires knowing all identity seeds)
 /// - Doesn't reveal individual identities to network observers
 /// - Different for each unique set of participants
 ///
-/// Uses spaghettify for maximum obfuscation (domain-separated, maximally weird mixing).
-/// VSF type: hg (spaghetti hash)
+/// Uses spaghettify for maximum obfuscation (domain-separated, maximally weird mixing). VSF type: hg (spaghetti hash)
 pub fn derive_conversation_token(participant_seeds: &[[u8; 32]]) -> [u8; 32] {
     // Canonical ordering - ALL participants compute same token
     let mut sorted_seeds = participant_seeds.to_vec();
@@ -57,12 +54,9 @@ const CEREMONY_INSTANCE_DOMAIN: &[u8] = b"PHOTON_CEREMONY_INSTANCE_v0";
 
 /// Derive a unique ceremony instance identifier from all parties' offers.
 ///
-/// This is used for stale detection: distinguishes re-key requests from PT
-/// retransmissions. Unlike ceremony_id (derived from handle_hashes, invariant
-/// per handle pair), this changes when ephemeral keypairs are regenerated.
+/// This is used for stale detection: distinguishes re-key requests from PT retransmissions. Unlike ceremony_id (derived from handle_hashes, invariant per handle pair), this changes when ephemeral keypairs are regenerated.
 ///
-/// Both parties can compute this independently once they have both offers.
-/// Works for N-party ceremonies.
+/// Both parties can compute this independently once they have both offers. Works for N-party ceremonies.
 pub fn derive_ceremony_instance(offers: &[&ClutchOfferPayload]) -> [u8; 32] {
     // Serialize each offer to bytes (concatenate all 8 public keys)
     let mut offer_bytes: Vec<Vec<u8>> = offers.iter().map(|o| o.to_bytes()).collect();
@@ -82,8 +76,7 @@ pub fn derive_ceremony_instance(offers: &[&ClutchOfferPayload]) -> [u8; 32] {
     smear_hash(&input)
 }
 
-/// Determine who initiates clutch ceremony.
-/// Lower handle_proof = initiator (sends ephemeral pubkeys first)
+/// Determine who initiates clutch ceremony. Lower handle_proof = initiator (sends ephemeral pubkeys first)
 /// Higher handle_proof = responder (waits, then responds)
 ///
 /// All parties compute the same result from sorted handle hashes.
@@ -105,8 +98,7 @@ pub fn generate_x25519_ephemeral() -> ([u8; 32], [u8; 32]) {
     (secret_bytes, *public.as_bytes())
 }
 
-/// Perform X25519 ECDH to derive shared secret.
-/// Caller should zeroize the returned shared secret after use.
+/// Perform X25519 ECDH to derive shared secret. Caller should zeroize the returned shared secret after use.
 pub fn x25519_ecdh(local_secret: &[u8; 32], peer_public: &[u8; 32]) -> [u8; 32] {
     let secret = StaticSecret::from(*local_secret);
     let public = PublicKey::from(*peer_public);
@@ -116,8 +108,7 @@ pub fn x25519_ecdh(local_secret: &[u8; 32], peer_public: &[u8; 32]) -> [u8; 32] 
 }
 
 // ============================================================================
-// CLASS 0: CLASSICAL ELLIPTIC CURVES
-// ============================================================================
+// CLASS 0: CLASSICAL ELLIPTIC CURVES ============================================================================
 
 /// Generate P-384 ephemeral keypair
 /// Returns (secret_bytes, public_bytes)
@@ -134,8 +125,7 @@ pub fn generate_p384_ephemeral() -> (Vec<u8>, Vec<u8>) {
     (secret_bytes, public_bytes)
 }
 
-/// Perform P-384 ECDH.
-/// Returns 48-byte shared secret.
+/// Perform P-384 ECDH. Returns 48-byte shared secret.
 pub fn p384_ecdh(local_secret: &[u8], peer_public: &[u8]) -> Vec<u8> {
     use p384::elliptic_curve::ecdh::diffie_hellman;
     use p384::{PublicKey, SecretKey};
@@ -162,8 +152,7 @@ pub fn generate_secp256k1_ephemeral() -> (Vec<u8>, Vec<u8>) {
     (secret_bytes, public_bytes)
 }
 
-/// Perform secp256k1 ECDH.
-/// Returns 32-byte shared secret.
+/// Perform secp256k1 ECDH. Returns 32-byte shared secret.
 pub fn secp256k1_ecdh(local_secret: &[u8], peer_public: &[u8]) -> Vec<u8> {
     use k256::elliptic_curve::ecdh::diffie_hellman;
     use k256::{PublicKey, SecretKey};
@@ -190,8 +179,7 @@ pub fn generate_p256_ephemeral() -> (Vec<u8>, Vec<u8>) {
     (secret_bytes, public_bytes)
 }
 
-/// Perform P-256 ECDH.
-/// Returns 32-byte shared secret.
+/// Perform P-256 ECDH. Returns 32-byte shared secret.
 pub fn p256_ecdh(local_secret: &[u8], peer_public: &[u8]) -> Vec<u8> {
     use p256::elliptic_curve::ecdh::diffie_hellman;
     use p256::{PublicKey, SecretKey};
@@ -204,8 +192,7 @@ pub fn p256_ecdh(local_secret: &[u8], peer_public: &[u8]) -> Vec<u8> {
 }
 
 // ============================================================================
-// CLASS 1: POST-QUANTUM LATTICE KEMS
-// ============================================================================
+// CLASS 1: POST-QUANTUM LATTICE KEMS ============================================================================
 
 /// Generate FrodoKEM-976-SHAKE keypair
 /// Returns (secret_key, public_key)
@@ -302,8 +289,7 @@ pub fn ntru701_decapsulate(our_secret_key: &[u8], ciphertext: &[u8]) -> Vec<u8> 
 }
 
 // ============================================================================
-// CLASS 2: POST-QUANTUM CODE-BASED KEMS
-// ============================================================================
+// CLASS 2: POST-QUANTUM CODE-BASED KEMS ============================================================================
 
 /// Generate Classic McEliece 460896 keypair
 /// Returns (secret_key, public_key ~512KB)
@@ -420,14 +406,11 @@ fn sort_pair<'a>(a: &'a [u8; 32], b: &'a [u8; 32]) -> (&'a [u8; 32], &'a [u8; 32
 }
 
 // ============================================================================
-// LAYER 1: CONVERSATION PROVENANCE (permanent identity binding)
-// ============================================================================
+// LAYER 1: CONVERSATION PROVENANCE (permanent identity binding) ============================================================================
 
 /// Derive the conversation provenance hash.
 ///
-/// This is a PERMANENT identifier for a conversation between two parties.
-/// It depends ONLY on identity (device keys + handle hashes + signatures),
-/// NOT on ephemeral clutch keys. This means:
+/// This is a PERMANENT identifier for a conversation between two parties. It depends ONLY on identity (device keys + handle hashes + signatures), NOT on ephemeral clutch keys. This means:
 /// - Same provenance survives re-clutch (key rotation)
 /// - Can be used as filename/filter key for conversation messages
 /// - Proves chain of custody back to initial handshake
@@ -477,12 +460,10 @@ pub fn derive_conversation_provenance(
 
 /// Compute the handshake message that both parties sign.
 ///
-/// This is signed by each party with their device private key.
-/// The signatures become part of the provenance derivation.
+/// This is signed by each party with their device private key. The signatures become part of the provenance derivation.
 ///
 /// Contains: sorted device pubkeys + sorted handle hashes + timestamp
-/// The timestamp prevents replay but is NOT part of provenance (so same
-/// parties can re-establish with same provenance).
+/// The timestamp prevents replay but is NOT part of provenance (so same parties can re-establish with same provenance).
 pub fn compute_handshake_message(
     our_device_pubkey: &[u8; 32],
     their_device_pubkey: &[u8; 32],
@@ -503,13 +484,11 @@ pub fn compute_handshake_message(
 }
 
 // ============================================================================
-// LAYER 2: clutch SEED (ephemeral encryption key material)
-// ============================================================================
+// LAYER 2: clutch SEED (ephemeral encryption key material) ============================================================================
 
 /// Derive the clutch shared seed from private handle hashes and X25519 shared secret.
 ///
-/// This is the Phase 1 (X25519-only) seed derivation.
-/// The seed is deterministic: both parties compute the same value.
+/// This is the Phase 1 (X25519-only) seed derivation. The seed is deterministic: both parties compute the same value.
 ///
 /// SECURITY: Uses private handle_hash = BLAKE3(handle), NOT public handle_proof!
 /// - handle_proof is PUBLIC (announced to FGTW, visible in peer table)
@@ -517,8 +496,7 @@ pub fn compute_handshake_message(
 ///
 /// Handle hashes are sorted canonically so order of parties doesn't matter.
 ///
-/// Note: Phase 1 uses 32-byte seed (sufficient for single primitive).
-/// Full clutch (8 primitives) will use 256-byte seed via BLAKE3 XOF.
+/// Note: Phase 1 uses 32-byte seed (sufficient for single primitive). Full clutch (8 primitives) will use 256-byte seed via BLAKE3 XOF.
 pub fn derive_clutch_seed_x25519(
     our_handle_hash: &[u8; 32],
     their_handle_hash: &[u8; 32],
@@ -542,8 +520,7 @@ pub fn derive_clutch_seed_x25519(
 
 /// Derive the clutch shared seed using parallel key exchange.
 ///
-/// Both parties generate and exchange ephemeral keys simultaneously.
-/// BOTH ephemeral pubkeys contribute entropy to the final seed.
+/// Both parties generate and exchange ephemeral keys simultaneously. BOTH ephemeral pubkeys contribute entropy to the final seed.
 ///
 /// SECURITY: Uses private handle_hash = BLAKE3(handle), NOT public handle_proof!
 ///
@@ -552,8 +529,7 @@ pub fn derive_clutch_seed_x25519(
 /// - Handle hashes: sorted (lower first)
 /// - Ephemeral pubkeys: sorted (lower first)
 ///
-/// Uses BLAKE3 XOF to produce 256-byte seed (ready for full 8-primitive clutch).
-/// Phase 1 only uses first 32 bytes, but we derive the full seed for forward compat.
+/// Uses BLAKE3 XOF to produce 256-byte seed (ready for full 8-primitive clutch). Phase 1 only uses first 32 bytes, but we derive the full seed for forward compat.
 pub fn derive_clutch_seed_parallel(
     our_device_pubkey: &[u8; 32],
     their_device_pubkey: &[u8; 32],
@@ -594,8 +570,7 @@ pub fn derive_clutch_seed_parallel(
     Seed::from_bytes(seed_bytes)
 }
 
-/// All 8 ephemeral keypairs for full CLUTCH ceremony.
-/// Each algorithm has its own keypair format.
+/// All 8 ephemeral keypairs for full CLUTCH ceremony. Each algorithm has its own keypair format.
 #[derive(Clone, Debug)]
 pub struct ClutchAllKeypairs {
     // Class 0: Classical EC (32B secrets, variable pubkeys)
@@ -634,9 +609,7 @@ impl ClutchAllKeypairs {
         self.hqc256_secret.zeroize();
     }
 
-    /// Convert to VSF multi-value fields for disk storage.
-    /// Returns (pubkeys, secrets) as two Vec<VsfType> for use with add_field_multi().
-    /// Order: x25519, p384, secp256k1, p256, frodo, ntru, mceliece, hqc
+    /// Convert to VSF multi-value fields for disk storage. Returns (pubkeys, secrets) as two Vec<VsfType> for use with add_field_multi(). Order: x25519, p384, secp256k1, p256, frodo, ntru, mceliece, hqc
     pub fn to_vsf_multi(&self) -> (Vec<vsf::VsfType>, Vec<vsf::VsfType>) {
         use vsf::VsfType;
         let pubkeys = vec![
@@ -662,9 +635,7 @@ impl ClutchAllKeypairs {
         (pubkeys, secrets)
     }
 
-    /// Parse from VSF section with multi-value fields.
-    /// Expects: (pubkeys: kx, kp, kk, kp, kf, kn, kl, kh)
-    ///          (secrets: vx, vp, vk, vp, vf, vn, vl, vh)
+    /// Parse from VSF section with multi-value fields. Expects: (pubkeys: kx, kp, kk, kp, kf, kn, kl, kh) (secrets: vx, vp, vk, vp, vf, vn, vl, vh)
     pub fn from_vsf_section(section: &vsf::VsfSection) -> Option<Self> {
         use vsf::VsfType;
 
@@ -767,11 +738,9 @@ impl ClutchAllKeypairs {
 }
 
 // =============================================================================
-// CLUTCH PAYLOAD STRUCTS FOR NETWORK TRANSFER
-// =============================================================================
+// CLUTCH PAYLOAD STRUCTS FOR NETWORK TRANSFER =============================================================================
 
-/// Full offer with all 8 public keys (~548KB).
-/// Sent by both parties at start of CLUTCH ceremony.
+/// Full offer with all 8 public keys (~548KB). Sent by both parties at start of CLUTCH ceremony.
 ///
 /// For network serialization, use the VSF-wrapped functions in protocol.rs:
 /// - build_clutch_offer_vsf() / parse_clutch_offer_vsf()
@@ -830,9 +799,7 @@ impl ClutchOfferPayload {
         bytes
     }
 
-    /// Convert to VSF multi-value field for disk storage.
-    /// Returns Vec<VsfType> for use with add_field_multi("pubkeys", ...).
-    /// Order: x25519, p384, secp256k1, p256, frodo, ntru, mceliece, hqc
+    /// Convert to VSF multi-value field for disk storage. Returns Vec<VsfType> for use with add_field_multi("pubkeys", ...). Order: x25519, p384, secp256k1, p256, frodo, ntru, mceliece, hqc
     pub fn to_vsf_multi(&self) -> Vec<vsf::VsfType> {
         use vsf::VsfType;
         vec![
@@ -847,8 +814,7 @@ impl ClutchOfferPayload {
         ]
     }
 
-    /// Parse from VSF section with multi-value pubkeys field.
-    /// Expects: (pubkeys: kx, kp, kk, kp, kf, kn, kl, kh)
+    /// Parse from VSF section with multi-value pubkeys field. Expects: (pubkeys: kx, kp, kk, kp, kf, kn, kl, kh)
     pub fn from_vsf_section(section: &vsf::VsfSection) -> Option<Self> {
         use vsf::VsfType;
 
@@ -901,12 +867,9 @@ impl ClutchOfferPayload {
     }
 }
 
-/// KEM response with 4 PQC ciphertexts + 4 EC ephemeral pubkeys (~31KB).
-/// Sent by both parties after receiving peer's full offer.
+/// KEM response with 4 PQC ciphertexts + 4 EC ephemeral pubkeys (~31KB). Sent by both parties after receiving peer's full offer.
 ///
-/// The EC ephemeral pubkeys enable ECIES-style encapsulation: sender generates
-/// fresh keypair, computes ECDH with recipient's long-term pubkey, sends ephemeral
-/// pubkey. This gives truly distinct shared secrets per direction per algorithm.
+/// The EC ephemeral pubkeys enable ECIES-style encapsulation: sender generates fresh keypair, computes ECDH with recipient's long-term pubkey, sends ephemeral pubkey. This gives truly distinct shared secrets per direction per algorithm.
 ///
 /// For network serialization, use the VSF-wrapped functions in protocol.rs:
 /// - build_clutch_kem_response_vsf() / parse_clutch_kem_response_vsf()
@@ -929,11 +892,9 @@ pub struct ClutchKemResponsePayload {
 }
 
 impl ClutchKemResponsePayload {
-    /// Perform encapsulations to peer's public keys (4 PQC KEMs + 4 EC ECIES-style).
-    /// Returns (payload, shared_secrets) where shared_secrets are our encapsulated secrets.
+    /// Perform encapsulations to peer's public keys (4 PQC KEMs + 4 EC ECIES-style). Returns (payload, shared_secrets) where shared_secrets are our encapsulated secrets.
     ///
-    /// For EC algorithms, we generate fresh ephemeral keypairs and compute ECDH with
-    /// the peer's offer pubkeys. This gives truly distinct secrets per direction.
+    /// For EC algorithms, we generate fresh ephemeral keypairs and compute ECDH with the peer's offer pubkeys. This gives truly distinct secrets per direction.
     pub fn encapsulate_to_peer(their_offer: &ClutchOfferPayload) -> (Self, ClutchKemSharedSecrets) {
         #[cfg(feature = "development")]
         #[cfg(feature = "development")]
@@ -1011,8 +972,7 @@ impl ClutchKemResponsePayload {
     }
 }
 
-/// Shared secrets from encapsulation (one direction) - all 8 algorithms.
-/// PQC KEMs produce variable-size secrets, EC ECDH produces 32B secrets.
+/// Shared secrets from encapsulation (one direction) - all 8 algorithms. PQC KEMs produce variable-size secrets, EC ECDH produces 32B secrets.
 #[derive(Clone, Debug)]
 pub struct ClutchKemSharedSecrets {
     // PQC KEM shared secrets
@@ -1030,8 +990,7 @@ pub struct ClutchKemSharedSecrets {
 impl ClutchKemSharedSecrets {
     /// Decapsulate from received response using our secret keys (4 PQC + 4 EC).
     ///
-    /// For EC algorithms, we compute ECDH(our_offer_secret, their_ephemeral_pubkey)
-    /// which gives the same shared secret as their ECDH(ephemeral_secret, our_offer_pubkey).
+    /// For EC algorithms, we compute ECDH(our_offer_secret, their_ephemeral_pubkey) which gives the same shared secret as their ECDH(ephemeral_secret, our_offer_pubkey).
     pub fn decapsulate_from_peer(
         response: &ClutchKemResponsePayload,
         our_keys: &ClutchAllKeypairs,
@@ -1143,9 +1102,7 @@ impl ClutchKemSharedSecrets {
         self.p256.zeroize();
     }
 
-    /// Convert to VSF multi-value field for disk storage.
-    /// Returns Vec<VsfType> for use with add_field_multi("secrets", ...).
-    /// Order: x25519, p384, secp256k1, p256, frodo, ntru, mceliece, hqc
+    /// Convert to VSF multi-value field for disk storage. Returns Vec<VsfType> for use with add_field_multi("secrets", ...). Order: x25519, p384, secp256k1, p256, frodo, ntru, mceliece, hqc
     pub fn to_vsf_multi(&self) -> Vec<vsf::VsfType> {
         use vsf::VsfType;
         vec![
@@ -1160,8 +1117,7 @@ impl ClutchKemSharedSecrets {
         ]
     }
 
-    /// Parse from VSF section with multi-value secrets field.
-    /// Expects: (secrets: vx, vp, vk, vp, vf, vn, vl, vh)
+    /// Parse from VSF section with multi-value secrets field. Expects: (secrets: vx, vp, vk, vp, vf, vn, vl, vh)
     pub fn from_vsf_section(section: &vsf::VsfSection) -> Option<Self> {
         use vsf::VsfType;
 
@@ -1220,11 +1176,9 @@ impl ClutchKemSharedSecrets {
 
 /// Sent by both parties after computing eggs to verify agreement.
 ///
-/// Contains the eggs_proof hash. Both parties MUST compute the same proof
-/// since they derived identical eggs from the ceremony.
+/// Contains the eggs_proof hash. Both parties MUST compute the same proof since they derived identical eggs from the ceremony.
 ///
-/// If proofs don't match, something went catastrophically wrong (MITM, bug,
-/// or corruption) and the ceremony MUST be aborted with a panic.
+/// If proofs don't match, something went catastrophically wrong (MITM, bug, or corruption) and the ceremony MUST be aborted with a panic.
 ///
 /// For network serialization, use the VSF-wrapped functions in protocol.rs:
 /// - build_clutch_complete_vsf() / parse_clutch_complete_vsf()
@@ -1233,9 +1187,7 @@ pub struct ClutchCompletePayload {
     pub eggs_proof: [u8; 32],
 }
 
-/// Generate all 8 ephemeral keypairs for full CLUTCH ceremony.
-/// WARNING: This generates ~512KB of public key material (mostly McEliece).
-/// Caller MUST call zeroize() on the result when done!
+/// Generate all 8 ephemeral keypairs for full CLUTCH ceremony. WARNING: This generates ~512KB of public key material (mostly McEliece). Caller MUST call zeroize() on the result when done!
 pub fn generate_all_ephemeral_keypairs() -> ClutchAllKeypairs {
     // Class 0: Classical EC
     let (x25519_secret, x25519_public) = generate_x25519_ephemeral();
@@ -1271,8 +1223,7 @@ pub fn generate_all_ephemeral_keypairs() -> ClutchAllKeypairs {
     }
 }
 
-/// All shared secrets from 20 cryptographic eggs.
-/// Each "egg" is a labeled BLAKE3 hash for domain separation.
+/// All shared secrets from 20 cryptographic eggs. Each "egg" is a labeled BLAKE3 hash for domain separation.
 pub struct ClutchEggs {
     pub eggs: Vec<[u8; 32]>,
 }
@@ -1586,9 +1537,7 @@ pub fn avalanche_hash_eggs(eggs: &ClutchEggs) -> (Vec<u8>, Vec<u8>) {
 
 /// Expand eggs to 2MB mixed buffer for chain derivation.
 ///
-/// Memory-hard, deterministic, preserves full entropy from all 20 eggs.
-/// Uses the same expansion and mixing logic as avalanche_hash_eggs but
-/// returns the full 2MB buffer instead of splitting into pads.
+/// Memory-hard, deterministic, preserves full entropy from all 20 eggs. Uses the same expansion and mixing logic as avalanche_hash_eggs but returns the full 2MB buffer instead of splitting into pads.
 ///
 /// Properties:
 /// - Deterministic: same eggs → same 2MB output
@@ -1761,8 +1710,7 @@ pub fn avalanche_expand_eggs(eggs: &ClutchEggs) -> Vec<u8> {
 
 /// Derive one participant's 8KB chain from avalanche buffer.
 ///
-/// Uses truncate-and-append for deterministic PRNG without compression.
-/// Links accumulate at end of buffer - no separate Vec needed.
+/// Uses truncate-and-append for deterministic PRNG without compression. Links accumulate at end of buffer - no separate Vec needed.
 ///
 /// Algorithm:
 /// 1. Domain separation: BLAKE3_XOF(avalanche || participant) → 2MB buffer
@@ -1794,9 +1742,7 @@ pub fn derive_chain_from_avalanche(avalanche: &[u8], participant: &[u8; 32]) -> 
     buffer[len - 8192..].to_vec()
 }
 
-/// Compute the clutch completion proof.
-/// Sent by initiator to confirm they derived the same seed.
-/// Responder can verify without revealing the seed.
+/// Compute the clutch completion proof. Sent by initiator to confirm they derived the same seed. Responder can verify without revealing the seed.
 pub fn compute_clutch_proof(seed: &Seed) -> [u8; 32] {
     let mut hasher = Hasher::new();
     hasher.update(seed.as_bytes());
@@ -1820,9 +1766,7 @@ pub struct ClutchResult {
 
 /// Perform complete clutch ceremony using parallel key exchange.
 ///
-/// Both parties generate ephemeral keypairs simultaneously and exchange them.
-/// Both pubkeys contribute entropy to the final seed.
-/// Device pubkeys are mixed in to bind the seed to both device identities.
+/// Both parties generate ephemeral keypairs simultaneously and exchange them. Both pubkeys contribute entropy to the final seed. Device pubkeys are mixed in to bind the seed to both device identities.
 ///
 /// Steps:
 /// 0. Generate ephemeral keypair (done before calling this)
@@ -1830,8 +1774,7 @@ pub struct ClutchResult {
 /// 2. Once both pubkeys known, call this function
 /// 3. Lower handle_proof party sends ClutchComplete with proof
 ///
-/// SECURITY: Takes private handle_hash = BLAKE3(handle), NOT public handle_proof!
-/// Device pubkeys are mixed in to prevent handle spoofing with different device.
+/// SECURITY: Takes private handle_hash = BLAKE3(handle), NOT public handle_proof! Device pubkeys are mixed in to prevent handle spoofing with different device.
 pub fn clutch_complete_parallel(
     our_device_pubkey: &[u8; 32],
     their_device_pubkey: &[u8; 32],
@@ -1878,8 +1821,7 @@ pub struct ClutchFullResult {
 /// For 2-party: 16 distinct shared secrets (8 algorithms × 2 directions)
 /// For 3-party: 48 distinct shared secrets (8 algorithms × 6 directed pairs)
 ///
-/// An attacker must compromise BOTH directions of an algorithm to break
-/// that algorithm's contribution to the final key material.
+/// An attacker must compromise BOTH directions of an algorithm to break that algorithm's contribution to the final key material.
 pub struct ClutchSharedSecrets {
     // Class 0: Classical EC (ECIES-style: distinct secret per direction)
     pub low_x25519: [u8; 32],
@@ -1928,15 +1870,13 @@ impl ClutchSharedSecrets {
 
 /// Perform full 8-algorithm CLUTCH ceremony.
 ///
-/// Takes all 16 shared secrets (8 algorithms × 2 directions) and produces
-/// identical (low_pad, high_pad) on both parties.
+/// Takes all 16 shared secrets (8 algorithms × 2 directions) and produces identical (low_pad, high_pad) on both parties.
 ///
 /// The low/high ordering is determined by comparing handle_hashes:
 /// - Party with lower handle_hash uses low_pad for sending
 /// - Party with higher handle_hash uses high_pad for sending
 ///
-/// Both parties MUST call this with the same shared secrets (just with
-/// their perspective on low/high being different based on handle ordering).
+/// Both parties MUST call this with the same shared secrets (just with their perspective on low/high being different based on handle ordering).
 ///
 /// Returns ClutchFullResult with:
 /// - low_pad: 1MB encryption pad for low handle party
@@ -1979,12 +1919,9 @@ pub fn clutch_complete_full(
     ClutchFullResult { eggs, proof }
 }
 
-/// Compute proof hash for CLUTCH verification from eggs.
-/// Used by both parties to verify they collected identical eggs.
+/// Compute proof hash for CLUTCH verification from eggs. Used by both parties to verify they collected identical eggs.
 ///
-/// Defense-in-depth: uses spaghettify + smear_hash for algorithm diversity.
-/// If BLAKE3 is broken, SHA3 and SHA512 still protect the proof.
-/// If any hash is broken, spaghettify's chaos mixing still scrambles the eggs.
+/// Defense-in-depth: uses spaghettify + smear_hash for algorithm diversity. If BLAKE3 is broken, SHA3 and SHA512 still protect the proof. If any hash is broken, spaghettify's chaos mixing still scrambles the eggs.
 pub fn compute_eggs_proof(eggs: &ClutchEggs) -> [u8; 32] {
     // Flatten eggs to bytes
     let mut egg_bytes = Vec::with_capacity(eggs.eggs.len() * 32);
@@ -2030,9 +1967,7 @@ mod tests {
 
     #[test]
     fn test_clutch_ceremony_v1_compatibility_removed() {
-        // This test verified v1 sequential clutch (initiator/responder pattern).
-        // v3 uses parallel exchange only - see test_parallel_clutch_produces_same_seed.
-        // Keeping this stub to document the intentional removal of v1 support.
+        // This test verified v1 sequential clutch (initiator/responder pattern). v3 uses parallel exchange only - see test_parallel_clutch_produces_same_seed. Keeping this stub to document the intentional removal of v1 support.
     }
 
     #[test]
@@ -2151,8 +2086,7 @@ mod tests {
     }
 
     // ========================================================================
-    // PROVENANCE TESTS
-    // ========================================================================
+    // PROVENANCE TESTS ========================================================================
 
     #[test]
     fn test_provenance_deterministic_both_parties() {
@@ -2455,9 +2389,7 @@ mod tests {
         assert_eq!(hqc_ss_alice_encap, hqc_ss_bob_decap);
         assert_eq!(hqc_ss_bob_encap, hqc_ss_alice_decap);
 
-        // === BUILD SHARED SECRETS STRUCT ===
-        // low_* = from alice's perspective (alice is low handle)
-        // high_* = from bob's perspective (bob is high handle)
+        // === BUILD SHARED SECRETS STRUCT === low_* = from alice's perspective (alice is low handle) high_* = from bob's perspective (bob is high handle)
         //
         // For EC: both get same shared secret, but labeled by who initiated
         // For KEM: low_* = alice→bob direction, high_* = bob→alice direction
@@ -2546,8 +2478,7 @@ mod tests {
     }
 
     // ========================================================================
-    // SPAGHETTIFY TESTS
-    // ========================================================================
+    // SPAGHETTIFY TESTS ========================================================================
 
     #[test]
     fn test_spaghettify_deterministic() {
@@ -2615,9 +2546,7 @@ mod tests {
     #[test]
     fn test_spaghettify_variable_rounds() {
         // Different inputs should trigger different round counts
-        // We can't directly verify round count, but we can verify different
-        // inputs produce different timing characteristics (not tested here)
-        // and that both produce valid outputs
+        // We can't directly verify round count, but we can verify different inputs produce different timing characteristics (not tested here) and that both produce valid outputs
 
         let short = spaghettify(&[0u8]);
         let long = spaghettify(&[255u8; 1000]);

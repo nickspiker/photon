@@ -1,7 +1,6 @@
 //! Test to verify spaghettify determinism across platforms
 //!
-//! Run on both Linux x86_64 and Android ARM to compare outputs.
-//! Expected: Basic IEEE ops match, transcendentals diverge.
+//! Run on both Linux x86_64 and Android ARM to compare outputs. Expected: Basic IEEE ops match, transcendentals diverge.
 
 use std::convert::TryInto;
 use std::f64::consts::PI;
