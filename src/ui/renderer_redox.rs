@@ -2,8 +2,7 @@ use softbuffer::{Context, Surface};
 use std::num::NonZeroU32;
 use winit::window::Window;
 
-/// Buffer wrapper that adds mark_rows/mark_all to softbuffer's Buffer.
-/// On Redox (softbuffer), dirty tracking is a no-op — the compositor owns the buffer.
+/// Buffer wrapper that adds mark_rows/mark_all to softbuffer's Buffer. On Redox (softbuffer), dirty tracking is a no-op — the compositor owns the buffer.
 pub struct RedoxBuffer<'a> {
     inner: softbuffer::Buffer<'a, &'static Window, &'static Window>,
 }
@@ -46,8 +45,7 @@ pub struct Renderer {
 
 impl Renderer {
     pub fn new(window: &Window, width: u32, height: u32) -> Self {
-        // SAFETY: We extend the lifetime to 'static because the surface will live
-        // as long as the renderer, and the window is guaranteed to outlive both
+        // SAFETY: We extend the lifetime to 'static because the surface will live as long as the renderer, and the window is guaranteed to outlive both
         let static_window: &'static Window = unsafe { std::mem::transmute(window) };
 
         let context = Context::new(static_window).unwrap();

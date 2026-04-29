@@ -1,8 +1,6 @@
 //! Contact status checker
 //!
-//! Sends UDP pings to contacts and receives pongs to determine online status.
-//! Also handles CLUTCH key ceremony messages.
-//! Uses the shared UDP socket from HandleQuery (the same port announced to FGTW).
+//! Sends UDP pings to contacts and receives pongs to determine online status. Also handles CLUTCH key ceremony messages. Uses the shared UDP socket from HandleQuery (the same port announced to FGTW).
 //!
 //! Protocol uses VSF-spec provenance hash for replay protection:
 //! - provenance_hash = BLAKE3(sender_pubkey || timestamp_nanos)
@@ -57,8 +55,7 @@ pub struct PingRequest {
 }
 
 // NOTE: ClutchRequest and ClutchRequestType REMOVED
-// Full 8-primitive CLUTCH uses ClutchOfferRequest and ClutchKemResponseRequest
-// which are handled via build_clutch_offer_vsf() and build_clutch_kem_response_vsf()
+// Full 8-primitive CLUTCH uses ClutchOfferRequest and ClutchKemResponseRequest which are handled via build_clutch_offer_vsf() and build_clutch_kem_response_vsf()
 // See CLUTCH.md Section 4.2 for the slot-based ceremony protocol.
 
 /// Request to send an encrypted message (CHAIN format)
@@ -67,8 +64,7 @@ pub struct MessageRequest {
     pub peer_addr: SocketAddr,
     /// Recipient's device pubkey (for relay fallback)
     pub recipient_pubkey: [u8; 32],
-    /// Privacy-preserving conversation token (smear_hash of sorted participant seeds).
-    /// Replaces cleartext handle_hash and friendship_id - only participants can compute.
+    /// Privacy-preserving conversation token (smear_hash of sorted participant seeds). Replaces cleartext handle_hash and friendship_id - only participants can compute.
     pub conversation_token: [u8; 32],
     /// Hash chain link to previous message (or first_message_anchor)
     pub prev_msg_hp: [u8; 32],
@@ -85,8 +81,7 @@ pub struct AckRequest {
     pub peer_addr: SocketAddr,
     /// Recipient's device pubkey (for relay fallback)
     pub recipient_pubkey: [u8; 32],
-    /// Privacy-preserving conversation token (smear_hash of sorted participant seeds).
-    /// Replaces cleartext handle_hash - only participants can compute.
+    /// Privacy-preserving conversation token (smear_hash of sorted participant seeds). Replaces cleartext handle_hash - only participants can compute.
     pub conversation_token: [u8; 32],
     /// Eagle time oscillations of the message being ACKed (i64 from their VSF header)
     pub acked_eagle_time: i64,
@@ -103,8 +98,7 @@ pub struct PTSendRequest {
 
 /// Request to send full CLUTCH offer (~548KB) via TCP fallback
 ///
-/// Uses pre-built VSF bytes from build_clutch_offer_vsf().
-/// The caller builds the VSF to capture the offer_provenance (hp field).
+/// Uses pre-built VSF bytes from build_clutch_offer_vsf(). The caller builds the VSF to capture the offer_provenance (hp field).
 #[derive(Clone)]
 pub struct ClutchOfferRequest {
     pub peer_addr: SocketAddr, // Port comes from FGTW (peer's photon_port)
@@ -113,8 +107,7 @@ pub struct ClutchOfferRequest {
 
 /// Request to send CLUTCH KEM response (~31KB) via TCP fallback
 ///
-/// Uses VSF format with proper signing and verification.
-/// See protocol.rs build_clutch_kem_response_vsf() for format details.
+/// Uses VSF format with proper signing and verification. See protocol.rs build_clutch_kem_response_vsf() for format details.
 #[derive(Clone)]
 pub struct ClutchKemResponseRequest {
     pub peer_addr: SocketAddr, // Port comes from FGTW (peer's photon_port)
@@ -127,8 +120,7 @@ pub struct ClutchKemResponseRequest {
 
 /// Request to send CLUTCH complete proof (~200 bytes) via TCP fallback
 ///
-/// Uses VSF format with proper signing and verification.
-/// See protocol.rs build_clutch_complete_vsf() for format details.
+/// Uses VSF format with proper signing and verification. See protocol.rs build_clutch_complete_vsf() for format details.
 #[derive(Clone)]
 pub struct ClutchCompleteRequest {
     pub peer_addr: SocketAddr, // Port comes from FGTW (peer's photon_port)
@@ -219,8 +211,7 @@ pub enum StatusUpdate {
         sender_addr: SocketAddr,
     },
     /// CLUTCH complete proof received (~200 bytes with eggs_proof)
-    /// Payload is already verified and parsed from VSF format.
-    /// Both parties exchange this to verify they derived identical eggs.
+    /// Payload is already verified and parsed from VSF format. Both parties exchange this to verify they derived identical eggs.
     ClutchCompleteReceived {
         conversation_token: [u8; 32], // Privacy-preserving smear_hash of sorted participant seeds
         ceremony_id: [u8; 32],        // Deterministic - should match locally computed value
@@ -245,9 +236,7 @@ struct PendingPing {
 
 /// Contact status checker
 ///
-/// Spawns a background thread to handle async UDP ping/pong and CLUTCH messages.
-/// Uses the shared UDP socket from HandleQuery.
-/// For large CLUTCH payloads, uses TCP fallback (raw254 not yet implemented).
+/// Spawns a background thread to handle async UDP ping/pong and CLUTCH messages. Uses the shared UDP socket from HandleQuery. For large CLUTCH payloads, uses TCP fallback (raw254 not yet implemented).
 pub struct StatusChecker {
     ping_sender: Sender<PingRequest>,
     // NOTE: clutch_sender removed - legacy v1 CLUTCH no longer used
@@ -265,11 +254,7 @@ pub struct StatusChecker {
 impl StatusChecker {
     /// Create a new status checker using a shared socket (Desktop version with EventLoopProxy)
     ///
-    /// `socket` is the shared UDP socket from HandleQuery (same port announced to FGTW).
-    /// `keypair` is the device keypair (same one used for FGTW registration).
-    /// `contacts` is shared with UI - only respond to pings from pubkeys in this list.
-    /// `sync_records` is shared with UI - provides last_received_ef6 for each conversation
-    /// `event_proxy` is used to wake the event loop when network data arrives.
+    /// `socket` is the shared UDP socket from HandleQuery (same port announced to FGTW). `keypair` is the device keypair (same one used for FGTW registration). `contacts` is shared with UI - only respond to pings from pubkeys in this list. `sync_records` is shared with UI - provides last_received_ef6 for each conversation `event_proxy` is used to wake the event loop when network data arrives.
     #[cfg(not(target_os = "android"))]
     pub fn new(
         socket: Arc<UdpSocket>,
@@ -510,8 +495,7 @@ impl StatusChecker {
 
     /// Send CLUTCH complete proof (~200 bytes) via TCP fallback (non-blocking)
     ///
-    /// Both parties exchange their eggs_proof after computing eggs.
-    /// Proofs MUST match - if they don't, something is catastrophically wrong.
+    /// Both parties exchange their eggs_proof after computing eggs. Proofs MUST match - if they don't, something is catastrophically wrong.
     pub fn send_complete_proof(&self, request: ClutchCompleteRequest) {
         let _ = self.complete_proof_sender.send(request);
     }
@@ -526,8 +510,7 @@ impl StatusChecker {
     }
 
     /// Clear pending PT sends for a peer (non-blocking)
-    /// NOTE: Currently unused - clearing PT sends during CLUTCH completion
-    /// was killing ClutchComplete transfers in flight. Left for future use.
+    /// NOTE: Currently unused - clearing PT sends during CLUTCH completion was killing ClutchComplete transfers in flight. Left for future use.
     #[allow(dead_code)]
     pub fn clear_pt_sends(&self, peer_addr: SocketAddr) {
         let _ = self.clear_pt_sender.send(ClearPtSendsRequest { peer_addr });
@@ -1665,14 +1648,12 @@ async fn run_checker(
         }
 
         // NOTE: "Process CLUTCH requests" block REMOVED
-        // Full 8-primitive CLUTCH uses ClutchOfferRequest and ClutchKemResponseRequest
-        // which are processed below using TCP/PT transport.
+        // Full 8-primitive CLUTCH uses ClutchOfferRequest and ClutchKemResponseRequest which are processed below using TCP/PT transport.
 
         // Process message requests (encrypted chat messages - CHAIN format)
         // Routed through PT for unified transport (UDP → TCP after 1s → relay fallback)
         while let Ok(request) = message_rx.try_recv() {
-            // Use the eagle_time from encryption - nonce is derived from this
-            // so we MUST use the same timestamp the sender encrypted with
+            // Use the eagle_time from encryption - nonce is derived from this so we MUST use the same timestamp the sender encrypted with
             let timestamp = request.eagle_time;
 
             // Compute provenance and sign (CHAIN format)

@@ -1,7 +1,6 @@
 //! Generate Ed25519 keypair for signing Photon Messenger binaries
 //!
-//! This utility generates a signing keypair and stores it in the keys directory.
-//! The private key is stored unencrypted (filesystem encryption assumed).
+//! This utility generates a signing keypair and stores it in the keys directory. The private key is stored unencrypted (filesystem encryption assumed).
 //!
 //! Usage: photon-keygen
 

@@ -4,8 +4,7 @@ use crate::crypto::clutch::{
 };
 use std::net::{Ipv4Addr, SocketAddr};
 
-/// A slot in the CLUTCH ceremony, indexed by sorted handle_hash position.
-/// Same indexing on all devices in the ceremony (N-party ready).
+/// A slot in the CLUTCH ceremony, indexed by sorted handle_hash position. Same indexing on all devices in the ceremony (N-party ready).
 #[derive(Clone, Debug)]
 pub struct PartySlot {
     /// Handle hash identifying this party (sorted position determines slot index)
@@ -32,8 +31,7 @@ impl PartySlot {
         }
     }
 
-    /// Check if this slot has all required data for ceremony completion.
-    /// Each slot needs offer + ONE KEM contribution (either direction):
+    /// Check if this slot has all required data for ceremony completion. Each slot needs offer + ONE KEM contribution (either direction):
     /// - Local slot: kem_secrets_to_them (local encapsulated)
     /// - Remote slots: kem_secrets_from_them (remote encapsulated)
     pub fn is_complete(&self) -> bool {
@@ -101,9 +99,7 @@ impl std::fmt::Display for HandleText {
 
 /// State of the CLUTCH key ceremony for a contact
 ///
-/// Slot-based design: each party has a slot indexed by sorted handle_hash position.
-/// Ceremony completes when all slots have both offer and kem_secrets filled,
-/// AND both parties have exchanged matching eggs_proof values.
+/// Slot-based design: each party has a slot indexed by sorted handle_hash position. Ceremony completes when all slots have both offer and kem_secrets filled, AND both parties have exchanged matching eggs_proof values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum ClutchState {
     #[default]
@@ -132,9 +128,7 @@ pub struct Contact {
     /// Party slots indexed by sorted handle_hash position
     /// Each slot contains offer + kem_secrets for one party (including self)
     pub clutch_slots: Vec<PartySlot>,
-    /// Cached ceremony_id - computed from handle_hashes + sorted ping provenances.
-    /// Uses spaghettify for mixing (no memory-hard step needed).
-    /// Unique per ceremony due to ping timestamp entropy.
+    /// Cached ceremony_id - computed from handle_hashes + sorted ping provenances. Uses spaghettify for mixing (no memory-hard step needed). Unique per ceremony due to ping timestamp entropy.
     pub ceremony_id: Option<[u8; 32]>,
     /// Pending KEM response received before our keygen completed
     /// Stored here and processed when ceremony_id becomes available
@@ -151,15 +145,10 @@ pub struct Contact {
     pub clutch_kem_encap_in_progress: bool,
     /// Flag to prevent multiple concurrent ceremony completions (avalanche_expand)
     pub clutch_ceremony_in_progress: bool,
-    /// HQC public key prefix from peer's last completed ceremony.
-    /// Used for stale detection: if received offer has same HQC prefix, it's a
-    /// PT retransmission (stale), not a legitimate re-key request.
-    /// Stored at completion time, cleared when accepting new ceremony.
+    /// HQC public key prefix from peer's last completed ceremony. Used for stale detection: if received offer has same HQC prefix, it's a PT retransmission (stale), not a legitimate re-key request. Stored at completion time, cleared when accepting new ceremony.
     pub completed_their_hqc_prefix: Option<[u8; 8]>,
     /// Collected offer provenances for ceremony nonce derivation.
-    /// Each offer's VSF header has hp = BLAKE3(signer_pubkey || creation_time_nanos).
-    /// Sorted and combined via spaghettify to derive unique ceremony_id.
-    /// Cleared when CLUTCH ceremony completes.
+    /// Each offer's VSF header has hp = BLAKE3(signer_pubkey || creation_time_nanos). Sorted and combined via spaghettify to derive unique ceremony_id. Cleared when CLUTCH ceremony completes.
     pub offer_provenances: Vec<[u8; 32]>,
 
     pub trust_level: TrustLevel,
@@ -278,9 +267,7 @@ impl Contact {
         self.last_seen = Some(timestamp);
     }
 
-    /// Get the best address to reach this contact.
-    /// If we share the same public IP (same NAT), use their local_ip to bypass AP isolation.
-    /// Otherwise use their public IP.
+    /// Get the best address to reach this contact. If we share the same public IP (same NAT), use their local_ip to bypass AP isolation. Otherwise use their public IP.
     pub fn best_addr(&self, our_public_ip: Option<std::net::IpAddr>) -> Option<std::net::SocketAddr> {
         let public_addr = self.ip?;
 
@@ -304,15 +291,12 @@ impl Contact {
 
     /// Get the cached ceremony ID for CLUTCH with this contact.
     ///
-    /// The ceremony_id is computed once during background keygen and cached.
-    /// It's deterministic from sorted handle_hashes, so both parties compute same value.
-    /// Returns None if keygen hasn't completed yet.
+    /// The ceremony_id is computed once during background keygen and cached. It's deterministic from sorted handle_hashes, so both parties compute same value. Returns None if keygen hasn't completed yet.
     pub fn get_ceremony_id(&self) -> Option<CeremonyId> {
         self.ceremony_id.map(CeremonyId::from_bytes)
     }
 
-    /// Initialize CLUTCH slots for a 2-party ceremony.
-    /// Slots are indexed by sorted handle_hash position.
+    /// Initialize CLUTCH slots for a 2-party ceremony. Slots are indexed by sorted handle_hash position.
     pub fn init_clutch_slots(&mut self, our_handle_hash: [u8; 32]) {
         let mut hashes = vec![our_handle_hash, self.handle_hash];
         hashes.sort();
@@ -320,8 +304,7 @@ impl Contact {
         self.clutch_slots = hashes.into_iter().map(PartySlot::new).collect();
     }
 
-    /// Get the slot index for a given handle_hash.
-    /// Returns None if the handle_hash is not in the ceremony.
+    /// Get the slot index for a given handle_hash. Returns None if the handle_hash is not in the ceremony.
     pub fn get_slot_index(&self, handle_hash: &[u8; 32]) -> Option<usize> {
         self.clutch_slots
             .iter()
@@ -342,14 +325,12 @@ impl Contact {
             .find(|s| &s.handle_hash == handle_hash)
     }
 
-    /// Check if all slots are complete (ceremony can finish).
-    /// For 2-party: both slots have offer + both KEM secret directions.
+    /// Check if all slots are complete (ceremony can finish). For 2-party: both slots have offer + both KEM secret directions.
     pub fn all_slots_complete(&self) -> bool {
         !self.clutch_slots.is_empty() && self.clutch_slots.iter().all(|s| s.is_complete())
     }
 
-    /// Insert a message in sorted order by timestamp (oldest first).
-    /// Uses binary search for O(log n) position finding.
+    /// Insert a message in sorted order by timestamp (oldest first). Uses binary search for O(log n) position finding.
     pub fn insert_message_sorted(&mut self, msg: ChatMessage) {
         // Binary search for insertion point (maintains ascending timestamp order)
         let pos = self

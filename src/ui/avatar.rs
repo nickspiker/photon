@@ -1,7 +1,6 @@
 //! Avatar encoding/decoding using AV1 compression with circular masking
 //!
-//! Avatars are circular images encoded with anti-aliased edges to avoid
-//! compression artifacts. The circular mask blends to black at the edge.
+//! Avatars are circular images encoded with anti-aliased edges to avoid compression artifacts. The circular mask blends to black at the edge.
 
 /// Avatar size in pixels (256x256 square)
 pub const AVATAR_SIZE: usize = 256;
@@ -78,8 +77,7 @@ pub fn encode_avatar_from_image(image_data: &[u8]) -> Result<Vec<u8>, String> {
     };
 
     // Decode image to RGB
-    // Note: image crate has default memory limits (~512MB decoded).
-    // This is fine - avatars are 256x256 output, huge sources should be resized first.
+    // Note: image crate has default memory limits (~512MB decoded). This is fine - avatars are 256x256 output, huge sources should be resized first.
     let img = image::load_from_memory(image_data)
         .map_err(|e| format!("Failed to decode image: {}", e))?;
 
@@ -225,8 +223,7 @@ pub fn encode_avatar_from_image(image_data: &[u8]) -> Result<Vec<u8>, String> {
                 ]
             };
 
-            // Apply VSF gamma 2 encoding
-            // .max(0.) prevents NaN from sqrt() - Lanczos3 ringing can produce negatives
+            // Apply VSF gamma 2 encoding .max(0.) prevents NaN from sqrt() - Lanczos3 ringing can produce negatives
             vsf_rgb_f32[idx] = delinearize_gamma2(masked_linear[0].max(0.));
             vsf_rgb_f32[idx + 1] = delinearize_gamma2(masked_linear[1].max(0.));
             vsf_rgb_f32[idx + 2] = delinearize_gamma2(masked_linear[2].max(0.));
@@ -526,9 +523,7 @@ fn convert_pixel_linear(r: u8, g: u8, b: u8, converter: &IccColourConverter) -> 
     let xyz = apply_matrix_3x3_f32(&converter.icc_to_xyz, &[r_lin, g_lin, b_lin]);
 
     // Apply XYZ → VSF_RGB matrix
-    // Clamp negative values: out-of-gamut colors can produce negatives, but
-    // negative light intensity is physically impossible. This prevents NaN
-    // from sqrt() in delinearize_gamma2.
+    // Clamp negative values: out-of-gamut colors can produce negatives, but negative light intensity is physically impossible. This prevents NaN from sqrt() in delinearize_gamma2.
     let vsf = apply_matrix_3x3_f32(&converter.xyz_to_vsf, &xyz);
     [vsf[0].max(0.), vsf[1].max(0.), vsf[2].max(0.)]
 }
@@ -547,9 +542,7 @@ fn convert_pixel_linear_u16(r: u16, g: u16, b: u16, converter: &IccColourConvert
     let xyz = apply_matrix_3x3_f32(&converter.icc_to_xyz, &[r_lin, g_lin, b_lin]);
 
     // Apply XYZ → VSF_RGB matrix
-    // Clamp negative values: out-of-gamut colors can produce negatives, but
-    // negative light intensity is physically impossible. This prevents NaN
-    // from sqrt() in delinearize_gamma2.
+    // Clamp negative values: out-of-gamut colors can produce negatives, but negative light intensity is physically impossible. This prevents NaN from sqrt() in delinearize_gamma2.
     let vsf = apply_matrix_3x3_f32(&converter.xyz_to_vsf, &xyz);
     [vsf[0].max(0.), vsf[1].max(0.), vsf[2].max(0.)]
 }
@@ -655,8 +648,7 @@ fn encode_av1(rgb_data: &[f32], size: usize) -> Result<Vec<u8>, String> {
 /// # Arguments
 /// * `av1_data` - Raw AV1 OBU bitstream
 ///
-/// # Returns
-/// (width, height, RGB pixel data in VSF RGB colourspace)
+/// # Returns (width, height, RGB pixel data in VSF RGB colourspace)
 pub fn decode_avatar(av1_data: &[u8]) -> Result<(usize, usize, Vec<u8>), String> {
     use rav1d::include::dav1d::data::Dav1dData;
     use rav1d::include::dav1d::dav1d::{Dav1dContext, Dav1dSettings};
@@ -719,8 +711,7 @@ pub fn decode_avatar(av1_data: &[u8]) -> Result<(usize, usize, Vec<u8>), String>
             break; // Got a picture
         } else if get_result.0 == -11 {
             // EAGAIN - no picture ready yet, decoder needs to process
-            // For single-frame decode, this shouldn't happen after send succeeds
-            // but let's be safe
+            // For single-frame decode, this shouldn't happen after send succeeds but let's be safe
             std::thread::yield_now();
             continue;
         } else {
@@ -792,8 +783,7 @@ pub fn get_android_data_dir() -> Option<std::path::PathBuf> {
     ANDROID_DATA_DIR.get().map(|s| std::path::PathBuf::from(s))
 }
 
-/// Get flat path for a cached avatar by its storage key.
-/// Avatars are public signed VSF — stored unencrypted directly in ~/.config/photon/.
+/// Get flat path for a cached avatar by its storage key. Avatars are public signed VSF — stored unencrypted directly in ~/.config/photon/.
 pub fn avatar_cache_path(storage_key: &str) -> std::io::Result<std::path::PathBuf> {
     Ok(crate::storage::photon_config_dir()?.join(format!("av_{}", storage_key)))
 }
@@ -833,8 +823,7 @@ pub fn load_avatar(handle: &str) -> Option<(usize, Vec<u8>)> {
 
 /// Load avatar from raw VSF bytes (used for both local and network avatars)
 ///
-/// Avatar data is encrypted with handle-derived key, so handle is required for decryption.
-/// Format: v'e'(encrypted v'a'(AV1 data))
+/// Avatar data is encrypted with handle-derived key, so handle is required for decryption. Format: v'e'(encrypted v'a'(AV1 data))
 pub fn load_avatar_from_bytes(vsf_data: &[u8], handle: &str) -> Option<(usize, Vec<u8>)> {
     // Verify this is an unmodified original before processing
     if let Err(e) = vsf::verification::is_original(vsf_data) {
@@ -885,8 +874,7 @@ pub fn load_avatar_from_bytes(vsf_data: &[u8], handle: &str) -> Option<(usize, V
 
 /// Save avatar to disk as VSF by handle
 /// Uses "image" section with "pixels" field containing v'e'(encrypted v'a'(AV1))
-/// Only people who know the handle plaintext can decrypt the avatar.
-/// Stored in avatars/ directory using handle-based storage key
+/// Only people who know the handle plaintext can decrypt the avatar. Stored in avatars/ directory using handle-based storage key
 pub fn save_avatar(av1_data: &[u8], handle: &str) -> std::io::Result<()> {
     use vsf::{VsfBuilder, VsfType};
 
@@ -987,8 +975,7 @@ pub fn get_local_avatar_timestamp(handle: &str) -> Option<i64> {
 
 /// Derive the avatar Ed25519 keypair from device private key and handle
 ///
-/// This creates a deterministic keypair tied to both the device identity and handle.
-/// The private key never leaves the client - only the public key is shared.
+/// This creates a deterministic keypair tied to both the device identity and handle. The private key never leaves the client - only the public key is shared.
 ///
 /// Formula: avatar_priv_seed = BLAKE3(device_private_key || handle_hash || "handle-avatar")
 /// Then derive Ed25519 keypair from that 32-byte seed.
@@ -997,8 +984,7 @@ pub fn get_local_avatar_timestamp(handle: &str) -> Option<i64> {
 /// * `device_secret` - The device's Ed25519 signing key (32 bytes)
 /// * `handle` - The user's handle string
 ///
-/// # Returns
-/// (SigningKey, VerifyingKey) - The avatar's Ed25519 keypair
+/// # Returns (SigningKey, VerifyingKey) - The avatar's Ed25519 keypair
 pub fn derive_avatar_keypair(
     device_secret: &SigningKey,
     handle: &str,
@@ -1023,8 +1009,7 @@ pub fn derive_avatar_keypair(
 
 /// Compute the avatar storage key from handle
 ///
-/// This is the public URL-safe identifier for fetching avatars from FGTW.
-/// Anyone who knows a handle can compute the storage key and fetch the avatar.
+/// This is the public URL-safe identifier for fetching avatars from FGTW. Anyone who knows a handle can compute the storage key and fetch the avatar.
 /// Formula: base64url(BLAKE3(BLAKE3(VsfType::x(handle).flatten()) || "avatar"))
 ///
 /// # Arguments
@@ -1046,15 +1031,13 @@ pub fn avatar_storage_key(handle: &str) -> String {
 
 /// Derive the avatar encryption key from handle
 ///
-/// This key is used to encrypt avatar data so only people who know
-/// the handle plaintext can decrypt it.
+/// This key is used to encrypt avatar data so only people who know the handle plaintext can decrypt it.
 /// Formula: BLAKE3(BLAKE3(VsfType::x(handle).flatten()) || "avatar-encryption")
 ///
 /// # Arguments
 /// * `handle` - The user's handle string
 ///
-/// # Returns
-/// 32-byte AES-256-GCM key
+/// # Returns 32-byte AES-256-GCM key
 pub fn derive_avatar_encryption_key(handle: &str) -> [u8; 32] {
     // VSF normalize handle for consistent key derivation
     let vsf_bytes = vsf::VsfType::x(handle.to_string()).flatten();
@@ -1066,8 +1049,7 @@ pub fn derive_avatar_encryption_key(handle: &str) -> [u8; 32] {
 
 /// Encrypt AV1 avatar data using handle-derived key
 ///
-/// Wraps AV1 data in v'a', then encrypts with AES-256-GCM.
-/// Format: [nonce:12][ciphertext][tag:16]
+/// Wraps AV1 data in v'a', then encrypts with AES-256-GCM. Format: [nonce:12][ciphertext][tag:16]
 ///
 /// # Arguments
 /// * `av1_data` - Raw AV1 OBU bitstream
@@ -1106,8 +1088,7 @@ pub fn encrypt_av1_data(av1_data: &[u8], handle: &str) -> Result<Vec<u8>, String
 
 /// Decrypt avatar data using handle-derived key
 ///
-/// Decrypts v'e' payload and unwraps the inner v'a' to get raw AV1 data.
-/// Format: [nonce:12][ciphertext][tag:16]
+/// Decrypts v'e' payload and unwraps the inner v'a' to get raw AV1 data. Format: [nonce:12][ciphertext][tag:16]
 ///
 /// # Arguments
 /// * `encrypted` - Encrypted blob (from v'e' wrapper)
@@ -1305,8 +1286,7 @@ pub fn build_signed_avatar_vsf(
 /// Write signature bytes into the ge placeholder in a VSF file
 fn write_signature_to_vsf(mut vsf_bytes: Vec<u8>, signature: &[u8; 64]) -> Result<Vec<u8>, String> {
     // Scan for "ge" marker followed by length encoding and 64 zero bytes
-    // VSF encodes length as (len-1) with size marker:
-    // For 64 bytes: len-1 = 63, which fits in u8, so: '3' (0x33) + 63 (0x3F)
+    // VSF encodes length as (len-1) with size marker: For 64 bytes: len-1 = 63, which fits in u8, so: '3' (0x33) + 63 (0x3F)
     // Full encoding: 'g' 'e' '3' 63 <64 bytes>
     let mut pos = 0;
     while pos < vsf_bytes.len().saturating_sub(68) {
@@ -1400,15 +1380,12 @@ pub fn upload_avatar(
 
 /// Download avatar from FGTW by handle
 ///
-/// Checks local cache first, only fetches from network if not cached.
-/// Computes storage key from handle (anyone can fetch anyone's avatar).
-/// FGTW strips ke/ge from stored avatars, so we verify provenance hash only.
+/// Checks local cache first, only fetches from network if not cached. Computes storage key from handle (anyone can fetch anyone's avatar). FGTW strips ke/ge from stored avatars, so we verify provenance hash only.
 ///
 /// # Arguments
 /// * `handle` - The peer's handle string
 ///
-/// # Returns
-/// (size, pixels) if successful, None otherwise
+/// # Returns (size, pixels) if successful, None otherwise
 pub fn download_avatar(handle: &str) -> Option<(usize, Vec<u8>)> {
     // Check local cache first (no network request needed)
     if let Some(cached) = load_cached_avatar(handle) {
@@ -1451,8 +1428,7 @@ pub fn download_avatar(handle: &str) -> Option<(usize, Vec<u8>)> {
 
 /// Sync avatar bidirectionally with FGTW (newest wins)
 ///
-/// For the user's own avatar only - compares local and server timestamps,
-/// uploads if local is newer, downloads if server is newer.
+/// For the user's own avatar only - compares local and server timestamps, uploads if local is newer, downloads if server is newer.
 ///
 /// # Arguments
 /// * `device_secret` - Device's Ed25519 signing key (for uploading)

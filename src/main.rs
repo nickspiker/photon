@@ -61,9 +61,7 @@ impl ApplicationHandler<PhotonEvent> for App {
                 .with_position(winit::dpi::PhysicalPosition::new(x, y))
                 .with_decorations(false)
                 .with_transparent(true)
-                // macOS: start non-resizable so AppKit doesn't override our cursor near edges.
-                // We flip to resizable=true only while an actual resize drag is in progress
-                // (required for request_inner_size to work), then flip back on release.
+                // macOS: start non-resizable so AppKit doesn't override our cursor near edges. We flip to resizable=true only while an actual resize drag is in progress (required for request_inner_size to work), then flip back on release.
                 .with_resizable(cfg!(not(target_os = "macos")));
 
             self.window = Some(event_loop.create_window(window_attributes).unwrap());
@@ -177,8 +175,7 @@ impl ApplicationHandler<PhotonEvent> for App {
                 }
             }
             WindowEvent::Focused(false) => {
-                // Cancel any in-progress drag/resize when the window loses focus —
-                // we won't receive a MouseInput Released event in that case.
+                // Cancel any in-progress drag/resize when the window loses focus — we won't receive a MouseInput Released event in that case.
                 if let Some(app) = &mut self.photon_app {
                     app.cancel_drag();
                 }
@@ -207,10 +204,7 @@ impl ApplicationHandler<PhotonEvent> for App {
                     window.request_redraw();
                 }
             }
-            // On macOS, occlude/unocclude cycles are very common (switching apps,
-            // Mission Control, etc.). The Metal surface goes stale while occluded, so
-            // get_current_texture returns Outdated on the next frame. Requesting a
-            // redraw here ensures we re-present as soon as the window becomes visible.
+            // On macOS, occlude/unocclude cycles are very common (switching apps, Mission Control, etc.). The Metal surface goes stale while occluded, so get_current_texture returns Outdated on the next frame. Requesting a redraw here ensures we re-present as soon as the window becomes visible.
             WindowEvent::Occluded(false) => {
                 if let Some(window) = &self.window {
                     window.request_redraw();
@@ -224,9 +218,7 @@ impl ApplicationHandler<PhotonEvent> for App {
         if let Some(app) = &mut self.photon_app {
             use winit::event_loop::ControlFlow;
 
-            // Priority 0 (macOS only): poll mouse during resize drag.
-            // winit stops delivering CursorMoved when cursor leaves the window,
-            // so we query NSEvent.mouseLocation directly via AppKit.
+            // Priority 0 (macOS only): poll mouse during resize drag. winit stops delivering CursorMoved when cursor leaves the window, so we query NSEvent.mouseLocation directly via AppKit.
             #[cfg(target_os = "macos")]
             if app.is_dragging_resize {
                 if let Some(window) = &self.window {

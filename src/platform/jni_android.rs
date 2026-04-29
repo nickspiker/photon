@@ -1,7 +1,6 @@
 //! JNI bindings for Android
 //!
-//! This module provides the native interface for the Android app.
-//! The Kotlin/Java activity calls these functions to initialize and draw the UI.
+//! This module provides the native interface for the Android app. The Kotlin/Java activity calls these functions to initialize and draw the UI.
 
 use crate::network::fgtw::PeerStore;
 use crate::network::HandleQuery;
@@ -253,8 +252,7 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeResize(
     context.resize(width as u32, height as u32);
 }
 
-/// Handle touch events
-/// action: 0=DOWN, 1=UP, 2=MOVE, 3=CANCEL
+/// Handle touch events action: 0=DOWN, 1=UP, 2=MOVE, 3=CANCEL
 /// Returns: 1=show keyboard, -1=hide keyboard, 0=no change
 #[cfg(target_os = "android")]
 #[no_mangle]
@@ -348,8 +346,7 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeOnBackPressed(
     }
 }
 
-/// Handle pinch-to-zoom scale gesture
-/// scale_factor: >1.0 = zoom in, <1.0 = zoom out
+/// Handle pinch-to-zoom scale gesture scale_factor: >1.0 = zoom in, <1.0 = zoom out
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeOnScale(
@@ -408,8 +405,7 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeDestroy(
 }
 
 // ============================================================================
-// FCM Push Notification Support
-// ============================================================================
+// FCM Push Notification Support ============================================================================
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -435,8 +431,7 @@ pub extern "C" fn Java_com_photon_messenger_PhotonMessagingService_nativePeerUpd
 }
 
 // ============================================================================
-// PhotonConnectionService - Background Network Stack
-// ============================================================================
+// PhotonConnectionService - Background Network Stack ============================================================================
 
 /// Network context owned by the foreground service
 /// Persists across Activity lifecycle changes

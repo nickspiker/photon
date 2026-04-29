@@ -96,9 +96,7 @@ impl Renderer {
     /// Present internal buffer to Android NativeWindow surface
     /// Only call this after compositing has drawn to lock_buffer()
     ///
-    /// Uses magic pixel in top-right corner to track per-buffer state.
-    /// Each of Android's 3 rotating buffers gets the content_version written
-    /// to it after copy, so we can detect if a buffer is already current.
+    /// Uses magic pixel in top-right corner to track per-buffer state. Each of Android's 3 rotating buffers gets the content_version written to it after copy, so we can detect if a buffer is already current.
     pub fn present(&mut self, window: &NativeWindow, dirty: bool) -> bool {
         unsafe {
             let mut android_buffer = std::mem::zeroed::<ANativeWindow_Buffer>();

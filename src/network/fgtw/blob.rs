@@ -5,8 +5,7 @@ use vsf::VsfType;
 const FGTW_URL: &str = "https://fgtw.org";
 
 // ============================================================================
-// Blob Storage API (VSF section-based)
-// ============================================================================
+// Blob Storage API (VSF section-based) ============================================================================
 
 /// Error type for blob operations
 #[derive(Debug)]

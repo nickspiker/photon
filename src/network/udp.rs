@@ -1,8 +1,6 @@
 //! UDP Transport Layer
 //!
-//! Handles all UDP network traffic with centralized logging.
-//! Used for: ping/pong, status updates, LAN discovery, small messages, streaming.
-//! Fallback when Photon Transport is unavailable.
+//! Handles all UDP network traffic with centralized logging. Used for: ping/pong, status updates, LAN discovery, small messages, streaming. Fallback when Photon Transport is unavailable.
 
 #[cfg(feature = "development")]
 use super::inspect::vsf_inspect;
@@ -74,8 +72,7 @@ pub fn get_broadcast_addr() -> Option<(std::net::Ipv4Addr, std::net::Ipv4Addr)> 
         }
     }
 
-    // Fallback: assume /24 subnet (most common home/office network)
-    // e.g., 192.168.1.42 -> 192.168.1.255
+    // Fallback: assume /24 subnet (most common home/office network) e.g., 192.168.1.42 -> 192.168.1.255
     let octets = local_ip.octets();
     let broadcast = std::net::Ipv4Addr::new(octets[0], octets[1], octets[2], 255);
     Some((broadcast, local_ip))
@@ -110,8 +107,7 @@ fn get_broadcast_from_system(local_ip: &std::net::Ipv4Addr) -> Option<std::net::
 }
 
 /// Parse LAN discovery packet
-/// Returns (handle_proof, ip, port) if valid, None otherwise
-/// handle_proof is extracted from the VSF header's provenance hash (hp)
+/// Returns (handle_proof, ip, port) if valid, None otherwise handle_proof is extracted from the VSF header's provenance hash (hp)
 pub fn parse_lan_discovery(
     packet: &[u8],
     src_addr: SocketAddr,
@@ -159,8 +155,7 @@ pub fn parse_lan_discovery(
     Some((handle_proof, src_ip, port))
 }
 
-/// Build LAN discovery broadcast packet
-/// handle_proof is stored in VSF header as provenance hash (hp) for identity
+/// Build LAN discovery broadcast packet handle_proof is stored in VSF header as provenance hash (hp) for identity
 /// One-shot broadcast - no rolling hash needed (provenance_only)
 pub fn build_lan_discovery(handle_proof: [u8; 32], port: u16) -> Vec<u8> {
     use vsf::{VsfBuilder, VsfType};
