@@ -1,11 +1,8 @@
 //! TCP Transport Layer
 //!
-//! Handles reliable TCP connections with centralized logging.
-//! Fallback for: CLUTCH key exchange, attachments, large file transfers.
-//! Only used when Photon Transport (UDP) fails after retries.
+//! Handles reliable TCP connections with centralized logging. Fallback for: CLUTCH key exchange, attachments, large file transfers. Only used when Photon Transport (UDP) fails after retries.
 //!
-//! VSF files contain an L (file length) field in the header, so TCP
-//! just streams raw VSF bytes - no external framing needed.
+//! VSF files contain an L (file length) field in the header, so TCP just streams raw VSF bytes - no external framing needed.
 
 #[cfg(feature = "development")]
 use super::inspect::vsf_inspect;
@@ -48,8 +45,7 @@ pub fn recv(stream: &mut TcpStream) -> std::io::Result<Vec<u8>> {
         .unwrap_or_else(|_| "unknown".parse().unwrap());
 
     // Read enough bytes to parse VSF header and extract L (file length)
-    // VSF header starts with: RÅ< (4 bytes) + z + y + b + L + ...
-    // We need to read incrementally until we have L
+    // VSF header starts with: RÅ< (4 bytes) + z + y + b + L + ... We need to read incrementally until we have L
 
     // First, read magic + enough for header fields (conservatively 64 bytes)
     let mut header_buf = vec![0u8; 64];

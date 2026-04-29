@@ -1,7 +1,6 @@
 //! Cloud contact storage via FGTW blob endpoints.
 //!
-//! Stores encrypted contact list on FGTW so users can backup contacts.
-//! Each device gets its own blob slot (key includes device_secret).
+//! Stores encrypted contact list on FGTW so users can backup contacts. Each device gets its own blob slot (key includes device_secret).
 //!
 //! Key derivation:
 //! - Storage key: BLAKE3(identity_seed || device_secret || "contacts_storage_key_v0")
@@ -247,8 +246,7 @@ fn u8_to_trust_level(v: u8) -> TrustLevel {
 }
 
 // ============================================================================
-// High-Level API (Blocking)
-// ============================================================================
+// High-Level API (Blocking) ============================================================================
 
 /// Sync contacts to FGTW cloud storage (blocking)
 ///
@@ -345,8 +343,7 @@ pub fn load_contacts_from_cloud(
 }
 
 // ============================================================================
-// High-Level API (Async)
-// ============================================================================
+// High-Level API (Async) ============================================================================
 
 /// Upload contacts to FGTW cloud storage (async version)
 pub async fn upload_contacts_to_cloud(

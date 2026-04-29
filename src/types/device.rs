@@ -41,8 +41,7 @@ impl DevicePubkey {
 
     /// Convert Ed25519 public key to X25519 for Diffie-Hellman
     ///
-    /// Uses the standard birational map from Ed25519 to Curve25519.
-    /// This allows using a single Ed25519 identity for both signing and DHE.
+    /// Uses the standard birational map from Ed25519 to Curve25519. This allows using a single Ed25519 identity for both signing and DHE.
     pub fn to_x25519(&self) -> x25519_dalek::PublicKey {
         // Ed25519 public keys can be converted to X25519 using montgomery_point
         // The ed25519-dalek VerifyingKey has to_montgomery() but we have raw bytes
@@ -81,14 +80,11 @@ impl DevicePubkey {
 
 /// Convert Ed25519 signing key to X25519 secret for Diffie-Hellman
 ///
-/// This is the secret-key counterpart to DevicePubkey::to_x25519().
-/// Used when we need to do DHE with our Ed25519 identity.
+/// This is the secret-key counterpart to DevicePubkey::to_x25519(). Used when we need to do DHE with our Ed25519 identity.
 pub fn ed25519_secret_to_x25519(
     ed_secret: &ed25519_dalek::SigningKey,
 ) -> x25519_dalek::StaticSecret {
-    // Ed25519 secret keys are hashed before use; the first 32 bytes of SHA-512(secret)
-    // become the scalar. For X25519, we need that scalar clamped.
-    // ed25519-dalek's SigningKey stores the seed, so we hash it like Ed25519 does.
+    // Ed25519 secret keys are hashed before use; the first 32 bytes of SHA-512(secret) become the scalar. For X25519, we need that scalar clamped. ed25519-dalek's SigningKey stores the seed, so we hash it like Ed25519 does.
     use sha2::{Digest, Sha512};
     let mut hasher = Sha512::new();
     hasher.update(ed_secret.as_bytes());

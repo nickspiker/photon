@@ -272,8 +272,7 @@ impl PTAck {
 
     /// Parse from VSF header (inline field format)
     ///
-    /// Expects header with provenance_hash (= chunk_hash) and inline field:
-    /// (pt_ack:u#{sid},u#{seq})
+    /// Expects header with provenance_hash (= chunk_hash) and inline field: (pt_ack:u#{sid},u#{seq})
     pub fn from_vsf_header(
         provenance_hash: [u8; 32],
         field_values: &[vsf::VsfType],
@@ -345,8 +344,7 @@ impl PTNak {
 
     /// Parse from VSF header (inline field format)
     ///
-    /// Expects header with provenance_hash and inline field:
-    /// (pt_nak:u#{seq1},u#{seq2},...)
+    /// Expects header with provenance_hash and inline field: (pt_nak:u#{seq1},u#{seq2},...)
     pub fn from_vsf_header(field_values: &[vsf::VsfType]) -> Option<Self> {
         use vsf::VsfType;
 
@@ -431,8 +429,7 @@ impl PTControl {
 
     /// Parse from VSF header (inline field format)
     ///
-    /// Expects header with provenance_hash and inline field:
-    /// (pt_ctrl:u#{cmd})
+    /// Expects header with provenance_hash and inline field: (pt_ctrl:u#{cmd})
     pub fn from_vsf_header(field_values: &[vsf::VsfType]) -> Option<Self> {
         use vsf::VsfType;
 
@@ -488,8 +485,7 @@ impl PTComplete {
 
     /// Parse from VSF header (inline field format)
     ///
-    /// Expects header with provenance_hash (= final_hash) and inline field:
-    /// (pt_done:u#{ok})
+    /// Expects header with provenance_hash (= final_hash) and inline field: (pt_done:u#{ok})
     pub fn from_vsf_header(
         provenance_hash: [u8; 32],
         field_values: &[vsf::VsfType],
@@ -513,8 +509,7 @@ impl PTComplete {
 }
 
 // ============================================================================
-// VSF Variable-Length Uint Encoding (matching VSF spec)
-// ============================================================================
+// VSF Variable-Length Uint Encoding (matching VSF spec) ============================================================================
 
 /// Encode unsigned integer as VSF variable-length format
 /// - 0-127: 1 byte (high bit clear)

@@ -153,10 +153,14 @@ impl PhotonApp {
             // Pre-compute selection skip rect for hover effect (to avoid borrow conflict with buffer)
             let selection_skip = self.selection_skip_rect();
 
-            // Pre-mark dirty rows on the renderer before locking the buffer.
-            // The GPU texture persists between frames; only dirty rows are uploaded.
-            let indicator_radius = (self.span as f32 * eff_ru / 160.).max(1.) as usize;
-            let indicator_x = (self.span as f32 * eff_ru / 40.).max(1.) as usize;
+            // Pre-mark dirty rows on the renderer before locking the buffer. The GPU texture persists between frames; only dirty rows are uploaded.
+            //
+            // PROOF .max(2.): the three connectivity-indicator helpers (draw_black_circle, draw_filled_circle, draw_indicator_hairline) require `radius ≥ 2` — hairline computes `(radius - 2) as isize` and an `r_inner2 = (radius-2)²`; at radius < 2 either the usize subtraction underflows or `edge_range = r_outer²
+            // - r_inner²` evaluates to 0, panicking in the AA division. .max(2.) is the boundary contract enforcing the strictest helper's precondition.
+            //
+            // PROOF cx = 4*radius: the helpers also require `cx ≥ radius` and `cy ≥ radius` so dx, dy ∈ [-r, r] doesn't underflow `(cx as isize + dx) as usize`. Setting indicator_x = indicator_radius * 4 directly preserves the original `span/40 vs span/160` ratio AND the cx ≥ 4r > r invariant in every case.
+            let indicator_radius = (self.span as f32 * eff_ru / 160.).max(2.) as usize;
+            let indicator_x = indicator_radius * 4;
             let indicator_y = indicator_x;
 
             if self.window_dirty || self.debug_hit_test || self.show_textbox_mask {
@@ -205,7 +209,8 @@ impl PhotonApp {
                     }
                 }
                 if self.fgtw_online != self.prev_fgtw_online {
-                    let ind_top = indicator_y.saturating_sub(indicator_radius);
+                    // PROOF: indicator_y == indicator_x = max(1, span*eff_ru/40); indicator_radius = max(1, span*eff_ru/160). Both are clamped to ≥ 1, and the unclamped formulas give indicator_y == 4 * indicator_radius. In every case (clamped or not) indicator_y ≥ indicator_radius, so plain subtraction never underflows.
+                    let ind_top = indicator_y - indicator_radius;
                     let ind_bot = (indicator_y + indicator_radius + 1).min(self.height as usize);
                     self.renderer.mark_rows(ind_top as u32, ind_bot as u32);
                 }
@@ -255,8 +260,7 @@ impl PhotonApp {
                     bg_scroll,
                 );
 
-                // Fill header with back button hit area BEFORE window controls
-                // so controls can overwrite their portion
+                // Fill header with back button hit area BEFORE window controls so controls can overwrite their portion
                 if matches!(self.app_state, AppState::Conversation) {
                     let header_height = self.span as usize / 5;
                     for y in 0..header_height {
@@ -790,8 +794,7 @@ impl PhotonApp {
                                 + scroll;
                             let row_bottom = row_top + row_height;
 
-                            // Intersection bounds proof:
-                            // WHY: row_top can be negative (scrolled off top) or row_bottom > height (off bottom)
+                            // Intersection bounds proof: WHY: row_top can be negative (scrolled off top) or row_bottom > height (off bottom)
                             // PROOF: .max(0) and .min(height) compute intersection with screen rectangle
                             // PREVENTS: Out-of-bounds hit_test_map access
                             let hit_top = row_top.max(0) as usize;
@@ -953,42 +956,12 @@ impl PhotonApp {
                                     pixels[idx].wrapping_add(theme::CONTACT_BRIGHTEN_DELTA);
                             }
 
-                            // // Online indicator centered on divider line
-                            // let indicator_radius = (self.span / 80).max(1);
-                            // let indicator_x = center_x;
-                            // let indicator_y = header_height; // On the divider
+                            // // Online indicator centered on divider line let indicator_radius = (self.span / 80).max(1); let indicator_x = center_x; let indicator_y = header_height; // On the divider
 
                             // // Draw base (dark circle)
-                            // Self::draw_indicator_base(
-                            //     pixels,
-                            //     self.width as usize,
-                            //     indicator_x,
-                            //     indicator_y,
-                            //     indicator_radius,
-                            // );
-                            // if contact.is_online {
-                            //     // Online: add green fill
-                            //     Self::draw_indicator_colour(
-                            //         pixels,
-                            //         self.width as usize,
-                            //         indicator_x,
-                            //         indicator_y,
-                            //         indicator_radius,
-                            //         theme::ONLINE_DOT,
-                            //         true,
-                            //     );
-                            // } else {
-                            //     // Offline: draw hairline ring
-                            //     Self::draw_indicator_hairline(
-                            //         pixels,
-                            //         self.width as usize,
-                            //         indicator_x,
-                            //         indicator_y,
-                            //         indicator_radius,
-                            //         theme::CONTACT_OFFLINE,
-                            //         true,
-                            //     );
-                            // }
+                            // Self::draw_indicator_base( pixels, self.width as usize, indicator_x, indicator_y, indicator_radius, ); if contact.is_online { // Online: add green fill
+                            // Self::draw_indicator_colour( pixels, self.width as usize, indicator_x, indicator_y, indicator_radius, theme::ONLINE_DOT, true, ); } else { // Offline: draw hairline ring
+                            // Self::draw_indicator_hairline( pixels, self.width as usize, indicator_x, indicator_y, indicator_radius, theme::CONTACT_OFFLINE, true, ); }
 
                             // Draw message area based on CLUTCH state
                             use crate::types::ClutchState;
@@ -1919,8 +1892,7 @@ impl PhotonApp {
                 self.prev_fgtw_online = self.fgtw_online;
             }
 
-            // Reapply current hover state after window_dirty redraws
-            // (full redraws clear the framebuffer, losing hover overlays)
+            // Reapply current hover state after window_dirty redraws (full redraws clear the framebuffer, losing hover overlays)
             // This runs OUTSIDE controls_dirty so it works during animation
             if self.window_dirty && self.hovered_button != HoveredButton::None {
                 // Calculate button centers for centerpoint fill
@@ -2310,8 +2282,7 @@ impl PhotonApp {
                 }
             }
 
-            // Zoom hint differential rendering - shows current zoom level at top left third
-            // (right third is reserved for window controls)
+            // Zoom hint differential rendering - shows current zoom level at top left third (right third is reserved for window controls)
             if zoom_hint_dirty {
                 // Timer expired - subtract the old zoom hint text
                 let zoom_text = format!("{:.0}%", self.zoom_hint_ru * 100.0);
@@ -2368,8 +2339,7 @@ impl PhotonApp {
                 );
             }
 
-            // Debug: overlay hit test map visualization with random colours
-            // (drawn last so it covers all UI elements including differentially rendered buttons)
+            // Debug: overlay hit test map visualization with random colours (drawn last so it covers all UI elements including differentially rendered buttons)
             if self.debug_hit_test {
                 for y in 0..self.height as usize {
                     for x in 0..self.width as usize {
@@ -2438,8 +2408,7 @@ impl PhotonApp {
         self.last_frame_time = now;
     }
 
-    /// Calculate window control bounds without drawing.
-    /// Returns (start, crossings, button_x_start, button_height) needed for edges/hairlines.
+    /// Calculate window control bounds without drawing. Returns (start, crossings, button_x_start, button_height) needed for edges/hairlines.
     pub fn window_controls_bounds(
         window_width: u32,
         window_height: u32,
@@ -2497,8 +2466,7 @@ impl PhotonApp {
         let window_width = window_width as usize;
         let window_height = window_height as usize;
 
-        // Calculate button dimensions using harmonic mean (span) scaled by ru
-        // span = 2wh/(w+h), base button size = span/32, scaled by ru (zoom multiplier)
+        // Calculate button dimensions using harmonic mean (span) scaled by ru span = 2wh/(w+h), base button size = span/32, scaled by ru (zoom multiplier)
         let span = 2.0 * window_width as f32 * window_height as f32
             / (window_width as f32 + window_height as f32);
         let button_height = (span / 32.0 * ru).ceil() as usize;
@@ -2555,8 +2523,7 @@ impl PhotonApp {
                 // Write packed ARGB colour directly
                 pixels[pixel_idx] = bg_colour;
 
-                // Determine which button this pixel belongs to
-                // Button widths: minimize (0-1), maximize (1-2), close (2-3.5)
+                // Determine which button this pixel belongs to Button widths: minimize (0-1), maximize (1-2), close (2-3.5)
                 // Buttons are drawn with a button_width / 4 offset
                 let button_area_x_start = x_start + button_width / 4;
 
@@ -2624,8 +2591,7 @@ impl PhotonApp {
 
                 pixels[pixel_idx] = bg_colour;
 
-                // Determine which button this pixel belongs to
-                // Buttons are drawn with a button_width / 4 offset
+                // Determine which button this pixel belongs to Buttons are drawn with a button_width / 4 offset
                 let button_area_x_start = x_start + button_width / 4;
 
                 // Handle the case where px might be before button_area_x_start
@@ -3105,8 +3071,7 @@ impl PhotonApp {
         size: usize,
         stroke_colour: (u8, u8, u8),
     ) {
-        // Geometry based on magnify.svg (1000x1000 viewbox):
-        // Circle center at ~(417, 417), radius 292, stroke 83
+        // Geometry based on magnify.svg (1000x1000 viewbox): Circle center at ~(417, 417), radius 292, stroke 83
         // Handle from (625, 625) to (875, 875)
         // Normalize to our size parameter
 
@@ -3273,8 +3238,7 @@ impl PhotonApp {
         }
     }
 
-    /// Draw hourglass icon (two triangles meeting at center point)
-    /// angle_degrees: rotation angle in degrees (stochastic wobble during search)
+    /// Draw hourglass icon (two triangles meeting at center point) angle_degrees: rotation angle in degrees (stochastic wobble during search)
     pub fn draw_hourglass_symbol(
         pixels: &mut [u32],
         width: usize,
@@ -4093,10 +4057,7 @@ impl PhotonApp {
         // (height already computed above for early-out check)
 
         // Top-left corner - vertical edge with diagonal fill
-        // WHY bounds checks: Scroll can push textbox partially off-screen (negative Y wraps to huge usize,
-        // or Y exceeds height). X could also exceed width on narrow windows.
-        // PROOF: wrapping_add/wrapping_sub produce wrapped coordinates when textbox is off-screen.
-        // PREVENTS: Out-of-bounds pixel buffer access when textbox is partially visible.
+        // WHY bounds checks: Scroll can push textbox partially off-screen (negative Y wraps to huge usize, or Y exceeds height). X could also exceed width on narrow windows. PROOF: wrapping_add/wrapping_sub produce wrapped coordinates when textbox is off-screen. PREVENTS: Out-of-bounds pixel buffer access when textbox is partially visible.
         for (i, &(inset, l, h)) in crossings.iter().enumerate() {
             // Stop at diagonal - when inset exceeds i, we've gone past the 45-degree point
             if inset as usize > i {
@@ -4174,8 +4135,7 @@ impl PhotonApp {
             }
         }
 
-        // Top-right corner - mirror of top-left (flip x)
-        // (bounds checks justified in top-left comment: scroll causes partial visibility)
+        // Top-right corner - mirror of top-left (flip x) (bounds checks justified in top-left comment: scroll causes partial visibility)
         for (i, &(inset, l, h)) in crossings.iter().enumerate() {
             if inset as usize > i {
                 break;
@@ -4260,8 +4220,7 @@ impl PhotonApp {
             }
         }
 
-        // Bottom-left corner - mirror of top-left (flip y), shifted down 1 to avoid overlap
-        // (bounds checks justified in top-left comment: scroll causes partial visibility)
+        // Bottom-left corner - mirror of top-left (flip y), shifted down 1 to avoid overlap (bounds checks justified in top-left comment: scroll causes partial visibility)
         for (i, &(inset, l, h)) in crossings.iter().enumerate() {
             if inset as usize > i {
                 break;
@@ -4341,8 +4300,7 @@ impl PhotonApp {
             }
         }
 
-        // Bottom-right corner - mirror of top-left (flip both x and y), shifted down 1 to avoid overlap
-        // (bounds checks justified in top-left comment: scroll causes partial visibility)
+        // Bottom-right corner - mirror of top-left (flip both x and y), shifted down 1 to avoid overlap (bounds checks justified in top-left comment: scroll causes partial visibility)
         for (i, &(inset, l, h)) in crossings.iter().enumerate() {
             if inset as usize > i {
                 break;
@@ -4517,8 +4475,7 @@ impl PhotonApp {
         }
     }
 
-    /// Generate textbox glow mask by blurring textbox_mask left/right and knocking out center
-    /// glow_colour is 0x00RRGGBB format (no alpha), or 0x00010101 for white/gray
+    /// Generate textbox glow mask by blurring textbox_mask left/right and knocking out center glow_colour is 0x00RRGGBB format (no alpha), or 0x00010101 for white/gray
     pub fn apply_textbox_glow(
         pixels: &mut [u32],
         textbox_mask: &[u8],
@@ -5325,28 +5282,9 @@ impl PhotonApp {
             highlight_buffer[glow_idx] = prev;
         }
 
-        // // Vertical pass: top to bottom
-        // for x in 0..window_width as usize {
-        //     let mut prev = highlight_buffer[x]; // y=0, x=x
-        //     for y in 1..window_height as usize {
-        //         let glow_idx = y * window_width as usize + x;
-        //         prev = (((highlight_buffer[glow_idx] as u16 + prev as u16 * 3) >> 2) as u8)
-        //             .max(highlight_buffer[glow_idx]);
-        //         highlight_buffer[glow_idx] = prev;
-        //     }
-        // }
+        // // Vertical pass: top to bottom for x in 0..window_width as usize { let mut prev = highlight_buffer[x]; // y=0, x=x for y in 1..window_height as usize { let glow_idx = y * window_width as usize + x; prev = (((highlight_buffer[glow_idx] as u16 + prev as u16 * 3) >> 2) as u8) .max(highlight_buffer[glow_idx]); highlight_buffer[glow_idx] = prev; } }
 
-        // // Vertical pass: bottom to top
-        // for x in 0..window_width as usize {
-        //     let mut prev =
-        //         highlight_buffer[(window_height as usize - 1) * window_width as usize + x];
-        //     for y in (0..window_height as usize - 1).rev() {
-        //         let glow_idx = y * window_width as usize + x;
-        //         prev = (((highlight_buffer[glow_idx] as u16 + prev as u16 * 3) >> 2) as u8)
-        //             .max(highlight_buffer[glow_idx]);
-        //         highlight_buffer[glow_idx] = prev;
-        //     }
-        // }
+        // // Vertical pass: bottom to top for x in 0..window_width as usize { let mut prev = highlight_buffer[(window_height as usize - 1) * window_width as usize + x]; for y in (0..window_height as usize - 1).rev() { let glow_idx = y * window_width as usize + x; prev = (((highlight_buffer[glow_idx] as u16 + prev as u16 * 3) >> 2) as u8) .max(highlight_buffer[glow_idx]); highlight_buffer[glow_idx] = prev; } }
 
         let mut prev = glow_buffer[0];
         for glow_idx in 1..glow_buffer.len() {
@@ -5421,8 +5359,14 @@ impl PhotonApp {
         }
     }
 
-    /// Draw an anti-aliased filled circle blending toward black
-    /// Used as the base layer for the connectivity indicator
+    /// Draw an anti-aliased filled circle blending toward black. Used as the base layer for the connectivity indicator.
+    ///
+    /// Caller invariants (enforced at call site):
+    /// - `radius ≥ 1`
+    /// - `cx - radius`, `cy - radius` ≥ 0 (no usize underflow on dx/dy = -r)
+    /// - `cx + radius < width`, `cy + radius < pixels.len() / width`
+    ///
+    /// Sole call chain: connectivity-indicator path with cx = cy = 4*radius (see compositing.rs:158-160), so all four invariants hold provably.
     fn draw_black_circle(pixels: &mut [u32], width: usize, cx: usize, cy: usize, radius: usize) {
         let r_outer = radius as isize;
         let r_outer2 = r_outer * r_outer;
@@ -5432,9 +5376,6 @@ impl PhotonApp {
 
         for dy in -r_outer..=r_outer {
             let y = cy as isize + dy;
-            if y < 0 || y >= (pixels.len() / width) as isize {
-                continue;
-            }
             let dy2 = dy * dy;
 
             for dx in -r_outer..=r_outer {
@@ -5466,8 +5407,14 @@ impl PhotonApp {
         }
     }
 
-    /// Add or subtract colour from an anti-aliased circle region
-    /// Used for the green overlay on the connectivity indicator
+    /// Add or subtract colour from an anti-aliased circle region. Used for the green overlay on the connectivity indicator.
+    ///
+    /// Caller invariants (enforced at call site):
+    /// - `radius ≥ 1`
+    /// - `cx - radius`, `cy - radius` ≥ 0
+    /// - `cx + radius < width`, `cy + radius < pixels.len() / width`
+    ///
+    /// Sole call chain: connectivity-indicator path with cx = cy = 4*radius (see compositing.rs:158-160).
     fn draw_filled_circle(
         pixels: &mut [u32],
         width: usize,
@@ -5490,9 +5437,6 @@ impl PhotonApp {
 
         for dy in -r_outer..=r_outer {
             let y = cy as isize + dy;
-            if y < 0 || y >= (pixels.len() / width) as isize {
-                continue;
-            }
             let dy2 = dy * dy;
 
             for dx in -r_outer..=r_outer {
@@ -5501,9 +5445,6 @@ impl PhotonApp {
                     continue;
                 }
                 let x = cx as isize + dx;
-                if x < 0 || x >= width as isize {
-                    continue;
-                }
                 let idx = y as usize * width + x as usize;
                 // Calculate alpha: 255 inside, 0 at edge
                 let alpha = if dist2 <= r_inner2 {
@@ -5531,9 +5472,14 @@ impl PhotonApp {
         }
     }
 
-    /// Add or subtract a single-pixel hairline circle (anti-aliased ring)
-    /// Used for the grey outline on offline indicators
-    /// Draws at the outer edge of the circle (same edge as draw_indicator_base AA zone)
+    /// Add or subtract a single-pixel hairline circle (anti-aliased ring). Used for the grey outline on offline indicators. Draws at the outer edge of the circle (same edge as draw_indicator_base AA zone).
+    ///
+    /// Caller invariants (enforced at call site):
+    /// - `radius ≥ 2` (note: stricter than draw_black_circle / draw_filled_circle — hairline uses `radius - 2`; at radius = 1 r_inner2 = r_outer2 = 1 and edge_range = 0, panicking in the AA division)
+    /// - `cx - radius`, `cy - radius` ≥ 0
+    /// - `cx + radius < width`, `cy + radius < pixels.len() / width`
+    ///
+    /// Sole call chain: connectivity-indicator path with cx = cy = 4*radius (see compositing.rs:158-160).
     fn draw_indicator_hairline(
         pixels: &mut [u32],
         width: usize,
@@ -5556,9 +5502,6 @@ impl PhotonApp {
 
         for dy in -r_outer..=r_outer {
             let y = cy as isize + dy;
-            if y < 0 || y >= (pixels.len() / width) as isize {
-                continue;
-            }
             let dy2 = dy * dy;
 
             for dx in -r_outer..=r_outer {
@@ -5567,9 +5510,6 @@ impl PhotonApp {
                     continue;
                 }
                 let x = cx as isize + dx;
-                if x < 0 || x >= width as isize {
-                    continue;
-                }
                 let idx = y as usize * width + x as usize;
                 // Calculate alpha: 255 inside, 0 at edge
                 let alpha = if dist2 <= r_inner2 {
@@ -5636,11 +5576,9 @@ impl PhotonApp {
     /// Unified avatar drawing function
     /// - hit_test_map: Some = fill with HIT_AVATAR, None = skip hit testing
     /// - ring_colour: Some = draw status ring, None = no ring
-    /// - brighten: brighten avatar when file hovering (self avatar only)
-    /// avatar_scaled must be pre-scaled to diameter×diameter (diameter = radius * 2)
+    /// - brighten: brighten avatar when file hovering (self avatar only) avatar_scaled must be pre-scaled to diameter×diameter (diameter = radius * 2)
     ///
-    /// Coordinates are isize to support scrolling (can be partially/fully off-screen).
-    /// Computes intersection of avatar bounds with screen - loop bounds prove safety.
+    /// Coordinates are isize to support scrolling (can be partially/fully off-screen). Computes intersection of avatar bounds with screen - loop bounds prove safety.
     pub fn draw_avatar(
         pixels: &mut [u32],
         mut hit_test_map: Option<&mut [u8]>,
@@ -5672,8 +5610,7 @@ impl PhotonApp {
         // AA diff for inner edge (no-ring case): maps [r_inner_inner2, r_inner2) to [255, 0]
         let diff_inner = r_inner2 - r_inner_inner2;
 
-        // Intersection bounds:
-        // WHY: cx/cy can be negative or exceed screen bounds due to scroll offset
+        // Intersection bounds: WHY: cx/cy can be negative or exceed screen bounds due to scroll offset
         // PROOF: We compute intersection of circle bounding box with screen (0..width, 0..height)
         //        If intersection is empty (y_max <= y_min), avatar is off-screen, return early
         //        Otherwise cast to usize is safe since values are in [0, width/height]
@@ -5819,8 +5756,7 @@ fn sample_avatar(
         let mut green = data[tex_idx + 1] as u32;
         let mut blue = data[tex_idx + 2] as u32;
         if brighten {
-            // PROOF: red/green/blue are u8 (0-255), multiplied by 3/2 gives max 382.
-            // .min(255) is REQUIRED to prevent overflow when packing to u32 RGB.
+            // PROOF: red/green/blue are u8 (0-255), multiplied by 3/2 gives max 382. .min(255) is REQUIRED to prevent overflow when packing to u32 RGB.
             red = (red * 3 / 2).min(255);
             green = (green * 3 / 2).min(255);
             blue = (blue * 3 / 2).min(255);
