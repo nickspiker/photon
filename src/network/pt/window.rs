@@ -6,8 +6,7 @@
 //! - Loss adaptation: adjust ratio based on observed loss rate
 //! - No artificial window cap - naturally fills available BDP
 //!
-//! This is NOT TCP - we intentionally overshoot to saturate the link,
-//! then clean up gaps in sweep cycles after all data is sent.
+//! This is NOT TCP - we intentionally overshoot to saturate the link, then clean up gaps in sweep cycles after all data is sent.
 
 use std::time::{Duration, Instant};
 
@@ -167,8 +166,7 @@ impl WindowController {
 
     /// Called on successful ACK - update rolling loss rate and adapt ratio
     pub fn on_ack(&mut self) {
-        // EMA update: successful ACK = 0 loss for this sample
-        // α = 0.02 gives ~50 packet smoothing window
+        // EMA update: successful ACK = 0 loss for this sample α = 0.02 gives ~50 packet smoothing window
         self.loss_rate = 0.98 * self.loss_rate;
 
         // Adapt ratio based on current loss rate

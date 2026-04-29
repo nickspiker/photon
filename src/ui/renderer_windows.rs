@@ -8,8 +8,7 @@ use windows::Win32::UI::WindowsAndMessaging::{UpdateLayeredWindow, ULW_ALPHA};
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::Window;
 
-/// Buffer guard — Deref gives you the DIB's actual pixel memory.
-/// Compositor writes premultiplied pixels directly (PREMULTIPLIED=true on Windows).
+/// Buffer guard — Deref gives you the DIB's actual pixel memory. Compositor writes premultiplied pixels directly (PREMULTIPLIED=true on Windows).
 pub struct WindowsBuffer<'a> {
     pixels: &'a mut [u32],
     renderer: &'a Renderer,

@@ -69,8 +69,7 @@ impl PhotonApp {
         self.current_text_state.width = total_width;
         self.current_text_state.widths = widths;
     }
-    /// Render text with proper clipping to textbox bounds
-    /// y_offset: additional Y offset to apply (for scroll)
+    /// Render text with proper clipping to textbox bounds y_offset: additional Y offset to apply (for scroll)
     pub fn render_text_clipped(
         pixels: &mut [u32],
         text: &TextState,
@@ -131,8 +130,7 @@ impl PhotonApp {
         }
     }
 
-    /// Update scroll offset to keep blinkey visible within usable text area.
-    /// Uses symmetric margins since text is now centered in usable area.
+    /// Update scroll offset to keep blinkey visible within usable text area. Uses symmetric margins since text is now centered in usable area.
     pub fn update_text_scroll(&mut self) -> bool {
         if self.current_text_state.chars.is_empty() {
             self.current_text_state.scroll_offset = 0.0;
@@ -242,8 +240,7 @@ impl PhotonApp {
             let total_text_width = self.current_text_state.width as f32;
             let textbox_half = usable_width / 2.0;
 
-            // Calculate scroll limits:
-            // Stop at 3/4 width from center instead of at the edge (leaves padding for selection)
+            // Calculate scroll limits: Stop at 3/4 width from center instead of at the edge (leaves padding for selection)
             let scroll_limit_distance = (textbox_half * 3.0) / 4.0;
 
             // Max scroll LEFT (positive): first char at 3/4 from left edge

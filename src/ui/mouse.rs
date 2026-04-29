@@ -216,8 +216,7 @@ impl PhotonApp {
                             }
                         buffer.present().unwrap();
 
-                            // Prepare for potential drag selection - set anchor to click position
-                            // is_mouse_selecting will be set to true when mouse actually moves (in handle_mouse_move)
+                            // Prepare for potential drag selection - set anchor to click position is_mouse_selecting will be set to true when mouse actually moves (in handle_mouse_move)
                             self.current_text_state.selection_anchor =
                                 Some(self.current_text_state.blinkey_index);
                             self.selection_dirty = true;
@@ -977,9 +976,7 @@ impl PhotonApp {
         }
     }
 
-    /// macOS: poll mouse position and button state directly from AppKit.
-    /// Called from about_to_wait() to track the cursor even when it's outside the window
-    /// (winit stops delivering CursorMoved once the cursor leaves during resize).
+    /// macOS: poll mouse position and button state directly from AppKit. Called from about_to_wait() to track the cursor even when it's outside the window (winit stops delivering CursorMoved once the cursor leaves during resize).
     #[cfg(target_os = "macos")]
     pub fn poll_macos_resize(&mut self, window: &Window, screen_height: u32) -> bool {
         use std::ffi::{c_char, c_void};

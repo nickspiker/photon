@@ -2,13 +2,11 @@
 //
 // lib.rs ── constants, logging, debug macro, module re-exports
 //   PHOTON_PORT=4383, PHOTON_PORT_FALLBACK=3546, MULTICAST_PORT=4384
-//   OSC_PER_SEC, PEER_EXPIRY_OSC (7 days), KBUCKET_STALE_OSC (1 hour)
-//   init_logging(), log()
+// OSC_PER_SEC, PEER_EXPIRY_OSC (7 days), KBUCKET_STALE_OSC (1 hour) init_logging(), log()
 //
 // main.rs ── winit event loop, window creation, tokio async runtime
 //
-// crypto/
-// ├── chain.rs ── rolling-chain encryption (512-link, 16KB)
+// crypto/ ├── chain.rs ── rolling-chain encryption (512-link, 16KB)
 // │   struct Chain { links: [[u8;32]; 512], last_ack_time: Option<EagleTime> }
 // │     ::from_bytes(), to_bytes(), from_full_bytes()
 // │     ::current_key(), link(idx), links()
@@ -24,25 +22,14 @@
 // │   generate_confirmation_smear(message, chain)
 // │   generate_ack_proof(eagle_time, plaintext_hash, chain)
 // │   verify_ack_proof(eagle_time, plaintext_hash, chain, received_proof)
-// │   derive_nonce(eagle_time), encrypt_layers(), decrypt_layers()
-// │
-// ├── clutch.rs ── 8-algorithm parallel key ceremony
+// │   derive_nonce(eagle_time), encrypt_layers(), decrypt_layers() │ ├── clutch.rs ── 8-algorithm parallel key ceremony
 // │   smear_hash(data), derive_conversation_token(participant_seeds)
-// │   derive_ceremony_instance(offers), spaghettify(input)
-// │
-// ├── handle_proof.rs ── memory-hard handle attestation (~1s)
-// │   handle_proof(hash)
-// │
-// ├── keys.rs ── identity key management (TODO)
-// │
-// ├── self_verify.rs ── Ed25519 binary signature verification
+// │   derive_ceremony_instance(offers), spaghettify(input) │ ├── handle_proof.rs ── memory-hard handle attestation (~1s)
+// │   handle_proof(hash) │ ├── keys.rs ── identity key management (TODO) │ ├── self_verify.rs ── Ed25519 binary signature verification
 // │   AUTHOR_PUBKEY, SYSTEM_PUBKEYS
-// │   is_system_pubkey(pubkey), verify_binary_hash()
-// │
-// └── shards.rs ── social recovery key sharding (TODO)
+// │   is_system_pubkey(pubkey), verify_binary_hash() │ └── shards.rs ── social recovery key sharding (TODO)
 //
-// network/
-// ├── fgtw/ ── Fractal Gradient Trust Web (Kademlia DHT)
+// network/ ├── fgtw/ ── Fractal Gradient Trust Web (Kademlia DHT)
 // │   ├── blob.rs ── binary blob storage/retrieval
 // │   │
 // │   ├── bootstrap.rs ── initial peer discovery
@@ -59,9 +46,7 @@
 // │   │   enum FgtwMessage { ... }
 // │   │   struct PeerRecord, SyncRecord
 // │   │
-// │   └── relay.rs ── relay node logic
-// │
-// ├── handle_query.rs ── handle attestation and lookup
+// │   └── relay.rs ── relay node logic │ ├── handle_query.rs ── handle attestation and lookup
 // │   struct HandleQuery
 // │     ::new(keypair, event_proxy), query(handle), try_recv()
 // │     ::try_recv_online(), search(handle), try_recv_search()
@@ -69,16 +54,10 @@
 // │     ::set_transport(), get_transport(), port(), socket()
 // │   enum QueryResult { Success(AttestationData), AlreadyAttested, Error }
 // │   struct AttestationData { handle, handle_proof, identity_seed,
-// │     contacts, friendships, avatar_pixels, peers }
-// │
-// ├── inspect.rs ── network diagnostic utilities, VSF disk I/O
+// │     contacts, friendships, avatar_pixels, peers } │ ├── inspect.rs ── network diagnostic utilities, VSF disk I/O
 // │   vsf_write(path, encrypted, label, decrypted, device_secret, policy)
-// │   vsf_read(path, label, device_secret)
-// │
-// ├── peer_updates.rs ── peer state change notifications
-// │   struct PeerUpdate, PeerUpdateClient
-// │
-// ├── pt/ ── Photon Transfer (large message transport)
+// │   vsf_read(path, label, device_secret) │ ├── peer_updates.rs ── peer state change notifications
+// │   struct PeerUpdate, PeerUpdateClient │ ├── pt/ ── Photon Transfer (large message transport)
 // │   ├── buffer.rs ── reassembly buffer
 // │   ├── packets.rs ── packet framing
 // │   │   struct PTSpec
@@ -91,9 +70,7 @@
 // │     ::new(keypair), send(addr, data), send_with_pubkey()
 // │     ::handle_spec(), handle_spec_ack(), handle_data(), handle_ack()
 // │   struct RelayInfo { recipient_pubkey, payload }
-// │   struct TickSend { peer_addr, wire_bytes, also_tcp, relay }
-// │
-// ├── status.rs ── P2P ping/pong, CLUTCH orchestration
+// │   struct TickSend { peer_addr, wire_bytes, also_tcp, relay } │ ├── status.rs ── P2P ping/pong, CLUTCH orchestration
 // │   struct StatusChecker
 // │     ::new(socket, keypair, contacts, sync_records, event_proxy)
 // │   enum StatusUpdate {
@@ -113,40 +90,24 @@
 // │     acked_eagle_time, plaintext_hash }
 // │   struct PTSendRequest { peer_addr, data }
 // │   struct ClutchOfferRequest, ClutchKemResponseRequest,
-// │     ClutchCompleteRequest, LanBroadcastRequest, ClearPtSendsRequest
-// │
-// ├── tcp.rs ── TCP fallback for large payloads
-// │   send(stream, data), recv(stream)
-// │
-// └── udp.rs ── UDP socket utilities
-//     async send(socket, data, addr), send_sync(socket, data, addr)
-//     log_received(data, addr)
-//     get_local_ip(), get_broadcast_addr()
+// │     ClutchCompleteRequest, LanBroadcastRequest, ClearPtSendsRequest │ ├── tcp.rs ── TCP fallback for large payloads
+// │   send(stream, data), recv(stream) │ └── udp.rs ── UDP socket utilities async send(socket, data, addr), send_sync(socket, data, addr) log_received(data, addr) get_local_ip(), get_broadcast_addr()
 //
-// platform/
-// ├── mod.rs ── platform detection
-// └── jni_android.rs ── Android JNI bridge
+// platform/ ├── mod.rs ── platform detection └── jni_android.rs ── Android JNI bridge
 //
-// storage/
-// ├── mod.rs ── unified storage I/O (all disk writes/reads go through here)
+// storage/ ├── mod.rs ── unified storage I/O (all disk writes/reads go through here)
 // │   enum WritePolicy { MustSucceed, BestEffort }
 // │   write_file(path, data, label, policy) ── atomic write with fsync
-// │   read_file(path, label) ── unified read with error logging
-// │
-// ├── cloud.rs ── FGTW cloud backup (contacts sync)
+// │   read_file(path, label) ── unified read with error logging │ ├── cloud.rs ── FGTW cloud backup (contacts sync)
 // │   struct CloudContact, enum CloudError
 // │   contacts_storage_key(identity_seed, device_secret)
-// │   contacts_encryption_key(identity_seed, device_secret)
-// │
-// ├── contacts.rs ── local contact storage via FlatStorage
+// │   contacts_encryption_key(identity_seed, device_secret) │ ├── contacts.rs ── local contact storage via FlatStorage
 // │   struct ContactIdentity
 // │   derive_identity_seed(handle)
 // │   save/load_contact_list(storage), save/load_contact_state(contact, storage)
 // │   save/load_all_contacts(storage), save/load_messages(contact, storage)
 // │   save/load/delete_clutch_keypairs(handle, storage)
-// │   save/load/delete_clutch_slots(slots, handle, storage)
-// │
-// ├── flat.rs ── flat opaque storage (all disk I/O goes through here)
+// │   save/load/delete_clutch_slots(slots, handle, storage) │ ├── flat.rs ── flat opaque storage (all disk I/O goes through here)
 // │   struct FlatStorage, enum StorageError { Io, Crypto, Parse }
 // │     ::new(identity_seed, device_secret)
 // │     ::write(key, data), ::read(key), ::delete(key)
@@ -158,15 +119,9 @@
 // │     last_seen, clutch_state, keypairs, slots, ceremony_id, ... }
 // │   struct ChainBlob { chain_links, chain_last_ack_time, message_index }
 // │   struct MessageBlob { author_index, status, eagle_time, plaintext, ... }
-// │   struct MessageIndexEntry { network_id, eagle_time, author_index }
-// │
-// └── friendship.rs ── per-friendship chain persistence via FlatStorage
-//     save/load_friendship_chains(chains/id, storage)
-//     load_all_friendships(friendship_ids, storage)
-//     delete_friendship_chains(friendship_id, storage)
+// │   struct MessageIndexEntry { network_id, eagle_time, author_index } │ └── friendship.rs ── per-friendship chain persistence via FlatStorage save/load_friendship_chains(chains/id, storage) load_all_friendships(friendship_ids, storage) delete_friendship_chains(friendship_id, storage)
 //
-// types/
-// ├── contact.rs ── contact/friendship re-exports
+// types/ ├── contact.rs ── contact/friendship re-exports
 // │   struct PartySlot { handle_hash, offer, kem_secrets_from/to_them, ... }
 // │     ::new(handle_hash), is_complete()
 // │   struct ChatMessage { content, timestamp, is_outgoing, delivered }
@@ -189,13 +144,9 @@
 // │     ::update_last_seen(), best_addr(), can_be_custodian()
 // │     ::get_ceremony_id(), init_clutch_slots()
 // │     ::get_slot_index(), get_slot_mut(), get_slot()
-// │     ::all_slots_complete(), insert_message_sorted()
-// │
-// ├── device.rs ── device identity
+// │     ::all_slots_complete(), insert_message_sorted() │ ├── device.rs ── device identity
 // │   struct DevicePubkey
-// │   ed25519_secret_to_x25519(ed_secret)
-// │
-// ├── friendship.rs ── friendship and ceremony types
+// │   ed25519_secret_to_x25519(ed_secret) │ ├── friendship.rs ── friendship and ceremony types
 // │   struct CeremonyId([u8;32])
 // │     ::derive_base(handle_hashes), derive(handle_hashes, provenances)
 // │     ::from_bytes(), as_bytes()
@@ -203,36 +154,23 @@
 // │     ::derive(handle_hashes), from_bytes(), as_bytes()
 // │     ::to_base64(), from_base64()
 // │   struct FriendshipChains { friendship_id, conversation_token,
-// │     chains, participants }
-// │
-// ├── handle.rs ── handle type
+// │     chains, participants } │ ├── handle.rs ── handle type
 // │   struct Handle { text, key }
-// │     ::new(), to_handle_proof(), username_to_handle_proof()
-// │
-// ├── message.rs ── message structures
+// │     ::new(), to_handle_proof(), username_to_handle_proof() │ ├── message.rs ── message structures
 // │   struct MessageId([u8;32]) ::new(), as_bytes(), to_vsf(), from_vsf()
 // │   struct Message { nonce, sequence, payload, timestamp }
 // │     ::new(), to_vsf_bytes(), from_vsf_bytes()
 // │   struct EncryptedMessage { sequence, ciphertext }
 // │     ::to_vsf_bytes(), from_vsf_bytes()
 // │   enum MessageStatus { Pending, Sent, Delivered, Read, Failed }
-// │     ::to_vsf(), from_vsf()
-// │
-// ├── peer.rs ── peer connection state
+// │     ::to_vsf(), from_vsf() │ ├── peer.rs ── peer connection state
 // │   struct Peer { public_identity, address, last_seen, connection_state }
 // │     ::new(), update_connection_state(), is_online()
 // │   enum ConnectionState { Disconnected, Connecting, Connected, Authenticated }
-// │   struct DhtAnnouncement { public_key, port, timestamp, signature }
-// │
-// ├── seed.rs ── cryptographic seed
-// │   struct Seed([u8;32])
-// │
-// └── shard.rs ── key shard structures
-//     struct KeyShard, ShardId([u8;16]), DecryptedShard
-//     struct RecoveryRequest, RecoveryApproval, ShardDistribution
+// │   struct DhtAnnouncement { public_key, port, timestamp, signature } │ ├── seed.rs ── cryptographic seed
+// │   struct Seed([u8;32]) │ └── shard.rs ── key shard structures struct KeyShard, ShardId([u8;16]), DecryptedShard struct RecoveryRequest, RecoveryApproval, ShardDistribution
 //
-// ui/
-// ├── app.rs ── application state machine
+// ui/ ├── app.rs ── application state machine
 // │   struct PhotonApp (main app state — see text_editing.rs for text methods)
 // │   struct TextState { chars, widths, width, blinkey_index,
 // │     scroll_offset, selection_anchor, textbox_focused, is_empty }
@@ -257,30 +195,12 @@
 // │   struct ClutchKemEncapResult { contact_id, kem_response, local_secrets, ... }
 // │   struct ClutchCeremonyResult { contact_id, friendship_chains,
 // │     eggs_proof, their_handle_hash, ceremony_id, ... }
-// │   soft_limit(x, max)
-// │
-// ├── avatar.rs ── avatar encoding/upload/download
-// │   AVATAR_SIZE, encode_avatar_from_image(image_data)
-// │
-// ├── colour.rs ── colour utilities
-// │
-// ├── compositing.rs ── compositing pipeline, layout calculation, rendering
-// │
-// ├── display_profile.rs ── ICC colour profile conversion
+// │   soft_limit(x, max) │ ├── avatar.rs ── avatar encoding/upload/download
+// │   AVATAR_SIZE, encode_avatar_from_image(image_data) │ ├── colour.rs ── colour utilities │ ├── compositing.rs ── compositing pipeline, layout calculation, rendering │ ├── display_profile.rs ── ICC colour profile conversion
 // │   struct DisplayConverter { xyz_to_display, r/g/b_trc }
-// │     ::new(), convert_avatar(vsf_rgb)
-// │
-// ├── drawing.rs ── primitive drawing (circles, lines, fills)
-// │
-// ├── keyboard.rs ── input handling (key events → app state changes)
-// │
-// ├── mouse.rs ── mouse/touch input
-// │
-// ├── renderer_*.rs ── platform-specific renderers (7 backends)
+// │     ::new(), convert_avatar(vsf_rgb) │ ├── drawing.rs ── primitive drawing (circles, lines, fills) │ ├── keyboard.rs ── input handling (key events → app state changes) │ ├── mouse.rs ── mouse/touch input │ ├── renderer_*.rs ── platform-specific renderers (7 backends)
 // │   android, linux_softbuffer, linux_wgpu, macos,
-// │   macos_softbuffer, redox, windows
-// │
-// ├── text_editing.rs ── text input methods on PhotonApp
+// │   macos_softbuffer, redox, windows │ ├── text_editing.rs ── text input methods on PhotonApp
 // │   ::textbox_is_focused(), font_size(), textbox_width/height()
 // │   ::textbox_center_y(), textbox_left/right()
 // │   ::recalculate_char_widths(), render_text_clipped()
@@ -288,16 +208,9 @@
 // │   ::get_selection_range(), delete_selection(), get_selected_text()
 // │   ::paste_text(), handle_blinkey_left(), next_blink_wake_time()
 // │   ::start/stop/undraw/draw/flip_blinkey()
-// │   ::add/subtract_blinkey_top/bottom(), invert_selection()
-// │
-// ├── text_rasterizing.rs ── font rendering (cosmic-text)
-// │
-// └── theme.rs ── colour palette
+// │   ::add/subtract_blinkey_top/bottom(), invert_selection() │ ├── text_rasterizing.rs ── font rendering (cosmic-text) │ └── theme.rs ── colour palette
 //
-// bin/
-// ├── photon-keygen.rs ── signing key generation
-// ├── photon-signature-signer.rs ── binary signing tool
-// └── test-device-key.rs ── device key diagnostic
+// bin/ ├── photon-keygen.rs ── signing key generation ├── photon-signature-signer.rs ── binary signing tool └── test-device-key.rs ── device key diagnostic
 
 // Global debug flag - can be toggled at runtime with Ctrl+D
 use std::sync::atomic::AtomicBool;
@@ -312,8 +225,7 @@ pub const PHOTON_PORT: u16 = 4383;
 pub const PHOTON_PORT_FALLBACK: u16 = 3546;
 
 /// Multicast port for LAN peer discovery
-/// Separate from main port to avoid SO_REUSEADDR complexity
-/// 4384 is IANA unassigned
+/// Separate from main port to avoid SO_REUSEADDR complexity 4384 is IANA unassigned
 pub const MULTICAST_PORT: u16 = 4384;
 
 /// Eagle Time: oscillations per second (hydrogen hyperfine transition)

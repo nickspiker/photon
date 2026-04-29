@@ -1,8 +1,6 @@
 //! WebSocket client for real-time peer IP updates from FGTW
 //!
-//! Connects to wss://fgtw.org/ws and receives peer_update messages
-//! when any peer's IP changes. This eliminates the 25-second delay
-//! caused by stale IP caches.
+//! Connects to wss://fgtw.org/ws and receives peer_update messages when any peer's IP changes. This eliminates the 25-second delay caused by stale IP caches.
 //!
 //! Desktop-only module (not available on Android - uses FCM instead)
 
@@ -36,8 +34,7 @@ pub struct PeerUpdateClient {
 impl PeerUpdateClient {
     /// Create and start a new peer update WebSocket client
     ///
-    /// Spawns a background thread that maintains a WebSocket connection
-    /// to fgtw.org/ws and receives peer updates.
+    /// Spawns a background thread that maintains a WebSocket connection to fgtw.org/ws and receives peer updates.
     #[cfg(not(target_os = "android"))]
     pub fn new(event_proxy: EventLoopProxy<PhotonEvent>) -> Self {
         let (update_tx, update_rx) = channel::<PeerUpdate>();

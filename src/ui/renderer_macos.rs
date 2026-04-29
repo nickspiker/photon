@@ -1,10 +1,8 @@
 //! macOS renderer — wgpu/Metal backend, no shader
 //!
-//! CPU buffer → write_texture (memcpy) → copy_texture_to_texture (DMA) → present.
-//! Zero float conversion. Pixels stay as u32 bytes the whole way.
+//! CPU buffer → write_texture (memcpy) → copy_texture_to_texture (DMA) → present. Zero float conversion. Pixels stay as u32 bytes the whole way.
 //!
-//! Pixel layout: `u32` stores `0xAARRGGBB`. Little-endian bytes are [B,G,R,A]
-//! = Bgra8Unorm — direct upload, zero byte-swapping.
+//! Pixel layout: `u32` stores `0xAARRGGBB`. Little-endian bytes are [B,G,R,A] = Bgra8Unorm — direct upload, zero byte-swapping.
 
 use winit::window::Window;
 
@@ -130,8 +128,7 @@ impl Renderer {
     }
 
     fn present_frame(&mut self) {
-        // Always upload the full buffer — GPU texture is persistent so no
-        // buffer-age problem, and write_texture is a memcpy into shared RAM.
+        // Always upload the full buffer — GPU texture is persistent so no buffer-age problem, and write_texture is a memcpy into shared RAM.
         let bytes: &[u8] = unsafe {
             std::slice::from_raw_parts(
                 self.cpu_buffer.as_ptr() as *const u8,
@@ -158,10 +155,7 @@ impl Renderer {
             Ok(t)  => t,
             Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
                 self.surface.configure(&self.device, &self.config);
-                // Retry immediately — the reconfigured surface is ready now.
-                // Without this, Metal clears the new swapchain to black and we
-                // return with nothing presented; the window stays black until
-                // the next event happens to fire (could be 250 ms or never).
+                // Retry immediately — the reconfigured surface is ready now. Without this, Metal clears the new swapchain to black and we return with nothing presented; the window stays black until the next event happens to fire (could be 250 ms or never).
                 match self.surface.get_current_texture() {
                     Ok(t)  => t,
                     Err(_) => return,

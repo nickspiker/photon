@@ -6,9 +6,7 @@ use super::theme;
 
 /// Photon's signature animated background texture
 ///
-/// Creates a symmetric procedural texture with organic noise patterns.
-/// The `fullscreen` parameter controls whether edge pixels are drawn
-/// (false = leave 1px border for window edges on desktop).
+/// Creates a symmetric procedural texture with organic noise patterns. The `fullscreen` parameter controls whether edge pixels are drawn (false = leave 1px border for window edges on desktop).
 ///
 /// # Arguments
 /// * `pixels` - ARGB pixel buffer (0xAARRGGBB format)
@@ -75,7 +73,6 @@ pub fn draw_background_texture(
 }
 
 /// Draw a single row of the background texture
-/// This is the core algorithm shared between platforms
 #[inline]
 fn draw_background_row(
     row_pixels: &mut [u32],

@@ -57,8 +57,7 @@ fn try_parse_vsf_error(bytes: &[u8]) -> Option<String> {
         }
     }
 
-    // Fallback: check if there's an error section without header field
-    // (for simple inline error responses)
+    // Fallback: check if there's an error section without header field (for simple inline error responses)
     let mut ptr = header_len;
     while ptr < bytes.len() {
         if bytes[ptr] == b'[' {
