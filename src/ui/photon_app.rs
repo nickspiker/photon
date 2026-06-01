@@ -174,11 +174,12 @@ impl FluorApp for PhotonApp {
         let buf_w = ctx.viewport.width_px as usize;
         let buf_h = ctx.viewport.height_px as usize;
 
-        // Bg noise. `scroll_offset` translates the pattern vertically (existing fluor behaviour); `speckle` is the user-fidoodlable knob driven by the same scroll value so the speckle density changes visibly as you scroll. The multiplier picks the dynamic range — smaller = subtler speckle modulation, larger = more dramatic. Adjust to taste; this is the constant Nick wanted exposed.
+        // Bg noise. `speckle` is driven by `bg_scroll` so the speckle density changes as you scroll — the multiplier picks the dynamic range. `scroll_offset` is per-screen: Launch/Attest gets `0` (no vertical movement on the attest screen — speckle only); future screens (Ready, Searching, Conversation) will pass `bg_scroll` so the noise pattern also translates with their page-scroll content. Phase 2+ branches on AppState to pick which.
         let bg_scroll = self.bg_scroll;
         let speckle = (bg_scroll as usize).wrapping_mul(0x0100_0000);
+        let scroll_offset = 0; // Launch only for now.
         chrome.rasterize_bg(ctx.damage, move |canvas| {
-            paint::background_noise(canvas, speckle, false, bg_scroll, None);
+            paint::background_noise(canvas, speckle, false, scroll_offset, None);
         });
         chrome.rasterize_chrome(ctx.damage, ctx.text, ctx.clip_mask);
         chrome.flatten_into(target, buf_w, buf_h, None);
