@@ -27,6 +27,10 @@ pub mod theme;
 #[cfg(not(target_os = "android"))]
 pub mod chromatic_wave;
 
+// Desktop "Photon" wordmark — port of legacy `compositing.rs::draw_logo_text` with glow + highlight + sharp body in α + darkness format. Oxanium 800.
+#[cfg(not(target_os = "android"))]
+pub mod photon_logo;
+
 // Desktop Launch-screen layout calculator — proportional slicing port from legacy `app::Layout::new`.
 #[cfg(not(target_os = "android"))]
 pub mod launch_layout;

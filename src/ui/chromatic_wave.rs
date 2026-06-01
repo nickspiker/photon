@@ -1,28 +1,21 @@
-//! Chromatic wave: a sine-modulated visible-spectrum colour bar that composes additively over whatever's already on the canvas. Direct port of the legacy `draw_spectrum` from `compositing.rs:5092-5168` (Android side, behind cfg-gate), adapted to fluor's α + darkness pixel format and gaining a `period_scale` parameter so the user's scroll wheel can stretch/compress the wave horizontally.
+//! Chromatic wave: a sine-modulated visible-spectrum colour bar that paints over the existing background via legacy `sqrt(c*scale + c_bg²)` per-channel blend. Direct port of `compositing.rs::draw_spectrum` (compositing.rs:5092-5168), preserving the legacy quadrature-add interaction with the bg below.
 //!
-//! The wave colour at each x sweeps the 350-750 nm band of the visible spectrum (sampled via [`super::lms2006so::LMS2006SO`] and converted to RGB via the LMS → REC2020 magic 9 coefficients inlined below — identical numerical values to the legacy implementation). The y modulation is a sine whose **frequency** ramps up toward the blue end (logarithmic) and whose **amplitude** rises toward blue too — same shape as the legacy bar; the period_scale knob multiplies the base `waves_per_region` so the same shape stretches/compresses globally.
+//! The wave reads the bg pixel's visible RGB (assumed opaque from a prior `paint::background_noise` pass), quadrature-adds the wave's per-channel intensity, writes back to α + darkness storage with α preserved. Render order is bg-first (noise → wave → logo) — the wave depends on the noise already being in the buffer to read.
 //!
-//! Composition model matches the legacy "square-root of sum of squares" per-channel additive blend: `c_new_visible = sqrt(c_wave * scale + c_bg_visible²)`. Out-of-gamut values saturate to [0, 255] via `as u8` exactly as in the legacy. Alpha of the destination pixel is preserved unchanged.
+//! Colour at each x sweeps the 350-750 nm band of the visible spectrum (sampled via [`super::lms2006so::LMS2006SO`] and converted to RGB via the LMS → REC2020 magic 9 coefficients inlined below). The y modulation is a sine whose **frequency** ramps up toward the blue end (logarithmic) and whose **amplitude** rises toward blue too; `period_scale` multiplies the base `waves_per_region` so the same shape stretches/compresses globally.
 
 use super::lms2006so::LMS2006SO;
 use fluor::canvas::{Canvas, PixelRect};
 use std::f32::consts::TAU;
 
-/// Paint a chromatic wave covering `rect` of `canvas`. `phase` is the wave's horizontal phase shift in radians (advance over time to animate); `period_scale` multiplies the base waves-per-region (`1.` = legacy density, `>1.` = more waves, `<1.` = fewer waves; values can be ≤0 to invert though that's mostly a visual curiosity).
+/// Paint a chromatic wave covering `rect` of `canvas`. `phase` is the wave's horizontal phase shift in radians (advance over time to animate); `period_scale` multiplies the base waves-per-region (`1.` = legacy density, `>1.` = more waves, `<1.` = fewer waves).
 pub fn chromatic_wave(canvas: &mut Canvas, rect: PixelRect, phase: f32, period_scale: f32) {
     let buf_w = canvas.width;
     let buf_h = canvas.height;
-    // Clip the requested rect to the canvas — rasterizers don't get to write past the buffer. Anything entirely off-canvas no-ops.
-    let x0 = rect.x0.min(buf_w);
-    let y0 = rect.y0.min(buf_h);
-    let x1 = rect.x1.min(buf_w);
-    let y1 = rect.y1.min(buf_h);
-    if x0 >= x1 || y0 >= y1 {
-        return;
-    }
+    let PixelRect { x0, y0, x1, y1 } = rect;
     let region_w = x1 - x0;
     let region_h = y1 - y0;
-    // logo_height = half the region; the wave oscillates around the vertical center. region_h < 2 means we can't form a meaningful wave — bail out rather than divide by zero in the scale calc.
+    // WHY: `logo_height` is the denominator in `scale = ... / logo_height_f` below; if it were 0 the f32 division produces ±Inf / NaN and the per-pixel `as u8` cast saturates to 0 across the entire region, painting nothing — at which point the loops are wasted work. PROOF: triggered exactly when `region_h ≤ 1` (one or zero pixels of wave); the wave is undefined at that height anyway.
     let logo_height = region_h / 2;
     if logo_height == 0 {
         return;
@@ -97,7 +90,7 @@ pub fn chromatic_wave(canvas: &mut Canvas, rect: PixelRect, phase: f32, period_s
             let g_bg = ((visible >> 8) & 0xFF) as f32;
             let b_bg = (visible & 0xFF) as f32;
 
-            // Square-root-of-sum-of-squares additive blend; `as u8` saturates [0, 255] (legacy semantics: out-of-gamut values clip to gamut edge, NaN → 0).
+            // Legacy quadrature add: `sqrt(c * scale + c_bg²)`. `as u8` saturates [0, 255] (legacy semantics: out-of-gamut values clip to gamut edge, NaN → 0).
             let r_new = (r * scale + r_bg * r_bg).sqrt() as u8 as u32;
             let g_new = (g * scale + g_bg * g_bg).sqrt() as u8 as u32;
             let b_new = (b * scale + b_bg * b_bg).sqrt() as u8 as u32;
