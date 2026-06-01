@@ -7,7 +7,7 @@
 use crate::network::fgtw::Keypair;
 use crate::network::fgtw::{bootstrap::load_bootstrap_peers, PeerRecord, PeerStore};
 use crate::types::{Handle, HandleText};
-use crate::ui::app::{FoundPeer, SearchResult};
+use crate::ui::state::{FoundPeer, SearchResult};
 use std::net::UdpSocket;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};

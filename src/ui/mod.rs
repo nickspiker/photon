@@ -1,56 +1,46 @@
+// Legacy desktop UI stack — owns the per-platform renderer trio + 5 837-line compositing.rs + 6 081-line app.rs + the four extension impls (mouse, keyboard, text_editing, text_rasterizing). Cfg-gated to Android only as of Phase 0; desktop runs through `photon_app` (the fluor-hosted FluorApp impl) below. Android keeps the legacy stack untouched until fluor grows `host-android`, at which point a separate plan migrates it.
+#[cfg(target_os = "android")]
 pub mod app;
-pub mod avatar;
+#[cfg(target_os = "android")]
 mod colour;
+#[cfg(target_os = "android")]
 mod compositing;
-pub mod display_profile;
+#[cfg(target_os = "android")]
 pub mod drawing;
-#[cfg(not(target_os = "android"))]
+#[cfg(target_os = "android")]
 mod keyboard;
-#[cfg(not(target_os = "android"))]
+#[cfg(target_os = "android")]
 mod mouse;
+#[cfg(target_os = "android")]
 mod text_editing;
+#[cfg(target_os = "android")]
 mod text_rasterizing;
 
-#[cfg(target_os = "windows")]
-mod renderer_windows;
+// `avatar` is shared between Android (legacy stack uses it directly) and desktop (the Phase 2 Avatar widget will wrap its LRU cache). Stays unconditional.
+pub mod avatar;
+pub mod display_profile;
+pub mod state;
+pub mod theme;
 
-#[cfg(target_os = "linux")]
-mod renderer_linux_softbuffer;
+pub use state::{AppState, FoundPeer, LaunchState, SearchResult};
 
-#[cfg(target_os = "redox")]
-mod renderer_redox;
-
-#[cfg(target_os = "macos")]
-mod renderer_macos;
-#[cfg(target_os = "macos")]
-mod renderer_macos_softbuffer;
-
+// Android renderer survives until fluor grows host-android. Renderer trio for desktop (linux_softbuffer / linux_wgpu / windows / macos / macos_softbuffer / redox) is gated below the Android-only block since they were only consumed by the legacy `app::PhotonApp`.
 #[cfg(target_os = "android")]
 pub mod renderer_android;
 
-#[cfg(target_os = "windows")]
-use renderer_windows as renderer;
-
-#[cfg(target_os = "linux")]
-use renderer_linux_softbuffer as renderer;
-
-#[cfg(target_os = "redox")]
-use renderer_redox as renderer;
-
-#[cfg(target_os = "macos")]
-use renderer_macos as renderer;
-
-#[cfg(target_os = "android")]
+#[cfg(all(target_os = "android"))]
 pub use renderer_android as renderer;
 
-pub mod theme;
+#[cfg(target_os = "android")]
+pub use app::PhotonApp;
 
+// Desktop (everything except Android): the fluor-hosted `FluorApp` impl. Phase 0c scaffold renders chrome + blank inside; Phase 1+ rebuilds each screen as widgets.
 #[cfg(not(target_os = "android"))]
 pub mod photon_app;
+#[cfg(not(target_os = "android"))]
+pub use photon_app::PhotonApp;
 
-pub use app::{AppState, LaunchState, PhotonApp};
-
-/// Custom events for cross-thread communication with the event loop
+/// Custom events for cross-thread communication with the event loop. Wired through `FluorApp::on_user_event` on desktop (background tasks clone the `EventLoopProxy<PhotonEvent>` from `PhotonApp::set_event_proxy` and call `send_event` to wake the UI thread); Android uses its own JNI bridge.
 #[cfg(not(target_os = "android"))]
 #[derive(Debug, Clone)]
 pub enum PhotonEvent {
