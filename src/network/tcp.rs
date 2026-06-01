@@ -88,7 +88,7 @@ pub fn recv(stream: &mut TcpStream) -> std::io::Result<Vec<u8>> {
 
     // Parse L (file length) - this is what we need!
     let file_length = match vsf::decoding::parse(&header_buf, &mut ptr) {
-        Ok(vsf::VsfType::L(len, _)) => len,
+        Ok(vsf::VsfType::l(len, _)) => len,
         Ok(other) => {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,

@@ -270,7 +270,7 @@ impl PeerUpdateClient {
                         VsfType::u4(v) => Some(*v as usize),
                         VsfType::u5(v) => Some(*v as usize),
                         VsfType::u6(v) => Some(*v as usize),
-                        VsfType::m(v) => Some(*v), // Legacy compat
+                        VsfType::n(v) => Some(*v), // Was `m` pre-rename; now `n` for number/count
                         _ => None,
                     };
                     if let Some(v) = p {

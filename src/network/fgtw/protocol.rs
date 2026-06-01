@@ -865,7 +865,7 @@ fn extract_sync_records(fields: &[(String, VsfType)]) -> Result<Vec<SyncRecord>,
 fn extract_header_timestamp(header: &vsf::file_format::VsfHeader) -> Result<i64, String> {
     use vsf::types::EtType;
     match &header.creation_time {
-        VsfType::e(EtType::e6(v)) => Ok(*v),
+        Some(VsfType::e(EtType::e6(v))) => Ok(*v),
         _ => Err("Invalid header timestamp".to_string()),
     }
 }
