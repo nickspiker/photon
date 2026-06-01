@@ -62,3 +62,6 @@ ios/**/.generated/
 # Temporary files
 *.tmp
 *.temp
+
+# Stray dev artifacts
+/rust_out

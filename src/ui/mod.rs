@@ -45,6 +45,9 @@ pub use renderer_android as renderer;
 
 pub mod theme;
 
+#[cfg(not(target_os = "android"))]
+pub mod photon_app;
+
 pub use app::{AppState, LaunchState, PhotonApp};
 
 /// Custom events for cross-thread communication with the event loop
