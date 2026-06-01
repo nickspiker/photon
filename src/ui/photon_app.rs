@@ -6,6 +6,7 @@
 
 use super::chromatic_wave::chromatic_wave;
 use super::launch_layout::LaunchLayout;
+use super::photon_logo::paint_photon_logo;
 use super::PhotonEvent;
 use fluor::canvas::{Canvas, PixelRect};
 use fluor::coord::Coord;
@@ -135,14 +136,25 @@ impl FluorApp for PhotonApp {
     }
 
     fn init(&mut self, ctx: &mut Context) {
+        // Register Photon's Oxanium font weights with fluor's shared `TextRenderer` so the logo wordmark can resolve `Family::Name("Oxanium")`. Seven weights matches the legacy Photon font set; ExtraLight/Light/Regular/Medium/SemiBold/Bold/ExtraBold = numeric weights 200/300/400/500/600/700/800. The logo uses weight 800.
+        let db = ctx.text.font_system_mut().db_mut();
+        db.load_font_data(include_bytes!("../../assets/Oxanium/Oxanium-ExtraLight.ttf").to_vec());
+        db.load_font_data(include_bytes!("../../assets/Oxanium/Oxanium-Light.ttf").to_vec());
+        db.load_font_data(include_bytes!("../../assets/Oxanium/Oxanium-Regular.ttf").to_vec());
+        db.load_font_data(include_bytes!("../../assets/Oxanium/Oxanium-Medium.ttf").to_vec());
+        db.load_font_data(include_bytes!("../../assets/Oxanium/Oxanium-SemiBold.ttf").to_vec());
+        db.load_font_data(include_bytes!("../../assets/Oxanium/Oxanium-Bold.ttf").to_vec());
+        db.load_font_data(include_bytes!("../../assets/Oxanium/Oxanium-ExtraBold.ttf").to_vec());
+
         // Chrome owns its own hit-test map sized to the viewport, allocates four hit-ids for its buttons via the threaded counter, and stamps the perimeter + button rasters in `rasterize_chrome`. No app icon yet — Photon's icon asset wires here in a follow-up commit.
         let chrome = DefaultChrome::new(ctx.viewport, "Photon", None, None, &mut self.hit_counter);
         self.chrome = Some(chrome);
     }
 
-    fn on_resize(&mut self, width: u32, height: u32, ctx: &mut Context) {
+    fn on_resize(&mut self, _width: u32, _height: u32, ctx: &mut Context) {
         if let Some(chrome) = self.chrome.as_mut() {
-            chrome.resize(Viewport::new(width, height));
+            // Use `ctx.viewport` directly — it carries the current `ru` (zoom factor) that fluor's host has already updated from Ctrl/Cmd +/-/0/scroll. Building a fresh `Viewport::new(w, h)` here would reset ru to 1.0 every resize/zoom event and silently strip the user's zoom state. Width/height are redundant with `ctx.viewport.{width_px, height_px}` for the same reason.
+            chrome.resize(ctx.viewport);
             // Maximize toggles always change size between user-sized and screen-sized, so on_resize is the natural sync point for full_edge mode (no perimeter hairline / corner cutout / shadow when the window fills the screen). User-tweakable later if someone wants the bordered look when maximized.
             chrome.set_full_edge(ctx.is_maximized);
         }
@@ -167,6 +179,15 @@ impl FluorApp for PhotonApp {
             WindowEvent::CursorLeft { .. } => {
                 if let Some(chrome) = self.chrome.as_mut() {
                     if chrome.set_hover(HIT_NONE) {
+                        ctx.window.request_redraw();
+                    }
+                }
+                EventResponse::Pass
+            }
+            WindowEvent::Focused(focused) => {
+                // Chrome's edges + title + orb dim when the window loses focus (palette swap to `WINDOW_*_UNFOCUSED` + `TEXT_COLOUR_UNFOCUSED` + `ORB_DARKEN_UNFOCUSED`). The host independently dims the drop shadow via its own `is_focused` tracker; this handler just propagates to chrome's internal flag so the chrome layer re-rasterizes with the dimmed palette.
+                if let Some(chrome) = self.chrome.as_mut() {
+                    if chrome.set_focused(*focused) {
                         ctx.window.request_redraw();
                     }
                 }
@@ -294,9 +315,14 @@ impl FluorApp for PhotonApp {
         let phase = bg_scroll as f32 * (1. / ((1 << 7) as f32));
         let period_scale = 1.;
         let spectrum_rect = layout.spectrum;
-        chrome.rasterize_bg(ctx.damage, move |canvas| {
+        let logo_rect = layout.photon_text;
+        // Split-borrow `ctx.damage` (consumed by rasterize_bg's first arg) and `ctx.text` (captured by the closure for the logo's text rendering). These are disjoint fields of `Context` so the borrow checker allows both reborrows simultaneously. The closure is non-`move` so the text reborrow ends when rasterize_bg returns, leaving `ctx.text` available for `rasterize_chrome` on the next line.
+        let text = &mut *ctx.text;
+        // Bg-first compose chain (matches legacy `compositing.rs` exactly): noise paints opaque, the wave reads it for the `sqrt(c*scale + c_bg²)` blend, then the logo (glow / body / highlight) paints over both via legacy visible-RGB ops. Each step preserves α on the pixels it touches.
+        chrome.rasterize_bg(ctx.damage, |canvas| {
             paint::background_noise(canvas, shimmer, false, scroll_offset, None);
             chromatic_wave(canvas, spectrum_rect, phase, period_scale);
+            paint_photon_logo(canvas, text, logo_rect);
         });
         chrome.rasterize_chrome(ctx.damage, ctx.text, ctx.clip_mask);
 
