@@ -74,9 +74,11 @@ impl FluorApp for PhotonApp {
         self.chrome = Some(chrome);
     }
 
-    fn on_resize(&mut self, width: u32, height: u32, _ctx: &mut Context) {
+    fn on_resize(&mut self, width: u32, height: u32, ctx: &mut Context) {
         if let Some(chrome) = self.chrome.as_mut() {
             chrome.resize(Viewport::new(width, height));
+            // Maximize toggles always change size between user-sized and screen-sized, so on_resize is the natural sync point for full_edge mode (no perimeter hairline / corner cutout / shadow when the window fills the screen). User-tweakable later if someone wants the bordered look when maximized.
+            chrome.set_full_edge(ctx.is_maximized);
         }
     }
 
