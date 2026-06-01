@@ -8,6 +8,50 @@
 
 use fluor::canvas::PixelRect;
 
+/// 7-row vertical subdivision of [`LaunchLayout::attest_block`] — port of legacy `app::AttestBlockLayout::new`. Slice ratios `[error: 1.5, gap0: 0.5, textbox: 2.0, gap1: 0.25, hint: 1.8, gap2: 0.5, attest: 2.7]` sum to 9.25 units of the block height. Error and textbox are full block width; hint and attest are centred at 3/4 width so the wordmark feels framed by the controls.
+pub struct AttestBlockLayout {
+    /// Error message slot (rendered when `LaunchState` carries an error). Reserved for slice 8 of the migration.
+    pub error: PixelRect,
+    /// Handle textbox — full width.
+    pub textbox: PixelRect,
+    /// "handle" hint label slot (rendered between textbox and attest button). Reserved for slice 8.
+    pub hint: PixelRect,
+    /// Attest button — centred, 3/4 width.
+    pub attest: PixelRect,
+}
+
+impl AttestBlockLayout {
+    pub fn compute(block: PixelRect) -> Self {
+        let block_x = block.x0;
+        let block_y = block.y0;
+        let block_w = block.x1 - block.x0;
+        let block_h = block.y1 - block.y0;
+
+        // Slice ratios in unitless units; cumulative positions converted to pixels via block_h / sum. Matches the legacy `slice_positions` shape — explicit cum so rounding accumulates monotonically (no per-row independent rounding gap).
+        let slices = [1.5_f32, 0.5, 2.0, 0.25, 1.8, 0.5, 2.7];
+        let sum: f32 = slices.iter().sum();
+        let unit_px = block_h as f32 / sum;
+        let mut v = [0_usize; 8];
+        let mut cum = 0_f32;
+        for (i, s) in slices.iter().enumerate() {
+            v[i] = (cum * unit_px) as usize;
+            cum += s;
+        }
+        v[7] = (cum * unit_px) as usize;
+
+        // Hint + attest sit at 3/4 width, horizontally centred.
+        let narrow_w = block_w * 3 / 4;
+        let narrow_x = block_x + (block_w - narrow_w) / 2;
+
+        Self {
+            error: PixelRect::new(block_x, block_y + v[0], block_x + block_w, block_y + v[1]),
+            textbox: PixelRect::new(block_x, block_y + v[2], block_x + block_w, block_y + v[3]),
+            hint: PixelRect::new(narrow_x, block_y + v[4], narrow_x + narrow_w, block_y + v[5]),
+            attest: PixelRect::new(narrow_x, block_y + v[6], narrow_x + narrow_w, block_y + v[7]),
+        }
+    }
+}
+
 /// Pixel rects for every widget on the Launch screen. `spectrum` is full-width (no horizontal margin); everything else sits inside the 6/8 content column with 1/8 margin on each side.
 pub struct LaunchLayout {
     pub spectrum: PixelRect,
