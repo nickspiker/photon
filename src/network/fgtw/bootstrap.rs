@@ -46,8 +46,8 @@ fn try_parse_vsf_error(bytes: &[u8]) -> Option<String> {
                         // Return first text value (l for long text, x for VSF text)
                         for value in &section_field.values {
                             match value {
-                                VsfType::l(msg) => return Some(msg.clone()),
                                 VsfType::x(msg) => return Some(msg.clone()),
+                                VsfType::a(msg) => return Some(msg.clone()),
                                 _ => {}
                             }
                         }
@@ -68,8 +68,8 @@ fn try_parse_vsf_error(bytes: &[u8]) -> Option<String> {
                         if let Some(section_field) = section.get_field(field_name) {
                             for value in &section_field.values {
                                 match value {
-                                    VsfType::l(msg) => return Some(msg.clone()),
                                     VsfType::x(msg) => return Some(msg.clone()),
+                                    VsfType::a(msg) => return Some(msg.clone()),
                                     _ => {}
                                 }
                             }

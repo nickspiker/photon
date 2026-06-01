@@ -279,7 +279,7 @@ pub fn load_contact_state(
     contact.added = added;
 
     // Optional fields
-    if let Some(VsfType::x(s) | VsfType::l(s) | VsfType::d(s)) = get_val("ip") {
+    if let Some(VsfType::x(s) | VsfType::d(s)) = get_val("ip") {
         contact.ip = s.parse().ok();
     }
     if let Some(VsfType::hb(v)) = get_val("seed") {
