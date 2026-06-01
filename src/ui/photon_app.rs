@@ -5,21 +5,26 @@
 //! Subsequent phases (1+) port Photon's state machine (`AppState`, network handles, contact list) into this struct's fields, add per-screen widgets, and wire cross-thread wake-ups through `FluorApp::on_user_event` using the [`super::PhotonEvent`] payload type.
 
 use super::chromatic_wave::chromatic_wave;
-use super::launch_layout::LaunchLayout;
+use super::launch_layout::{AttestBlockLayout, LaunchLayout};
 use super::photon_logo::paint_photon_logo;
+use super::state::{AppState, LaunchState};
 use super::PhotonEvent;
+use crate::network::fgtw::{derive_device_keypair, get_machine_fingerprint, PeerStore};
+use crate::network::{HandleQuery, QueryResult};
 use fluor::canvas::{Canvas, PixelRect};
 use fluor::coord::Coord;
 use fluor::geom::Viewport;
 use fluor::host::app::{Context, EventResponse, FluorApp};
 use fluor::host::chrome::{self, ResizeEdge};
 use fluor::host::chrome_widget::DefaultChrome;
-use fluor::host::widget::{self, Container, Widget};
+use fluor::host::widget::{self, Container, TabDir, Widget};
 use fluor::paint::{self, HitId, HIT_NONE};
+use fluor::widgets::{BlinkTimer, Button, Textbox};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::EventLoopProxy;
-use winit::keyboard::Key;
+use winit::keyboard::{Key, NamedKey};
 use winit::window::CursorIcon;
 
 /// How long after a `[`/`]` release we still treat the bracket as "held" for chord purposes. X11 fires a synthetic Release for the held bracket the instant the action key is pressed; this grace absorbs that round-trip so chords fire reliably.
@@ -64,8 +69,24 @@ pub struct PhotonApp {
     chrome: Option<DefaultChrome>,
     hit_counter: HitId,
     event_proxy: Option<EventLoopProxy<PhotonEvent>>,
-    /// Vertical scroll offset for the background noise — drives `paint::background_noise`'s `scroll_offset` (visually translates the noise pattern up/down), `shimmer` (noise colour bias cycle), AND the chromatic wave's phase + period_scale. The wave is fully scroll-driven (no clock-tick) so the app idles at zero CPU until the user scrolls or interacts. MouseWheel events in `on_event` mutate this; everything else reads it.
+    /// Vertical scroll offset for the background noise — drives `paint::background_noise`'s `scroll_offset` (visually translates the noise pattern up/down), `shimmer` (noise colour bias cycle), AND the chromatic wave's phase. MouseWheel events in `on_event` mutate this; everything else reads it.
     bg_scroll: isize,
+    /// Wave-phase animation accumulator for the "query in flight" cue. Advances at `2π rad/s` (1 full cycle/sec) in `tick()` while `state == LaunchState::Attesting` (or future `AppState::Searching`); held constant otherwise so the wave stays idle when the app is. Summed into the scroll-driven base phase in `render()`. Wraps mod TAU each frame so it stays in `[0, 2π)` and float precision doesn't drift over a long-running query.
+    attest_anim_phase: f32,
+    /// Last `tick()` timestamp; used to compute the per-frame `delta_time` that `attest_anim_phase` advances by. `None` until the first tick fires.
+    last_tick: Option<Instant>,
+    /// Top-level app state machine. Launch(LaunchState) at startup; transitions to Ready after a successful attestation lands via `tick`'s `HandleQuery::try_recv` poll. Cloned out of [`super::state::AppState::Default`] at construction; mutated in `on_event` (textbox edits flip `Error → Fresh`), `tick` (handle_query result drives the Launch → Ready transition), and submission (`Fresh → Attesting`).
+    state: AppState,
+    /// Handle textbox — sits in the launch screen's `attest_block.textbox` slot. Holds the user's typed handle until Enter or Attest-click; geometry recomputed on every resize / zoom via `update_widget_layout`. `None` until [`FluorApp::init`].
+    textbox: Option<Textbox>,
+    /// "Attest" button — sits in the `attest_block.attest` slot. Click fires the same submission path as Enter in the textbox. `None` until init.
+    attest_btn: Option<Button>,
+    /// Currently-focused widget id, or `None` when nothing's focused (Esc, background click, first launch). Source of truth for keyboard delivery — widgets' internal `focused` flags are derived state set by `widget::apply_focus_change` after this updates.
+    focused: Option<HitId>,
+    /// Blinkey timer for the focused textbox cursor. `tick()` polls it and writes `textbox.blinkey_visible` accordingly; resets on every keystroke so the cursor stays solid through typing instead of strobing.
+    blink_timer: BlinkTimer,
+    /// HandleQuery client — owns the UDP socket, device keypair, and FGTW peer store. Submission calls `handle_query.query(handle)`; `tick()` polls `try_recv()` for results. `None` until init.
+    handle_query: Option<HandleQuery>,
     /// Last `[` Press timestamp; `None` until first press. Combined with `chord_lb_release` decides whether `[` is currently held — see `brackets_held`.
     chord_lb_press: Option<Instant>,
     /// Last `[` Release timestamp. `None` until first release.
@@ -90,6 +111,14 @@ impl PhotonApp {
             hit_counter: 0,
             event_proxy: None,
             bg_scroll: 0,
+            attest_anim_phase: 0.,
+            last_tick: None,
+            state: AppState::default(),
+            textbox: None,
+            attest_btn: None,
+            focused: None,
+            blink_timer: BlinkTimer::new(),
+            handle_query: None,
             chord_lb_press: None,
             chord_lb_release: None,
             chord_rb_press: None,
@@ -108,8 +137,17 @@ impl Default for PhotonApp {
 }
 
 /// Walk the (currently chrome-only) widget tree. Once Phase 1+ adds the launch screen widgets (logo, spectrograph, handle textbox), they yield BEFORE chrome — same ordering convention as fluor's panes example: content first, chrome last, matching macOS / GNOME tab traversal.
+/// Widget tree visit order: launch-screen content (textbox → attest button) FIRST, then chrome's four buttons. Matches macOS / GNOME convention where Tab traverses form fields before window-frame controls. `linear_tab_next` reads this order off the visit walk; `dispatch_click` / `dispatch_key` use it to route events by id. Container-impl on widgets the Launch screen doesn't own (Ready/Searching/Conversation widgets, when they land) gates on `state` so off-screen widgets neither hit-test nor cycle.
 impl Container for PhotonApp {
     fn visit(&mut self, f: &mut dyn FnMut(&mut dyn Widget)) {
+        if matches!(self.state, AppState::Launch(_)) {
+            if let Some(tb) = self.textbox.as_mut() {
+                f(tb);
+            }
+            if let Some(btn) = self.attest_btn.as_mut() {
+                f(btn);
+            }
+        }
         if let Some(chrome) = self.chrome.as_mut() {
             chrome.visit(f);
         }
@@ -149,6 +187,32 @@ impl FluorApp for PhotonApp {
         // Chrome owns its own hit-test map sized to the viewport, allocates four hit-ids for its buttons via the threaded counter, and stamps the perimeter + button rasters in `rasterize_chrome`. No app icon yet — Photon's icon asset wires here in a follow-up commit.
         let chrome = DefaultChrome::new(ctx.viewport, "Photon", None, None, &mut self.hit_counter);
         self.chrome = Some(chrome);
+
+        // Launch-screen widgets: handle textbox + attest button. Constructed with placeholder geometry; real geometry lands in `update_widget_layout` (called below and on every resize). Hit IDs are allocated from the shared counter AFTER chrome's four — chrome currently takes 1..=4, widgets get 5..=6.
+        self.textbox = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
+        self.attest_btn = Some(Button::new(
+            &mut self.hit_counter,
+            0.,
+            0.,
+            1.,
+            1.,
+            12.,
+            "Attest",
+        ));
+        self.update_widget_layout(ctx);
+
+        // HandleQuery: device keypair is derived deterministically from the machine fingerprint (NEVER stored to disk per legacy convention — same machine yields the same keypair so attestations are reproducible across restarts). HandleQuery owns the UDP socket + sends/receives FGTW packets; an empty PeerStore wires the transport so query packets have somewhere to fan out to. Status checker, peer-update client, contact pubkeys etc. are deferred — they belong to later migration slices (Phase 2+). The proxy expect is structurally safe: fluor's host calls `set_event_proxy` BEFORE `init` (see `run_app` in fluor/src/host/app.rs), so `event_proxy` is always `Some` here.
+        let proxy = self
+            .event_proxy
+            .as_ref()
+            .expect("event_proxy must be set before init (host contract)");
+        let fingerprint = get_machine_fingerprint()
+            .expect("device-key derivation: machine fingerprint unavailable");
+        let keypair = derive_device_keypair(&fingerprint);
+        let hq = HandleQuery::new(keypair, proxy.clone());
+        let peer_store = Arc::new(Mutex::new(PeerStore::new()));
+        hq.set_transport(peer_store);
+        self.handle_query = Some(hq);
     }
 
     fn on_resize(&mut self, _width: u32, _height: u32, ctx: &mut Context) {
@@ -158,29 +222,60 @@ impl FluorApp for PhotonApp {
             // Maximize toggles always change size between user-sized and screen-sized, so on_resize is the natural sync point for full_edge mode (no perimeter hairline / corner cutout / shadow when the window fills the screen). User-tweakable later if someone wants the bordered look when maximized.
             chrome.set_full_edge(ctx.is_maximized);
         }
+        self.update_widget_layout(ctx);
     }
 
     fn on_event(&mut self, event: &WindowEvent, ctx: &mut Context) -> EventResponse {
         match event {
             WindowEvent::CursorMoved { .. } => {
-                // Hover tint follows the cursor across chrome buttons. Outside chrome the hit is HIT_NONE, which clears any prior hover.
+                // Hit-test against the shared hit_test_map (chrome stamps its buttons, widgets stamp their pill silhouettes — all into chrome's map). `hit_at` returns the id at the cursor regardless of which widget owns the stamp; we route hover updates to each kind separately. Chrome sets its own hover state; widgets get their `set_hovered` flipped if the hit matches.
                 let new_hit = self
                     .chrome
                     .as_ref()
                     .map(|c| c.hit_at(ctx.cursor_x, ctx.cursor_y))
                     .unwrap_or(HIT_NONE);
+                let mut changed = false;
                 if let Some(chrome) = self.chrome.as_mut() {
-                    if chrome.set_hover(new_hit) {
-                        ctx.window.request_redraw();
+                    changed |= chrome.set_hover(new_hit);
+                }
+                if let Some(tb) = self.textbox.as_mut() {
+                    let want = new_hit == tb.hit_id();
+                    if tb.is_hovered() != want {
+                        tb.set_hovered(want);
+                        changed = true;
                     }
+                }
+                if let Some(btn) = self.attest_btn.as_mut() {
+                    let want = new_hit == btn.hit_id();
+                    if btn.is_hovered() != want {
+                        btn.set_hovered(want);
+                        changed = true;
+                    }
+                }
+                if changed {
+                    ctx.window.request_redraw();
                 }
                 EventResponse::Pass
             }
             WindowEvent::CursorLeft { .. } => {
+                let mut changed = false;
                 if let Some(chrome) = self.chrome.as_mut() {
-                    if chrome.set_hover(HIT_NONE) {
-                        ctx.window.request_redraw();
+                    changed |= chrome.set_hover(HIT_NONE);
+                }
+                if let Some(tb) = self.textbox.as_mut() {
+                    if tb.is_hovered() {
+                        tb.set_hovered(false);
+                        changed = true;
                     }
+                }
+                if let Some(btn) = self.attest_btn.as_mut() {
+                    if btn.is_hovered() {
+                        btn.set_hovered(false);
+                        changed = true;
+                    }
+                }
+                if changed {
+                    ctx.window.request_redraw();
                 }
                 EventResponse::Pass
             }
@@ -220,7 +315,10 @@ impl FluorApp for PhotonApp {
                     .unwrap_or(HIT_NONE);
 
                 if hit_id == HIT_NONE {
-                    // No chrome button under the cursor — fall back to resize-edge / title-bar drag. Resize edge takes precedence; clicks anywhere else inside the visible window start a move-drag (which the host promotes to an actual drag once the cursor passes the dead-zone threshold).
+                    // No widget under the cursor — clear focus, then fall back to resize-edge / title-bar drag. Resize edge takes precedence; clicks anywhere else inside the visible window start a move-drag (which the host promotes to an actual drag once the cursor passes the dead-zone threshold).
+                    if self.change_focus(None) {
+                        ctx.window.request_redraw();
+                    }
                     let edge = chrome::get_resize_edge(
                         ctx.viewport.width_px,
                         ctx.viewport.height_px,
@@ -233,22 +331,35 @@ impl FluorApp for PhotonApp {
                     return EventResponse::StartWindowDrag;
                 }
 
-                // Chrome button click → walk the container, find the widget with this id, ask its Click impl for the action's EventResponse. Chrome's ChromeButton::on_click returns Close / Minimize / ToggleMaximized based on the button's action.
-                let x = ctx.cursor_x;
-                let y = ctx.cursor_y;
-                let mods = ctx.modifiers;
-                let mut response = EventResponse::Pass;
+                // Focus follows click for focusable widgets (textbox + attest button). Chrome buttons aren't focusable (their `Widget::focus()` returns None) so a click on close/min/max leaves the prior focus intact — matches GNOME / macOS convention. We can't borrow `self` mutably twice in one walk, so determine "is this id focusable" via a pre-walk, then change_focus before the dispatch.
+                let mut hit_is_focusable = false;
                 self.visit(&mut |w| {
-                    if w.id() == hit_id {
-                        if let Some(c) = w.click() {
-                            response = c.on_click(x, y, mods);
-                        }
+                    if w.id() == hit_id && w.focus().is_some() {
+                        hit_is_focusable = true;
                     }
                 });
-                response
+                if hit_is_focusable && self.change_focus(Some(hit_id)) {
+                    ctx.window.request_redraw();
+                }
+
+                // Dispatch the click via the new fluor helper. Walks the tree once, finds the widget with `hit_id`, calls its `Click::on_click`. Returns `EventResponse::Pass` if the widget has no Click capability — covers chrome's app-icon orb (no action wired yet).
+                widget::dispatch_click(self, hit_id, ctx.cursor_x, ctx.cursor_y, ctx.modifiers)
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                // Attest button: poll `take_click` AFTER release — Button::on_click increments the counter at press; we observe the rising edge here so submit fires once per press/release pair regardless of how chrome dispatches subsequent events.
+                let clicked = self.attest_btn.as_mut().map(|b| b.take_click()).unwrap_or(false);
+                if clicked {
+                    self.submit_handle();
+                    ctx.window.request_redraw();
+                }
+                EventResponse::Pass
             }
             WindowEvent::KeyboardInput { event: kev, .. } => {
-                // Debug chord: `[` AND `]` held + action letter. Track Press/Release timestamps per bracket; an action key is dispatched iff `brackets_held(now)` returns true at the moment the action key arrives. Auto-repeat is suppressed (`!kev.repeat`) for action keys so holding F doesn't toggle the FPS strip every repeat tick. Bracket presses themselves type into focused text as normal — we don't swallow them (no focused textbox yet, but the doctrine is set for when there is). No whitelist: unknown letters fall through `handle_chord_action` as no-ops, so adding a chord only touches dispatch.
+                // Bracket chord first — tracks Press/Release timestamps regardless of focus so the debug overlay arms as soon as both brackets are held, and the chord action runs before delivery to the focused widget (so an action letter like 'h' doesn't also type into the textbox).
                 if let Key::Character(c) = &kev.logical_key {
                     let cs = c.as_str();
                     let now = Instant::now();
@@ -265,7 +376,6 @@ impl FluorApp for PhotonApp {
                         }
                         _ => {}
                     }
-                    // Redraw whenever a bracket Press/Release transitions so the hint panel appears / disappears in lockstep with the user's grip.
                     if cs == "[" || cs == "]" {
                         ctx.window.request_redraw();
                     }
@@ -275,10 +385,129 @@ impl FluorApp for PhotonApp {
                         }
                     }
                 }
-                EventResponse::Pass
+
+                // Press-only routing for Tab / Esc / Enter and delivery to the focused widget. Released arms (key-up) don't insert characters or trigger actions, so we no-op them. `repeat` keys DO insert characters (auto-repeat typing) so we don't filter on it here.
+                if kev.state != ElementState::Pressed {
+                    return EventResponse::Pass;
+                }
+
+                match &kev.logical_key {
+                    // Tab cycles focus through the widget tree in registration order (launch widgets first, then chrome). Intercepted BEFORE delivery so textbox can't swallow it as "\t" insertion.
+                    Key::Named(NamedKey::Tab) => {
+                        let dir = if ctx.modifiers.shift_key() {
+                            TabDir::Backward
+                        } else {
+                            TabDir::Forward
+                        };
+                        let current_focus = self.focused;
+                        let next = widget::linear_tab_next(self, current_focus, dir);
+                        if self.change_focus(next) {
+                            ctx.window.request_redraw();
+                        }
+                        EventResponse::Handled
+                    }
+                    // Esc clears focus.
+                    Key::Named(NamedKey::Escape) => {
+                        if self.change_focus(None) {
+                            ctx.window.request_redraw();
+                        }
+                        EventResponse::Handled
+                    }
+                    // Enter submits the handle when the textbox is focused — intercepted before delivery so the textbox doesn't insert a literal newline. When the attest button is focused, route to its on_key (Button activates on Enter / Space and we observe via take_click in tick / on_event Release path).
+                    Key::Named(NamedKey::Enter) => {
+                        let focused_is_textbox = self
+                            .textbox
+                            .as_ref()
+                            .map(|t| Some(t.hit_id()) == self.focused)
+                            .unwrap_or(false);
+                        if focused_is_textbox {
+                            self.submit_handle();
+                            ctx.window.request_redraw();
+                            return EventResponse::Handled;
+                        }
+                        if let Some(focus_id) = self.focused {
+                            let resp = widget::dispatch_key(self, focus_id, kev, ctx.modifiers, ctx.text);
+                            // Button::on_key activates on Enter; poll take_click and submit if it fired.
+                            let btn_clicked = self.attest_btn.as_mut().map(|b| b.take_click()).unwrap_or(false);
+                            if btn_clicked {
+                                self.submit_handle();
+                                ctx.window.request_redraw();
+                            }
+                            return resp;
+                        }
+                        EventResponse::Pass
+                    }
+                    // All other keys → focused widget via dispatch_key. The Textbox's on_key handles character insertion, backspace, arrows, selection, clipboard (Ctrl+A); Button's on_key handles Space activation. Unfocused → Pass so the host can ignore.
+                    _ => {
+                        if let Some(focus_id) = self.focused {
+                            return widget::dispatch_key(self, focus_id, kev, ctx.modifiers, ctx.text);
+                        }
+                        EventResponse::Pass
+                    }
+                }
             }
             _ => EventResponse::Pass,
         }
+    }
+
+    fn tick(&mut self, ctx: &mut Context) -> bool {
+        let now = Instant::now();
+        let mut needs_redraw = false;
+
+        // Compute per-tick delta_time for the attest-animation accumulator. `last_tick` is None on the very first tick — bootstrap to "zero elapsed" so the accumulator doesn't take a huge jump on startup.
+        let delta_time = match self.last_tick {
+            Some(prev) => now.duration_since(prev).as_secs_f32(),
+            None => 0.,
+        };
+        self.last_tick = Some(now);
+
+        // Spectrum animation while attesting (port of legacy `compositing.rs:58-79`): wave phase advances at 2π rad/sec = 1 cycle/sec. Provides the visual "query in flight" cue the legacy build had — the bar slowly slides while we wait for FGTW to answer. Idle / Fresh / Error states leave the phase frozen so the screen stays calm.
+        if matches!(self.state, AppState::Launch(LaunchState::Attesting))
+            || matches!(self.state, AppState::Searching)
+        {
+            self.attest_anim_phase += delta_time * std::f32::consts::TAU;
+            self.attest_anim_phase %= std::f32::consts::TAU;
+            if let Some(chrome) = self.chrome.as_mut() {
+                chrome.invalidate_bg();
+            }
+            needs_redraw = true;
+        }
+
+        // Drive the blinkey on the focused textbox. The timer only advances while it's been started (start() in change_focus); off-focus textboxes return false from poll because the timer is stopped. Mirror the visibility flag onto the textbox so the next paint reflects the current phase.
+        let visible = self.blink_timer.poll(now);
+        let focused_tb_id = self.focused.filter(|id| {
+            self.textbox
+                .as_ref()
+                .map(|t| t.hit_id() == *id)
+                .unwrap_or(false)
+        });
+        if let Some(tb) = self.textbox.as_mut() {
+            let want = focused_tb_id == Some(tb.hit_id()) && visible;
+            if tb.blinkey_visible != want {
+                tb.blinkey_visible = want;
+                needs_redraw = true;
+            }
+        }
+
+        // Drain handle_query results. `try_recv` is non-blocking; we collect into a local Vec so the immutable borrow on `handle_query` ends before `on_query_result` (which takes `&mut self`) runs. `try_recv_online` gates a `ConnectivityChanged` event but we don't render it yet — the LaunchState transitions will care about it once we wire the connectivity indicator.
+        let mut drained: Vec<QueryResult> = Vec::new();
+        if let Some(hq) = self.handle_query.as_ref() {
+            while let Some(result) = hq.try_recv() {
+                drained.push(result);
+            }
+            while let Some(_online) = hq.try_recv_online() {
+                // No UI surface for online state yet; once the connectivity indicator lands this becomes a state mutation.
+            }
+        }
+        for result in drained {
+            self.on_query_result(result);
+            needs_redraw = true;
+        }
+
+        if needs_redraw {
+            ctx.window.request_redraw();
+        }
+        needs_redraw
     }
 
     fn damage_rect(&self, viewport: Viewport) -> Option<PixelRect> {
@@ -311,8 +540,11 @@ impl FluorApp for PhotonApp {
         let scroll_offset = 0; // Launch only for now.
         // Launch layout: faithful proportional slicing port from legacy `Layout::new` — spectrum near the top, logo wordmark overlapping its bottom, attest block (textbox + hint + button) below. Compute every frame; cheap and lets resize flow through without a separate cache.
         let layout = LaunchLayout::compute(buf_w, buf_h);
-        // Chromatic wave: scroll shifts the wave horizontally (phase), nothing else — pure function of `bg_scroll` so the app idles at zero CPU between inputs. Phase coefficient = `1 / (1 << 7)` rad/scroll-unit (one wheel-notch ≈ 8 units → ~1/16 rad shift); user-tunable by changing the shift exponent — increment to halve sensitivity, decrement to double. Period held at `1.` — earlier attempts to drive period from scroll changed the wave's frequency instead of moving it.
-        let phase = bg_scroll as f32 * (1. / ((1 << 7) as f32));
+        // Chromatic wave phase has two summands:
+        //   * Scroll-driven base (`bg_scroll * 1/128 rad/scroll-unit`) — one wheel-notch ≈ 8 units → ~1/16 rad shift; user-tunable by changing the shift exponent.
+        //   * `attest_anim_phase` (advanced in `tick()` while `LaunchState::Attesting`) — the legacy "query in flight" cue, 1 cycle/sec.
+        // Summing them means the wave responds to BOTH inputs simultaneously: a user scrolling during an attestation still nudges the phase on top of the animation.
+        let phase = bg_scroll as f32 * (1. / ((1 << 7) as f32)) + self.attest_anim_phase;
         let period_scale = 1.;
         let spectrum_rect = layout.spectrum;
         let logo_rect = layout.photon_text;
@@ -331,6 +563,36 @@ impl FluorApp for PhotonApp {
             let span = ctx.viewport.effective_span();
             let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
             paint::draw_chord_hint(&mut canvas, ctx.text, CHORD_HINTS, span);
+        }
+
+        // Launch-screen widgets paint UNDER the chord hint (so the hint always wins over the textbox) and OVER chrome (so the pill sits on top of the spectrum strip / wordmark). Same target buffer as the chord hint; widgets stamp their hit IDs into chrome's shared `hit_test_map`. Only paint when the launch screen is the active state — Ready/Searching/Conversation get their own widgets later.
+        if matches!(self.state, AppState::Launch(_)) {
+            let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
+            if let Some(tb) = self.textbox.as_mut() {
+                let id = tb.hit_id();
+                tb.render_content_into(
+                    &mut canvas,
+                    0.,
+                    0.,
+                    ctx.text,
+                    None,
+                    None,
+                    Some(&mut chrome.hit_test_map),
+                    id,
+                );
+            }
+            if let Some(btn) = self.attest_btn.as_mut() {
+                let id = btn.hit_id();
+                btn.render_content_into(
+                    &mut canvas,
+                    0.,
+                    0.,
+                    ctx.text,
+                    None,
+                    Some(&mut chrome.hit_test_map),
+                    id,
+                );
+            }
         }
 
         chrome.flatten_into(target, buf_w, buf_h, None);
@@ -373,6 +635,16 @@ impl FluorApp for PhotonApp {
                 return CursorIcon::Pointer;
             }
         }
+        if let Some(btn) = self.attest_btn.as_ref() {
+            if btn.hit_id() == hit {
+                return CursorIcon::Pointer;
+            }
+        }
+        if let Some(tb) = self.textbox.as_ref() {
+            if tb.hit_id() == hit {
+                return CursorIcon::Text;
+            }
+        }
         match chrome::get_resize_edge(ctx.viewport.width_px, ctx.viewport.height_px, x, y) {
             ResizeEdge::Top | ResizeEdge::Bottom => CursorIcon::NsResize,
             ResizeEdge::Left | ResizeEdge::Right => CursorIcon::EwResize,
@@ -391,6 +663,86 @@ impl PhotonApp {
             Some(proxy) => proxy.send_event(event).is_ok(),
             None => false,
         }
+    }
+
+    /// Recompute the launch-screen widget geometry from the current viewport. Called from `init` once after construction and from `on_resize` on every viewport/zoom change. Font size and stroke ride `effective_span()` (= span × ru) so widgets grow/shrink with Ctrl+/Ctrl-/Ctrl+scroll zoom in lockstep with chrome.
+    fn update_widget_layout(&mut self, ctx: &mut Context) {
+        let buf_w = ctx.viewport.width_px as usize;
+        let buf_h = ctx.viewport.height_px as usize;
+        let layout = LaunchLayout::compute(buf_w, buf_h);
+        let attest = AttestBlockLayout::compute(layout.attest_block);
+        // Font size = span/24 — small enough to fit the legacy attest-block textbox ratio (height ≈ 2 units of the 9.25-unit slice), large enough to remain legible across zoom range. Same scalar drives the button so they read as a matched pair.
+        let span = ctx.viewport.effective_span();
+        let font_size = span / 24.;
+
+        if let Some(tb) = self.textbox.as_mut() {
+            let (cx, cy, w, h) = rect_center_dims(attest.textbox);
+            tb.set_rect(cx, cy, w, h);
+            tb.set_font_size(font_size, ctx.text);
+        }
+        if let Some(btn) = self.attest_btn.as_mut() {
+            let (cx, cy, w, h) = rect_center_dims(attest.attest);
+            btn.set_rect(cx, cy, w, h);
+            btn.set_font_size(font_size);
+        }
+    }
+
+    /// Send the current textbox contents as an attestation query and transition Launch → Attesting. Called from Enter in the textbox path and from clicking the Attest button — same submit path. No-op if the textbox is empty or HandleQuery wasn't constructed (init failure path).
+    fn submit_handle(&mut self) {
+        let handle: String = match self.textbox.as_ref() {
+            Some(tb) => tb.chars.iter().collect(),
+            None => return,
+        };
+        if handle.is_empty() {
+            return;
+        }
+        if let Some(hq) = self.handle_query.as_ref() {
+            hq.query(handle);
+            self.state = AppState::Launch(LaunchState::Attesting);
+        }
+    }
+
+    /// Handle a [`QueryResult`] arriving from HandleQuery's background worker. Transitions the launch state and stashes the proof on success — Phase 2 (Ready screen) is where the proof gets consumed by contact + storage init. For now success leaves the user on Launch with a "ready to advance" log line; persistence + screen transition land next slice.
+    fn on_query_result(&mut self, result: QueryResult) {
+        match result {
+            QueryResult::Success(data) => {
+                if let Some(hq) = self.handle_query.as_ref() {
+                    hq.set_handle_proof(data.handle_proof, &data.handle);
+                }
+                eprintln!(
+                    "attestation success: handle={} pubkey={}",
+                    data.handle,
+                    hex::encode(data.handle_proof)
+                );
+                // TODO Phase 2: self.state = AppState::Ready; persist contact + storage init.
+                self.state = AppState::Launch(LaunchState::Fresh);
+            }
+            QueryResult::AlreadyAttested(peer) => {
+                let msg = format!(
+                    "handle already attested by another device (pubkey {})",
+                    hex::encode(peer.device_pubkey.as_bytes())
+                );
+                eprintln!("attestation rejected: {msg}");
+                self.state = AppState::Launch(LaunchState::Error(msg));
+            }
+            QueryResult::Error(e) => {
+                eprintln!("attestation error: {e}");
+                self.state = AppState::Launch(LaunchState::Error(e));
+            }
+        }
+    }
+
+    /// Apply a focus change: update `self.focused`, then walk the widget tree via `apply_focus_change` so the old + new widgets fire `set_focused(false/true)` and mark their caches dirty. Returns `true` if anything changed (caller decides whether to request a redraw — most callers do).
+    fn change_focus(&mut self, new: Option<HitId>) -> bool {
+        if new == self.focused {
+            return false;
+        }
+        let old = self.focused;
+        self.focused = new;
+        widget::apply_focus_change(self, old, new);
+        // Restart blink so the cursor lands solid on the newly-focused textbox instead of mid-cycle dark. `start` resets the phase to the start of the visible half whether the timer was already running or not.
+        self.blink_timer.start(Instant::now());
+        true
     }
 
     /// True iff both `[` and `]` are currently held. A bracket is "held" if its press timestamp is more recent than its release timestamp, OR the release was within [`CHORD_RELEASE_GRACE`] — that grace absorbs X11's habit of firing a synthetic Release for a held key the instant another key is pressed.
@@ -511,4 +863,13 @@ impl PhotonApp {
         }
         acted
     }
+}
+
+/// Convert a [`PixelRect`] to the centre+dimensions float quadruple fluor widgets expect. Pure geometric translation — no clamping, no rounding tricks; pixel ints flow straight into `Coord` (= `f32`).
+fn rect_center_dims(r: PixelRect) -> (Coord, Coord, Coord, Coord) {
+    let w = (r.x1 - r.x0) as Coord;
+    let h = (r.y1 - r.y0) as Coord;
+    let cx = r.x0 as Coord + w * 0.5;
+    let cy = r.y0 as Coord + h * 0.5;
+    (cx, cy, w, h)
 }
