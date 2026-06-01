@@ -251,7 +251,7 @@ impl PhotonApp {
                 } else {
                     0
                 };
-                Self::draw_background_texture(
+                super::drawing::draw_background_texture(
                     pixels,
                     self.width as usize,
                     self.height as usize,
@@ -3427,26 +3427,6 @@ impl PhotonApp {
         let dist_x = px - closest_x;
         let dist_y = py - closest_y;
         (dist_x * dist_x + dist_y * dist_y).sqrt() - radius
-    }
-
-    // Motion triggered by network action, motion speed dependent on latency
-    // Delegates to shared drawing module
-    pub fn draw_background_texture(
-        pixels: &mut [u32],
-        width: usize,
-        height: usize,
-        speckle: usize,
-        fullscreen: bool,
-        scroll_offset: isize,
-    ) {
-        super::drawing::draw_background_texture(
-            pixels,
-            width,
-            height,
-            speckle,
-            fullscreen,
-            scroll_offset,
-        );
     }
 
     /// Draw window edge hairlines and apply squircle alpha mask
