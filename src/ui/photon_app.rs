@@ -4,14 +4,16 @@
 //!
 //! Subsequent phases (1+) port Photon's state machine (`AppState`, network handles, contact list) into this struct's fields, add per-screen widgets, and wire cross-thread wake-ups through `FluorApp::on_user_event` using the [`super::PhotonEvent`] payload type.
 
+use super::chromatic_wave::chromatic_wave;
 use super::PhotonEvent;
+use fluor::canvas::PixelRect;
 use fluor::coord::Coord;
 use fluor::geom::Viewport;
 use fluor::host::app::{Context, EventResponse, FluorApp};
 use fluor::host::chrome::{self, ResizeEdge};
 use fluor::host::chrome_widget::DefaultChrome;
 use fluor::host::widget::{self, Container, Widget};
-use fluor::paint::{self, HIT_NONE, HitId};
+use fluor::paint::{self, HitId, HIT_NONE};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::EventLoopProxy;
 use winit::window::CursorIcon;
@@ -23,7 +25,7 @@ pub struct PhotonApp {
     chrome: Option<DefaultChrome>,
     hit_counter: HitId,
     event_proxy: Option<EventLoopProxy<PhotonEvent>>,
-    /// Vertical scroll offset for the background noise — drives `paint::background_noise`'s `scroll_offset` (visually translates the noise pattern up/down) AND, on the home screen, gets fed into the `speckle` parameter so the speckle density modulates as you scroll. MouseWheel events in `on_event` mutate this; everything else reads it.
+    /// Vertical scroll offset for the background noise — drives `paint::background_noise`'s `scroll_offset` (visually translates the noise pattern up/down), `shimmer` (noise colour bias cycle), AND the chromatic wave's phase + period_scale. The wave is fully scroll-driven (no clock-tick) so the app idles at zero CPU until the user scrolls or interacts. MouseWheel events in `on_event` mutate this; everything else reads it.
     bg_scroll: isize,
 }
 
@@ -67,13 +69,7 @@ impl FluorApp for PhotonApp {
 
     fn init(&mut self, ctx: &mut Context) {
         // Chrome owns its own hit-test map sized to the viewport, allocates four hit-ids for its buttons via the threaded counter, and stamps the perimeter + button rasters in `rasterize_chrome`. No app icon yet — Photon's icon asset wires here in a follow-up commit.
-        let chrome = DefaultChrome::new(
-            ctx.viewport,
-            "Photon",
-            None,
-            None,
-            &mut self.hit_counter,
-        );
+        let chrome = DefaultChrome::new(ctx.viewport, "Photon", None, None, &mut self.hit_counter);
         self.chrome = Some(chrome);
     }
 
@@ -110,7 +106,7 @@ impl FluorApp for PhotonApp {
                 EventResponse::Pass
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                // Bg-noise scroll. Vertical-only for now — horizontal trackpad gestures and shift-modified wheel both fold into the same `bg_scroll` axis. LineDelta from a discrete mouse wheel gets multiplied to feel like a normal scroll step; PixelDelta (trackpad) is used directly. The scroll value feeds both `scroll_offset` (translates the noise pattern up/down) and the speckle-density modulation in `render`.
+                // Bg-noise scroll. Vertical-only for now — horizontal trackpad gestures and shift-modified wheel both fold into the same `bg_scroll` axis. LineDelta from a discrete mouse wheel gets multiplied to feel like a normal scroll step; PixelDelta (trackpad) is used directly. The scroll value feeds both `scroll_offset` (translates the noise pattern up/down on screens that want it) and `shimmer` (colour-bias cycle on every screen) in `render`.
                 let dy = match delta {
                     MouseScrollDelta::LineDelta(_, y) => (*y as isize) * 8,
                     MouseScrollDelta::PixelDelta(p) => p.y as isize,
@@ -174,12 +170,17 @@ impl FluorApp for PhotonApp {
         let buf_w = ctx.viewport.width_px as usize;
         let buf_h = ctx.viewport.height_px as usize;
 
-        // Bg noise. `speckle` is driven by `bg_scroll` so the speckle density changes as you scroll — the multiplier picks the dynamic range. `scroll_offset` is per-screen: Launch/Attest gets `0` (no vertical movement on the attest screen — speckle only); future screens (Ready, Searching, Conversation) will pass `bg_scroll` so the noise pattern also translates with their page-scroll content. Phase 2+ branches on AppState to pick which.
+        // Bg noise. `shimmer` is driven by `bg_scroll` and mixes into each row's starting colour — so the noise colour bias cycles as you scroll without changing the underlying pattern topology. `scroll_offset` is per-screen: Launch/Attest gets `0` (no vertical movement on the attest screen — shimmer only); future screens (Ready, Searching, Conversation) will pass `bg_scroll` so the noise pattern also translates with their page-scroll content. Phase 2+ branches on AppState to pick which.
         let bg_scroll = self.bg_scroll;
-        let speckle = (bg_scroll as usize);
+        let shimmer = bg_scroll as usize;
         let scroll_offset = 0; // Launch only for now.
+        // Chromatic wave: scroll shifts the wave horizontally (phase), nothing else — pure function of `bg_scroll` so the app idles at zero CPU between inputs. Phase coefficient = `1 / (1 << 7)` rad/scroll-unit (one wheel-notch ≈ 8 units → ~1/16 rad shift); user-tunable by changing the shift exponent — increment to halve sensitivity, decrement to double. Period held at `1.` — earlier attempts to drive period from scroll changed the wave's frequency instead of moving it. Region is a Launch-only placeholder; refines once the real attest layout lands.
+        let phase = bg_scroll as f32 * (1. / ((1 << 7) as f32));
+        let period_scale = 1.;
+        let wave_rect = launch_chromatic_region(buf_w, buf_h);
         chrome.rasterize_bg(ctx.damage, move |canvas| {
-            paint::background_noise(canvas, speckle, false, scroll_offset, None);
+            paint::background_noise(canvas, shimmer, false, scroll_offset, None);
+            chromatic_wave(canvas, wave_rect, phase, period_scale);
         });
         chrome.rasterize_chrome(ctx.damage, ctx.text, ctx.clip_mask);
         chrome.flatten_into(target, buf_w, buf_h, None);
@@ -217,6 +218,12 @@ impl FluorApp for PhotonApp {
             ResizeEdge::None => CursorIcon::Default,
         }
     }
+}
+
+/// Placeholder layout for the chromatic wave on the Launch screen: full window width, bottom 3/8 of the viewport height (y0 at 5/8). Replaced by real attest-screen layout (relative to the textbox + orb + logo positions) when those widgets land.
+fn launch_chromatic_region(buf_w: usize, buf_h: usize) -> PixelRect {
+    let y0 = (buf_h * 5) >> 3;
+    PixelRect::new(0, y0, buf_w, buf_h)
 }
 
 impl PhotonApp {

@@ -19,8 +19,13 @@ mod text_rasterizing;
 // `avatar` is shared between Android (legacy stack uses it directly) and desktop (the Phase 2 Avatar widget will wrap its LRU cache). Stays unconditional.
 pub mod avatar;
 pub mod display_profile;
+pub mod lms2006so;
 pub mod state;
 pub mod theme;
+
+// Desktop chromatic wave (sine-modulated visible-spectrum bar). Reads LMS2006SO; writes α + darkness pixels. Android keeps the legacy `draw_spectrum` in `compositing.rs` until the Android port lands.
+#[cfg(not(target_os = "android"))]
+pub mod chromatic_wave;
 
 pub use state::{AppState, FoundPeer, LaunchState, SearchResult};
 
