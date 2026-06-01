@@ -176,7 +176,7 @@ impl FluorApp for PhotonApp {
 
         // Bg noise. `speckle` is driven by `bg_scroll` so the speckle density changes as you scroll — the multiplier picks the dynamic range. `scroll_offset` is per-screen: Launch/Attest gets `0` (no vertical movement on the attest screen — speckle only); future screens (Ready, Searching, Conversation) will pass `bg_scroll` so the noise pattern also translates with their page-scroll content. Phase 2+ branches on AppState to pick which.
         let bg_scroll = self.bg_scroll;
-        let speckle = (bg_scroll as usize).wrapping_mul(0x0100_0000);
+        let speckle = (bg_scroll as usize);
         let scroll_offset = 0; // Launch only for now.
         chrome.rasterize_bg(ctx.damage, move |canvas| {
             paint::background_noise(canvas, speckle, false, scroll_offset, None);
