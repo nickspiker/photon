@@ -963,7 +963,7 @@ pub fn get_local_avatar_timestamp(handle: &str) -> Option<i64> {
     // Parse header to extract creation timestamp
     let (header, _) = VsfHeader::decode(&vsf_data).ok()?;
     match header.creation_time {
-        VsfType::e(et) => {
+        Some(VsfType::e(et)) => {
             let ts = EagleTime::new(et).oscillations().unwrap_or(0);
             #[cfg(feature = "development")]
             crate::log(&format!("Avatar: Local timestamp = {}", ts));
