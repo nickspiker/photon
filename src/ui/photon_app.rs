@@ -11,8 +11,8 @@ use fluor::host::app::{Context, EventResponse, FluorApp};
 use fluor::host::chrome::{self, ResizeEdge};
 use fluor::host::chrome_widget::DefaultChrome;
 use fluor::host::widget::{self, Container, Widget};
-use fluor::paint::{HIT_NONE, HitId};
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use fluor::paint::{self, HIT_NONE, HitId};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::EventLoopProxy;
 use winit::window::CursorIcon;
 
@@ -23,6 +23,8 @@ pub struct PhotonApp {
     chrome: Option<DefaultChrome>,
     hit_counter: HitId,
     event_proxy: Option<EventLoopProxy<PhotonEvent>>,
+    /// Vertical scroll offset for the background noise — drives `paint::background_noise`'s `scroll_offset` (visually translates the noise pattern up/down) AND, on the home screen, gets fed into the `speckle` parameter so the speckle density modulates as you scroll. MouseWheel events in `on_event` mutate this; everything else reads it.
+    bg_scroll: isize,
 }
 
 impl PhotonApp {
@@ -32,6 +34,7 @@ impl PhotonApp {
             chrome: None,
             hit_counter: 0,
             event_proxy: None,
+            bg_scroll: 0,
         }
     }
 }
@@ -106,6 +109,21 @@ impl FluorApp for PhotonApp {
                 }
                 EventResponse::Pass
             }
+            WindowEvent::MouseWheel { delta, .. } => {
+                // Bg-noise scroll. Vertical-only for now — horizontal trackpad gestures and shift-modified wheel both fold into the same `bg_scroll` axis. LineDelta from a discrete mouse wheel gets multiplied to feel like a normal scroll step; PixelDelta (trackpad) is used directly. The scroll value feeds both `scroll_offset` (translates the noise pattern up/down) and the speckle-density modulation in `render`.
+                let dy = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => (*y as isize) * 8,
+                    MouseScrollDelta::PixelDelta(p) => p.y as isize,
+                };
+                if dy != 0 {
+                    self.bg_scroll = self.bg_scroll.wrapping_add(dy);
+                    if let Some(chrome) = self.chrome.as_mut() {
+                        chrome.invalidate_bg();
+                    }
+                    ctx.window.request_redraw();
+                }
+                EventResponse::Pass
+            }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
@@ -156,8 +174,12 @@ impl FluorApp for PhotonApp {
         let buf_w = ctx.viewport.width_px as usize;
         let buf_h = ctx.viewport.height_px as usize;
 
-        // Bg layer is left empty — once Photon's procedural background noise lands behind chrome, the closure paints it. For now a no-op gives us a transparent inside-the-chrome region.
-        chrome.rasterize_bg(ctx.damage, |_canvas| {});
+        // Bg noise. `scroll_offset` translates the pattern vertically (existing fluor behaviour); `speckle` is the user-fidoodlable knob driven by the same scroll value so the speckle density changes visibly as you scroll. The multiplier picks the dynamic range — smaller = subtler speckle modulation, larger = more dramatic. Adjust to taste; this is the constant Nick wanted exposed.
+        let bg_scroll = self.bg_scroll;
+        let speckle = (bg_scroll as usize).wrapping_mul(0x0100_0000);
+        chrome.rasterize_bg(ctx.damage, move |canvas| {
+            paint::background_noise(canvas, speckle, false, bg_scroll, None);
+        });
         chrome.rasterize_chrome(ctx.damage, ctx.text, ctx.clip_mask);
         chrome.flatten_into(target, buf_w, buf_h, None);
     }
