@@ -63,6 +63,14 @@ impl FluorApp for PhotonApp {
         "Photon"
     }
 
+    fn initial_size(&self, monitor: (u32, u32)) -> (u32, u32) {
+        // Portrait launch window — matches the pre-fluor Photon dimensions: height = half the SHORTER screen axis, width = half that. Yields a tall 1:2 (w:h) rectangle on any aspect ratio. Examples: 1920×1080 → 270×540; 1080×1920 → 270×540; 2560×1440 → 360×720.
+        let short = monitor.0.min(monitor.1);
+        let h = short >> 1;
+        let w = h >> 1;
+        (w, h)
+    }
+
     fn set_event_proxy(&mut self, proxy: EventLoopProxy<Self::UserEvent>) {
         self.event_proxy = Some(proxy);
     }
