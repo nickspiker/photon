@@ -27,6 +27,10 @@ pub mod theme;
 #[cfg(not(target_os = "android"))]
 pub mod chromatic_wave;
 
+// Desktop Launch-screen layout calculator — proportional slicing port from legacy `app::Layout::new`.
+#[cfg(not(target_os = "android"))]
+pub mod launch_layout;
+
 pub use state::{AppState, FoundPeer, LaunchState, SearchResult};
 
 // Android renderer survives until fluor grows host-android. Renderer trio for desktop (linux_softbuffer / linux_wgpu / windows / macos / macos_softbuffer / redox) is gated below the Android-only block since they were only consumed by the legacy `app::PhotonApp`.
