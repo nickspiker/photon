@@ -85,6 +85,30 @@ fn try_parse_vsf_error(bytes: &[u8]) -> Option<String> {
     None
 }
 
+/// Format a non-2xx HTTP response as a short user-facing error string. Drops the body when it just re-states the status's canonical reason phrase (Cloudflare's generic 5xx pages echo the reason in all-caps; we don't want to print "FGTW challenge 500 Internal Server Error: INTERNAL SERVER ERROR"). Async helper to lift the body out of the response before stringifying.
+async fn format_http_error(step: &str, response: reqwest::Response) -> String {
+    let status = response.status();
+    let body_bytes = response.bytes().await.unwrap_or_default();
+    format_http_error_from_bytes(step, status, &body_bytes)
+}
+
+/// Body-from-bytes variant — used by the announce path where the body was already buffered for VSF-error parsing before falling through to the generic formatter.
+fn format_http_error_from_bytes(step: &str, status: reqwest::StatusCode, body: &[u8]) -> String {
+    let body_preview = match std::str::from_utf8(body) {
+        Ok(s) => s.trim().to_string(),
+        Err(_) => format!("<{} bytes, non-UTF8>", body.len()),
+    };
+    // "INTERNAL SERVER ERROR" body for a 500, "BAD GATEWAY" for 502, etc. — body adds nothing.
+    let canonical = status.canonical_reason().unwrap_or("");
+    let body_is_just_reason =
+        body_preview.eq_ignore_ascii_case(canonical) || body_preview.is_empty();
+    if body_is_just_reason {
+        format!("FGTW {step} {}", status.as_u16())
+    } else {
+        format!("FGTW {step} {}: {body_preview}", status.as_u16())
+    }
+}
+
 /// Load bootstrap peers by announcing to FGTW
 /// This requires authenticating with our handle and device key
 /// Returns BootstrapResult which includes peers even on error (for peer discovery)
@@ -140,10 +164,7 @@ async fn load_bootstrap_peers_inner(
         .map_err(|e| format!("Failed to fetch challenge: {}", e))?;
 
     if !challenge_response.status().is_success() {
-        return Err(format!(
-            "Challenge HTTP error: {}",
-            challenge_response.status()
-        ));
+        return Err(format_http_error("challenge", challenge_response).await);
     }
 
     let challenge_bytes = challenge_response
@@ -204,9 +225,12 @@ async fn load_bootstrap_peers_inner(
     if !is_success {
         if let Some(error_msg) = try_parse_vsf_error(&response_bytes) {
             return Err(error_msg);
-        } else {
-            return Err(format!("Announce HTTP error: {}", status));
         }
+        return Err(format_http_error_from_bytes(
+            "announce",
+            status,
+            &response_bytes,
+        ));
     }
 
     // Parse peer list
