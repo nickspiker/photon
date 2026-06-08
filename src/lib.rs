@@ -263,14 +263,20 @@ macro_rules! debug_println {
 static WINDOWS_LOG_FILE: std::sync::OnceLock<std::sync::Mutex<std::fs::File>> =
     std::sync::OnceLock::new();
 
-/// Initialize logging - must be called early in main() on Windows
+/// Initialize logging - must be called early in main() on Windows. Log filename is the opaque base64url BLAKE3 hash of a fixed domain string — no `photon.log` text on disk, so a directory listing of `~/.config/photon/` reveals nothing about app identity or content type. Logged bytes themselves stay plaintext (logs are for the user's own forensic use; on-disk encryption only protects against offline access and the user already has the secrets needed to read the rest of the directory).
 #[cfg(all(feature = "logging", target_os = "windows"))]
 pub fn init_logging() {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
     let _ = WINDOWS_LOG_FILE.get_or_init(|| {
         let config_dir = dirs::config_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
         let log_dir = config_dir.join("photon");
         let _ = std::fs::create_dir_all(&log_dir);
-        let log_path = log_dir.join("photon.log");
+        // Opaque filename: BLAKE3("photon.storage.filename.v0" || "diagnostic_log") base64url-encoded. No identity_seed / device_secret inputs — logging starts before auth, so we can't key on user state. Same domain-separator prefix as `flat.rs::derive_filename` so all opaque files share one namespace.
+        let mut h = blake3::Hasher::new();
+        h.update(b"photon.storage.filename.v0");
+        h.update(b"diagnostic_log");
+        let filename = URL_SAFE_NO_PAD.encode(h.finalize().as_bytes());
+        let log_path = log_dir.join(filename);
         let file = std::fs::File::create(&log_path).expect("Failed to create log file");
         std::sync::Mutex::new(file)
     });
