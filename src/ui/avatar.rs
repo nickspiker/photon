@@ -783,9 +783,9 @@ pub fn get_android_data_dir() -> Option<std::path::PathBuf> {
     ANDROID_DATA_DIR.get().map(|s| std::path::PathBuf::from(s))
 }
 
-/// Get flat path for a cached avatar by its storage key. Avatars are public signed VSF — stored unencrypted directly in ~/.config/photon/.
+/// Get flat path for a cached avatar by its storage key. Avatars are public signed VSF — stored unencrypted directly in ~/.config/photon/, but with no filename prefix or other distinguishing marker so directory listings can't separate avatar files from FlatStorage blobs by name shape. The base64url storage_key is the FGTW URL anyone can compute from the handle; on disk it's the bare filename.
 pub fn avatar_cache_path(storage_key: &str) -> std::io::Result<std::path::PathBuf> {
-    Ok(crate::storage::photon_config_dir()?.join(format!("av_{}", storage_key)))
+    Ok(crate::storage::photon_config_dir()?.join(storage_key))
 }
 
 /// Load avatar from local cache by handle (checks avatars/ directory)
