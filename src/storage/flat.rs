@@ -89,8 +89,8 @@ impl FlatStorage {
                 StorageError::Vault(format!("FileStore::open failed: {:?}", e))
             })?
         } else {
-            // Format a fresh vault. Default capacity is 1 MiB which holds hundreds of contacts comfortably; growth happens via compact (Phase 2).
-            let device = FileDevice::create(&vault_path, device_id, DEFAULT_PAYLOAD_CAPACITY * 2)
+            // Format a fresh vault. `FileStore::format` calls `set_capacity` to grow the device if the wrapped output exceeds its initial size, so the seed value here just needs to be a reasonable starting allocation — pass the payload capacity straight through.
+            let device = FileDevice::create(&vault_path, device_id, DEFAULT_PAYLOAD_CAPACITY)
                 .map_err(|e| {
                     StorageError::Vault(format!("FileDevice::create failed: {:?}", e))
                 })?;
