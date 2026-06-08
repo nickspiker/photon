@@ -114,6 +114,9 @@ pub struct PhotonApp {
     last_chord_held: bool,
     /// Attested handle, set on `QueryResult::Success`. Used by the Ready screen for the optional handle label below the avatar (gated by user settings — defaults off for security). `None` while the user is still on Launch.
     attested_handle: Option<String>,
+    /// True when the dual-ring vault flagged a damaged ring on open this session.
+    /// Drives the persistent amber banner on the Ready screen. Sticky for the session.
+    vault_degraded: bool,
 }
 
 impl PhotonApp {
@@ -141,6 +144,7 @@ impl PhotonApp {
             debug_hit_colours: Vec::new(),
             last_chord_held: false,
             attested_handle: None,
+            vault_degraded: false,
         }
     }
 }
@@ -629,8 +633,16 @@ impl FluorApp for PhotonApp {
         let text = &mut *ctx.text;
         // Bg-first compose chain (matches legacy `compositing.rs` exactly): noise paints opaque, the wave reads it for the `sqrt(c*scale + c_bg²)` blend, then the logo (glow / body / highlight) paints over both via legacy visible-RGB ops. Each step preserves α on the pixels it touches. The wave + logo are Launch-screen chrome — once attested the user shouldn't be staring at the wordmark every time they open the app, so Ready / Searching / Conversation get just the background noise and let their own widgets own the canvas.
         let on_launch = matches!(self.state, AppState::Launch(_));
+        // Swap the noise base colour to BG_BASE_WARNING when the dual-ring vault flagged degraded
+        // this session — the noise pass already runs every frame so this changes a colour, not the
+        // pass count. None on the happy path keeps the default green-dark base from theme.rs.
+        let bg_base = if self.vault_degraded {
+            Some(crate::ui::theme::BG_BASE_WARNING)
+        } else {
+            None
+        };
         chrome.rasterize_bg(ctx.damage, |canvas| {
-            paint::background_noise(canvas, shimmer, false, scroll_offset, None);
+            paint::background_noise(canvas, shimmer, false, scroll_offset, None, bg_base);
             if on_launch {
                 chromatic_wave(canvas, spectrum_rect, phase, period_scale);
                 paint_photon_logo(canvas, text, logo_rect);
@@ -746,6 +758,32 @@ impl FluorApp for PhotonApp {
                 None,
                 None,
             );
+
+            // Persistent degraded-vault indicator: amber text at the bottom. The
+            // matching warm background tint already lives in the noise pass above (we
+            // swap BG_BASE → BG_BASE_WARNING) so we add no extra render pass here, just
+            // the text glyph. Full details live in the README.
+            if self.vault_degraded {
+                // Visible RGB(255, 140, 0) amber. Packed: α=0xFF | darkness = (0x00, 0x73, 0xFF).
+                const DEGRADED_TEXT: u32 = 0xFF_00_73_FF;
+                let band_h = (buf_h / 24).max(20);
+                let cx = buf_w as f32 * 0.5;
+                let cy = buf_h as f32 - band_h as f32 * 0.5;
+                let font_size = band_h as f32 * 0.6;
+                ctx.text.draw_text_center_u32(
+                    &mut canvas,
+                    "storage degraded",
+                    cx,
+                    cy,
+                    font_size,
+                    600,
+                    DEGRADED_TEXT,
+                    "Oxanium",
+                    None,
+                    None,
+                    None,
+                );
+            }
         }
 
         chrome.flatten_into(target, buf_w, buf_h, None);
@@ -874,6 +912,7 @@ impl PhotonApp {
                 );
                 // Stash the handle for the Ready screen (the optional label below the avatar). Settings persistence + the actual gate on whether to show it land in a later slice — for now Ready always renders the placeholder without text.
                 self.attested_handle = Some(data.handle.clone());
+                self.vault_degraded = data.vault_degraded;
                 self.state = AppState::Ready;
             }
             QueryResult::AlreadyAttested(peer) => {
