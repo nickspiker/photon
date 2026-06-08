@@ -68,10 +68,15 @@ pub fn decrypt_bytes(blob: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {
 /// Unified disk write: all storage writes go through this function. Every write is read-back-verified before returning success — if the bytes on disk don't match the bytes we asked to write, the call returns an error and the caller treats that as a hard failure. No "best effort" path; silent corruption is forbidden, and the cost of a `fs::read` per write is cheap against the cost of discovering on next launch that a contact's messages didn't actually persist.
 ///
 /// - Ensures parent directory exists
-/// - Writes to a temp file first, then atomically renames
+/// - Writes to a fresh-random-named sibling first, then atomically renames into place
 /// - Calls fsync to ensure data reaches disk (critical for crash safety)
 /// - Reads back the file and compares byte-for-byte against the data we asked to write
+///
+/// The pre-rename file uses a random base64url name (not a `.tmp` extension) so in-flight writes are indistinguishable in shape from finished files — `~/.config/photon/` stays FAF (flat as fuck), no metadata leak about which file was being written when a crash happened.
 pub fn write_file(path: &Path, data: &[u8], label: &str) -> Result<(), std::io::Error> {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    use rand::RngCore;
+
     // Ensure parent directory exists
     if let Some(parent) = path.parent() {
         if let Err(e) = fs::create_dir_all(parent) {
@@ -80,8 +85,14 @@ pub fn write_file(path: &Path, data: &[u8], label: &str) -> Result<(), std::io::
         }
     }
 
-    // Write to temp file first, then rename (atomic on most OS)
-    let tmp_path = path.with_extension("tmp");
+    // Fresh random sibling — looks like any other opaque file on disk. 24 random bytes → 32-char base64url, matching the filename-shape FlatStorage already uses for everything else.
+    let tmp_path = {
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        let mut rand_bytes = [0u8; 24];
+        rand::thread_rng().fill_bytes(&mut rand_bytes);
+        let rand_name = URL_SAFE_NO_PAD.encode(rand_bytes);
+        parent.join(rand_name)
+    };
 
     if let Err(e) = fs::write(&tmp_path, data) {
         let _ = fs::remove_file(&tmp_path);

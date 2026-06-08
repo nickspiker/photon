@@ -57,7 +57,7 @@ pub struct FlatStorage {
 impl FlatStorage {
     /// Initialize storage. Called once at auth time.
     pub fn new(identity_seed: [u8; 32], device_secret: [u8; 32]) -> Result<Self, StorageError> {
-        let root = photon_dir()?;
+        let root = crate::storage::photon_config_dir()?;
         fs::create_dir_all(&root)?;
         Ok(Self { root, identity_seed, device_secret })
     }
@@ -110,14 +110,3 @@ impl FlatStorage {
     }
 }
 
-// ============================================================================
-// Directory ============================================================================
-
-fn photon_dir() -> Result<PathBuf, StorageError> {
-    dirs::config_dir()
-        .map(|p| p.join("photon"))
-        .ok_or_else(|| StorageError::Io(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "config directory not found",
-        )))
-}
