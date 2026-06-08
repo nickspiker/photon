@@ -989,9 +989,8 @@ pub fn derive_avatar_keypair(
     device_secret: &SigningKey,
     handle: &str,
 ) -> (SigningKey, VerifyingKey) {
-    // VSF normalize handle for consistent key derivation
-    let vsf_bytes = vsf::VsfType::x(handle.to_string()).flatten();
-    let handle_hash = blake3::hash(&vsf_bytes);
+    // Canonical handle pre-hash via `ihi::handle_to_hash` — same intermediate `handle_to_proof` uses, so avatar key seeds, storage keys, encryption keys, and handle proofs all share one canonical "handle string → 32 bytes" algorithm.
+    let handle_hash = ihi::handle_to_hash(handle);
 
     // Derive avatar private key seed: BLAKE3(device_priv || handle_hash || "handle-avatar")
     let mut hasher = blake3::Hasher::new();
@@ -1020,9 +1019,8 @@ pub fn derive_avatar_keypair(
 pub fn avatar_storage_key(handle: &str) -> String {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 
-    // VSF normalize handle for consistent key derivation
-    let vsf_bytes = vsf::VsfType::x(handle.to_string()).flatten();
-    let handle_hash = blake3::hash(&vsf_bytes);
+    // Canonical handle pre-hash via `ihi::handle_to_hash` — same intermediate `handle_to_proof` uses, so avatar key seeds, storage keys, encryption keys, and handle proofs all share one canonical "handle string → 32 bytes" algorithm.
+    let handle_hash = ihi::handle_to_hash(handle);
     let mut salted = handle_hash.as_bytes().to_vec();
     salted.extend_from_slice(b"avatar");
     let avatar_hash = blake3::hash(&salted);
@@ -1039,9 +1037,8 @@ pub fn avatar_storage_key(handle: &str) -> String {
 ///
 /// # Returns 32-byte AES-256-GCM key
 pub fn derive_avatar_encryption_key(handle: &str) -> [u8; 32] {
-    // VSF normalize handle for consistent key derivation
-    let vsf_bytes = vsf::VsfType::x(handle.to_string()).flatten();
-    let handle_hash = blake3::hash(&vsf_bytes);
+    // Canonical handle pre-hash via `ihi::handle_to_hash` — same intermediate `handle_to_proof` uses, so avatar key seeds, storage keys, encryption keys, and handle proofs all share one canonical "handle string → 32 bytes" algorithm.
+    let handle_hash = ihi::handle_to_hash(handle);
     let mut salted = handle_hash.as_bytes().to_vec();
     salted.extend_from_slice(b"avatar-encryption");
     *blake3::hash(&salted).as_bytes()
