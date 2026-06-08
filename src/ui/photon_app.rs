@@ -112,6 +112,8 @@ pub struct PhotonApp {
     debug_hit_colours: Vec<u32>,
     /// "Were both brackets held last frame?" — read in `damage_rect` so the frame following a release still includes the chord-hint bbox (one extra paint to clear stale hint pixels), and the toggle is debounced through a full frame.
     last_chord_held: bool,
+    /// Attested handle, set on `QueryResult::Success`. Used by the Ready screen for the optional handle label below the avatar (gated by user settings — defaults off for security). `None` while the user is still on Launch.
+    attested_handle: Option<String>,
 }
 
 impl PhotonApp {
@@ -138,6 +140,7 @@ impl PhotonApp {
             show_hitmask: false,
             debug_hit_colours: Vec::new(),
             last_chord_held: false,
+            attested_handle: None,
         }
     }
 }
@@ -624,11 +627,14 @@ impl FluorApp for PhotonApp {
         let logo_rect = layout.photon_text;
         // Split-borrow `ctx.damage` (consumed by rasterize_bg's first arg) and `ctx.text` (captured by the closure for the logo's text rendering). These are disjoint fields of `Context` so the borrow checker allows both reborrows simultaneously. The closure is non-`move` so the text reborrow ends when rasterize_bg returns, leaving `ctx.text` available for `rasterize_chrome` on the next line.
         let text = &mut *ctx.text;
-        // Bg-first compose chain (matches legacy `compositing.rs` exactly): noise paints opaque, the wave reads it for the `sqrt(c*scale + c_bg²)` blend, then the logo (glow / body / highlight) paints over both via legacy visible-RGB ops. Each step preserves α on the pixels it touches.
+        // Bg-first compose chain (matches legacy `compositing.rs` exactly): noise paints opaque, the wave reads it for the `sqrt(c*scale + c_bg²)` blend, then the logo (glow / body / highlight) paints over both via legacy visible-RGB ops. Each step preserves α on the pixels it touches. The wave + logo are Launch-screen chrome — once attested the user shouldn't be staring at the wordmark every time they open the app, so Ready / Searching / Conversation get just the background noise and let their own widgets own the canvas.
+        let on_launch = matches!(self.state, AppState::Launch(_));
         chrome.rasterize_bg(ctx.damage, |canvas| {
             paint::background_noise(canvas, shimmer, false, scroll_offset, None);
-            chromatic_wave(canvas, spectrum_rect, phase, period_scale);
-            paint_photon_logo(canvas, text, logo_rect);
+            if on_launch {
+                chromatic_wave(canvas, spectrum_rect, phase, period_scale);
+                paint_photon_logo(canvas, text, logo_rect);
+            }
         });
         chrome.rasterize_chrome(ctx.damage, ctx.text, ctx.clip_mask);
 
@@ -720,6 +726,26 @@ impl FluorApp for PhotonApp {
                     id,
                 );
             }
+        }
+
+        // Ready screen — minimum-viable placeholder. Dark grey avatar square top-centre, nothing else yet. Click + drag-and-drop hint, settings-gated handle label, contact list, etc. land in subsequent slices.
+        if matches!(self.state, AppState::Ready) {
+            let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
+            let avatar_size = (buf_h.min(buf_w) / 5).max(64);
+            let avatar_x0 = buf_w.saturating_sub(avatar_size) / 2;
+            let avatar_y0 = buf_h / 10;
+            // 0xFFC5C5C5 in fluor's α+darkness format = α 0xFF, darkness 0xC5 each channel = visible RGB(0x3A, 0x3A, 0x3A) ≈ 22% brightness. Standalone constant (no theme.rs entry yet) — promote when Ready chrome gets a proper palette pass.
+            const AVATAR_PLACEHOLDER: u32 = 0xFF_C5_C5_C5;
+            paint::fill_rect(
+                &mut canvas,
+                avatar_x0 as isize,
+                avatar_y0 as isize,
+                avatar_size as isize,
+                avatar_size as isize,
+                AVATAR_PLACEHOLDER,
+                None,
+                None,
+            );
         }
 
         chrome.flatten_into(target, buf_w, buf_h, None);
@@ -846,8 +872,9 @@ impl PhotonApp {
                     data.handle,
                     hex::encode(data.handle_proof)
                 );
-                // TODO Phase 2: self.state = AppState::Ready; persist contact + storage init.
-                self.state = AppState::Launch(LaunchState::Fresh);
+                // Stash the handle for the Ready screen (the optional label below the avatar). Settings persistence + the actual gate on whether to show it land in a later slice — for now Ready always renders the placeholder without text.
+                self.attested_handle = Some(data.handle.clone());
+                self.state = AppState::Ready;
             }
             QueryResult::AlreadyAttested(peer) => {
                 let msg = format!(
