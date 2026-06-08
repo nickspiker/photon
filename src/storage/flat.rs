@@ -11,15 +11,10 @@
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use blake3::Hasher;
-use chacha20poly1305::{
-    aead::{Aead, KeyInit},
-    ChaCha20Poly1305, Nonce,
-};
-use rand::RngCore;
 use std::fs;
 use std::path::PathBuf;
 
-use crate::storage::{read_file, write_file, WritePolicy};
+use crate::storage::{decrypt_bytes, encrypt_bytes, read_file, write_file};
 
 // ============================================================================
 // Error ============================================================================
@@ -70,8 +65,9 @@ impl FlatStorage {
     /// Write data to opaque file derived from logical key. Atomic (tmp → rename), fsynced, read-back verified. Treat error as fatal.
     pub fn write(&self, key: &str, data: &[u8]) -> Result<(), StorageError> {
         let path = self.root.join(self.derive_filename(key));
-        let ciphertext = encrypt(data, &self.derive_enc_key(key))?;
-        write_file(&path, &ciphertext, key, WritePolicy::MustSucceed)?;
+        let ciphertext =
+            encrypt_bytes(data, &self.derive_enc_key(key)).map_err(StorageError::Crypto)?;
+        write_file(&path, &ciphertext, key)?;
         Ok(())
     }
 
@@ -82,7 +78,9 @@ impl FlatStorage {
             return Ok(None);
         }
         let ciphertext = read_file(&path, key)?;
-        Ok(Some(decrypt(&ciphertext, &self.derive_enc_key(key))?))
+        let plaintext = decrypt_bytes(&ciphertext, &self.derive_enc_key(key))
+            .map_err(StorageError::Crypto)?;
+        Ok(Some(plaintext))
     }
 
     /// Delete file for logical key. No-op if not found.
@@ -110,33 +108,6 @@ impl FlatStorage {
         let context = [key.as_bytes(), self.identity_seed.as_slice(), self.device_secret.as_slice()].concat();
         blake3::derive_key("photon.storage.encryption.v0", &context)
     }
-}
-
-// ============================================================================
-// Encryption helpers ============================================================================
-
-fn encrypt(plaintext: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, StorageError> {
-    let cipher = ChaCha20Poly1305::new(key.into());
-    let mut nonce_bytes = [0u8; 12];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
-    let nonce = Nonce::from(nonce_bytes);
-    let mut ciphertext = cipher
-        .encrypt(&nonce, plaintext)
-        .map_err(|e| StorageError::Crypto(e.to_string()))?;
-    let mut out = nonce_bytes.to_vec();
-    out.append(&mut ciphertext);
-    Ok(out)
-}
-
-fn decrypt(data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, StorageError> {
-    if data.len() < 12 {
-        return Err(StorageError::Crypto("ciphertext too short for nonce".into()));
-    }
-    let (nonce_bytes, ciphertext) = data.split_at(12);
-    let cipher = ChaCha20Poly1305::new(key.into());
-    cipher
-        .decrypt(Nonce::from_slice(nonce_bytes), ciphertext)
-        .map_err(|e| StorageError::Crypto(e.to_string()))
 }
 
 // ============================================================================

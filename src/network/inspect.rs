@@ -198,7 +198,6 @@ pub fn vsf_write(
     label: &str,
     #[allow(unused_variables)] decrypted: Option<&[u8]>,
     device_secret: &[u8; 32],
-    policy: crate::storage::WritePolicy,
 ) -> std::io::Result<()> {
     #[cfg(feature = "development")]
     crate::log(&format!("STORAGE: vsf_write: start {}", label));
@@ -241,12 +240,7 @@ pub fn vsf_write(
     #[cfg(feature = "development")]
     crate::log(&format!("STORAGE: vsf_write: writing to {:?}", path));
 
-    crate::storage::write_file(
-        path,
-        &vsf_file,
-        label,
-        policy,
-    )?;
+    crate::storage::write_file(path, &vsf_file, label)?;
 
     #[cfg(feature = "development")]
     crate::log("STORAGE: vsf_write: write complete");
