@@ -94,7 +94,8 @@ spirix = { path = "../spirix" }
 # fluor: CPU softbuffer compositor. Hosts the desktop event loop, owns chrome / paint primitives / text rendering / widget dispatch.
 # Path dep during the migration so Photon picks up local fluor changes without a republish cycle; flip to `version = "0.0.2"` once the migration stabilizes.
 fluor = { path = "../fluor" }
-ihi = "0.0.0"
+ihi = { path = "../ihi" }
+ferros_vault = { path = "../ferros/ferros_vault", features = ["host-file"] }
 rav1e = { version = "0.7", default-features = false }
 rav1d = { version = "1.1", default-features = false, features = ["bitdepth_8"] }
 icc-profile = "0.0.2"
