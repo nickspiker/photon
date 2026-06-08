@@ -1,4 +1,3 @@
-use crate::crypto::handle_proof::handle_proof;
 use crate::types::DevicePubkey;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15,18 +14,14 @@ impl Handle {
         }
     }
 
-    /// Generate handle proof for DHT lookup
-    /// VSF normalizes Unicode, then runs handle_proof (memory-hard PoW, ~1s)
+    /// Generate handle proof for DHT lookup. Delegates to [`ihi::handle_to_proof`] — the canonical entry point per ihi's "consolidation" doc-comment ("every component in the stack should call this rather than rolling its own pre-hash step"). Raw UTF-8 bytes of the username feed BLAKE3 directly; no VSF framing.
     pub fn to_handle_proof(&self) -> [u8; 32] {
         Self::username_to_handle_proof(&self.text)
     }
 
-    /// Generate handle proof from a username string
-    /// Memory-hard PoW (24MB, 17 rounds, ~1s) to prevent handle squatting
+    /// Generate handle proof from a username string via [`ihi::handle_to_proof`]. Memory-hard PoW (24MB scratch, 17 rounds, ~1s on 2025 hardware) — anti-squatting + ASIC-resistant. Returns the 32-byte proof.
     pub fn username_to_handle_proof(username: &str) -> [u8; 32] {
-        let vsf_bytes = vsf::VsfType::x(username.to_string()).flatten();
-        let initial_hash = blake3::hash(&vsf_bytes);
-        *handle_proof(&initial_hash).as_bytes()
+        *ihi::handle_to_proof(username).as_bytes()
     }
 }
 
