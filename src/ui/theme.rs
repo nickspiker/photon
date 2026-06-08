@@ -103,6 +103,7 @@ pub const DEBUG_MARKER: u32 = fmt(0xFE_FF_00_FF); // Magenta marker for debuggin
 
 // Background texture colours
 pub const BG_BASE: u32 = fmt(0xFF_0C_14_0E); // Base dark green for background
+pub const BG_BASE_WARNING: u32 = fmt(0xFF_30_10_00); // Warning orange background
 pub const BG_MASK: u32 = fmt(0xFF_0F_07_1F); // Channel mask for noise generation
 pub const BG_ALPHA: u32 = fmt(0xFF_00_00_00); // Alpha channel (opaque)
 pub const BG_SPECKLE: u32 = fmt(0x00_3F_1F_7F); // Speckle highlight colour (no alpha)
