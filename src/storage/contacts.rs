@@ -47,11 +47,9 @@ impl ContactIdentity {
     }
 }
 
-/// Derive identity_seed from a handle string using VSF normalization
-/// Formula: BLAKE3(VsfType::x(handle).flatten())
+/// Derive identity_seed from a handle string. Delegates to `ihi::handle_to_hash` — the canonical "handle string → 32 bytes" intermediate that `handle_to_proof` uses as its pre-hash. Matches `Contact::new`'s `handle_hash` field and the avatar key seeds; one canonical algorithm across all handle-derived bytes.
 pub fn derive_identity_seed(handle: &str) -> [u8; 32] {
-    let vsf_bytes = VsfType::x(handle.to_string()).flatten();
-    *blake3::hash(&vsf_bytes).as_bytes()
+    *ihi::handle_to_hash(handle).as_bytes()
 }
 
 /// Logical key for a contact's data

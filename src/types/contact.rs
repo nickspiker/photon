@@ -199,12 +199,8 @@ impl ContactId {
 
 impl Contact {
     pub fn new(handle: HandleText, handle_proof: [u8; 32], public_identity: DevicePubkey) -> Self {
-        // Compute private handle_hash using VSF normalization
-        // Formula: BLAKE3(VsfType::x(handle).flatten())
-        // This ensures consistent hashing regardless of Unicode representation
-        // This is PRIVATE and used for seed derivation (NOT the public handle_proof!)
-        let vsf_bytes = vsf::VsfType::x(handle.as_str().to_string()).flatten();
-        let handle_hash = *blake3::hash(&vsf_bytes).as_bytes();
+        // Private handle_hash for local seed derivation (NOT the public handle_proof). Delegates to `ihi::handle_to_hash` — the canonical "handle string → 32 bytes" intermediate that `handle_to_proof` uses as its pre-hash. Same canonical answer here means contact-table keys, avatar keypair seeds, and the public handle_proof all share one pre-hash algorithm across the codebase.
+        let handle_hash = *ihi::handle_to_hash(handle.as_str()).as_bytes();
 
         Self {
             id: ContactId::from_pubkey(&public_identity),
