@@ -13,13 +13,10 @@
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use blake3::Hasher;
-use chacha20poly1305::{
-    aead::{Aead, KeyInit},
-    ChaCha20Poly1305, Nonce,
-};
 use vsf::schema::{SectionSchema, TypeConstraint};
 use vsf::{VsfSection, VsfType};
 
+use crate::storage::{decrypt_bytes, encrypt_bytes};
 use crate::types::{Contact, DevicePubkey, HandleText, TrustLevel};
 
 /// Errors from cloud storage operations
@@ -186,44 +183,14 @@ impl CloudContact {
     }
 }
 
-/// Encrypt data with ChaCha20-Poly1305
+/// Encrypt for cloud storage — thin wrapper over [`crate::storage::encrypt_bytes`] that maps the stringified error into [`CloudError::Encryption`]. Wire format (12-byte nonce + ChaCha20-Poly1305 ciphertext + 16-byte auth tag) is identical to local-disk blobs by construction.
 fn encrypt_data(data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, CloudError> {
-    let cipher =
-        ChaCha20Poly1305::new_from_slice(key).map_err(|e| CloudError::Encryption(e.to_string()))?;
-
-    let mut nonce_bytes = [0u8; 12];
-    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce_bytes);
-    let nonce: Nonce = nonce_bytes.into();
-
-    let ciphertext = cipher
-        .encrypt(&nonce, data)
-        .map_err(|e| CloudError::Encryption(e.to_string()))?;
-
-    // Format: [12-byte nonce][ciphertext with 16-byte auth tag]
-    let mut result = Vec::with_capacity(12 + ciphertext.len());
-    result.extend_from_slice(&nonce_bytes);
-    result.extend_from_slice(&ciphertext);
-    Ok(result)
+    encrypt_bytes(data, key).map_err(CloudError::Encryption)
 }
 
-/// Decrypt data with ChaCha20-Poly1305
+/// Decrypt a cloud-storage blob — thin wrapper over [`crate::storage::decrypt_bytes`].
 fn decrypt_data(encrypted: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, CloudError> {
-    if encrypted.len() < 12 + 16 {
-        return Err(CloudError::Decryption("Data too short".to_string()));
-    }
-
-    let cipher =
-        ChaCha20Poly1305::new_from_slice(key).map_err(|e| CloudError::Decryption(e.to_string()))?;
-
-    let nonce_bytes: [u8; 12] = encrypted[..12]
-        .try_into()
-        .map_err(|_| CloudError::Decryption("Invalid nonce".to_string()))?;
-    let nonce: Nonce = nonce_bytes.into();
-    let ciphertext = &encrypted[12..];
-
-    cipher
-        .decrypt(&nonce, ciphertext)
-        .map_err(|e| CloudError::Decryption(e.to_string()))
+    decrypt_bytes(encrypted, key).map_err(CloudError::Decryption)
 }
 
 fn trust_level_to_u8(level: TrustLevel) -> u8 {

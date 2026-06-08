@@ -807,7 +807,7 @@ pub fn load_cached_avatar(handle: &str) -> Option<(usize, Vec<u8>)> {
 fn save_avatar_to_cache(handle: &str, vsf_data: &[u8]) -> std::io::Result<()> {
     let storage_key = avatar_storage_key(handle);
     let cache_path = avatar_cache_path(&storage_key)?;
-    crate::storage::write_file(&cache_path, vsf_data, &format!("avatar/{}", handle), crate::storage::WritePolicy::BestEffort)?;
+    crate::storage::write_file(&cache_path, vsf_data, &format!("avatar/{}", handle))?;
     crate::log(&format!(
         "Avatar: Cached {} locally ({}...)",
         handle,
