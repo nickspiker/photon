@@ -30,6 +30,11 @@ pub struct AttestationData {
     pub friendships: Vec<(crate::types::friendship::FriendshipId, crate::types::friendship::FriendshipChains)>,
     pub avatar_pixels: Option<Vec<u8>>,  // Local avatar if exists
     pub peers: Vec<PeerRecord>,
+    /// True if FlatStorage detected a damaged ring during open this session (missing,
+    /// permission-denied, corrupt, or HMAC-bad). UI renders a persistent degraded
+    /// banner when true. Sticky for the session — only clears on next process restart
+    /// after both rings open cleanly.
+    pub vault_degraded: bool,
 }
 
 /// Result of a handle query
@@ -486,10 +491,10 @@ impl HandleQuery {
                         let device_secret_bytes = *keypair.secret.as_bytes();
                         let identity_seed = crate::storage::contacts::derive_identity_seed(&handle);
 
-                        // Dev-mode tap so `vaultinfo` can decrypt this session's vault end-to-end. Logged at the same point in the flow the values themselves come into existence so it's obvious from the trace which run produced which keys. Never enabled in release builds.
+                        // Dev-mode tap so `vaultinfo` can decrypt this session's vault end-to-end. Logged at the same point in the flow the values themselves come into existence so it's obvious from the trace which run produced which keys. Spaces around `=` so double-clicking the hex in a terminal selects only the value (without spaces, bash word-selection picks up the `name=hex` glob and vaultinfo rejects the non-hex prefix). Never enabled in release builds.
                         #[cfg(feature = "development")]
                         crate::log(&format!(
-                            "Development: identity_seed={} device_secret={}",
+                            "Development: identity_seed = {}  device_secret = {}",
                             hex::encode(identity_seed),
                             hex::encode(device_secret_bytes),
                         ));
@@ -502,6 +507,7 @@ impl HandleQuery {
                                 return;
                             }
                         };
+                        let vault_degraded = storage.degraded();
 
                         // Load contacts from disk
                         crate::log("Network: Loading contacts from disk...");
@@ -613,6 +619,7 @@ impl HandleQuery {
                             friendships,
                             avatar_pixels,
                             peers: result.peers,
+                            vault_degraded,
                         }))
                     } else {
                         crate::log(&format!(

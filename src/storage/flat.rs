@@ -87,9 +87,14 @@ struct DualStore {
 }
 
 impl DualStore {
-    /// Open or create both rings. Repairs from the surviving file if one is missing
-    /// or corrupt; copies the higher-seq file over the lower-seq one if both exist
-    /// but their anchor_seqs differ (crash mid-dual-write self-heal).
+    /// Open or create both rings. Robust to any of: missing files, files that exist
+    /// but can't be opened (permission denied, corrupt envelope, bad HMAC, etc.).
+    ///
+    /// Cases handled, in order:
+    /// 1. Neither file exists → format ring 0, copy to ring 1. If the copy fails, ring 1 stays None + degraded.
+    /// 2. Both opened cleanly → if anchor_seqs differ, silent self-heal (lower copies from higher). Healed silently; no degraded flag.
+    /// 3. One opens, the other doesn't (missing, perm-denied, or corrupt) → attempt repair by copying the survivor's file. Repair failures don't error — the surviving ring keeps running, degraded flag flips on.
+    /// 4. Neither opens → hard error (vault is unrecoverable).
     fn open_or_create(
         paths: [PathBuf; 2],
         anchor_key: AnchorKey,
@@ -97,114 +102,102 @@ impl DualStore {
     ) -> Result<Self, StorageError> {
         for p in &paths {
             if let Some(parent) = p.parent() {
-                std::fs::create_dir_all(parent)?;
+                let _ = std::fs::create_dir_all(parent);
             }
         }
 
         let exists = [paths[0].exists(), paths[1].exists()];
 
-        match exists {
-            [false, false] => {
-                // Fresh setup. Format ring 0, copy file to ring 1, open both.
-                let s0 = format_fresh(&paths[0], anchor_key, device_id)?;
-                drop(s0);
-                std::fs::copy(&paths[0], &paths[1])?;
-                let r0 = open_existing(&paths[0], anchor_key, device_id)?;
-                let r1 = open_existing(&paths[1], anchor_key, device_id)?;
-                Ok(Self {
-                    rings: [Some(r0), Some(r1)],
-                    degraded: false,
-                })
-            }
-            [true, false] => {
-                std::fs::copy(&paths[0], &paths[1])?;
-                let r0 = open_existing(&paths[0], anchor_key, device_id)?;
-                let r1 = open_existing(&paths[1], anchor_key, device_id)?;
-                crate::log("STORAGE: ring 1 was missing — rebuilt from ring 0");
-                Ok(Self {
-                    rings: [Some(r0), Some(r1)],
-                    degraded: true,
-                })
-            }
-            [false, true] => {
-                std::fs::copy(&paths[1], &paths[0])?;
-                let r0 = open_existing(&paths[0], anchor_key, device_id)?;
-                let r1 = open_existing(&paths[1], anchor_key, device_id)?;
-                crate::log("STORAGE: ring 0 was missing — rebuilt from ring 1");
-                Ok(Self {
-                    rings: [Some(r0), Some(r1)],
-                    degraded: true,
-                })
-            }
-            [true, true] => {
-                let r0 = open_existing(&paths[0], anchor_key, device_id);
-                let r1 = open_existing(&paths[1], anchor_key, device_id);
-                match (r0, r1) {
-                    (Ok(r0), Ok(r1)) => {
-                        let seq0 = r0.anchor().anchor_seq;
-                        let seq1 = r1.anchor().anchor_seq;
-                        if seq0 == seq1 {
-                            Ok(Self {
-                                rings: [Some(r0), Some(r1)],
-                                degraded: false,
-                            })
-                        } else if seq0 > seq1 {
-                            drop(r1);
-                            std::fs::copy(&paths[0], &paths[1])?;
-                            let r1 = open_existing(&paths[1], anchor_key, device_id)?;
-                            crate::log(&format!(
-                                "STORAGE: ring 1 seq {} < ring 0 seq {} — silent self-heal",
-                                seq1, seq0
-                            ));
-                            Ok(Self {
-                                rings: [Some(r0), Some(r1)],
-                                degraded: false,
-                            })
-                        } else {
-                            drop(r0);
-                            std::fs::copy(&paths[1], &paths[0])?;
-                            let r0 = open_existing(&paths[0], anchor_key, device_id)?;
-                            crate::log(&format!(
-                                "STORAGE: ring 0 seq {} < ring 1 seq {} — silent self-heal",
-                                seq0, seq1
-                            ));
-                            Ok(Self {
-                                rings: [Some(r0), Some(r1)],
-                                degraded: false,
-                            })
-                        }
-                    }
-                    (Ok(r0), Err(e1)) => {
-                        crate::log(&format!(
-                            "STORAGE: ring 1 corrupt ({}) — rebuilding from ring 0",
-                            e1
-                        ));
-                        std::fs::copy(&paths[0], &paths[1])?;
-                        let r1 = open_existing(&paths[1], anchor_key, device_id)?;
-                        Ok(Self {
-                            rings: [Some(r0), Some(r1)],
-                            degraded: true,
-                        })
-                    }
-                    (Err(e0), Ok(r1)) => {
-                        crate::log(&format!(
-                            "STORAGE: ring 0 corrupt ({}) — rebuilding from ring 1",
-                            e0
-                        ));
-                        std::fs::copy(&paths[1], &paths[0])?;
-                        let r0 = open_existing(&paths[0], anchor_key, device_id)?;
-                        Ok(Self {
-                            rings: [Some(r0), Some(r1)],
-                            degraded: true,
-                        })
-                    }
-                    (Err(e0), Err(e1)) => Err(StorageError::Vault(format!(
-                        "both rings unreadable: ring0={}; ring1={}",
-                        e0, e1
-                    ))),
+        // Fresh setup.
+        if !exists[0] && !exists[1] {
+            let s0 = format_fresh(&paths[0], anchor_key, device_id)?;
+            drop(s0);
+            let r0 = Some(open_existing(&paths[0], anchor_key, device_id)?);
+            let r1 = match std::fs::copy(&paths[0], &paths[1]) {
+                Ok(_) => open_existing(&paths[1], anchor_key, device_id).ok(),
+                Err(e) => {
+                    crate::log(&format!(
+                        "STORAGE: ring 1 seed copy to {:?} failed: {}",
+                        paths[1], e
+                    ));
+                    None
+                }
+            };
+            let degraded = r1.is_none();
+            return Ok(Self {
+                rings: [r0, r1],
+                degraded,
+            });
+        }
+
+        // At least one file present. Try to open both — failure here is "unreadable
+        // for any reason" (missing, perm-denied, corrupt VSF wrapper, bad HMAC, etc.).
+        let mut r0 = open_existing(&paths[0], anchor_key, device_id).ok();
+        let mut r1 = open_existing(&paths[1], anchor_key, device_id).ok();
+
+        if r0.is_none() && r1.is_none() {
+            return Err(StorageError::Vault(format!(
+                "both rings unreadable: ring0={:?}; ring1={:?}",
+                paths[0], paths[1]
+            )));
+        }
+
+        let mut degraded = false;
+
+        // Asymmetric repair: copy from the survivor to the broken ring.
+        if r0.is_some() && r1.is_none() {
+            crate::log(&format!(
+                "STORAGE: ring 1 ({:?}) unreadable — attempting repair from ring 0",
+                paths[1]
+            ));
+            r1 = repair_ring(&paths[0], &paths[1], anchor_key, device_id);
+            degraded = true;
+        } else if r0.is_none() && r1.is_some() {
+            crate::log(&format!(
+                "STORAGE: ring 0 ({:?}) unreadable — attempting repair from ring 1",
+                paths[0]
+            ));
+            r0 = repair_ring(&paths[1], &paths[0], anchor_key, device_id);
+            degraded = true;
+        }
+
+        // Both open: check seq parity. Mismatched seqs are normal crash-during-
+        // dual-write recovery, silent self-heal (no degraded flag).
+        if let (Some(a), Some(b)) = (&r0, &r1) {
+            let seq0 = a.anchor().anchor_seq;
+            let seq1 = b.anchor().anchor_seq;
+            if seq0 != seq1 {
+                let (src_idx, dst_idx) = if seq0 > seq1 { (0, 1) } else { (1, 0) };
+                crate::log(&format!(
+                    "STORAGE: silent self-heal — ring {} (seq {}) → ring {} (seq {})",
+                    src_idx,
+                    if src_idx == 0 { seq0 } else { seq1 },
+                    dst_idx,
+                    if dst_idx == 0 { seq0 } else { seq1 },
+                ));
+                // Drop the loser handle before overwriting its file.
+                if dst_idx == 0 {
+                    r0 = None;
+                } else {
+                    r1 = None;
+                }
+                let healed = repair_ring(&paths[src_idx], &paths[dst_idx], anchor_key, device_id);
+                if dst_idx == 0 {
+                    r0 = healed;
+                } else {
+                    r1 = healed;
+                }
+                // If self-heal failed, the surviving ring still has the truth; flag degraded.
+                if r0.is_none() || r1.is_none() {
+                    degraded = true;
                 }
             }
         }
+
+        Ok(Self {
+            rings: [r0, r1],
+            degraded,
+        })
     }
 
     /// Read root_commit dict from the first available ring; both contain identical
@@ -256,6 +249,33 @@ fn open_existing(
         .map_err(|e| format!("FileDevice::open {:?}: {:?}", path, e))?;
     FileStore::open(device, anchor_key)
         .map_err(|e| format!("FileStore::open {:?}: {:?}", path, e))
+}
+
+/// Copy `src` over `dst` and try to open the result. Returns None if either step
+/// fails (most commonly: dst path is unwritable, or src is unreadable mid-copy).
+/// Failure logged at warn level — caller decides whether to flip degraded.
+fn repair_ring(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+    anchor_key: AnchorKey,
+    device_id: DeviceId,
+) -> Option<FileStore> {
+    match std::fs::copy(src, dst) {
+        Ok(_) => match open_existing(dst, anchor_key, device_id) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                crate::log(&format!("STORAGE: repair reopen {:?} failed: {}", dst, e));
+                None
+            }
+        },
+        Err(e) => {
+            crate::log(&format!(
+                "STORAGE: repair copy {:?} → {:?} failed: {}",
+                src, dst, e
+            ));
+            None
+        }
+    }
 }
 
 // ============================================================================
