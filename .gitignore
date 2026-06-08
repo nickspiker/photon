@@ -54,7 +54,6 @@ ios/**/.generated/
 
 # Logs
 *.log
-!M.log
 
 # Local config
 .claude/
