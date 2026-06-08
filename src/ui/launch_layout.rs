@@ -61,7 +61,8 @@ pub struct LaunchLayout {
 }
 
 impl LaunchLayout {
-    pub fn compute(buf_w: usize, buf_h: usize) -> Self {
+    /// Compute the launch layout. `ru` is the viewport's relative-unit zoom factor (1.0 = default; Ctrl++/Ctrl-+ adjust it). Only the `attest_block` slice scales with `ru` — spectrum + wordmark stay window-proportional so the visual identity reads consistent across zoom levels; the interactive form (textbox + button + hint + error labels) grows or shrinks around its base centerpoint so users zooming for legibility get a larger pill + larger fonts together. Matches legacy `app::Layout::new` lines 800-806.
+    pub fn compute(buf_w: usize, buf_h: usize, ru: f32) -> Self {
         // Horizontal: 1/8 margin | 6/8 content | 1/8 margin. Spectrum ignores this and uses full width.
         let content_x = buf_w >> 3;
         let content_w = buf_w - 2 * content_x;
@@ -96,9 +97,16 @@ impl LaunchLayout {
         cum += PHOTON_TEXT;
         let y_text_end = (cum * unit_px) as usize;
         cum += GAP2;
-        let y_block_start = (cum * unit_px) as usize;
+        let y_block_start_base = (cum * unit_px) as f32;
         cum += ATTEST_BLOCK;
-        let y_block_end = (cum * unit_px) as usize;
+        let y_block_end_base = (cum * unit_px) as f32;
+
+        // Apply ru zoom to attest_block height, centred on its base midpoint. Spectrum + wordmark stay at their unit-proportional positions; only the interactive form responds to Ctrl+/Ctrl-. Direct float arithmetic — no clamps; if ru is large enough that the scaled block would extend past the viewport, that's the user explicitly zooming past what fits, and downstream renderers cope by clipping at the canvas edge.
+        let base_h = y_block_end_base - y_block_start_base;
+        let scaled_h = base_h * ru;
+        let center = (y_block_start_base + y_block_end_base) * 0.5;
+        let y_block_start = (center - scaled_h * 0.5) as usize;
+        let y_block_end = (center + scaled_h * 0.5) as usize;
 
         LaunchLayout {
             spectrum: PixelRect::new(0, y_spectrum_start, buf_w, y_spectrum_end),

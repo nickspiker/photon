@@ -30,6 +30,15 @@ use winit::window::CursorIcon;
 /// How long after a `[`/`]` release we still treat the bracket as "held" for chord purposes. X11 fires a synthetic Release for the held bracket the instant the action key is pressed; this grace absorbs that round-trip so chords fire reliably.
 const CHORD_RELEASE_GRACE: Duration = Duration::from_millis(40);
 
+/// Error-state message colour for the Launch screen's error slot — visible RGB (255, 80, 80), bright red, fully opaque. Packed as α + darkness: `α=0xFF | (0xFF − 255)<<16 | (0xFF − 80)<<8 | (0xFF − 80) = 0xFF_00_AF_AF`. Matches the legacy `theme::STATUS_TEXT_ERROR` intent (red error text) in fluor's storage convention.
+const ERROR_TEXT_COLOUR: u32 = 0xFF_00_AF_AF;
+
+/// Hint-label colour for the static "handle" prompt under the textbox — visible RGB (160, 160, 160), soft grey, fully opaque. Quieter than `theme::TEXTBOX_TEXT` (visible 224/224/220) because the hint is contextual, not content — dim enough that the eye reads the textbox first and the hint only on attention. Packed: `α=0xFF | (0xFF − 160) per channel = 0xFF_5F_5F_5F`.
+const HINT_TEXT_COLOUR: u32 = 0xFF_5F_5F_5F;
+
+/// Status-message colour for the "Attesting…" indicator that occupies the error slot while a handle query is in flight. Pure visible white (255, 255, 255), fully opaque — same slot as `ERROR_TEXT_COLOUR` but white instead of red so the user reads it as "neutral status" rather than "something went wrong". Packed: `α=0xFF | darkness=0x00_00_00 = 0xFF_00_00_00`.
+const STATUS_TEXT_COLOUR: u32 = 0xFF_00_00_00;
+
 /// Debug chord bindings shown in the hint overlay while `[ + ]` are held. Keep in sync with the dispatch in `on_event`'s KeyboardInput arm — adding a row here without wiring its handler (or vice versa) silently drops the binding.
 const CHORD_HINTS: &[(&str, &str)] = &[
     ("H", "Hit-mask overlay"),
@@ -85,6 +94,8 @@ pub struct PhotonApp {
     focused: Option<HitId>,
     /// Blinkey timer for the focused textbox cursor. `tick()` polls it and writes `textbox.blinkey_visible` accordingly; resets on every keystroke so the cursor stays solid through typing instead of strobing.
     blink_timer: BlinkTimer,
+    /// `true` while a left-mouse-button drag is extending the textbox selection (set on left-press over a focused textbox, cleared on left-release). `CursorMoved` consults this to decide whether to grow the selection toward the cursor — otherwise hover updates are the only thing CursorMoved touches.
+    is_dragging_select: bool,
     /// HandleQuery client — owns the UDP socket, device keypair, and FGTW peer store. Submission calls `handle_query.query(handle)`; `tick()` polls `try_recv()` for results. `None` until init.
     handle_query: Option<HandleQuery>,
     /// Last `[` Press timestamp; `None` until first press. Combined with `chord_lb_release` decides whether `[` is currently held — see `brackets_held`.
@@ -118,6 +129,7 @@ impl PhotonApp {
             attest_btn: None,
             focused: None,
             blink_timer: BlinkTimer::new(),
+            is_dragging_select: false,
             handle_query: None,
             chord_lb_press: None,
             chord_lb_release: None,
@@ -228,6 +240,18 @@ impl FluorApp for PhotonApp {
     fn on_event(&mut self, event: &WindowEvent, ctx: &mut Context) -> EventResponse {
         match event {
             WindowEvent::CursorMoved { .. } => {
+                // Drag-select extension takes precedence over hover updates. Active iff we're inside a left-press-then-move sequence over the focused textbox; on first move during the drag we set the anchor to the cursor's pre-drag position (the click landed there via Textbox::on_click), then update `cursor` to the character nearest the live cursor X. `cursor_index_from_x` saturates internally — X past text bounds returns the first/last character index — so no clamp here.
+                if self.is_dragging_select {
+                    if let Some(tb) = self.textbox.as_mut() {
+                        if tb.selection_anchor.is_none() {
+                            tb.selection_anchor = Some(tb.cursor);
+                        }
+                        tb.cursor = tb.cursor_index_from_x(ctx.cursor_x);
+                    }
+                    ctx.window.request_redraw();
+                    return EventResponse::Handled;
+                }
+
                 // Hit-test against the shared hit_test_map (chrome stamps its buttons, widgets stamp their pill silhouettes — all into chrome's map). `hit_at` returns the id at the cursor regardless of which widget owns the stamp; we route hover updates to each kind separately. Chrome sets its own hover state; widgets get their `set_hovered` flipped if the hit matches.
                 let new_hit = self
                     .chrome
@@ -343,13 +367,43 @@ impl FluorApp for PhotonApp {
                 }
 
                 // Dispatch the click via the new fluor helper. Walks the tree once, finds the widget with `hit_id`, calls its `Click::on_click`. Returns `EventResponse::Pass` if the widget has no Click capability — covers chrome's app-icon orb (no action wired yet).
-                widget::dispatch_click(self, hit_id, ctx.cursor_x, ctx.cursor_y, ctx.modifiers)
+                let response =
+                    widget::dispatch_click(self, hit_id, ctx.cursor_x, ctx.cursor_y, ctx.modifiers);
+
+                // Arm drag-select if the click landed on the (now-focused) textbox. CursorMoved consults `is_dragging_select` to grow the selection; release clears it. Set AFTER dispatch so Textbox::on_click has placed the cursor at the click position first — drag then extends from there.
+                let textbox_focused = self
+                    .textbox
+                    .as_ref()
+                    .map(|t| Some(t.hit_id()) == self.focused)
+                    .unwrap_or(false);
+                if textbox_focused {
+                    self.is_dragging_select = true;
+                }
+
+                // Fluor's host doesn't auto-redraw on `Handled` (app.rs:712); a click that moved a textbox cursor or armed drag-select needs an explicit redraw or the visual update waits for the next tick (perceived as input lag).
+                if matches!(response, EventResponse::Handled) || textbox_focused {
+                    ctx.window.request_redraw();
+                }
+
+                response
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
             } => {
+                // Drag-select end: if the drag never moved (anchor == cursor) the selection range is empty; clear the anchor so subsequent keyboard navigation behaves as "no selection" rather than "0-length selection".
+                if self.is_dragging_select {
+                    self.is_dragging_select = false;
+                    if let Some(tb) = self.textbox.as_mut() {
+                        if tb.selection_anchor == Some(tb.cursor) {
+                            tb.selection_anchor = None;
+                        }
+                    }
+                    self.blink_timer.start(Instant::now());
+                    ctx.window.request_redraw();
+                }
+
                 // Attest button: poll `take_click` AFTER release — Button::on_click increments the counter at press; we observe the rising edge here so submit fires once per press/release pair regardless of how chrome dispatches subsequent events.
                 let clicked = self.attest_btn.as_mut().map(|b| b.take_click()).unwrap_or(false);
                 if clicked {
@@ -431,22 +485,49 @@ impl FluorApp for PhotonApp {
                             let btn_clicked = self.attest_btn.as_mut().map(|b| b.take_click()).unwrap_or(false);
                             if btn_clicked {
                                 self.submit_handle();
+                            }
+                            if btn_clicked || matches!(resp, EventResponse::Handled) {
                                 ctx.window.request_redraw();
                             }
                             return resp;
                         }
                         EventResponse::Pass
                     }
-                    // All other keys → focused widget via dispatch_key. The Textbox's on_key handles character insertion, backspace, arrows, selection, clipboard (Ctrl+A); Button's on_key handles Space activation. Unfocused → Pass so the host can ignore.
+                    // All other keys → focused widget via dispatch_key. The Textbox's on_key handles character insertion, backspace, arrows, selection, clipboard (Ctrl+A); Button's on_key handles Space activation. Unfocused → Pass so the host can ignore. Request redraw on Handled so character insertion paints immediately instead of waiting for the next tick.
                     _ => {
                         if let Some(focus_id) = self.focused {
-                            return widget::dispatch_key(self, focus_id, kev, ctx.modifiers, ctx.text);
+                            let resp =
+                                widget::dispatch_key(self, focus_id, kev, ctx.modifiers, ctx.text);
+                            if matches!(resp, EventResponse::Handled) {
+                                ctx.window.request_redraw();
+                                // Reset blink so the cursor stays solid through fast typing instead of blinking mid-keystroke.
+                                self.blink_timer.start(Instant::now());
+                            }
+                            return resp;
                         }
                         EventResponse::Pass
                     }
                 }
             }
             _ => EventResponse::Pass,
+        }
+    }
+
+    fn wake_at(&self) -> Option<Instant> {
+        // Schedule the next wakeup at the soonest of:
+        //   * `blink_timer.next_tick()` — drives the focused-textbox cursor pulse (random 0-300ms intervals); `None` while no textbox is focused.
+        //   * `now` when an attestation is in flight — `tick()` advances `attest_anim_phase` at 1 cycle/sec for the "query in flight" wave shift; we need a wakeup every frame to keep it animating smoothly. Without this, the host blocks waiting for input and the animation stalls.
+        let blink = self.blink_timer.next_tick();
+        let attest = matches!(
+            self.state,
+            AppState::Launch(LaunchState::Attesting) | AppState::Searching
+        )
+        .then(Instant::now);
+        match (blink, attest) {
+            (Some(b), Some(a)) => Some(b.min(a)),
+            (Some(b), None) => Some(b),
+            (None, Some(a)) => Some(a),
+            (None, None) => None,
         }
     }
 
@@ -473,19 +554,12 @@ impl FluorApp for PhotonApp {
             needs_redraw = true;
         }
 
-        // Drive the blinkey on the focused textbox. The timer only advances while it's been started (start() in change_focus); off-focus textboxes return false from poll because the timer is stopped. Mirror the visibility flag onto the textbox so the next paint reflects the current phase.
-        let visible = self.blink_timer.poll(now);
-        let focused_tb_id = self.focused.filter(|id| {
-            self.textbox
-                .as_ref()
-                .map(|t| t.hit_id() == *id)
-                .unwrap_or(false)
-        });
-        if let Some(tb) = self.textbox.as_mut() {
-            let want = focused_tb_id == Some(tb.hit_id()) && visible;
-            if tb.blinkey_visible != want {
-                tb.blinkey_visible = want;
-                needs_redraw = true;
+        // Drive the blinkey on the focused textbox. `BlinkTimer::poll(now)` returns `true` ONLY on the rising edge of each fire (then schedules the next random 0-300ms interval and returns false the rest of the time). On each fire, toggle the focused textbox's blinkey via `flip_blinkey` — which is a no-op on an unfocused textbox, so we can call it without gating.
+        if self.blink_timer.poll(now) {
+            if let Some(tb) = self.textbox.as_mut() {
+                if tb.flip_blinkey() {
+                    needs_redraw = true;
+                }
             }
         }
 
@@ -539,7 +613,7 @@ impl FluorApp for PhotonApp {
         let shimmer = bg_scroll as usize;
         let scroll_offset = 0; // Launch only for now.
         // Launch layout: faithful proportional slicing port from legacy `Layout::new` — spectrum near the top, logo wordmark overlapping its bottom, attest block (textbox + hint + button) below. Compute every frame; cheap and lets resize flow through without a separate cache.
-        let layout = LaunchLayout::compute(buf_w, buf_h);
+        let layout = LaunchLayout::compute(buf_w, buf_h, ctx.viewport.ru);
         // Chromatic wave phase has two summands:
         //   * Scroll-driven base (`bg_scroll * 1/128 rad/scroll-unit`) — one wheel-notch ≈ 8 units → ~1/16 rad shift; user-tunable by changing the shift exponent.
         //   * `attest_anim_phase` (advanced in `tick()` while `LaunchState::Attesting`) — the legacy "query in flight" cue, 1 cycle/sec.
@@ -566,8 +640,61 @@ impl FluorApp for PhotonApp {
         }
 
         // Launch-screen widgets paint UNDER the chord hint (so the hint always wins over the textbox) and OVER chrome (so the pill sits on top of the spectrum strip / wordmark). Same target buffer as the chord hint; widgets stamp their hit IDs into chrome's shared `hit_test_map`. Only paint when the launch screen is the active state — Ready/Searching/Conversation get their own widgets later.
-        if matches!(self.state, AppState::Launch(_)) {
+        if let AppState::Launch(launch_state) = &self.state {
+            let layout = LaunchLayout::compute(buf_w, buf_h, ctx.viewport.ru);
+            let attest = AttestBlockLayout::compute(layout.attest_block);
             let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
+
+            // Status slot — `attest.error` rect above the textbox. Carries either the red error message (`LaunchState::Error`) or the white "Attesting…" indicator (`LaunchState::Attesting`); empty in Fresh. Same geometry for both so they swap in place; colour differentiates "something's wrong" from "we're working". Wave's 1-cycle/sec phase animation pairs with the "Attesting…" line as the secondary cue.
+            let status: Option<(&str, u32)> = match launch_state {
+                LaunchState::Attesting => Some(("Attesting\u{2026}", STATUS_TEXT_COLOUR)),
+                LaunchState::Error(msg) if !msg.is_empty() => Some((msg.as_str(), ERROR_TEXT_COLOUR)),
+                _ => None,
+            };
+            if let Some((text, colour)) = status {
+                let error_rect = attest.error;
+                if !error_rect.is_empty() {
+                    let region_h = (error_rect.y1 - error_rect.y0) as f32;
+                    let cx = (error_rect.x0 + error_rect.x1) as f32 * 0.5;
+                    let cy = (error_rect.y0 + error_rect.y1) as f32 * 0.5;
+                    // Half-height font: status messages are short by convention; full-rect-height is too loud for one-line text and overflows wide messages off the side.
+                    ctx.text.draw_text_center_u32(
+                        &mut canvas,
+                        text,
+                        cx,
+                        cy,
+                        region_h * 0.5,
+                        500, // Medium weight — readable at small sizes; matches the Oxanium family already loaded in init().
+                        colour,
+                        "Oxanium",
+                        None,
+                        None,
+                        None,
+                    );
+                }
+            }
+
+            // Hint slot — static "handle" label below the textbox, always shown on the Launch screen. Tells the user what to type; doesn't change with sub-state.
+            let hint_rect = attest.hint;
+            if !hint_rect.is_empty() {
+                let region_h = (hint_rect.y1 - hint_rect.y0) as f32;
+                let cx = (hint_rect.x0 + hint_rect.x1) as f32 * 0.5;
+                let cy = (hint_rect.y0 + hint_rect.y1) as f32 * 0.5;
+                ctx.text.draw_text_center_u32(
+                    &mut canvas,
+                    "handle",
+                    cx,
+                    cy,
+                    region_h * 0.7,
+                    500,
+                    HINT_TEXT_COLOUR,
+                    "Oxanium",
+                    None,
+                    None,
+                    None,
+                );
+            }
+
             if let Some(tb) = self.textbox.as_mut() {
                 let id = tb.hit_id();
                 tb.render_content_into(
@@ -669,7 +796,7 @@ impl PhotonApp {
     fn update_widget_layout(&mut self, ctx: &mut Context) {
         let buf_w = ctx.viewport.width_px as usize;
         let buf_h = ctx.viewport.height_px as usize;
-        let layout = LaunchLayout::compute(buf_w, buf_h);
+        let layout = LaunchLayout::compute(buf_w, buf_h, ctx.viewport.ru);
         let attest = AttestBlockLayout::compute(layout.attest_block);
         // Font size = span/24 — small enough to fit the legacy attest-block textbox ratio (height ≈ 2 units of the 9.25-unit slice), large enough to remain legible across zoom range. Same scalar drives the button so they read as a matched pair.
         let span = ctx.viewport.effective_span();
@@ -687,8 +814,13 @@ impl PhotonApp {
         }
     }
 
-    /// Send the current textbox contents as an attestation query and transition Launch → Attesting. Called from Enter in the textbox path and from clicking the Attest button — same submit path. No-op if the textbox is empty or HandleQuery wasn't constructed (init failure path).
+    /// Send the current textbox contents as an attestation query and transition Launch → Attesting. Called from Enter in the textbox path and from clicking the Attest button — same submit path. No-op if the textbox is empty, HandleQuery wasn't constructed (init failure path), or the launch sub-state forbids submission (`LaunchState::Attesting` — query already in flight; second submit would double-spend the ~5s memory-hard proof).
     fn submit_handle(&mut self) {
+        if let AppState::Launch(s) = &self.state {
+            if !s.can_edit_handle() {
+                return;
+            }
+        }
         let handle: String = match self.textbox.as_ref() {
             Some(tb) => tb.chars.iter().collect(),
             None => return,
