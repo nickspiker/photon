@@ -486,6 +486,14 @@ impl HandleQuery {
                         let device_secret_bytes = *keypair.secret.as_bytes();
                         let identity_seed = crate::storage::contacts::derive_identity_seed(&handle);
 
+                        // Dev-mode tap so `vaultinfo` can decrypt this session's vault end-to-end. Logged at the same point in the flow the values themselves come into existence so it's obvious from the trace which run produced which keys. Never enabled in release builds.
+                        #[cfg(feature = "development")]
+                        crate::log(&format!(
+                            "Development: identity_seed={} device_secret={}",
+                            hex::encode(identity_seed),
+                            hex::encode(device_secret_bytes),
+                        ));
+
                         // Initialize FlatStorage for this session
                         let storage = match crate::storage::FlatStorage::new(identity_seed, device_secret_bytes) {
                             Ok(s) => s,
