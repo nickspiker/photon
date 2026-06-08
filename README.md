@@ -59,6 +59,7 @@ Photon is a peer-to-peer messaging application that replaces traditional authent
 | Android | ✅ Working | ARM64, tested on device |
 | Redox | 🟡 Compiles | Orbital, untested |
 | iOS | ❌ Blocked | See "Why No iOS?" below |
+| ferros | ✅ Future | waiting on ferros components |
 
 ---
 
@@ -293,7 +294,25 @@ You authenticate once when creating your identity. All subsequent access uses cr
 
 **Handle attestation:**
 
-Identity is tied to your handle—any Unicode string of any length (e.g., `fractal decoder`, `🚀`, `∫∂x`, or `☢⚡☃`). The handle is hashed with BLAKE3 to derive a network address. Claiming a handle requires **two human attestations**—existing users vouch for your identity. This is invite-only by design.
+Identity is tied to your handle—any Unicode string of any length (e.g., `fractal decoder`, `ℕƐρ⊤∪ηǝ`, `∫∂x`, or `☢⚡☃`). The handle is hashed to derive a network address. Claiming a handle requires **two human attestations**—existing users vouch for your identity. This is invite-only by design.
+
+**What makes a good handle:**
+
+Your handle is a personal identifier you share out-of-band with people you want to reach you like family, friends, or colleagues. It's not a username assigned by a platform, and it shouldn't be your name or email address. It's whatever feels like you to the people who know you.
+
+Because FGTW routes by a hash of your handle, the handle itself is never transmitted on the network. This means your handle can be anything, including characters no traditional system would accept. ☃, polar bear, ∫∂x, and ℕƐρ⊤∪ηǝ are all equally valid and equally routable. Spaces are fine — `omega cyan` and `omega_cyan` hash to entirely different addresses, so there's no reason to substitute underscores for the space you'd actually say out loud.
+
+Conventions worth following:
+
+- Prefer lowercase — `omega cyan` is easier to dictate than `Omega Cyan`, and `omega cyan` and `Omega cyan` are different handles
+- Use real spaces, not underscores or dots — your handle should read like something you'd say, not something you'd type into a login form
+- Pick something that isn't a name — two-word phrases like `purple octopus`, `slow tide`, or `paper kite` are distinctive, memorable, and don't collide with the person you happen to share a first name with
+- Don't use your real name or email — your handle isn't a directory entry, it's a shared secret
+- Pick something memorable enough to hand to someone verbally or write on paper
+- If two people independently choose the same handle, the first to complete attestation owns it — choose something distinctive
+- You can have one handle per identity; choose with care
+
+The handle is the thing you give someone so they can find you. Nothing more, nothing less. The crypto does the rest.
 
 **Attestation flow** (see [AUTH.md](AUTH.md) for full specification):
 
@@ -317,7 +336,7 @@ See [AUTH.md](AUTH.md) for detailed specification.
 
 ### Network Architecture
 
-**Peer discovery:** FGTW (Fractal Gradient Trust Web)—custom Kademlia DHT with 32-byte BLAKE3 node IDs, 256 k-buckets, and VSF-serialized protocol messages. Handle lookups: `BLAKE3(handle) → handle_hash → Kademlia routing → peer records`. Bootstrap via `fgtw.org/peers.vsf` (Cloudflare Workers endpoint providing seed routing table population).
+**Peer discovery:** FGTW (Fractal Gradient Trust Web)—custom Kademlia DHT with 32-byte node IDs, 256 k-buckets, and VSF-serialized protocol messages. Handle lookups: `handle → hashed handle → Kademlia routing → peer records`. Bootstrap via `fgtw.org/peers.vsf` (Cloudflare Workers endpoint providing seed routing table population).
 
 **Transport:** UDP for P2P status and messaging, HTTPS (rustls) for bootstrap fetches. WebSocket support planned for NAT traversal.
 
