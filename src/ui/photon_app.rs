@@ -7,6 +7,7 @@
 use super::chromatic_wave::chromatic_wave;
 use super::launch_layout::{AttestBlockLayout, LaunchLayout};
 use super::photon_logo::paint_photon_logo;
+use super::ready_layout::ReadyLayout;
 use super::state::{AppState, LaunchState};
 use super::PhotonEvent;
 use crate::network::fgtw::{derive_device_keypair, get_machine_fingerprint, PeerStore};
@@ -117,6 +118,10 @@ pub struct PhotonApp {
     /// True when the dual-ring vault flagged a damaged ring on open this session.
     /// Drives the persistent amber banner on the Ready screen. Sticky for the session.
     vault_degraded: bool,
+    /// FGTW connectivity state — flipped by `HandleQuery::try_recv_online`. Drives the
+    /// top-left chrome orb's colour (red offline / green online). Starts false; the
+    /// background worker reports the first real status within the first second of launch.
+    online: bool,
 }
 
 impl PhotonApp {
@@ -145,7 +150,23 @@ impl PhotonApp {
             last_chord_held: false,
             attested_handle: None,
             vault_degraded: false,
+            online: false,
         }
+    }
+}
+
+/// Map a connectivity bool to the chrome orb tint. Offline = red disk, online = green
+/// disk. Visible RGB chosen for high contrast in either light or dark chrome themes;
+/// brighten=true on the online state for the eventual icon-overlay case (no-icon today
+/// just renders as a solid coloured circle).
+fn orb_tint_for(online: bool) -> fluor::host::chrome::OrbTint {
+    // Visible RGB(64, 224, 64) green: darkness = (0xBF, 0x1F, 0xBF); packed α=0xFF.
+    // Visible RGB(224, 64, 64) red:   darkness = (0x1F, 0xBF, 0xBF); packed α=0xFF.
+    const ORB_ONLINE: u32 = 0xFF_BF_1F_BF;
+    const ORB_OFFLINE: u32 = 0xFF_1F_BF_BF;
+    fluor::host::chrome::OrbTint::Custom {
+        ring: if online { ORB_ONLINE } else { ORB_OFFLINE },
+        brighten: online,
     }
 }
 
@@ -203,8 +224,20 @@ impl FluorApp for PhotonApp {
         db.load_font_data(include_bytes!("../../assets/Oxanium/Oxanium-Bold.ttf").to_vec());
         db.load_font_data(include_bytes!("../../assets/Oxanium/Oxanium-ExtraBold.ttf").to_vec());
 
-        // Chrome owns its own hit-test map sized to the viewport, allocates four hit-ids for its buttons via the threaded counter, and stamps the perimeter + button rasters in `rasterize_chrome`. No app icon yet — Photon's icon asset wires here in a follow-up commit.
-        let chrome = DefaultChrome::new(ctx.viewport, "Photon", None, None, &mut self.hit_counter);
+        // Chrome owns its own hit-test map sized to the viewport, allocates four hit-ids for its buttons via the threaded counter, and stamps the perimeter + button rasters in `rasterize_chrome`. The Photon orb (chromatic starburst — same brand mark as the OS-level app icon) ships as a VSF image and decodes into the chrome's app_icon slot.
+        let orb_icon = fluor::host::icon::Icon::from_vsf_bytes(include_bytes!(
+            "../../assets/photon-orb.vsf"
+        ))
+        .ok();
+        let mut chrome = DefaultChrome::new(
+            ctx.viewport,
+            "Photon",
+            orb_icon,
+            None,
+            &mut self.hit_counter,
+        );
+        // Top-left orb's ring doubles as the FGTW connectivity indicator (port of the legacy compositing.rs connectivity dot). Initialize red/offline; `try_recv_online` flips to green once the FGTW reports the device is reachable.
+        chrome.set_orb_tint(orb_tint_for(false));
         self.chrome = Some(chrome);
 
         // Launch-screen widgets: handle textbox + attest button. Constructed with placeholder geometry; real geometry lands in `update_widget_layout` (called below and on every resize). Hit IDs are allocated from the shared counter AFTER chrome's four — chrome currently takes 1..=4, widgets get 5..=6.
@@ -576,8 +609,12 @@ impl FluorApp for PhotonApp {
             while let Some(result) = hq.try_recv() {
                 drained.push(result);
             }
-            while let Some(_online) = hq.try_recv_online() {
-                // No UI surface for online state yet; once the connectivity indicator lands this becomes a state mutation.
+            while let Some(online) = hq.try_recv_online() {
+                self.online = online;
+                if let Some(chrome) = self.chrome.as_mut() {
+                    chrome.set_orb_tint(orb_tint_for(online));
+                }
+                needs_redraw = true;
             }
         }
         for result in drained {
@@ -740,24 +777,14 @@ impl FluorApp for PhotonApp {
             }
         }
 
-        // Ready screen — minimum-viable placeholder. Dark grey avatar square top-centre, nothing else yet. Click + drag-and-drop hint, settings-gated handle label, contact list, etc. land in subsequent slices.
+        // Ready screen — slice-based layout matching legacy ContactsUnifiedLayout. Today only the avatar circle is painted; the layout already carries rects for handle / hint / textbox / separator / contact rows so subsequent slices drop into named slots without re-computing geometry.
         if matches!(self.state, AppState::Ready) {
             let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
-            let avatar_size = (buf_h.min(buf_w) / 5).max(64);
-            let avatar_x0 = buf_w.saturating_sub(avatar_size) / 2;
-            let avatar_y0 = buf_h / 10;
+            let ready_layout = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru);
+            let (cx, cy, radius) = ready_layout.avatar_center_radius();
             // 0xFFC5C5C5 in fluor's α+darkness format = α 0xFF, darkness 0xC5 each channel = visible RGB(0x3A, 0x3A, 0x3A) ≈ 22% brightness. Standalone constant (no theme.rs entry yet) — promote when Ready chrome gets a proper palette pass.
             const AVATAR_PLACEHOLDER: u32 = 0xFF_C5_C5_C5;
-            paint::fill_rect(
-                &mut canvas,
-                avatar_x0 as isize,
-                avatar_y0 as isize,
-                avatar_size as isize,
-                avatar_size as isize,
-                AVATAR_PLACEHOLDER,
-                None,
-                None,
-            );
+            paint::draw_circle(&mut canvas, cx, cy, radius, AVATAR_PLACEHOLDER, None);
 
             // Persistent degraded-vault indicator: amber text at the bottom. The
             // matching warm background tint already lives in the noise pass above (we

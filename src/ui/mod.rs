@@ -35,6 +35,10 @@ pub mod photon_logo;
 #[cfg(not(target_os = "android"))]
 pub mod launch_layout;
 
+// Desktop Ready-screen layout calculator — slice-based port of legacy `app::ContactsUnifiedLayout`.
+#[cfg(not(target_os = "android"))]
+pub mod ready_layout;
+
 pub use state::{AppState, FoundPeer, LaunchState, SearchResult};
 
 // Android renderer survives until fluor grows host-android. Renderer trio for desktop (linux_softbuffer / linux_wgpu / windows / macos / macos_softbuffer / redox) is gated below the Android-only block since they were only consumed by the legacy `app::PhotonApp`.
