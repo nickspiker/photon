@@ -9,7 +9,6 @@
 //!
 //! Concurrency: FileStore lives behind a `std::sync::Mutex` so the public `&self` methods can mutate it. Photon is single-threaded today but the Mutex costs nothing and future-proofs against concurrent access.
 
-use std::path::PathBuf;
 use std::sync::Mutex;
 
 use ferros_vault::host_file::{
@@ -64,11 +63,18 @@ pub struct FlatStorage {
 }
 
 impl FlatStorage {
-    /// Initialize storage. Called once at auth time. Opens `~/.config/photon/photon.vsf` if it exists; formats a fresh vault if not. Treats `identity_seed + device_secret` as the keying material — same auth flow reproduces the same vault key.
+    /// Initialize storage. Called once at auth time. Opens `~/.config/photon.vsf` if it exists; formats a fresh vault if not. Treats `identity_seed + device_secret` as the keying material — same auth flow reproduces the same vault key.
+    ///
+    /// Note: the vault file lives directly under `~/.config/`, NOT inside a `~/.config/photon/` subdirectory. The whole point of the vault is that one file holds all Photon state; spawning a subdirectory just to hold it would leak the same metadata the vault is designed to hide. Avatars + the Windows log still live in a `~/.config/photon/` subdirectory for now (Phase 1F migrates them into the vault).
     pub fn new(identity_seed: [u8; 32], device_secret: [u8; 32]) -> Result<Self, StorageError> {
-        let root = crate::storage::photon_config_dir()?;
-        std::fs::create_dir_all(&root)?;
-        let vault_path = root.join(VAULT_FILENAME);
+        let config_dir = dirs::config_dir().ok_or_else(|| {
+            StorageError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "config directory not found",
+            ))
+        })?;
+        std::fs::create_dir_all(&config_dir)?;
+        let vault_path = config_dir.join(VAULT_FILENAME);
 
         let anchor_key = derive_anchor_key(&identity_seed, &device_secret);
 
