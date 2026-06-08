@@ -775,7 +775,7 @@ MIT OR Apache-2.0 (dual licensed)
 
 ## Appendix A: Zero-Index Philosophy
 
-This specification uses zero-indexing throughout:
+This specification uses zero-indexing thruout:
 - Sections: 0-11
 - Phases: 0-N
 - Array indices: 0-N

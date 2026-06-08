@@ -227,7 +227,7 @@ The type marker exists precisely so you never have to guess. Use it.
 ## Language Preferences
 
 ### Strongly Preferred:
-- **Rust**: Memory safety through ownership, zero-cost abstractions
+- **Rust**: Memory safety thru ownership, zero-cost abstractions
 - **Assembly**: When you need exact control
 - **Metal**: GPU compute with known performance characteristics
 
@@ -592,7 +592,7 @@ If you find yourself writing:
 - `.timestamp()` on a `DateTime`
 - `SystemTime::now().duration_since(...)`
 - Storing raw `u64` seconds without Eagle Time wrapper
-- Any date/time calculation that doesn't go through `eagle_time.rs`
+- Any date/time calculation that doesn't go thru `eagle_time.rs`
 
 **You are violating this rule.** Convert to Eagle Time immediately.
 
