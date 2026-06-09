@@ -92,9 +92,12 @@ rayon = "1.11.0"
 vsf = { path = "../vsf", features = ["crypto", "text"] }
 spirix = { path = "../spirix" }
 # fluor: CPU softbuffer compositor. Hosts the desktop event loop, owns chrome / paint primitives / text rendering / widget dispatch.
-# Path dep during the migration so Photon picks up local fluor changes without a republish cycle; flip to `version = "0.0.2"` once the migration stabilizes.
-fluor = { path = "../fluor" }
+# Path dep during the migration so Photon picks up local fluor changes without a republish cycle; flip to `version = "0.0.3+"` once the migration stabilizes (note: 0.0.2 was yanked).
+# Global = algorithm/geometry core only (no windowing backend). The desktop target block below adds `host-winit` so Cargo unions to {std, text, simd, rayon, host-winit} for desktop builds; the Android target stays at the default set so its dep graph excludes softbuffer/arboard/winit. This is the first step of the `host-android` plan — Android stays on the legacy compositor for now, but the fluor algorithm code is shared by both targets going forward.
+fluor = { path = "../fluor", default-features = false, features = ["std", "text", "simd", "rayon"] }
 ihi = { path = "../ihi" }
+voca = { path = "../voca" }
+num-bigint = "0.4"
 ferros_vault = { path = "../ferros/ferros_vault", features = ["host-file"] }
 rav1e = { version = "0.7", default-features = false }
 rav1d = { version = "1.1", default-features = false, features = ["bitdepth_8"] }
@@ -141,18 +144,23 @@ jni = "0.21"
 ndk = { version = "0.9.0", features = ["api-level-26"] }
 ndk-sys = "0.6.0"
 android_logger = "0.15.0"
+# winit on Android pulls in the platform-agnostic event types only (ElementState / MouseButton / MouseScrollDelta / KeyEvent / ModifiersState). `default-features = false` + `rwh_06` keeps the window/event-loop machinery out — Photon's Android surface is `ANativeWindow` via `renderer_android.rs`, and JNI translates Android input events into these winit type values before feeding them to the legacy compositor. Drops out completely once the `host-android` plan lands fluor-native event types (Phase 1).
+winit = { version = "0.30.12", default-features = false, features = ["rwh_06"] }
+# winit's Android target unconditionally pulls `android-activity` (not feature-gated), and android-activity refuses to compile without one of its backend features set. `native-activity` is the lighter of the two — picks the standard `NativeActivity` glue and lets winit's types compile cleanly without bringing in a separate event-loop driver. Photon doesn't dispatch through winit's event loop on Android (its activity is a custom Kotlin class in `android/app/.../PhotonActivity.kt`); this dep is purely compile-glue.
+android-activity = { version = "0.6", features = ["native-activity"] }
 
 # Redox uses Orbital, not X11
 [target.'cfg(target_os = "redox")'.dependencies]
 winit = { version = "0.30.12", default-features = false, features = ["rwh_06"] }
 softbuffer = { version = "0.4", default-features = false }
 
-# Desktop platforms (not Redox, not Android): default winit/softbuffer + if-watch + arboard
+# Desktop platforms (not Redox, not Android): default winit/softbuffer + if-watch + arboard, plus fluor's `host-winit` feature (Cargo unions features across target blocks, so the global `default-features = false` set is augmented here rather than overridden).
 [target.'cfg(not(any(target_os = "redox", target_os = "android")))'.dependencies]
 winit = "0.30.12"
 softbuffer = "0.4"
 if-watch = { version = "3.2.1", features = ["tokio"] }
 arboard = "3.4"
+fluor = { path = "../fluor", default-features = false, features = ["host-winit"] }
 
 [dev-dependencies]
 criterion = "0.7.0"

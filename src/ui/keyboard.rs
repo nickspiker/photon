@@ -100,7 +100,7 @@ impl PhotonApp {
                         }
 
                         // Ctrl+C: Copy
-                        #[cfg(not(target_os = "redox"))]
+                        #[cfg(not(any(target_os = "redox", target_os = "android")))]
                         if c.eq_ignore_ascii_case("c") {
                             if let Some(selected_text) = self.get_selected_text() {
                                 if let Ok(mut clipboard) = arboard::Clipboard::new() {
@@ -111,7 +111,7 @@ impl PhotonApp {
                         }
 
                         // Ctrl+X: Cut
-                        #[cfg(not(target_os = "redox"))]
+                        #[cfg(not(any(target_os = "redox", target_os = "android")))]
                         if c.eq_ignore_ascii_case("x") {
                             if let Some(selected_text) = self.get_selected_text() {
                                 // Try to copy to clipboard first
@@ -142,7 +142,7 @@ impl PhotonApp {
                         }
 
                         // Ctrl+V: Paste
-                        #[cfg(not(target_os = "redox"))]
+                        #[cfg(not(any(target_os = "redox", target_os = "android")))]
                         if c.eq_ignore_ascii_case("v") {
                             if let Ok(mut clipboard) = arboard::Clipboard::new() {
                                 if let Ok(text) = clipboard.get_text() {
