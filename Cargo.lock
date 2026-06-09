@@ -1580,7 +1580,7 @@ dependencies = [
  "num-bigint",
  "rand 0.8.5",
  "voca",
- "vsf",
+ "vsf 0.3.6",
 ]
 
 [[package]]
@@ -1628,7 +1628,7 @@ dependencies = [
  "softbuffer",
  "spirix",
  "swash",
- "vsf",
+ "vsf 0.3.6",
  "wgpu",
  "wide",
  "winit",
@@ -2294,11 +2294,26 @@ dependencies = [
 [[package]]
 name = "ihi"
 version = "0.0.42"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2df9fd706b9c0f47cbe676a1c5a975909bb4707001cb26662e259be25bc08937"
 dependencies = [
  "blake3",
  "i256",
  "sha2 0.10.9",
  "sha3 0.10.8",
+]
+
+[[package]]
+name = "ihi"
+version = "0.0.43"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "974f446aa6e9d23c7a18393aabd3763d01e2d70ed64c24ab645a1d2ccb3e6dbc"
+dependencies = [
+ "blake3",
+ "i256",
+ "sha2 0.10.9",
+ "sha3 0.10.8",
+ "vsf 0.3.6 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -3399,7 +3414,7 @@ dependencies = [
  "i256",
  "icc-profile",
  "if-watch",
- "ihi",
+ "ihi 0.0.43",
  "image",
  "img-parts",
  "jni",
@@ -3429,14 +3444,13 @@ dependencies = [
  "sha2 0.10.9",
  "sha3 0.11.0-rc.8",
  "softbuffer",
- "spirix",
  "subtle",
  "thiserror 2.0.18",
  "thread-priority",
  "tokio",
  "tokio-tungstenite",
  "voca",
- "vsf",
+ "vsf 0.3.6",
  "wgpu",
  "windows 0.58.0",
  "winit",
@@ -4743,7 +4757,6 @@ dependencies = [
  "num-complex",
  "num-integer",
  "num-traits",
- "rand 0.9.2",
 ]
 
 [[package]]
@@ -5463,6 +5476,8 @@ checksum = "051eb1abcf10076295e815102942cc58f9d5e3b4560e46e53c21e8ff6f3af7b1"
 [[package]]
 name = "voca"
 version = "0.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9e8d8f24210692b23219676beb53b7a9a24062db6b1e0e5d1795919d861be0e8"
 dependencies = [
  "num-bigint",
  "num-integer",
@@ -5471,7 +5486,7 @@ dependencies = [
 
 [[package]]
 name = "vsf"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "aes-gcm 0.10.3",
  "bitvec",
@@ -5483,7 +5498,7 @@ dependencies = [
  "ed25519-dalek",
  "hex",
  "i256",
- "ihi",
+ "ihi 0.0.42",
  "libm",
  "num-complex",
  "num-traits",
@@ -5491,6 +5506,24 @@ dependencies = [
  "spin",
  "ureq",
  "x25519-dalek",
+]
+
+[[package]]
+name = "vsf"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4b6b83ec39ba5bb7f6c6acab8e0f64713b77a6d8895565a690842f21dbdd349b"
+dependencies = [
+ "bitvec",
+ "blake3",
+ "chrono",
+ "hex",
+ "i256",
+ "ihi 0.0.42",
+ "libm",
+ "num-complex",
+ "num-traits",
+ "ureq",
 ]
 
 [[package]]
