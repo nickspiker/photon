@@ -29,8 +29,7 @@ use winit::event_loop::EventLoopProxy;
 /// Shared contact list - UI updates this, background thread reads it
 pub type ContactPubkeys = Arc<Mutex<Vec<DevicePubkey>>>;
 
-/// Shared sync records - UI updates this, background thread reads it for pong responses
-/// Maps conversation_token to last_received_ef6 (when we last received a message)
+/// Shared sync records - UI updates this, background thread reads it for pong responses Maps conversation_token to last_received_ef6 (when we last received a message)
 pub type SyncRecordsProvider = Arc<Mutex<Vec<SyncRecord>>>;
 
 /// Get current Eagle Time as i64 oscillations
@@ -54,9 +53,7 @@ pub struct PingRequest {
     pub peer_pubkey: DevicePubkey,
 }
 
-// NOTE: ClutchRequest and ClutchRequestType REMOVED
-// Full 8-primitive CLUTCH uses ClutchOfferRequest and ClutchKemResponseRequest which are handled via build_clutch_offer_vsf() and build_clutch_kem_response_vsf()
-// See CLUTCH.md Section 4.2 for the slot-based ceremony protocol.
+// NOTE: ClutchRequest and ClutchRequestType REMOVED Full 8-primitive CLUTCH uses ClutchOfferRequest and ClutchKemResponseRequest which are handled via build_clutch_offer_vsf() and build_clutch_kem_response_vsf() See CLUTCH.md Section 4.2 for the slot-based ceremony protocol.
 
 /// Request to send an encrypted message (CHAIN format)
 #[derive(Clone)]
@@ -70,8 +67,7 @@ pub struct MessageRequest {
     pub prev_msg_hp: [u8; 32],
     /// Encrypted message content
     pub ciphertext: Vec<u8>,
-    /// Eagle time oscillations used for encryption - MUST match for decryption
-    /// The nonce is derived from this, so sender and receiver must use identical value
+    /// Eagle time oscillations used for encryption - MUST match for decryption The nonce is derived from this, so sender and receiver must use identical value
     pub eagle_time: i64,
 }
 
@@ -131,16 +127,14 @@ pub struct ClutchCompleteRequest {
     pub device_secret: [u8; 32], // For signing (zeroize after use)
 }
 
-/// Request to broadcast presence on LAN for local peer discovery
-/// Solves NAT hairpinning - when peers are on same LAN, use local IPs
+/// Request to broadcast presence on LAN for local peer discovery Solves NAT hairpinning - when peers are on same LAN, use local IPs
 #[derive(Clone)]
 pub struct LanBroadcastRequest {
     pub our_handle_proof: [u8; 32],
     pub our_port: u16, // Port we're listening on
 }
 
-/// Request to clear pending PT sends for a peer (e.g., when CLUTCH completes)
-/// Prevents wasteful retransmission of offers/KEM responses after ceremony is done.
+/// Request to clear pending PT sends for a peer (e.g., when CLUTCH completes) Prevents wasteful retransmission of offers/KEM responses after ceremony is done.
 #[derive(Clone)]
 pub struct ClearPtSendsRequest {
     pub peer_addr: SocketAddr,
@@ -157,13 +151,10 @@ pub enum StatusUpdate {
         peer_pubkey: DevicePubkey,
         is_online: bool,
         peer_addr: Option<std::net::SocketAddr>,
-        /// Sync records from pong: (conversation_token, last_received_ef6)
-        /// Tells us which messages the peer has received, for retransmit logic
+        /// Sync records from pong: (conversation_token, last_received_ef6) Tells us which messages the peer has received, for retransmit logic
         sync_records: Vec<SyncRecord>,
     },
-    // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete REMOVED
-    // Full 8-primitive CLUTCH uses ClutchOfferReceived and ClutchKemResponseReceived
-    // See CLUTCH.md Section 4.2 for the slot-based ceremony protocol.
+    // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete REMOVED Full 8-primitive CLUTCH uses ClutchOfferReceived and ClutchKemResponseReceived See CLUTCH.md Section 4.2 for the slot-based ceremony protocol.
     /// Encrypted chat message received (CHAIN format)
     ChatMessage {
         /// Privacy-preserving conversation token (smear_hash of sorted participant seeds)
@@ -192,8 +183,7 @@ pub enum StatusUpdate {
     },
     /// PT outbound transfer completed successfully
     PTSendComplete { peer_addr: SocketAddr },
-    /// Full CLUTCH offer received (~548KB with all 8 pubkeys)
-    /// Payload is already verified and parsed from VSF format.
+    /// Full CLUTCH offer received (~548KB with all 8 pubkeys) Payload is already verified and parsed from VSF format.
     ClutchOfferReceived {
         conversation_token: [u8; 32], // Privacy-preserving smear_hash of sorted participant seeds
         offer_provenance: [u8; 32],   // VSF header hp - unique per offer (timestamp entropy)
@@ -201,8 +191,7 @@ pub enum StatusUpdate {
         payload: crate::crypto::clutch::ClutchOfferPayload,
         sender_addr: SocketAddr,
     },
-    /// CLUTCH KEM response received (~31KB with 4 ciphertexts)
-    /// Payload is already verified and parsed from VSF format.
+    /// CLUTCH KEM response received (~31KB with 4 ciphertexts) Payload is already verified and parsed from VSF format.
     ClutchKemResponseReceived {
         conversation_token: [u8; 32], // Privacy-preserving smear_hash of sorted participant seeds
         ceremony_id: [u8; 32],        // Deterministic - should match locally computed value
@@ -210,8 +199,7 @@ pub enum StatusUpdate {
         payload: crate::crypto::clutch::ClutchKemResponsePayload,
         sender_addr: SocketAddr,
     },
-    /// CLUTCH complete proof received (~200 bytes with eggs_proof)
-    /// Payload is already verified and parsed from VSF format. Both parties exchange this to verify they derived identical eggs.
+    /// CLUTCH complete proof received (~200 bytes with eggs_proof) Payload is already verified and parsed from VSF format. Both parties exchange this to verify they derived identical eggs.
     ClutchCompleteReceived {
         conversation_token: [u8; 32], // Privacy-preserving smear_hash of sorted participant seeds
         ceremony_id: [u8; 32],        // Deterministic - should match locally computed value
@@ -289,8 +277,7 @@ impl StatusChecker {
             .set_nonblocking(true)
             .map_err(|e| format!("Failed to set non-blocking: {}", e))?;
 
-        // Get local IP for TCP listener (and LAN discovery)
-        // Use connect-to-external trick to find actual LAN IP (not 0.0.0.0)
+        // Get local IP for TCP listener (and LAN discovery) Use connect-to-external trick to find actual LAN IP (not 0.0.0.0)
         let local_ip = udp::get_local_ip().unwrap_or(Ipv4Addr::new(0, 0, 0, 0));
 
         let thread_body = move || {
@@ -500,8 +487,7 @@ impl StatusChecker {
         let _ = self.complete_proof_sender.send(request);
     }
 
-    /// Broadcast presence on LAN for local peer discovery (non-blocking)
-    /// Solves NAT hairpinning - when peers are on same LAN, they can discover each other's local IPs
+    /// Broadcast presence on LAN for local peer discovery (non-blocking) Solves NAT hairpinning - when peers are on same LAN, they can discover each other's local IPs
     pub fn send_lan_broadcast(&self, our_handle_proof: [u8; 32], our_port: u16) {
         let _ = self.lan_broadcast_sender.send(LanBroadcastRequest {
             our_handle_proof,
@@ -509,8 +495,7 @@ impl StatusChecker {
         });
     }
 
-    /// Clear pending PT sends for a peer (non-blocking)
-    /// NOTE: Currently unused - clearing PT sends during CLUTCH completion was killing ClutchComplete transfers in flight. Left for future use.
+    /// Clear pending PT sends for a peer (non-blocking) NOTE: Currently unused - clearing PT sends during CLUTCH completion was killing ClutchComplete transfers in flight. Left for future use.
     #[allow(dead_code)]
     pub fn clear_pt_sends(&self, peer_addr: SocketAddr) {
         let _ = self.clear_pt_sender.send(ClearPtSendsRequest { peer_addr });
@@ -582,9 +567,7 @@ async fn run_checker(
         }
     };
 
-    // Start TCP listener for CLUTCH large payloads (same port as UDP)
-    // Try IPv6 first (dual-stack), fall back to IPv4
-    // Skip on Android - tokio TcpListener has issues with accept() returning EINVAL
+    // Start TCP listener for CLUTCH large payloads (same port as UDP) Try IPv6 first (dual-stack), fall back to IPv4 Skip on Android - tokio TcpListener has issues with accept() returning EINVAL
     #[cfg(not(target_os = "android"))]
     let tcp_listener = {
         let udp_port = std_socket
@@ -646,14 +629,12 @@ async fn run_checker(
     let pt_recv = pt.clone();
     let failed_pings_recv = failed_pings.clone();
 
-    // Spawn multicast listener for LAN peer discovery
-    // Multicast is more reliable than broadcast across different network configurations
+    // Spawn multicast listener for LAN peer discovery Multicast is more reliable than broadcast across different network configurations
     {
         let status_tx_mcast = status_tx.clone();
         let event_proxy_mcast = event_proxy.clone();
         tokio::spawn(async move {
-            // Photon-specific multicast group in administratively scoped range (239.x.x.x)
-            // Address derived from random entropy: 0x68C790 -> 239.104.199.144
+            // Photon-specific multicast group in administratively scoped range (239.x.x.x) Address derived from random entropy: 0x68C790 -> 239.104.199.144
             let multicast_addr: Ipv4Addr = Ipv4Addr::new(239, 104, 199, 144);
             let multicast_port = crate::MULTICAST_PORT;
 
@@ -736,8 +717,7 @@ async fn run_checker(
                 std::net::Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0x68c7, 0x9014);
             let multicast_port = crate::MULTICAST_PORT;
 
-            // Create IPv6-only socket using libc to set IPV6_V6ONLY before binding
-            // This prevents dual-stack conflict with the IPv4 multicast socket on same port
+            // Create IPv6-only socket using libc to set IPV6_V6ONLY before binding This prevents dual-stack conflict with the IPv4 multicast socket on same port
             #[cfg(unix)]
             let socket = {
                 use std::os::unix::io::FromRawFd;
@@ -919,8 +899,7 @@ async fn run_checker(
                                             && &data[0..3] == b"R\xC3\x85"
                                             && data[3] == b'<'
                                         {
-                                            // Parse VSF header to determine message type
-                                            // Try parsing as ClutchOffer first
+                                            // Parse VSF header to determine message type Try parsing as ClutchOffer first
                                             use crate::network::fgtw::protocol::{
                                                 parse_clutch_complete_vsf_without_recipient_check,
                                                 parse_clutch_kem_response_vsf_without_recipient_check,
@@ -1055,8 +1034,7 @@ async fn run_checker(
                 Ok((len, src_addr)) => {
                     let msg_bytes = &buf[..len];
 
-                    // Check for PT DATA packets first (start with 'd')
-                    // NOTE: Individual DATA packets not logged - only completion/failure
+                    // Check for PT DATA packets first (start with 'd') NOTE: Individual DATA packets not logged - only completion/failure
                     if is_pt_data(msg_bytes) {
                         if let Some(data) = PTData::from_bytes(msg_bytes) {
                             // Handle data and collect responses (must drop lock before await)
@@ -1137,8 +1115,7 @@ async fn run_checker(
                                         parse_clutch_offer_vsf_without_recipient_check,
                                     };
 
-                                    // Helper to check if sender is a known contact (defense-in-depth)
-                                    // Note: PT SPEC validation should have already rejected unknown senders
+                                    // Helper to check if sender is a known contact (defense-in-depth) Note: PT SPEC validation should have already rejected unknown senders
                                     let is_known_sender_pt = |pubkey_bytes: &[u8; 32]| -> bool {
                                         let sender = DevicePubkey::from_bytes(*pubkey_bytes);
                                         let contact_list = contacts_recv.lock().unwrap();
@@ -1285,8 +1262,7 @@ async fn run_checker(
                         }
                     }
 
-                    // Try to parse small direct UDP VSF messages (ClutchComplete, etc.)
-                    // These are sent directly without PT overhead for efficiency
+                    // Try to parse small direct UDP VSF messages (ClutchComplete, etc.) These are sent directly without PT overhead for efficiency
                     if msg_bytes.len() >= 4
                         && &msg_bytes[0..3] == b"R\xC3\x85"
                         && msg_bytes[3] == b'<'
@@ -1345,8 +1321,7 @@ async fn run_checker(
                                         failures.retain(|(k, _)| k != sender_pubkey.as_bytes());
                                     }
 
-                                    // Mark sender as online (they pinged us, so they're online!)
-                                    // No sync_records from ping - we'll send our sync info in pong
+                                    // Mark sender as online (they pinged us, so they're online!) No sync_records from ping - we'll send our sync info in pong
                                     send_status_update(
                                         &status_tx_recv,
                                         StatusUpdate::Online {
@@ -1441,9 +1416,7 @@ async fn run_checker(
                                     );
                                 }
 
-                                // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete handlers REMOVED
-                                // Full 8-primitive CLUTCH uses TCP with ClutchOfferReceived and ClutchKemResponseReceived
-                                // See CLUTCH.md Section 4.2 for the slot-based ceremony protocol.
+                                // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete handlers REMOVED Full 8-primitive CLUTCH uses TCP with ClutchOfferReceived and ClutchKemResponseReceived See CLUTCH.md Section 4.2 for the slot-based ceremony protocol.
                                 FgtwMessage::ChatMessage {
                                     timestamp,
                                     conversation_token,
@@ -1588,8 +1561,7 @@ async fn run_checker(
             Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
         }
 
-        // Cleanup stale pending pings (older than 5 seconds)
-        // Use hysteresis: only mark offline after OFFLINE_THRESHOLD consecutive failures
+        // Cleanup stale pending pings (older than 5 seconds) Use hysteresis: only mark offline after OFFLINE_THRESHOLD consecutive failures
         {
             let mut list = pending.lock().unwrap();
             let mut failures = failed_pings.lock().unwrap();
@@ -1647,11 +1619,9 @@ async fn run_checker(
             list.retain(|ping| now.duration_since(ping.sent_at) < timeout);
         }
 
-        // NOTE: "Process CLUTCH requests" block REMOVED
-        // Full 8-primitive CLUTCH uses ClutchOfferRequest and ClutchKemResponseRequest which are processed below using TCP/PT transport.
+        // NOTE: "Process CLUTCH requests" block REMOVED Full 8-primitive CLUTCH uses ClutchOfferRequest and ClutchKemResponseRequest which are processed below using TCP/PT transport.
 
-        // Process message requests (encrypted chat messages - CHAIN format)
-        // Routed through PT for unified transport (UDP → TCP after 1s → relay fallback)
+        // Process message requests (encrypted chat messages - CHAIN format) Routed through PT for unified transport (UDP → TCP after 1s → relay fallback)
         while let Ok(request) = message_rx.try_recv() {
             // Use the eagle_time from encryption - nonce is derived from this so we MUST use the same timestamp the sender encrypted with
             let timestamp = request.eagle_time;
@@ -1694,8 +1664,7 @@ async fn run_checker(
             }
         }
 
-        // Process ACK requests (message acknowledgments - CHAIN format)
-        // Routed through PT for unified transport (UDP → TCP after 1s → relay fallback)
+        // Process ACK requests (message acknowledgments - CHAIN format) Routed through PT for unified transport (UDP → TCP after 1s → relay fallback)
         while let Ok(request) = ack_rx.try_recv() {
             let timestamp = eagle_time_now();
 
@@ -1753,8 +1722,7 @@ async fn run_checker(
             udp::send(&socket, &bytes_to_send, request.peer_addr).await;
         }
 
-        // Process full CLUTCH offer requests (PT/UDP primary, TCP fallback)
-        // Uses VSF format with Ed25519 signature for verification
+        // Process full CLUTCH offer requests (PT/UDP primary, TCP fallback) Uses VSF format with Ed25519 signature for verification
         while let Ok(request) = offer_rx.try_recv() {
             // VSF bytes already built by caller (to capture offer_provenance)
             let vsf_bytes = request.vsf_bytes;
@@ -1980,12 +1948,9 @@ fn verify_provenance_signature(
     verifying_key.verify(provenance_hash, &sig).is_ok()
 }
 
-// NOTE: compute_clutch_provenance and compute_clutch_complete_provenance REMOVED
-// They were only used by the legacy v1 ClutchOffer/ClutchInit/ClutchResponse/ClutchComplete
-// Full 8-primitive CLUTCH uses different provenance via build_clutch_offer_vsf()
+// NOTE: compute_clutch_provenance and compute_clutch_complete_provenance REMOVED They were only used by the legacy v1 ClutchOffer/ClutchInit/ClutchResponse/ClutchComplete Full 8-primitive CLUTCH uses different provenance via build_clutch_offer_vsf()
 
-/// Compute provenance hash for encrypted chat message (CHAIN format)
-/// provenance = BLAKE3(conversation_token || prev_msg_hp)
+/// Compute provenance hash for encrypted chat message (CHAIN format) provenance = BLAKE3(conversation_token || prev_msg_hp)
 fn compute_chat_provenance(conversation_token: &[u8; 32], prev_msg_hp: &[u8; 32]) -> [u8; 32] {
     use blake3::Hasher;
     let mut hasher = Hasher::new();
@@ -1994,8 +1959,7 @@ fn compute_chat_provenance(conversation_token: &[u8; 32], prev_msg_hp: &[u8; 32]
     *hasher.finalize().as_bytes()
 }
 
-/// Compute provenance hash for message acknowledgment (CHAIN format)
-/// provenance = BLAKE3(conversation_token || acked_eagle_time_bytes || plaintext_hash || "ack")
+/// Compute provenance hash for message acknowledgment (CHAIN format) provenance = BLAKE3(conversation_token || acked_eagle_time_bytes || plaintext_hash || "ack")
 fn compute_ack_provenance_v2(
     conversation_token: &[u8; 32],
     acked_eagle_time: i64,
@@ -2009,8 +1973,7 @@ fn compute_ack_provenance_v2(
     hasher.update(b"ack");
     *hasher.finalize().as_bytes()
 }
-/// Handle PT VSF packets (SPEC, ACK, NAK, CONTROL, COMPLETE)
-/// Returns Some(true) if packet was handled, Some(false) if not a PT packet, None on error
+/// Handle PT VSF packets (SPEC, ACK, NAK, CONTROL, COMPLETE) Returns Some(true) if packet was handled, Some(false) if not a PT packet, None on error
 ///
 /// Security: SPEC packets are only accepted from known contacts (sender pubkey validated)
 async fn handle_pt_vsf_packet(
@@ -2035,8 +1998,7 @@ async fn handle_pt_vsf_packet(
             match name.as_str() {
                 "pt_ack" => {
                     if let Some(ack) = PTAck::from_vsf_header(provenance_hash, &values) {
-                        // Handle ACK - state transitions happen in handle_ack
-                        // Completion check and cleanup handled by main loop via transfer_id
+                        // Handle ACK - state transitions happen in handle_ack Completion check and cleanup handled by main loop via transfer_id
                         let response_packets = {
                             let mut pt_mgr = pt.lock().unwrap();
                             pt_mgr.handle_ack(src_addr, ack)
@@ -2074,8 +2036,7 @@ async fn handle_pt_vsf_packet(
                         if !complete.success {
                             crate::log(&format!("PT: Transfer FAILED from {}", src_addr));
                         }
-                        // Handle completion - state transitions happen in handle_complete
-                        // Completion check and cleanup handled by main loop via transfer_id
+                        // Handle completion - state transitions happen in handle_complete Completion check and cleanup handled by main loop via transfer_id
                         {
                             let mut pt_mgr = pt.lock().unwrap();
                             pt_mgr.handle_complete(src_addr, complete);
@@ -2095,8 +2056,7 @@ async fn handle_pt_vsf_packet(
         } => {
             if name == "pt_spec" {
                 if let Some(spec) = PTSpec::from_vsf_fields(&fields) {
-                    // SECURITY: Validate sender before accepting any transfer
-                    // Only accept SPEC from known contacts to prevent resource exhaustion
+                    // SECURITY: Validate sender before accepting any transfer Only accept SPEC from known contacts to prevent resource exhaustion
                     let is_known_contact = match sender_pubkey {
                         Some(pubkey_bytes) => {
                             let sender = DevicePubkey::from_bytes(pubkey_bytes);
@@ -2136,8 +2096,7 @@ async fn handle_pt_vsf_packet(
     Some(false)
 }
 
-/// Parse LAN discovery packet from main UDP socket
-/// Returns StatusUpdate::LanPeerDiscovered if valid, None otherwise
+/// Parse LAN discovery packet from main UDP socket Returns StatusUpdate::LanPeerDiscovered if valid, None otherwise
 fn parse_lan_discovery(packet: &[u8], src_addr: SocketAddr) -> Option<StatusUpdate> {
     let (handle_proof, local_ip, port) = udp::parse_lan_discovery(packet, src_addr)?;
     crate::log(&format!(
@@ -2186,12 +2145,10 @@ fn parse_pt_packet(bytes: &[u8]) -> Option<ParsedPtPacket> {
         _ => return None,
     };
 
-    // Check for header-only format first (inline fields like pt_ack, pt_nak, pt_ctrl, pt_done)
-    // These have fields with values directly in the header, no section body
+    // Check for header-only format first (inline fields like pt_ack, pt_nak, pt_ctrl, pt_done) These have fields with values directly in the header, no section body
     for field in &header.fields {
         if field.name.starts_with("pt_") && field.offset_bytes == 0 && field.size_bytes == 0 {
-            // This is a header-only field with inline values
-            // We need to re-parse to get the actual values
+            // This is a header-only field with inline values We need to re-parse to get the actual values
             if let Some(values) = parse_header_inline_values(bytes, &field.name) {
                 return Some(ParsedPtPacket::HeaderOnly {
                     name: field.name.clone(),
@@ -2202,8 +2159,7 @@ fn parse_pt_packet(bytes: &[u8]) -> Option<ParsedPtPacket> {
         }
     }
 
-    // Extract sender pubkey from header signature (if present)
-    // This is the Ed25519 public key used to sign the packet
+    // Extract sender pubkey from header signature (if present) This is the Ed25519 public key used to sign the packet
     let sender_pubkey = match &header.signer_pubkey {
         Some(vsf::VsfType::ke(key)) if key.len() == 32 => {
             let mut arr = [0u8; 32];
@@ -2237,8 +2193,7 @@ fn parse_pt_packet(bytes: &[u8]) -> Option<ParsedPtPacket> {
     })
 }
 
-/// Parse inline values from a header field by name
-/// Returns the values for (name:val1,val2,...) format
+/// Parse inline values from a header field by name Returns the values for (name:val1,val2,...) format
 fn parse_header_inline_values(bytes: &[u8], target_name: &str) -> Option<Vec<vsf::VsfType>> {
     use vsf::file_format::VsfHeader;
 
@@ -2252,8 +2207,7 @@ fn parse_header_inline_values(bytes: &[u8], target_name: &str) -> Option<Vec<vsf
         .map(|f| f.inline_values.clone())
 }
 
-/// Parse VSF fields from bytes (legacy section-only format)
-/// Parse a PT VSF packet, returns (section_name, fields)
+/// Parse VSF fields from bytes (legacy section-only format) Parse a PT VSF packet, returns (section_name, fields)
 #[allow(dead_code)]
 fn parse_pt_vsf_fields(bytes: &[u8]) -> Option<(String, Vec<(String, vsf::VsfType)>)> {
     match parse_pt_packet(bytes)? {

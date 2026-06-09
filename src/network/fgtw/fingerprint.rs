@@ -12,8 +12,7 @@ use std::path::PathBuf;
 
 /// Ed25519 keypair for FGTW device/handle identity
 ///
-/// NEVER persisted to disk - derived deterministically from device fingerprint. On Android: BLAKE3(device_fingerprint) → Ed25519 seed
-/// On Desktop: BLAKE3(machine-id) → Ed25519 seed
+/// NEVER persisted to disk - derived deterministically from device fingerprint. On Android: BLAKE3(device_fingerprint) → Ed25519 seed On Desktop: BLAKE3(machine-id) → Ed25519 seed
 #[derive(Clone)]
 pub struct Keypair {
     pub secret: SigningKey,
@@ -79,9 +78,7 @@ pub fn derive_device_keypair(fingerprint: &[u8]) -> Keypair {
 
 /// Get machine fingerprint for deterministic key derivation
 ///
-/// Linux: /etc/machine-id (stable across reboots, unique per install)
-/// Windows: MachineGuid from registry macOS: IOPlatformUUID (hardware-burned, survives reinstalls)
-/// Android: Handled separately via JNI with device fingerprint
+/// Linux: /etc/machine-id (stable across reboots, unique per install) Windows: MachineGuid from registry macOS: IOPlatformUUID (hardware-burned, survives reinstalls) Android: Handled separately via JNI with device fingerprint
 #[cfg(target_os = "linux")]
 pub fn get_machine_fingerprint() -> io::Result<Vec<u8>> {
     std::fs::read("/etc/machine-id")
@@ -133,8 +130,7 @@ pub fn get_machine_fingerprint() -> io::Result<Vec<u8>> {
     target_os = "android"
 )))]
 pub fn get_machine_fingerprint() -> io::Result<Vec<u8>> {
-    // Fallback for other Unix-like systems (FreeBSD, etc.)
-    // Try /etc/hostid first, then hostname
+    // Fallback for other Unix-like systems (FreeBSD, etc.) Try /etc/hostid first, then hostname
     if let Ok(hostid) = std::fs::read("/etc/hostid") {
         return Ok(hostid);
     }

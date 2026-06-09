@@ -41,8 +41,7 @@ pub enum FgtwMessage {
     /// - ke = sender's Ed25519 public key (for signature verification)
     /// - ge = signature of provenance_hash
     ///
-    /// Note: Avatar is fetched by handle, not exchanged in ping/pong.
-    /// Storage key = BLAKE3(BLAKE3(handle) || "avatar")
+    /// Note: Avatar is fetched by handle, not exchanged in ping/pong. Storage key = BLAKE3(BLAKE3(handle) || "avatar")
     StatusPing {
         timestamp: i64, // Eagle time oscillations (i64)
         sender_pubkey: DevicePubkey, // Who is pinging (for response routing)
@@ -59,21 +58,16 @@ pub enum FgtwMessage {
     /// - sync records: Per-conversation last_received_ef6 for efficient resync
     ///   Peer can retransmit everything after that timestamp
     ///
-    /// Note: Avatar is fetched by handle, not exchanged in ping/pong.
-    /// Storage key = BLAKE3(BLAKE3(handle) || "avatar")
+    /// Note: Avatar is fetched by handle, not exchanged in ping/pong. Storage key = BLAKE3(BLAKE3(handle) || "avatar")
     StatusPong {
         timestamp: i64,                 // Responder's current Eagle time oscillations (i64)
         responder_pubkey: DevicePubkey, // Who is responding
         provenance_hash: [u8; 32],      // Same hash from ping (proves we received it)
         signature: [u8; 64],            // Ed25519 signature of provenance_hash
-        /// Per-conversation sync records: (conversation_token, last_received_osc)
-        /// Tells peer: "For this conversation, your last message I received was at time X"
-        /// Peer retransmits any pending messages with eagle_time > X
+        /// Per-conversation sync records: (conversation_token, last_received_osc) Tells peer: "For this conversation, your last message I received was at time X" Peer retransmits any pending messages with eagle_time > X
         sync_records: Vec<SyncRecord>,
     },
-    // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete REMOVED
-    // Full 8-primitive CLUTCH uses ClutchOffer and ClutchKemResponse which are handled via build_clutch_offer_vsf() and parse_clutch_offer_vsf()
-    // See CLUTCH.md Section 4.2 for the slot-based ceremony protocol.
+    // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete REMOVED Full 8-primitive CLUTCH uses ClutchOffer and ClutchKemResponse which are handled via build_clutch_offer_vsf() and parse_clutch_offer_vsf() See CLUTCH.md Section 4.2 for the slot-based ceremony protocol.
     /// Encrypted chat message
     ///
     /// Format: section "msg" with encrypted payload per CHAIN.md Section 6.2
@@ -117,19 +111,16 @@ pub struct PeerRecord {
     pub last_seen: i64,         // Eagle Time oscillations
 }
 
-/// Sync record for pong - tells peer our last received message timestamp per conversation
-/// Used for efficient resync: peer retransmits pending messages with eagle_time > last_received_ef6
+/// Sync record for pong - tells peer our last received message timestamp per conversation Used for efficient resync: peer retransmits pending messages with eagle_time > last_received_ef6
 #[derive(Debug, Clone)]
 pub struct SyncRecord {
     /// Privacy-preserving conversation token (smear_hash of sorted participant seeds)
     pub conversation_token: [u8; 32],
-    /// Eagle time oscillations of last message received from peer in this conversation
-    /// Peer should retransmit any pending messages with eagle_time > this value
+    /// Eagle time oscillations of last message received from peer in this conversation Peer should retransmit any pending messages with eagle_time > this value
     pub last_received_osc: i64,
 }
 
-/// Convert SocketAddr to binary format for VSF
-/// Format:
+/// Convert SocketAddr to binary format for VSF Format:
 /// - IPv4: 4 bytes (address) + 2 bytes (port big-endian) = 6 bytes
 /// - IPv6: 16 bytes (address) + 2 bytes (port big-endian) = 18 bytes
 fn socketaddr_to_bytes(addr: &SocketAddr) -> Vec<u8> {
@@ -151,8 +142,7 @@ fn socketaddr_to_bytes(addr: &SocketAddr) -> Vec<u8> {
     bytes
 }
 
-/// Convert binary format back to SocketAddr
-/// Returns None if the format is invalid
+/// Convert binary format back to SocketAddr Returns None if the format is invalid
 fn bytes_to_socketaddr(bytes: &[u8]) -> Option<SocketAddr> {
     if bytes.len() == 6 {
         // IPv4: 4 bytes address + 2 bytes port
@@ -338,9 +328,7 @@ impl FgtwMessage {
                 provenance_hash,
                 signature,
             } => {
-                // Simplified header-only format: RÅ< ... ke[pubkey] ge[sig] n1 (ping) >
-                // All crypto is in header, section just identifies message type
-                // Avatar is NOT included - fetched by handle instead
+                // Simplified header-only format: RÅ< ... ke[pubkey] ge[sig] n1 (ping) > All crypto is in header, section just identifies message type Avatar is NOT included - fetched by handle instead
                 builder
                     .creation_time_oscillations(*timestamp)
                     .provenance_hash(*provenance_hash)
@@ -355,8 +343,7 @@ impl FgtwMessage {
                 signature,
                 sync_records,
             } => {
-                // Pong with sync records for efficient resync
-                // Format: RÅ< ... ke[pubkey] ge[sig] > [pong (sync_count: N) (sync_0_tok: hb) (sync_0_ef6: f6) ...]
+                // Pong with sync records for efficient resync Format: RÅ< ... ke[pubkey] ge[sig] > [pong (sync_count: N) (sync_0_tok: hb) (sync_0_ef6: f6) ...]
                 let mut fields = vec![(
                     "sync_count".to_string(),
                     VsfType::u(sync_records.len(), false),
@@ -378,8 +365,7 @@ impl FgtwMessage {
                     .add_section("pong", fields)
                     .build()
             }
-            // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete serialization REMOVED
-            // Full CLUTCH uses build_clutch_offer_vsf() and build_clutch_kem_response_vsf()
+            // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete serialization REMOVED Full CLUTCH uses build_clutch_offer_vsf() and build_clutch_kem_response_vsf()
             FgtwMessage::ChatMessage {
                 timestamp,
                 conversation_token,
@@ -466,8 +452,7 @@ impl FgtwMessage {
         let (header, header_end) =
             VsfHeader::decode(bytes).map_err(|e| format!("Failed to parse VSF header: {}", e))?;
 
-        // Check for empty section (header-only format like ping/pong)
-        // Empty sections have no '[' after '>' - the section name is in the header field
+        // Check for empty section (header-only format like ping/pong) Empty sections have no '[' after '>' - the section name is in the header field
         if header_end >= bytes.len() || bytes[header_end] != b'[' {
             // No section body - search header fields for message type (ping/pong)
             let section_name = header
@@ -537,8 +522,7 @@ impl FgtwMessage {
             }
         }
 
-        // NOTE: clutch_offer, clutch_init, clutch_resp, clutch_done deserialization REMOVED
-        // Full CLUTCH uses parse_clutch_offer_vsf() and parse_clutch_kem_response_vsf() which handle "clutch_offer" and "clutch_kem_response" sections
+        // NOTE: clutch_offer, clutch_init, clutch_resp, clutch_done deserialization REMOVED Full CLUTCH uses parse_clutch_offer_vsf() and parse_clutch_kem_response_vsf() which handle "clutch_offer" and "clutch_kem_response" sections
 
         // Handle msg (encrypted chat message) and ack (acknowledgment)
         if section_name == "msg" || section_name == "ack" {
@@ -564,8 +548,7 @@ impl FgtwMessage {
                     signature,
                 });
             } else {
-                // MessageAck: tok (conversation_token), time (acked_eagle_time), hash (plaintext_hash)
-                // No sequence numbers, no weave (deferred)
+                // MessageAck: tok (conversation_token), time (acked_eagle_time), hash (plaintext_hash) No sequence numbers, no weave (deferred)
                 let acked_eagle_time = extract_eagle_time(&fields, "time")?;
                 let plaintext_hash = extract_hash(&fields, "hash")?;
                 return Ok(FgtwMessage::MessageAck {
@@ -829,8 +812,7 @@ fn extract_peer_list(
     Ok(peers)
 }
 
-/// Extract sync records from pong message fields
-/// Format: sync_count, sync_0_tok, sync_0_ef6, sync_1_tok, sync_1_ef6, ...
+/// Extract sync records from pong message fields Format: sync_count, sync_0_tok, sync_0_ef6, sync_1_tok, sync_1_ef6, ...
 fn extract_sync_records(fields: &[(String, VsfType)]) -> Result<Vec<SyncRecord>, String> {
     // Get count (optional for backwards compat - default to 0)
     let count = match get_field(fields, "sync_count") {
@@ -896,9 +878,7 @@ fn extract_header_pubkey(header: &vsf::file_format::VsfHeader) -> Result<DeviceP
 }
 
 fn extract_header_signature(header: &vsf::file_format::VsfHeader) -> Result<[u8; 64], String> {
-    // Signature is in header.signature field (replaces rolling_hash when present)
-    // For now, check if there's a ge signature in the header
-    // The VsfHeader struct stores signature in a specific field
+    // Signature is in header.signature field (replaces rolling_hash when present) For now, check if there's a ge signature in the header The VsfHeader struct stores signature in a specific field
     if let Some(ref sig) = header.signature {
         match sig {
             VsfType::ge(bytes) if bytes.len() == 64 => {
@@ -912,15 +892,11 @@ fn extract_header_signature(header: &vsf::file_format::VsfHeader) -> Result<[u8;
     Err("Invalid or missing header signature".to_string())
 }
 
-// Note: extract_header_avatar_id removed - avatar is now fetched by handle
-// Storage key = BLAKE3(BLAKE3(handle) || "avatar")
+// Note: extract_header_avatar_id removed - avatar is now fetched by handle Storage key = BLAKE3(BLAKE3(handle) || "avatar")
 
-// NOTE: compute_clutch_provenance and compute_clutch_complete_provenance REMOVED
-// They were only used by the legacy ClutchOffer/ClutchInit/ClutchResponse/ClutchComplete
-// Full CLUTCH uses ceremony_id as provenance (deterministic from handle_hashes)
+// NOTE: compute_clutch_provenance and compute_clutch_complete_provenance REMOVED They were only used by the legacy ClutchOffer/ClutchInit/ClutchResponse/ClutchComplete Full CLUTCH uses ceremony_id as provenance (deterministic from handle_hashes)
 
-/// Compute provenance hash for encrypted chat message (CHAIN format)
-/// provenance = BLAKE3(conversation_token || prev_msg_hp)
+/// Compute provenance hash for encrypted chat message (CHAIN format) provenance = BLAKE3(conversation_token || prev_msg_hp)
 fn compute_chat_provenance(conversation_token: &[u8; 32], prev_msg_hp: &[u8; 32]) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(conversation_token);
@@ -928,8 +904,7 @@ fn compute_chat_provenance(conversation_token: &[u8; 32], prev_msg_hp: &[u8; 32]
     *hasher.finalize().as_bytes()
 }
 
-/// Compute provenance hash for message acknowledgment (CHAIN format)
-/// provenance = BLAKE3(conversation_token || acked_eagle_time_bytes || plaintext_hash || "ack")
+/// Compute provenance hash for message acknowledgment (CHAIN format) provenance = BLAKE3(conversation_token || acked_eagle_time_bytes || plaintext_hash || "ack")
 fn compute_ack_provenance_v2(
     conversation_token: &[u8; 32],
     acked_eagle_time: i64,
@@ -976,8 +951,7 @@ pub fn build_clutch_offer_vsf(
 ) -> Result<(Vec<u8>, [u8; 32]), String> {
     use vsf::VsfBuilder;
 
-    // Build unsigned VSF with signature placeholder hp (provenance hash) will be auto-computed by sign_file from the content
-    // This hash is unique per offer due to timestamp and content
+    // Build unsigned VSF with signature placeholder hp (provenance hash) will be auto-computed by sign_file from the content This hash is unique per offer due to timestamp and content
     use vsf::file_format::VsfSection;
 
     // Build section with multi-value field (matches keypairs.vsf format)
@@ -1008,8 +982,7 @@ pub fn build_clutch_offer_vsf(
     // Sign the file (computes file hash, signs it, patches ge)
     let signed = vsf::verification::sign_file(unsigned, device_secret)?;
 
-    // Compute offer_provenance from keys (deterministic, no timestamp)
-    // Hash all pubkeys in fixed order: x25519, p384, secp256k1, p256, frodo, ntru, mceliece, hqc
+    // Compute offer_provenance from keys (deterministic, no timestamp) Hash all pubkeys in fixed order: x25519, p384, secp256k1, p256, frodo, ntru, mceliece, hqc
     let offer_provenance = {
         let mut hasher = blake3::Hasher::new();
         hasher.update(&payload.x25519_public);
@@ -1086,8 +1059,7 @@ pub fn parse_clutch_offer_vsf(
         return Err("ClutchOffer conversation_token mismatch".to_string());
     }
 
-    // Extract pubkeys from multi-value "pubkeys" field (kx, kp, kk, kp, kf, kn, kl, kh order)
-    // Also support legacy individual fields for backwards compatibility
+    // Extract pubkeys from multi-value "pubkeys" field (kx, kp, kk, kp, kf, kn, kl, kh order) Also support legacy individual fields for backwards compatibility
     let (
         x25519_public,
         p384_public,
@@ -1160,8 +1132,7 @@ pub fn parse_clutch_offer_vsf(
         hqc256_public,
     };
 
-    // Compute offer_provenance from keys (deterministic, no timestamp)
-    // Hash all pubkeys in fixed order: x25519, p384, secp256k1, p256, frodo, ntru, mceliece, hqc
+    // Compute offer_provenance from keys (deterministic, no timestamp) Hash all pubkeys in fixed order: x25519, p384, secp256k1, p256, frodo, ntru, mceliece, hqc
     let offer_provenance = {
         let mut hasher = blake3::Hasher::new();
         hasher.update(&payload.x25519_public);
@@ -1343,8 +1314,7 @@ pub fn parse_clutch_kem_response_vsf(
         })
         .unwrap_or([0u8; 8]);
 
-    // Extract ciphertexts from multi-value "ciphertexts" field (vf, vn, vl, vc order)
-    // Also support legacy individual fields for backwards compatibility
+    // Extract ciphertexts from multi-value "ciphertexts" field (vf, vn, vl, vc order) Also support legacy individual fields for backwards compatibility
     let (frodo976_ciphertext, ntru701_ciphertext, mceliece_ciphertext, hqc256_ciphertext) =
         if let Some(ct_field) = fields.iter().find(|f| f.name == "ciphertexts") {
             // New format: multi-value field
@@ -1376,8 +1346,7 @@ pub fn parse_clutch_kem_response_vsf(
             )
         };
 
-    // Extract EC ephemeral pubkeys from multi-value "ephemerals" field (kx, kp, kk, kp order)
-    // Also support legacy individual fields for backwards compatibility
+    // Extract EC ephemeral pubkeys from multi-value "ephemerals" field (kx, kp, kk, kp order) Also support legacy individual fields for backwards compatibility
     let (x25519_ephemeral, p384_ephemeral, secp256k1_ephemeral, p256_ephemeral) =
         if let Some(eph_field) = fields.iter().find(|f| f.name == "ephemerals") {
             // New format: multi-value field
@@ -1546,8 +1515,7 @@ pub fn parse_clutch_offer_vsf_without_recipient_check(
         })
         .ok_or("Missing or invalid conversation_token")?;
 
-    // Extract pubkeys from multi-value "pubkeys" field (kx, kp, kk, kp, kf, kn, kl, kh order)
-    // Also support legacy individual fields for backwards compatibility
+    // Extract pubkeys from multi-value "pubkeys" field (kx, kp, kk, kp, kf, kn, kl, kh order) Also support legacy individual fields for backwards compatibility
     let (
         x25519_public,
         p384_public,
@@ -1620,8 +1588,7 @@ pub fn parse_clutch_offer_vsf_without_recipient_check(
         hqc256_public,
     };
 
-    // Compute offer_provenance from keys (deterministic, no timestamp)
-    // Hash all pubkeys in fixed order: x25519, p384, secp256k1, p256, frodo, ntru, mceliece, hqc
+    // Compute offer_provenance from keys (deterministic, no timestamp) Hash all pubkeys in fixed order: x25519, p384, secp256k1, p256, frodo, ntru, mceliece, hqc
     let offer_provenance = {
         let mut hasher = blake3::Hasher::new();
         hasher.update(&payload.x25519_public);
@@ -1713,8 +1680,7 @@ pub fn parse_clutch_kem_response_vsf_without_recipient_check(
         })
         .unwrap_or([0u8; 8]);
 
-    // Extract ciphertexts from multi-value "ciphertexts" field (vf, vn, vl, vc order)
-    // Also support legacy individual fields for backwards compatibility
+    // Extract ciphertexts from multi-value "ciphertexts" field (vf, vn, vl, vc order) Also support legacy individual fields for backwards compatibility
     let (frodo976_ciphertext, ntru701_ciphertext, mceliece_ciphertext, hqc256_ciphertext) =
         if let Some(ct_field) = fields.iter().find(|f| f.name == "ciphertexts") {
             // New format: multi-value field
@@ -1746,8 +1712,7 @@ pub fn parse_clutch_kem_response_vsf_without_recipient_check(
             )
         };
 
-    // Extract EC ephemeral pubkeys from multi-value "ephemerals" field (kx, kp, kk, kp order)
-    // Also support legacy individual fields for backwards compatibility
+    // Extract EC ephemeral pubkeys from multi-value "ephemerals" field (kx, kp, kk, kp order) Also support legacy individual fields for backwards compatibility
     let (x25519_ephemeral, p384_ephemeral, secp256k1_ephemeral, p256_ephemeral) =
         if let Some(eph_field) = fields.iter().find(|f| f.name == "ephemerals") {
             // New format: multi-value field

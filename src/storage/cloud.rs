@@ -61,8 +61,7 @@ impl From<&Contact> for CloudContact {
     }
 }
 
-/// Derive storage key for contacts blob on FGTW
-/// Returns base64url-encoded 32-byte hash (43 chars)
+/// Derive storage key for contacts blob on FGTW Returns base64url-encoded 32-byte hash (43 chars)
 pub fn contacts_storage_key(identity_seed: &[u8; 32], device_secret: &[u8; 32]) -> String {
     let mut hasher = Hasher::new();
     hasher.update(identity_seed);

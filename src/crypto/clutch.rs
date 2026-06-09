@@ -76,16 +76,14 @@ pub fn derive_ceremony_instance(offers: &[&ClutchOfferPayload]) -> [u8; 32] {
     smear_hash(&input)
 }
 
-/// Determine who initiates clutch ceremony. Lower handle_proof = initiator (sends ephemeral pubkeys first)
-/// Higher handle_proof = responder (waits, then responds)
+/// Determine who initiates clutch ceremony. Lower handle_proof = initiator (sends ephemeral pubkeys first) Higher handle_proof = responder (waits, then responds)
 ///
 /// All parties compute the same result from sorted handle hashes.
 pub fn is_clutch_initiator(local_handle_proof: &[u8; 32], remote_handle_proof: &[u8; 32]) -> bool {
     local_handle_proof < remote_handle_proof
 }
 
-/// Generate ephemeral X25519 keypair
-/// Returns (secret, public) - caller MUST zeroize the secret after use!
+/// Generate ephemeral X25519 keypair Returns (secret, public) - caller MUST zeroize the secret after use!
 pub fn generate_x25519_ephemeral() -> ([u8; 32], [u8; 32]) {
     let mut secret_bytes = [0u8; 32];
     rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut secret_bytes);
@@ -93,8 +91,7 @@ pub fn generate_x25519_ephemeral() -> ([u8; 32], [u8; 32]) {
     let secret = StaticSecret::from(secret_bytes);
     let public = PublicKey::from(&secret);
 
-    // Return the secret bytes for the caller to use (and zeroize when done)
-    // Note: StaticSecret::from() copies the bytes, so we return the original
+    // Return the secret bytes for the caller to use (and zeroize when done) Note: StaticSecret::from() copies the bytes, so we return the original
     (secret_bytes, *public.as_bytes())
 }
 
@@ -110,8 +107,7 @@ pub fn x25519_ecdh(local_secret: &[u8; 32], peer_public: &[u8; 32]) -> [u8; 32] 
 // ============================================================================
 // CLASS 0: CLASSICAL ELLIPTIC CURVES ============================================================================
 
-/// Generate P-384 ephemeral keypair
-/// Returns (secret_bytes, public_bytes)
+/// Generate P-384 ephemeral keypair Returns (secret_bytes, public_bytes)
 pub fn generate_p384_ephemeral() -> (Vec<u8>, Vec<u8>) {
     use p384::elliptic_curve::Generate;
     use p384::SecretKey;
@@ -137,8 +133,7 @@ pub fn p384_ecdh(local_secret: &[u8], peer_public: &[u8]) -> Vec<u8> {
     shared.raw_secret_bytes().to_vec()
 }
 
-/// Generate secp256k1 ephemeral keypair
-/// Returns (secret_bytes, public_bytes)
+/// Generate secp256k1 ephemeral keypair Returns (secret_bytes, public_bytes)
 pub fn generate_secp256k1_ephemeral() -> (Vec<u8>, Vec<u8>) {
     use k256::elliptic_curve::Generate;
     use k256::SecretKey;
@@ -164,8 +159,7 @@ pub fn secp256k1_ecdh(local_secret: &[u8], peer_public: &[u8]) -> Vec<u8> {
     shared.raw_secret_bytes().to_vec()
 }
 
-/// Generate P-256 ephemeral keypair
-/// Returns (secret_bytes, public_bytes)
+/// Generate P-256 ephemeral keypair Returns (secret_bytes, public_bytes)
 pub fn generate_p256_ephemeral() -> (Vec<u8>, Vec<u8>) {
     use p256::elliptic_curve::Generate;
     use p256::SecretKey;
@@ -194,8 +188,7 @@ pub fn p256_ecdh(local_secret: &[u8], peer_public: &[u8]) -> Vec<u8> {
 // ============================================================================
 // CLASS 1: POST-QUANTUM LATTICE KEMS ============================================================================
 
-/// Generate FrodoKEM-976-SHAKE keypair
-/// Returns (secret_key, public_key)
+/// Generate FrodoKEM-976-SHAKE keypair Returns (secret_key, public_key)
 pub fn generate_frodo976_keypair() -> (Vec<u8>, Vec<u8>) {
     use frodo_kem_rs::Algorithm;
     use rand_core::OsRng;
@@ -208,8 +201,7 @@ pub fn generate_frodo976_keypair() -> (Vec<u8>, Vec<u8>) {
     (dk.value().to_vec(), ek.value().to_vec())
 }
 
-/// Encapsulate FrodoKEM-976-SHAKE
-/// Returns (ciphertext, shared_secret)
+/// Encapsulate FrodoKEM-976-SHAKE Returns (ciphertext, shared_secret)
 pub fn frodo976_encapsulate(their_public_key: &[u8]) -> (Vec<u8>, Vec<u8>) {
     use frodo_kem_rs::{Algorithm, EncryptionKey};
     use rand_core::OsRng;
@@ -224,8 +216,7 @@ pub fn frodo976_encapsulate(their_public_key: &[u8]) -> (Vec<u8>, Vec<u8>) {
     (ct.value().to_vec(), ss.value().to_vec())
 }
 
-/// Decapsulate FrodoKEM-976-SHAKE
-/// Returns shared_secret
+/// Decapsulate FrodoKEM-976-SHAKE Returns shared_secret
 pub fn frodo976_decapsulate(our_secret_key: &[u8], ciphertext: &[u8]) -> Vec<u8> {
     use frodo_kem_rs::{Algorithm, Ciphertext, DecryptionKey};
 
@@ -239,8 +230,7 @@ pub fn frodo976_decapsulate(our_secret_key: &[u8], ciphertext: &[u8]) -> Vec<u8>
     ss.value().to_vec()
 }
 
-/// Generate NTRU-HRSS-701 keypair
-/// Returns (secret_key, public_key)
+/// Generate NTRU-HRSS-701 keypair Returns (secret_key, public_key)
 pub fn generate_ntru701_keypair() -> (Vec<u8>, Vec<u8>) {
     use pqcrypto_ntru::ntruhrss701;
     use pqcrypto_traits::kem::{PublicKey, SecretKey};
@@ -254,8 +244,7 @@ pub fn generate_ntru701_keypair() -> (Vec<u8>, Vec<u8>) {
     )
 }
 
-/// Encapsulate NTRU-HRSS-701
-/// Returns (ciphertext, 32B shared_secret)
+/// Encapsulate NTRU-HRSS-701 Returns (ciphertext, 32B shared_secret)
 pub fn ntru701_encapsulate(their_public_key: &[u8]) -> (Vec<u8>, Vec<u8>) {
     use pqcrypto_ntru::ntruhrss701;
     use pqcrypto_traits::kem::{Ciphertext, PublicKey, SharedSecret};
@@ -272,8 +261,7 @@ pub fn ntru701_encapsulate(their_public_key: &[u8]) -> (Vec<u8>, Vec<u8>) {
     )
 }
 
-/// Decapsulate NTRU-HRSS-701
-/// Returns 32B shared_secret
+/// Decapsulate NTRU-HRSS-701 Returns 32B shared_secret
 pub fn ntru701_decapsulate(our_secret_key: &[u8], ciphertext: &[u8]) -> Vec<u8> {
     use pqcrypto_ntru::ntruhrss701;
     use pqcrypto_traits::kem::{Ciphertext, SecretKey, SharedSecret};
@@ -291,8 +279,7 @@ pub fn ntru701_decapsulate(our_secret_key: &[u8], ciphertext: &[u8]) -> Vec<u8> 
 // ============================================================================
 // CLASS 2: POST-QUANTUM CODE-BASED KEMS ============================================================================
 
-/// Generate Classic McEliece 460896 keypair
-/// Returns (secret_key, public_key ~512KB)
+/// Generate Classic McEliece 460896 keypair Returns (secret_key, public_key ~512KB)
 pub fn generate_mceliece460896_keypair() -> (Vec<u8>, Vec<u8>) {
     use classic_mceliece_rust::keypair_boxed;
 
@@ -303,8 +290,7 @@ pub fn generate_mceliece460896_keypair() -> (Vec<u8>, Vec<u8>) {
     (sk.as_array().to_vec(), pk.as_array().to_vec())
 }
 
-/// Encapsulate Classic McEliece 460896
-/// Returns (ciphertext, 32B shared_secret)
+/// Encapsulate Classic McEliece 460896 Returns (ciphertext, 32B shared_secret)
 pub fn mceliece460896_encapsulate(their_public_key: &[u8]) -> (Vec<u8>, Vec<u8>) {
     use classic_mceliece_rust::{encapsulate_boxed, PublicKey, CRYPTO_PUBLICKEYBYTES};
 
@@ -322,8 +308,7 @@ pub fn mceliece460896_encapsulate(their_public_key: &[u8]) -> (Vec<u8>, Vec<u8>)
     (ct.as_array().to_vec(), ss.as_array().to_vec())
 }
 
-/// Decapsulate Classic McEliece 460896
-/// Returns 32B shared_secret
+/// Decapsulate Classic McEliece 460896 Returns 32B shared_secret
 pub fn mceliece460896_decapsulate(our_secret_key: &[u8], ciphertext: &[u8]) -> Vec<u8> {
     use classic_mceliece_rust::{
         decapsulate_boxed, Ciphertext, SecretKey, CRYPTO_CIPHERTEXTBYTES, CRYPTO_SECRETKEYBYTES,
@@ -347,8 +332,7 @@ pub fn mceliece460896_decapsulate(our_secret_key: &[u8], ciphertext: &[u8]) -> V
     ss.as_array().to_vec()
 }
 
-/// Generate HQC-256 keypair
-/// Returns (secret_key, public_key)
+/// Generate HQC-256 keypair Returns (secret_key, public_key)
 pub fn generate_hqc256_keypair() -> (Vec<u8>, Vec<u8>) {
     use pqcrypto_hqc::hqc256;
     use pqcrypto_traits::kem::{PublicKey, SecretKey};
@@ -362,8 +346,7 @@ pub fn generate_hqc256_keypair() -> (Vec<u8>, Vec<u8>) {
     )
 }
 
-/// Encapsulate HQC-256
-/// Returns (ciphertext, 64B shared_secret)
+/// Encapsulate HQC-256 Returns (ciphertext, 64B shared_secret)
 pub fn hqc256_encapsulate(their_public_key: &[u8]) -> (Vec<u8>, Vec<u8>) {
     use pqcrypto_hqc::hqc256;
     use pqcrypto_traits::kem::{Ciphertext, PublicKey, SharedSecret};
@@ -380,8 +363,7 @@ pub fn hqc256_encapsulate(their_public_key: &[u8]) -> (Vec<u8>, Vec<u8>) {
     )
 }
 
-/// Decapsulate HQC-256
-/// Returns 64B shared_secret
+/// Decapsulate HQC-256 Returns 64B shared_secret
 pub fn hqc256_decapsulate(our_secret_key: &[u8], ciphertext: &[u8]) -> Vec<u8> {
     use pqcrypto_hqc::hqc256;
     use pqcrypto_traits::kem::{Ciphertext, SecretKey, SharedSecret};
@@ -438,8 +420,7 @@ pub fn derive_conversation_provenance(
     // Sort handle hashes canonically
     let (first_handle, second_handle) = sort_pair(our_handle_hash, their_handle_hash);
 
-    // Signatures are included but order doesn't matter for the hash
-    // We sort by the device pubkey order for consistency
+    // Signatures are included but order doesn't matter for the hash We sort by the device pubkey order for consistency
     let (first_sig, second_sig) = if our_device_pubkey < their_device_pubkey {
         (our_handshake_signature, their_handshake_signature)
     } else {
@@ -462,8 +443,7 @@ pub fn derive_conversation_provenance(
 ///
 /// This is signed by each party with their device private key. The signatures become part of the provenance derivation.
 ///
-/// Contains: sorted device pubkeys + sorted handle hashes + timestamp
-/// The timestamp prevents replay but is NOT part of provenance (so same parties can re-establish with same provenance).
+/// Contains: sorted device pubkeys + sorted handle hashes + timestamp The timestamp prevents replay but is NOT part of provenance (so same parties can re-establish with same provenance).
 pub fn compute_handshake_message(
     our_device_pubkey: &[u8; 32],
     their_device_pubkey: &[u8; 32],
@@ -559,8 +539,7 @@ pub fn derive_clutch_seed_parallel(
     hasher.update(x25519_shared); // ECDH result (32B for X25519-only)
                                   // Future: add other 7 shared secrets here for full clutch
 
-    // BLAKE3 XOF: extend output to 256 bytes (2048 bits)
-    // Phase 1 uses Seed (32 bytes) but we derive full output for future compat
+    // BLAKE3 XOF: extend output to 256 bytes (2048 bits) Phase 1 uses Seed (32 bytes) but we derive full output for future compat
     let mut output = [0u8; 256];
     hasher.finalize_xof().fill(&mut output);
 
@@ -882,9 +861,7 @@ pub struct ClutchKemResponsePayload {
     pub hqc256_ciphertext: Vec<u8>,
     /// First 8 bytes of HQC public key this was encrypted to (for stale detection)
     pub target_hqc_pub_prefix: [u8; 8],
-    // EC ephemeral pubkeys for ECIES-style encapsulation
-    // Sender generates fresh keypair, computes ECDH(ephemeral_secret, peer_offer_pubkey)
-    // Receiver computes ECDH(offer_secret, ephemeral_pubkey) to get same shared secret
+    // EC ephemeral pubkeys for ECIES-style encapsulation Sender generates fresh keypair, computes ECDH(ephemeral_secret, peer_offer_pubkey) Receiver computes ECDH(offer_secret, ephemeral_pubkey) to get same shared secret
     pub x25519_ephemeral: [u8; 32],
     pub p384_ephemeral: Vec<u8>,      // 97B uncompressed SEC1
     pub secp256k1_ephemeral: Vec<u8>, // 65B uncompressed SEC1
@@ -915,8 +892,7 @@ impl ClutchKemResponsePayload {
             hex::encode(&hqc256_ciphertext[..8])
         ));
 
-        // ===== EC ECIES-style: generate ephemeral keypairs, ECDH with peer's offer pubkeys =====
-        // This gives distinct shared secrets per direction (we→them vs them→us)
+        // ===== EC ECIES-style: generate ephemeral keypairs, ECDH with peer's offer pubkeys ===== This gives distinct shared secrets per direction (we→them vs them→us)
         let (x25519_eph_secret, x25519_ephemeral) = generate_x25519_ephemeral();
         let x25519_ss = x25519_ecdh(&x25519_eph_secret, &their_offer.x25519_public);
 
@@ -1049,8 +1025,7 @@ impl ClutchKemSharedSecrets {
             hqc.len()
         ));
 
-        // ===== EC ECIES-style: ECDH(our_offer_secret, their_ephemeral_pubkey) =====
-        // This matches their ECDH(ephemeral_secret, our_offer_pubkey)
+        // ===== EC ECIES-style: ECDH(our_offer_secret, their_ephemeral_pubkey) ===== This matches their ECDH(ephemeral_secret, our_offer_pubkey)
         let x25519 = x25519_ecdh(&our_keys.x25519_secret, &response.x25519_ephemeral);
         #[cfg(feature = "development")]
         #[cfg(feature = "development")]
@@ -1261,8 +1236,7 @@ impl ClutchEggs {
 /// - Class 1: frodo976, ntru701
 /// - Class 2: mceliece460896, hqc256
 ///
-/// Each egg is a BLAKE3 hash with domain separation:
-/// BLAKE3("clutch_EGG_v4_" || label || shared_secret)
+/// Each egg is a BLAKE3 hash with domain separation: BLAKE3("clutch_EGG_v4_" || label || shared_secret)
 ///
 /// Returns vector of 20 eggs ready for avalanche hashing.
 pub fn collect_clutch_eggs(
@@ -1433,8 +1407,7 @@ pub fn avalanche_hash_eggs(eggs: &ClutchEggs) -> (Vec<u8>, Vec<u8>) {
     #[cfg(feature = "development")]
     let step1_elapsed = start_time.elapsed();
 
-    // Step 2: Heavy mixing with diverse operations
-    // Process as variable-sized chunks (1-43 bytes, unaligned) for maximum diffusion
+    // Step 2: Heavy mixing with diverse operations Process as variable-sized chunks (1-43 bytes, unaligned) for maximum diffusion
     const MIX_ROUNDS: usize = 8;
 
     for round in 0..MIX_ROUNDS {
@@ -1505,8 +1478,7 @@ pub fn avalanche_hash_eggs(eggs: &ClutchEggs) -> (Vec<u8>, Vec<u8>) {
     #[cfg(feature = "development")]
     let step2_elapsed = start_time.elapsed();
 
-    // Step 3: Final rotation before trim
-    // Hash entire buffer and rotate by (hash % len) to shuffle one last time
+    // Step 3: Final rotation before trim Hash entire buffer and rotate by (hash % len) to shuffle one last time
     let final_hash = blake3::hash(&omelette);
     let final_u256 = U256::from_be_bytes(*final_hash.as_bytes());
     let rotate_amount = (final_u256 % U256::from(omelette.len() as u128)).as_u128() as usize;
@@ -1730,8 +1702,7 @@ pub fn derive_chain_from_avalanche(avalanche: &[u8], participant: &[u8; 32]) -> 
     hasher.finalize_xof().fill(&mut buffer);
     let len = buffer.len();
 
-    // Generate 256 links via truncate-and-append
-    // Each link = smear_hash(buffer), then drop first 32B, append link at end
+    // Generate 256 links via truncate-and-append Each link = smear_hash(buffer), then drop first 32B, append link at end
     for _ in 0..256 {
         let link = smear_hash(&buffer);
         buffer.copy_within(32.., 0); // shift left, drop first 32B
@@ -1818,8 +1789,7 @@ pub struct ClutchFullResult {
 /// - low_* = encapsulated by lower handle_hash party
 /// - high_* = encapsulated by higher handle_hash party
 ///
-/// For 2-party: 16 distinct shared secrets (8 algorithms × 2 directions)
-/// For 3-party: 48 distinct shared secrets (8 algorithms × 6 directed pairs)
+/// For 2-party: 16 distinct shared secrets (8 algorithms × 2 directions) For 3-party: 48 distinct shared secrets (8 algorithms × 6 directed pairs)
 ///
 /// An attacker must compromise BOTH directions of an algorithm to break that algorithm's contribution to the final key material.
 pub struct ClutchSharedSecrets {
@@ -1933,12 +1903,10 @@ pub fn compute_eggs_proof(eggs: &ClutchEggs) -> [u8; 32] {
     let mut input = b"CLUTCH_EGGS_v2_proof".to_vec();
     input.extend_from_slice(&egg_bytes);
 
-    // Spaghettify for chaos mixing, then smear_hash for algorithm diversity
-    // This is overkill for a proof, but consistency with chain derivation is good
+    // Spaghettify for chaos mixing, then smear_hash for algorithm diversity This is overkill for a proof, but consistency with chain derivation is good
     let spaghetti = spaghettify(&input);
 
-    // Final proof = smear_hash(spaghetti || eggs)
-    // Defense in depth: if spaghettify broken, eggs still contribute directly
+    // Final proof = smear_hash(spaghetti || eggs) Defense in depth: if spaghettify broken, eggs still contribute directly
     let mut final_input = spaghetti.to_vec();
     final_input.extend_from_slice(&egg_bytes);
     smear_hash(&final_input)
@@ -2159,8 +2127,7 @@ mod tests {
 
     #[test]
     fn test_provenance_survives_reclutch() {
-        // Key insight: provenance doesn't include ephemeral keys
-        // So re-clutch (new ephemeral keys) produces same provenance
+        // Key insight: provenance doesn't include ephemeral keys So re-clutch (new ephemeral keys) produces same provenance
         let alice_device = [1u8; 32];
         let bob_device = [2u8; 32];
         let alice_handle = *blake3::hash(b"alice").as_bytes();
@@ -2178,8 +2145,7 @@ mod tests {
             &bob_sig,
         );
 
-        // Re-clutch with new ephemeral keys (simulated)
-        // But same device keys, handles, and signatures
+        // Re-clutch with new ephemeral keys (simulated) But same device keys, handles, and signatures
         let provenance_2 = derive_conversation_provenance(
             &alice_device,
             &bob_device,
@@ -2324,8 +2290,7 @@ mod tests {
         let mut alice_keys = generate_all_ephemeral_keypairs();
         let mut bob_keys = generate_all_ephemeral_keypairs();
 
-        // === EC ALGORITHMS: Both compute same shared secret ===
-        // X25519
+        // === EC ALGORITHMS: Both compute same shared secret === X25519
         let x25519_shared = x25519_ecdh(&alice_keys.x25519_secret, &bob_keys.x25519_public);
         let x25519_shared_bob = x25519_ecdh(&bob_keys.x25519_secret, &alice_keys.x25519_public);
         assert_eq!(x25519_shared, x25519_shared_bob);
@@ -2391,8 +2356,7 @@ mod tests {
 
         // === BUILD SHARED SECRETS STRUCT === low_* = from alice's perspective (alice is low handle) high_* = from bob's perspective (bob is high handle)
         //
-        // For EC: both get same shared secret, but labeled by who initiated
-        // For KEM: low_* = alice→bob direction, high_* = bob→alice direction
+        // For EC: both get same shared secret, but labeled by who initiated For KEM: low_* = alice→bob direction, high_* = bob→alice direction
 
         let alice_secrets = ClutchSharedSecrets {
             low_x25519: x25519_shared,
@@ -2451,8 +2415,7 @@ mod tests {
             &bob_secrets,
         );
 
-        // === THE CRITICAL ASSERTIONS ===
-        // Both parties should collect identical eggs
+        // === THE CRITICAL ASSERTIONS === Both parties should collect identical eggs
         assert_eq!(
             alice_result.eggs.eggs.len(),
             bob_result.eggs.eggs.len(),
@@ -2545,8 +2508,7 @@ mod tests {
 
     #[test]
     fn test_spaghettify_variable_rounds() {
-        // Different inputs should trigger different round counts
-        // We can't directly verify round count, but we can verify different inputs produce different timing characteristics (not tested here) and that both produce valid outputs
+        // Different inputs should trigger different round counts We can't directly verify round count, but we can verify different inputs produce different timing characteristics (not tested here) and that both produce valid outputs
 
         let short = spaghettify(&[0u8]);
         let long = spaghettify(&[255u8; 1000]);

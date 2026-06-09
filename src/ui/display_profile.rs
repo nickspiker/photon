@@ -30,8 +30,7 @@ enum TrcCurve {
 }
 
 impl DisplayConverter {
-    /// Create converter by querying display ICC profile
-    /// Falls back to sRGB if no profile found
+    /// Create converter by querying display ICC profile Falls back to sRGB if no profile found
     pub fn new() -> Self {
         if let Some(profile_bytes) = get_display_profile() {
             if let Ok(converter) = Self::from_icc_profile(&profile_bytes) {
@@ -79,8 +78,7 @@ impl DisplayConverter {
 
     /// sRGB fallback when no ICC profile available
     fn srgb_fallback() -> Self {
-        // XYZ→sRGB matrix (D65 white point)
-        // This is the inverse of the sRGB→XYZ matrix
+        // XYZ→sRGB matrix (D65 white point) This is the inverse of the sRGB→XYZ matrix
         let xyz_to_display = [
             3.2404542, -0.9692660, 0.0556434, -1.5371385, 1.8760108, -0.2040259, -0.4985314,
             0.0415560, 1.0572252,
@@ -100,9 +98,7 @@ impl DisplayConverter {
         }
     }
 
-    /// Convert VSF RGB pixels to display colorspace
-    /// Input: 256×256×3 VSF RGB gamma-encoded bytes
-    /// Output: 256×256×3 Display RGB bytes (BGR order on Android for ABGR surface)
+    /// Convert VSF RGB pixels to display colorspace Input: 256×256×3 VSF RGB gamma-encoded bytes Output: 256×256×3 Display RGB bytes (BGR order on Android for ABGR surface)
     pub fn convert_avatar(&self, vsf_rgb: &[u8]) -> Vec<u8> {
         let pixel_count = 256 * 256;
         let mut output = vec![0u8; pixel_count * 3];
@@ -201,8 +197,7 @@ fn parse_trc(trc: Option<&Data>) -> Result<TrcCurve, String> {
     }
 }
 
-/// Apply TRC curve to convert linear [0,1] to display u8
-/// This applies the OETF (optical-electro transfer function)
+/// Apply TRC curve to convert linear [0,1] to display u8 This applies the OETF (optical-electro transfer function)
 fn apply_trc(linear: f32, trc: &TrcCurve) -> u8 {
     let clamped = linear.max(0.0).min(1.0);
 
@@ -228,8 +223,7 @@ fn apply_trc(linear: f32, trc: &TrcCurve) -> u8 {
                     (clamped.powf(1.0 / gamma) - b) / a
                 }
                 0x0003 => {
-                    // sRGB-style: Y = (aX + b)^gamma if X >= d, else cX
-                    // Inverse: X = ((Y)^(1/gamma) - b) / a if Y >= (ad+b)^gamma, else Y/c
+                    // sRGB-style: Y = (aX + b)^gamma if X >= d, else cX Inverse: X = ((Y)^(1/gamma) - b) / a if Y >= (ad+b)^gamma, else Y/c
                     let gamma = vals[0];
                     let a = vals[1];
                     let b = vals[2];

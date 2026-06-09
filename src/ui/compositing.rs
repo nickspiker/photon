@@ -133,8 +133,7 @@ impl PhotonApp {
         {
             self.update_counter += 1;
 
-            // Pre-compute scaled avatar before locking buffer (to avoid borrow conflict)
-            // Use the same radius calculation as the layout to ensure avatar fits perfectly
+            // Pre-compute scaled avatar before locking buffer (to avoid borrow conflict) Use the same radius calculation as the layout to ensure avatar fits perfectly
             if matches!(self.app_state, AppState::Ready | AppState::Searching) {
                 if let Some(ref contacts_block) = self.layout.contacts {
                     let unified = super::app::ContactsUnifiedLayout::new(
@@ -271,14 +270,12 @@ impl PhotonApp {
                     }
                 }
 
-                // Calculate window control bounds (needed for edges/hairlines)
-                // Controls are drawn AFTER content (below)
+                // Calculate window control bounds (needed for edges/hairlines) Controls are drawn AFTER content (below)
                 #[cfg(not(target_os = "android"))]
                 let (start, edges, button_x_start, button_height) =
                     Self::window_controls_bounds(self.width, self.height, eff_ru);
 
-                // Draw FGTW connectivity indicator (small circle in top-left)
-                // AA black base circle
+                // Draw FGTW connectivity indicator (small circle in top-left) AA black base circle
                 Self::draw_black_circle(
                     pixels,
                     self.width as usize,
@@ -349,8 +346,7 @@ impl PhotonApp {
                         );
                     }
 
-                    // Attest block: unified region containing textbox (top), hint (middle), attest (bottom)
-                    // Uses AttestBlockLayout for proportional slicing - fiddle with slices in app.rs
+                    // Attest block: unified region containing textbox (top), hint (middle), attest (bottom) Uses AttestBlockLayout for proportional slicing - fiddle with slices in app.rs
                     if let Some(ref block) = self.layout.attest_block {
                         let sub = super::app::AttestBlockLayout::new(block);
 
@@ -530,15 +526,13 @@ impl PhotonApp {
                             }
                         }
 
-                        // Draw search textbox (with scroll)
-                        // TextLayout provides base positions; we apply scroll offset for rendering
+                        // Draw search textbox (with scroll) TextLayout provides base positions; we apply scroll offset for rendering
                         let tl = &self.text_layout;
                         let scrolled_textbox_cy = tl.center_y as isize + scroll;
                         let half_box_h = (tl.box_height / 2) as isize;
                         let screen_h = self.height as isize;
 
-                        // Textbox is always drawn (draw_textbox handles partial visibility)
-                        // But glow/focus/hover only allowed when FULLY on-screen
+                        // Textbox is always drawn (draw_textbox handles partial visibility) But glow/focus/hover only allowed when FULLY on-screen
                         let textbox_fully_visible = scrolled_textbox_cy >= half_box_h
                             && scrolled_textbox_cy + half_box_h <= screen_h;
 
@@ -566,8 +560,7 @@ impl PhotonApp {
                             }
                         };
 
-                        // Apply glow BEFORE button when focused or searching
-                        // Glow function handles partial visibility via per-column bounds checks
+                        // Apply glow BEFORE button when focused or searching Glow function handles partial visibility via per-column bounds checks
                         if self.current_text_state.textbox_focused
                             || matches!(self.app_state, AppState::Searching)
                         {
@@ -684,8 +677,7 @@ impl PhotonApp {
                             }
                         }
 
-                        // === CONTACT ROWS (part of unified layout) ===
-                        // Draw contact rows using same unit_height as user section
+                        // === CONTACT ROWS (part of unified layout) === Draw contact rows using same unit_height as user section
                         let contact_avatar_radius = unified.avatar_diameter / 2;
                         let contact_avatar_diameter = contact_avatar_radius * 2;
                         let row_height = unified.row_height as isize;
@@ -787,16 +779,13 @@ impl PhotonApp {
                                 theme::FONT_USER_CONTENT,
                             );
 
-                            // Hit region with scroll offset
-                            // Compute row bounds and intersect with screen (use visible_row for positioning)
+                            // Hit region with scroll offset Compute row bounds and intersect with screen (use visible_row for positioning)
                             let row_top = unified.rows.y as isize
                                 + visible_row as isize * row_height
                                 + scroll;
                             let row_bottom = row_top + row_height;
 
-                            // Intersection bounds proof: WHY: row_top can be negative (scrolled off top) or row_bottom > height (off bottom)
-                            // PROOF: .max(0) and .min(height) compute intersection with screen rectangle
-                            // PREVENTS: Out-of-bounds hit_test_map access
+                            // Intersection bounds proof: WHY: row_top can be negative (scrolled off top) or row_bottom > height (off bottom) PROOF: .max(0) and .min(height) compute intersection with screen rectangle PREVENTS: Out-of-bounds hit_test_map access
                             let hit_top = row_top.max(0) as usize;
                             let hit_bottom = row_bottom.min(screen_h) as usize;
                             // Use contact_idx for hit ID (not visible_row) so clicking works correctly
@@ -958,10 +947,7 @@ impl PhotonApp {
 
                             // // Online indicator centered on divider line let indicator_radius = (self.span / 80).max(1); let indicator_x = center_x; let indicator_y = header_height; // On the divider
 
-                            // // Draw base (dark circle)
-                            // Self::draw_indicator_base( pixels, self.width as usize, indicator_x, indicator_y, indicator_radius, ); if contact.is_online { // Online: add green fill
-                            // Self::draw_indicator_colour( pixels, self.width as usize, indicator_x, indicator_y, indicator_radius, theme::ONLINE_DOT, true, ); } else { // Offline: draw hairline ring
-                            // Self::draw_indicator_hairline( pixels, self.width as usize, indicator_x, indicator_y, indicator_radius, theme::CONTACT_OFFLINE, true, ); }
+                            // // Draw base (dark circle) Self::draw_indicator_base( pixels, self.width as usize, indicator_x, indicator_y, indicator_radius, ); if contact.is_online { // Online: add green fill Self::draw_indicator_colour( pixels, self.width as usize, indicator_x, indicator_y, indicator_radius, theme::ONLINE_DOT, true, ); } else { // Offline: draw hairline ring Self::draw_indicator_hairline( pixels, self.width as usize, indicator_x, indicator_y, indicator_radius, theme::CONTACT_OFFLINE, true, ); }
 
                             // Draw message area based on CLUTCH state
                             use crate::types::ClutchState;
@@ -1151,8 +1137,7 @@ impl PhotonApp {
                                     }
                                 }
                                 _ => {
-                                    // CLUTCH in progress - show status, hide textbox
-                                    // Line 1: "clutch in progress"
+                                    // CLUTCH in progress - show status, hide textbox Line 1: "clutch in progress"
                                     let line1_y = msg_center_y - (font_size as usize / 2);
                                     self.text_renderer.draw_text_center_u32(
                                         pixels,
@@ -1165,8 +1150,7 @@ impl PhotonApp {
                                         theme::STATUS_TEXT_ATTESTING, // Yellow with proper alpha
                                         theme::FONT_UI,
                                     );
-                                    // Line 2: Hint about what's happening
-                                    // Slot-based: only Pending and Complete states
+                                    // Line 2: Hint about what's happening Slot-based: only Pending and Complete states
                                     let hint = if contact.clutch_our_keypairs.is_none() {
                                         "generating ephemeral keys..."
                                     } else if !contact.clutch_offer_sent {
@@ -1245,8 +1229,7 @@ impl PhotonApp {
                 // Frame counter continues incrementing (not reset)
                 self.prev_hovered_button = HoveredButton::None;
             } else {
-                // Differential rendering blocks (only if window wasn't fully redrawn)
-                // Scroll offset for text rendering (Ready/Searching states only)
+                // Differential rendering blocks (only if window wasn't fully redrawn) Scroll offset for text rendering (Ready/Searching states only)
                 let text_scroll_offset =
                     if matches!(self.app_state, AppState::Ready | AppState::Searching) {
                         self.contacts_scroll_offset
@@ -1584,9 +1567,7 @@ impl PhotonApp {
                     let button_size = box_height * 7 / 8;
                     let inset = box_height / 16;
                     let button_center_x = center_x + box_width / 2 - inset - button_size / 2;
-                    // WHY: textbox_y is unscrolled, must apply scroll offset for correct position
-                    // PROOF: Full redraw path uses scrolled_textbox_cy, differential must match
-                    // PREVENTS: Button drawn at wrong Y when contacts are scrolled
+                    // WHY: textbox_y is unscrolled, must apply scroll offset for correct position PROOF: Full redraw path uses scrolled_textbox_cy, differential must match PREVENTS: Button drawn at wrong Y when contacts are scrolled
                     let button_center_y =
                         (textbox_y as isize + self.contacts_scroll_offset) as usize;
 
@@ -1630,8 +1611,7 @@ impl PhotonApp {
             if self.controls_dirty {
                 // Handle hover state changes
                 if self.prev_hovered_button != self.hovered_button {
-                    // Calculate button centers for centerpoint fill
-                    // Must match draw_window_controls: span/32 * ru
+                    // Calculate button centers for centerpoint fill Must match draw_window_controls: span/32 * ru
                     let button_height = (self.span as f32 / 32.0 * eff_ru).ceil() as usize;
                     let button_width = button_height;
                     let total_width = button_width * 7 / 2;
@@ -1892,11 +1872,9 @@ impl PhotonApp {
                 self.prev_fgtw_online = self.fgtw_online;
             }
 
-            // Reapply current hover state after window_dirty redraws (full redraws clear the framebuffer, losing hover overlays)
-            // This runs OUTSIDE controls_dirty so it works during animation
+            // Reapply current hover state after window_dirty redraws (full redraws clear the framebuffer, losing hover overlays) This runs OUTSIDE controls_dirty so it works during animation
             if self.window_dirty && self.hovered_button != HoveredButton::None {
-                // Calculate button centers for centerpoint fill
-                // Must match draw_window_controls: span/32 * ru
+                // Calculate button centers for centerpoint fill Must match draw_window_controls: span/32 * ru
                 let button_height = (self.span as f32 / 32.0 * eff_ru).ceil() as usize;
                 let button_width = button_height;
                 let total_width = button_width * 7 / 2;
@@ -2523,12 +2501,10 @@ impl PhotonApp {
                 // Write packed ARGB colour directly
                 pixels[pixel_idx] = bg_colour;
 
-                // Determine which button this pixel belongs to Button widths: minimize (0-1), maximize (1-2), close (2-3.5)
-                // Buttons are drawn with a button_width / 4 offset
+                // Determine which button this pixel belongs to Button widths: minimize (0-1), maximize (1-2), close (2-3.5) Buttons are drawn with a button_width / 4 offset
                 let button_area_x_start = x_start + button_width / 4;
 
-                // Determine button ID based on x position
-                // Handle the case where px might be before button_area_x_start
+                // Determine button ID based on x position Handle the case where px might be before button_area_x_start
                 let button_id = if px < button_area_x_start {
                     HIT_MINIMIZE_BUTTON // Left edge before offset belongs to minimize
                 } else {
@@ -2876,8 +2852,7 @@ impl PhotonApp {
 
         let end = size / 3.;
 
-        // Define the two diagonal line segments
-        // Diagonal 1: top-left to bottom-right
+        // Define the two diagonal line segments Diagonal 1: top-left to bottom-right
         let x1_start = cxf - end;
         let y1_start = cyf - end;
         let x1_end = cxf + end;
@@ -3071,9 +3046,7 @@ impl PhotonApp {
         size: usize,
         stroke_colour: (u8, u8, u8),
     ) {
-        // Geometry based on magnify.svg (1000x1000 viewbox): Circle center at ~(417, 417), radius 292, stroke 83
-        // Handle from (625, 625) to (875, 875)
-        // Normalize to our size parameter
+        // Geometry based on magnify.svg (1000x1000 viewbox): Circle center at ~(417, 417), radius 292, stroke 83 Handle from (625, 625) to (875, 875) Normalize to our size parameter
 
         let scale = size as f32 / 1000.0;
         let stroke_width = 83.0 * scale;
@@ -3262,8 +3235,7 @@ impl PhotonApp {
         let cx_f = cx as f32;
         let cy_f = cy as f32;
 
-        // Hourglass vertices in local coords (center at origin)
-        // Top triangle: apex at center, base at top
+        // Hourglass vertices in local coords (center at origin) Top triangle: apex at center, base at top
         let top_apex = (0.0_f32, 0.0_f32);
         let top_left = (-half_w, -half_h);
         let top_right = (half_w, -half_h);
@@ -3288,8 +3260,7 @@ impl PhotonApp {
                 let lx = dx * cos_a - dy * sin_a;
                 let ly = dx * sin_a + dy * cos_a;
 
-                // Distance to each line segment of the hourglass (6 edges total)
-                // Top triangle edges
+                // Distance to each line segment of the hourglass (6 edges total) Top triangle edges
                 let d1 = Self::distance_to_capsule_local(
                     lx,
                     ly,
@@ -3441,8 +3412,7 @@ impl PhotonApp {
         let light_colour = theme::WINDOW_LIGHT_EDGE;
         let shadow_colour = theme::WINDOW_SHADOW_EDGE;
 
-        // Fill all four edges with white before squircle clipping
-        // Top edge
+        // Fill all four edges with white before squircle clipping Top edge
         for x in 0..width {
             let idx = 0 * width + x;
             pixels[idx as usize] = light_colour;
@@ -3731,8 +3701,7 @@ impl PhotonApp {
         }
     }
 
-    /// Calculate selection rectangle bounds for hover skip logic
-    /// Returns (x_start, x_end, y_top, y_bottom) or None if no selection
+    /// Calculate selection rectangle bounds for hover skip logic Returns (x_start, x_end, y_top, y_bottom) or None if no selection
     fn selection_skip_rect(&self) -> Option<(usize, usize, usize, usize)> {
         let anchor = self.current_text_state.selection_anchor?;
         let (sel_start, sel_end) = if anchor < self.current_text_state.blinkey_index {
@@ -3764,8 +3733,7 @@ impl PhotonApp {
         Some((sel_x_start, sel_x_end, sel_y_top, sel_y_bottom))
     }
 
-    /// Apply hover effect using centerpoint fill algorithm
-    /// Starts from element center, scans vertically then horizontally based on hit test map
+    /// Apply hover effect using centerpoint fill algorithm Starts from element center, scans vertically then horizontally based on hit test map
     pub fn draw_hover_centerpoint(
         pixels: &mut [u32],
         hit_test_map: &[u8],
@@ -3779,8 +3747,7 @@ impl PhotonApp {
         debug: bool,
         skip_rect: Option<(usize, usize, usize, usize)>, // (x_start, x_end, y_top, y_bottom)
     ) {
-        // Debug: draw magenta pixel at centerpoint
-        // Use alpha=254 so we can distinguish it from actual magenta UI elements
+        // Debug: draw magenta pixel at centerpoint Use alpha=254 so we can distinguish it from actual magenta UI elements
         if debug {
             let debug_idx = center_y * window_width + center_x;
             pixels[debug_idx] = 0xFE_FF_00_FF; // Magenta with alpha=254
@@ -3864,8 +3831,7 @@ impl PhotonApp {
         }
     }
 
-    /// Apply hover effect to conversation back header
-    /// Adds/subtracts brightness to header area
+    /// Apply hover effect to conversation back header Adds/subtracts brightness to header area
     pub fn apply_back_header_hover(
         pixels: &mut [u32],
         hit_test_map: &[u8],
@@ -3907,8 +3873,7 @@ impl PhotonApp {
         // button_width equals button_height (passed in, already scaled with span * ru)
         let button_width = button_height;
 
-        // Two hairlines: at 1.0 and 2.0 button widths from button area start
-        // Left hairline between minimize and maximize
+        // Two hairlines: at 1.0 and 2.0 button widths from button area start Left hairline between minimize and maximize
         let left_px = button_x_start + button_width;
         // Right hairline between maximize and close
         let right_px = button_x_start + button_width * 2;
@@ -3919,8 +3884,7 @@ impl PhotonApp {
         // Edge/hairline colour
         let edge_colour = theme::WINDOW_CONTROLS_HAIRLINE;
 
-        // Draw left hairline
-        // Draw upward from center until colour changes
+        // Draw left hairline Draw upward from center until colour changes
         let center_colour = pixels[center_y * width + left_px];
         for py in (y_start..=center_y).rev() {
             let idx = py * width + left_px;
@@ -3943,8 +3907,7 @@ impl PhotonApp {
             }
         }
 
-        // Draw right hairline
-        // Draw upward from center until colour changes
+        // Draw right hairline Draw upward from center until colour changes
         let center_colour_right = pixels[center_y * width + right_px];
         for py in (y_start..=center_y).rev() {
             let idx = py * width + right_px;
@@ -3994,9 +3957,7 @@ impl PhotonApp {
             0usize.wrapping_sub((-y_signed) as usize)
         };
 
-        // WHY: Check if textbox overlaps visible region [0, height) using signed math
-        // PROOF: top = y_signed, bottom = y_signed + box_height; visible if top < height AND bottom > 0
-        // PREVENTS: Drawing when entirely off-screen, while allowing partial visibility
+        // WHY: Check if textbox overlaps visible region [0, height) using signed math PROOF: top = y_signed, bottom = y_signed + box_height; visible if top < height AND bottom > 0 PREVENTS: Drawing when entirely off-screen, while allowing partial visibility
         let box_top = y_signed;
         let box_bottom = y_signed + box_height as isize;
         if box_bottom <= 0 || box_top >= height_signed {
@@ -4036,8 +3997,7 @@ impl PhotonApp {
 
         // (height already computed above for early-out check)
 
-        // Top-left corner - vertical edge with diagonal fill
-        // WHY bounds checks: Scroll can push textbox partially off-screen (negative Y wraps to huge usize, or Y exceeds height). X could also exceed width on narrow windows. PROOF: wrapping_add/wrapping_sub produce wrapped coordinates when textbox is off-screen. PREVENTS: Out-of-bounds pixel buffer access when textbox is partially visible.
+        // Top-left corner - vertical edge with diagonal fill WHY bounds checks: Scroll can push textbox partially off-screen (negative Y wraps to huge usize, or Y exceeds height). X could also exceed width on narrow windows. PROOF: wrapping_add/wrapping_sub produce wrapped coordinates when textbox is off-screen. PREVENTS: Out-of-bounds pixel buffer access when textbox is partially visible.
         for (i, &(inset, l, h)) in crossings.iter().enumerate() {
             // Stop at diagonal - when inset exceeds i, we've gone past the 45-degree point
             if inset as usize > i {
@@ -4097,10 +4057,7 @@ impl PhotonApp {
                 textbox_mask[idx] = h;
             }
 
-            // Fill vertically between horizontal edge and diagonal
-            // WHY: Use signed arithmetic to handle negative Y when scrolled off top
-            // PROOF: y_signed can be negative, clamping to [0, height) gives visible portion
-            // PREVENTS: Infinite loop from wrapped usize, fills only visible pixels
+            // Fill vertically between horizontal edge and diagonal WHY: Use signed arithmetic to handle negative Y when scrolled off top PROOF: y_signed can be negative, clamping to [0, height) gives visible portion PREVENTS: Infinite loop from wrapped usize, fills only visible pixels
             let hy_signed = y_signed + inset as isize;
             let diag_y_signed = y_signed + radius as isize - i as isize;
             let fill_start = (hy_signed + 2).max(0).min(height_signed) as usize;
@@ -4182,10 +4139,7 @@ impl PhotonApp {
                 textbox_mask[idx] = h;
             }
 
-            // Fill vertically between horizontal edge and diagonal
-            // WHY: Use signed arithmetic to handle negative Y when scrolled off top
-            // PROOF: y_signed can be negative, clamping to [0, height) gives visible portion
-            // PREVENTS: Infinite loop from wrapped usize, fills only visible pixels
+            // Fill vertically between horizontal edge and diagonal WHY: Use signed arithmetic to handle negative Y when scrolled off top PROOF: y_signed can be negative, clamping to [0, height) gives visible portion PREVENTS: Infinite loop from wrapped usize, fills only visible pixels
             let hy_signed = y_signed + inset as isize;
             let diag_y_signed = y_signed + radius as isize - i as isize;
             let fill_start = (hy_signed + 2).max(0).min(height_signed) as usize;
@@ -4262,10 +4216,7 @@ impl PhotonApp {
                 textbox_mask[idx] = h;
             }
 
-            // Fill vertically between diagonal and horizontal edge
-            // WHY: Use signed arithmetic to handle off-screen scroll
-            // PROOF: y_signed can be negative or exceed height, clamping gives visible portion
-            // PREVENTS: Infinite loop from wrapped usize, fills only visible pixels
+            // Fill vertically between diagonal and horizontal edge WHY: Use signed arithmetic to handle off-screen scroll PROOF: y_signed can be negative or exceed height, clamping gives visible portion PREVENTS: Infinite loop from wrapped usize, fills only visible pixels
             let diag_y_signed = y_signed + box_height as isize - radius as isize + i as isize;
             let hy_signed = y_signed + box_height as isize - inset as isize;
             let fill_start = (diag_y_signed + 1).max(0).min(height_signed) as usize;
@@ -4350,10 +4301,7 @@ impl PhotonApp {
                 textbox_mask[idx] = h;
             }
 
-            // Fill vertically between diagonal and horizontal edge
-            // WHY: Use signed arithmetic to handle off-screen scroll
-            // PROOF: y_signed can be negative or exceed height, clamping gives visible portion
-            // PREVENTS: Infinite loop from wrapped usize, fills only visible pixels
+            // Fill vertically between diagonal and horizontal edge WHY: Use signed arithmetic to handle off-screen scroll PROOF: y_signed can be negative or exceed height, clamping gives visible portion PREVENTS: Infinite loop from wrapped usize, fills only visible pixels
             let diag_y_signed = y_signed + box_height as isize - radius as isize + i as isize;
             let hy_signed = y_signed + box_height as isize - inset as isize;
             let fill_start = (diag_y_signed + 1).max(0).min(height_signed) as usize;
@@ -4368,8 +4316,7 @@ impl PhotonApp {
             }
         }
 
-        // Fill center and straight edges
-        // Use signed arithmetic to clamp Y ranges to visible portion
+        // Fill center and straight edges Use signed arithmetic to clamp Y ranges to visible portion
         let radius_int = radius as isize;
 
         if box_width > box_height {
@@ -4470,10 +4417,7 @@ impl PhotonApp {
         let blur_radius_horiz = 32;
         let blur_radius_vert = 16;
 
-        // WHY: center_y can be negative or huge when scrolled off-screen
-        // PROOF: y_top/y_bottom computed from center_y - need center on-screen for valid usize
-        // PREVENTS: Underflow when computing y_top = center_y - box_height/2
-        // NOTE: Cast to usize wraps negatives to huge values, failing >= height check
+        // WHY: center_y can be negative or huge when scrolled off-screen PROOF: y_top/y_bottom computed from center_y - need center on-screen for valid usize PREVENTS: Underflow when computing y_top = center_y - box_height/2 NOTE: Cast to usize wraps negatives to huge values, failing >= height check
         let height = pixels.len() / window_width;
         let half_h = (box_height / 2) as isize;
         if (center_y - half_h) as usize >= height || (center_y + half_h) as usize >= height {
@@ -4540,8 +4484,7 @@ impl PhotonApp {
             // Horizontal blur pass - left from left edge (with diagonal corner fill)
             for y in y_top..y_bottom {
                 adder = 0;
-                // PROOF saturating_sub: blur_radius_horiz could exceed x_left
-                // Prevents underflow when blurring near left edge, saturating at 0
+                // PROOF saturating_sub: blur_radius_horiz could exceed x_left Prevents underflow when blurring near left edge, saturating at 0
                 for x in (x_left.saturating_sub(blur_radius_horiz)
                     ..=x_left
                         + (y_horiz_start as isize - y as isize).max(0) as usize
@@ -4569,9 +4512,7 @@ impl PhotonApp {
                     - (x as isize - x_vert_end as isize).max(0) as usize
                     ..y_bottom + blur_radius_vert
                 {
-                    // WHY: Glow extends blur_radius_vert below textbox, may exceed screen
-                    // PROOF: Loop scans outward (increasing y), once y >= height all remaining y's also >=
-                    // PREVENTS: Out-of-bounds pixel access when glow extends past bottom edge
+                    // WHY: Glow extends blur_radius_vert below textbox, may exceed screen PROOF: Loop scans outward (increasing y), once y >= height all remaining y's also >= PREVENTS: Out-of-bounds pixel access when glow extends past bottom edge
                     if y >= height {
                         break;
                     }
@@ -4599,15 +4540,11 @@ impl PhotonApp {
                     + (x as isize - x_vert_end as isize).max(0) as usize)
                     .rev()
                 {
-                    // WHY: Glow extends blur_radius_vert above textbox, may go negative (wrapped)
-                    // PROOF: Loop scans outward (decreasing y), once past y_top - blur_radius_vert we stop
-                    // PREVENTS: Processing pixels above glow region or wrapped negative values
+                    // WHY: Glow extends blur_radius_vert above textbox, may go negative (wrapped) PROOF: Loop scans outward (decreasing y), once past y_top - blur_radius_vert we stop PREVENTS: Processing pixels above glow region or wrapped negative values
                     if y + blur_radius_vert < y_top {
                         break;
                     }
-                    // WHY: y_top + corner_adjust can exceed height when textbox is near bottom
-                    // PROOF: Loop starts at y_top + corner_adjust, which depends on textbox position
-                    // PREVENTS: Out-of-bounds access to textbox_mask[idx] and pixels[idx]
+                    // WHY: y_top + corner_adjust can exceed height when textbox is near bottom PROOF: Loop starts at y_top + corner_adjust, which depends on textbox position PREVENTS: Out-of-bounds access to textbox_mask[idx] and pixels[idx]
                     if y >= height {
                         continue;
                     }
@@ -4651,8 +4588,7 @@ impl PhotonApp {
             // Horizontal blur pass - left from left edge (with diagonal corner fill)
             for y in y_top..y_bottom {
                 adder = 0;
-                // PROOF saturating_sub: blur_radius_horiz could exceed x_left
-                // Prevents underflow when blurring near left edge, saturating at 0
+                // PROOF saturating_sub: blur_radius_horiz could exceed x_left Prevents underflow when blurring near left edge, saturating at 0
                 for x in (x_left.saturating_sub(blur_radius_horiz)
                     ..=x_left
                         + (y_horiz_start as isize - y as isize).max(0) as usize
@@ -4680,9 +4616,7 @@ impl PhotonApp {
                     - (x as isize - x_vert_end as isize).max(0) as usize
                     ..y_bottom + blur_radius_vert
                 {
-                    // WHY: Glow extends blur_radius_vert below textbox, may exceed screen
-                    // PROOF: Loop scans outward (increasing y), once y >= height all remaining y's also >=
-                    // PREVENTS: Out-of-bounds pixel access when glow extends past bottom edge
+                    // WHY: Glow extends blur_radius_vert below textbox, may exceed screen PROOF: Loop scans outward (increasing y), once y >= height all remaining y's also >= PREVENTS: Out-of-bounds pixel access when glow extends past bottom edge
                     if y >= height {
                         break;
                     }
@@ -4710,15 +4644,11 @@ impl PhotonApp {
                     + (x as isize - x_vert_end as isize).max(0) as usize)
                     .rev()
                 {
-                    // WHY: Glow extends blur_radius_vert above textbox, may go negative (wrapped)
-                    // PROOF: Loop scans outward (decreasing y), once past y_top - blur_radius_vert we stop
-                    // PREVENTS: Processing pixels above glow region or wrapped negative values
+                    // WHY: Glow extends blur_radius_vert above textbox, may go negative (wrapped) PROOF: Loop scans outward (decreasing y), once past y_top - blur_radius_vert we stop PREVENTS: Processing pixels above glow region or wrapped negative values
                     if y + blur_radius_vert < y_top {
                         break;
                     }
-                    // WHY: y_top + corner_adjust can exceed height when textbox is near bottom
-                    // PROOF: Loop starts at y_top + corner_adjust, which depends on textbox position
-                    // PREVENTS: Out-of-bounds access to textbox_mask[idx] and pixels[idx]
+                    // WHY: y_top + corner_adjust can exceed height when textbox is near bottom PROOF: Loop starts at y_top + corner_adjust, which depends on textbox position PREVENTS: Out-of-bounds access to textbox_mask[idx] and pixels[idx]
                     if y >= height {
                         continue;
                     }
@@ -4835,8 +4765,7 @@ impl PhotonApp {
                 mask[idx] = 255 - h;
             }
 
-            // Fill vertically down from horizontal edge to diagonal
-            // Diagonal is where the vertical edge is at this same iteration
+            // Fill vertically down from horizontal edge to diagonal Diagonal is where the vertical edge is at this same iteration
             let diag_y = y + radius as usize - i;
             for fill_y in (hy + 2)..diag_y {
                 let idx = fill_y * window_width + hx;
@@ -5105,8 +5034,7 @@ impl PhotonApp {
         // Wave period tied to height - aspect ratio determines wave count
         let waves_per_region = region.w as f32 / region.h as f32 * 2.;
 
-        // Loop invariant: y in 0..region.h → py = region.y + y is in region.y..region.bottom()
-        // Loop invariant: x in 0..region.w → px = region.x + x is in region.x..region.right()
+        // Loop invariant: y in 0..region.h → py = region.y + y is in region.y..region.bottom() Loop invariant: x in 0..region.w → px = region.x + x is in region.x..region.right()
         for y in 0..region.h {
             let py = region.y + y;
             for x in 0..logo_width {
@@ -5130,8 +5058,7 @@ impl PhotonApp {
                     * 32000.
                     / (scale.abs() + amplitude / region_span * 0.25);
 
-                // Map x position to wavelength index, flipped left-right
-                // LMS2006SO covers 350-830nm in 1nm steps
+                // Map x position to wavelength index, flipped left-right LMS2006SO covers 350-830nm in 1nm steps
                 const START_NM: usize = 350;
                 const LAMBDA_START: usize = 350 - START_NM;
                 const LAMBDA_END: usize = 750 - START_NM;
@@ -5590,15 +5517,10 @@ impl PhotonApp {
         // AA diff for inner edge (no-ring case): maps [r_inner_inner2, r_inner2) to [255, 0]
         let diff_inner = r_inner2 - r_inner_inner2;
 
-        // Intersection bounds: WHY: cx/cy can be negative or exceed screen bounds due to scroll offset
-        // PROOF: We compute intersection of circle bounding box with screen (0..width, 0..height)
-        //        If intersection is empty (y_max <= y_min), avatar is off-screen, return early
-        //        Otherwise cast to usize is safe since values are in [0, width/height]
-        // PREVENTS: Negative isize cast to usize would wrap to huge value causing infinite loop
+        // Intersection bounds: WHY: cx/cy can be negative or exceed screen bounds due to scroll offset PROOF: We compute intersection of circle bounding box with screen (0..width, 0..height) If intersection is empty (y_max <= y_min), avatar is off-screen, return early Otherwise cast to usize is safe since values are in [0, width/height] PREVENTS: Negative isize cast to usize would wrap to huge value causing infinite loop
 
         if let Some(ring) = ring_colour {
-            // === WITH RING ===
-            // Compute intersection of outer ring bounds with screen (keep as isize)
+            // === WITH RING === Compute intersection of outer ring bounds with screen (keep as isize)
             let y_min_i = (cy - r_outer_outer).max(0);
             let y_max_i = (cy + r_outer_outer + 1).min(height as isize);
             let x_min_i = (cx - r_outer_outer).max(0);
@@ -5638,25 +5560,21 @@ impl PhotonApp {
                     } else if dist2 < r_inner2 {
                         // Inner AA edge - blend ring over avatar
                         let colour = sample_avatar(avatar_scaled, dx, dy, r, diameter, brighten);
-                        // PROOF: dist2 ∈ (r_inner_inner2, r_inner2), so numerator ∈ (0, diff_inner<<8)
-                        // Division maps to (0, 256), cast to u8 is safe (max 255)
+                        // PROOF: dist2 ∈ (r_inner_inner2, r_inner2), so numerator ∈ (0, diff_inner<<8) Division maps to (0, 256), cast to u8 is safe (max 255)
                         let alpha = (((dist2 - r_inner_inner2) << 8) / diff_inner) as u8;
                         pixels[idx] = blend_rgb_only(0xFF000000 | colour, ring, 255 - alpha, alpha);
                     } else if dist2 <= r_outer2 {
                         // Solid ring (r_inner to r_outer)
                         pixels[idx] = 0xFF000000 | ring;
                     } else if dist2 <= r_outer_outer2 {
-                        // Outer AA edge (r_outer to r_outer_outer) - blend ring to background
-                        // PROOF: dist2 ∈ (r_outer2, r_outer_outer2], so numerator ∈ [0, diff_outer<<8)
-                        // Division maps to [0, 256), cast to u8 is safe (max 255)
+                        // Outer AA edge (r_outer to r_outer_outer) - blend ring to background PROOF: dist2 ∈ (r_outer2, r_outer_outer2], so numerator ∈ [0, diff_outer<<8) Division maps to [0, 256), cast to u8 is safe (max 255)
                         let alpha = (((r_outer_outer2 - dist2) << 8) / diff_outer) as u8;
                         pixels[idx] = blend_rgb_only(pixels[idx], ring, 255 - alpha, alpha);
                     }
                 }
             }
         } else {
-            // === NO RING ===
-            // Compute intersection of inner circle bounds with screen (keep as isize)
+            // === NO RING === Compute intersection of inner circle bounds with screen (keep as isize)
             let y_min_i = (cy - r_inner).max(0);
             let y_max_i = (cy + r_inner + 1).min(height as isize);
             let x_min_i = (cx - r_inner).max(0);
@@ -5706,8 +5624,7 @@ impl PhotonApp {
                     } else {
                         // AA edge - blend avatar to background
                         let colour = sample_avatar(avatar_scaled, dx, dy, r, diameter, brighten);
-                        // PROOF: dist2 ∈ (r_inner_inner2, r_inner2], so numerator ∈ [0, diff_inner<<8)
-                        // Division maps to [0, 256), cast to u8 is safe (max 255)
+                        // PROOF: dist2 ∈ (r_inner_inner2, r_inner2], so numerator ∈ [0, diff_inner<<8) Division maps to [0, 256), cast to u8 is safe (max 255)
                         let alpha = (((r_inner2 - dist2) << 8) / diff_inner) as u8;
                         pixels[idx] = blend_rgb_only(pixels[idx], colour, 255 - alpha, alpha);
                     }
@@ -5717,8 +5634,7 @@ impl PhotonApp {
     }
 }
 
-/// Sample avatar texture at offset (dx, dy) from center
-/// Texture is diameter×diameter, centered at (r, r)
+/// Sample avatar texture at offset (dx, dy) from center Texture is diameter×diameter, centered at (r, r)
 #[inline]
 fn sample_avatar(
     avatar_data: Option<&[u8]>,
@@ -5751,9 +5667,7 @@ fn sample_avatar(
     }
 }
 
-// Helper functions for u32 packed pixel manipulation
-// Desktop: ARGB format (0xAARRGGBB)
-// Android: ABGR format (0xAABBGGRR)
+// Helper functions for u32 packed pixel manipulation Desktop: ARGB format (0xAARRGGBB) Android: ABGR format (0xAABBGGRR)
 #[inline]
 #[cfg(not(target_os = "android"))]
 fn pack_argb(r: u8, g: u8, b: u8, a: u8) -> u32 {

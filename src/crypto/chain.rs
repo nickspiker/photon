@@ -45,8 +45,8 @@ pub enum ChainError {
 pub type Result<T> = std::result::Result<T, ChainError>;
 
 // ============================================================================
-// Constants from CHAIN.md Appendix A ============================================================================
 
+// // Constants from CHAIN.md Appendix A ============================================================================
 /// Total links in a chain (512 × 32B = 16KB)
 pub const CHAIN_LINKS: usize = 512;
 
@@ -83,8 +83,8 @@ const CONFIRM_LINK_RANGE: std::ops::Range<usize> = 509..512; // 3 links (96B)
 const SALT_LINK_RANGE: std::ops::Range<usize> = 500..512; // 12 links (384B)
 
 // ============================================================================
-// Chain Structure ============================================================================
 
+// // Chain Structure ============================================================================
 /// 512-link chain (16KB) - one per participant in a friendship
 ///
 /// Layout:
@@ -115,8 +115,7 @@ impl Chain {
 
         let mut links = [[0u8; 32]; CHAIN_LINKS];
 
-        // History [0..256) stays zeros
-        // Active [256..512) gets the CLUTCH-derived bytes
+        // History [0..256) stays zeros Active [256..512) gets the CLUTCH-derived bytes
         for (i, chunk) in bytes.chunks_exact(LINK_SIZE).enumerate() {
             links[HISTORY_LINKS + i].copy_from_slice(chunk);
         }
@@ -182,8 +181,7 @@ impl Chain {
         // Left-shift: everything moves left, oldest drops off [0]
         self.links.copy_within(1..CHAIN_LINKS, 0);
 
-        // Derive fresh link via spaghettify (computationally chaotic)
-        // With bidirectional entropy mixing if their_plaintext is provided
+        // Derive fresh link via spaghettify (computationally chaotic) With bidirectional entropy mixing if their_plaintext is provided
         let fresh_link =
             derive_fresh_link(&eagle_time, our_plaintext, their_plaintext, &self.links);
 
@@ -203,8 +201,8 @@ impl std::fmt::Debug for Chain {
 }
 
 // ============================================================================
-// Salt Derivation (Section 3.0) ============================================================================
 
+// // Salt Derivation (Section 3.0) ============================================================================
 /// Derive salt from previous plaintext and chain state.
 ///
 /// Each message's salt is derived from the previous message's plaintext. This creates a cryptographic chain that forces message ordering.
@@ -219,8 +217,8 @@ pub fn derive_salt(prev_plaintext: &[u8], chain: &Chain) -> [u8; 32] {
 }
 
 // ============================================================================
-// Scratch Pad Generation (Section 4.0) ============================================================================
 
+// // Scratch Pad Generation (Section 4.0) ============================================================================
 /// Generate L1 scratch pad for XOR layer.
 ///
 /// Memory-hard, data-dependent mixing that fits in L1 cache. Uses smear_hash for algorithm diversity.
@@ -262,8 +260,8 @@ pub fn generate_scratch(chain: &Chain, salt: &[u8; 32]) -> Vec<u8> {
 }
 
 // ============================================================================
-// Confirmation Smear (Inner Integrity - Section 5.1) ============================================================================
 
+// // Confirmation Smear (Inner Integrity - Section 5.1) ============================================================================
 /// Generate confirmation smear for inner integrity.
 ///
 /// Chain-bound, encrypted inside the message. Proves possession of chain state. Uses last 3 links (96B) for binding.
@@ -276,8 +274,8 @@ pub fn generate_confirmation_smear(message: &[u8], chain: &Chain) -> [u8; 32] {
 }
 
 // ============================================================================
-// ACK Proof (Section 6.1) ============================================================================
 
+// // ACK Proof (Section 6.1) ============================================================================
 /// Generate ACK proof for message acknowledgment.
 ///
 /// Fast (smear_hash, not spaghettify) - keeps message flow snappy. Domain-separated from fresh_link derivation.
@@ -307,8 +305,8 @@ pub fn verify_ack_proof(
 }
 
 // ============================================================================
-// Chain Advancement (Section 7.1) ============================================================================
 
+// // Chain Advancement (Section 7.1) ============================================================================
 /// Derive fresh link for chain advancement.
 ///
 /// Uses spaghettify for computational chaos (data-dependent ops, IEEE754 weirdness). NOT memory-hard (~1.7KB state) - fast enough for per-message use.
@@ -351,8 +349,8 @@ fn derive_fresh_link(
 }
 
 // ============================================================================
-// ChaCha20 Nonce Derivation ============================================================================
 
+// // ChaCha20 Nonce Derivation ============================================================================
 /// Derive ChaCha20 nonce from Eagle time.
 ///
 /// Uses first 12 bytes of BLAKE3 hash of timestamp.
@@ -363,13 +361,12 @@ pub fn derive_nonce(eagle_time: &EagleTime) -> [u8; 12] {
     nonce
 }
 
-// ============================================================================ 3-Layer Encryption (Section 5.1) ============================================================================
+// ============================================================================
 
+// 3-Layer Encryption (Section 5.1) ============================================================================
 /// Encrypt plaintext using 3-layer encryption.
 ///
-/// Layer 1: Build VSF section (done by caller)
-/// Layer 2: ChaCha20 encryption
-/// Layer 3: XOR with scratch pad
+/// Layer 1: Build VSF section (done by caller) Layer 2: ChaCha20 encryption Layer 3: XOR with scratch pad
 pub fn encrypt_layers(
     plaintext: &[u8],
     chain: &Chain,
@@ -397,9 +394,7 @@ pub fn encrypt_layers(
 
 /// Decrypt ciphertext using 3-layer decryption.
 ///
-/// Layer 3: XOR with scratch pad
-/// Layer 2: ChaCha20 decryption
-/// Layer 1: Parse VSF section (done by caller)
+/// Layer 3: XOR with scratch pad Layer 2: ChaCha20 decryption Layer 1: Parse VSF section (done by caller)
 pub fn decrypt_layers(
     ciphertext: &[u8],
     chain: &Chain,
@@ -471,8 +466,8 @@ pub fn generate_scratch_at_offset(chain: &Chain, salt: &[u8; 32], offset: usize)
 }
 
 // ============================================================================
-// Utility Functions ============================================================================
 
+// // Utility Functions ============================================================================
 /// Constant-time equality comparison
 fn constant_time_eq(a: &[u8; 32], b: &[u8; 32]) -> bool {
     let mut diff = 0u8;
@@ -483,8 +478,8 @@ fn constant_time_eq(a: &[u8; 32], b: &[u8; 32]) -> bool {
 }
 
 // ============================================================================
-// Tests ============================================================================
 
+// // Tests ============================================================================
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -505,8 +500,7 @@ mod tests {
         assert_eq!(chain.link(0).unwrap(), &[0u8; 32]);
         assert_eq!(chain.link(255).unwrap(), &[0u8; 32]);
 
-        // Active [256..512) should have our test data
-        // First active link at [256] has bytes 0..31
+        // Active [256..512) should have our test data First active link at [256] has bytes 0..31
         assert_eq!(chain.link(256).unwrap()[0], 0);
         assert_eq!(chain.link(256).unwrap()[31], 31);
 

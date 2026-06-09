@@ -12,9 +12,7 @@ use std::time::{Duration, Instant};
 
 /// RTT Estimator using TCP-style exponential moving average
 ///
-/// SRTT = (1-α)*SRTT + α*R  where α=0.125
-/// RTTVAR = (1-β)*RTTVAR + β*|SRTT-R|  where β=0.25
-/// RTO = SRTT + 4*RTTVAR
+/// SRTT = (1-α)*SRTT + α*R  where α=0.125 RTTVAR = (1-β)*RTTVAR + β*|SRTT-R|  where β=0.25 RTO = SRTT + 4*RTTVAR
 pub struct RTTEstimator {
     /// Smoothed RTT
     smoothed_rtt: Duration,
@@ -134,21 +132,17 @@ impl WindowController {
         }
     }
 
-    /// Get current window size (for compatibility with FlightTracker)
-    /// In blast phase, return blast_remaining
-    /// After blast, this is effectively unlimited (we use send_ratio instead)
+    /// Get current window size (for compatibility with FlightTracker) In blast phase, return blast_remaining After blast, this is effectively unlimited (we use send_ratio instead)
     pub fn window(&self) -> u32 {
         if self.in_blast_phase {
             self.blast_remaining.max(1)
         } else {
-            // After blast, allow large in-flight count
-            // Real limit is send_ratio controlling new sends
+            // After blast, allow large in-flight count Real limit is send_ratio controlling new sends
             65536
         }
     }
 
-    /// Get number of packets to send for this ACK
-    /// Returns 0 if we shouldn't send (during sweep phase)
+    /// Get number of packets to send for this ACK Returns 0 if we shouldn't send (during sweep phase)
     pub fn packets_per_ack(&mut self) -> u32 {
         if self.in_blast_phase {
             return 0; // Blast phase doesn't use per-ACK sending

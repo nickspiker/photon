@@ -40,8 +40,7 @@ pub struct ContactIdentity {
 }
 
 impl ContactIdentity {
-    /// Derive identity_seed from handle using VSF normalization
-    /// This ensures consistent key derivation regardless of Unicode representation
+    /// Derive identity_seed from handle using VSF normalization This ensures consistent key derivation regardless of Unicode representation
     pub fn identity_seed(&self) -> [u8; 32] {
         derive_identity_seed(&self.handle)
     }
@@ -60,8 +59,7 @@ fn contact_key(their_identity_seed: &[u8; 32], suffix: &str) -> String {
 // ============================================================================
 // Contact List (Index) - Static Identity Data (Schema-validated) ============================================================================
 
-/// Schema for contact_list section
-/// Each contact field contains: (handle_proof: hb, handle: x)
+/// Schema for contact_list section Each contact field contains: (handle_proof: hb, handle: x)
 fn contact_list_schema() -> SectionSchema {
     SectionSchema::new("contact_list")
         // Contact field allows mixed types (hash, string) - use Any
@@ -491,10 +489,7 @@ use crate::types::PartySlot;
 ///
 /// VSF structure (proper multi-value fields):
 /// ```text
-/// [clutch_slots]
-///   (ceremony_id: hb{...})                  // if computed
-///   (provenances: hb{p0}, hb{p1}, ...)     // only if ceremony_id not yet computed
-///   (slot: hb{handle}, u0{offer}, u0{from}, u0{to}, ...data...)  // repeated
+/// [clutch_slots] (ceremony_id: hb{...})                  // if computed (provenances: hb{p0}, hb{p1}, ...)     // only if ceremony_id not yet computed (slot: hb{handle}, u0{offer}, u0{from}, u0{to}, ...data...)  // repeated
 /// ```
 pub fn save_clutch_slots(
     slots: &[PartySlot],
@@ -526,8 +521,7 @@ pub fn save_clutch_slots(
         );
     }
 
-    // Each slot as a repeated "slot" field with multi-value
-    // Format: (slot: hb{handle_hash}, u0{has_offer}, u0{has_from}, u0{has_to}, u0{has_resend}, ...offer_keys..., ...from_secrets..., ...to_secrets..., ...resend_payload...)
+    // Each slot as a repeated "slot" field with multi-value Format: (slot: hb{handle_hash}, u0{has_offer}, u0{has_from}, u0{has_to}, u0{has_resend}, ...offer_keys..., ...from_secrets..., ...to_secrets..., ...resend_payload...)
     for slot in slots {
         let mut values: Vec<VsfType> = Vec::new();
 
@@ -621,10 +615,7 @@ pub struct ClutchCeremonyState {
 ///
 /// Parses VSF structure with multi-value fields (no decimal string prefixes):
 /// ```text
-/// [clutch_slots]
-///   (provenances: hb{p0}, hb{p1}, ...)
-///   (ceremony_id: hb{...})
-///   (slot: hb{handle}, u0{offer}, u0{from}, u0{to}, ...data...)
+/// [clutch_slots] (provenances: hb{p0}, hb{p1}, ...) (ceremony_id: hb{...}) (slot: hb{handle}, u0{offer}, u0{from}, u0{to}, ...data...)
 /// ```
 pub fn load_clutch_slots(
     handle: &str,
@@ -684,8 +675,7 @@ pub fn load_clutch_slots(
         slots.push(slot);
     }
 
-    // Sanity check: ceremony_id requires both parties' provenances to compute
-    // If we have a ceremony_id but fewer than 2 provenances, it's stale (peer reset)
+    // Sanity check: ceremony_id requires both parties' provenances to compute If we have a ceremony_id but fewer than 2 provenances, it's stale (peer reset)
     let ceremony_id = if ceremony_id.is_some() && offer_provenances.len() < 2 {
         #[cfg(feature = "development")]
         crate::log(&format!(
@@ -758,8 +748,7 @@ fn parse_slot_from_values(values: &[VsfType]) -> Result<PartySlot, StorageError>
 
     let mut slot = PartySlot::new(handle_hash);
 
-    // Parse keys and secrets by TYPE MARKER, not position
-    // The type (kx, kf, kn, kl, kh, kk, kp, ks) tells us exactly what it is Start at index 5 (after 5 flags: handle, offer, from, to, resend)
+    // Parse keys and secrets by TYPE MARKER, not position The type (kx, kf, kn, kl, kh, kk, kp, ks) tells us exactly what it is Start at index 5 (after 5 flags: handle, offer, from, to, resend)
     let data_start = 5;
     if has_offer {
         let mut offer = ClutchOfferPayload::default();
@@ -822,8 +811,7 @@ fn parse_slot_from_values(values: &[VsfType]) -> Result<PartySlot, StorageError>
         slot.offer = Some(offer);
     }
 
-    // Parse typed shared secrets (ksx, ksp, ksk, ksf, ksn, ksl, ksh)
-    // Secrets come in groups of 8, first group is "from_them", second is "to_them"
+    // Parse typed shared secrets (ksx, ksp, ksk, ksf, ksn, ksl, ksh) Secrets come in groups of 8, first group is "from_them", second is "to_them"
     if has_from || has_to {
         let secrets: Vec<&VsfType> = values[data_start..]
             .iter()
@@ -1154,8 +1142,7 @@ pub fn load_messages(
         }
     }
 
-    // Sort messages by timestamp (ascending) to ensure correct chronological order
-    // This handles messages that may have been saved before sorted-insert was implemented
+    // Sort messages by timestamp (ascending) to ensure correct chronological order This handles messages that may have been saved before sorted-insert was implemented
     contact.messages.sort_by(|a, b| {
         a.timestamp
             .partial_cmp(&b.timestamp)

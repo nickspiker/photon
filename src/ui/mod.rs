@@ -1,64 +1,30 @@
-// Legacy desktop UI stack — owns the per-platform renderer trio + 5 837-line compositing.rs + 6 081-line app.rs + the four extension impls (mouse, keyboard, text_editing, text_rasterizing). Cfg-gated to Android only as of Phase 0; desktop runs through `photon_app` (the fluor-hosted FluorApp impl) below. Android keeps the legacy stack untouched until fluor grows `host-android`, at which point a separate plan migrates it.
-#[cfg(target_os = "android")]
-pub mod app;
-#[cfg(target_os = "android")]
-mod colour;
-#[cfg(target_os = "android")]
-mod compositing;
-#[cfg(target_os = "android")]
-pub mod drawing;
-#[cfg(target_os = "android")]
-mod keyboard;
-#[cfg(target_os = "android")]
-mod mouse;
-#[cfg(target_os = "android")]
-mod text_editing;
-#[cfg(target_os = "android")]
-mod text_rasterizing;
+// All platforms now share the fluor-hosted UI stack. Phase 3 of the host-android plan: the legacy Android compositor (ui::app, ui::compositing, ui::drawing, ui::keyboard, ui::mouse, ui::text_editing, ui::text_rasterizing, ui::renderer_android) is retired in favour of `photon_app::PhotonApp` running under `fluor::host::android::AndroidShell` on Android and `fluor::host::app::run_app` on desktop.
 
-// `avatar` is shared between Android (legacy stack uses it directly) and desktop (the Phase 2 Avatar widget will wrap its LRU cache). Stays unconditional.
 pub mod avatar;
 pub mod display_profile;
 pub mod lms2006so;
 pub mod state;
 pub mod theme;
 
-// Desktop chromatic wave (sine-modulated visible-spectrum bar). Reads LMS2006SO; writes α + darkness pixels. Android keeps the legacy `draw_spectrum` in `compositing.rs` until the Android port lands.
-#[cfg(not(target_os = "android"))]
+// Chromatic wave (sine-modulated visible-spectrum bar). Reads LMS2006SO; writes α + darkness pixels.
 pub mod chromatic_wave;
 
-// Desktop "Photon" wordmark — port of legacy `compositing.rs::draw_logo_text` with glow + highlight + sharp body in α + darkness format. Oxanium 800.
-#[cfg(not(target_os = "android"))]
+// "Photon" wordmark — port of legacy `compositing.rs::draw_logo_text` with glow + highlight + sharp body in α + darkness format. Oxanium 800.
 pub mod photon_logo;
 
-// Desktop Launch-screen layout calculator — proportional slicing port from legacy `app::Layout::new`.
-#[cfg(not(target_os = "android"))]
+// Launch-screen layout calculator — proportional slicing port from legacy `app::Layout::new`.
 pub mod launch_layout;
 
-// Desktop Ready-screen layout calculator — slice-based port of legacy `app::ContactsUnifiedLayout`.
-#[cfg(not(target_os = "android"))]
+// Ready-screen layout calculator — slice-based port of legacy `app::ContactsUnifiedLayout`.
 pub mod ready_layout;
 
 pub use state::{AppState, FoundPeer, LaunchState, SearchResult};
 
-// Android renderer survives until fluor grows host-android. Renderer trio for desktop (linux_softbuffer / linux_wgpu / windows / macos / macos_softbuffer / redox) is gated below the Android-only block since they were only consumed by the legacy `app::PhotonApp`.
-#[cfg(target_os = "android")]
-pub mod renderer_android;
-
-#[cfg(all(target_os = "android"))]
-pub use renderer_android as renderer;
-
-#[cfg(target_os = "android")]
-pub use app::PhotonApp;
-
-// Desktop (everything except Android): the fluor-hosted `FluorApp` impl. Phase 0c scaffold renders chrome + blank inside; Phase 1+ rebuilds each screen as widgets.
-#[cfg(not(target_os = "android"))]
+// The fluor-hosted `FluorApp` impl. Drives desktop via `host-winit` and Android via `host-android`.
 pub mod photon_app;
-#[cfg(not(target_os = "android"))]
 pub use photon_app::PhotonApp;
 
-/// Custom events for cross-thread communication with the event loop. Wired through `FluorApp::on_user_event` on desktop (background tasks clone the `EventLoopProxy<PhotonEvent>` from `PhotonApp::set_event_proxy` and call `send_event` to wake the UI thread); Android uses its own JNI bridge.
-#[cfg(not(target_os = "android"))]
+/// Custom events for cross-thread communication with the event loop. On desktop, background tasks clone the `EventLoopProxy<PhotonEvent>` from `PhotonApp::set_event_proxy` and call `send_event` to wake the UI thread; on Android the same proxy type exists (data-only) but background work pokes the activity via JNI callbacks instead — the variants stay shared so the FluorApp::on_user_event handler is the same code on both platforms.
 #[derive(Debug, Clone)]
 pub enum PhotonEvent {
     /// FGTW connectivity status changed

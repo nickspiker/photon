@@ -85,10 +85,7 @@ impl PhotonApp {
             return;
         }
 
-        // Apply Y offset for scroll - skip only if textbox is completely off-screen
-        // WHY: Text can be partially visible when center is near edge
-        // PROOF: Glyph rendering clips per-pixel, so partial visibility is safe
-        // PREVENTS: Early return when text is still partially visible
+        // Apply Y offset for scroll - skip only if textbox is completely off-screen WHY: Text can be partially visible when center is near edge PROOF: Glyph rendering clips per-pixel, so partial visibility is safe PREVENTS: Early return when text is still partially visible
         let render_y_isize = layout.center_y as isize + y_offset;
         let height = pixels.len() / window_width;
         let half_h = (layout.box_height / 2) as isize;
@@ -155,8 +152,7 @@ impl PhotonApp {
         let usable_half = (layout.usable_width / 2) as f32;
         let text_half = (total_text_width / 2) as f32;
 
-        // First: clamp scroll so text doesn't leave empty space
-        // Max scroll right (negative): right edge of text at right margin
+        // First: clamp scroll so text doesn't leave empty space Max scroll right (negative): right edge of text at right margin
         let max_scroll_right = usable_half - margin - text_half;
         // Max scroll left (positive): left edge of text at left margin
         let max_scroll_left = text_half - usable_half + margin;
@@ -180,8 +176,7 @@ impl PhotonApp {
         self.current_text_state.scroll_offset != old_offset
     }
 
-    /// Update scroll offset during selection drag (called every frame)
-    /// Returns true if scroll was modified and a redraw is needed
+    /// Update scroll offset during selection drag (called every frame) Returns true if scroll was modified and a redraw is needed
     pub fn update_selection_scroll(&mut self) -> bool {
         if !self.current_text_state.textbox_focused || self.current_text_state.chars.is_empty() {
             return false;

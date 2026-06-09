@@ -248,8 +248,7 @@ impl PTAck {
 
     /// Serialize to VSF bytes (header-only, ~50 bytes)
     ///
-    /// Format: RÅ< ... hp[chunk_hash] n1 (pt_ack:u#{sid},u#{seq}) >
-    /// The provenance hash IS the chunk hash - proving correct receipt.
+    /// Format: RÅ< ... hp[chunk_hash] n1 (pt_ack:u#{sid},u#{seq}) > The provenance hash IS the chunk hash - proving correct receipt.
     #[allow(dead_code)]
     pub fn to_vsf_bytes(&self, _keypair: &Keypair) -> Vec<u8> {
         use vsf::{VsfBuilder, VsfType};

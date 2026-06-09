@@ -10,7 +10,9 @@ use super::photon_logo::paint_photon_logo;
 use super::ready_layout::ReadyLayout;
 use super::state::{AppState, LaunchState};
 use super::PhotonEvent;
-use crate::network::fgtw::{derive_device_keypair, get_machine_fingerprint, PeerStore};
+use crate::network::fgtw::{derive_device_keypair, PeerStore};
+#[cfg(not(target_os = "android"))]
+use crate::network::fgtw::get_machine_fingerprint;
 use crate::network::{HandleQuery, QueryResult};
 use fluor::canvas::{Canvas, PixelRect};
 use fluor::coord::Coord;
@@ -115,27 +117,15 @@ pub struct PhotonApp {
     last_chord_held: bool,
     /// Attested handle, set on `QueryResult::Success`. Used by the Ready screen for the optional handle label below the avatar (gated by user settings — defaults off for security). `None` while the user is still on Launch.
     attested_handle: Option<String>,
-    /// True when the dual-ring vault flagged a damaged ring on open this session.
-    /// Drives the persistent amber banner on the Ready screen. Sticky for the session.
+    /// True when the dual-ring vault flagged a damaged ring on open this session. Drives the persistent amber banner on the Ready screen. Sticky for the session.
     vault_degraded: bool,
-    /// FGTW connectivity state — flipped by `HandleQuery::try_recv_online`. Drives the
-    /// top-left chrome orb's colour (red offline / green online). Starts false; the
-    /// background worker reports the first real status within the first second of launch.
+    /// FGTW connectivity state — flipped by `HandleQuery::try_recv_online`. Drives the top-left chrome orb's colour (red offline / green online). Starts false; the background worker reports the first real status within the first second of launch.
     online: bool,
-    /// Contacts-page handle search/add textbox (Ready state). Distinct from `textbox` so
-    /// content doesn't bleed between Launch (handle being attested) and Ready (handle
-    /// being added as a contact).
+    /// Contacts-page handle search/add textbox (Ready state). Distinct from `textbox` so content doesn't bleed between Launch (handle being attested) and Ready (handle being added as a contact).
     contacts_textbox: Option<Textbox>,
-    /// Plus button to the right of `contacts_textbox` — clicking it (or pressing Enter
-    /// in the textbox) triggers the add-contact flow (`HandleQuery::search`). Will
-    /// eventually carry an idle "+" glyph and an in-progress rotating-hourglass
-    /// animation (legacy port from `compositing.rs`); that lands when `ProgressButton`
-    /// gets extracted to fluor.
+    /// Plus button to the right of `contacts_textbox` — clicking it (or pressing Enter in the textbox) triggers the add-contact flow (`HandleQuery::search`). Will eventually carry an idle "+" glyph and an in-progress rotating-hourglass animation (legacy port from `compositing.rs`); that lands when `ProgressButton` gets extracted to fluor.
     contacts_plus_btn: Option<Button>,
-    /// In-memory contact list. Populated from `AttestationData.contacts` on attestation
-    /// success and grown by `submit_add_friend` → `HandleQuery::search` results.
-    /// Persistence (FlatStorage write on add) + rendering as scrollable rows below the
-    /// search box land in subsequent slices.
+    /// In-memory contact list. Populated from `AttestationData.contacts` on attestation success and grown by `submit_add_friend` → `HandleQuery::search` results. Persistence (FlatStorage write on add) + rendering as scrollable rows below the search box land in subsequent slices.
     contacts: Vec<crate::types::Contact>,
 }
 
@@ -173,13 +163,9 @@ impl PhotonApp {
     }
 }
 
-/// Map a connectivity bool to the chrome orb tint. Offline = red disk, online = green
-/// disk. Visible RGB chosen for high contrast in either light or dark chrome themes;
-/// brighten=true on the online state for the eventual icon-overlay case (no-icon today
-/// just renders as a solid coloured circle).
+/// Map a connectivity bool to the chrome orb tint. Offline = red disk, online = green disk. Visible RGB chosen for high contrast in either light or dark chrome themes; brighten=true on the online state for the eventual icon-overlay case (no-icon today just renders as a solid coloured circle).
 fn orb_tint_for(online: bool) -> fluor::host::chrome::OrbTint {
-    // Visible RGB(64, 224, 64) green: darkness = (0xBF, 0x1F, 0xBF); packed α=0xFF.
-    // Visible RGB(224, 64, 64) red:   darkness = (0x1F, 0xBF, 0xBF); packed α=0xFF.
+    // Visible RGB(64, 224, 64) green: darkness = (0xBF, 0x1F, 0xBF); packed α=0xFF. Visible RGB(224, 64, 64) red:   darkness = (0x1F, 0xBF, 0xBF); packed α=0xFF.
     const ORB_ONLINE: u32 = 0xFF_BF_1F_BF;
     const ORB_OFFLINE: u32 = 0xFF_1F_BF_BF;
     fluor::host::chrome::OrbTint::Custom {
@@ -194,8 +180,7 @@ impl Default for PhotonApp {
     }
 }
 
-/// Walk the (currently chrome-only) widget tree. Once Phase 1+ adds the launch screen widgets (logo, spectrograph, handle textbox), they yield BEFORE chrome — same ordering convention as fluor's panes example: content first, chrome last, matching macOS / GNOME tab traversal.
-/// Widget tree visit order: launch-screen content (textbox → attest button) FIRST, then chrome's four buttons. Matches macOS / GNOME convention where Tab traverses form fields before window-frame controls. `linear_tab_next` reads this order off the visit walk; `dispatch_click` / `dispatch_key` use it to route events by id. Container-impl on widgets the Launch screen doesn't own (Ready/Searching/Conversation widgets, when they land) gates on `state` so off-screen widgets neither hit-test nor cycle.
+/// Walk the (currently chrome-only) widget tree. Once Phase 1+ adds the launch screen widgets (logo, spectrograph, handle textbox), they yield BEFORE chrome — same ordering convention as fluor's panes example: content first, chrome last, matching macOS / GNOME tab traversal. Widget tree visit order: launch-screen content (textbox → attest button) FIRST, then chrome's four buttons. Matches macOS / GNOME convention where Tab traverses form fields before window-frame controls. `linear_tab_next` reads this order off the visit walk; `dispatch_click` / `dispatch_key` use it to route events by id. Container-impl on widgets the Launch screen doesn't own (Ready/Searching/Conversation widgets, when they land) gates on `state` so off-screen widgets neither hit-test nor cycle.
 impl Container for PhotonApp {
     fn visit(&mut self, f: &mut dyn FnMut(&mut dyn Widget)) {
         if matches!(self.state, AppState::Launch(_)) {
@@ -295,10 +280,24 @@ impl FluorApp for PhotonApp {
             .event_proxy
             .as_ref()
             .expect("event_proxy must be set before init (host contract)");
+        #[cfg(not(target_os = "android"))]
         let fingerprint = get_machine_fingerprint()
             .expect("device-key derivation: machine fingerprint unavailable");
+        // Android derives the device fingerprint via JNI in PhotonConnectionService and
+        // hands it through the NetworkContext path; the AndroidShell-side wiring will
+        // surface that to PhotonApp once `PhotonApp::new(network)` lands. Until then the
+        // Android branch falls back to a placeholder so the build links — the actual
+        // value gets replaced by the real fingerprint in the next slice.
+        #[cfg(target_os = "android")]
+        let fingerprint: Vec<u8> = vec![0u8; 32];
         let keypair = derive_device_keypair(&fingerprint);
+        #[cfg(not(target_os = "android"))]
         let hq = HandleQuery::new(keypair, proxy.clone());
+        #[cfg(target_os = "android")]
+        let hq = {
+            let _ = proxy;
+            HandleQuery::new(keypair)
+        };
         let peer_store = Arc::new(Mutex::new(PeerStore::new()));
         hq.set_transport(peer_store);
         self.handle_query = Some(hq);
@@ -753,9 +752,7 @@ impl FluorApp for PhotonApp {
         let text = &mut *ctx.text;
         // Bg-first compose chain (matches legacy `compositing.rs` exactly): noise paints opaque, the wave reads it for the `sqrt(c*scale + c_bg²)` blend, then the logo (glow / body / highlight) paints over both via legacy visible-RGB ops. Each step preserves α on the pixels it touches. The wave + logo are Launch-screen chrome — once attested the user shouldn't be staring at the wordmark every time they open the app, so Ready / Searching / Conversation get just the background noise and let their own widgets own the canvas.
         let on_launch = matches!(self.state, AppState::Launch(_));
-        // Swap the noise base colour to BG_BASE_WARNING when the dual-ring vault flagged degraded
-        // this session — the noise pass already runs every frame so this changes a colour, not the
-        // pass count. None on the happy path keeps the default green-dark base from theme.rs.
+        // Swap the noise base colour to BG_BASE_WARNING when the dual-ring vault flagged degraded this session — the noise pass already runs every frame so this changes a colour, not the pass count. None on the happy path keeps the default green-dark base from theme.rs.
         let bg_base = if self.vault_degraded {
             Some(crate::ui::theme::BG_BASE_WARNING)
         } else {
@@ -869,15 +866,9 @@ impl FluorApp for PhotonApp {
             const AVATAR_PLACEHOLDER: u32 = 0xFF_C5_C5_C5;
             paint::draw_circle(&mut canvas, cx, cy, radius, AVATAR_PLACEHOLDER, None);
 
-            // Contacts-page textbox + plus button. The plus button is OVERLAID inside
-            // the textbox right edge (legacy pattern) and ONLY rendered when the textbox
-            // has content — empty textbox shows no button.
+            // Contacts-page textbox + plus button. The plus button is OVERLAID inside the textbox right edge (legacy pattern) and ONLY rendered when the textbox has content — empty textbox shows no button.
             //
-            // Under-blend semantics ("topmost paints first; later opaque dst wins"):
-            // paint the button FIRST so it's visually topmost, then the textbox under
-            // it. Textbox::render_content_into stamps hit_test_map unconditionally over
-            // its entire bbox, so after the textbox runs we re-stamp the button's bbox
-            // with the button's hit_id to recover correct click dispatch in the overlap.
+            // Under-blend semantics ("topmost paints first; later opaque dst wins"): paint the button FIRST so it's visually topmost, then the textbox under it. Textbox::render_content_into stamps hit_test_map unconditionally over its entire bbox, so after the textbox runs we re-stamp the button's bbox with the button's hit_id to recover correct click dispatch in the overlap.
             let plus_visible = self
                 .contacts_textbox
                 .as_ref()
@@ -918,10 +909,7 @@ impl FluorApp for PhotonApp {
                 restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, x0, y0, x1, y1, btn_id);
             }
 
-            // Persistent degraded-vault indicator: amber text at the bottom. The
-            // matching warm background tint already lives in the noise pass above (we
-            // swap BG_BASE → BG_BASE_WARNING) so we add no extra render pass here, just
-            // the text glyph. Full details live in the README.
+            // Persistent degraded-vault indicator: amber text at the bottom. The matching warm background tint already lives in the noise pass above (we swap BG_BASE → BG_BASE_WARNING) so we add no extra render pass here, just the text glyph. Full details live in the README.
             if self.vault_degraded {
                 // Visible RGB(255, 140, 0) amber. Packed: α=0xFF | darkness = (0x00, 0x73, 0xFF).
                 const DEGRADED_TEXT: u32 = 0xFF_00_73_FF;
@@ -1046,12 +1034,7 @@ impl PhotonApp {
             btn.set_font_size(font_size);
         }
 
-        // Contacts-page widgets: textbox takes the full ReadyLayout textbox slot; the
-        // plus button is OVERLAID inside the textbox's right edge (legacy compositing.rs
-        // pattern). Button size = 7/8 textbox height, inset from the right by 1/16 of
-        // the textbox height — same proportions as the legacy `tl.box_height * 7/8` /
-        // `tl.box_height / 16`. Same font_size as the launch widgets so zoom feels
-        // consistent across screens.
+        // Contacts-page widgets: textbox takes the full ReadyLayout textbox slot; the plus button is OVERLAID inside the textbox's right edge (legacy compositing.rs pattern). Button size = 7/8 textbox height, inset from the right by 1/16 of the textbox height — same proportions as the legacy `tl.box_height * 7/8` / `tl.box_height / 16`. Same font_size as the launch widgets so zoom feels consistent across screens.
         let ready_layout = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru);
         let slot = ready_layout.textbox;
         let slot_x0 = slot.x0 as f32;
@@ -1074,13 +1057,7 @@ impl PhotonApp {
         }
     }
 
-    /// Submit the contacts-page textbox contents as an FGTW handle search. Called from
-    /// Enter in `contacts_textbox` and from clicking `contacts_plus_btn`. Bails on
-    /// empty input, on no `HandleQuery` available (init failure path), and on a search
-    /// for the user's own attested handle (would just find their own device — no point).
-    /// Successful Found results land in `tick()`'s drain loop and append to
-    /// `self.contacts`. Persistence + UI transition into a search-in-flight visual
-    /// state (the rotating-hourglass plus button) ride in subsequent slices.
+    /// Submit the contacts-page textbox contents as an FGTW handle search. Called from Enter in `contacts_textbox` and from clicking `contacts_plus_btn`. Bails on empty input, on no `HandleQuery` available (init failure path), and on a search for the user's own attested handle (would just find their own device — no point). Successful Found results land in `tick()`'s drain loop and append to `self.contacts`. Persistence + UI transition into a search-in-flight visual state (the rotating-hourglass plus button) ride in subsequent slices.
     fn submit_add_friend(&mut self) {
         let handle: String = match self.contacts_textbox.as_ref() {
             Some(tb) => tb.chars.iter().collect(),
@@ -1197,10 +1174,7 @@ impl PhotonApp {
                     self.contacts.len() + 1
                 ));
                 self.contacts.push(contact);
-                // Textbox clearing post-search would be nice UX but Textbox has no public
-                // `clear` method yet — the user can select-all+delete or backspace. Punted
-                // to a fluor follow-up: either add `Textbox::clear` or a "consume submit"
-                // option that auto-clears on successful submit.
+                // Textbox clearing post-search would be nice UX but Textbox has no public `clear` method yet — the user can select-all+delete or backspace. Punted to a fluor follow-up: either add `Textbox::clear` or a "consume submit" option that auto-clears on successful submit.
             }
             SearchResult::NotFound => {
                 crate::log("search-result: handle not found on FGTW");
@@ -1353,10 +1327,7 @@ fn rect_center_dims(r: PixelRect) -> (Coord, Coord, Coord, Coord) {
     (cx, cy, w, h)
 }
 
-/// Bounding box of a [`Button`]'s pill rect in pixel coords, returned as
-/// `(x0, y0, x1, y1)`. Used by the overlay re-stamp pass for the contacts-page plus
-/// button — see the `render` flow where the button paints topmost but its hit stamp
-/// gets clobbered by the textbox painting under it.
+/// Bounding box of a [`Button`]'s pill rect in pixel coords, returned as `(x0, y0, x1, y1)`. Used by the overlay re-stamp pass for the contacts-page plus button — see the `render` flow where the button paints topmost but its hit stamp gets clobbered by the textbox painting under it.
 fn button_bbox(btn: &Button) -> (isize, isize, isize, isize) {
     let half_w = btn.width * 0.5;
     let half_h = btn.height * 0.5;
@@ -1367,13 +1338,7 @@ fn button_bbox(btn: &Button) -> (isize, isize, isize, isize) {
     (x0, y0, x1, y1)
 }
 
-/// Stamp `hit_id` over every pixel in `[x0, x1) × [y0, y1)` of `hit_map`. Used to
-/// reclaim hit-test coverage for a widget that paints visually on top of another
-/// but whose hit stamps were overwritten by the under-blend partner's later stamping
-/// pass (the contacts-page plus button overlaid inside the textbox). Bbox over-stamp
-/// — corners outside the pill silhouette claim a few extra pixels, which dispatches
-/// those clicks to the button. Acceptable UX since the area is tiny and inside the
-/// pill anyway.
+/// Stamp `hit_id` over every pixel in `[x0, x1) × [y0, y1)` of `hit_map`. Used to reclaim hit-test coverage for a widget that paints visually on top of another but whose hit stamps were overwritten by the under-blend partner's later stamping pass (the contacts-page plus button overlaid inside the textbox). Bbox over-stamp — corners outside the pill silhouette claim a few extra pixels, which dispatches those clicks to the button. Acceptable UX since the area is tiny and inside the pill anyway.
 fn restamp_hit_rect(
     hit_map: &mut [HitId],
     buf_w: usize,

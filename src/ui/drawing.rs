@@ -37,9 +37,7 @@ pub fn draw_background_texture(
     rows.par_chunks_mut(width)
         .enumerate()
         .for_each(|(row_idx, row_pixels)| {
-            // WHY: Scroll offset shifts which logical row this screen row represents
-            // PROOF: Adding scroll_offset to row index makes texture scroll with content
-            // PREVENTS: Background staying static while content scrolls
+            // WHY: Scroll offset shifts which logical row this screen row represents PROOF: Adding scroll_offset to row index makes texture scroll with content PREVENTS: Background staying static while content scrolls
             let logical_row = (row_start + row_idx) as isize - scroll_offset;
             draw_background_row(
                 row_pixels,
@@ -83,9 +81,7 @@ fn draw_background_row(
     x_end: usize,
     speckle: usize,
 ) {
-    // WHY: logical_row can be negative when scrolled, use wrapping for RNG seed
-    // PROOF: wrapping_sub produces consistent hash for any scroll position
-    // PREVENTS: Different behavior for negative vs positive row indices
+    // WHY: logical_row can be negative when scrolled, use wrapping for RNG seed PROOF: wrapping_sub produces consistent hash for any scroll position PREVENTS: Different behavior for negative vs positive row indices
     let mut rng: usize = (0xDEADBEEF01234567)
         ^ ((logical_row as usize)
             .wrapping_sub(height / 2)

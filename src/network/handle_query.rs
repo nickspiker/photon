@@ -30,18 +30,14 @@ pub struct AttestationData {
     pub friendships: Vec<(crate::types::friendship::FriendshipId, crate::types::friendship::FriendshipChains)>,
     pub avatar_pixels: Option<Vec<u8>>,  // Local avatar if exists
     pub peers: Vec<PeerRecord>,
-    /// True if FlatStorage detected a damaged ring during open this session (missing,
-    /// permission-denied, corrupt, or HMAC-bad). UI renders a persistent degraded
-    /// banner when true. Sticky for the session — only clears on next process restart
-    /// after both rings open cleanly.
+    /// True if FlatStorage detected a damaged ring during open this session (missing, permission-denied, corrupt, or HMAC-bad). UI renders a persistent degraded banner when true. Sticky for the session — only clears on next process restart after both rings open cleanly.
     pub vault_degraded: bool,
 }
 
 /// Result of a handle query
 #[derive(Debug, Clone)]
 pub enum QueryResult {
-    /// Successfully attested/registered, with all data pre-loaded in background
-    /// This includes contacts, friendships, avatar - everything needed to flip to Ready state
+    /// Successfully attested/registered, with all data pre-loaded in background This includes contacts, friendships, avatar - everything needed to flip to Ready state
     Success(Box<AttestationData>),
     AlreadyAttested(PeerRecord), // Handle is claimed by another device
     Error(String),               // Error during attestation
@@ -75,8 +71,7 @@ pub struct HandleQuery {
     port: Arc<Mutex<u16>>,
 }
 
-/// Bind UDP socket - tries ports in order: 4383 → 3546 → ephemeral
-/// Returns (socket, port) - must have both UDP and TCP free on chosen port
+/// Bind UDP socket - tries ports in order: 4383 → 3546 → ephemeral Returns (socket, port) - must have both UDP and TCP free on chosen port
 fn bind_photon_socket() -> (UdpSocket, u16) {
     let ports_to_try = [crate::PHOTON_PORT, crate::PHOTON_PORT_FALLBACK];
 
@@ -664,18 +659,9 @@ impl HandleQuery {
                     thread::sleep(Duration::from_millis(100));
                 };
 
-                // Local-peer-store-only lookup. The previous fall-through to
-                // `load_bootstrap_peers` re-issued an FGTW announce with a different
-                // handle_proof but this device's keypair — FGTW correctly rejects that
-                // as "handle mismatch" (a device may only own ONE handle). Searching
-                // for another peer needs either an FGTW query endpoint (not yet
-                // implemented) or a freshly-pulled peer list. For now we rely on the
-                // peer store populated by THIS device's own attestation response (which
-                // includes the FGTW-wide peer list).
+                // Local-peer-store-only lookup. The previous fall-through to `load_bootstrap_peers` re-issued an FGTW announce with a different handle_proof but this device's keypair — FGTW correctly rejects that as "handle mismatch" (a device may only own ONE handle). Searching for another peer needs either an FGTW query endpoint (not yet implemented) or a freshly-pulled peer list. For now we rely on the peer store populated by THIS device's own attestation response (which includes the FGTW-wide peer list).
                 //
-                // Caveat: if the searched peer registered AFTER our last announce, we
-                // won't see them until a re-announce / refresh. A periodic re-announce
-                // task lands when the rest of the find/talk flow is fleshed out.
+                // Caveat: if the searched peer registered AFTER our last announce, we won't see them until a re-announce / refresh. A periodic re-announce task lands when the rest of the find/talk flow is fleshed out.
                 let peer_store = transport_arc;
                 let store = peer_store.lock().unwrap();
                 let peers = store.get_devices_for_handle(&handle_proof);
