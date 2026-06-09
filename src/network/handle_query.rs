@@ -491,13 +491,16 @@ impl HandleQuery {
                         let device_secret_bytes = *keypair.secret.as_bytes();
                         let identity_seed = crate::storage::contacts::derive_identity_seed(&handle);
 
-                        // Dev-mode tap so `vaultinfo` can decrypt this session's vault end-to-end. Logged at the same point in the flow the values themselves come into existence so it's obvious from the trace which run produced which keys. Spaces around `=` so double-clicking the hex in a terminal selects only the value (without spaces, bash word-selection picks up the `name=hex` glob and vaultinfo rejects the non-hex prefix). Never enabled in release builds.
+                        // Dev-mode tap so `vaultinfo` can decrypt this session's vault end-to-end. Logged at the same point in the flow the values themselves come into existence so it's obvious from the trace which run produced which keys. Spaces around `=` so double-clicking the value in a terminal selects only the encoded token. Values printed in voca FULL (PascalCase word concatenation, ~22 words for a 32-byte key) — denser than hex on the page, copy-pasteable as one token, and reads aloud cleanly. `vaultinfo` auto-detects voca vs hex on input. Never enabled in release builds.
                         #[cfg(feature = "development")]
-                        crate::log(&format!(
-                            "Development: identity_seed = {}  device_secret = {}",
-                            hex::encode(identity_seed),
-                            hex::encode(device_secret_bytes),
-                        ));
+                        {
+                            use num_bigint::BigUint;
+                            crate::log(&format!(
+                                "Development: identity_seed = {}  device_secret = {}",
+                                voca::encode(BigUint::from_bytes_be(&identity_seed)),
+                                voca::encode(BigUint::from_bytes_be(&device_secret_bytes)),
+                            ));
+                        }
 
                         // Initialize FlatStorage for this session
                         let storage = match crate::storage::FlatStorage::new(identity_seed, device_secret_bytes) {
@@ -661,11 +664,21 @@ impl HandleQuery {
                     thread::sleep(Duration::from_millis(100));
                 };
 
-                // Check local peer store first
+                // Local-peer-store-only lookup. The previous fall-through to
+                // `load_bootstrap_peers` re-issued an FGTW announce with a different
+                // handle_proof but this device's keypair — FGTW correctly rejects that
+                // as "handle mismatch" (a device may only own ONE handle). Searching
+                // for another peer needs either an FGTW query endpoint (not yet
+                // implemented) or a freshly-pulled peer list. For now we rely on the
+                // peer store populated by THIS device's own attestation response (which
+                // includes the FGTW-wide peer list).
+                //
+                // Caveat: if the searched peer registered AFTER our last announce, we
+                // won't see them until a re-announce / refresh. A periodic re-announce
+                // task lands when the rest of the find/talk flow is fleshed out.
                 let peer_store = transport_arc;
                 let store = peer_store.lock().unwrap();
                 let peers = store.get_devices_for_handle(&handle_proof);
-
                 let result = if let Some(peer) = peers.first() {
                     SearchResult::Found(FoundPeer {
                         handle: HandleText::new(&handle),
@@ -674,41 +687,9 @@ impl HandleQuery {
                         ip: peer.ip,
                     })
                 } else {
-                    drop(store);
-
-                    // Query FGTW
-                    let bootstrap_result = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .expect("Failed to create tokio runtime")
-                        .block_on(load_bootstrap_peers(
-                            &keypair,
-                            handle_proof,
-                            crate::PHOTON_PORT,
-                            &handle,
-                        ));
-
-                    // Add found peers to store
-                    if !bootstrap_result.peers.is_empty() {
-                        let mut store = peer_store.lock().unwrap();
-                        for peer in &bootstrap_result.peers {
-                            store.add_peer(peer.clone());
-                        }
-                    }
-
-                    if let Some(error) = bootstrap_result.error {
-                        SearchResult::Error(error)
-                    } else if let Some(peer) = bootstrap_result.peers.first() {
-                        SearchResult::Found(FoundPeer {
-                            handle: HandleText::new(&handle),
-                            handle_proof,
-                            device_pubkey: peer.device_pubkey.clone(),
-                            ip: peer.ip,
-                        })
-                    } else {
-                        SearchResult::NotFound
-                    }
+                    SearchResult::NotFound
                 };
+                drop(store);
 
                 let _ = tx.send(result);
             }
