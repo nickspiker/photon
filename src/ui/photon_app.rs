@@ -130,6 +130,8 @@ pub struct PhotonApp {
     contacts: Vec<crate::types::Contact>,
     /// Device keypair injected externally (Android: from `NetworkContext` via `set_device_keypair` before `init`). When `Some`, `init` uses it directly; when `None`, `init` derives a fresh keypair from `get_machine_fingerprint` (desktop path). Android MUST set this before `init` runs — leaving it `None` on Android would silently downgrade to a zeroed placeholder keypair, which would be a critical key-derivation failure.
     device_keypair: Option<crate::network::fgtw::Keypair>,
+    /// One-shot Android soft-keyboard request. `change_focus` sets `Some(true)` when focus enters a textbox and `Some(false)` when it leaves; `wants_keyboard` returns and clears the value. The Activity reads the JNI signal after each touch and calls `InputMethodManager.show/hide` accordingly. Stays `None` on idle frames so the Activity doesn't churn the IME.
+    pending_keyboard_request: Option<bool>,
 }
 
 impl PhotonApp {
@@ -163,6 +165,7 @@ impl PhotonApp {
             contacts_plus_btn: None,
             contacts: Vec::new(),
             device_keypair: None,
+            pending_keyboard_request: None,
         }
     }
 
@@ -229,6 +232,11 @@ impl FluorApp for PhotonApp {
         (w, h)
     }
 
+    fn wants_keyboard(&mut self) -> Option<bool> {
+        // Return the one-shot keyboard transition set by `change_focus` and clear it so subsequent polls see `None` until focus moves again — keeps the Android Activity from calling `InputMethodManager.show/hide` every frame.
+        self.pending_keyboard_request.take()
+    }
+
     fn set_event_proxy(&mut self, proxy: Arc<dyn WakeSender<Self::UserEvent>>) {
         self.event_proxy = Some(proxy);
     }
@@ -256,6 +264,13 @@ impl FluorApp for PhotonApp {
             None,
             &mut self.hit_counter,
         );
+        // Android: full-screen surface owns the whole display, so drop the desktop window chrome — no perimeter hairline, no top-right min/max/close buttons. Keeps the orb (connectivity indicator) on the top-left. set_full_edge skips draw_window_edges_and_mask; the `DEBUG_SKIP_CONTROLS` flag (also used by the desktop `[]l` chord) gates the controls-strip rasterization, so flipping it once at startup persistently suppresses the strip on Android.
+        #[cfg(target_os = "android")]
+        {
+            chrome.set_full_edge(true);
+            fluor::paint::DEBUG_SKIP_CONTROLS
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
         // Top-left orb's ring doubles as the FGTW connectivity indicator (port of the legacy compositing.rs connectivity dot). Initialize red/offline; `try_recv_online` flips to green once the FGTW reports the device is reachable.
         chrome.set_orb_tint(orb_tint_for(false));
         self.chrome = Some(chrome);
@@ -777,8 +792,13 @@ impl FluorApp for PhotonApp {
         } else {
             None
         };
+        // `fullscreen` controls the 1-pixel inset around the noise: on desktop we leave a 1-px ring for the window perimeter / shadow band so the noise doesn't draw under the chrome's edge stroke; on Android (fullscreen surface, no chrome edges, no shadow) we paint right to the screen edge or you get a 1-px white frame.
+        #[cfg(target_os = "android")]
+        let bg_fullscreen = true;
+        #[cfg(not(target_os = "android"))]
+        let bg_fullscreen = false;
         chrome.rasterize_bg(ctx.damage, |canvas| {
-            paint::background_noise(canvas, shimmer, false, scroll_offset, None, bg_base);
+            paint::background_noise(canvas, shimmer, bg_fullscreen, scroll_offset, None, bg_base);
             if on_launch {
                 chromatic_wave(canvas, spectrum_rect, phase, period_scale);
                 paint_photon_logo(canvas, text, logo_rect);
@@ -1204,17 +1224,35 @@ impl PhotonApp {
         }
     }
 
-    /// Apply a focus change: update `self.focused`, then walk the widget tree via `apply_focus_change` so the old + new widgets fire `set_focused(false/true)` and mark their caches dirty. Returns `true` if anything changed (caller decides whether to request a redraw — most callers do).
+    /// Apply a focus change: update `self.focused`, then walk the widget tree via `apply_focus_change` so the old + new widgets fire `set_focused(false/true)` and mark their caches dirty. Returns `true` if anything changed (caller decides whether to request a redraw — most callers do). Also drops a one-shot Android keyboard-show/hide request when focus enters or leaves a textbox; the Activity reads it via `FluorApp::wants_keyboard` after each touch and raises / dismisses the soft IME accordingly.
     fn change_focus(&mut self, new: Option<HitId>) -> bool {
         if new == self.focused {
             return false;
         }
         let old = self.focused;
+        let was_textbox = self.is_textbox(old);
+        let is_textbox = self.is_textbox(new);
+        if was_textbox != is_textbox {
+            self.pending_keyboard_request = Some(is_textbox);
+        }
         self.focused = new;
         widget::apply_focus_change(self, old, new);
         // Restart blink so the cursor lands solid on the newly-focused textbox instead of mid-cycle dark. `start` resets the phase to the start of the visible half whether the timer was already running or not.
         self.blink_timer.start(Instant::now());
         true
+    }
+
+    /// True iff `id` belongs to one of photon's textboxes (launch handle textbox or contacts search textbox). Used by `change_focus` to detect focus transitions into / out of a text-input target so the Android IME show/hide signal can be triggered.
+    fn is_textbox(&self, id: Option<HitId>) -> bool {
+        let Some(id) = id else {
+            return false;
+        };
+        self.textbox.as_ref().map(|t| t.hit_id()) == Some(id)
+            || self
+                .contacts_textbox
+                .as_ref()
+                .map(|t| t.hit_id())
+                == Some(id)
     }
 
     /// True iff both `[` and `]` are currently held. A bracket is "held" if its press timestamp is more recent than its release timestamp, OR the release was within [`CHORD_RELEASE_GRACE`] — that grace absorbs X11's habit of firing a synthetic Release for a held key the instant another key is pressed.
