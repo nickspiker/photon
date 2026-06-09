@@ -887,8 +887,7 @@ impl Layout {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-// `AppState`, `LaunchState`, `FoundPeer`, `SearchResult` moved to `super::state` in Phase 0e — non-ui crates (`network::handle_query`, `platform::jni_android`) need these without depending on the cfg-gated legacy `app` module.
+// `AppState`, `LaunchState`, `FoundPeer`, `SearchResult` moved to `super::state` in Phase 0e — non-ui crates (`network::handle_query`, `platform::jni_android`) need these without depending on the cfg-gated legacy `app` module. (Leftover `#[derive]` from the lift removed: re-exports inherit derives from the source type, the attribute on a `pub use` was a stale artifact and finally errored when the Android cfg-gate started actually compiling this file.)
 pub use super::state::{AppState, FoundPeer, LaunchState, SearchResult};
 
 /// ENTIRE text state, selection, all that (excluding blinkey)
