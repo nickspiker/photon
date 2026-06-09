@@ -391,24 +391,66 @@ impl FlatStorage {
     }
 }
 
-/// Resolve the two ring paths. On Linux + Windows the XDG split gives meaningfully different directories. On macOS `config_dir()` and `data_dir()` collide; in that case the shadow shares the directory with a `photon-shadow.vsf` filename — worse for accidental-dir-deletion resistance but keeps the dual-write invariant.
+/// Android vault dir override — populated once at startup from [`crate::platform::jni_android::NetworkContext::new`] via [`set_android_vault_dirs`]. `dirs::config_dir()` doesn't resolve on Android (no XDG), and even when it did the right scope is the app-private dirs Java side hands us. Tuple is `(primary, shadow)` — primary points at `context.filesDir`, shadow at `context.getExternalFilesDir(null)` (empty when external storage unavailable, in which case [`vault_paths`] falls back to a shadow-suffix file inside primary).
+#[cfg(target_os = "android")]
+static ANDROID_VAULT_DIRS: Mutex<Option<(String, String)>> = Mutex::new(None);
+
+/// Inject the Android dual-ring vault directories. Must be called before any storage operation (`new`, `read`, `write`, `delete`) — the JNI shim wires it from `nativeNetworkInit` so the dirs are set before HandleQuery's storage init fires post-attestation.
+#[cfg(target_os = "android")]
+pub fn set_android_vault_dirs(primary: String, shadow: String) {
+    if let Ok(mut g) = ANDROID_VAULT_DIRS.lock() {
+        *g = Some((primary, shadow));
+    }
+}
+
+/// Resolve the two ring paths. On Linux + Windows the XDG split gives meaningfully different directories. On macOS `config_dir()` and `data_dir()` collide; in that case the shadow shares the directory with a `photon-shadow.vsf` filename — worse for accidental-dir-deletion resistance but keeps the dual-write invariant. On Android the dirs come from the JNI shim ([`set_android_vault_dirs`]) — `filesDir` for primary, `getExternalFilesDir(null)` for shadow; the latter empties to the shadow-suffix fallback if external storage wasn't available at startup.
 fn vault_paths() -> Result<[PathBuf; 2], StorageError> {
-    let primary_dir = dirs::config_dir().ok_or_else(|| {
-        StorageError::Io(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "config directory not found",
-        ))
-    })?;
-    let shadow_dir = dirs::data_dir().unwrap_or_else(|| primary_dir.clone());
+    #[cfg(target_os = "android")]
+    {
+        let dirs = ANDROID_VAULT_DIRS
+            .lock()
+            .map_err(|e| StorageError::Io(std::io::Error::other(format!("vault-dir lock: {}", e))))?
+            .clone()
+            .ok_or_else(|| {
+                StorageError::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "Android vault dirs not set — JNI shim must call set_android_vault_dirs",
+                ))
+            })?;
+        let primary_dir = PathBuf::from(&dirs.0);
+        let shadow_dir = if dirs.1.is_empty() {
+            primary_dir.clone()
+        } else {
+            PathBuf::from(&dirs.1)
+        };
+        let primary = primary_dir.join(VAULT_FILENAME);
+        let shadow = if primary_dir == shadow_dir {
+            shadow_dir.join(VAULT_FILENAME_SHADOW)
+        } else {
+            shadow_dir.join(VAULT_FILENAME)
+        };
+        return Ok([primary, shadow]);
+    }
 
-    let primary = primary_dir.join(VAULT_FILENAME);
-    let shadow = if primary_dir == shadow_dir {
-        shadow_dir.join(VAULT_FILENAME_SHADOW)
-    } else {
-        shadow_dir.join(VAULT_FILENAME)
-    };
+    #[cfg(not(target_os = "android"))]
+    {
+        let primary_dir = dirs::config_dir().ok_or_else(|| {
+            StorageError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "config directory not found",
+            ))
+        })?;
+        let shadow_dir = dirs::data_dir().unwrap_or_else(|| primary_dir.clone());
 
-    Ok([primary, shadow])
+        let primary = primary_dir.join(VAULT_FILENAME);
+        let shadow = if primary_dir == shadow_dir {
+            shadow_dir.join(VAULT_FILENAME_SHADOW)
+        } else {
+            shadow_dir.join(VAULT_FILENAME)
+        };
+
+        Ok([primary, shadow])
+    }
 }
 
 /// Build a DeviceId from the device_secret. Same derivation as before — both rings share the same DeviceId since they're logically the same device.
