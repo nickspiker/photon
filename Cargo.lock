@@ -1577,7 +1577,9 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "chacha20poly1305 0.10.1",
+ "num-bigint",
  "rand 0.8.5",
+ "voca",
  "vsf",
 ]
 
@@ -3367,6 +3369,7 @@ name = "photon-messenger"
 version = "0.0.39"
 dependencies = [
  "aes-gcm 0.11.0-rc.3",
+ "android-activity",
  "android_logger",
  "anyhow",
  "arboard",
@@ -3402,6 +3405,7 @@ dependencies = [
  "log",
  "ndk",
  "ndk-sys",
+ "num-bigint",
  "p256",
  "p384",
  "pollster",
@@ -3428,6 +3432,7 @@ dependencies = [
  "thread-priority",
  "tokio",
  "tokio-tungstenite",
+ "voca",
  "vsf",
  "wgpu",
  "windows 0.58.0",
@@ -5451,6 +5456,15 @@ name = "virtue"
 version = "0.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "051eb1abcf10076295e815102942cc58f9d5e3b4560e46e53c21e8ff6f3af7b1"
+
+[[package]]
+name = "voca"
+version = "0.0.0"
+dependencies = [
+ "num-bigint",
+ "num-integer",
+ "num-traits",
+]
 
 [[package]]
 name = "vsf"

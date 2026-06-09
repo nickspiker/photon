@@ -122,6 +122,21 @@ pub struct PhotonApp {
     /// top-left chrome orb's colour (red offline / green online). Starts false; the
     /// background worker reports the first real status within the first second of launch.
     online: bool,
+    /// Contacts-page handle search/add textbox (Ready state). Distinct from `textbox` so
+    /// content doesn't bleed between Launch (handle being attested) and Ready (handle
+    /// being added as a contact).
+    contacts_textbox: Option<Textbox>,
+    /// Plus button to the right of `contacts_textbox` — clicking it (or pressing Enter
+    /// in the textbox) triggers the add-contact flow (`HandleQuery::search`). Will
+    /// eventually carry an idle "+" glyph and an in-progress rotating-hourglass
+    /// animation (legacy port from `compositing.rs`); that lands when `ProgressButton`
+    /// gets extracted to fluor.
+    contacts_plus_btn: Option<Button>,
+    /// In-memory contact list. Populated from `AttestationData.contacts` on attestation
+    /// success and grown by `submit_add_friend` → `HandleQuery::search` results.
+    /// Persistence (FlatStorage write on add) + rendering as scrollable rows below the
+    /// search box land in subsequent slices.
+    contacts: Vec<crate::types::Contact>,
 }
 
 impl PhotonApp {
@@ -151,6 +166,9 @@ impl PhotonApp {
             attested_handle: None,
             vault_degraded: false,
             online: false,
+            contacts_textbox: None,
+            contacts_plus_btn: None,
+            contacts: Vec::new(),
         }
     }
 }
@@ -185,6 +203,14 @@ impl Container for PhotonApp {
                 f(tb);
             }
             if let Some(btn) = self.attest_btn.as_mut() {
+                f(btn);
+            }
+        }
+        if matches!(self.state, AppState::Ready) {
+            if let Some(tb) = self.contacts_textbox.as_mut() {
+                f(tb);
+            }
+            if let Some(btn) = self.contacts_plus_btn.as_mut() {
                 f(btn);
             }
         }
@@ -240,7 +266,7 @@ impl FluorApp for PhotonApp {
         chrome.set_orb_tint(orb_tint_for(false));
         self.chrome = Some(chrome);
 
-        // Launch-screen widgets: handle textbox + attest button. Constructed with placeholder geometry; real geometry lands in `update_widget_layout` (called below and on every resize). Hit IDs are allocated from the shared counter AFTER chrome's four — chrome currently takes 1..=4, widgets get 5..=6.
+        // Launch-screen widgets: handle textbox + attest button. Constructed with placeholder geometry; real geometry lands in `update_widget_layout` (called below and on every resize). Hit IDs are allocated from the shared counter AFTER chrome's four — chrome currently takes 1..=4, launch widgets get 5..=6, contacts widgets get 7..=8.
         self.textbox = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
         self.attest_btn = Some(Button::new(
             &mut self.hit_counter,
@@ -250,6 +276,17 @@ impl FluorApp for PhotonApp {
             1.,
             12.,
             "Attest",
+        ));
+        // Contacts-page widgets — same placeholder shape; geometry set every frame via `update_widget_layout` based on ReadyLayout. The plus button label is "+" for now; the rotating-hourglass animation lands in a follow-up when we extract `ProgressButton` into fluor.
+        self.contacts_textbox = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
+        self.contacts_plus_btn = Some(Button::new(
+            &mut self.hit_counter,
+            0.,
+            0.,
+            1.,
+            1.,
+            12.,
+            "+",
         ));
         self.update_widget_layout(ctx);
 
@@ -406,9 +443,14 @@ impl FluorApp for PhotonApp {
                     ctx.window.request_redraw();
                 }
 
-                // Dispatch the click via the new fluor helper. Walks the tree once, finds the widget with `hit_id`, calls its `Click::on_click`. Returns `EventResponse::Pass` if the widget has no Click capability — covers chrome's app-icon orb (no action wired yet).
-                let response =
-                    widget::dispatch_click(self, hit_id, ctx.cursor_x, ctx.cursor_y, ctx.modifiers);
+                // Dispatch the click via the new fluor helper. Walks the tree once, finds the widget with `hit_id`, calls its `Click::on_click`. Returns `EventResponse::Pass` if the widget has no Click capability — covers chrome's app-icon orb (no action wired yet). Translates winit modifiers → fluor at the boundary (capability traits speak fluor types now).
+                let response = widget::dispatch_click(
+                    self,
+                    hit_id,
+                    ctx.cursor_x,
+                    ctx.cursor_y,
+                    fluor::host::winit_compat::from_winit_mods(ctx.modifiers),
+                );
 
                 // Arm drag-select if the click landed on the (now-focused) textbox. CursorMoved consults `is_dragging_select` to grow the selection; release clears it. Set AFTER dispatch so Textbox::on_click has placed the cursor at the click position first — drag then extends from there.
                 let textbox_focused = self
@@ -448,6 +490,16 @@ impl FluorApp for PhotonApp {
                 let clicked = self.attest_btn.as_mut().map(|b| b.take_click()).unwrap_or(false);
                 if clicked {
                     self.submit_handle();
+                    ctx.window.request_redraw();
+                }
+                // Contacts plus button — same release-edge polling pattern.
+                let plus_clicked = self
+                    .contacts_plus_btn
+                    .as_mut()
+                    .map(|b| b.take_click())
+                    .unwrap_or(false);
+                if plus_clicked {
+                    self.submit_add_friend();
                     ctx.window.request_redraw();
                 }
                 EventResponse::Pass
@@ -507,26 +559,47 @@ impl FluorApp for PhotonApp {
                         }
                         EventResponse::Handled
                     }
-                    // Enter submits the handle when the textbox is focused — intercepted before delivery so the textbox doesn't insert a literal newline. When the attest button is focused, route to its on_key (Button activates on Enter / Space and we observe via take_click in tick / on_event Release path).
+                    // Enter submits the handle when the textbox is focused — intercepted before delivery so the textbox doesn't insert a literal newline. When the attest button is focused, route to its on_key (Button activates on Enter / Space and we observe via take_click in tick / on_event Release path). Both Launch and Ready screens follow the same shape with their respective widgets.
                     Key::Named(NamedKey::Enter) => {
-                        let focused_is_textbox = self
+                        let focused_is_launch_textbox = self
                             .textbox
                             .as_ref()
                             .map(|t| Some(t.hit_id()) == self.focused)
                             .unwrap_or(false);
-                        if focused_is_textbox {
+                        if focused_is_launch_textbox {
                             self.submit_handle();
                             ctx.window.request_redraw();
                             return EventResponse::Handled;
                         }
+                        let focused_is_contacts_textbox = self
+                            .contacts_textbox
+                            .as_ref()
+                            .map(|t| Some(t.hit_id()) == self.focused)
+                            .unwrap_or(false);
+                        if focused_is_contacts_textbox {
+                            self.submit_add_friend();
+                            ctx.window.request_redraw();
+                            return EventResponse::Handled;
+                        }
                         if let Some(focus_id) = self.focused {
-                            let resp = widget::dispatch_key(self, focus_id, kev, ctx.modifiers, ctx.text);
-                            // Button::on_key activates on Enter; poll take_click and submit if it fired.
-                            let btn_clicked = self.attest_btn.as_mut().map(|b| b.take_click()).unwrap_or(false);
-                            if btn_clicked {
+                            // Translate winit → fluor at the boundary. Capability traits speak fluor types; the trait surface (FluorApp::on_event) still carries winit's WindowEvent until the next migration slice.
+                            let fkev = fluor::host::winit_compat::from_winit_key_event(kev);
+                            let fmods = fluor::host::winit_compat::from_winit_mods(ctx.modifiers);
+                            let resp = widget::dispatch_key(self, focus_id, &fkev, fmods, ctx.text);
+                            // Either button can activate on Enter; poll both and route to the matching submit.
+                            let attest_clicked = self.attest_btn.as_mut().map(|b| b.take_click()).unwrap_or(false);
+                            if attest_clicked {
                                 self.submit_handle();
                             }
-                            if btn_clicked || matches!(resp, EventResponse::Handled) {
+                            let plus_clicked = self
+                                .contacts_plus_btn
+                                .as_mut()
+                                .map(|b| b.take_click())
+                                .unwrap_or(false);
+                            if plus_clicked {
+                                self.submit_add_friend();
+                            }
+                            if attest_clicked || plus_clicked || matches!(resp, EventResponse::Handled) {
                                 ctx.window.request_redraw();
                             }
                             return resp;
@@ -536,8 +609,10 @@ impl FluorApp for PhotonApp {
                     // All other keys → focused widget via dispatch_key. The Textbox's on_key handles character insertion, backspace, arrows, selection, clipboard (Ctrl+A); Button's on_key handles Space activation. Unfocused → Pass so the host can ignore. Request redraw on Handled so character insertion paints immediately instead of waiting for the next tick.
                     _ => {
                         if let Some(focus_id) = self.focused {
+                            let fkev = fluor::host::winit_compat::from_winit_key_event(kev);
+                            let fmods = fluor::host::winit_compat::from_winit_mods(ctx.modifiers);
                             let resp =
-                                widget::dispatch_key(self, focus_id, kev, ctx.modifiers, ctx.text);
+                                widget::dispatch_key(self, focus_id, &fkev, fmods, ctx.text);
                             if matches!(resp, EventResponse::Handled) {
                                 ctx.window.request_redraw();
                                 // Reset blink so the cursor stays solid through fast typing instead of blinking mid-keystroke.
@@ -594,17 +669,23 @@ impl FluorApp for PhotonApp {
             needs_redraw = true;
         }
 
-        // Drive the blinkey on the focused textbox. `BlinkTimer::poll(now)` returns `true` ONLY on the rising edge of each fire (then schedules the next random 0-300ms interval and returns false the rest of the time). On each fire, toggle the focused textbox's blinkey via `flip_blinkey` — which is a no-op on an unfocused textbox, so we can call it without gating.
+        // Drive the blinkey on the focused textbox. `BlinkTimer::poll(now)` returns `true` ONLY on the rising edge of each fire (then schedules the next random 0-300ms interval and returns false the rest of the time). On each fire, toggle the focused textbox's blinkey via `flip_blinkey` — which is a no-op on an unfocused textbox, so we can call it on every textbox without gating.
         if self.blink_timer.poll(now) {
             if let Some(tb) = self.textbox.as_mut() {
                 if tb.flip_blinkey() {
                     needs_redraw = true;
                 }
             }
+            if let Some(tb) = self.contacts_textbox.as_mut() {
+                if tb.flip_blinkey() {
+                    needs_redraw = true;
+                }
+            }
         }
 
-        // Drain handle_query results. `try_recv` is non-blocking; we collect into a local Vec so the immutable borrow on `handle_query` ends before `on_query_result` (which takes `&mut self`) runs. `try_recv_online` gates a `ConnectivityChanged` event but we don't render it yet — the LaunchState transitions will care about it once we wire the connectivity indicator.
+        // Drain handle_query results. `try_recv` is non-blocking; we collect into local Vecs so the immutable borrow on `handle_query` ends before the `&mut self` handlers run. Three channels feed in: attestation results, connectivity changes, handle searches.
         let mut drained: Vec<QueryResult> = Vec::new();
+        let mut drained_searches: Vec<crate::ui::state::SearchResult> = Vec::new();
         if let Some(hq) = self.handle_query.as_ref() {
             while let Some(result) = hq.try_recv() {
                 drained.push(result);
@@ -616,9 +697,16 @@ impl FluorApp for PhotonApp {
                 }
                 needs_redraw = true;
             }
+            while let Some(search) = hq.try_recv_search() {
+                drained_searches.push(search);
+            }
         }
         for result in drained {
             self.on_query_result(result);
+            needs_redraw = true;
+        }
+        for search in drained_searches {
+            self.on_search_result(search);
             needs_redraw = true;
         }
 
@@ -786,6 +874,55 @@ impl FluorApp for PhotonApp {
             const AVATAR_PLACEHOLDER: u32 = 0xFF_C5_C5_C5;
             paint::draw_circle(&mut canvas, cx, cy, radius, AVATAR_PLACEHOLDER, None);
 
+            // Contacts-page textbox + plus button. The plus button is OVERLAID inside
+            // the textbox right edge (legacy pattern) and ONLY rendered when the textbox
+            // has content — empty textbox shows no button.
+            //
+            // Under-blend semantics ("topmost paints first; later opaque dst wins"):
+            // paint the button FIRST so it's visually topmost, then the textbox under
+            // it. Textbox::render_content_into stamps hit_test_map unconditionally over
+            // its entire bbox, so after the textbox runs we re-stamp the button's bbox
+            // with the button's hit_id to recover correct click dispatch in the overlap.
+            let plus_visible = self
+                .contacts_textbox
+                .as_ref()
+                .map(|tb| !tb.chars.is_empty())
+                .unwrap_or(false);
+            let plus_bbox: Option<(isize, isize, isize, isize, HitId)> = if plus_visible {
+                self.contacts_plus_btn.as_mut().map(|btn| {
+                    let id = btn.hit_id();
+                    btn.render_content_into(
+                        &mut canvas,
+                        0.,
+                        0.,
+                        ctx.text,
+                        None,
+                        Some(&mut chrome.hit_test_map),
+                        id,
+                    );
+                    let bbox = button_bbox(btn);
+                    (bbox.0, bbox.1, bbox.2, bbox.3, id)
+                })
+            } else {
+                None
+            };
+            if let Some(tb) = self.contacts_textbox.as_mut() {
+                let id = tb.hit_id();
+                tb.render_content_into(
+                    &mut canvas,
+                    0.,
+                    0.,
+                    ctx.text,
+                    None,
+                    None,
+                    Some(&mut chrome.hit_test_map),
+                    id,
+                );
+            }
+            if let Some((x0, y0, x1, y1, btn_id)) = plus_bbox {
+                restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, x0, y0, x1, y1, btn_id);
+            }
+
             // Persistent degraded-vault indicator: amber text at the bottom. The
             // matching warm background tint already lives in the noise pass above (we
             // swap BG_BASE → BG_BASE_WARNING) so we add no extra render pass here, just
@@ -858,7 +995,17 @@ impl FluorApp for PhotonApp {
                 return CursorIcon::Pointer;
             }
         }
+        if let Some(btn) = self.contacts_plus_btn.as_ref() {
+            if btn.hit_id() == hit {
+                return CursorIcon::Pointer;
+            }
+        }
         if let Some(tb) = self.textbox.as_ref() {
+            if tb.hit_id() == hit {
+                return CursorIcon::Text;
+            }
+        }
+        if let Some(tb) = self.contacts_textbox.as_ref() {
             if tb.hit_id() == hit {
                 return CursorIcon::Text;
             }
@@ -903,6 +1050,69 @@ impl PhotonApp {
             btn.set_rect(cx, cy, w, h);
             btn.set_font_size(font_size);
         }
+
+        // Contacts-page widgets: textbox takes the full ReadyLayout textbox slot; the
+        // plus button is OVERLAID inside the textbox's right edge (legacy compositing.rs
+        // pattern). Button size = 7/8 textbox height, inset from the right by 1/16 of
+        // the textbox height — same proportions as the legacy `tl.box_height * 7/8` /
+        // `tl.box_height / 16`. Same font_size as the launch widgets so zoom feels
+        // consistent across screens.
+        let ready_layout = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru);
+        let slot = ready_layout.textbox;
+        let slot_x0 = slot.x0 as f32;
+        let slot_y0 = slot.y0 as f32;
+        let slot_w = (slot.x1 - slot.x0) as f32;
+        let slot_h = (slot.y1 - slot.y0) as f32;
+        let tb_cx = slot_x0 + slot_w * 0.5;
+        let tb_cy = slot_y0 + slot_h * 0.5;
+        let plus_size = slot_h * 7.0 / 8.0;
+        let plus_inset = slot_h / 16.0;
+        let plus_cx = slot_x0 + slot_w - plus_inset - plus_size * 0.5;
+        let plus_cy = tb_cy;
+        if let Some(tb) = self.contacts_textbox.as_mut() {
+            tb.set_rect(tb_cx, tb_cy, slot_w, slot_h);
+            tb.set_font_size(font_size, ctx.text);
+        }
+        if let Some(btn) = self.contacts_plus_btn.as_mut() {
+            btn.set_rect(plus_cx, plus_cy, plus_size, plus_size);
+            btn.set_font_size(font_size);
+        }
+    }
+
+    /// Submit the contacts-page textbox contents as an FGTW handle search. Called from
+    /// Enter in `contacts_textbox` and from clicking `contacts_plus_btn`. Bails on
+    /// empty input, on no `HandleQuery` available (init failure path), and on a search
+    /// for the user's own attested handle (would just find their own device — no point).
+    /// Successful Found results land in `tick()`'s drain loop and append to
+    /// `self.contacts`. Persistence + UI transition into a search-in-flight visual
+    /// state (the rotating-hourglass plus button) ride in subsequent slices.
+    fn submit_add_friend(&mut self) {
+        let handle: String = match self.contacts_textbox.as_ref() {
+            Some(tb) => tb.chars.iter().collect(),
+            None => return,
+        };
+        if handle.is_empty() {
+            return;
+        }
+        if self.attested_handle.as_deref() == Some(handle.as_str()) {
+            crate::log(&format!(
+                "add-friend: refusing to add own handle '{}'",
+                handle
+            ));
+            return;
+        }
+        if self
+            .contacts
+            .iter()
+            .any(|c| c.handle.as_str().eq_ignore_ascii_case(&handle))
+        {
+            crate::log(&format!("add-friend: '{}' already in contacts", handle));
+            return;
+        }
+        if let Some(hq) = self.handle_query.as_ref() {
+            crate::log(&format!("add-friend: searching FGTW for '{}'", handle));
+            hq.search(handle);
+        }
     }
 
     /// Send the current textbox contents as an attestation query and transition Launch → Attesting. Called from Enter in the textbox path and from clicking the Attest button — same submit path. No-op if the textbox is empty, HandleQuery wasn't constructed (init failure path), or the launch sub-state forbids submission (`LaunchState::Attesting` — query already in flight; second submit would double-spend the ~5s memory-hard proof).
@@ -927,25 +1137,32 @@ impl PhotonApp {
 
     /// Handle a [`QueryResult`] arriving from HandleQuery's background worker. Transitions the launch state and stashes the proof on success — Phase 2 (Ready screen) is where the proof gets consumed by contact + storage init. For now success leaves the user on Launch with a "ready to advance" log line; persistence + screen transition land next slice.
     fn on_query_result(&mut self, result: QueryResult) {
+        use num_bigint::BigUint;
         match result {
             QueryResult::Success(data) => {
                 if let Some(hq) = self.handle_query.as_ref() {
                     hq.set_handle_proof(data.handle_proof, &data.handle);
                 }
+                // Pubkey emitted as voca-encoded camelCase so a user reading the log can double-click + paste the value as a single word (matches `Development:` key lines from handle_query.rs).
                 eprintln!(
-                    "attestation success: handle={} pubkey={}",
+                    "attestation success: handle = {}  pubkey = {}",
                     data.handle,
-                    hex::encode(data.handle_proof)
+                    voca::encode(BigUint::from_bytes_be(&data.handle_proof))
                 );
                 // Stash the handle for the Ready screen (the optional label below the avatar). Settings persistence + the actual gate on whether to show it land in a later slice — for now Ready always renders the placeholder without text.
                 self.attested_handle = Some(data.handle.clone());
                 self.vault_degraded = data.vault_degraded;
+                self.contacts = data.contacts.clone();
+                crate::log(&format!(
+                    "UI: loaded {} contact(s) into Ready state",
+                    self.contacts.len()
+                ));
                 self.state = AppState::Ready;
             }
             QueryResult::AlreadyAttested(peer) => {
                 let msg = format!(
                     "handle already attested by another device (pubkey {})",
-                    hex::encode(peer.device_pubkey.as_bytes())
+                    voca::encode(BigUint::from_bytes_be(peer.device_pubkey.as_bytes()))
                 );
                 eprintln!("attestation rejected: {msg}");
                 self.state = AppState::Launch(LaunchState::Error(msg));
@@ -953,6 +1170,48 @@ impl PhotonApp {
             QueryResult::Error(e) => {
                 eprintln!("attestation error: {e}");
                 self.state = AppState::Launch(LaunchState::Error(e));
+            }
+        }
+    }
+
+    /// Handle a [`SearchResult`] from `HandleQuery::search`. On `Found`, build a `Contact` from the peer and append to `self.contacts` (skip if a contact with the same handle already exists; should be rare given `submit_add_friend` pre-checks, but the search races against attestation worker's contact load). Clears the textbox on success so the user can immediately search the next handle. On `NotFound`/`Error`, log only — UI search-result rendering into the hint slot lands in a follow-up.
+    fn on_search_result(&mut self, result: crate::ui::state::SearchResult) {
+        use crate::ui::state::SearchResult;
+        match result {
+            SearchResult::Found(peer) => {
+                let already = self
+                    .contacts
+                    .iter()
+                    .any(|c| c.handle.as_str().eq_ignore_ascii_case(peer.handle.as_str()));
+                if already {
+                    crate::log(&format!(
+                        "search-result: '{}' already in contacts — skipping add",
+                        peer.handle.as_str()
+                    ));
+                    return;
+                }
+                let contact = crate::types::Contact::new(
+                    peer.handle.clone(),
+                    peer.handle_proof,
+                    peer.device_pubkey.clone(),
+                )
+                .with_ip(peer.ip);
+                crate::log(&format!(
+                    "search-result: added contact '{}' (total: {})",
+                    contact.handle.as_str(),
+                    self.contacts.len() + 1
+                ));
+                self.contacts.push(contact);
+                // Textbox clearing post-search would be nice UX but Textbox has no public
+                // `clear` method yet — the user can select-all+delete or backspace. Punted
+                // to a fluor follow-up: either add `Textbox::clear` or a "consume submit"
+                // option that auto-clears on successful submit.
+            }
+            SearchResult::NotFound => {
+                crate::log("search-result: handle not found on FGTW");
+            }
+            SearchResult::Error(e) => {
+                crate::log(&format!("search-result: error '{}'", e));
             }
         }
     }
@@ -1097,4 +1356,47 @@ fn rect_center_dims(r: PixelRect) -> (Coord, Coord, Coord, Coord) {
     let cx = r.x0 as Coord + w * 0.5;
     let cy = r.y0 as Coord + h * 0.5;
     (cx, cy, w, h)
+}
+
+/// Bounding box of a [`Button`]'s pill rect in pixel coords, returned as
+/// `(x0, y0, x1, y1)`. Used by the overlay re-stamp pass for the contacts-page plus
+/// button — see the `render` flow where the button paints topmost but its hit stamp
+/// gets clobbered by the textbox painting under it.
+fn button_bbox(btn: &Button) -> (isize, isize, isize, isize) {
+    let half_w = btn.width * 0.5;
+    let half_h = btn.height * 0.5;
+    let x0 = (btn.center_x - half_w) as isize;
+    let y0 = (btn.center_y - half_h) as isize;
+    let x1 = (btn.center_x + half_w) as isize;
+    let y1 = (btn.center_y + half_h) as isize;
+    (x0, y0, x1, y1)
+}
+
+/// Stamp `hit_id` over every pixel in `[x0, x1) × [y0, y1)` of `hit_map`. Used to
+/// reclaim hit-test coverage for a widget that paints visually on top of another
+/// but whose hit stamps were overwritten by the under-blend partner's later stamping
+/// pass (the contacts-page plus button overlaid inside the textbox). Bbox over-stamp
+/// — corners outside the pill silhouette claim a few extra pixels, which dispatches
+/// those clicks to the button. Acceptable UX since the area is tiny and inside the
+/// pill anyway.
+fn restamp_hit_rect(
+    hit_map: &mut [HitId],
+    buf_w: usize,
+    buf_h: usize,
+    x0: isize,
+    y0: isize,
+    x1: isize,
+    y1: isize,
+    hit_id: HitId,
+) {
+    let xs = x0.max(0) as usize;
+    let ys = y0.max(0) as usize;
+    let xe = (x1.max(0) as usize).min(buf_w);
+    let ye = (y1.max(0) as usize).min(buf_h);
+    for y in ys..ye {
+        let row_base = y * buf_w;
+        for x in xs..xe {
+            hit_map[row_base + x] = hit_id;
+        }
+    }
 }
