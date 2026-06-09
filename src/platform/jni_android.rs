@@ -131,7 +131,7 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeResize(
     ctx.shell.resize(width as u32, height as u32);
 }
 
-/// Returns: 1=show keyboard, -1=hide keyboard, 0=no change. The fluor shell doesn't track keyboard show/hide semantics directly — that's app-policy. For now we return 0 unconditionally; PhotonApp will eventually expose `wants_keyboard()` to drive this from focus state.
+/// Returns: 1=show keyboard, -1=hide keyboard, 0=no change. AndroidShell::on_touch reads PhotonApp::wants_keyboard after dispatching the touch through the widget tree; the JNI shim just forwards the int.
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeOnTouch(
@@ -145,8 +145,7 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeOnTouch(
     let Some(ctx) = get_context(context_ptr) else {
         return 0;
     };
-    ctx.shell.on_touch(action, x, y);
-    0
+    ctx.shell.on_touch(action, x, y) as jint
 }
 
 #[cfg(target_os = "android")]
