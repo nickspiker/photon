@@ -17,8 +17,7 @@ use std::time::Duration;
 // Desktop-only imports
 #[cfg(not(target_os = "android"))]
 use crate::ui::PhotonEvent;
-#[cfg(not(target_os = "android"))]
-use winit::event_loop::EventLoopProxy;
+use fluor::host::WakeSender;
 
 /// Data loaded during attestation (all blocking work done in background)
 #[derive(Debug, Clone)]
@@ -120,7 +119,7 @@ impl HandleQuery {
     /// * `device_keypair` - The device's Ed25519 keypair for FGTW authentication
     /// * `event_proxy` - Desktop only: EventLoopProxy for waking the UI on connectivity changes
     #[cfg(not(target_os = "android"))]
-    pub fn new(device_keypair: Keypair, event_proxy: EventLoopProxy<PhotonEvent>) -> Self {
+    pub fn new(device_keypair: Keypair, event_proxy: Arc<dyn WakeSender<PhotonEvent>>) -> Self {
         Self::new_internal(device_keypair, Some(event_proxy))
     }
 
@@ -133,7 +132,7 @@ impl HandleQuery {
     #[cfg(not(target_os = "android"))]
     fn new_internal(
         device_keypair: Keypair,
-        event_proxy: Option<EventLoopProxy<PhotonEvent>>,
+        event_proxy: Option<Arc<dyn WakeSender<PhotonEvent>>>,
     ) -> Self {
         // Create all channels
         let (query_tx, query_rx_worker) = channel::<String>();
@@ -271,7 +270,7 @@ impl HandleQuery {
     #[cfg(not(target_os = "android"))]
     fn spawn_connectivity_worker(
         online_tx: Sender<bool>,
-        event_proxy: Option<EventLoopProxy<PhotonEvent>>,
+        event_proxy: Option<Arc<dyn WakeSender<PhotonEvent>>>,
     ) {
         thread::spawn(move || {
             use std::sync::mpsc::channel as std_channel;
@@ -327,7 +326,7 @@ impl HandleQuery {
                 if first_check || online != prev_online {
                     let _ = online_tx.send(online);
                     if let Some(ref proxy) = event_proxy {
-                        let _ = proxy.send_event(PhotonEvent::ConnectivityChanged(online));
+                        let _ = proxy.send(PhotonEvent::ConnectivityChanged(online));
                     }
                     prev_online = online;
                     first_check = false;
