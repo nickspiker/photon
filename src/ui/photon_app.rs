@@ -28,7 +28,8 @@ use fluor::paint::{self, HitId, HIT_NONE};
 use fluor::widgets::{BlinkTimer, Button, Textbox};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use winit::event_loop::EventLoopProxy;
+
+use fluor::host::WakeSender;
 
 /// How long after a `[`/`]` release we still treat the bracket as "held" for chord purposes. X11 fires a synthetic Release for the held bracket the instant the action key is pressed; this grace absorbs that round-trip so chords fire reliably.
 const CHORD_RELEASE_GRACE: Duration = Duration::from_millis(40);
@@ -80,7 +81,7 @@ fn chord_hint_bbox(viewport: Viewport, vw: usize, vh: usize) -> PixelRect {
 pub struct PhotonApp {
     chrome: Option<DefaultChrome>,
     hit_counter: HitId,
-    event_proxy: Option<EventLoopProxy<PhotonEvent>>,
+    event_proxy: Option<Arc<dyn WakeSender<PhotonEvent>>>,
     /// Vertical scroll offset for the background noise — drives `paint::background_noise`'s `scroll_offset` (visually translates the noise pattern up/down), `shimmer` (noise colour bias cycle), AND the chromatic wave's phase. MouseWheel events in `on_event` mutate this; everything else reads it.
     bg_scroll: isize,
     /// Wave-phase animation accumulator for the "query in flight" cue. Advances at `2π rad/s` (1 full cycle/sec) in `tick()` while `state == LaunchState::Attesting` (or future `AppState::Searching`); held constant otherwise so the wave stays idle when the app is. Summed into the scroll-driven base phase in `render()`. Wraps mod TAU each frame so it stays in `[0, 2π)` and float precision doesn't drift over a long-running query.
@@ -127,6 +128,8 @@ pub struct PhotonApp {
     contacts_plus_btn: Option<Button>,
     /// In-memory contact list. Populated from `AttestationData.contacts` on attestation success and grown by `submit_add_friend` → `HandleQuery::search` results. Persistence (FlatStorage write on add) + rendering as scrollable rows below the search box land in subsequent slices.
     contacts: Vec<crate::types::Contact>,
+    /// Device keypair injected externally (Android: from `NetworkContext` via `set_device_keypair` before `init`). When `Some`, `init` uses it directly; when `None`, `init` derives a fresh keypair from `get_machine_fingerprint` (desktop path). Android MUST set this before `init` runs — leaving it `None` on Android would silently downgrade to a zeroed placeholder keypair, which would be a critical key-derivation failure.
+    device_keypair: Option<crate::network::fgtw::Keypair>,
 }
 
 impl PhotonApp {
@@ -159,7 +162,13 @@ impl PhotonApp {
             contacts_textbox: None,
             contacts_plus_btn: None,
             contacts: Vec::new(),
+            device_keypair: None,
         }
+    }
+
+    /// Inject the device keypair before `init` runs. Used by the Android JNI shim to pass through the keypair that `PhotonConnectionService` derives from the OS-provided device fingerprint — that fingerprint lives in Java (`Build.FINGERPRINT` / `Settings.Secure.ANDROID_ID`) and reaches the native side via `NetworkContext`. On desktop this stays unset; `init` falls back to `get_machine_fingerprint` (which reads `/etc/machine-id` etc.) and derives the keypair internally.
+    pub fn set_device_keypair(&mut self, keypair: crate::network::fgtw::Keypair) {
+        self.device_keypair = Some(keypair);
     }
 }
 
@@ -220,7 +229,7 @@ impl FluorApp for PhotonApp {
         (w, h)
     }
 
-    fn set_event_proxy(&mut self, proxy: EventLoopProxy<Self::UserEvent>) {
+    fn set_event_proxy(&mut self, proxy: Arc<dyn WakeSender<Self::UserEvent>>) {
         self.event_proxy = Some(proxy);
     }
 
@@ -280,17 +289,27 @@ impl FluorApp for PhotonApp {
             .event_proxy
             .as_ref()
             .expect("event_proxy must be set before init (host contract)");
-        #[cfg(not(target_os = "android"))]
-        let fingerprint = get_machine_fingerprint()
-            .expect("device-key derivation: machine fingerprint unavailable");
-        // Android derives the device fingerprint via JNI in PhotonConnectionService and
-        // hands it through the NetworkContext path; the AndroidShell-side wiring will
-        // surface that to PhotonApp once `PhotonApp::new(network)` lands. Until then the
-        // Android branch falls back to a placeholder so the build links — the actual
-        // value gets replaced by the real fingerprint in the next slice.
-        #[cfg(target_os = "android")]
-        let fingerprint: Vec<u8> = vec![0u8; 32];
-        let keypair = derive_device_keypair(&fingerprint);
+        // Prefer an externally-injected keypair (Android: PhotonContext sets it from NetworkContext before AndroidShell::new calls init). Fall back to deriving from the OS machine fingerprint — desktop reads /etc/machine-id etc., Android has no in-Rust fallback (Build.FINGERPRINT lives Java-side) so a missing keypair there is a panic-worthy programmer error: shipping a zero-derived keypair would silently downgrade every cryptographic identity in the app.
+        let keypair = match self.device_keypair.take() {
+            Some(kp) => kp,
+            None => {
+                #[cfg(not(target_os = "android"))]
+                {
+                    let fingerprint = get_machine_fingerprint()
+                        .expect("device-key derivation: machine fingerprint unavailable");
+                    derive_device_keypair(&fingerprint)
+                }
+                #[cfg(target_os = "android")]
+                {
+                    panic!(
+                        "PhotonApp::set_device_keypair must be called before init on Android — \
+                         the JNI shim wires through the keypair derived from the OS fingerprint \
+                         in PhotonConnectionService; a missing keypair here means the wiring was \
+                         skipped and would produce a zeroed/insecure key derivation"
+                    );
+                }
+            }
+        };
         #[cfg(not(target_os = "android"))]
         let hq = HandleQuery::new(keypair, proxy.clone());
         #[cfg(target_os = "android")]
@@ -1008,7 +1027,7 @@ impl PhotonApp {
     #[allow(dead_code)] // Used by background tasks once Phase 1+ wires them in.
     pub fn send_event(&self, event: PhotonEvent) -> bool {
         match &self.event_proxy {
-            Some(proxy) => proxy.send_event(event).is_ok(),
+            Some(proxy) => proxy.send(event).is_ok(),
             None => false,
         }
     }
