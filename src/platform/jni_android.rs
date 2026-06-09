@@ -299,14 +299,19 @@ fn derive_device_keypair(fingerprint: &[u8]) -> Keypair {
 pub struct NetworkContext {
     pub keypair: Keypair,
     pub peer_store: Arc<Mutex<PeerStore>>,
+    /// Primary ring directory — Activity passes `context.filesDir.absolutePath` (app-private internal storage, `/data/user/0/<pkg>/files`).
     pub data_dir: String,
+    /// Shadow ring directory — Activity passes `context.getExternalFilesDir(null)?.absolutePath` (app-private external, `/storage/emulated/0/Android/data/<pkg>/files`). Empty string if external storage wasn't available; storage layer falls back to a shadow-suffix file inside `data_dir` in that case.
+    pub shadow_dir: String,
 }
 
 #[cfg(target_os = "android")]
 impl NetworkContext {
-    pub fn new(fingerprint: &[u8], data_dir: &str) -> Self {
+    pub fn new(fingerprint: &[u8], data_dir: &str, shadow_dir: &str) -> Self {
         // Set global Android data directory for avatar storage
         crate::avatar::set_android_data_dir(data_dir.to_string());
+        // Hand the storage layer both ring dirs so the dual-ring vault can place primary on internal and shadow on external — see [storage::flat::set_android_vault_dirs].
+        crate::storage::flat::set_android_vault_dirs(data_dir.to_string(), shadow_dir.to_string());
 
         let keypair = derive_device_keypair(fingerprint);
 
@@ -321,6 +326,7 @@ impl NetworkContext {
             keypair,
             peer_store,
             data_dir: data_dir.to_string(),
+            shadow_dir: shadow_dir.to_string(),
         }
     }
 
@@ -346,6 +352,7 @@ pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeNetwor
     _class: JClass<'_>,
     fingerprint: JByteArray<'_>,
     data_dir: JString<'_>,
+    shadow_dir: JString<'_>,
 ) -> jlong {
     info!("PhotonConnectionService: Initializing network stack");
 
@@ -365,13 +372,26 @@ pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeNetwor
         }
     };
 
+    let shadow_dir_str: String = match env.get_string(&shadow_dir) {
+        Ok(s) => s.into(),
+        Err(e) => {
+            error!("Failed to read shadow_dir: {:?}", e);
+            return 0;
+        }
+    };
+
     info!(
-        "NetworkContext: fingerprint {} bytes, data_dir: {}",
+        "NetworkContext: fingerprint {} bytes, data_dir: {}, shadow_dir: {}",
         fingerprint_bytes.len(),
-        data_dir_str
+        data_dir_str,
+        if shadow_dir_str.is_empty() { "<none>" } else { &shadow_dir_str },
     );
 
-    let context = Box::new(NetworkContext::new(&fingerprint_bytes, &data_dir_str));
+    let context = Box::new(NetworkContext::new(
+        &fingerprint_bytes,
+        &data_dir_str,
+        &shadow_dir_str,
+    ));
     Box::into_raw(context) as jlong
 }
 
