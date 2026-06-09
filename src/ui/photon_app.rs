@@ -341,7 +341,10 @@ impl FluorApp for PhotonApp {
         if let Some(chrome) = self.chrome.as_mut() {
             // Use `ctx.viewport` directly — it carries the current `ru` (zoom factor) that fluor's host has already updated from Ctrl/Cmd +/-/0/scroll. Building a fresh `Viewport::new(w, h)` here would reset ru to 1.0 every resize/zoom event and silently strip the user's zoom state. Width/height are redundant with `ctx.viewport.{width_px, height_px}` for the same reason.
             chrome.resize(ctx.viewport);
-            // Maximize toggles always change size between user-sized and screen-sized, so on_resize is the natural sync point for full_edge mode (no perimeter hairline / corner cutout / shadow when the window fills the screen). User-tweakable later if someone wants the bordered look when maximized.
+            // Maximize toggles always change size between user-sized and screen-sized, so on_resize is the natural sync point for full_edge mode (no perimeter hairline / corner cutout / shadow when the window fills the screen). On Android the surface is always fullscreen — soft-keyboard show/hide triggers an on_resize too, and ctx.is_maximized is hard-coded false there, so without this override the perimeter + corner cutout would re-appear every time the IME opens.
+            #[cfg(target_os = "android")]
+            chrome.set_full_edge(true);
+            #[cfg(not(target_os = "android"))]
             chrome.set_full_edge(ctx.is_maximized);
         }
         self.update_widget_layout(ctx);
