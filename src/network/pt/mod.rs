@@ -97,8 +97,7 @@ impl PTManager {
         id
     }
 
-    /// Max VSF size for single UDP packet (no sharding needed) 1KB threshold - VSF this size or smaller sent directly
-    /// Larger VSF gets sharded into [lowercase letter][packet number][1KB DATA] packets
+    /// Max VSF size for single UDP packet (no sharding needed) 1KB threshold - VSF this size or smaller sent directly Larger VSF gets sharded into [lowercase letter][packet number][1KB DATA] packets
     pub const SINGLE_PACKET_MAX: usize = 1024;
 
     /// Queue data for reliable delivery to peer
@@ -122,8 +121,7 @@ impl PTManager {
         data: Vec<u8>,
         recipient_pubkey: Option<[u8; 32]>,
     ) -> Vec<u8> {
-        // Small payload - send directly, no sharding needed
-        // Note: For small payloads, relay fallback happens at the caller level
+        // Small payload - send directly, no sharding needed Note: For small payloads, relay fallback happens at the caller level
         if data.len() <= Self::SINGLE_PACKET_MAX {
             return data;
         }
@@ -174,8 +172,7 @@ impl PTManager {
 
         let stream_id = spec.stream_id;
 
-        // Remove any existing incomplete transfer for this (peer, stream_id)
-        // A new SPEC means peer has abandoned the old transfer
+        // Remove any existing incomplete transfer for this (peer, stream_id) A new SPEC means peer has abandoned the old transfer
         self.inbound.retain(|t| {
             !(t.peer_addr == peer_addr && t.stream_id == stream_id && !t.is_complete())
         });
@@ -192,8 +189,7 @@ impl PTManager {
         ack.to_vsf_bytes(&self.keypair)
     }
 
-    /// Handle received SPEC ACK (we can start sending DATA)
-    /// Routes by stream_id for concurrent transfer support
+    /// Handle received SPEC ACK (we can start sending DATA) Routes by stream_id for concurrent transfer support
     pub fn handle_spec_ack(
         &mut self,
         peer_addr: SocketAddr,
@@ -233,8 +229,7 @@ impl PTManager {
         packets
     }
 
-    /// Handle received DATA packet
-    /// Routes by (peer_addr, stream_id) to support concurrent transfers
+    /// Handle received DATA packet Routes by (peer_addr, stream_id) to support concurrent transfers
     pub fn handle_data(&mut self, peer_addr: SocketAddr, data: PTData) -> Option<Vec<u8>> {
         // Find inbound transfer by peer AND stream_id
         if let Some(transfer) = self
@@ -258,8 +253,7 @@ impl PTManager {
         None
     }
 
-    /// Handle received ACK
-    /// Routes by (peer_addr, stream_id) to support concurrent transfers
+    /// Handle received ACK Routes by (peer_addr, stream_id) to support concurrent transfers
     pub fn handle_ack(&mut self, peer_addr: SocketAddr, ack: PTAck) -> Vec<Vec<u8>> {
         let mut packets = Vec::new();
 
@@ -276,8 +270,7 @@ impl PTManager {
         }) {
             transfer.handle_ack(&ack);
 
-            // Only log progress at milestones (every 100 packets or completion)
-            // Avoids spamming logs with per-ACK updates
+            // Only log progress at milestones (every 100 packets or completion) Avoids spamming logs with per-ACK updates
             let (acked, total) = transfer.send_buffer.progress();
             if acked == total {
                 crate::log(&format!(
@@ -415,8 +408,7 @@ impl PTManager {
         None
     }
 
-    /// Get inbound transfer stats (before taking data)
-    /// Returns: (total_packets, total_bytes, duplicates, duration_ms)
+    /// Get inbound transfer stats (before taking data) Returns: (total_packets, total_bytes, duplicates, duration_ms)
     pub fn inbound_stats(&self, peer_addr: &SocketAddr) -> Option<(u32, u32, u32, u64)> {
         self.inbound
             .iter()
@@ -461,8 +453,7 @@ impl PTManager {
             .retain(|t| !(t.peer_addr == *peer_addr && t.state == TransferState::Complete));
     }
 
-    /// Clear ALL outbound transfers to a peer (regardless of state)
-    /// Used when CLUTCH completes to stop retransmitting offers/KEM responses.
+    /// Clear ALL outbound transfers to a peer (regardless of state) Used when CLUTCH completes to stop retransmitting offers/KEM responses.
     pub fn clear_outbound(&mut self, peer_addr: &SocketAddr) {
         let before = self.outbound.len();
         self.outbound.retain(|t| t.peer_addr != *peer_addr);
@@ -475,8 +466,7 @@ impl PTManager {
         }
     }
 
-    /// Periodic tick - check timeouts, send retransmits
-    /// Returns TickSend structs with:
+    /// Periodic tick - check timeouts, send retransmits Returns TickSend structs with:
     /// - peer_addr, wire_bytes: UDP packet to send
     /// - also_tcp: if true, also send via TCP
     /// - relay: if Some, UDP+TCP failed, relay via /conduit with this info
@@ -762,8 +752,7 @@ mod tests {
             .collect()
     }
 
-    // Helper to parse header-only PT packet fields
-    // Returns (provenance_hash, values) for the pt_* header field
+    // Helper to parse header-only PT packet fields Returns (provenance_hash, values) for the pt_* header field
     fn parse_pt_header_field(bytes: &[u8]) -> Option<([u8; 32], Vec<vsf::VsfType>)> {
         use vsf::file_format::VsfHeader;
 

@@ -245,8 +245,7 @@ impl PhotonApp {
                             self.window_dirty = true;
                             self.reset_textbox();
 
-                            // Clear hover states when transitioning screens
-                            // Set both current and prev to None to avoid differential rendering artifacts
+                            // Clear hover states when transitioning screens Set both current and prev to None to avoid differential rendering artifacts
                             self.prev_hovered_button = HoveredButton::None;
                             self.hovered_button = HoveredButton::None;
                             self.prev_hovered_contact = None;
@@ -415,8 +414,7 @@ impl PhotonApp {
                                 self.window_dirty = true;
                                 self.reset_textbox();
 
-                                // Clear hover states when transitioning screens
-                                // Set both current and prev to None to avoid differential rendering artifacts
+                                // Clear hover states when transitioning screens Set both current and prev to None to avoid differential rendering artifacts
                                 self.prev_hovered_button = HoveredButton::None;
                                 self.hovered_button = HoveredButton::None;
                                 self.prev_hovered_contact = None;
@@ -767,16 +765,13 @@ impl PhotonApp {
             }
         };
 
-        // Zoom scroll (works in any state)
-        // macOS: Cmd+scroll  |  other platforms: Ctrl+scroll
-        // Logarithmic scaling: 1 step = multiply by 33/32
+        // Zoom scroll (works in any state) macOS: Cmd+scroll  |  other platforms: Ctrl+scroll Logarithmic scaling: 1 step = multiply by 33/32
         #[cfg(target_os = "macos")]
         let zoom_key = self.modifiers.super_key();
         #[cfg(not(target_os = "macos"))]
         let zoom_key = self.modifiers.control_key();
         if zoom_key {
-            // scroll_pixels: ~20 per line notch, variable for pixel delta (touchpad)
-            // Convert to steps: 1 notch = 1 step
+            // scroll_pixels: ~20 per line notch, variable for pixel delta (touchpad) Convert to steps: 1 notch = 1 step
             let steps = scroll_pixels / 20.0;
             self.adjust_zoom(steps);
             return true;
@@ -867,15 +862,12 @@ impl PhotonApp {
 
         // Apply scroll to contact's message area
         if let Some(contact) = self.contacts.get_mut(contact_idx) {
-            // Positive scroll = scroll up (show older messages)
-            // Negative scroll = scroll down (show newer messages)
+            // Positive scroll = scroll up (show older messages) Negative scroll = scroll down (show newer messages)
             contact.message_scroll_offset += scroll_pixels;
 
             let total_height = contact.messages.len() * line_height + padding * 2;
 
-            // Clamp scroll offset to valid range
-            // Max scroll up: 0 (no offset, messages at natural position)
-            // Max scroll down: -(total_height - visible_height) if content taller than viewport
+            // Clamp scroll offset to valid range Max scroll up: 0 (no offset, messages at natural position) Max scroll down: -(total_height - visible_height) if content taller than viewport
             let max_scroll_down = -((total_height as i32 - visible_height as i32).max(0) as f32);
             contact.message_scroll_offset =
                 contact.message_scroll_offset.clamp(max_scroll_down, 0.0);

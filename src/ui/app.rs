@@ -5,8 +5,7 @@ use super::theme;
 use super::PhotonEvent;
 use crate::crypto::clutch::ClutchAllKeypairs;
 
-/// Asymptotic clamping: approaches max but never exceeds it. soft_limit(x, max) = max * x / (x + max)
-/// At x=0: returns 0. At x=max: returns max/2. As x→∞: approaches max.
+/// Asymptotic clamping: approaches max but never exceeds it. soft_limit(x, max) = max * x / (x + max) At x=0: returns 0. At x=max: returns max/2. As x→∞: approaches max.
 pub fn soft_limit(x: f32, max: f32) -> f32 {
     max * x / (x + max)
 }
@@ -347,8 +346,7 @@ pub struct Layout {
     pub photon_text: Option<PixelRegion>,
     /// Text input box - present in non-launch states (conversation only)
     pub textbox: Option<PixelRegion>,
-    /// Unified block containing hint + textbox + attest button - launch screens only
-    /// Subdivided via AttestBlockLayout
+    /// Unified block containing hint + textbox + attest button - launch screens only Subdivided via AttestBlockLayout
     pub attest_block: Option<PixelRegion>,
     /// Unified contacts block (Ready/Searching states) - contains user section + contact rows. Subdivided via ContactsUnifiedLayout. All elements scale with span-based row_height.
     pub contacts: Option<PixelRegion>,
@@ -390,8 +388,7 @@ impl AttestBlockLayout {
         ];
         let v = slice_positions(block.h, &V_SLICES);
 
-        // Hint and attest are centered horizontally (narrower than full width)
-        // Use 75% of block width for these elements
+        // Hint and attest are centered horizontally (narrower than full width) Use 75% of block width for these elements
         let narrow_w = block.w * 3 / 4;
         let narrow_x = block.x + (block.w - narrow_w) / 2;
 
@@ -797,8 +794,7 @@ impl Layout {
                 const PHOTON_TEXT: usize = 3;
                 const ATTEST_BLOCK: usize = 5;
 
-                // attest_block: height scales with ru, width stays at content_w
-                // Use signed math to handle ru > 1.0 (content extends beyond base region)
+                // attest_block: height scales with ru, width stays at content_w Use signed math to handle ru > 1.0 (content extends beyond base region)
                 let base_block_y = v[ATTEST_BLOCK] as isize;
                 let base_block_h = (v[ATTEST_BLOCK + 1] - v[ATTEST_BLOCK]) as isize;
                 let scaled_block_h = (base_block_h as f32 * ru) as isize;
@@ -832,9 +828,7 @@ impl Layout {
                 }
             }
             AppState::Ready | AppState::Searching => {
-                // Single unified block from top of screen
-                // ContactsUnifiedLayout subdivides into user section + contact rows
-                // Everything scales with span-based row_height
+                // Single unified block from top of screen ContactsUnifiedLayout subdivides into user section + contact rows Everything scales with span-based row_height
                 Self {
                     logo_spectrum: None,
                     photon_text: None,
@@ -914,8 +908,7 @@ pub struct PhotonApp {
     pub controls_dirty: bool,
 
     // Universal scaling units (cached for performance)
-    /// Span: harmonic mean of width and height = 2wh/(w+h)
-    /// Smooth at w==h (no discontinuity), biased toward smaller dimension, finite slope at axes, slope exactly 1 along diagonal. Base unit for all UI scaling.
+    /// Span: harmonic mean of width and height = 2wh/(w+h) Smooth at w==h (no discontinuity), biased toward smaller dimension, finite slope at axes, slope exactly 1 along diagonal. Base unit for all UI scaling.
     pub span: usize,
     pub perimeter: usize,   // width + height
     pub diagonal_sq: usize, // width² + height²
@@ -1285,8 +1278,7 @@ impl PhotonApp {
             let peer_store = std::sync::Arc::new(std::sync::Mutex::new(PeerStore::new()));
             handle_query.set_transport(peer_store);
 
-            // Start StatusChecker early so PT receiver is ready before attestation
-            // This allows us to receive ClutchOffers from peers who come online before us
+            // Start StatusChecker early so PT receiver is ready before attestation This allows us to receive ClutchOffers from peers who come online before us
             use crate::network::status::StatusChecker;
             app.status_checker = StatusChecker::new(
                 handle_query.socket().clone(),
@@ -1441,8 +1433,7 @@ impl PhotonApp {
         }
     }
 
-    /// Update the fullscreen/maximized state
-    /// When true, window edges are not drawn
+    /// Update the fullscreen/maximized state When true, window edges are not drawn
     pub fn set_fullscreen(&mut self, is_fullscreen: bool) {
         if self.is_fullscreen != is_fullscreen {
             self.is_fullscreen = is_fullscreen;
@@ -1455,8 +1446,7 @@ impl PhotonApp {
 
         let mut records = Vec::new();
         for (_fid, chains) in &self.friendship_chains {
-            // Get the max last_received_time across all participants
-            // This is when we last received ANY message in this conversation
+            // Get the max last_received_time across all participants This is when we last received ANY message in this conversation
             let max_time = chains
                 .last_received_times()
                 .iter()
@@ -1478,8 +1468,7 @@ impl PhotonApp {
         *provider = records;
     }
 
-    /// Reset textbox state when changing screens
-    /// Clears text content, hides blinkey, unfocuses textbox
+    /// Reset textbox state when changing screens Clears text content, hides blinkey, unfocuses textbox
     pub fn reset_textbox(&mut self) {
         self.current_text_state.chars.clear();
         self.current_text_state.widths.clear();
@@ -1494,8 +1483,7 @@ impl PhotonApp {
         self.selection_dirty = true;
     }
 
-    /// Handle touch events on Android action: 0=DOWN, 1=UP, 2=MOVE, 3=CANCEL
-    /// Returns: 1=show keyboard, -1=hide keyboard, 0=no change
+    /// Handle touch events on Android action: 0=DOWN, 1=UP, 2=MOVE, 3=CANCEL Returns: 1=show keyboard, -1=hide keyboard, 0=no change
     #[cfg(target_os = "android")]
     pub fn handle_touch(&mut self, action: i32, x: f32, y: f32) -> i32 {
         self.mouse_x = x;
@@ -1623,8 +1611,7 @@ impl PhotonApp {
             HIT_NONE
         };
 
-        // Special case: tap on textbox when already focused = position cursor
-        // But not during attestation - handle is locked in
+        // Special case: tap on textbox when already focused = position cursor But not during attestation - handle is locked in
         if element == HIT_HANDLE_TEXTBOX
             && self.current_text_state.textbox_focused
             && !matches!(self.app_state, AppState::Launch(LaunchState::Attesting))
@@ -1652,8 +1639,7 @@ impl PhotonApp {
                 if matches!(self.app_state, AppState::Launch(LaunchState::Attesting)) {
                     // Ignore textbox taps while attesting
                 } else {
-                    // Focus textbox and show keyboard
-                    // Always return 1 even if already focused - keyboard may have been dismissed
+                    // Focus textbox and show keyboard Always return 1 even if already focused - keyboard may have been dismissed
                     self.current_text_state.textbox_focused = true;
                     self.blinkey_visible = true;
                     self.text_dirty = true;
@@ -1910,8 +1896,7 @@ impl PhotonApp {
         false
     }
 
-    /// Handle Android back button
-    /// Returns true if handled (stay in app), false to allow default back behavior (exit)
+    /// Handle Android back button Returns true if handled (stay in app), false to allow default back behavior (exit)
     #[cfg(target_os = "android")]
     pub fn handle_back(&mut self) -> bool {
         // If in a chat, go back to contacts list (same as tapping back header button)
@@ -1946,8 +1931,7 @@ impl PhotonApp {
 
     /// Set the handle query system (called from JNI after keypair is available on Android, or can be used to reinitialize on any platform)
     pub fn set_handle_query(&mut self, handle_query: HandleQuery) {
-        // Start StatusChecker early so PT receiver is ready before attestation
-        // This allows us to receive ClutchOffers from peers who come online before us
+        // Start StatusChecker early so PT receiver is ready before attestation This allows us to receive ClutchOffers from peers who come online before us
         #[cfg(target_os = "android")]
         if self.status_checker.is_none() {
             use crate::network::status::StatusChecker;
@@ -2131,8 +2115,7 @@ impl PhotonApp {
         Ok(())
     }
 
-    /// Adjust zoom level by steps (positive = zoom in, negative = zoom out)
-    /// Uses logarithmic scaling: each step multiplies by 33/32 (in) or 32/33 (out). Clamps to range [1/32, 32] for full design exploration.
+    /// Adjust zoom level by steps (positive = zoom in, negative = zoom out) Uses logarithmic scaling: each step multiplies by 33/32 (in) or 32/33 (out). Clamps to range [1/32, 32] for full design exploration.
     pub fn adjust_zoom(&mut self, steps: f32) {
         let factor = if steps.is_sign_negative() {
             (33f32 / 32.).powf(steps)
@@ -2172,8 +2155,7 @@ impl PhotonApp {
 
         self.recalculate_char_widths();
 
-        // Show zoom hint (will be hidden after 1 second via differential rendering)
-        // Shows user's ru, not effective_ru (keyboard compensation is transparent)
+        // Show zoom hint (will be hidden after 1 second via differential rendering) Shows user's ru, not effective_ru (keyboard compensation is transparent)
         self.zoom_hint_visible = true;
         self.zoom_hint_hide_time =
             Some(std::time::Instant::now() + std::time::Duration::from_secs(1));
@@ -2183,8 +2165,7 @@ impl PhotonApp {
     /// Handle pinch-to-zoom scale gesture from Android scale_factor: >1.0 = zoom in, <1.0 = zoom out
     #[cfg(target_os = "android")]
     pub fn handle_scale(&mut self, scale_factor: f32) {
-        // Convert scale factor to zoom steps using logarithm log2(scale_factor) gives: pinch out (1.5x) -> +0.58, pinch in (0.7x) -> -0.51
-        // Sensitivity multiplier controls how responsive the zoom feels
+        // Convert scale factor to zoom steps using logarithm log2(scale_factor) gives: pinch out (1.5x) -> +0.58, pinch in (0.7x) -> -0.51 Sensitivity multiplier controls how responsive the zoom feels
         const SENSITIVITY: f32 = 10.0;
         let steps = scale_factor.log2() * SENSITIVITY;
         self.adjust_zoom(steps);
@@ -2199,20 +2180,17 @@ impl PhotonApp {
         self.width = width;
         self.height = height;
 
-        // Adjust scroll to keep content centered during resize
-        // Content at old center (old_height/2 - scroll) should stay at new center new_scroll = scroll + (new_height - old_height) / 2
+        // Adjust scroll to keep content centered during resize Content at old center (old_height/2 - scroll) should stay at new center new_scroll = scroll + (new_height - old_height) / 2
         let height_delta = (height as isize - old_height) / 2;
         self.contacts_scroll_offset += height_delta;
 
-        // On Android, compensate for keyboard resize by adjusting keyboard_scale
-        // This keeps UI elements the same visual size when keyboard appears
+        // On Android, compensate for keyboard resize by adjusting keyboard_scale This keeps UI elements the same visual size when keyboard appears
         #[cfg(target_os = "android")]
         {
             self.keyboard_scale = self.initial_height as f32 / height as f32;
         }
 
-        // Update cached scaling units
-        // Span: harmonic mean of width and height - smooth at w==h, biased toward smaller 2wh/(w+h) has finite slope at axes, slope exactly 1, tastes delicious
+        // Update cached scaling units Span: harmonic mean of width and height - smooth at w==h, biased toward smaller 2wh/(w+h) has finite slope at axes, slope exactly 1, tastes delicious
         self.span = 2 * w * h / (w + h);
         self.perimeter = w + h;
         self.diagonal_sq = w * w + h * h;
@@ -2270,8 +2248,7 @@ impl PhotonApp {
             self.current_text_state.scroll_offset = 0.0;
         }
 
-        // Clear textbox focus on resize - user must click to refocus
-        // On Android, preserve focus during keyboard resize (keyboard_scale != 1.0 means keyboard is up)
+        // Clear textbox focus on resize - user must click to refocus On Android, preserve focus during keyboard resize (keyboard_scale != 1.0 means keyboard is up)
         #[cfg(not(target_os = "android"))]
         {
             self.current_text_state.textbox_focused = false;
@@ -2321,8 +2298,7 @@ impl PhotonApp {
         }
     }
 
-    /// Calculate blinkey_index from click/tap X coordinate
-    /// Returns the cursor position (0 = before first char, len = after last char)
+    /// Calculate blinkey_index from click/tap X coordinate Returns the cursor position (0 = before first char, len = after last char)
     pub fn blinkey_index_from_x(&self, click_x: f32) -> usize {
         if self.current_text_state.chars.is_empty() {
             return 0;
@@ -2474,8 +2450,7 @@ impl PhotonApp {
                             contact.clutch_keygen_in_progress = true;
                             self.contacts.push(contact);
 
-                            // Start background CLUTCH keypair generation + ceremony_id
-                            // Both McEliece keygen and handle_proof are slow (~1-2s total)
+                            // Start background CLUTCH keypair generation + ceremony_id Both McEliece keygen and handle_proof are slow (~1-2s total)
                             let our_handle_hash = self
                                 .user_handle
                                 .as_ref()
@@ -2587,8 +2562,7 @@ impl PhotonApp {
                         self.controls_dirty = true;
                         self.selection_dirty = true;
 
-                        // Immediately ping to check if online
-                        // CLUTCH starts when PONG confirms they're online
+                        // Immediately ping to check if online CLUTCH starts when PONG confirms they're online
                         if let Some(checker) = &self.status_checker {
                             if let Some(contact) = self.contacts.last() {
                                 if let Some(ip) = contact.ip {
@@ -2821,8 +2795,7 @@ impl PhotonApp {
                     crate::log("UI: PeerUpdateClient started for real-time IP updates");
                 }
 
-                // Broadcast StatusPing to all peers so they learn our IP (NAT hole punching)
-                // Filter out our own pubkey - FGTW returns all peers including ourselves
+                // Broadcast StatusPing to all peers so they learn our IP (NAT hole punching) Filter out our own pubkey - FGTW returns all peers including ourselves
                 let our_pubkey_bytes = self.device_keypair.public.to_bytes();
                 let other_peers: Vec<_> = initial_peers
                     .iter()
@@ -2894,8 +2867,7 @@ impl PhotonApp {
         self.app_state = AppState::Launch(state);
     }
 
-    /// Check for status updates from P2P checker (non-blocking)
-    /// Returns true if any contact status changed
+    /// Check for status updates from P2P checker (non-blocking) Returns true if any contact status changed
     pub fn check_status_updates(&mut self) -> bool {
         use crate::crypto::clutch;
         use crate::network::status::StatusUpdate;
@@ -2907,9 +2879,7 @@ impl PhotonApp {
             None => return false,
         };
 
-        // Get our handle_hash for CLUTCH (PRIVATE identity seed, used in VSF messages)
-        // Formula: BLAKE3(VsfType::x(handle).flatten()) - VSF normalized for Unicode safety
-        // SECURITY: This IS sent in CLUTCH offers for contact matching, but only parties who already know our handle can compute it to match us
+        // Get our handle_hash for CLUTCH (PRIVATE identity seed, used in VSF messages) Formula: BLAKE3(VsfType::x(handle).flatten()) - VSF normalized for Unicode safety SECURITY: This IS sent in CLUTCH offers for contact matching, but only parties who already know our handle can compute it to match us
         let our_handle_hash = match self.user_identity_seed {
             Some(h) => h,
             None => return false, // Can't do CLUTCH without our handle_hash
@@ -2966,9 +2936,7 @@ impl PhotonApp {
                                 ));
                             }
 
-                            // Send full offer when contact comes online and keys are ready
-                            // Keys are pre-generated in background when contact is added
-                            // Slot-based: send if Pending, have keypairs, haven't sent yet Note: ceremony_id is now computed AFTER offers are exchanged
+                            // Send full offer when contact comes online and keys are ready Keys are pre-generated in background when contact is added Slot-based: send if Pending, have keypairs, haven't sent yet Note: ceremony_id is now computed AFTER offers are exchanged
                             if is_online
                                 && contact.clutch_state == ClutchState::Pending
                                 && !contact.clutch_offer_sent
@@ -3076,8 +3044,7 @@ impl PhotonApp {
                         }
                     }
                 }
-                // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete handlers REMOVED
-                // Full 8-primitive CLUTCH uses ClutchOfferReceived and ClutchKemResponseReceived which are handled above (via TCP/PT transport).
+                // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete handlers REMOVED Full 8-primitive CLUTCH uses ClutchOfferReceived and ClutchKemResponseReceived which are handled above (via TCP/PT transport).
                 StatusUpdate::ChatMessage {
                     conversation_token,
                     prev_msg_hp,
@@ -3131,8 +3098,7 @@ impl PhotonApp {
                             }
                         };
 
-                        // Deduplication: skip if we've already processed this exact message (UDP duplicates have identical eagle_time)
-                        // Note: Sender learns our state via last_received_hp in ping/pong - no ACK needed for dupes
+                        // Deduplication: skip if we've already processed this exact message (UDP duplicates have identical eagle_time) Note: Sender learns our state via last_received_hp in ping/pong - no ACK needed for dupes
                         if chains.is_duplicate(&from_handle_hash, timestamp) {
                             crate::log(&format!(
                                 "CHAT: Skipping duplicate message from {} (eagle_time {})",
@@ -3141,8 +3107,7 @@ impl PhotonApp {
                             continue;
                         }
 
-                        // Hash chain verification: check prev_msg_hp matches expected
-                        // If mismatch: either out-of-order or missing messages
+                        // Hash chain verification: check prev_msg_hp matches expected If mismatch: either out-of-order or missing messages
                         if let Err(expected) =
                             chains.verify_chain_link(&from_handle_hash, &prev_msg_hp)
                         {
@@ -3152,8 +3117,7 @@ impl PhotonApp {
                                 hex::encode(&expected[..8]),
                                 hex::encode(&prev_msg_hp[..8])
                             ));
-                            // For now, continue with decryption anyway (soft verification)
-                            // TODO: Request resync if gap detected
+                            // For now, continue with decryption anyway (soft verification) TODO: Request resync if gap detected
                         }
 
                         crate::log(&format!(
@@ -3214,8 +3178,7 @@ impl PhotonApp {
                             &plaintext
                         ));
 
-                        // Parse VSF field: (d{message}:x{text},hp{inc_hp},hR{pad})
-                        // Uses VsfField::parse() per AGENT.md
+                        // Parse VSF field: (d{message}:x{text},hp{inc_hp},hR{pad}) Uses VsfField::parse() per AGENT.md
                         let mut ptr = 0usize;
                         let mut message_text = String::new();
                         let mut incorporated_hp = [0u8; 32];
@@ -3278,9 +3241,7 @@ impl PhotonApp {
                         // Update bidirectional entropy state (derive weave hash from full message context)
                         chains.update_received_for_mixing(timestamp, msg_hp, &plaintext);
 
-                        // Look up OUR plaintext that they incorporated (for bidirectional weave)
-                        // If incorporated_hp is all zeros, they didn't incorporate any of our messages
-                        // Clone to avoid borrow issues with advance()
+                        // Look up OUR plaintext that they incorporated (for bidirectional weave) If incorporated_hp is all zeros, they didn't incorporate any of our messages Clone to avoid borrow issues with advance()
                         let our_incorporated_plaintext: Option<Vec<u8>> =
                             if incorporated_hp != [0u8; 32] {
                                 chains
@@ -3311,8 +3272,7 @@ impl PhotonApp {
                             hex::encode(&msg_hp[..8])
                         ));
 
-                        // CRASH SAFETY: Persist to disk BEFORE sending ACK
-                        // If we crash after ACK but before disk, sender thinks we have it but we don't. Disk write is the commit point - ACK is just notification. If chain save fails, DO NOT send ACK. Sender will retransmit and we can try again, preventing permanent desync.
+                        // CRASH SAFETY: Persist to disk BEFORE sending ACK If we crash after ACK but before disk, sender thinks we have it but we don't. Disk write is the commit point - ACK is just notification. If chain save fails, DO NOT send ACK. Sender will retransmit and we can try again, preventing permanent desync.
                         if let Some(storage) = self.storage.as_ref() {
                             if let Err(e) = crate::storage::friendship::save_friendship_chains(
                                 chains,
@@ -3350,8 +3310,7 @@ impl PhotonApp {
                             }
                         }
 
-                        // *** THEN send ACK - if we crash here, sender will resend, we can dedup ***
-                        // Get recipient pubkey for relay fallback
+                        // *** THEN send ACK - if we crash here, sender will resend, we can dedup *** Get recipient pubkey for relay fallback
                         let recipient_pubkey = self.contacts.get(contact_idx)
                             .map(|c| *c.public_identity.as_bytes())
                             .unwrap_or([0u8; 32]);
@@ -3544,8 +3503,7 @@ impl PhotonApp {
                     }
                 }
 
-                // PT large transfer received (fallback - normally parsed in status.rs)
-                // This only fires if the PT data wasn't recognized as CLUTCH message
+                // PT large transfer received (fallback - normally parsed in status.rs) This only fires if the PT data wasn't recognized as CLUTCH message
                 StatusUpdate::PTReceived { peer_addr, data } => {
                     crate::log(&format!(
                         "PT: Received unknown {} bytes from {} (not CLUTCH)",
@@ -3560,8 +3518,7 @@ impl PhotonApp {
                     // TODO: Track completion for full CLUTCH flow
                 }
 
-                // Full CLUTCH offer received (~548KB with all 8 pubkeys)
-                // Payload is already parsed and signature verified by status.rs
+                // Full CLUTCH offer received (~548KB with all 8 pubkeys) Payload is already parsed and signature verified by status.rs
                 StatusUpdate::ClutchOfferReceived {
                     conversation_token,
                     offer_provenance, // Unique per offer (VSF hp field)
@@ -3675,16 +3632,14 @@ impl PhotonApp {
 
                             if let Some(stored_keys) = stored_hqc_pub {
                                 if stored_keys == their_offer.hqc256_public {
-                                    // Same keys - check if we already sent KEM response
-                                    // If so, peer didn't receive it - re-send!
+                                    // Same keys - check if we already sent KEM response If so, peer didn't receive it - re-send!
                                     let already_sent_kem = contact
                                         .get_slot(&our_handle_hash)
                                         .map(|s| s.kem_secrets_to_them.is_some())
                                         .unwrap_or(false);
 
                                     if already_sent_kem {
-                                        // We already sent KEM response but peer resent offer
-                                        // They didn't receive it - trigger re-send
+                                        // We already sent KEM response but peer resent offer They didn't receive it - trigger re-send
                                         crate::log(&format!(
                                             "CLUTCH: Re-sending KEM response to {} (peer resent same offer)",
                                             contact.handle
@@ -3752,9 +3707,7 @@ impl PhotonApp {
                                         // Clear ceremony_id so it gets recomputed with new provenance
                                         contact.ceremony_id = None;
                                         contact.offer_provenances.retain(|p| {
-                                            // Keep our provenance, remove their old one
-                                            // Our provenance is computed from our handle_hash
-                                            // This is a bit hacky but works for 2-party
+                                            // Keep our provenance, remove their old one Our provenance is computed from our handle_hash This is a bit hacky but works for 2-party
                                             p != &offer_provenance
                                         });
                                         // Don't trigger rekey_request - we keep our keys
@@ -3943,9 +3896,7 @@ impl PhotonApp {
                                     }
                                 }
 
-                                // Send KEM response (encapsulate to remote pubkeys)
-                                // Check if we haven't already sent (kem_secrets_to_them in local slot)
-                                // KEM response requires ceremony_id (for wire format verification)
+                                // Send KEM response (encapsulate to remote pubkeys) Check if we haven't already sent (kem_secrets_to_them in local slot) KEM response requires ceremony_id (for wire format verification)
                                 let already_sent_kem = contact
                                     .get_slot(&our_handle_hash)
                                     .map(|s| s.kem_secrets_to_them.is_some())
@@ -4012,9 +3963,7 @@ impl PhotonApp {
                                         contact.handle
                                     ));
                                 } else {
-                                    // No keypairs - need to respond (whether Complete or not)
-                                    // If Complete: peer lost their chains, accept re-key
-                                    // If not Complete: restart mid-ceremony or fresh re-key
+                                    // No keypairs - need to respond (whether Complete or not) If Complete: peer lost their chains, accept re-key If not Complete: restart mid-ceremony or fresh re-key
                                     if contact.clutch_state == ClutchState::Complete {
                                         // Peer is sending an offer while we think we're Complete. This means either:
                                         // 1. Same HQC prefix: peer missed our KEM response (can't re-send without keypairs)
@@ -4156,8 +4105,7 @@ impl PhotonApp {
                     }
                 }
 
-                // CLUTCH KEM response received (~31KB with 4 ciphertexts)
-                // Payload is already parsed and signature verified by status.rs
+                // CLUTCH KEM response received (~31KB with 4 ciphertexts) Payload is already parsed and signature verified by status.rs
                 StatusUpdate::ClutchKemResponseReceived {
                     conversation_token,
                     ceremony_id: received_ceremony_id,
@@ -4254,8 +4202,7 @@ impl PhotonApp {
                                     continue;
                                 }
                             } else {
-                                // No ceremony_id yet - check if we have keypairs and if KEM targets them
-                                // This happens when keypairs are loaded from disk but offers not yet exchanged
+                                // No ceremony_id yet - check if we have keypairs and if KEM targets them This happens when keypairs are loaded from disk but offers not yet exchanged
                                 if let Some(ref our_keys) = contact.clutch_our_keypairs {
                                     let our_hqc_prefix: [u8; 8] =
                                         our_keys.hqc256_public[..8].try_into().unwrap();
@@ -4293,8 +4240,7 @@ impl PhotonApp {
                                 contact.init_clutch_slots(our_handle_hash);
                             }
 
-                            // Verify KEM response targets our CURRENT HQC public key
-                            // This prevents panics from stale KEM responses encrypted to old keys
+                            // Verify KEM response targets our CURRENT HQC public key This prevents panics from stale KEM responses encrypted to old keys
                             if let Some(ref our_keys) = contact.clutch_our_keypairs {
                                 let our_hqc_prefix: [u8; 8] =
                                     our_keys.hqc256_public[..8].try_into().unwrap();
@@ -4373,8 +4319,7 @@ impl PhotonApp {
                     }
                 }
 
-                // CLUTCH complete proof received (~200 bytes with eggs_proof)
-                // Both parties exchange this to verify they derived identical eggs
+                // CLUTCH complete proof received (~200 bytes with eggs_proof) Both parties exchange this to verify they derived identical eggs
                 StatusUpdate::ClutchCompleteReceived {
                     conversation_token,
                     ceremony_id: _received_ceremony_id,
@@ -4584,14 +4529,12 @@ impl PhotonApp {
             changed = true;
         }
 
-        // Ping contacts immediately when a new LAN address is discovered
-        // Fixes timing gap: startup ping fires before first LAN discovery arrives
+        // Ping contacts immediately when a new LAN address is discovered Fixes timing gap: startup ping fires before first LAN discovery arrives
         for idx in lan_ping_indices {
             self.ping_contact(idx);
         }
 
-        // Retransmit pending messages to contacts that just came online
-        // Use last_received_ef6 from pong to only retransmit messages they don't have
+        // Retransmit pending messages to contacts that just came online Use last_received_ef6 from pong to only retransmit messages they don't have
         for (fid, peer_addr, handle, recipient_pubkey, last_received_ef6) in retransmit_requests {
             if let Some((_, chains)) = self.friendship_chains.iter().find(|(id, _)| *id == fid) {
                 let pending = chains.pending_messages();
@@ -4658,8 +4601,7 @@ impl PhotonApp {
         changed
     }
 
-    /// Send a message to the currently selected contact
-    /// Returns true if message was sent successfully
+    /// Send a message to the currently selected contact Returns true if message was sent successfully
     pub fn send_message_to_selected_contact(&mut self, message_text: &str) -> bool {
         use crate::network::status::MessageRequest;
         use crate::types::ChatMessage;
@@ -4760,8 +4702,7 @@ impl PhotonApp {
             .and_then(|their_hash| chains.last_received_hash(their_hash).copied())
             .unwrap_or([0u8; 32]);
 
-        // Build payload as VSF field: (d{message}:x{text},hp{inc_hp},hR{pad})
-        // This is VSF-spec compliant with type-marker parsing (not positional)
+        // Build payload as VSF field: (d{message}:x{text},hp{inc_hp},hR{pad}) This is VSF-spec compliant with type-marker parsing (not positional)
         use vsf::schema::section::FieldValue;
 
         let mut values = vec![
@@ -4769,8 +4710,7 @@ impl PhotonApp {
             vsf::VsfType::hp(incorporated_hp.to_vec()),
         ];
 
-        // Add random padding for traffic analysis resistance
-        // Length = min of 3 random u8s → biased toward short (median ~53 bytes)
+        // Add random padding for traffic analysis resistance Length = min of 3 random u8s → biased toward short (median ~53 bytes)
         let pad_len = rand::random::<u8>()
             .min(rand::random::<u8>())
             .min(rand::random::<u8>()) as usize;
@@ -4829,8 +4769,7 @@ impl PhotonApp {
         // Capture conversation_token before mutable borrow
         let conversation_token = chains.conversation_token;
 
-        // CRASH SAFETY: Persist to disk BEFORE sending to network
-        // If we crash after network but before disk, we desync permanently. Disk write is the commit point - network is just notification.
+        // CRASH SAFETY: Persist to disk BEFORE sending to network If we crash after network but before disk, we desync permanently. Disk write is the commit point - network is just notification.
 
         // Track pending message for ACK matching and resync capability
         if let Some((_, chains_mut)) = self
@@ -4852,8 +4791,7 @@ impl PhotonApp {
 
             // DO NOT advance chain here — wait for ACK. Advancing before ACK causes permanent desync if the message is never processed by the receiver (crash, offline, lost UDP). The receiver's copy of our chain won't match, and subsequent messages decrypt to garbage. Chain advancement happens in process_ack() when the receiver confirms they decrypted our message.
 
-            // *** PERSIST to disk FIRST - this is the commit point ***
-            // If chain save fails, DO NOT send the message. The chain state would be out of sync with disk, causing permanent desync on crash/restart.
+            // *** PERSIST to disk FIRST - this is the commit point *** If chain save fails, DO NOT send the message. The chain state would be out of sync with disk, causing permanent desync on crash/restart.
             if let Some(storage) = self.storage.as_ref() {
                 if let Err(e) = crate::storage::friendship::save_friendship_chains(
                     chains_mut,
@@ -4912,8 +4850,7 @@ impl PhotonApp {
         false
     }
 
-    /// Check for completed avatar downloads and update contacts or user avatar
-    /// Returns true if any avatars were updated
+    /// Check for completed avatar downloads and update contacts or user avatar Returns true if any avatars were updated
     pub fn check_avatar_downloads(&mut self) -> bool {
         let mut changed = false;
         while let Ok(result) = self.contact_avatar_rx.try_recv() {
@@ -5463,8 +5400,7 @@ impl PhotonApp {
                     found_idx = Some(idx);
                     contact.clutch_kem_encap_in_progress = false;
 
-                    // Store local encapsulation secrets in local slot (local contribution)
-                    // Also store the KEM response payload for re-send
+                    // Store local encapsulation secrets in local slot (local contribution) Also store the KEM response payload for re-send
                     if let Some(slot) = contact.get_slot_mut(&our_handle_hash) {
                         slot.kem_secrets_to_them = Some(result.local_secrets);
                         slot.kem_response_for_resend = Some(result.kem_response.clone());
@@ -5908,8 +5844,7 @@ impl PhotonApp {
             crate::log(&format!("Status: Pinged {} contact(s)", pinged));
         }
 
-        // Send LAN broadcast for local peer discovery (NAT hairpinning workaround)
-        // This lets peers on the same LAN discover each other's local IPs
+        // Send LAN broadcast for local peer discovery (NAT hairpinning workaround) This lets peers on the same LAN discover each other's local IPs
         if let (Some(handle_proof), Some(hq)) = (self.user_handle_proof, &self.handle_query) {
             checker.send_lan_broadcast(handle_proof, hq.port());
         }
@@ -5945,8 +5880,7 @@ impl PhotonApp {
         }
     }
 
-    /// Trigger peer IP refresh (ping all contacts)
-    /// Called when returning to contacts screen for snappy updates
+    /// Trigger peer IP refresh (ping all contacts) Called when returning to contacts screen for snappy updates
     pub fn trigger_peer_refresh(&mut self) {
         crate::log("Network: Triggering peer refresh on screen return");
         self.ping_contacts();
@@ -5968,8 +5902,7 @@ impl PhotonApp {
     }
 
 
-    /// Check for peer updates from WebSocket (real-time IP changes)
-    /// Returns true if any contact IP was updated
+    /// Check for peer updates from WebSocket (real-time IP changes) Returns true if any contact IP was updated
     #[cfg(not(target_os = "android"))]
     pub fn check_peer_updates(&mut self) -> bool {
         let Some(ref client) = self.peer_update_client else {
@@ -6010,8 +5943,7 @@ impl PhotonApp {
         updated
     }
 
-    // NOTE: initiate_full_clutch was removed - use spawn_clutch_keygen() for background keygen
-    // The proper flow is:
+    // NOTE: initiate_full_clutch was removed - use spawn_clutch_keygen() for background keygen The proper flow is:
     // 1. spawn_clutch_keygen() generates keys + ceremony_id in background (~2s total)
     // 2. check_clutch_keygens() stores results and sends offers when ready
 }

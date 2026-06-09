@@ -6,8 +6,7 @@
 use super::inspect::vsf_inspect;
 use std::net::SocketAddr;
 
-/// Centralized UDP TX - logs via vsf_inspect then sends
-/// This is THE ONLY place UDP packets should be transmitted (except LAN broadcast)
+/// Centralized UDP TX - logs via vsf_inspect then sends This is THE ONLY place UDP packets should be transmitted (except LAN broadcast)
 pub async fn send(socket: &tokio::net::UdpSocket, data: &[u8], addr: SocketAddr) {
     #[cfg(feature = "development")]
     {
@@ -44,8 +43,7 @@ pub fn log_received(data: &[u8], addr: &SocketAddr) {
     }
 }
 
-/// Get local LAN IP address by connecting to external address
-/// This finds which interface the OS would use to reach the internet
+/// Get local LAN IP address by connecting to external address This finds which interface the OS would use to reach the internet
 pub fn get_local_ip() -> Option<std::net::Ipv4Addr> {
     let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
     // Connect to Cloudflare DNS - doesn't actually send packets, just sets up routing
@@ -56,11 +54,9 @@ pub fn get_local_ip() -> Option<std::net::Ipv4Addr> {
     }
 }
 
-/// Get LAN broadcast address for the interface that routes to internet
-/// Returns (broadcast_addr, local_ip) or None if unable to determine
+/// Get LAN broadcast address for the interface that routes to internet Returns (broadcast_addr, local_ip) or None if unable to determine
 ///
-/// On Linux: parses `ip addr` output to find actual broadcast address
-/// Fallback: assumes /24 subnet and computes broadcast from local IP
+/// On Linux: parses `ip addr` output to find actual broadcast address Fallback: assumes /24 subnet and computes broadcast from local IP
 pub fn get_broadcast_addr() -> Option<(std::net::Ipv4Addr, std::net::Ipv4Addr)> {
     let local_ip = get_local_ip()?;
 
@@ -88,8 +84,7 @@ fn get_broadcast_from_system(local_ip: &std::net::Ipv4Addr) -> Option<std::net::
     let stdout = String::from_utf8_lossy(&output.stdout);
     let local_str = local_ip.to_string();
 
-    // Find line containing our local IP and extract broadcast address
-    // Format: "inet <lan-ip>/24 brd 192.168.0.255 scope global ..."
+    // Find line containing our local IP and extract broadcast address Format: "inet <lan-ip>/24 brd 192.168.0.255 scope global ..."
     for line in stdout.lines() {
         if line.contains(&local_str) && line.contains("brd") {
             // Parse: inet IP/prefix brd BROADCAST ...
@@ -106,8 +101,7 @@ fn get_broadcast_from_system(local_ip: &std::net::Ipv4Addr) -> Option<std::net::
     None
 }
 
-/// Parse LAN discovery packet
-/// Returns (handle_proof, ip, port) if valid, None otherwise handle_proof is extracted from the VSF header's provenance hash (hp)
+/// Parse LAN discovery packet Returns (handle_proof, ip, port) if valid, None otherwise handle_proof is extracted from the VSF header's provenance hash (hp)
 pub fn parse_lan_discovery(
     packet: &[u8],
     src_addr: SocketAddr,
@@ -115,8 +109,7 @@ pub fn parse_lan_discovery(
     use vsf::file_format::{VsfHeader, VsfSection};
     use vsf::VsfType;
 
-    // Parse header to get provenance hash (sender identity) and find section start
-    // Note: No is_original() check - LAN discovery is a simple unsigned broadcast
+    // Parse header to get provenance hash (sender identity) and find section start Note: No is_original() check - LAN discovery is a simple unsigned broadcast
     let (header, header_end) = VsfHeader::decode(packet).ok()?;
 
     // Extract handle_proof from header provenance hash
@@ -155,8 +148,7 @@ pub fn parse_lan_discovery(
     Some((handle_proof, src_ip, port))
 }
 
-/// Build LAN discovery broadcast packet handle_proof is stored in VSF header as provenance hash (hp) for identity
-/// One-shot broadcast - no rolling hash needed (provenance_only)
+/// Build LAN discovery broadcast packet handle_proof is stored in VSF header as provenance hash (hp) for identity One-shot broadcast - no rolling hash needed (provenance_only)
 pub fn build_lan_discovery(handle_proof: [u8; 32], port: u16) -> Vec<u8> {
     use vsf::{VsfBuilder, VsfType};
 

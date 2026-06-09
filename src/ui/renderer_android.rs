@@ -13,8 +13,7 @@ fn is_samsung() -> bool {
     unsafe { SAMSUNG_MODE }
 }
 
-/// Buffer wrapper for Android that mimics softbuffer's interface
-/// Allows compositing code to work identically across platforms
+/// Buffer wrapper for Android that mimics softbuffer's interface Allows compositing code to work identically across platforms
 pub struct AndroidBuffer<'a> {
     pixels: &'a mut Vec<u32>,
 }
@@ -30,8 +29,7 @@ impl<'a> AndroidBuffer<'a> {
     /// Mark the entire buffer as dirty (no-op — Android uses magic pixel generation tracking).
     pub fn mark_all(&self) {}
 
-    /// No-op present for Android - actual present happens via Renderer::present()
-    /// This exists so compositing code's `buffer.present().unwrap()` compiles
+    /// No-op present for Android - actual present happens via Renderer::present() This exists so compositing code's `buffer.present().unwrap()` compiles
     pub fn present(self) -> Result<(), ()> {
         Ok(())
     }
@@ -85,16 +83,14 @@ impl Renderer {
     pub fn mark_rows(&mut self, _y_start: u32, _y_end: u32) {}
     pub fn mark_all(&mut self) {}
 
-    /// Lock buffer for drawing - matches desktop interface
-    /// Compositing code calls this to get a &mut [u32] to draw into
+    /// Lock buffer for drawing - matches desktop interface Compositing code calls this to get a &mut [u32] to draw into
     pub fn lock_buffer(&mut self) -> AndroidBuffer<'_> {
         AndroidBuffer {
             pixels: &mut self.buffer,
         }
     }
 
-    /// Present internal buffer to Android NativeWindow surface
-    /// Only call this after compositing has drawn to lock_buffer()
+    /// Present internal buffer to Android NativeWindow surface Only call this after compositing has drawn to lock_buffer()
     ///
     /// Uses magic pixel in top-right corner to track per-buffer state. Each of Android's 3 rotating buffers gets the content_version written to it after copy, so we can detect if a buffer is already current.
     pub fn present(&mut self, window: &NativeWindow, dirty: bool) -> bool {

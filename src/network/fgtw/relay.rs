@@ -119,8 +119,7 @@ pub async fn fetch_relay_messages(keypair: &Keypair) -> Result<Vec<u8>, String> 
             .await
             .map_err(|e| format!("Failed to read body: {}", e))?;
 
-        // Response is VSF with section "fetched" containing "messages" field
-        // Parse to extract the raw messages
+        // Response is VSF with section "fetched" containing "messages" field Parse to extract the raw messages
         if bytes.is_empty() {
             return Ok(Vec::new());
         }

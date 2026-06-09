@@ -45,8 +45,7 @@ fn fs_main(in: VertOut) -> @location(0) vec4<f32> {
 
 // --------------------------------------------------------------------------- WgpuBuffer guard — matches the softbuffer API used by compositing.rs
 //
-//   let mut buf = renderer.lock_buffer();
-// buf[idx] = colour;           // DerefMut → &mut [u32] buf.present().unwrap(); ---------------------------------------------------------------------------
+//   let mut buf = renderer.lock_buffer(); buf[idx] = colour;           // DerefMut → &mut [u32] buf.present().unwrap(); ---------------------------------------------------------------------------
 pub struct WgpuBuffer<'a> {
     inner: &'a mut Renderer,
 }
