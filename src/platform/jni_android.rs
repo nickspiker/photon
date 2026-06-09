@@ -45,9 +45,14 @@ pub struct PhotonContext {
 
 #[cfg(target_os = "android")]
 impl PhotonContext {
-    pub fn new(width: u32, height: u32, _network: &NetworkContext) -> Self {
-        // Wire NetworkContext-derived state into the fluor-based PhotonApp here once the app exposes a constructor that takes (keypair, peer_store, data_dir). Today the app constructs its HandleQuery internally during init; this is a known follow-up.
-        let app = PhotonApp::new();
+    pub fn new(width: u32, height: u32, network: &NetworkContext) -> Self {
+        // Inject the NetworkContext-derived device keypair BEFORE AndroidShell::new calls app.init — PhotonApp::init takes the keypair via `device_keypair.take()` and would panic on Android if it found `None`. The cryptographic identity for every contact / message / chain advance flows from this keypair, so the safety check is load-bearing.
+        let mut app = PhotonApp::new();
+        app.set_device_keypair(network.keypair.clone());
+        info!(
+            "PhotonContext: wired device keypair pubkey {}",
+            hex::encode(network.keypair.public.as_bytes())
+        );
         Self {
             shell: AndroidShell::new(app, width, height),
         }
