@@ -3,9 +3,7 @@ use crate::types::DevicePubkey;
 
 use crate::PEER_EXPIRY_OSC;
 
-/// In-memory peer storage for FGTW
-/// Stores PeerRecords in a sorted Vec (by handle_proof) for O(log n) lookup
-/// Multiple devices per handle are supported (consecutive records with same handle_proof)
+/// In-memory peer storage for FGTW Stores PeerRecords in a sorted Vec (by handle_proof) for O(log n) lookup Multiple devices per handle are supported (consecutive records with same handle_proof)
 pub struct PeerStore {
     /// Sorted by handle_proof for binary search
     peers: Vec<PeerRecord>,
@@ -23,9 +21,7 @@ impl PeerStore {
             .unwrap_or_else(|i| i)
     }
 
-    /// Add or update a peer record
-    /// If device already exists for this handle, update it
-    /// Otherwise insert at sorted position
+    /// Add or update a peer record If device already exists for this handle, update it Otherwise insert at sorted position
     pub fn add_peer(&mut self, peer: PeerRecord) {
         // Find where this handle_proof starts
         let pos = self.find_position(&peer.handle_proof);

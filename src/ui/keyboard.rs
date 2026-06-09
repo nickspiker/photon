@@ -56,9 +56,7 @@ impl PhotonApp {
                 }
             }
 
-            // Zoom shortcuts (available in all states)
-            // Uses logarithmic scaling: 1 step = multiply by 33/32
-            // macOS: Cmd++/-/0  |  other platforms: Ctrl++/-/0
+            // Zoom shortcuts (available in all states) Uses logarithmic scaling: 1 step = multiply by 33/32 macOS: Cmd++/-/0  |  other platforms: Ctrl++/-/0
             #[cfg(target_os = "macos")]
             let zoom_key = self.modifiers.super_key();
             #[cfg(not(target_os = "macos"))]
@@ -391,8 +389,7 @@ impl PhotonApp {
                                 }
                             }
                             AppState::Connected { .. } => {
-                                // In Connected state: send message (TODO)
-                                // For now, do nothing
+                                // In Connected state: send message (TODO) For now, do nothing
                             }
                         }
                     }
@@ -427,8 +424,7 @@ impl PhotonApp {
                 _ => {}
             }
 
-            // Handle text input using event.text field (includes space and all printable chars)
-            // Named keys return early above, so we only reach here for actual text input
+            // Handle text input using event.text field (includes space and all printable chars) Named keys return early above, so we only reach here for actual text input
             if let Some(text) = &event.text {
                 // Delete selection first if it exists
                 if self.current_text_state.selection_anchor.is_some() {
@@ -462,8 +458,7 @@ impl PhotonApp {
                     let _text: String = self.current_text_state.chars.iter().collect();
                     debug_println!("  Text now: \"{}\" (len={})", text, text.len());
                 }
-                // Only reset to Fresh state if we're in Launch mode
-                // Don't touch app_state if we're in Ready or Connected
+                // Only reset to Fresh state if we're in Launch mode Don't touch app_state if we're in Ready or Connected
                 if matches!(self.app_state, AppState::Launch(_)) {
                     if !matches!(self.app_state, AppState::Launch(LaunchState::Fresh)) {
                         self.window_dirty = true; // Force redraw to update button

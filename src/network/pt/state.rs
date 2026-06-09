@@ -132,8 +132,7 @@ impl OutboundTransfer {
         );
     }
 
-    /// Check if TCP should be used in parallel (after 1s)
-    /// Returns true when transfer is old enough that TCP should be tried alongside UDP
+    /// Check if TCP should be used in parallel (after 1s) Returns true when transfer is old enough that TCP should be tried alongside UDP
     pub fn tcp_eligible(&self) -> bool {
         self.created_at.elapsed() >= Duration::from_secs(1)
     }
@@ -162,14 +161,12 @@ impl OutboundTransfer {
 
     /// Get next packets to send based on blast-256 model
     ///
-    /// Phase 1 (blast): Send up to INITIAL_BLAST packets immediately
-    /// Phase 2 (pipelining): Send packets_per_ack() packets for each ACK
+    /// Phase 1 (blast): Send up to INITIAL_BLAST packets immediately Phase 2 (pipelining): Send packets_per_ack() packets for each ACK
     pub fn packets_to_send(&mut self) -> Vec<PTData> {
         let mut packets = Vec::new();
 
         if self.window.in_blast_phase() {
-            // Blast phase: send ALL blast packets immediately (no in-flight limit)
-            // We're intentionally flooding - ACKs will catch up
+            // Blast phase: send ALL blast packets immediately (no in-flight limit) We're intentionally flooding - ACKs will catch up
             while self.window.in_blast_phase() {
                 if let Some(seq) = self.send_buffer.next_to_send() {
                     if let Some(payload) = self.send_buffer.get_packet(seq) {
@@ -223,8 +220,7 @@ impl OutboundTransfer {
         packets
     }
 
-    /// Handle ACK received
-    /// Note: chunk_hash verification is done in PTManager::handle_ack() during transfer matching
+    /// Handle ACK received Note: chunk_hash verification is done in PTManager::handle_ack() during transfer matching
     pub fn handle_ack(&mut self, ack: &PTAck) -> bool {
         // Update RTT if we were tracking this packet
         if let Some(rtt_sample) = self.flight.acked(ack.sequence) {
@@ -280,8 +276,7 @@ impl OutboundTransfer {
         }
     }
 
-    /// Get transfer statistics
-    /// Returns: (total_packets, bytes, retransmits, duration_ms, send_ratio_x100, rtt_ms, packet_size)
+    /// Get transfer statistics Returns: (total_packets, bytes, retransmits, duration_ms, send_ratio_x100, rtt_ms, packet_size)
     pub fn stats(&self) -> (u32, u32, u32, u64, u32, u64, u16) {
         let duration_ms = self.created_at.elapsed().as_millis() as u64;
         let rtt_ms = self.rtt.srtt().as_millis() as u64;
@@ -418,8 +413,7 @@ impl InboundTransfer {
         self.receive_buffer.progress()
     }
 
-    /// Get transfer statistics
-    /// Returns: (total_packets, total_bytes, duplicates, duration_ms)
+    /// Get transfer statistics Returns: (total_packets, total_bytes, duplicates, duration_ms)
     pub fn stats(&self) -> (u32, u32, u32, u64) {
         let duration_ms = self.created_at.elapsed().as_millis() as u64;
         (

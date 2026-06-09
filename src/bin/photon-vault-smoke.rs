@@ -2,11 +2,7 @@
 //!
 //! Exercises every FlatStorage public method against a real `~/.config/photon.vsf` file using hard-coded test keying material. Useful for verifying the on-disk vault works end-to-end before a real attestation has fired in Photon (which is what would normally trigger `FlatStorage::new` at runtime).
 //!
-//! Usage:
-//!   cargo run --bin photon-vault-smoke
-//!   ls -la ~/.config/photon.vsf       # should be ~2 MiB
-//!   file ~/.config/photon.vsf         # should say "VSF data"
-//!   cargo run --bin photon-vault-smoke # again, should find existing data + add more
+//! Usage: cargo run --bin photon-vault-smoke ls -la ~/.config/photon.vsf       # should be ~2 MiB file ~/.config/photon.vsf         # should say "VSF data" cargo run --bin photon-vault-smoke # again, should find existing data + add more
 //!
 //! Cleanup: just `rm ~/.config/photon.vsf` between runs.
 //!

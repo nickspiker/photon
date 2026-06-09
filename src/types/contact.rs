@@ -70,8 +70,7 @@ impl ChatMessage {
     }
 }
 
-/// A handle name stored as VSF text (normalized Unicode, unambiguous)
-/// Wrapper around String that represents a VSF x-type text value
+/// A handle name stored as VSF text (normalized Unicode, unambiguous) Wrapper around String that represents a VSF x-type text value
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HandleText(String);
 
@@ -125,13 +124,11 @@ pub struct Contact {
     // Slot-based CLUTCH state (N-party support)
     /// Our 8 ephemeral keypairs (~512KB secret keys) - generated once per ceremony
     pub clutch_our_keypairs: Option<ClutchAllKeypairs>,
-    /// Party slots indexed by sorted handle_hash position
-    /// Each slot contains offer + kem_secrets for one party (including self)
+    /// Party slots indexed by sorted handle_hash position Each slot contains offer + kem_secrets for one party (including self)
     pub clutch_slots: Vec<PartySlot>,
     /// Cached ceremony_id - computed from handle_hashes + sorted ping provenances. Uses spaghettify for mixing (no memory-hard step needed). Unique per ceremony due to ping timestamp entropy.
     pub ceremony_id: Option<[u8; 32]>,
-    /// Pending KEM response received before our keygen completed
-    /// Stored here and processed when ceremony_id becomes available
+    /// Pending KEM response received before our keygen completed Stored here and processed when ceremony_id becomes available
     pub clutch_pending_kem: Option<ClutchKemResponsePayload>,
     /// Track if we've sent our offer (to avoid resending)
     pub clutch_offer_sent: bool,
@@ -147,8 +144,7 @@ pub struct Contact {
     pub clutch_ceremony_in_progress: bool,
     /// HQC public key prefix from peer's last completed ceremony. Used for stale detection: if received offer has same HQC prefix, it's a PT retransmission (stale), not a legitimate re-key request. Stored at completion time, cleared when accepting new ceremony.
     pub completed_their_hqc_prefix: Option<[u8; 8]>,
-    /// Collected offer provenances for ceremony nonce derivation.
-    /// Each offer's VSF header has hp = BLAKE3(signer_pubkey || creation_time_nanos). Sorted and combined via spaghettify to derive unique ceremony_id. Cleared when CLUTCH ceremony completes.
+    /// Collected offer provenances for ceremony nonce derivation. Each offer's VSF header has hp = BLAKE3(signer_pubkey || creation_time_nanos). Sorted and combined via spaghettify to derive unique ceremony_id. Cleared when CLUTCH ceremony completes.
     pub offer_provenances: Vec<[u8; 32]>,
 
     pub trust_level: TrustLevel,
@@ -162,15 +158,13 @@ pub struct Contact {
     pub indicator_y: usize, // Cached indicator dot Y position (set during draw)
     pub text_x: f32,     // Cached text X position (set during draw)
     pub text_y: f32,     // Cached text Y position (set during draw)
-    // Avatar cache - fetched from FGTW by handle
-    // Storage key is deterministic: BLAKE3(BLAKE3(handle) || "avatar")
+    // Avatar cache - fetched from FGTW by handle Storage key is deterministic: BLAKE3(BLAKE3(handle) || "avatar")
     pub avatar_pixels: Option<Vec<u8>>, // Full 256x256 VSF RGB pixels (cached)
     pub avatar_scaled: Option<Vec<u8>>, // Pre-scaled to current display size
     pub avatar_scaled_diameter: usize,  // Diameter the scaled pixels were rendered for
 }
 
-/// Contact identifier - BLAKE3 hash of the contact's public identity key
-/// This provides deterministic, collision-resistant identification
+/// Contact identifier - BLAKE3 hash of the contact's public identity key This provides deterministic, collision-resistant identification
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ContactId([u8; 32]);
 

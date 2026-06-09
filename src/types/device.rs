@@ -43,9 +43,7 @@ impl DevicePubkey {
     ///
     /// Uses the standard birational map from Ed25519 to Curve25519. This allows using a single Ed25519 identity for both signing and DHE.
     pub fn to_x25519(&self) -> x25519_dalek::PublicKey {
-        // Ed25519 public keys can be converted to X25519 using montgomery_point
-        // The ed25519-dalek VerifyingKey has to_montgomery() but we have raw bytes
-        // Use curve25519-dalek's CompressedEdwardsY directly
+        // Ed25519 public keys can be converted to X25519 using montgomery_point The ed25519-dalek VerifyingKey has to_montgomery() but we have raw bytes Use curve25519-dalek's CompressedEdwardsY directly
         use curve25519_dalek::edwards::CompressedEdwardsY;
         let compressed = CompressedEdwardsY::from_slice(&self.key).unwrap();
         let edwards = compressed.decompress().expect("invalid Ed25519 point");

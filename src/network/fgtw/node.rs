@@ -6,8 +6,7 @@ fn eagle_time() -> i64 {
     vsf::eagle_time_oscillations()
 }
 
-/// Node identifier for FGTW routing
-/// Wraps the device's X25519 pubkey for use in Kademlia XOR distance calculations
+/// Node identifier for FGTW routing Wraps the device's X25519 pubkey for use in Kademlia XOR distance calculations
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NodeId([u8; 32]);
 
@@ -46,8 +45,7 @@ impl NodeId {
         256 // All zeros
     }
 
-    /// Calculate bucket index for another node relative to this node
-    /// Returns which of the 256 buckets the other node belongs in
+    /// Calculate bucket index for another node relative to this node Returns which of the 256 buckets the other node belongs in
     pub fn bucket_index(&self, other: &NodeId) -> usize {
         let distance = self.distance(other);
         let mut leading_zeros = 0;
@@ -102,8 +100,7 @@ impl NodeContact {
     }
 }
 
-/// K-bucket for Kademlia routing table
-/// Each bucket stores up to K nodes at a specific XOR distance range
+/// K-bucket for Kademlia routing table Each bucket stores up to K nodes at a specific XOR distance range
 #[derive(Debug, Clone)]
 pub struct KBucket {
     entries: Vec<NodeContact>,
@@ -118,8 +115,7 @@ impl KBucket {
         }
     }
 
-    /// Try to insert a node contact
-    /// Returns true if inserted, false if bucket is full
+    /// Try to insert a node contact Returns true if inserted, false if bucket is full
     pub fn insert(&mut self, contact: NodeContact) -> bool {
         // Check if node already exists
         if let Some(pos) = self
@@ -185,8 +181,7 @@ impl KBucket {
     }
 }
 
-/// Kademlia routing table with 256 buckets
-/// Each bucket stores nodes at a specific XOR distance range
+/// Kademlia routing table with 256 buckets Each bucket stores nodes at a specific XOR distance range
 pub struct RoutingTable {
     local_id: NodeId,
     buckets: Vec<KBucket>,

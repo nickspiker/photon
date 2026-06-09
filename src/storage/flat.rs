@@ -1,10 +1,6 @@
 //! Flat opaque storage — dual-ring `ferros_vault` host_file backend.
 //!
-//! Two equal vault files, each a complete VSF-wrapped vault: ring 0 at the XDG config
-//! path (`~/.config/photon.vsf` on Linux) and ring 1 at the XDG data path
-//! (`~/.local/share/photon.vsf` on Linux). Both files store the same logical state;
-//! neither is "primary" — write order is randomized per call so wear distributes evenly
-//! and a damaged-always-first-ring failure mode can't sneak in.
+//! Two equal vault files, each a complete VSF-wrapped vault: ring 0 at the XDG config path (`~/.config/photon.vsf` on Linux) and ring 1 at the XDG data path (`~/.local/share/photon.vsf` on Linux). Both files store the same logical state; neither is "primary" — write order is randomized per call so wear distributes evenly and a damaged-always-first-ring failure mode can't sneak in.
 //!
 //! Failure handling:
 //! - On open, if one file is missing or corrupt, it's silently rebuilt from the other
@@ -14,9 +10,7 @@
 //! - On write, both rings are written. If one fails the survivor is kept and the
 //!   failed ring is dropped from the session; `degraded` flags it for the user.
 //!
-//! Public API (`new`, `read`, `write`, `delete`) signatures unchanged from the
-//! single-file version — callers in `contacts.rs`, `friendship.rs`, etc. don't know
-//! the backend went dual.
+//! Public API (`new`, `read`, `write`, `delete`) signatures unchanged from the single-file version — callers in `contacts.rs`, `friendship.rs`, etc. don't know the backend went dual.
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -33,13 +27,10 @@ use rand::Rng;
 use crate::storage::{decrypt_bytes, encrypt_bytes};
 
 const VAULT_FILENAME: &str = "photon.vsf";
-/// Suffix used when XDG config_dir == data_dir (macOS): both files share a directory
-/// but use distinct names. Strictly worse than the XDG split, but keeps the dual-ring
-/// invariant intact across platforms.
+/// Suffix used when XDG config_dir == data_dir (macOS): both files share a directory but use distinct names. Strictly worse than the XDG split, but keeps the dual-ring invariant intact across platforms.
 const VAULT_FILENAME_SHADOW: &str = "photon-shadow.vsf";
 
-// ============================================================================
-// Error ======================================================================
+// ============================================================================ Error ======================================================================
 
 #[derive(Debug)]
 pub enum StorageError {
@@ -73,22 +64,17 @@ impl std::fmt::Display for StorageError {
     }
 }
 
-// ============================================================================
-// DualStore ==================================================================
+// ============================================================================ DualStore ==================================================================
 
-/// Two FileStore instances backing the same logical vault. Both files store identical
-/// state under healthy conditions. A ring is `None` only when it failed mid-session;
-/// next process start re-opens both via `DualStore::open_or_create` which repairs.
+/// Two FileStore instances backing the same logical vault. Both files store identical state under healthy conditions. A ring is `None` only when it failed mid-session; next process start re-opens both via `DualStore::open_or_create` which repairs.
 struct DualStore {
     rings: [Option<FileStore>; 2],
-    /// Set when one ring needed repair on open OR a write failed to one ring this session.
-    /// Sticky for the session — clears on next process restart after both files are healthy.
+    /// Set when one ring needed repair on open OR a write failed to one ring this session. Sticky for the session — clears on next process restart after both files are healthy.
     degraded: bool,
 }
 
 impl DualStore {
-    /// Open or create both rings. Robust to any of: missing files, files that exist
-    /// but can't be opened (permission denied, corrupt envelope, bad HMAC, etc.).
+    /// Open or create both rings. Robust to any of: missing files, files that exist but can't be opened (permission denied, corrupt envelope, bad HMAC, etc.).
     ///
     /// Cases handled, in order:
     /// 1. Neither file exists → format ring 0, copy to ring 1. If the copy fails, ring 1 stays None + degraded.
@@ -130,8 +116,7 @@ impl DualStore {
             });
         }
 
-        // At least one file present. Try to open both — failure here is "unreadable
-        // for any reason" (missing, perm-denied, corrupt VSF wrapper, bad HMAC, etc.).
+        // At least one file present. Try to open both — failure here is "unreadable for any reason" (missing, perm-denied, corrupt VSF wrapper, bad HMAC, etc.).
         let mut r0 = open_existing(&paths[0], anchor_key, device_id).ok();
         let mut r1 = open_existing(&paths[1], anchor_key, device_id).ok();
 
@@ -161,8 +146,7 @@ impl DualStore {
             degraded = true;
         }
 
-        // Both open: check seq parity. Mismatched seqs are normal crash-during-
-        // dual-write recovery, silent self-heal (no degraded flag).
+        // Both open: check seq parity. Mismatched seqs are normal crash-during- dual-write recovery, silent self-heal (no degraded flag).
         if let (Some(a), Some(b)) = (&r0, &r1) {
             let seq0 = a.anchor().anchor_seq;
             let seq1 = b.anchor().anchor_seq;
@@ -200,8 +184,7 @@ impl DualStore {
         })
     }
 
-    /// Read root_commit dict from the first available ring; both contain identical
-    /// state under healthy conditions.
+    /// Read root_commit dict from the first available ring; both contain identical state under healthy conditions.
     fn load_root_commit(&self) -> Result<ferros_vault::host_file::RootCommit, StorageError> {
         for r in &self.rings {
             if let Some(store) = r {
@@ -237,9 +220,7 @@ fn format_fresh(
         .map_err(|e| StorageError::Vault(format!("FileStore::format {:?}: {:?}", path, e)))
 }
 
-/// Open an existing vault file and return the FileStore. Wraps device + store errors
-/// into a single string for the caller's error path (we don't need to discriminate
-/// further — corrupt is corrupt, the dual-ring layer just rebuilds from the other).
+/// Open an existing vault file and return the FileStore. Wraps device + store errors into a single string for the caller's error path (we don't need to discriminate further — corrupt is corrupt, the dual-ring layer just rebuilds from the other).
 fn open_existing(
     path: &std::path::Path,
     anchor_key: AnchorKey,
@@ -251,9 +232,7 @@ fn open_existing(
         .map_err(|e| format!("FileStore::open {:?}: {:?}", path, e))
 }
 
-/// Copy `src` over `dst` and try to open the result. Returns None if either step
-/// fails (most commonly: dst path is unwritable, or src is unreadable mid-copy).
-/// Failure logged at warn level — caller decides whether to flip degraded.
+/// Copy `src` over `dst` and try to open the result. Returns None if either step fails (most commonly: dst path is unwritable, or src is unreadable mid-copy). Failure logged at warn level — caller decides whether to flip degraded.
 fn repair_ring(
     src: &std::path::Path,
     dst: &std::path::Path,
@@ -278,27 +257,19 @@ fn repair_ring(
     }
 }
 
-// ============================================================================
-// FlatStorage ================================================================
+// ============================================================================ FlatStorage ================================================================
 
-/// All Photon disk I/O goes through this struct. Initialized once at auth with
-/// identity_seed + device_secret; the dual-ring vault is opened (or formatted)
-/// during construction. Callers only see logical keys; vault internals + per-key
-/// encryption are managed below.
+/// All Photon disk I/O goes through this struct. Initialized once at auth with identity_seed + device_secret; the dual-ring vault is opened (or formatted) during construction. Callers only see logical keys; vault internals + per-key encryption are managed below.
 pub struct FlatStorage {
     /// Photon's two persistent roots — kept for per-key encryption derivation.
     identity_seed: [u8; 32],
     device_secret: [u8; 32],
-    /// Dual-ring backing store. Mutex chosen over RefCell so future multi-threaded
-    /// callers Just Work; cost is negligible in the single-threaded case.
+    /// Dual-ring backing store. Mutex chosen over RefCell so future multi-threaded callers Just Work; cost is negligible in the single-threaded case.
     dual: Mutex<DualStore>,
 }
 
 impl FlatStorage {
-    /// Initialize storage. Called once at auth time. Locates both ring paths via
-    /// `vault_paths()`, opens or formats them as needed. Treats
-    /// `identity_seed + device_secret` as the keying material — same auth flow
-    /// reproduces the same vault key.
+    /// Initialize storage. Called once at auth time. Locates both ring paths via `vault_paths()`, opens or formats them as needed. Treats `identity_seed + device_secret` as the keying material — same auth flow reproduces the same vault key.
     pub fn new(identity_seed: [u8; 32], device_secret: [u8; 32]) -> Result<Self, StorageError> {
         let paths = vault_paths()?;
         let anchor_key = derive_anchor_key(&identity_seed, &device_secret);
@@ -313,10 +284,7 @@ impl FlatStorage {
         })
     }
 
-    /// Write data under a logical key. Encrypts with per-key ChaCha20-Poly1305,
-    /// stores as a content-addressed object in BOTH rings, updates each ring's
-    /// root_commit dict. At-least-one-ring durability semantics: succeeds as long
-    /// as at least one ring landed the write; sets degraded if the other failed.
+    /// Write data under a logical key. Encrypts with per-key ChaCha20-Poly1305, stores as a content-addressed object in BOTH rings, updates each ring's root_commit dict. At-least-one-ring durability semantics: succeeds as long as at least one ring landed the write; sets degraded if the other failed.
     pub fn write(&self, key: &str, data: &[u8]) -> Result<(), StorageError> {
         let enc_key = self.derive_enc_key(key);
         let ciphertext = encrypt_bytes(data, &enc_key).map_err(StorageError::Crypto)?;
@@ -328,10 +296,7 @@ impl FlatStorage {
             .lock()
             .map_err(|_| StorageError::Vault("FlatStorage mutex poisoned".to_string()))?;
 
-        // Put the object into each healthy ring before committing the root. We do
-        // the put + commit per-ring because each FileStore tracks its own index +
-        // anchor_seq; sharing object payloads between two FileStores would require
-        // ferros_vault changes we're not making in v1.
+        // Put the object into each healthy ring before committing the root. We do the put + commit per-ring because each FileStore tracks its own index + anchor_seq; sharing object payloads between two FileStores would require ferros_vault changes we're not making in v1.
         let first: usize = rand::thread_rng().gen_range(0..2);
         let order = [first, 1 - first];
         let mut any_ok = false;
@@ -358,10 +323,7 @@ impl FlatStorage {
         }
     }
 
-    /// Read the value for a logical key, decrypting with the per-key
-    /// ChaCha20-Poly1305 key. Returns `None` if the key isn't in the vault's root
-    /// commit (logically "file not found"). Reads from the first healthy ring; both
-    /// hold identical state under healthy conditions.
+    /// Read the value for a logical key, decrypting with the per-key ChaCha20-Poly1305 key. Returns `None` if the key isn't in the vault's root commit (logically "file not found"). Reads from the first healthy ring; both hold identical state under healthy conditions.
     pub fn read(&self, key: &str) -> Result<Option<Vec<u8>>, StorageError> {
         let dual = self
             .dual
@@ -378,9 +340,7 @@ impl FlatStorage {
         Ok(Some(plaintext))
     }
 
-    /// Remove a logical key from the vault. The underlying object stays until
-    /// compact (Phase 2 GC); only the root_commit dict entry goes. Removed from
-    /// BOTH rings under healthy conditions.
+    /// Remove a logical key from the vault. The underlying object stays until compact (Phase 2 GC); only the root_commit dict entry goes. Removed from BOTH rings under healthy conditions.
     pub fn delete(&self, key: &str) -> Result<(), StorageError> {
         let mut dual = self
             .dual
@@ -413,14 +373,12 @@ impl FlatStorage {
         }
     }
 
-    /// True if any ring required repair on open this session or a write to one ring
-    /// failed this session. UI reads this to render the persistent degraded banner.
+    /// True if any ring required repair on open this session or a write to one ring failed this session. UI reads this to render the persistent degraded banner.
     pub fn degraded(&self) -> bool {
         self.dual.lock().map(|d| d.degraded).unwrap_or(true)
     }
 
-    // ========================================================================
-    // Internal key derivation ================================================
+    // ======================================================================== Internal key derivation ================================================
 
     fn derive_enc_key(&self, key: &str) -> [u8; 32] {
         let context = [
@@ -433,10 +391,7 @@ impl FlatStorage {
     }
 }
 
-/// Resolve the two ring paths. On Linux + Windows the XDG split gives meaningfully
-/// different directories. On macOS `config_dir()` and `data_dir()` collide; in that
-/// case the shadow shares the directory with a `photon-shadow.vsf` filename — worse
-/// for accidental-dir-deletion resistance but keeps the dual-write invariant.
+/// Resolve the two ring paths. On Linux + Windows the XDG split gives meaningfully different directories. On macOS `config_dir()` and `data_dir()` collide; in that case the shadow shares the directory with a `photon-shadow.vsf` filename — worse for accidental-dir-deletion resistance but keeps the dual-write invariant.
 fn vault_paths() -> Result<[PathBuf; 2], StorageError> {
     let primary_dir = dirs::config_dir().ok_or_else(|| {
         StorageError::Io(std::io::Error::new(
@@ -456,8 +411,7 @@ fn vault_paths() -> Result<[PathBuf; 2], StorageError> {
     Ok([primary, shadow])
 }
 
-/// Build a DeviceId from the device_secret. Same derivation as before — both rings
-/// share the same DeviceId since they're logically the same device.
+/// Build a DeviceId from the device_secret. Same derivation as before — both rings share the same DeviceId since they're logically the same device.
 fn device_id_from_secret(device_secret: &[u8; 32]) -> DeviceId {
     let h = blake3::derive_key("photon.vault.device_id.v0", device_secret);
     let mut id = [0u8; 16];
@@ -465,8 +419,7 @@ fn device_id_from_secret(device_secret: &[u8; 32]) -> DeviceId {
     DeviceId(id)
 }
 
-/// Put + insert + commit_root on a single store. Errors stringified for the dual-ring
-/// layer's per-ring tracking.
+/// Put + insert + commit_root on a single store. Errors stringified for the dual-ring layer's per-ring tracking.
 fn write_one(
     store: &mut FileStore,
     key: &str,
@@ -499,9 +452,7 @@ fn delete_one(store: &mut FileStore, key: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Build a Blob-typed Object whose content is the ciphertext. The vault expects the
-/// meta.hash field to equal `blake3(content)` (raw, no salt/name/domain mixing) —
-/// FileStore verifies this on put and uses the hash as the object's address.
+/// Build a Blob-typed Object whose content is the ciphertext. The vault expects the meta.hash field to equal `blake3(content)` (raw, no salt/name/domain mixing) — FileStore verifies this on put and uses the hash as the object's address.
 fn build_blob_object(ciphertext: &[u8]) -> Object {
     use ferros_vault::object::ObjectMeta;
     let hash = ferros_vault::hash::ObjectHash(*blake3::hash(ciphertext).as_bytes());

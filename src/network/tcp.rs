@@ -37,15 +37,13 @@ pub fn send(stream: &mut TcpStream, data: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Receive VSF data from TCP by parsing L from header
-/// Returns the complete VSF file bytes
+/// Receive VSF data from TCP by parsing L from header Returns the complete VSF file bytes
 pub fn recv(stream: &mut TcpStream) -> std::io::Result<Vec<u8>> {
     let _addr = stream
         .peer_addr()
         .unwrap_or_else(|_| "unknown".parse().unwrap());
 
-    // Read enough bytes to parse VSF header and extract L (file length)
-    // VSF header starts with: RÅ< (4 bytes) + z + y + b + L + ... We need to read incrementally until we have L
+    // Read enough bytes to parse VSF header and extract L (file length) VSF header starts with: RÅ< (4 bytes) + z + y + b + L + ... We need to read incrementally until we have L
 
     // First, read magic + enough for header fields (conservatively 64 bytes)
     let mut header_buf = vec![0u8; 64];
@@ -141,8 +139,7 @@ pub fn connect_and_send(addr: SocketAddr, data: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Async TCP send for PT fallback (fully async, no blocking)
-/// No external framing - VSF header contains L (file length)
+/// Async TCP send for PT fallback (fully async, no blocking) No external framing - VSF header contains L (file length)
 pub async fn send_tcp(data: &[u8], addr: SocketAddr) -> std::io::Result<()> {
     use tokio::io::AsyncWriteExt;
     use tokio::time::timeout;
@@ -155,8 +152,7 @@ pub async fn send_tcp(data: &[u8], addr: SocketAddr) -> std::io::Result<()> {
         .await
         .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "TCP connect timeout"))??;
 
-    // No length prefix - VSF header contains L (file length)
-    // Write with timeout
+    // No length prefix - VSF header contains L (file length) Write with timeout
     timeout(write_timeout, async {
         stream.write_all(data).await?;
         stream.flush().await
@@ -165,8 +161,7 @@ pub async fn send_tcp(data: &[u8], addr: SocketAddr) -> std::io::Result<()> {
     .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "TCP write timeout"))?
 }
 
-/// Send a framed CLUTCH message
-/// Format: [payload_type:1][handle_proof:32][payload]
+/// Send a framed CLUTCH message Format: [payload_type:1][handle_proof:32][payload]
 pub fn send_clutch(
     addr: SocketAddr,
     payload_type: u8,
@@ -181,8 +176,7 @@ pub fn send_clutch(
     connect_and_send(addr, &framed)
 }
 
-/// Parse a received CLUTCH frame
-/// Returns (payload_type, handle_proof, payload) if valid
+/// Parse a received CLUTCH frame Returns (payload_type, handle_proof, payload) if valid
 pub fn parse_clutch_frame(data: &[u8]) -> Option<(u8, [u8; 32], Vec<u8>)> {
     if data.len() < 33 {
         return None;
