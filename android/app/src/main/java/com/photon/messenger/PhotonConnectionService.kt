@@ -56,7 +56,7 @@ class PhotonConnectionService : Service() {
     }
 
     // Native methods for network operations
-    private external fun nativeNetworkInit(fingerprint: ByteArray, dataDir: String): Long
+    private external fun nativeNetworkInit(fingerprint: ByteArray, dataDir: String, shadowDir: String): Long
     private external fun nativeNetworkDestroy(networkPtr: Long)
     private external fun nativeNetworkPoll(networkPtr: Long)  // Check for incoming messages, refresh peers
     private external fun nativeGetDevicePubkey(networkPtr: Long): String
@@ -68,13 +68,14 @@ class PhotonConnectionService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // Extract fingerprint and data dir from intent
+        // Extract fingerprint and data dirs from intent. shadowDir is "" if getExternalFilesDir returned null on the Activity side — Rust treats empty as "fall back to dataDir with shadow-suffix filename".
         val fingerprint = intent?.getByteArrayExtra("fingerprint")
         val dataDir = intent?.getStringExtra("dataDir")
+        val shadowDir = intent?.getStringExtra("shadowDir") ?: ""
 
         if (fingerprint != null && dataDir != null && networkPtr == 0L) {
             // Initialize network stack
-            networkPtr = nativeNetworkInit(fingerprint, dataDir)
+            networkPtr = nativeNetworkInit(fingerprint, dataDir, shadowDir)
             if (networkPtr != 0L) {
                 devicePubkeyHex = nativeGetDevicePubkey(networkPtr)
                 Log.d(TAG, "Network initialized, device: ${devicePubkeyHex.take(16)}...")
