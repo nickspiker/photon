@@ -18,15 +18,15 @@ use fluor::geom::Viewport;
 use fluor::host::app::{Context, EventResponse, FluorApp};
 use fluor::host::chrome::{self, ResizeEdge};
 use fluor::host::chrome_widget::DefaultChrome;
+use fluor::event::{
+    CursorIcon, ElementState, Event, Key, MouseButton, MouseScrollDelta, NamedKey,
+};
 use fluor::host::widget::{self, Container, TabDir, Widget};
 use fluor::paint::{self, HitId, HIT_NONE};
 use fluor::widgets::{BlinkTimer, Button, Textbox};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::EventLoopProxy;
-use winit::keyboard::{Key, NamedKey};
-use winit::window::CursorIcon;
 
 /// How long after a `[`/`]` release we still treat the bracket as "held" for chord purposes. X11 fires a synthetic Release for the held bracket the instant the action key is pressed; this grace absorbs that round-trip so chords fire reliably.
 const CHORD_RELEASE_GRACE: Duration = Duration::from_millis(40);
@@ -314,9 +314,9 @@ impl FluorApp for PhotonApp {
         self.update_widget_layout(ctx);
     }
 
-    fn on_event(&mut self, event: &WindowEvent, ctx: &mut Context) -> EventResponse {
+    fn on_event(&mut self, event: &Event, ctx: &mut Context) -> EventResponse {
         match event {
-            WindowEvent::CursorMoved { .. } => {
+            Event::CursorMoved { .. } => {
                 // Drag-select extension takes precedence over hover updates. Active iff we're inside a left-press-then-move sequence over the focused textbox; on first move during the drag we set the anchor to the cursor's pre-drag position (the click landed there via Textbox::on_click), then update `cursor` to the character nearest the live cursor X. `cursor_index_from_x` saturates internally — X past text bounds returns the first/last character index — so no clamp here.
                 if self.is_dragging_select {
                     if let Some(tb) = self.textbox.as_mut() {
@@ -358,7 +358,7 @@ impl FluorApp for PhotonApp {
                 }
                 EventResponse::Pass
             }
-            WindowEvent::CursorLeft { .. } => {
+            Event::CursorLeft { .. } => {
                 let mut changed = false;
                 if let Some(chrome) = self.chrome.as_mut() {
                     changed |= chrome.set_hover(HIT_NONE);
@@ -380,7 +380,7 @@ impl FluorApp for PhotonApp {
                 }
                 EventResponse::Pass
             }
-            WindowEvent::Focused(focused) => {
+            Event::Focused(focused) => {
                 // Chrome's edges + title + orb dim when the window loses focus (palette swap to `WINDOW_*_UNFOCUSED` + `TEXT_COLOUR_UNFOCUSED` + `ORB_DARKEN_UNFOCUSED`). The host independently dims the drop shadow via its own `is_focused` tracker; this handler just propagates to chrome's internal flag so the chrome layer re-rasterizes with the dimmed palette.
                 if let Some(chrome) = self.chrome.as_mut() {
                     if chrome.set_focused(*focused) {
@@ -389,11 +389,11 @@ impl FluorApp for PhotonApp {
                 }
                 EventResponse::Pass
             }
-            WindowEvent::MouseWheel { delta, .. } => {
-                // Bg-noise scroll. Vertical-only for now — horizontal trackpad gestures and shift-modified wheel both fold into the same `bg_scroll` axis. LineDelta from a discrete mouse wheel gets multiplied to feel like a normal scroll step; PixelDelta (trackpad) is used directly. The scroll value feeds both `scroll_offset` (translates the noise pattern up/down on screens that want it) and `shimmer` (colour-bias cycle on every screen) in `render`.
+            Event::MouseWheel { delta } => {
+                // Bg-noise scroll. Vertical-only for now — horizontal trackpad gestures and shift-modified wheel both fold into the same `bg_scroll` axis. Discrete wheel notches (`Lines`) get multiplied to feel like a normal scroll step; continuous trackpad pixels (`Pixels`) are used directly. The scroll value feeds both `scroll_offset` (translates the noise pattern up/down on screens that want it) and `shimmer` (colour-bias cycle on every screen) in `render`.
                 let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => (*y as isize) * 8,
-                    MouseScrollDelta::PixelDelta(p) => p.y as isize,
+                    MouseScrollDelta::Lines(_, y) => (*y as isize) * 8,
+                    MouseScrollDelta::Pixels(_, y) => *y as isize,
                 };
                 if dy != 0 {
                     self.bg_scroll = self.bg_scroll.wrapping_add(dy);
@@ -404,7 +404,7 @@ impl FluorApp for PhotonApp {
                 }
                 EventResponse::Pass
             }
-            WindowEvent::MouseInput {
+            Event::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
@@ -443,13 +443,13 @@ impl FluorApp for PhotonApp {
                     ctx.window.request_redraw();
                 }
 
-                // Dispatch the click via the new fluor helper. Walks the tree once, finds the widget with `hit_id`, calls its `Click::on_click`. Returns `EventResponse::Pass` if the widget has no Click capability — covers chrome's app-icon orb (no action wired yet). Translates winit modifiers → fluor at the boundary (capability traits speak fluor types now).
+                // Dispatch the click via the fluor widget helper. Walks the tree once, finds the widget with `hit_id`, calls its `Click::on_click`. Returns `EventResponse::Pass` if the widget has no Click capability — covers chrome's app-icon orb (no action wired yet).
                 let response = widget::dispatch_click(
                     self,
                     hit_id,
                     ctx.cursor_x,
                     ctx.cursor_y,
-                    fluor::host::winit_compat::from_winit_mods(ctx.modifiers),
+                    ctx.modifiers,
                 );
 
                 // Arm drag-select if the click landed on the (now-focused) textbox. CursorMoved consults `is_dragging_select` to grow the selection; release clears it. Set AFTER dispatch so Textbox::on_click has placed the cursor at the click position first — drag then extends from there.
@@ -469,7 +469,7 @@ impl FluorApp for PhotonApp {
 
                 response
             }
-            WindowEvent::MouseInput {
+            Event::MouseInput {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
@@ -504,7 +504,7 @@ impl FluorApp for PhotonApp {
                 }
                 EventResponse::Pass
             }
-            WindowEvent::KeyboardInput { event: kev, .. } => {
+            Event::KeyboardInput { event: kev, .. } => {
                 // Bracket chord first — tracks Press/Release timestamps regardless of focus so the debug overlay arms as soon as both brackets are held, and the chord action runs before delivery to the focused widget (so an action letter like 'h' doesn't also type into the textbox).
                 if let Key::Character(c) = &kev.logical_key {
                     let cs = c.as_str();
@@ -582,10 +582,7 @@ impl FluorApp for PhotonApp {
                             return EventResponse::Handled;
                         }
                         if let Some(focus_id) = self.focused {
-                            // Translate winit → fluor at the boundary. Capability traits speak fluor types; the trait surface (FluorApp::on_event) still carries winit's WindowEvent until the next migration slice.
-                            let fkev = fluor::host::winit_compat::from_winit_key_event(kev);
-                            let fmods = fluor::host::winit_compat::from_winit_mods(ctx.modifiers);
-                            let resp = widget::dispatch_key(self, focus_id, &fkev, fmods, ctx.text);
+                            let resp = widget::dispatch_key(self, focus_id, kev, ctx.modifiers, ctx.text);
                             // Either button can activate on Enter; poll both and route to the matching submit.
                             let attest_clicked = self.attest_btn.as_mut().map(|b| b.take_click()).unwrap_or(false);
                             if attest_clicked {
@@ -609,10 +606,8 @@ impl FluorApp for PhotonApp {
                     // All other keys → focused widget via dispatch_key. The Textbox's on_key handles character insertion, backspace, arrows, selection, clipboard (Ctrl+A); Button's on_key handles Space activation. Unfocused → Pass so the host can ignore. Request redraw on Handled so character insertion paints immediately instead of waiting for the next tick.
                     _ => {
                         if let Some(focus_id) = self.focused {
-                            let fkev = fluor::host::winit_compat::from_winit_key_event(kev);
-                            let fmods = fluor::host::winit_compat::from_winit_mods(ctx.modifiers);
                             let resp =
-                                widget::dispatch_key(self, focus_id, &fkev, fmods, ctx.text);
+                                widget::dispatch_key(self, focus_id, kev, ctx.modifiers, ctx.text);
                             if matches!(resp, EventResponse::Handled) {
                                 ctx.window.request_redraw();
                                 // Reset blink so the cursor stays solid through fast typing instead of blinking mid-keystroke.
