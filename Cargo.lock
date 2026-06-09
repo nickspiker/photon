@@ -1617,7 +1617,11 @@ version = "0.0.2"
 dependencies = [
  "arboard",
  "cosmic-text",
+ "jni",
  "libm",
+ "log",
+ "ndk",
+ "ndk-sys",
  "pollster",
  "rav1d",
  "rayon",
