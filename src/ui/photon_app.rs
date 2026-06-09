@@ -1085,9 +1085,9 @@ impl PhotonApp {
         let buf_h = ctx.viewport.height_px as usize;
         let layout = LaunchLayout::compute(buf_w, buf_h, ctx.viewport.ru);
         let attest = AttestBlockLayout::compute(layout.attest_block);
-        // Font size = span/24 — small enough to fit the legacy attest-block textbox ratio (height ≈ 2 units of the 9.25-unit slice), large enough to remain legible across zoom range. Same scalar drives the button so they read as a matched pair.
-        let span = ctx.viewport.effective_span();
-        let font_size = span / 24.;
+        // Font size = textbox-slot height × 0.6. Derived from the pill so the text-to-pill ratio stays constant (= 1/0.72 ≈ 1.39) at any viewport — span/24 sized text via the harmonic-mean span which scales differently from pill_h (pill_h is linear in viewport_h, span is biased toward the narrower dim), so on a tall narrow phone the pill grew faster than the text and a soft-keyboard show/hide jumped the ratio from 1.43 to 1.12. Pill-derived sizing keeps padding around the text proportional, so descenders + ascenders never crowd the squircle edge. Same scalar drives the attest button so they read as a matched pair.
+        let textbox_h = (attest.textbox.y1 as f32) - (attest.textbox.y0 as f32);
+        let font_size = textbox_h * 0.6;
 
         if let Some(tb) = self.textbox.as_mut() {
             let (cx, cy, w, h) = rect_center_dims(attest.textbox);
