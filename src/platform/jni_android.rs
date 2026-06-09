@@ -1,15 +1,17 @@
-//! JNI bindings for Android
+//! JNI bindings for Android.
 //!
-//! This module provides the native interface for the Android app. The Kotlin/Java activity calls these functions to initialize and draw the UI.
+//! Two consumer surfaces hit these symbols:
+//! - `PhotonActivity` (the foreground UI) → `Java_com_photon_messenger_PhotonActivity_native*`.
+//!   These are thin shims into `fluor::host::android::AndroidShell<PhotonApp>` — the shell owns the surface + render pipeline + event translation, photon owns only the FluorApp impl and the app-specific bits (avatar picker, FCM peer-update flag).
+//! - `PhotonConnectionService` (the background network stack) →
+//!   `Java_com_photon_messenger_PhotonConnectionService_nativeNetwork*` + FCM peer-update notification. These survive the UI Activity's lifecycle so the persistent peer store + device keypair don't churn on each rotation / background trip.
 
 use crate::network::fgtw::PeerStore;
-use crate::network::HandleQuery;
-use crate::types::DevicePubkey;
 use std::sync::{Arc, Mutex};
 
 #[cfg(target_os = "android")]
 use jni::{
-    objects::{JByteArray, JClass, JObject, JString},
+    objects::{JByteArray, JClass, JString},
     sys::{jboolean, jfloat, jint, jlong, JNI_FALSE, JNI_TRUE},
     JNIEnv,
 };
@@ -21,136 +23,34 @@ use log::*;
 use ndk::native_window::NativeWindow;
 
 #[cfg(target_os = "android")]
-use crate::ui::app::{AppState, LaunchState};
-#[cfg(target_os = "android")]
-use crate::ui::PhotonApp;
+use jni::objects::JObject;
 
 #[cfg(target_os = "android")]
 use crate::network::fgtw::Keypair;
 
-/// Android-specific context wrapping PhotonApp with device keypair
+#[cfg(target_os = "android")]
+use crate::ui::PhotonApp;
+
+#[cfg(target_os = "android")]
+use fluor::host::android::AndroidShell;
+
+// ============================================================================
+
+// PhotonActivity context — wraps fluor::AndroidShell<PhotonApp> ============================================================================
+/// Activity-side context. Holds the fluor shell that owns the FluorApp + surface + pipeline. Lifetime: created on Activity surface-creation (`nativeInitWithNetwork`), destroyed on Activity teardown (`nativeDestroy`).
 #[cfg(target_os = "android")]
 pub struct PhotonContext {
-    pub app: PhotonApp,
-    pub device_keypair: Keypair,
-}
-
-/// Derive device keypair from fingerprint bytes using BLAKE3
-#[cfg(target_os = "android")]
-fn derive_device_keypair(fingerprint: &[u8]) -> Keypair {
-    use ed25519_dalek::SigningKey;
-
-    // BLAKE3 hash the fingerprint to get 32 bytes for Ed25519 seed
-    let hash = blake3::hash(fingerprint);
-    let seed: [u8; 32] = *hash.as_bytes();
-
-    let secret = SigningKey::from_bytes(&seed);
-    let public = secret.verifying_key();
-
-    Keypair { secret, public }
+    pub shell: AndroidShell<PhotonApp>,
 }
 
 #[cfg(target_os = "android")]
 impl PhotonContext {
-    /// Create UI context using network stack from service
-    /// Creates a fresh HandleQuery connected to the service's transport
-    pub fn new_with_network(width: u32, height: u32, network: &NetworkContext) -> Self {
-        info!(
-            "Device pubkey: {}",
-            hex::encode(network.keypair.public.as_bytes())
-        );
-
-        // Create app with keypair from network context
-        let mut app = PhotonApp::new(width, height, network.keypair.clone());
-
-        // Create fresh HandleQuery using service's keypair, connect to service's transport
-        let handle_query = HandleQuery::new(network.keypair.clone());
-        handle_query.set_transport(network.peer_store.clone());
-        app.set_handle_query(handle_query);
-
+    pub fn new(width: u32, height: u32, _network: &NetworkContext) -> Self {
+        // Wire NetworkContext-derived state into the fluor-based PhotonApp here once the app exposes a constructor that takes (keypair, peer_store, data_dir). Today the app constructs its HandleQuery internally during init; this is a known follow-up.
+        let app = PhotonApp::new();
         Self {
-            app,
-            device_keypair: network.keypair.clone(),
+            shell: AndroidShell::new(app, width, height),
         }
-    }
-
-    pub fn resize(&mut self, width: u32, height: u32) {
-        self.app.resize_to(width, height);
-    }
-
-    pub fn draw(&mut self, window: &NativeWindow) {
-        // Check for network updates using unified functions
-        self.app.check_fgtw_online();
-        self.app.check_attestation_response();
-        self.app.check_search_result();
-
-
-        // P2P status checking and FGTW refresh (unified with desktop)
-        if self.app.check_status_updates() {
-            self.app.window_dirty = true;
-        }
-        if self.app.check_avatar_downloads() {
-            self.app.window_dirty = true;
-        }
-        if self.app.check_clutch_keygens() {
-            self.app.window_dirty = true;
-        }
-        if self.app.check_clutch_kem_encaps() {
-            self.app.window_dirty = true;
-        }
-        if self.app.check_clutch_ceremonies() {
-            self.app.window_dirty = true;
-        }
-        self.app.maybe_ping_contacts();
-
-        // Check dirty BEFORE render to decide if we need to present
-        // BUT: animation sets window_dirty during render for NEXT frame
-        // So we check both before AND after
-        let dirty_before = self.app.window_dirty
-            || self.app.text_dirty
-            || self.app.selection_dirty
-            || self.app.controls_dirty;
-
-        // Check if we're in an animating state BEFORE render clears window_dirty
-        let is_animating = matches!(
-            self.app.app_state,
-            AppState::Launch(LaunchState::Attesting) | AppState::Searching
-        );
-
-        // Use the full PhotonApp render loop
-        self.app.render();
-
-        // Animation state always needs fresh buffer (render() clears window_dirty at end)
-        let mut dirty = dirty_before || self.app.window_dirty || is_animating;
-
-        // Handle blinkey blinking (cursor animation)
-        let now = std::time::Instant::now();
-        if now >= self.app.next_blinkey_blink_time
-            && self.app.current_text_state.textbox_focused
-            && self.app.blinkey_visible
-        {
-            let width = self.app.width as usize;
-            let blinkey_x = self.app.blinkey_pixel_x;
-            let blinkey_y = self.app.blinkey_pixel_y;
-            let font_size = self.app.font_size() as usize;
-            let is_selecting = self.app.is_mouse_selecting;
-
-            PhotonApp::flip_blinkey(
-                &mut self.app.renderer,
-                width,
-                blinkey_x,
-                blinkey_y,
-                &mut self.app.blinkey_visible,
-                &mut self.app.blinkey_wave_top_bright,
-                font_size,
-                is_selecting,
-            );
-            self.app.next_blinkey_blink_time = self.app.next_blink_wake_time();
-            dirty = true; // Blinkey changed, need to present
-        }
-
-        // Present internal buffer to NativeWindow
-        self.app.renderer.present(window, dirty);
     }
 }
 
@@ -163,12 +63,7 @@ fn get_context(ptr: jlong) -> Option<&'static mut PhotonContext> {
     unsafe { Some(&mut *(ptr as *mut PhotonContext)) }
 }
 
-/// Initialize Photon UI with network context from service
-/// Returns a pointer to the PhotonContext
-///
-/// # Arguments
-/// * `network_ptr` - Pointer to NetworkContext from PhotonConnectionService
-/// * `is_samsung` - True if running on Samsung device (needs Choreographer workarounds)
+/// Initialize the activity-side context. `network_ptr` is the service-owned `NetworkContext` pointer; `is_samsung` selects the surface's magic-pixel-cache fallback.
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeInitWithNetwork(
@@ -180,36 +75,22 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeInitWithNetwork
     is_samsung: jboolean,
 ) -> jlong {
     info!(
-        "Initializing Photon UI: {}x{} with network ptr 0x{:x}",
-        width, height, network_ptr as u64
+        "PhotonActivity: nativeInitWithNetwork {}x{} (network @ 0x{:x}, samsung={})",
+        width,
+        height,
+        network_ptr as u64,
+        is_samsung != JNI_FALSE
     );
-
     if network_ptr == 0 {
-        error!("Null network pointer");
+        error!("Null NetworkContext pointer");
         return 0;
     }
-
-    let is_samsung = is_samsung != JNI_FALSE;
-    info!("Samsung device: {}", is_samsung);
-
-    // Samsung's compositor breaks magic pixel optimization - always copy on Samsung
-    crate::ui::renderer_android::set_samsung_mode(is_samsung);
-
-    // Get reference to network context (owned by service, DO NOT free)
-    let network_ctx = unsafe { &*(network_ptr as *const NetworkContext) };
-
-    let context = Box::new(PhotonContext::new_with_network(
-        width as u32,
-        height as u32,
-        network_ctx,
-    ));
-    let ptr = Box::into_raw(context) as jlong;
-
-    info!("PhotonContext created at 0x{:x}", ptr as u64);
-    ptr
+    fluor::host::android::surface::set_samsung_mode(is_samsung != JNI_FALSE);
+    let network = unsafe { &*(network_ptr as *const NetworkContext) };
+    let context = Box::new(PhotonContext::new(width as u32, height as u32, network));
+    Box::into_raw(context) as jlong
 }
 
-/// Draw a frame to the surface
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeDraw(
@@ -218,22 +99,17 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeDraw(
     context_ptr: jlong,
     surface: JObject<'_>,
 ) {
-    let Some(context) = get_context(context_ptr) else {
-        error!("Invalid context pointer in nativeDraw");
+    let Some(ctx) = get_context(context_ptr) else {
         return;
     };
-
-    // Convert Surface to NativeWindow
     let Some(window) = (unsafe { NativeWindow::from_surface(env.get_raw(), surface.as_raw()) })
     else {
         error!("Failed to convert Surface to NativeWindow");
         return;
     };
-
-    context.draw(&window);
+    ctx.shell.draw(&window);
 }
 
-/// Handle resize
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeResize(
@@ -243,17 +119,14 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeResize(
     width: jint,
     height: jint,
 ) {
-    let Some(context) = get_context(context_ptr) else {
-        error!("Invalid context pointer in nativeResize");
+    let Some(ctx) = get_context(context_ptr) else {
         return;
     };
-
-    info!("Resizing Photon: {}x{}", width, height);
-    context.resize(width as u32, height as u32);
+    info!("nativeResize {}x{}", width, height);
+    ctx.shell.resize(width as u32, height as u32);
 }
 
-/// Handle touch events action: 0=DOWN, 1=UP, 2=MOVE, 3=CANCEL
-/// Returns: 1=show keyboard, -1=hide keyboard, 0=no change
+/// Returns: 1=show keyboard, -1=hide keyboard, 0=no change. The fluor shell doesn't track keyboard show/hide semantics directly — that's app-policy. For now we return 0 unconditionally; PhotonApp will eventually expose `wants_keyboard()` to drive this from focus state.
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeOnTouch(
@@ -264,13 +137,13 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeOnTouch(
     x: jfloat,
     y: jfloat,
 ) -> jint {
-    let Some(context) = get_context(context_ptr) else {
+    let Some(ctx) = get_context(context_ptr) else {
         return 0;
     };
-    context.app.handle_touch(action, x, y)
+    ctx.shell.on_touch(action, x, y);
+    0
 }
 
-/// Handle text input from soft keyboard
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeOnTextInput(
@@ -279,20 +152,19 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeOnTextInput(
     context_ptr: jlong,
     text: JString<'_>,
 ) {
-    let Some(context) = get_context(context_ptr) else {
+    let Some(ctx) = get_context(context_ptr) else {
         return;
     };
-
     let text_str: String = match env.get_string(&text) {
         Ok(s) => s.into(),
-        Err(_) => return,
+        Err(e) => {
+            error!("Failed to read text input: {:?}", e);
+            return;
+        }
     };
-
-    context.app.handle_text_input(&text_str);
+    ctx.shell.on_text_input(text_str);
 }
 
-/// Handle special key events (backspace, enter, arrows)
-/// Returns true if the key was handled
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeOnKeyEvent(
@@ -301,33 +173,16 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeOnKeyEvent(
     context_ptr: jlong,
     key_code: jint,
 ) -> jboolean {
-    let Some(context) = get_context(context_ptr) else {
+    let Some(ctx) = get_context(context_ptr) else {
         return JNI_FALSE;
     };
-
-    // Android KeyEvent codes
-    const KEYCODE_DEL: i32 = 67; // Backspace
-    const KEYCODE_ENTER: i32 = 66; // Enter
-    const KEYCODE_DPAD_LEFT: i32 = 21;
-    const KEYCODE_DPAD_RIGHT: i32 = 22;
-
-    let handled = match key_code {
-        KEYCODE_DEL => context.app.handle_backspace(),
-        KEYCODE_ENTER => context.app.handle_enter(),
-        KEYCODE_DPAD_LEFT => context.app.handle_arrow_left(),
-        KEYCODE_DPAD_RIGHT => context.app.handle_arrow_right(),
-        _ => false,
-    };
-
-    if handled {
+    if ctx.shell.on_key_event(key_code) {
         JNI_TRUE
     } else {
         JNI_FALSE
     }
 }
 
-/// Handle Android back button
-/// Returns true if handled (stay in app), false to exit
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeOnBackPressed(
@@ -335,18 +190,16 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeOnBackPressed(
     _class: JClass<'_>,
     context_ptr: jlong,
 ) -> jboolean {
-    let Some(context) = get_context(context_ptr) else {
+    let Some(ctx) = get_context(context_ptr) else {
         return JNI_FALSE;
     };
-
-    if context.app.handle_back() {
+    if ctx.shell.on_back_pressed() {
         JNI_TRUE
     } else {
         JNI_FALSE
     }
 }
 
-/// Handle pinch-to-zoom scale gesture scale_factor: >1.0 = zoom in, <1.0 = zoom out
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeOnScale(
@@ -355,14 +208,13 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeOnScale(
     context_ptr: jlong,
     scale_factor: jfloat,
 ) {
-    let Some(context) = get_context(context_ptr) else {
+    let Some(ctx) = get_context(context_ptr) else {
         return;
     };
-    context.app.handle_scale(scale_factor);
+    ctx.shell.on_scale(scale_factor);
 }
 
-/// Handle avatar file from image picker
-/// Receives raw file bytes (JPEG/PNG/WebP) for proper ICC profile color management
+/// Avatar from image picker. NOT in AndroidShell — photon-specific (decodes via the existing avatar pipeline). Stubbed for now; wires through once PhotonApp exposes a `set_avatar_from_file(bytes)` method that funnels into the avatar storage layer.
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeSetAvatarFromFile(
@@ -371,24 +223,19 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeSetAvatarFromFi
     context_ptr: jlong,
     file_bytes: JByteArray<'_>,
 ) {
-    let Some(context) = get_context(context_ptr) else {
-        error!("Invalid context pointer in nativeSetAvatarFromFile");
+    let Some(_ctx) = get_context(context_ptr) else {
         return;
     };
-
     let bytes = match env.convert_byte_array(&file_bytes) {
         Ok(b) => b,
         Err(e) => {
-            error!("Failed to read file bytes: {:?}", e);
+            error!("Failed to read avatar bytes: {:?}", e);
             return;
         }
     };
-
-    info!("Received avatar file: {} bytes", bytes.len());
-    context.app.set_avatar_from_file(bytes);
+    info!("Received avatar file: {} bytes (TODO: wire into PhotonApp)", bytes.len());
 }
 
-/// Cleanup
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeDestroy(
@@ -405,8 +252,8 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeDestroy(
 }
 
 // ============================================================================
-// FCM Push Notification Support ============================================================================
 
+// FCM Push Notification Support ============================================================================
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Flag set by FCM service when peer update received - triggers FGTW refresh
@@ -418,8 +265,7 @@ pub fn check_fcm_peer_update() -> bool {
     FCM_PEER_UPDATE_PENDING.swap(false, Ordering::SeqCst)
 }
 
-/// Called from FirebaseMessagingService when peer_update FCM message received
-/// This is called from a background thread, so we just set a flag
+/// Called from FirebaseMessagingService when peer_update FCM message received This is called from a background thread, so we just set a flag
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonMessagingService_nativePeerUpdateReceived(
@@ -431,11 +277,20 @@ pub extern "C" fn Java_com_photon_messenger_PhotonMessagingService_nativePeerUpd
 }
 
 // ============================================================================
-// PhotonConnectionService - Background Network Stack ============================================================================
 
-/// Network context owned by the foreground service
-/// Persists across Activity lifecycle changes
-/// Holds the keypair and peer store - UI creates HandleQuery on demand
+// PhotonConnectionService - Background Network Stack ============================================================================
+/// Derive device keypair from fingerprint bytes using BLAKE3
+#[cfg(target_os = "android")]
+fn derive_device_keypair(fingerprint: &[u8]) -> Keypair {
+    use ed25519_dalek::SigningKey;
+    let hash = blake3::hash(fingerprint);
+    let seed: [u8; 32] = *hash.as_bytes();
+    let secret = SigningKey::from_bytes(&seed);
+    let public = secret.verifying_key();
+    Keypair { secret, public }
+}
+
+/// Network context owned by the foreground service. Persists across Activity lifecycle changes; holds the device keypair and peer store. The Activity creates its own HandleQuery on demand via the shared transport.
 #[cfg(target_os = "android")]
 pub struct NetworkContext {
     pub keypair: Keypair,
@@ -449,7 +304,6 @@ impl NetworkContext {
         // Set global Android data directory for avatar storage
         crate::avatar::set_android_data_dir(data_dir.to_string());
 
-        // Derive device keypair from fingerprint
         let keypair = derive_device_keypair(fingerprint);
 
         info!(
@@ -457,7 +311,6 @@ impl NetworkContext {
             hex::encode(keypair.public.as_bytes())
         );
 
-        // Create peer store (persists across Activity lifecycle)
         let peer_store = Arc::new(Mutex::new(PeerStore::new()));
 
         Self {
@@ -469,8 +322,7 @@ impl NetworkContext {
 
     /// Poll for network events (called periodically from service background thread)
     pub fn poll(&self) {
-        // Transport handles incoming UDP internally
-        // This hook is for any periodic maintenance
+        // Transport handles incoming UDP internally This hook is for any periodic maintenance
     }
 }
 
@@ -483,8 +335,6 @@ fn get_network_context(ptr: jlong) -> Option<&'static mut NetworkContext> {
     unsafe { Some(&mut *(ptr as *mut NetworkContext)) }
 }
 
-/// Initialize network stack in foreground service
-/// Returns pointer to NetworkContext
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeNetworkInit(
@@ -518,13 +368,9 @@ pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeNetwor
     );
 
     let context = Box::new(NetworkContext::new(&fingerprint_bytes, &data_dir_str));
-    let ptr = Box::into_raw(context) as jlong;
-
-    info!("NetworkContext created at 0x{:x}", ptr as u64);
-    ptr
+    Box::into_raw(context) as jlong
 }
 
-/// Destroy network context
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeNetworkDestroy(
@@ -540,7 +386,6 @@ pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeNetwor
     }
 }
 
-/// Poll network for updates (called from background HandlerThread)
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeNetworkPoll(
@@ -554,22 +399,17 @@ pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeNetwor
     context.poll();
 }
 
-/// Get device public key as hex string
 #[cfg(target_os = "android")]
 #[no_mangle]
-pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeGetDevicePubkey<
-    'local,
->(
+pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeGetDevicePubkey<'local>(
     env: JNIEnv<'local>,
     _class: JClass<'local>,
     network_ptr: jlong,
 ) -> JString<'local> {
     let empty = || env.new_string("").unwrap();
-
     let Some(context) = get_network_context(network_ptr) else {
         return empty();
     };
-
     let hex = hex::encode(context.keypair.public.as_bytes());
     env.new_string(&hex).unwrap_or_else(|_| empty())
 }

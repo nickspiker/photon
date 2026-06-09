@@ -1,6 +1,4 @@
-// Global theme colours and constants
-// All colours are u32 in packed ARGB format: 0xAARRGGBB
-// On Android, colours are converted to ABGR at compile-time via fmt()
+// Global theme colours and constants All colours are u32 in packed ARGB format: 0xAARRGGBB On Android, colours are converted to ABGR at compile-time via fmt()
 
 /// Compile-time colour format conversion for Android (ARGB → ABGR)
 #[cfg(target_os = "android")]
@@ -50,8 +48,7 @@ pub const MAXIMIZE_GLYPH: u32 = fmt(0xFF_48_6B_3A);
 pub const MAXIMIZE_GLYPH_INTERIOR: u32 = fmt(0xFF_28_2D_2E);
 pub const MINIMIZE_GLYPH: u32 = fmt(0xFF_33_30_C7);
 
-// Button hover deltas (applied on hover, negated on unhover)
-// RGB channels wrap intentionally; 0xFF alpha absorbs carry from R overflow
+// Button hover deltas (applied on hover, negated on unhover) RGB channels wrap intentionally; 0xFF alpha absorbs carry from R overflow
 pub const CLOSE_HOVER: u32 = fmt(0xFF_21_FD_F9); // Red
 pub const MAXIMIZE_HOVER: u32 = fmt(0xFF_FA_10_FA); // Green
 pub const MINIMIZE_HOVER: u32 = fmt(0xFF_F7_FA_25); // Blue

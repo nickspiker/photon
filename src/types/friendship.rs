@@ -87,8 +87,7 @@ impl std::fmt::Debug for CeremonyId {
 
 /// Friendship ID: deterministic conversation identifier.
 ///
-/// Derived as `BLAKE3("PHOTON_FRIENDSHIP_v1" || sorted_handle_hashes)`
-/// Same value on all participants' devices.
+/// Derived as `BLAKE3("PHOTON_FRIENDSHIP_v1" || sorted_handle_hashes)` Same value on all participants' devices.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FriendshipId(pub [u8; 32]);
 
@@ -192,8 +191,7 @@ pub struct FriendshipChains {
     last_received_times: Vec<Option<i64>>,
 
     // ==================== HASH CHAIN STATE ====================
-    /// First message anchor per participant (deterministic starting point).
-    /// Derived from: BLAKE3(DOMAIN_ANCHOR || participant_handle_hash || chain_fingerprint) where chain_fingerprint = BLAKE3(chain[256..512]). Both parties compute identical anchors from CLUTCH ceremony.
+    /// First message anchor per participant (deterministic starting point). Derived from: BLAKE3(DOMAIN_ANCHOR || participant_handle_hash || chain_fingerprint) where chain_fingerprint = BLAKE3(chain[256..512]). Both parties compute identical anchors from CLUTCH ceremony.
     first_message_anchors: Vec<[u8; 32]>,
 
     /// Last received message hash per participant (for hash chain verification). Index matches chain index. None = no message received yet → expect anchor. On receive: verify prev_msg_hp == this value (or anchor if None). After successful decrypt: update to msg_hp of received message.
@@ -203,9 +201,7 @@ pub struct FriendshipChains {
     last_sent_hash: Option<[u8; 32]>,
 
     // ==================== BIDIRECTIONAL ENTROPY STATE ====================
-    /// Last received weave hash (for bidirectional entropy mixing).
-    /// Derived from: hash(DOMAIN || eagle_time || msg_hp || plaintext)
-    /// This prevents brute-forcing even if plaintext is guessable. When we send, we mix this into our chain advancement. Updated after each successful decrypt.
+    /// Last received weave hash (for bidirectional entropy mixing). Derived from: hash(DOMAIN || eagle_time || msg_hp || plaintext) This prevents brute-forcing even if plaintext is guessable. When we send, we mix this into our chain advancement. Updated after each successful decrypt.
     last_received_weave: Option<[u8; 32]>,
 
     /// Last sent weave hash (what we sent = what they received). When receiver advances their view of our chain, they use this to match what we used for mixing when we received their ACK. Updated after each send.
@@ -351,8 +347,7 @@ impl FriendshipChains {
         };
         let avalanche = avalanche_expand_eggs(&eggs_struct);
 
-        // Step 2: Derive each participant's chain via truncate-and-append derive_chain_from_avalanche returns 8KB (256 active links)
-        // We need 16KB (256 history zeros + 256 active links)
+        // Step 2: Derive each participant's chain via truncate-and-append derive_chain_from_avalanche returns 8KB (256 active links) We need 16KB (256 history zeros + 256 active links)
         let mut chains = Vec::with_capacity(sorted_participants.len());
         for participant in &sorted_participants {
             let active_bytes = derive_chain_from_avalanche(&avalanche, participant);
@@ -371,8 +366,7 @@ impl FriendshipChains {
         // Initialize last_received_times with None (no messages received yet)
         let last_received_times = vec![None; sorted_participants.len()];
 
-        // Derive first_message_anchors for each participant's hash chain
-        // Anchor = BLAKE3(DOMAIN_ANCHOR || handle_hash || chain_fingerprint) where chain_fingerprint = BLAKE3(active_chain_portion)
+        // Derive first_message_anchors for each participant's hash chain Anchor = BLAKE3(DOMAIN_ANCHOR || handle_hash || chain_fingerprint) where chain_fingerprint = BLAKE3(active_chain_portion)
         let first_message_anchors: Vec<[u8; 32]> = sorted_participants
             .iter()
             .zip(chains.iter())
@@ -437,8 +431,7 @@ impl FriendshipChains {
         // Initialize last_received_times with None (will be populated on first message)
         let last_received_times = vec![None; participants.len()];
 
-        // Derive first_message_anchors for each participant's hash chain
-        // These are deterministic from chain state, so we recompute them
+        // Derive first_message_anchors for each participant's hash chain These are deterministic from chain state, so we recompute them
         let first_message_anchors: Vec<[u8; 32]> = participants
             .iter()
             .zip(chains.iter())
@@ -539,8 +532,7 @@ impl FriendshipChains {
             last_received_times = vec![None; participants.len()];
         }
 
-        // Derive first_message_anchors for each participant's hash chain
-        // These are deterministic from chain state, so we recompute them
+        // Derive first_message_anchors for each participant's hash chain These are deterministic from chain state, so we recompute them
         let first_message_anchors: Vec<[u8; 32]> = participants
             .iter()
             .zip(chains.iter())
@@ -972,8 +964,7 @@ impl FriendshipChains {
             .iter()
             .position(|m| &m.msg_hp == their_incorporated_hp)
         {
-            // Remove all messages up to and including this one
-            // They're in order, so we can drain 0..=ack_pos
+            // Remove all messages up to and including this one They're in order, so we can drain 0..=ack_pos
             cleared = ack_pos + 1;
             self.pending_messages.drain(0..cleared);
         }

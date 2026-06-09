@@ -35,12 +35,10 @@ pub enum LaunchState {
     /// Ready to attest - show handle input + "Attest" button
     Fresh,
 
-    /// Computing handle_proof + announcing to FGTW
-    /// Show loading spinner, no button
+    /// Computing handle_proof + announcing to FGTW Show loading spinner, no button
     Attesting,
 
-    /// Attestation failed - show error message, no button
-    /// User can edit textbox to return to Fresh
+    /// Attestation failed - show error message, no button User can edit textbox to return to Fresh
     Error(String),
 }
 

@@ -2,12 +2,9 @@
 //!
 //! Centralized packet inspection for all network transports (UDP, TCP, PT). Provides human-readable VSF packet formatting with optional noise filtering.
 
-/// Format a VSF packet as a human-readable inspection string (like vsfinfo)
-/// Public for use across network modules (FGTW transport, P2P, etc.)
-/// Returns empty string for noisy packets (ping/pong/lan_discovery) unless verbose-network is enabled
+/// Format a VSF packet as a human-readable inspection string (like vsfinfo) Public for use across network modules (FGTW transport, P2P, etc.) Returns empty string for noisy packets (ping/pong/lan_discovery) unless verbose-network is enabled
 ///
-/// Title format: `═══ VSF {transport} {TX|RX} {addr} ({bytes} bytes) ═══`
-/// Section names come from the VSF data itself (shown in parsed output below title)
+/// Title format: `═══ VSF {transport} {TX|RX} {addr} ({bytes} bytes) ═══` Section names come from the VSF data itself (shown in parsed output below title)
 #[cfg(feature = "development")]
 pub fn vsf_inspect(data: &[u8], transport: &str, direction: &str, addr: &str) -> String {
     // PT DATA packets: stream_id ('a'-'z') + varint seq + payload - filter unless verbose-network
@@ -72,8 +69,7 @@ fn decode_vsf_varint(bytes: &[u8]) -> Option<(usize, usize)> {
     None
 }
 
-/// Noisy packet types that should be filtered from inspection logs
-/// These match VSF header label names (e.g., `(ping)`) and section names
+/// Noisy packet types that should be filtered from inspection logs These match VSF header label names (e.g., `(ping)`) and section names
 const NOISY_SECTION_NAMES: &[&str] = &[
     "ping",
     "pong",
@@ -85,8 +81,7 @@ const NOISY_SECTION_NAMES: &[&str] = &[
     "pt_done",
 ];
 
-/// Check if a VSF packet is a noisy type that should be filtered
-/// Filters: ping/pong, lan_discovery, PT control packets (ack/nak/ctrl/done/spec)
+/// Check if a VSF packet is a noisy type that should be filtered Filters: ping/pong, lan_discovery, PT control packets (ack/nak/ctrl/done/spec)
 #[cfg(feature = "development")]
 pub fn is_noisy_packet(data: &[u8]) -> bool {
     if data.is_empty() {
@@ -124,8 +119,7 @@ pub fn is_noisy_packet(data: &[u8]) -> bool {
     false
 }
 
-/// Format a raw VSF section (no header) as a human-readable inspection string
-/// Used for decrypted section-only data like FGTW peer lists
+/// Format a raw VSF section (no header) as a human-readable inspection string Used for decrypted section-only data like FGTW peer lists
 #[cfg(feature = "development")]
 pub fn section_inspect(data: &[u8], transport: &str, direction: &str, label: &str) -> String {
     let mut result = format!(

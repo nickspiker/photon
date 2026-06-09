@@ -12,8 +12,7 @@ pub struct BootstrapResult {
     pub error: Option<String>,
 }
 
-// FGTW Seed Public Keys (hardcoded to avoid extra queries)
-// X25519 public key - for encrypting announce messages
+// FGTW Seed Public Keys (hardcoded to avoid extra queries) X25519 public key - for encrypting announce messages
 pub const FGTW_X25519_PUBLIC_KEY: [u8; 32] = [
     0x3D, 0x55, 0x63, 0xA3, 0x9C, 0xB4, 0x0F, 0x68, 0x0E, 0x20, 0x88, 0x76, 0xDC, 0x2E, 0x3E, 0x58,
     0xC2, 0xFB, 0xF4, 0xA0, 0x37, 0x60, 0xB1, 0x25, 0x61, 0xC0, 0xAF, 0xE1, 0x12, 0xAD, 0xDD, 0x11,
@@ -25,9 +24,7 @@ pub const FGTW_ED25519_PUBLIC_KEY: [u8; 32] = [
     0x8F, 0xA7, 0x01, 0x6A, 0x60, 0xA6, 0xF4, 0x02, 0x05, 0xCA, 0x95, 0x0D, 0x9B, 0xF0, 0x58, 0x88,
 ];
 
-/// Try to parse a VSF error message from response bytes
-/// Returns Some(error_message) if the response is a valid VSF error, None otherwise
-/// Uses VsfHeader::decode() for robust parsing
+/// Try to parse a VSF error message from response bytes Returns Some(error_message) if the response is a valid VSF error, None otherwise Uses VsfHeader::decode() for robust parsing
 fn try_parse_vsf_error(bytes: &[u8]) -> Option<String> {
     use vsf::VsfType;
 
@@ -109,9 +106,7 @@ fn format_http_error_from_bytes(step: &str, status: reqwest::StatusCode, body: &
     }
 }
 
-/// Load bootstrap peers by announcing to FGTW
-/// This requires authenticating with our handle and device key
-/// Returns BootstrapResult which includes peers even on error (for peer discovery)
+/// Load bootstrap peers by announcing to FGTW This requires authenticating with our handle and device key Returns BootstrapResult which includes peers even on error (for peer discovery)
 ///
 /// # Arguments
 /// * `device_key` - Device's Ed25519 keypair
@@ -241,8 +236,7 @@ async fn load_bootstrap_peers_inner(
     Ok(peers)
 }
 
-/// Parse challenge VSF to extract provenance hash
-/// The timestamp in the challenge is ignored - announce generates its own timestamp
+/// Parse challenge VSF to extract provenance hash The timestamp in the challenge is ignored - announce generates its own timestamp
 fn parse_challenge_hash(bytes: &[u8]) -> Result<[u8; 32], String> {
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
     use vsf::VsfType;
@@ -290,9 +284,7 @@ fn parse_challenge_hash(bytes: &[u8]) -> Result<[u8; 32], String> {
     Ok(arr)
 }
 
-/// Encrypt data for FGTW using ephemeral X25519 + AES-256-GCM
-/// Format: [ephemeral_pubkey:32][nonce:12][ciphertext+tag]
-/// This matches FGTW's Web Crypto API implementation
+/// Encrypt data for FGTW using ephemeral X25519 + AES-256-GCM Format: [ephemeral_pubkey:32][nonce:12][ciphertext+tag] This matches FGTW's Web Crypto API implementation
 fn encrypt_for_fgtw(plaintext: &[u8], fgtw_x25519_pubkey: &[u8; 32]) -> Result<Vec<u8>, String> {
     use aes_gcm::{
         aead::{Aead, KeyInit},
@@ -333,9 +325,7 @@ fn encrypt_for_fgtw(plaintext: &[u8], fgtw_x25519_pubkey: &[u8; 32]) -> Result<V
     Ok(result)
 }
 
-/// Convert Ed25519 secret key to X25519 secret key (RFC 8032)
-/// This is a one-way deterministic conversion using SHA-512 and clamping
-/// Matches FGTW's implementation for compatibility
+/// Convert Ed25519 secret key to X25519 secret key (RFC 8032) This is a one-way deterministic conversion using SHA-512 and clamping Matches FGTW's implementation for compatibility
 fn ed25519_secret_to_x25519(ed25519_secret: &[u8]) -> [u8; 32] {
     use sha2::{Digest, Sha512};
 
@@ -356,9 +346,7 @@ fn ed25519_secret_to_x25519(ed25519_secret: &[u8]) -> [u8; 32] {
     x25519_secret
 }
 
-/// Decrypt data from FGTW using ephemeral X25519 + AES-256-GCM
-/// Format: [ephemeral_pubkey:32][nonce:12][ciphertext+tag]
-/// The device_key is Ed25519 but we derive X25519 for decryption
+/// Decrypt data from FGTW using ephemeral X25519 + AES-256-GCM Format: [ephemeral_pubkey:32][nonce:12][ciphertext+tag] The device_key is Ed25519 but we derive X25519 for decryption
 fn decrypt_from_fgtw(
     ciphertext_with_header: &[u8],
     device_key: &Keypair,
@@ -387,8 +375,7 @@ fn decrypt_from_fgtw(
     // Remaining bytes are ciphertext+tag
     let ciphertext = &ciphertext_with_header[44..];
 
-    // Convert Ed25519 secret key to X25519 secret key using RFC 8032 method
-    // This matches FGTW's conversion: SHA-512 hash + clamping
+    // Convert Ed25519 secret key to X25519 secret key using RFC 8032 method This matches FGTW's conversion: SHA-512 hash + clamping
     let x25519_secret_bytes = ed25519_secret_to_x25519(device_key.secret.as_bytes());
     let x25519_secret = StaticSecret::from(x25519_secret_bytes);
 
@@ -406,9 +393,7 @@ fn decrypt_from_fgtw(
     Ok(plaintext)
 }
 
-/// Build VSF announce message (new encrypted format)
-/// Structure: RÅ< z y b ef6 hp ke ge n[1] (d"announce" o b n) > [announce payload]
-/// The device Ed25519 key (ke) and signature (ge) are at HEADER level for full file integrity
+/// Build VSF announce message (new encrypted format) Structure: RÅ< z y b ef6 hp ke ge n[1] (d"announce" o b n) > [announce payload] The device Ed25519 key (ke) and signature (ge) are at HEADER level for full file integrity
 fn build_announce_message(
     handle_proof: [u8; 32],
     device_key: &Keypair,
@@ -525,8 +510,7 @@ fn parse_peer_list(bytes: &[u8], device_key: &Keypair) -> Result<Vec<PeerRecord>
     Ok(peers)
 }
 
-/// Parse a PeerRecord from a VsfField
-/// Expected format: (peer: hb{32}, ke{32}, t_u3{IP}, u3{port}, ef6{timestamp})
+/// Parse a PeerRecord from a VsfField Expected format: (peer: hb{32}, ke{32}, t_u3{IP}, u3{port}, ef6{timestamp})
 fn parse_peer_from_field(field: &vsf::VsfField) -> Result<PeerRecord, String> {
     if field.values.len() < 5 {
         return Err(format!(
