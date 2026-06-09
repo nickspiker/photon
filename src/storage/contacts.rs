@@ -46,9 +46,9 @@ impl ContactIdentity {
     }
 }
 
-/// Derive identity_seed from a handle string. Delegates to `ihi::handle_to_hash` — the canonical "handle string → 32 bytes" intermediate that `handle_to_proof` uses as its pre-hash. Matches `Contact::new`'s `handle_hash` field and the avatar key seeds; one canonical algorithm across all handle-derived bytes.
+/// Derive identity_seed from a handle string. BLAKE3 pre-hash of the handle — the canonical "handle string → 32 bytes" intermediate that `ihi::handle_to_proof` uses internally. Matches `Contact::new`'s `handle_hash` field and the avatar key seeds.
 pub fn derive_identity_seed(handle: &str) -> [u8; 32] {
-    *ihi::handle_to_hash(handle).as_bytes()
+    *blake3::hash(handle.as_bytes()).as_bytes()
 }
 
 /// Logical key for a contact's data

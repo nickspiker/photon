@@ -193,8 +193,8 @@ impl ContactId {
 
 impl Contact {
     pub fn new(handle: HandleText, handle_proof: [u8; 32], public_identity: DevicePubkey) -> Self {
-        // Private handle_hash for local seed derivation (NOT the public handle_proof). Delegates to `ihi::handle_to_hash` — the canonical "handle string → 32 bytes" intermediate that `handle_to_proof` uses as its pre-hash. Same canonical answer here means contact-table keys, avatar keypair seeds, and the public handle_proof all share one pre-hash algorithm across the codebase.
-        let handle_hash = *ihi::handle_to_hash(handle.as_str()).as_bytes();
+        // Private handle_hash for local seed derivation (NOT the public handle_proof). BLAKE3 pre-hash of the handle — same canonical answer here means contact-table keys, avatar keypair seeds, and the public handle_proof all share one pre-hash algorithm.
+        let handle_hash = *blake3::hash(handle.as_str().as_bytes()).as_bytes();
 
         Self {
             id: ContactId::from_pubkey(&public_identity),
