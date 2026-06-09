@@ -21,7 +21,7 @@ use fluor::host::app::{Context, EventResponse, FluorApp};
 use fluor::host::chrome::{self, ResizeEdge};
 use fluor::host::chrome_widget::DefaultChrome;
 use fluor::event::{
-    CursorIcon, ElementState, Event, Key, MouseButton, MouseScrollDelta, NamedKey,
+    CursorIcon, ElementState, Event, Ime, Key, MouseButton, MouseScrollDelta, NamedKey,
 };
 use fluor::host::widget::{self, Container, TabDir, Widget};
 use fluor::paint::{self, HitId, HIT_NONE};
@@ -651,6 +651,30 @@ impl FluorApp for PhotonApp {
                         EventResponse::Pass
                     }
                 }
+            }
+            Event::Ime(Ime::Commit(s)) => {
+                // Android: soft IME committed `s` (typing, swipe, autocomplete). Deliver into the focused textbox via `insert_str`. Backspace arrives as the literal "\b" character from PhotonSurfaceView's deleteSurroundingText / composing-text replacement path, so peel those off and route to `backspace`. Anything else gets inserted verbatim. No-op when no textbox is focused (focus might sit on the attest button via Tab).
+                let focused = self.focused;
+                let tb_focused = self
+                    .textbox
+                    .as_ref()
+                    .map(|t| Some(t.hit_id()) == focused)
+                    .unwrap_or(false);
+                if tb_focused {
+                    if let Some(tb) = self.textbox.as_mut() {
+                        for c in s.chars() {
+                            if c == '\u{0008}' {
+                                tb.backspace(ctx.text);
+                            } else {
+                                tb.insert_char(c, ctx.text);
+                            }
+                        }
+                        self.blink_timer.start(Instant::now());
+                        ctx.window.request_redraw();
+                    }
+                    return EventResponse::Handled;
+                }
+                EventResponse::Pass
             }
             _ => EventResponse::Pass,
         }
