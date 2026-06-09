@@ -272,6 +272,8 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
             val serviceIntent = Intent(this, PhotonConnectionService::class.java).apply {
                 putExtra("fingerprint", fp.fingerprint)
                 putExtra("dataDir", filesDir.absolutePath)
+                // Shadow ring for the dual-ring vault — different mount than filesDir, so a single-volume torn write or partition flake doesn't take both rings down in the same session. getExternalFilesDir(null) is app-scoped (no permission needed, dies with uninstall just like filesDir) and on a real device is effectively always present; the Rust side falls back to filesDir-with-shadow-suffix if it ever comes back null.
+                putExtra("shadowDir", getExternalFilesDir(null)?.absolutePath ?: "")
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 startForegroundService(serviceIntent)
