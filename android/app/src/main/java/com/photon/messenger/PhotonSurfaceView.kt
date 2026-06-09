@@ -24,7 +24,8 @@ class PhotonSurfaceView(
         outAttrs.inputType = EditorInfo.TYPE_CLASS_TEXT
         outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_FULLSCREEN or EditorInfo.IME_ACTION_DONE
 
-        return object : BaseInputConnection(this, false) {
+        // fullEditor=true tells the IME this view manages its own text buffer, so it routes character input through commitText / setComposingText (which we forward to the Rust side) instead of synthesizing key events for every character.
+        return object : BaseInputConnection(this, true) {
             // Track composing text so we can replace it when updated
             private var composingText = ""
 
