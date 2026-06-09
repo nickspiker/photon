@@ -144,6 +144,8 @@ jni = "0.21"
 ndk = { version = "0.9.0", features = ["api-level-26"] }
 ndk-sys = "0.6.0"
 android_logger = "0.15.0"
+# fluor's Android backend — ANativeWindow surface + JNI + Choreographer-driven render scheduling. Currently scaffolded (Phase 2.1 of the `host-android` plan); photon's Android target still routes through the legacy `ui::app::PhotonApp` renderer for now. Once Phase 2.2+ lands the JNI shims and event loop, photon's `photon_app.rs` will compile on Android too and the legacy renderer retires.
+fluor = { path = "../fluor", default-features = false, features = ["host-android"] }
 # winit on Android pulls in the platform-agnostic event types only (ElementState / MouseButton / MouseScrollDelta / KeyEvent / ModifiersState). `default-features = false` + `rwh_06` keeps the window/event-loop machinery out — Photon's Android surface is `ANativeWindow` via `renderer_android.rs`, and JNI translates Android input events into these winit type values before feeding them to the legacy compositor. Drops out completely once the `host-android` plan lands fluor-native event types (Phase 1).
 winit = { version = "0.30.12", default-features = false, features = ["rwh_06"] }
 # winit's Android target unconditionally pulls `android-activity` (not feature-gated), and android-activity refuses to compile without one of its backend features set. `native-activity` is the lighter of the two — picks the standard `NativeActivity` glue and lets winit's types compile cleanly without bringing in a separate event-loop driver. Photon doesn't dispatch through winit's event loop on Android (its activity is a custom Kotlin class in `android/app/.../PhotonActivity.kt`); this dep is purely compile-glue.
