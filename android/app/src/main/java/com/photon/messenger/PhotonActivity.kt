@@ -7,8 +7,13 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
+import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.graphics.PixelFormat
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
@@ -19,6 +24,7 @@ import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import android.view.WindowManager
 import android.view.inputmethod.InputMethodManager
 import android.widget.FrameLayout
 import androidx.activity.result.contract.ActivityResultContracts
@@ -61,6 +67,40 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     // Scale gesture detector for pinch-to-zoom
     private lateinit var scaleGestureDetector: ScaleGestureDetector
 
+    // Gravity sensor → setRequestedOrientation. We let the OS own the rotation (so the IME and any system overlays render in the correct orientation), but drive it ourselves from the gravity vector with a 7.0 m/s² deadband — same instant feel as lumis without the OrientationEventListener debounce (~500ms). Paired with ROTATION_ANIMATION_JUMPCUT, the orientation change shows as a hard cut with no rotation animation. Tracking `requestedOrientation` ourselves so we only call `setRequestedOrientation` on actual change (the setter triggers a config delivery either way).
+    private lateinit var sensorManager: SensorManager
+    private var gravitySensor: Sensor? = null
+    private var gravityX: Float = 0f
+    private var gravityY: Float = 9.8f
+    private var gravityZ: Float = 0f
+    private var currentOrientation: Int = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+    private val gravityListener = object : SensorEventListener {
+        override fun onSensorChanged(event: SensorEvent) {
+            if (event.sensor.type == Sensor.TYPE_GRAVITY) {
+                gravityX = event.values[0]
+                gravityY = event.values[1]
+                gravityZ = event.values[2]
+                updateOrientationFromGravity()
+            }
+        }
+        override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+    }
+
+    /// Snap raw gravity to one of the four screen orientations with a 7.0 m/s² deadband (≈71% of g, well past the 45° diagonal). Below threshold on both horizontal axes (phone near-flat) the previous orientation is retained.
+    private fun updateOrientationFromGravity() {
+        val target = when {
+            gravityY > 7.0f -> ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            gravityX < -7.0f -> ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE
+            gravityY < -7.0f -> ActivityInfo.SCREEN_ORIENTATION_REVERSE_PORTRAIT
+            gravityX > 7.0f -> ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+            else -> currentOrientation
+        }
+        if (target != currentOrientation) {
+            currentOrientation = target
+            requestedOrientation = target
+        }
+    }
+
     // Service connection callbacks
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
@@ -88,6 +128,9 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     private external fun nativeOnKeyEvent(contextPtr: Long, keyCode: Int): Boolean  // Special keys (backspace, enter)
     private external fun nativeOnBackPressed(contextPtr: Long): Boolean  // Back button - returns true if handled
     private external fun nativeOnScale(contextPtr: Long, scaleFactor: Float)  // Pinch-to-zoom scale factor
+    private external fun nativePollKeyboard(contextPtr: Long): Int  // Per-frame poll for show/hide soft IME — 1=show, -1=hide, 0=no change
+    private external fun nativePollAvatarPicker(contextPtr: Long): Int  // Per-frame poll for the avatar image-picker request — 1=launch ACTION_GET_CONTENT, 0=no change
+    private external fun nativeSetDisplayColorSpace(rgbToXyz: FloatArray, primaries: FloatArray)  // Display panel's RGB→XYZ_D50 (9 floats) + chromaticity primaries [Rx,Ry,Gx,Gy,Bx,By] (6 floats)
     private external fun nativeSetAvatarFromFile(contextPtr: Long, fileBytes: ByteArray)  // Raw image file bytes (preserves ICC profile)
     private external fun nativeDestroy(contextPtr: Long)
 
@@ -100,9 +143,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         }
     }
 
-    // Image picker for avatar selection - passes RAW FILE BYTES to Rust
-    // We do NOT decode in Android because BitmapFactory destroys ICC profiles
-    // and mangles colors. Rust handles proper color management via XYZ.
+    // Image picker for avatar selection — passes RAW FILE BYTES to Rust. We do NOT decode in Android because BitmapFactory destroys ICC profiles and mangles colors; Rust handles proper color management via XYZ.
     private val imagePickerLauncher = registerForActivityResult(
         ActivityResultContracts.GetContent()
     ) { uri ->
@@ -150,6 +191,29 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         surfaceView.holder.setFormat(PixelFormat.RGBA_8888)
         surfaceView.holder.addCallback(this)
 
+        // ROTATION_ANIMATION_JUMPCUT: when setRequestedOrientation flips the screen, do a hard cut with no rotation animation. This is the entire point of driving rotation ourselves — without it, every orientation change pays for the OS's default rotate animation (~300-500ms).
+        //
+        // colorMode = WIDE_COLOR_GAMUT: opt the Surface into the device's wide gamut (Display P3 on the Pixel 8 Pro) instead of the sRGB default. preferMinimalPostProcessing (API 30+) asks the compositor to skip vendor colour adjustments (saturation boost, "Vivid" mode, etc.). Together with `ANativeWindow_setBuffersDataSpace(ADATASPACE_DISPLAY_P3)` on the Rust side, this gives us a display-native pipeline: bytes we write land on the panel without an sRGB-clamp. Photon does its own colour management later in the paint pipeline (theme constants + chromatic wave get transformed before they're written to the framebuffer), so the OS-side clamp would only fight that work.
+        window.attributes = window.attributes.also {
+            it.rotationAnimation = WindowManager.LayoutParams.ROTATION_ANIMATION_JUMPCUT
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                it.preferMinimalPostProcessing = true
+            }
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            window.colorMode = ActivityInfo.COLOR_MODE_WIDE_COLOR_GAMUT
+            // Push the device's actual display primaries down to Rust. `preferredWideGamutColorSpace` returns the ColorSpace.Rgb the panel claims (Display P3 on the Pixel 8 Pro). Its `transform` is the 9-float RGB→XYZ_D50 matrix in row-major order; `primaries` is `[Rx Ry Gx Gy Bx By]` in CIE 1931 xy chromaticity. Photon composes these with its own LMS→XYZ to drive the chromatic wave with native panel coordinates instead of a hardcoded REC2020 approximation that's outside the display's gamut anyway.
+            val cs = display?.preferredWideGamutColorSpace
+            if (cs is android.graphics.ColorSpace.Rgb) {
+                nativeSetDisplayColorSpace(cs.transform, cs.primaries)
+            } else {
+                Log.w(TAG, "ColorPipeline: display.preferredWideGamutColorSpace is not Rgb (${cs?.javaClass?.simpleName}) — falling back to hardcoded matrices")
+            }
+        }
+        // Initialize gravity sensor — listener fills gravityX/Y/Z and calls updateOrientationFromGravity at ~60Hz (SENSOR_DELAY_UI). gravitySensor may be null on very old devices (TYPE_GRAVITY is a virtual sensor composited from accelerometer + gyro); when null the listener never registers and orientation stays at whatever the OS picks.
+        sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
+        gravitySensor = sensorManager.getDefaultSensor(Sensor.TYPE_GRAVITY)
+
         // Initialize scale gesture detector for pinch-to-zoom
         scaleGestureDetector = ScaleGestureDetector(this, object : ScaleGestureDetector.OnScaleGestureListener {
             override fun onScale(detector: ScaleGestureDetector): Boolean {
@@ -186,7 +250,6 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
                     when (keyboardAction) {
                         1 -> showKeyboard()
                         -1 -> hideKeyboard()
-                        2 -> openImagePicker()
                     }
                 }
             }
@@ -349,8 +412,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     }
 
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-        // Track full height only when keyboard is not visible AND height is larger
-        // (prevents capturing reduced height if surfaceChanged races with keyboard)
+        // Track full height only when keyboard is not visible AND height is larger (prevents capturing reduced height if surfaceChanged races with keyboard).
         if (!keyboardVisible && height > fullHeight) {
             fullHeight = height
         }
@@ -381,6 +443,15 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
             val surface = surfaceView.holder.surface
             if (surface.isValid) {
                 nativeDraw(nativePtr, surface)
+                // Poll the soft-keyboard signal each frame so app-driven focus changes (e.g. dropping focus from the textbox when attestation starts) propagate to the IME without waiting for the next user touch. `wants_keyboard` is a take-on-change one-shot — almost every frame returns 0 (no change), so this is cheap.
+                when (nativePollKeyboard(nativePtr)) {
+                    1 -> showKeyboard()
+                    -1 -> hideKeyboard()
+                }
+                // Avatar tap (Ready screen) → launch the system image picker. App-driven, not touch-driven, so it polls alongside the keyboard signal instead of riding the nativeOnTouch return like the legacy 2-code path did.
+                if (nativePollAvatarPicker(nativePtr) == 1) {
+                    openImagePicker()
+                }
             }
             // Schedule next frame
             Choreographer.getInstance().postFrameCallback(this)
@@ -399,10 +470,14 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     override fun onPause() {
         super.onPause()
         Choreographer.getInstance().removeFrameCallback(this)
+        sensorManager.unregisterListener(gravityListener)
     }
 
     override fun onResume() {
         super.onResume()
+        gravitySensor?.let {
+            sensorManager.registerListener(gravityListener, it, SensorManager.SENSOR_DELAY_UI)
+        }
         if (nativePtr != 0L && surfaceReady) {
             Choreographer.getInstance().postFrameCallback(this)
         }
