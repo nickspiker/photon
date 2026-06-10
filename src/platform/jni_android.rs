@@ -148,6 +148,47 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeOnTouch(
     ctx.shell.on_touch(action, x, y) as jint
 }
 
+/// Push the device's display colour-space data from Kotlin into fluor's `theme` globals. `rgb_to_xyz` is a 9-float row-major 3x3 matrix mapping the display's RGB into CIE XYZ D50 (queried Kotlin-side from `display.preferredWideGamutColorSpace.transform`). `primaries` is 6 floats `[Rx, Ry, Gx, Gy, Bx, By]` from the same ColorSpace. Stored once at Activity init; consumers (chromatic_wave, future colour-managed painters) read via `fluor::theme::display_rgb_to_xyz()` and `display_primaries()`.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeSetDisplayColorSpace(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    rgb_to_xyz: jni::objects::JFloatArray<'_>,
+    primaries: jni::objects::JFloatArray<'_>,
+) {
+    let mut m = [0f32; 9];
+    let mut p = [0f32; 6];
+    if let Err(e) = env.get_float_array_region(&rgb_to_xyz, 0, &mut m) {
+        error!("nativeSetDisplayColorSpace: rgb_to_xyz read failed: {:?}", e);
+        return;
+    }
+    if let Err(e) = env.get_float_array_region(&primaries, 0, &mut p) {
+        error!("nativeSetDisplayColorSpace: primaries read failed: {:?}", e);
+        return;
+    }
+    info!(
+        "Display ColourSpace: rgb→XYZ = [{:.4} {:.4} {:.4} / {:.4} {:.4} {:.4} / {:.4} {:.4} {:.4}]  primaries Rxy=({:.4},{:.4}) Gxy=({:.4},{:.4}) Bxy=({:.4},{:.4})",
+        m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8],
+        p[0], p[1], p[2], p[3], p[4], p[5]
+    );
+    fluor::theme::set_display_color_space(m, p);
+}
+
+/// Per-frame poll for the soft-keyboard show/hide signal. Returns `1` / `-1` / `0` like `nativeOnTouch`. Called from `PhotonActivity.doFrame` so app-driven focus changes (e.g. `change_focus(None)` from `submit_handle` while attesting) reach the Activity without waiting for the next user touch. Cheap — boils down to `app.wants_keyboard()` which is a take-on-change one-shot.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativePollKeyboard(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    context_ptr: jlong,
+) -> jint {
+    let Some(ctx) = get_context(context_ptr) else {
+        return 0;
+    };
+    ctx.shell.poll_keyboard() as jint
+}
+
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeOnTextInput(
@@ -218,7 +259,8 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeOnScale(
     ctx.shell.on_scale(scale_factor);
 }
 
-/// Avatar from image picker. NOT in AndroidShell — photon-specific (decodes via the existing avatar pipeline). Stubbed for now; wires through once PhotonApp exposes a `set_avatar_from_file(bytes)` method that funnels into the avatar storage layer.
+
+/// Avatar from image picker. NOT in AndroidShell — photon-specific (decodes via the existing avatar pipeline). Funnels raw file bytes (JPEG/PNG/WebP — Android side intentionally does NOT decode through `BitmapFactory` because that destroys ICC profile data) through `PhotonApp::set_avatar_from_file`, which encodes to VSF, saves to the encrypted handle-keyed store, reloads, colour-converts to BT.2020 γ=2.0 for the surface buffer, and (when a handle_proof is available) uploads to FGTW.
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeSetAvatarFromFile(
@@ -227,7 +269,7 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeSetAvatarFromFi
     context_ptr: jlong,
     file_bytes: JByteArray<'_>,
 ) {
-    let Some(_ctx) = get_context(context_ptr) else {
+    let Some(ctx) = get_context(context_ptr) else {
         return;
     };
     let bytes = match env.convert_byte_array(&file_bytes) {
@@ -237,7 +279,25 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeSetAvatarFromFi
             return;
         }
     };
-    info!("Received avatar file: {} bytes (TODO: wire into PhotonApp)", bytes.len());
+    ctx.shell.app().set_avatar_from_file(bytes);
+}
+
+/// Per-frame poll for the avatar image-picker request. Returns `1` when the user has tapped the avatar circle since the last poll, `0` otherwise. Kotlin's `doFrame` hook calls this alongside `nativePollKeyboard` and launches `ACTION_GET_CONTENT` on `1`. One-shot semantics: `PhotonApp::take_picker_request` clears the flag so consecutive polls without further taps yield `0`.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativePollAvatarPicker(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    context_ptr: jlong,
+) -> jint {
+    let Some(ctx) = get_context(context_ptr) else {
+        return 0;
+    };
+    if ctx.shell.app().take_picker_request() {
+        1
+    } else {
+        0
+    }
 }
 
 #[cfg(target_os = "android")]

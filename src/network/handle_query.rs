@@ -496,11 +496,13 @@ impl HandleQuery {
                             ));
                         }
 
-                        // Initialize FlatStorage for this session
+                        // Initialize FlatStorage for this session. A bare `return` here would silently strand the UI on the Attesting spinner because the result channel never gets a verdict — the worker has already proven FGTW says the handle is ours, but with no local vault we can't reach Ready. Surface the failure as a QueryResult::Error so the Launch screen flips to its error state and the user sees what happened.
                         let storage = match crate::storage::FlatStorage::new(identity_seed, device_secret_bytes) {
                             Ok(s) => s,
                             Err(e) => {
-                                crate::log(&format!("Network: Failed to init storage: {}", e));
+                                let msg = format!("storage init failed: {}", e);
+                                crate::log(&format!("Network: {}", msg));
+                                let _ = tx.send(QueryResult::Error(msg));
                                 return;
                             }
                         };

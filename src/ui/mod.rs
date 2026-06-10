@@ -18,6 +18,12 @@ pub mod launch_layout;
 // Ready-screen layout calculator — slice-based port of legacy `app::ContactsUnifiedLayout`.
 pub mod ready_layout;
 
+// VSF RGB → BT.2020 RGB conversion for display output on Android (γ=2.0 end-to-end).
+pub mod colour_convert;
+
+// Avatar paint — Mitchell resize + AA textured circle into a fluor `Canvas`.
+pub mod avatar_render;
+
 pub use state::{AppState, FoundPeer, LaunchState, SearchResult};
 
 // The fluor-hosted `FluorApp` impl. Drives desktop via `host-winit` and Android via `host-android`.
