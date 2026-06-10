@@ -83,18 +83,24 @@ pub fn chromatic_wave(canvas: &mut Canvas, rect: PixelRect, phase: f32, period_s
 
             let idx = row_base + px;
             let existing = canvas.pixels[idx];
-            // Extract visible RGB from α + darkness storage. Alpha stays unchanged.
+            // Extract visible RGB from α + darkness storage. Alpha stays unchanged. On Android the storage bytes are in `0xAA_DB_DG_DR` order (RGBA_8888 read as little-endian u32), so the byte at `>>16` is dark_B and the byte at `&0xFF` is dark_R — swap when extracting so the per-pixel math below stays in canonical R/G/B positions regardless of platform.
             let alpha = existing & ALPHA_MASK;
             let visible = (existing & RGB_MASK) ^ VISIBLE_FLIP;
-            let r_bg = ((visible >> 16) & 0xFF) as f32;
+            #[cfg(target_os = "android")]
+            let (r_bg, b_bg) = ((visible & 0xFF) as f32, ((visible >> 16) & 0xFF) as f32);
+            #[cfg(not(target_os = "android"))]
+            let (r_bg, b_bg) = (((visible >> 16) & 0xFF) as f32, (visible & 0xFF) as f32);
             let g_bg = ((visible >> 8) & 0xFF) as f32;
-            let b_bg = (visible & 0xFF) as f32;
 
             // Legacy quadrature add: `sqrt(c * scale + c_bg²)`. `as u8` saturates [0, 255] (legacy semantics: out-of-gamut values clip to gamut edge, NaN → 0).
             let r_new = (r * scale + r_bg * r_bg).sqrt() as u8 as u32;
             let g_new = (g * scale + g_bg * g_bg).sqrt() as u8 as u32;
             let b_new = (b * scale + b_bg * b_bg).sqrt() as u8 as u32;
 
+            // Pack R/G/B back into platform byte order — mirror image of the extract above.
+            #[cfg(target_os = "android")]
+            let visible_new = (b_new << 16) | (g_new << 8) | r_new;
+            #[cfg(not(target_os = "android"))]
             let visible_new = (r_new << 16) | (g_new << 8) | b_new;
             canvas.pixels[idx] = ((visible_new ^ VISIBLE_FLIP) & RGB_MASK) | alpha;
         }
