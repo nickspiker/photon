@@ -89,12 +89,12 @@ cosmic-text = "0.14.2"
 rayon = "1.11.0"
 # softbuffer specified per-platform below
 # arboard specified per-platform below (pulls x11rb on Linux)
-vsf = { path = "../vsf", features = ["crypto", "text"] }
+vsf = { version = "0.5", features = ["crypto", "inspect", "text-encode"] }
 # fluor: CPU softbuffer compositor. Hosts the desktop event loop, owns chrome / paint primitives / text rendering / widget dispatch.
 # Path dep during the migration so Photon picks up local fluor changes without a republish cycle; flip to `version = "0.0.3+"` once the migration stabilizes (note: 0.0.2 was yanked).
 # Global = algorithm/geometry core only (no windowing backend). The desktop target block below adds `host-winit` so Cargo unions to {std, text, simd, rayon, host-winit} for desktop builds; the Android target stays at the default set so its dep graph excludes softbuffer/arboard/winit. This is the first step of the `host-android` plan — Android stays on the legacy compositor for now, but the fluor algorithm code is shared by both targets going forward.
 fluor = { path = "../fluor", default-features = false, features = ["std", "text", "simd", "rayon"] }
-ihi = "0.0.43"
+ihi = "0.0.44"
 voca = "0.0.0"
 num-bigint = "0.4"
 ferros_vault = { path = "../ferros/vault", features = ["host-file"] }

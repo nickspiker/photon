@@ -191,22 +191,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "43d5b281e737544384e969a5ccad3f1cdd24b48086a0fc1b2a5262a26b8f4f4a"
 dependencies = [
  "anstyle",
- "anstyle-parse 0.2.7",
- "anstyle-query",
- "anstyle-wincon",
- "colorchoice",
- "is_terminal_polyfill",
- "utf8parse",
-]
-
-[[package]]
-name = "anstream"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "824a212faf96e9acacdbd09febd34438f8f711fb84e09a8916013cd7815ca28d"
-dependencies = [
- "anstyle",
- "anstyle-parse 1.0.0",
+ "anstyle-parse",
  "anstyle-query",
  "anstyle-wincon",
  "colorchoice",
@@ -225,15 +210,6 @@ name = "anstyle-parse"
 version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e7644824f0aa2c7b9384579234ef10eb7efb6a0deb83f9630a49594dd9c15c2"
-dependencies = [
- "utf8parse",
-]
-
-[[package]]
-name = "anstyle-parse"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52ce7f38b242319f7cabaa6813055467063ecdc9d355bbb4ce0c68908cd8130e"
 dependencies = [
  "utf8parse",
 ]
@@ -784,7 +760,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b193af5b67834b676abd72466a96c1024e6a6ad978a1f484bd90b85c94041351"
 dependencies = [
  "clap_builder",
- "clap_derive",
 ]
 
 [[package]]
@@ -793,22 +768,8 @@ version = "4.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "714a53001bf66416adb0e2ef5ac857140e7dc3a0c48fb28b2f10762fc4b5069f"
 dependencies = [
- "anstream 1.0.0",
  "anstyle",
  "clap_lex",
- "strsim",
-]
-
-[[package]]
-name = "clap_derive"
-version = "4.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1110bd8a634a1ab8cb04345d8d878267d57c3cf1b38d91b71af6686408bbca6a"
-dependencies = [
- "heck",
- "proc-macro2",
- "quote",
- "syn",
 ]
 
 [[package]]
@@ -1470,7 +1431,7 @@ version = "0.11.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b2daee4ea451f429a58296525ddf28b45a3b64f1acf6587e2067437bb11e218d"
 dependencies = [
- "anstream 0.6.21",
+ "anstream",
  "anstyle",
  "env_filter 1.0.0",
  "jiff",
@@ -1580,7 +1541,7 @@ dependencies = [
  "num-bigint",
  "rand 0.8.5",
  "voca",
- "vsf 0.3.6",
+ "vsf 0.4.1",
 ]
 
 [[package]]
@@ -1618,6 +1579,7 @@ dependencies = [
  "arboard",
  "cosmic-text",
  "jni",
+ "libc",
  "libm",
  "log",
  "ndk",
@@ -1628,7 +1590,7 @@ dependencies = [
  "softbuffer",
  "spirix",
  "swash",
- "vsf 0.3.6",
+ "vsf 0.4.1",
  "wgpu",
  "wide",
  "winit",
@@ -2293,27 +2255,15 @@ dependencies = [
 
 [[package]]
 name = "ihi"
-version = "0.0.42"
+version = "0.0.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2df9fd706b9c0f47cbe676a1c5a975909bb4707001cb26662e259be25bc08937"
+checksum = "207881c94f7406bfd0f5f86b09bd284aa49b123c7632226fae8dcc18c656e024"
 dependencies = [
  "blake3",
  "i256",
  "sha2 0.10.9",
  "sha3 0.10.8",
-]
-
-[[package]]
-name = "ihi"
-version = "0.0.43"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "974f446aa6e9d23c7a18393aabd3763d01e2d70ed64c24ab645a1d2ccb3e6dbc"
-dependencies = [
- "blake3",
- "i256",
- "sha2 0.10.9",
- "sha3 0.10.8",
- "vsf 0.3.6 (registry+https://github.com/rust-lang/crates.io-index)",
+ "vsf 0.4.1",
 ]
 
 [[package]]
@@ -3414,7 +3364,7 @@ dependencies = [
  "i256",
  "icc-profile",
  "if-watch",
- "ihi 0.0.43",
+ "ihi",
  "image",
  "img-parts",
  "jni",
@@ -3450,7 +3400,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "voca",
- "vsf 0.3.6",
+ "vsf 0.5.0",
  "wgpu",
  "windows 0.58.0",
  "winit",
@@ -4332,7 +4282,6 @@ version = "0.23.37"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "758025cb5fccfd3bc2fd74708fd4682be41d99e5dff73c377c0646c6012c73a4"
 dependencies = [
- "log",
  "once_cell",
  "ring",
  "rustls-pki-types",
@@ -4796,12 +4745,6 @@ name = "strict-num"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6637bab7722d379c8b41ba849228d680cc12d0a45ba1fa2b48f2a30577a06731"
-
-[[package]]
-name = "strsim"
-version = "0.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "strum"
@@ -5337,6 +5280,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3b09c83c3c29d37506a3e260c08c03743a6bb66a9cd432c6934ab501a190571f"
 
 [[package]]
+name = "unicode-normalization"
+version = "0.1.25"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5fd4f6878c9cb28d874b009da9e8d183b5abc80117c40bbd187a1fde336be6e8"
+dependencies = [
+ "tinyvec",
+]
+
+[[package]]
 name = "unicode-properties"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5397,22 +5349,6 @@ name = "unty"
 version = "0.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6d49784317cd0d1ee7ec5c716dd598ec5b4483ea832a2dced265471cc0f690ae"
-
-[[package]]
-name = "ureq"
-version = "2.12.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "02d1a66277ed75f640d608235660df48c8e3c19f3b4edb6a263315626cc3c01d"
-dependencies = [
- "base64",
- "flate2",
- "log",
- "once_cell",
- "rustls",
- "rustls-pki-types",
- "url",
- "webpki-roots 0.26.11",
-]
 
 [[package]]
 name = "url"
@@ -5486,44 +5422,49 @@ dependencies = [
 
 [[package]]
 name = "vsf"
-version = "0.3.6"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "967f0d92a3b0c93d9cd2722c1cdbe7785ecfaf4bc43098566b93996197a85828"
 dependencies = [
  "aes-gcm 0.10.3",
  "bitvec",
  "blake3",
  "chacha20poly1305 0.10.1",
  "chrono",
- "clap",
- "colored",
  "ed25519-dalek",
  "hex",
  "i256",
- "ihi 0.0.42",
  "libm",
  "num-complex",
  "num-traits",
  "rand 0.8.5",
  "spin",
- "ureq",
+ "unicode-normalization",
  "x25519-dalek",
 ]
 
 [[package]]
 name = "vsf"
-version = "0.3.6"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b6b83ec39ba5bb7f6c6acab8e0f64713b77a6d8895565a690842f21dbdd349b"
+checksum = "39299f186478de38ddfaab4791d4944b7e4e85b1892b40e7baed6b0845ba382a"
 dependencies = [
+ "aes-gcm 0.10.3",
  "bitvec",
  "blake3",
+ "chacha20poly1305 0.10.1",
  "chrono",
+ "colored",
+ "ed25519-dalek",
  "hex",
  "i256",
- "ihi 0.0.42",
  "libm",
  "num-complex",
  "num-traits",
- "ureq",
+ "rand 0.8.5",
+ "spin",
+ "unicode-normalization",
+ "x25519-dalek",
 ]
 
 [[package]]

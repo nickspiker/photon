@@ -34,14 +34,14 @@ use fluor::host::WakeSender;
 /// How long after a `[`/`]` release we still treat the bracket as "held" for chord purposes. X11 fires a synthetic Release for the held bracket the instant the action key is pressed; this grace absorbs that round-trip so chords fire reliably.
 const CHORD_RELEASE_GRACE: Duration = Duration::from_millis(40);
 
-/// Error-state message colour for the Launch screen's error slot — visible RGB (255, 80, 80), bright red, fully opaque. Packed as α + darkness: `α=0xFF | (0xFF − 255)<<16 | (0xFF − 80)<<8 | (0xFF − 80) = 0xFF_00_AF_AF`. Matches the legacy `theme::STATUS_TEXT_ERROR` intent (red error text) in fluor's storage convention.
-const ERROR_TEXT_COLOUR: u32 = 0xFF_00_AF_AF;
+/// Error-state message colour for the Launch screen's error slot — visible RGB (255, 80, 80), bright red, fully opaque. `fluor::theme::dark(fmt(visible_argb))` does the same compile-time pack as fluor's theme constants: `fmt` is identity on desktop and an R↔B swap on Android (RGBA_8888 byte order in the ANativeWindow buffer), `dark` flips RGB → darkness and sets α=0xFF.
+const ERROR_TEXT_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_FF_50_50));
 
-/// Hint-label colour for the static "handle" prompt under the textbox — visible RGB (160, 160, 160), soft grey, fully opaque. Quieter than `theme::TEXTBOX_TEXT` (visible 224/224/220) because the hint is contextual, not content — dim enough that the eye reads the textbox first and the hint only on attention. Packed: `α=0xFF | (0xFF − 160) per channel = 0xFF_5F_5F_5F`.
-const HINT_TEXT_COLOUR: u32 = 0xFF_5F_5F_5F;
+/// Hint-label colour for the static "handle" prompt under the textbox — visible RGB (160, 160, 160), soft grey, fully opaque. Quieter than `theme::TEXTBOX_TEXT` (visible 224/224/220) because the hint is contextual, not content — dim enough that the eye reads the textbox first and the hint only on attention.
+const HINT_TEXT_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_A0_A0_A0));
 
-/// Status-message colour for the "Attesting…" indicator that occupies the error slot while a handle query is in flight. Pure visible white (255, 255, 255), fully opaque — same slot as `ERROR_TEXT_COLOUR` but white instead of red so the user reads it as "neutral status" rather than "something went wrong". Packed: `α=0xFF | darkness=0x00_00_00 = 0xFF_00_00_00`.
-const STATUS_TEXT_COLOUR: u32 = 0xFF_00_00_00;
+/// Status-message colour for the "Attesting…" indicator that occupies the error slot while a handle query is in flight. Pure visible white, fully opaque — same slot as `ERROR_TEXT_COLOUR` but white instead of red so the user reads it as "neutral status" rather than "something went wrong".
+const STATUS_TEXT_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_FF_FF_FF));
 
 /// Debug chord bindings shown in the hint overlay while `[ + ]` are held. Keep in sync with the dispatch in `on_event`'s KeyboardInput arm — adding a row here without wiring its handler (or vice versa) silently drops the binding.
 const CHORD_HINTS: &[(&str, &str)] = &[
@@ -132,6 +132,16 @@ pub struct PhotonApp {
     device_keypair: Option<crate::network::fgtw::Keypair>,
     /// One-shot Android soft-keyboard request. `change_focus` sets `Some(true)` when focus enters a textbox and `Some(false)` when it leaves; `wants_keyboard` returns and clears the value. The Activity reads the JNI signal after each touch and calls `InputMethodManager.show/hide` accordingly. Stays `None` on idle frames so the Activity doesn't churn the IME.
     pending_keyboard_request: Option<bool>,
+    /// This device's avatar in BT.2020 γ=2.0 u8 RGB, sized `crate::avatar::AVATAR_SIZE × AVATAR_SIZE × 3`. `None` until `on_query_result` pulls one from local storage (no saved avatar = stays `None`, Ready screen falls back to the grey placeholder).
+    device_avatar_pixels: Option<Vec<u8>>,
+    /// Cached Mitchell resize of `device_avatar_pixels` at the current Ready-screen circle diameter. Rebuilt on diameter change (resize / zoom).
+    device_avatar_scaled: Option<Vec<u8>>,
+    /// Diameter (in pixels) of `device_avatar_scaled`. `0` means no cache built yet.
+    device_avatar_scaled_diameter: usize,
+    /// HitId reserved for the Ready-screen self-avatar circle. Allocated in `init` alongside the other widget IDs; stamped into `chrome.hit_test_map` during the Ready render so a tap on the circle dispatches to the avatar code path (open the image picker on Android).
+    avatar_hit_id: HitId,
+    /// One-shot Android image-picker request. Set when the user taps the avatar; consumed by the JNI poll (`nativePollAvatarPicker`) which signals the Activity to launch `ACTION_GET_CONTENT`. Stays `None` on idle frames so the Activity doesn't churn.
+    pending_picker_request: bool,
 }
 
 impl PhotonApp {
@@ -166,12 +176,73 @@ impl PhotonApp {
             contacts: Vec::new(),
             device_keypair: None,
             pending_keyboard_request: None,
+            device_avatar_pixels: None,
+            device_avatar_scaled: None,
+            device_avatar_scaled_diameter: 0,
+            avatar_hit_id: HIT_NONE,
+            pending_picker_request: false,
         }
     }
 
     /// Inject the device keypair before `init` runs. Used by the Android JNI shim to pass through the keypair that `PhotonConnectionService` derives from the OS-provided device fingerprint — that fingerprint lives in Java (`Build.FINGERPRINT` / `Settings.Secure.ANDROID_ID`) and reaches the native side via `NetworkContext`. On desktop this stays unset; `init` falls back to `get_machine_fingerprint` (which reads `/etc/machine-id` etc.) and derives the keypair internally.
     pub fn set_device_keypair(&mut self, keypair: crate::network::fgtw::Keypair) {
         self.device_keypair = Some(keypair);
+    }
+
+    /// Take the one-shot image-picker request. JNI shim polls this once per frame; returns `true` exactly on the frame the user taps the avatar so the Activity launches `ACTION_GET_CONTENT` once per tap.
+    pub fn take_picker_request(&mut self) -> bool {
+        let req = self.pending_picker_request;
+        self.pending_picker_request = false;
+        req
+    }
+
+    /// Encode + save + reload an avatar image picked from the OS image picker. Pipeline: raw file bytes → `encode_avatar_from_image` (handles JPEG/PNG/WebP and the ICC-profile colour management — VSF spectral γ=2.0 RGB out) → `save_avatar` (encrypted handle-keyed storage) → `load_avatar` (round-trip check) → `vsf_rgb_to_bt2020` (display conversion for the Android BT.2020 buffer tag) → installed as `device_avatar_pixels` with the scaled cache invalidated. Uploads to FGTW when a `handle_proof` is available so other devices can fetch it. Skipped if the user hasn't attested yet (no handle to derive the storage key from).
+    pub fn set_avatar_from_file(&mut self, image_bytes: Vec<u8>) {
+        let handle = match &self.attested_handle {
+            Some(h) => h.clone(),
+            None => {
+                crate::log("avatar picker: ignored — no attested handle yet");
+                return;
+            }
+        };
+        crate::log(&format!(
+            "avatar picker: processing {} bytes",
+            image_bytes.len()
+        ));
+        let av1_data = match crate::ui::avatar::encode_avatar_from_image(&image_bytes) {
+            Ok(d) => d,
+            Err(e) => {
+                crate::log(&format!("avatar picker: encode failed: {e}"));
+                return;
+            }
+        };
+        if let Err(e) = crate::ui::avatar::save_avatar(&av1_data, &handle) {
+            crate::log(&format!("avatar picker: save failed: {e}"));
+            return;
+        }
+        let Some((_, vsf_rgb)) = crate::ui::avatar::load_avatar(&handle) else {
+            crate::log("avatar picker: post-save load failed");
+            return;
+        };
+        self.device_avatar_pixels = Some(crate::ui::colour_convert::vsf_rgb_to_bt2020(&vsf_rgb));
+        self.device_avatar_scaled = None;
+        self.device_avatar_scaled_diameter = 0;
+        crate::log("avatar picker: saved + installed");
+        let proof = self
+            .handle_query
+            .as_ref()
+            .and_then(|hq| hq.get_handle_proof());
+        match (self.device_keypair.as_ref(), proof) {
+            (Some(kp), Some(hp)) => {
+                match crate::ui::avatar::upload_avatar(&kp.secret, &handle, &hp) {
+                    Ok(_) => crate::log("avatar picker: FGTW upload ok"),
+                    Err(e) => {
+                        crate::log(&format!("avatar picker: FGTW upload failed: {e}"))
+                    }
+                }
+            }
+            _ => crate::log("avatar picker: skipping FGTW upload — keypair / proof unavailable"),
+        }
     }
 }
 
@@ -297,6 +368,9 @@ impl FluorApp for PhotonApp {
             12.,
             "+",
         ));
+        // Reserve a hit-id for the Ready-screen avatar circle. Not a Widget — the avatar is just a paint primitive — so click dispatch is handled directly in `on_event`'s MouseInput::Pressed arm, not through `widget::dispatch_click`. Incrementing the shared counter keeps the contiguous-id contract intact for the `[]h` debug overlay.
+        self.hit_counter = self.hit_counter.wrapping_add(1);
+        self.avatar_hit_id = self.hit_counter;
         self.update_widget_layout(ctx);
 
         // HandleQuery: device keypair is derived deterministically from the machine fingerprint (NEVER stored to disk per legacy convention — same machine yields the same keypair so attestations are reproducible across restarts). HandleQuery owns the UDP socket + sends/receives FGTW packets; an empty PeerStore wires the transport so query packets have somewhere to fan out to. Status checker, peer-update client, contact pubkeys etc. are deferred — they belong to later migration slices (Phase 2+). The proxy expect is structurally safe: fluor's host calls `set_event_proxy` BEFORE `init` (see `run_app` in fluor/src/host/app.rs), so `event_proxy` is always `Some` here.
@@ -325,6 +399,8 @@ impl FluorApp for PhotonApp {
                 }
             }
         };
+        // Stash a clone for app-level operations that need the keypair after init (avatar upload via `upload_avatar`). The clone is cheap (Ed25519 keypair is ~64 bytes); we can't ask HandleQuery for it back because its constructor moves the keypair into the worker threads.
+        self.device_keypair = Some(keypair.clone());
         #[cfg(not(target_os = "android"))]
         let hq = HandleQuery::new(keypair, proxy.clone());
         #[cfg(target_os = "android")]
@@ -468,6 +544,18 @@ impl FluorApp for PhotonApp {
                     return EventResponse::StartWindowDrag;
                 }
 
+                // Avatar tap on Ready dispatches to the image picker — not a Widget, just a hit-stamp in chrome.hit_test_map. Intercepted BEFORE `widget::dispatch_click` so the walk doesn't waste a pass looking for a non-existent widget. Drops focus first because the picker overlays the whole UI.
+                if hit_id == self.avatar_hit_id
+                    && matches!(self.state, AppState::Ready)
+                    && self.avatar_hit_id != HIT_NONE
+                {
+                    if self.change_focus(None) {
+                        ctx.window.request_redraw();
+                    }
+                    self.pending_picker_request = true;
+                    return EventResponse::Handled;
+                }
+
                 // Focus follows click for focusable widgets (textbox + attest button). Chrome buttons aren't focusable (their `Widget::focus()` returns None) so a click on close/min/max leaves the prior focus intact — matches GNOME / macOS convention. We can't borrow `self` mutably twice in one walk, so determine "is this id focusable" via a pre-walk, then change_focus before the dispatch.
                 let mut hit_is_focusable = false;
                 self.visit(&mut |w| {
@@ -588,8 +676,13 @@ impl FluorApp for PhotonApp {
                         }
                         EventResponse::Handled
                     }
-                    // Esc clears focus.
+                    // Esc clears focus. Also cancels an in-flight attestation back to Fresh — without this the user is stuck on the "Attesting…" indicator with no way out if the FGTW response never lands (offline FGTW, peer worker stall, etc.). Android back routes here via `nativeOnBackPressed` → Escape.
                     Key::Named(NamedKey::Escape) => {
+                        if matches!(self.state, AppState::Launch(LaunchState::Attesting)) {
+                            self.state = AppState::Launch(LaunchState::Fresh);
+                            ctx.window.request_redraw();
+                            return EventResponse::Handled;
+                        }
                         if self.change_focus(None) {
                             ctx.window.request_redraw();
                         }
@@ -930,7 +1023,41 @@ impl FluorApp for PhotonApp {
             let (cx, cy, radius) = ready_layout.avatar_center_radius();
             // 0xFFC5C5C5 in fluor's α+darkness format = α 0xFF, darkness 0xC5 each channel = visible RGB(0x3A, 0x3A, 0x3A) ≈ 22% brightness. Standalone constant (no theme.rs entry yet) — promote when Ready chrome gets a proper palette pass.
             const AVATAR_PLACEHOLDER: u32 = 0xFF_C5_C5_C5;
-            paint::draw_circle(&mut canvas, cx, cy, radius, AVATAR_PLACEHOLDER, None);
+            if self.device_avatar_pixels.is_some() {
+                let diameter = (radius * 2.0) as usize;
+                if self.device_avatar_scaled.is_none()
+                    || self.device_avatar_scaled_diameter != diameter
+                {
+                    let base = self.device_avatar_pixels.as_ref().unwrap();
+                    self.device_avatar_scaled = Some(crate::ui::avatar_render::update_avatar_scaled(
+                        base,
+                        crate::ui::avatar::AVATAR_SIZE,
+                        diameter,
+                    ));
+                    self.device_avatar_scaled_diameter = diameter;
+                }
+                crate::ui::avatar_render::draw_avatar(
+                    &mut canvas,
+                    cx,
+                    cy,
+                    radius,
+                    self.device_avatar_scaled.as_ref().unwrap(),
+                    diameter,
+                    None,
+                );
+            } else {
+                paint::draw_circle(&mut canvas, cx, cy, radius, AVATAR_PLACEHOLDER, None);
+            }
+            // Stamp the avatar circle into the shared hit_test_map so a tap dispatches to the picker. Squared-distance test in the same row-major buffer the renderers use; bbox-clipped against the buffer extent so off-screen circles don't underflow.
+            stamp_hit_circle(
+                &mut chrome.hit_test_map,
+                buf_w,
+                buf_h,
+                cx,
+                cy,
+                radius,
+                self.avatar_hit_id,
+            );
 
             // Contacts-page textbox + plus button. The plus button is OVERLAID inside the textbox right edge (legacy pattern) and ONLY rendered when the textbox has content — empty textbox shows no button.
             //
@@ -1170,6 +1297,8 @@ impl PhotonApp {
         if let Some(hq) = self.handle_query.as_ref() {
             hq.query(handle);
             self.state = AppState::Launch(LaunchState::Attesting);
+            // Drop focus off the textbox during the attesting wait so further IME / key input doesn't mutate the handle being attested. `change_focus(None)` also flips the Android soft-IME signal to "hide" via `pending_keyboard_request`, which the next touch dispatch picks up — keeps the keyboard from hovering over a frozen textbox.
+            self.change_focus(None);
         }
     }
 
@@ -1190,6 +1319,13 @@ impl PhotonApp {
                 // Stash the handle for the Ready screen (the optional label below the avatar). Settings persistence + the actual gate on whether to show it land in a later slice — for now Ready always renders the placeholder without text.
                 self.attested_handle = Some(data.handle.clone());
                 self.vault_degraded = data.vault_degraded;
+                // Pull this device's avatar from local storage and colour-convert to BT.2020 γ=2.0 for the Ready screen render. Storage-miss = `None`; the Ready render falls through to the grey placeholder. Image-picker writes (`nativeSetAvatarFromFile`) go through a separate path that lands in a follow-up slice.
+                if let Some((_, vsf_rgb)) = crate::ui::avatar::load_avatar(&data.handle) {
+                    self.device_avatar_pixels =
+                        Some(crate::ui::colour_convert::vsf_rgb_to_bt2020(&vsf_rgb));
+                    self.device_avatar_scaled = None;
+                    self.device_avatar_scaled_diameter = 0;
+                }
                 self.contacts = data.contacts.clone();
                 crate::log(&format!(
                     "UI: loaded {} contact(s) into Ready state",
@@ -1420,6 +1556,37 @@ fn button_bbox(btn: &Button) -> (isize, isize, isize, isize) {
     let x1 = (btn.center_x + half_w) as isize;
     let y1 = (btn.center_y + half_h) as isize;
     (x0, y0, x1, y1)
+}
+
+/// Stamp `hit_id` into every pixel of `hit_map` whose centre is inside the circle at `(cx, cy)` with radius `radius`. Bbox-clipped to the buffer extent; squared-distance test, no sqrt.
+fn stamp_hit_circle(
+    hit_map: &mut [HitId],
+    buf_w: usize,
+    buf_h: usize,
+    cx: f32,
+    cy: f32,
+    radius: f32,
+    hit_id: HitId,
+) {
+    if radius <= 0.0 || buf_w == 0 || buf_h == 0 {
+        return;
+    }
+    let r2 = radius * radius;
+    let x_min = ((cx - radius).max(0.0) as usize).min(buf_w);
+    let x_max = ((cx + radius + 1.0).max(0.0) as usize).min(buf_w);
+    let y_min = ((cy - radius).max(0.0) as usize).min(buf_h);
+    let y_max = ((cy + radius + 1.0).max(0.0) as usize).min(buf_h);
+    for y in y_min..y_max {
+        let dy = (y as f32 + 0.5) - cy;
+        let dy2 = dy * dy;
+        let row_base = y * buf_w;
+        for x in x_min..x_max {
+            let dx = (x as f32 + 0.5) - cx;
+            if dx * dx + dy2 <= r2 {
+                hit_map[row_base + x] = hit_id;
+            }
+        }
+    }
 }
 
 /// Stamp `hit_id` over every pixel in `[x0, x1) × [y0, y1)` of `hit_map`. Used to reclaim hit-test coverage for a widget that paints visually on top of another but whose hit stamps were overwritten by the under-blend partner's later stamping pass (the contacts-page plus button overlaid inside the textbox). Bbox over-stamp — corners outside the pill silhouette claim a few extra pixels, which dispatches those clicks to the button. Acceptable UX since the area is tiny and inside the pill anyway.
