@@ -2660,7 +2660,7 @@ impl PhotonApp {
                 self.user_handle_proof = Some(handle_proof);
                 self.user_identity_seed = Some(identity_seed);
                 let device_secret_bytes = *self.device_keypair.secret.as_bytes();
-                self.storage = crate::storage::FlatStorage::new(identity_seed, device_secret_bytes)
+                self.storage = crate::storage::FlatStorage::new(&handle, device_secret_bytes)
                     .map_err(|e| crate::log(&format!("STORAGE: Failed to initialize FlatStorage: {}", e)))
                     .ok();
                 crate::log("UI: All data pre-loaded in background - no UI freeze");
