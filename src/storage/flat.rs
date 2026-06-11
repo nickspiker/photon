@@ -26,9 +26,12 @@ use rand::Rng;
 
 use crate::storage::{decrypt_bytes, encrypt_bytes};
 
-const VAULT_FILENAME: &str = "photon.vsf";
-/// Suffix used when XDG config_dir == data_dir (macOS): both files share a directory but use distinct names. Strictly worse than the XDG split, but keeps the dual-ring invariant intact across platforms.
-const VAULT_FILENAME_SHADOW: &str = "photon-shadow.vsf";
+/// Per-user vault dir under XDG config / data. Filename inside is derived per (handle, device) via passless-key so the same dir can hold multiple users' vaults without collision and without leaking which handles bind to this device — anyone listing the dir sees only opaque base64url names.
+const VAULT_DIR: &str = "Photon";
+/// Shadow-ring filename suffix used when XDG config_dir == data_dir (macOS): both rings live in the same directory but with distinct names. Keeps the dual-ring invariant intact across platforms.
+const VAULT_SHADOW_SUFFIX: &str = ".shadow";
+/// passless-key app identifier baked into every Photon build. Lumis et al. will use their own.
+const PASSLESS_APP_ID: &str = "photon";
 
 // ============================================================================ Error ======================================================================
 
@@ -261,24 +264,26 @@ fn repair_ring(
 
 /// All Photon disk I/O goes through this struct. Initialized once at auth with identity_seed + device_secret; the dual-ring vault is opened (or formatted) during construction. Callers only see logical keys; vault internals + per-key encryption are managed below.
 pub struct FlatStorage {
-    /// Photon's two persistent roots — kept for per-key encryption derivation.
-    identity_seed: [u8; 32],
+    /// Frozen v0 handle_seed (`passless_key::handle_seed(handle)`). Used as the per-key encryption derivation root and as the identity input to `derive_anchor_key`. Decoupled from `ihi::handle_to_hash` so future ihi changes (NFC fixes, Huffman tweaks) don't orphan local vaults.
+    handle_seed: [u8; 32],
     device_secret: [u8; 32],
     /// Dual-ring backing store. Mutex chosen over RefCell so future multi-threaded callers Just Work; cost is negligible in the single-threaded case.
     dual: Mutex<DualStore>,
 }
 
 impl FlatStorage {
-    /// Initialize storage. Called once at auth time. Locates both ring paths via `vault_paths()`, opens or formats them as needed. Treats `identity_seed + device_secret` as the keying material — same auth flow reproduces the same vault key.
-    pub fn new(identity_seed: [u8; 32], device_secret: [u8; 32]) -> Result<Self, StorageError> {
-        let paths = vault_paths()?;
-        let anchor_key = derive_anchor_key(&identity_seed, &device_secret);
+    /// Initialize storage. Called once at auth time. Derives the per-handle vault filename and anchor key via `passless-key` v0, opens the dual rings at `{config_dir,data_dir}/Photon/<base64url>.vsf`. Same `(handle, device)` always reproduces the same vault path and key.
+    pub fn new(handle: &str, device_secret: [u8; 32]) -> Result<Self, StorageError> {
+        let handle_seed = passless_key::handle_seed(handle);
+        let filename = passless_key::vault_path_name(PASSLESS_APP_ID, &handle_seed, &device_secret);
+        let paths = vault_paths(&filename)?;
+        let anchor_key = derive_anchor_key(&handle_seed, &device_secret);
         let device_id = device_id_from_secret(&device_secret);
 
         let dual = DualStore::open_or_create(paths, anchor_key, device_id)?;
 
         Ok(Self {
-            identity_seed,
+            handle_seed,
             device_secret,
             dual: Mutex::new(dual),
         })
@@ -383,7 +388,7 @@ impl FlatStorage {
     fn derive_enc_key(&self, key: &str) -> [u8; 32] {
         let context = [
             key.as_bytes(),
-            self.identity_seed.as_slice(),
+            self.handle_seed.as_slice(),
             self.device_secret.as_slice(),
         ]
         .concat();
@@ -403,8 +408,11 @@ pub fn set_android_vault_dirs(primary: String, shadow: String) {
     }
 }
 
-/// Resolve the two ring paths. On Linux + Windows the XDG split gives meaningfully different directories. On macOS `config_dir()` and `data_dir()` collide; in that case the shadow shares the directory with a `photon-shadow.vsf` filename — worse for accidental-dir-deletion resistance but keeps the dual-write invariant. On Android the dirs come from the JNI shim ([`set_android_vault_dirs`]) — `filesDir` for primary, `getExternalFilesDir(null)` for shadow; the latter empties to the shadow-suffix fallback if external storage wasn't available at startup.
-fn vault_paths() -> Result<[PathBuf; 2], StorageError> {
+/// Resolve the two ring paths for the given per-handle filename. Files live under `<config_dir>/Photon/<filename>.vsf` and `<data_dir>/Photon/<filename>.vsf`. On Linux + Windows the XDG split gives meaningfully different directories. On macOS `config_dir()` and `data_dir()` collide; in that case the shadow shares the directory with `<filename>.shadow.vsf` — worse for accidental-dir-deletion resistance but keeps the dual-write invariant. On Android the dirs come from the JNI shim ([`set_android_vault_dirs`]) — `filesDir` for primary, `getExternalFilesDir(null)` for shadow; the latter empties to the shadow-suffix fallback if external storage wasn't available at startup.
+fn vault_paths(filename: &str) -> Result<[PathBuf; 2], StorageError> {
+    let primary_name = format!("{}.vsf", filename);
+    let shadow_name = format!("{}{}.vsf", filename, VAULT_SHADOW_SUFFIX);
+
     #[cfg(target_os = "android")]
     {
         let dirs = ANDROID_VAULT_DIRS
@@ -417,36 +425,40 @@ fn vault_paths() -> Result<[PathBuf; 2], StorageError> {
                     "Android vault dirs not set — JNI shim must call set_android_vault_dirs",
                 ))
             })?;
-        let primary_dir = PathBuf::from(&dirs.0);
+        let primary_dir = PathBuf::from(&dirs.0).join(VAULT_DIR);
         let shadow_dir = if dirs.1.is_empty() {
             primary_dir.clone()
         } else {
-            PathBuf::from(&dirs.1)
+            PathBuf::from(&dirs.1).join(VAULT_DIR)
         };
-        let primary = primary_dir.join(VAULT_FILENAME);
+        let primary = primary_dir.join(&primary_name);
         let shadow = if primary_dir == shadow_dir {
-            shadow_dir.join(VAULT_FILENAME_SHADOW)
+            shadow_dir.join(&shadow_name)
         } else {
-            shadow_dir.join(VAULT_FILENAME)
+            shadow_dir.join(&primary_name)
         };
         return Ok([primary, shadow]);
     }
 
     #[cfg(not(target_os = "android"))]
     {
-        let primary_dir = dirs::config_dir().ok_or_else(|| {
-            StorageError::Io(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "config directory not found",
-            ))
-        })?;
-        let shadow_dir = dirs::data_dir().unwrap_or_else(|| primary_dir.clone());
+        let primary_dir = dirs::config_dir()
+            .ok_or_else(|| {
+                StorageError::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "config directory not found",
+                ))
+            })?
+            .join(VAULT_DIR);
+        let shadow_dir = dirs::data_dir()
+            .unwrap_or_else(|| primary_dir.clone())
+            .join(VAULT_DIR);
 
-        let primary = primary_dir.join(VAULT_FILENAME);
+        let primary = primary_dir.join(&primary_name);
         let shadow = if primary_dir == shadow_dir {
-            shadow_dir.join(VAULT_FILENAME_SHADOW)
+            shadow_dir.join(&shadow_name)
         } else {
-            shadow_dir.join(VAULT_FILENAME)
+            shadow_dir.join(&primary_name)
         };
 
         Ok([primary, shadow])

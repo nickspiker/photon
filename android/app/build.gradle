@@ -21,10 +21,10 @@ android {
 
     signingConfigs {
         release {
-            storeFile file(System.getenv("PHOTON_KEYSTORE_PATH") ?: "/dev/null")
-            storePassword System.getenv("PHOTON_KEYSTORE_PASSWORD") ?: ""
-            keyAlias System.getenv("PHOTON_KEY_ALIAS") ?: ""
-            keyPassword System.getenv("PHOTON_KEYSTORE_PASSWORD") ?: ""
+            storeFile file(System.getenv("TOKEN_KEYSTORE_PATH") ?: "/dev/null")
+            storePassword System.getenv("TOKEN_KEYSTORE_PASSWORD") ?: ""
+            keyAlias System.getenv("TOKEN_KEY_ALIAS") ?: ""
+            keyPassword System.getenv("TOKEN_KEYSTORE_PASSWORD") ?: ""
         }
     }
 

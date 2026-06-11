@@ -484,20 +484,22 @@ impl HandleQuery {
                         // === Load all data in background (proof → network → disk → cloud) ===
                         let device_secret_bytes = *keypair.secret.as_bytes();
                         let identity_seed = crate::storage::contacts::derive_identity_seed(&handle);
+                        let handle_seed = passless_key::handle_seed(&handle);
 
                         // Dev-mode tap so `vaultinfo` can decrypt this session's vault end-to-end. Logged at the same point in the flow the values themselves come into existence so it's obvious from the trace which run produced which keys. Spaces around `=` so double-clicking the value in a terminal selects only the encoded token. Values printed in voca FULL (PascalCase word concatenation, ~22 words for a 32-byte key) — denser than hex on the page, copy-pasteable as one token, and reads aloud cleanly. `vaultinfo` auto-detects voca vs hex on input. Never enabled in release builds.
                         #[cfg(feature = "development")]
                         {
                             use num_bigint::BigUint;
                             crate::log(&format!(
-                                "Development: identity_seed = {}  device_secret = {}",
+                                "Development: identity_seed = {}  handle_seed = {}  device_secret = {}",
                                 voca::encode(BigUint::from_bytes_be(&identity_seed)),
+                                voca::encode(BigUint::from_bytes_be(&handle_seed)),
                                 voca::encode(BigUint::from_bytes_be(&device_secret_bytes)),
                             ));
                         }
 
                         // Initialize FlatStorage for this session. A bare `return` here would silently strand the UI on the Attesting spinner because the result channel never gets a verdict — the worker has already proven FGTW says the handle is ours, but with no local vault we can't reach Ready. Surface the failure as a QueryResult::Error so the Launch screen flips to its error state and the user sees what happened.
-                        let storage = match crate::storage::FlatStorage::new(identity_seed, device_secret_bytes) {
+                        let storage = match crate::storage::FlatStorage::new(&handle, device_secret_bytes) {
                             Ok(s) => s,
                             Err(e) => {
                                 let msg = format!("storage init failed: {}", e);
