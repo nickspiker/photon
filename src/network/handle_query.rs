@@ -484,12 +484,12 @@ impl HandleQuery {
                         // === Load all data in background (proof → network → disk → cloud) ===
                         let device_secret_bytes = *keypair.secret.as_bytes();
                         let identity_seed = crate::storage::contacts::derive_identity_seed(&handle);
-                        let handle_seed = passless_key::handle_seed(&handle);
 
                         // Dev-mode tap so `vaultinfo` can decrypt this session's vault end-to-end. Logged at the same point in the flow the values themselves come into existence so it's obvious from the trace which run produced which keys. Spaces around `=` so double-clicking the value in a terminal selects only the encoded token. Values printed in voca FULL (PascalCase word concatenation, ~22 words for a 32-byte key) — denser than hex on the page, copy-pasteable as one token, and reads aloud cleanly. `vaultinfo` auto-detects voca vs hex on input. Never enabled in release builds.
                         #[cfg(feature = "development")]
                         {
                             use num_bigint::BigUint;
+                            let handle_seed = passless_key::handle_seed(&handle);
                             crate::log(&format!(
                                 "Development: identity_seed = {}  handle_seed = {}  device_secret = {}",
                                 voca::encode(BigUint::from_bytes_be(&identity_seed)),
