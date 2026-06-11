@@ -124,10 +124,16 @@ fn main() {
 
     // Report file size + path.
     println!("\n=== Disk state ===");
-    if let Some(p) = dirs::config_dir().map(|p| p.join("photon.vsf")) {
-        match std::fs::metadata(&p) {
-            Ok(m) => println!("  {} — {} bytes", p.display(), m.len()),
-            Err(e) => println!("  (couldn't stat {}: {})", p.display(), e),
+    if let Some(dir) = dirs::config_dir().map(|p| p.join("Photon")) {
+        match std::fs::read_dir(&dir) {
+            Ok(entries) => {
+                for entry in entries.flatten() {
+                    if let Ok(m) = entry.metadata() {
+                        println!("  {} — {} bytes", entry.path().display(), m.len());
+                    }
+                }
+            }
+            Err(e) => println!("  (couldn't list {}: {})", dir.display(), e),
         }
     }
 
