@@ -1,8 +1,8 @@
-//! Flat opaque storage — dual-ring `vsf_db` backend.
+//! Flat opaque storage — dual-ring `custodes` backend.
 //!
-//! Two equal vault files, each an append-only `vsf_db::Store`: ring 0 at the XDG config path (`~/.config/Photon/<derived>.vsf` on Linux) and ring 1 at the XDG data path (`~/.local/share/Photon/<derived>.vsf`). The filename is derived per (handle, device) via `passless-key` v0, so one directory holds many users' vaults under opaque names. Both files store the same logical state; neither is "primary".
+//! Two equal vault files, each an append-only `custodes::Store`: ring 0 at the XDG config path (`~/.config/Photon/<derived>.vsf` on Linux) and ring 1 at the XDG data path (`~/.local/share/Photon/<derived>.vsf`). The filename is derived per (handle, device) via `passless-key` v0, so one directory holds many users' vaults under opaque names. Both files store the same logical state; neither is "primary".
 //!
-//! Crash model: power loss at ANY byte boundary is normal operation. Every record self-validates (per-record HMAC + length-redundant header), every write fsyncs, and open scans + silently truncates any torn tail. The dual-ring layer (`vsf_db::DualStore`) heals divergence between rings by anchor_seq comparison — a ring that missed writes (crash between ring writes, deleted file, torn tail) is rebuilt from the survivor on next open.
+//! Crash model: power loss at ANY byte boundary is normal operation. Every record self-validates (per-record HMAC + length-redundant header), every write fsyncs, and open scans + silently truncates any torn tail. The dual-ring layer (`custodes::DualStore`) heals divergence between rings by anchor_seq comparison — a ring that missed writes (crash between ring writes, deleted file, torn tail) is rebuilt from the survivor on next open.
 //!
 //! Failure handling:
 //! - On open, a missing/torn/corrupt ring is rebuilt from the other; hard repairs set `degraded` so the UI can show a persistent banner.
@@ -14,7 +14,7 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use vsf_db::DualStore;
+use custodes::DualStore;
 
 use crate::storage::{decrypt_bytes, encrypt_bytes};
 
@@ -32,7 +32,7 @@ pub enum StorageError {
     Io(std::io::Error),
     Crypto(String),
     Parse(String),
-    /// Vault-layer error from the vsf_db backend.
+    /// Vault-layer error from the custodes backend.
     Vault(String),
 }
 
@@ -48,8 +48,8 @@ impl From<String> for StorageError {
     }
 }
 
-impl From<vsf_db::Error> for StorageError {
-    fn from(e: vsf_db::Error) -> Self {
+impl From<custodes::Error> for StorageError {
+    fn from(e: custodes::Error) -> Self {
         StorageError::Vault(e.to_string())
     }
 }
@@ -154,12 +154,12 @@ impl FlatStorage {
     }
 }
 
-/// Map a logical key string to the fixed 32-byte entry address vsf_db wants. Pure function of the key — the vault file is already per-(handle, device, app) so no identity material needs mixing here.
-fn derive_entry_key(key: &str) -> vsf_db::EntryKey {
+/// Map a logical key string to the fixed 32-byte entry address custodes wants. Pure function of the key — the vault file is already per-(handle, device, app) so no identity material needs mixing here.
+fn derive_entry_key(key: &str) -> custodes::EntryKey {
     blake3::derive_key("photon.storage.entry.v0", key.as_bytes())
 }
 
-/// Caller-clock timestamp for record metadata (`created_at`). Unix seconds — vsf_db never interprets it; it exists for GC policy and debugging.
+/// Caller-clock timestamp for record metadata (`created_at`). Unix seconds — custodes never interprets it; it exists for GC policy and debugging.
 fn unix_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
