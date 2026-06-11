@@ -1165,6 +1165,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "custodes"
+version = "0.0.0"
+dependencies = [
+ "blake3",
+]
+
+[[package]]
 name = "data-encoding"
 version = "2.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1578,7 +1585,7 @@ dependencies = [
  "softbuffer",
  "spirix",
  "swash",
- "vsf 0.4.1",
+ "vsf 0.8.0",
  "wgpu",
  "wide",
  "winit",
@@ -2243,15 +2250,15 @@ dependencies = [
 
 [[package]]
 name = "ihi"
-version = "0.0.44"
+version = "0.0.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "207881c94f7406bfd0f5f86b09bd284aa49b123c7632226fae8dcc18c656e024"
+checksum = "3f7ff152696658286ec11b152b20e0862ef5c051fc1a3b341801f4519dedecdd"
 dependencies = [
  "blake3",
  "i256",
  "sha2 0.10.9",
  "sha3 0.10.8",
- "vsf 0.4.1",
+ "vsf 0.6.42",
 ]
 
 [[package]]
@@ -3349,6 +3356,7 @@ dependencies = [
  "cosmic-text",
  "criterion",
  "curve25519-dalek",
+ "custodes",
  "dirs",
  "ed25519-dalek",
  "env_logger",
@@ -3397,8 +3405,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "voca",
- "vsf 0.5.0",
- "vsf-db",
+ "vsf 0.8.0",
  "wgpu",
  "windows 0.58.0",
  "winit",
@@ -5420,9 +5427,9 @@ dependencies = [
 
 [[package]]
 name = "vsf"
-version = "0.4.1"
+version = "0.6.42"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "967f0d92a3b0c93d9cd2722c1cdbe7785ecfaf4bc43098566b93996197a85828"
+checksum = "4c5d0a40ee257e3d1c771570668208f2daa233eab0c91badf84d00132b0218bb"
 dependencies = [
  "bitvec",
  "blake3",
@@ -5432,15 +5439,14 @@ dependencies = [
  "libm",
  "num-complex",
  "num-traits",
- "spin",
  "unicode-normalization",
 ]
 
 [[package]]
 name = "vsf"
-version = "0.5.0"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39299f186478de38ddfaab4791d4944b7e4e85b1892b40e7baed6b0845ba382a"
+checksum = "f2c7481e6809ad0226db749bfb75818588fe205852f582fb8b84868aebd89170"
 dependencies = [
  "aes-gcm 0.10.3",
  "bitvec",
@@ -5458,13 +5464,6 @@ dependencies = [
  "spin",
  "unicode-normalization",
  "x25519-dalek",
-]
-
-[[package]]
-name = "vsf-db"
-version = "0.0.0"
-dependencies = [
- "blake3",
 ]
 
 [[package]]
