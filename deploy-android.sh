@@ -32,30 +32,31 @@ else
     exit 1
 fi
 
-KEYSTORE_PATH="$KEYS_DIR/nicks-apps.keystore"
+# Keystore config — TOKEN is the stack-wide APK signing key (gates sibling-trust check at runtime).
+KEYSTORE_PATH="$KEYS_DIR/TOKEN.p12"
 if [ ! -f "$KEYSTORE_PATH" ]; then
     echo "ERROR: Keystore not found at $KEYSTORE_PATH"
     exit 1
 fi
-KEY_ALIAS="photon"
+KEY_ALIAS="TOKEN"
 
 # Get password from GNOME Keyring (or prompt if not stored)
-if [ -z "$PHOTON_KEYSTORE_PASSWORD" ]; then
-    PHOTON_KEYSTORE_PASSWORD=$(secret-tool lookup service photon key keystore_password 2>/dev/null)
-    if [ -z "$PHOTON_KEYSTORE_PASSWORD" ]; then
+if [ -z "$TOKEN_KEYSTORE_PASSWORD" ]; then
+    TOKEN_KEYSTORE_PASSWORD=$(secret-tool lookup service token key keystore_password 2>/dev/null)
+    if [ -z "$TOKEN_KEYSTORE_PASSWORD" ]; then
         echo "Password not in keyring. Run this once to store it:"
-        echo "  secret-tool store --label='Photon Keystore' service photon key keystore_password"
+        echo "  secret-tool store --label='TOKEN Keystore' service token key keystore_password"
         echo ""
         echo -n "Keystore password: "
-        read -s PHOTON_KEYSTORE_PASSWORD
+        read -s TOKEN_KEYSTORE_PASSWORD
         echo ""
     fi
-    export PHOTON_KEYSTORE_PASSWORD
+    export TOKEN_KEYSTORE_PASSWORD
 fi
 
 # Export for Gradle
-export PHOTON_KEYSTORE_PATH="$KEYSTORE_PATH"
-export PHOTON_KEY_ALIAS="$KEY_ALIAS"
+export TOKEN_KEYSTORE_PATH="$KEYSTORE_PATH"
+export TOKEN_KEY_ALIAS="$KEY_ALIAS"
 
 # Set up Android NDK environment
 export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/25.2.9519653

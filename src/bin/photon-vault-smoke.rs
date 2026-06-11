@@ -1,20 +1,14 @@
 //! Smoke test for the ferros_vault-backed FlatStorage.
 //!
-//! Exercises every FlatStorage public method against a real `~/.config/photon.vsf` file using hard-coded test keying material. Useful for verifying the on-disk vault works end-to-end before a real attestation has fired in Photon (which is what would normally trigger `FlatStorage::new` at runtime).
+//! Exercises every FlatStorage public method against a real per-handle vault file under `~/.config/Photon/<derived>.vsf` using a hard-coded test handle. Useful for verifying the on-disk vault works end-to-end before a real attestation has fired in Photon (which is what would normally trigger `FlatStorage::new` at runtime).
 //!
-//! Usage: cargo run --bin photon-vault-smoke ls -la ~/.config/photon.vsf       # should be ~2 MiB file ~/.config/photon.vsf         # should say "VSF data" cargo run --bin photon-vault-smoke # again, should find existing data + add more
+//! Cleanup: `rm -rf ~/.config/Photon/ ~/.local/share/Photon/` between runs.
 //!
-//! Cleanup: just `rm ~/.config/photon.vsf` between runs.
-//!
-//! Keying material is hard-coded constants — NOT real photon identity. The vault file written by this smoke test is intentionally compatible-but-separate from any real vault Photon would create; once a real attestation lands and Photon calls `FlatStorage::new` with actual `(identity_seed, device_secret)`, the smoke-test vault becomes inaccessible (different anchor key) and should be deleted.
+//! Hard-coded test handle + test device_secret — NOT real photon identity. The vault file written by this smoke test is intentionally separate from any real vault Photon would create; once a real attestation lands, Photon calls `FlatStorage::new(real_handle, real_device_secret)` which derives a different filename and the smoke-test vault becomes invisible.
 
 use photon_messenger::storage::FlatStorage;
 
-// Hard-coded test seeds — same on every run so the vault round-trips deterministically. NOT secret; do not reuse for anything real.
-const TEST_IDENTITY_SEED: [u8; 32] = [
-    0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00,
-    0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00,
-];
+const TEST_HANDLE: &str = "vault-smoke";
 const TEST_DEVICE_SECRET: [u8; 32] = [
     0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99,
     0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99,
@@ -22,9 +16,9 @@ const TEST_DEVICE_SECRET: [u8; 32] = [
 
 fn main() {
     println!("=== photon-vault-smoke ===");
-    println!("Initializing FlatStorage at ~/.config/photon.vsf …");
+    println!("Initializing FlatStorage for handle {:?} …", TEST_HANDLE);
 
-    let storage = match FlatStorage::new(TEST_IDENTITY_SEED, TEST_DEVICE_SECRET) {
+    let storage = match FlatStorage::new(TEST_HANDLE, TEST_DEVICE_SECRET) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("FATAL: FlatStorage::new failed: {}", e);

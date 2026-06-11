@@ -3313,6 +3313,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "passless-key"
+version = "0.0.0"
+dependencies = [
+ "base64",
+ "blake3",
+ "unicode-normalization",
+]
+
+[[package]]
 name = "paste"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3376,6 +3385,7 @@ dependencies = [
  "num-bigint",
  "p256",
  "p384",
+ "passless-key",
  "pollster",
  "pqc_dilithium",
  "pqcrypto-hqc",
