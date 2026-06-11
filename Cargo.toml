@@ -96,9 +96,9 @@ vsf = { version = "0.5", features = ["crypto", "inspect", "text-encode"] }
 fluor = { path = "../fluor", default-features = false, features = ["std", "text", "simd", "rayon"] }
 ihi = "0.0.44"
 passless-key = { path = "../passless-key" }
+vsf-db = { path = "../vsf-db" }
 voca = "0.0.0"
 num-bigint = "0.4"
-ferros_vault = { path = "../ferros/vault", features = ["host-file"] }
 rav1e = { version = "0.7", default-features = false }
 rav1d = { version = "1.1", default-features = false, features = ["bitdepth_8"] }
 icc-profile = "0.0.2"

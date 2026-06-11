@@ -1533,18 +1533,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ferros_vault"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "chacha20poly1305 0.10.1",
- "num-bigint",
- "rand 0.8.5",
- "voca",
- "vsf 0.4.1",
-]
-
-[[package]]
 name = "fiat-crypto"
 version = "0.2.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3365,7 +3353,6 @@ dependencies = [
  "ed25519-dalek",
  "env_logger",
  "falcon-rust",
- "ferros_vault",
  "fluor",
  "frodo-kem-rs",
  "futures",
@@ -3411,6 +3398,7 @@ dependencies = [
  "tokio-tungstenite",
  "voca",
  "vsf 0.5.0",
+ "vsf-db",
  "wgpu",
  "windows 0.58.0",
  "winit",
@@ -5436,21 +5424,16 @@ version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "967f0d92a3b0c93d9cd2722c1cdbe7785ecfaf4bc43098566b93996197a85828"
 dependencies = [
- "aes-gcm 0.10.3",
  "bitvec",
  "blake3",
- "chacha20poly1305 0.10.1",
  "chrono",
- "ed25519-dalek",
  "hex",
  "i256",
  "libm",
  "num-complex",
  "num-traits",
- "rand 0.8.5",
  "spin",
  "unicode-normalization",
- "x25519-dalek",
 ]
 
 [[package]]
@@ -5475,6 +5458,13 @@ dependencies = [
  "spin",
  "unicode-normalization",
  "x25519-dalek",
+]
+
+[[package]]
+name = "vsf-db"
+version = "0.0.0"
+dependencies = [
+ "blake3",
 ]
 
 [[package]]

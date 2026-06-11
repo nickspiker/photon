@@ -626,7 +626,7 @@ mod tests {
         let data = vec![0xAB; 3000]; // 3 packets
 
         // Sender initiates
-        let (spec_bytes, _transfer_id) = sender.send(peer_addr, data.clone());
+        let spec_bytes = sender.send(peer_addr, data.clone());
         assert!(!spec_bytes.is_empty());
 
         // Parse SPEC and feed to receiver
