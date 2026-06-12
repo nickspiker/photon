@@ -1,20 +1,15 @@
-//! Flat opaque storage — dual-ring `custodes` backend.
+//! Flat opaque storage — custodes Vault backend (spine ring + plow tract + COW HAMT over mirrored files).
 //!
-//! Two equal vault files, each an append-only `custodes::Store`: ring 0 at the XDG config path (`~/.config/Photon/<derived>.vsf` on Linux) and ring 1 at the XDG data path (`~/.local/share/Photon/<derived>.vsf`). The filename is derived per (handle, device) via `passless-key` v0, so one directory holds many users' vaults under opaque names. Both files store the same logical state; neither is "primary".
+//! Two mirror files per (handle, device), named via passless-key v0 so one directory holds many users' vaults under opaque 43-char names: ring 0 at the XDG config path, ring 1 at the XDG data path. Geometry lives in the vault's own spine entries — the filesystem is a witness, never the authority.
 //!
-//! Crash model: power loss at ANY byte boundary is normal operation. Every record self-validates (per-record HMAC + length-redundant header), every write fsyncs, and open scans + silently truncates any torn tail. The dual-ring layer (`custodes::DualStore`) heals divergence between rings by anchor_seq comparison — a ring that missed writes (crash between ring writes, deleted file, torn tail) is rebuilt from the survivor on next open.
+//! Crash model: power loss at ANY byte boundary is normal operation. Every block self-validates; the committed generation defines exactly which writes exist; the rollback fence keeps the last 4 generations fully restorable. Open replicates divergent mirrors block-level (verified, never a file copy) before composing them.
 //!
-//! Failure handling:
-//! - On open, a missing/torn/corrupt ring is rebuilt from the other; hard repairs set `degraded` so the UI can show a persistent banner.
-//! - On write, both rings are written. If one fails the survivor keeps the session alive and `degraded` flips.
-//! - If both rings are unreadable, `new` errors — the vault is genuinely unrecoverable on this device.
-//!
-//! Public API (`new`, `read`, `write`, `delete`, `degraded`) unchanged from the ferros_vault-backed version — callers in `contacts.rs`, `friendship.rs`, etc. don't know the backend moved.
+//! Public API (`new`, `read`, `write`, `delete`, `degraded`) unchanged through three backends now — callers in `contacts.rs`, `friendship.rs`, etc. have never known.
 
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use custodes::DualStore;
+use custodes::{verified_replicate, FileDev, Mirror, Vault, HOST_RING_LOG2};
 
 use crate::storage::{decrypt_bytes, encrypt_bytes};
 
@@ -24,6 +19,8 @@ const VAULT_DIR: &str = "Photon";
 const VAULT_SHADOW_SUFFIX: &str = ".shadow";
 /// passless-key app identifier baked into every Photon build. Lumis et al. will use their own.
 const PASSLESS_APP_ID: &str = "photon";
+/// Initial tract size: 4096 blocks = 16MB per mirror file. Deliberately below the 64MB spec default — a messenger's vault starts small and growth is one fallocate + commit.
+const PHOTON_TRACT_BLOCKS: u64 = 4096;
 
 // ============================================================================ Error ======================================================================
 
@@ -72,8 +69,10 @@ pub struct FlatStorage {
     /// Frozen v0 handle_seed (`passless_key::handle_seed(handle)`). Used as the per-key encryption derivation root. Decoupled from `ihi::handle_to_hash` so future ihi changes (NFC fixes, Huffman tweaks) don't orphan local vaults.
     handle_seed: [u8; 32],
     device_secret: [u8; 32],
-    /// Dual-ring backing store. Mutex chosen over RefCell so future multi-threaded callers Just Work; cost is negligible in the single-threaded case.
-    dual: Mutex<DualStore>,
+    /// The custodes engine. Mutex chosen over RefCell so future multi-threaded callers Just Work; cost is negligible in the single-threaded case.
+    vault: Mutex<Vault<FileDev, FileDev>>,
+    /// Mirrors diverged at open and were replicated back into agreement — surface to the UI banner alongside live degradation.
+    healed_at_open: bool,
 }
 
 impl FlatStorage {
@@ -82,42 +81,57 @@ impl FlatStorage {
         let handle_seed = passless_key::handle_seed(handle);
         let filename = passless_key::vault_path_name(PASSLESS_APP_ID, &handle_seed, &device_secret);
         let paths = vault_paths(&filename)?;
-        let anchor_key = passless_key::vault_anchor_key(PASSLESS_APP_ID, &handle_seed, &device_secret);
 
-        let dual = DualStore::open_or_create(paths, &anchor_key)?;
-        if dual.degraded() {
-            crate::log("STORAGE: vault opened degraded — a ring needed repair");
+        for p in &paths {
+            if let Some(parent) = p.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+        let blocks = (1u64 << HOST_RING_LOG2) + PHOTON_TRACT_BLOCKS;
+        let mut a = FileDev::create(&paths[0], blocks)?;
+        let mut b = FileDev::create(&paths[1], blocks)?;
+
+        // Converge divergent mirrors (stale restore, missed writes, fresh second file) BEFORE composing them — block-level, verified, idempotent, never a file copy.
+        let healed = verified_replicate(&mut a, &mut b, HOST_RING_LOG2)?;
+        let healed_at_open = healed != custodes::Replicated::default();
+        if healed_at_open {
+            crate::log(&format!(
+                "STORAGE: mirrors diverged at open — replicated {} spine + {} tract blocks",
+                healed.spine_copied, healed.tract_copied
+            ));
         }
 
+        let vault = Vault::open(Mirror::new(a, b), HOST_RING_LOG2, unix_now())?;
         Ok(Self {
             handle_seed,
             device_secret,
-            dual: Mutex::new(dual),
+            vault: Mutex::new(vault),
+            healed_at_open,
         })
     }
 
-    /// Write data under a logical key. Encrypts with per-key ChaCha20-Poly1305, appends a self-validating record to BOTH rings. At-least-one-ring durability semantics: succeeds as long as at least one ring landed the write; sets degraded if the other failed.
+    /// Write data under a logical key. Encrypts with per-key ChaCha20-Poly1305; durable on return (a spine generation references the new state on at least one verified mirror).
     pub fn write(&self, key: &str, data: &[u8]) -> Result<(), StorageError> {
         let enc_key = self.derive_enc_key(key);
         let ciphertext = encrypt_bytes(data, &enc_key).map_err(StorageError::Crypto)?;
         let entry_key = derive_entry_key(key);
 
-        let mut dual = self
-            .dual
+        let mut vault = self
+            .vault
             .lock()
             .map_err(|_| StorageError::Vault("FlatStorage mutex poisoned".to_string()))?;
-        dual.put(entry_key, &ciphertext, 0, None, unix_now())?;
+        vault.put(&entry_key, &ciphertext, unix_now())?;
         Ok(())
     }
 
-    /// Read the value for a logical key, decrypting with the per-key ChaCha20-Poly1305 key. Returns `None` if the key isn't in the vault (logically "file not found"). Reads from the first healthy ring; both hold identical state under healthy conditions.
+    /// Read the value for a logical key, decrypting with the per-key ChaCha20-Poly1305 key. Returns `None` if the key isn't in the vault (logically "file not found"). Every block on the path is hash-verified.
     pub fn read(&self, key: &str) -> Result<Option<Vec<u8>>, StorageError> {
         let entry_key = derive_entry_key(key);
-        let mut dual = self
-            .dual
+        let mut vault = self
+            .vault
             .lock()
             .map_err(|_| StorageError::Vault("FlatStorage mutex poisoned".to_string()))?;
-        let Some(ciphertext) = dual.get(&entry_key)? else {
+        let Some(ciphertext) = vault.get(&entry_key)? else {
             return Ok(None);
         };
         let enc_key = self.derive_enc_key(key);
@@ -125,20 +139,25 @@ impl FlatStorage {
         Ok(Some(plaintext))
     }
 
-    /// Remove a logical key from the vault by writing a tombstone record to BOTH rings. The superseded bytes stay until compaction.
+    /// Remove a logical key. Fast delete per the spec: the blocks are zeroed on both mirrors immediately; the plow reaps the slots.
     pub fn delete(&self, key: &str) -> Result<(), StorageError> {
         let entry_key = derive_entry_key(key);
-        let mut dual = self
-            .dual
+        let mut vault = self
+            .vault
             .lock()
             .map_err(|_| StorageError::Vault("FlatStorage mutex poisoned".to_string()))?;
-        dual.delete(&entry_key, unix_now())?;
+        vault.delete(&entry_key, unix_now())?;
         Ok(())
     }
 
-    /// True if any ring required repair on open this session or a write to one ring failed this session. UI reads this to render the persistent degraded banner.
+    /// True if the mirrors diverged at open (and were healed) or a mirror died mid-session. UI reads this to render the persistent degraded banner.
     pub fn degraded(&self) -> bool {
-        self.dual.lock().map(|d| d.degraded()).unwrap_or(true)
+        self.healed_at_open
+            || self
+                .vault
+                .lock()
+                .map(|mut v| v.degraded())
+                .unwrap_or(true)
     }
 
     // ======================================================================== Internal key derivation ================================================
@@ -155,7 +174,7 @@ impl FlatStorage {
 }
 
 /// Map a logical key string to the fixed 32-byte entry address custodes wants. Pure function of the key — the vault file is already per-(handle, device, app) so no identity material needs mixing here.
-fn derive_entry_key(key: &str) -> custodes::EntryKey {
+fn derive_entry_key(key: &str) -> [u8; 32] {
     blake3::derive_key("photon.storage.entry.v0", key.as_bytes())
 }
 
