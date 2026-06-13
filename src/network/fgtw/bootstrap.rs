@@ -82,10 +82,13 @@ fn try_parse_vsf_error(bytes: &[u8]) -> Option<String> {
     None
 }
 
-/// Format a non-2xx HTTP response as a short user-facing error string. Drops the body when it just re-states the status's canonical reason phrase (Cloudflare's generic 5xx pages echo the reason in all-caps; we don't want to print "FGTW challenge 500 Internal Server Error: INTERNAL SERVER ERROR"). Async helper to lift the body out of the response before stringifying.
+/// Format a non-2xx HTTP response as a short user-facing error string. Tries the signed-VSF-error body first (the worker answers failures with a signed message — print it verbatim). Async helper to lift the body out of the response before stringifying.
 async fn format_http_error(step: &str, response: reqwest::Response) -> String {
     let status = response.status();
     let body_bytes = response.bytes().await.unwrap_or_default();
+    if let Some(msg) = try_parse_vsf_error(&body_bytes) {
+        return format!("FGTW {step} {}: {msg}", status.as_u16());
+    }
     format_http_error_from_bytes(step, status, &body_bytes)
 }
 
@@ -95,12 +98,12 @@ fn format_http_error_from_bytes(step: &str, status: reqwest::StatusCode, body: &
         Ok(s) => s.trim().to_string(),
         Err(_) => format!("<{} bytes, non-UTF8>", body.len()),
     };
-    // "INTERNAL SERVER ERROR" body for a 500, "BAD GATEWAY" for 502, etc. — body adds nothing.
+    // "INTERNAL SERVER ERROR" body for a 500, "BAD GATEWAY" for 502, etc. — the body repeats the reason phrase, so print the phrase once and name the server so the failure reads as FGTW-side, not local.
     let canonical = status.canonical_reason().unwrap_or("");
     let body_is_just_reason =
         body_preview.eq_ignore_ascii_case(canonical) || body_preview.is_empty();
     if body_is_just_reason {
-        format!("FGTW {step} {}", status.as_u16())
+        format!("FGTW {step}: server answered {} {canonical} with no detail", status.as_u16())
     } else {
         format!("FGTW {step} {}: {body_preview}", status.as_u16())
     }
