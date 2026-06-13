@@ -18,6 +18,12 @@ cargo build --release
 echo "Signing x86_64 binary..."
 ./target/release/photon-signature-signer target/release/photon-messenger
 
+# Install the native binary to ~/.local/bin so `photon-messenger` runs this release build — same destination as the user installer, no download. (Only the native x86_64 binary; the arm64 cross-build below can't run on this box.)
+INSTALL_DIR="$HOME/.local/bin"
+mkdir -p "$INSTALL_DIR"
+cp target/release/photon-messenger "$INSTALL_DIR/photon-messenger"
+echo "Installed to $INSTALL_DIR/photon-messenger"
+
 # Cross: aarch64-unknown-linux-gnu.
 # - .cargo/config.toml sets the linker + sysroot link flags
 # - cc-rs needs CC_<target> + CFLAGS_<target> for C build deps
