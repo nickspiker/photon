@@ -1,4 +1,4 @@
-//! Launch-screen layout: aspect-adaptive port of the pre-fluor proportional slicing from `app.rs::Layout::new` (the `AppState::Launch` arm). The window divides into ~23 vertical units and 8 horizontal units; named slices land at unit boundaries; widgets occupy the rectangles those boundaries cut. Proportions are the Photon design — algorithm constants, not tuning knobs.
+//! Launch-screen layout: aspect-adaptive proportional slicing. The window divides into ~23 vertical units and 8 horizontal units; named slices land at unit boundaries; widgets occupy the rectangles those boundaries cut. Proportions are the Photon design — algorithm constants, not tuning knobs.
 //!
 //! Two slices interpolate with viewport aspect ratio so the layout stays correct from portrait to ultrawide:
 //!   * **`gap0`** (top margin above the spectrum) — `0.75` units in portrait/square, shrinking to `0.25` units in extreme landscape. Tight against the top edge when the window is short.
@@ -8,7 +8,7 @@
 
 use fluor::canvas::PixelRect;
 
-/// 7-row vertical subdivision of [`LaunchLayout::attest_block`] — port of legacy `app::AttestBlockLayout::new`. Slice ratios `[error: 1.5, gap0: 0.5, textbox: 2.0, gap1: 0.25, hint: 1.8, gap2: 0.5, attest: 2.7]` sum to 9.25 units of the block height. Error and textbox are full block width; hint and attest are centred at 3/4 width so the wordmark feels framed by the controls.
+/// 7-row vertical subdivision of [`LaunchLayout::attest_block`]. Slice ratios `[error: 1.5, gap0: 0.5, textbox: 2.0, gap1: 0.25, hint: 1.8, gap2: 0.5, attest: 2.7]` sum to 9.25 units of the block height. Error and textbox are full block width; hint and attest are centred at 3/4 width so the wordmark feels framed by the controls.
 pub struct AttestBlockLayout {
     /// Error message slot (rendered when `LaunchState` carries an error). Reserved for slice 8 of the migration.
     pub error: PixelRect,
@@ -27,7 +27,7 @@ impl AttestBlockLayout {
         let block_w = block.x1 - block.x0;
         let block_h = block.y1 - block.y0;
 
-        // Slice ratios in unitless units; cumulative positions converted to pixels via block_h / sum. Matches the legacy `slice_positions` shape — explicit cum so rounding accumulates monotonically (no per-row independent rounding gap).
+        // Slice ratios in unitless units; cumulative positions converted to pixels via block_h / sum. Explicit running total so rounding accumulates monotonically (no per-row independent rounding gap).
         let slices = [1.5_f32, 0.5, 2.0, 0.25, 1.8, 0.5, 2.7];
         let sum: f32 = slices.iter().sum();
         let unit_px = block_h as f32 / sum;
@@ -61,7 +61,7 @@ pub struct LaunchLayout {
 }
 
 impl LaunchLayout {
-    /// Compute the launch layout. `ru` is the viewport's relative-unit zoom factor (1.0 = default; Ctrl++/Ctrl-+ adjust it). Only the `attest_block` slice scales with `ru` — spectrum + wordmark stay window-proportional so the visual identity reads consistent across zoom levels; the interactive form (textbox + button + hint + error labels) grows or shrinks around its base centerpoint so users zooming for legibility get a larger pill + larger fonts together. Matches legacy `app::Layout::new` lines 800-806.
+    /// Compute the launch layout. `ru` is the viewport's relative-unit zoom factor (1.0 = default; Ctrl++/Ctrl-+ adjust it). Only the `attest_block` slice scales with `ru` — spectrum + wordmark stay window-proportional so the visual identity reads consistent across zoom levels; the interactive form (textbox + button + hint + error labels) grows or shrinks around its base centerpoint so users zooming for legibility get a larger pill + larger fonts together.
     pub fn compute(buf_w: usize, buf_h: usize, ru: f32) -> Self {
         // Horizontal: 1/8 margin | 6/8 content | 1/8 margin. Spectrum ignores this and uses full width.
         let content_x = buf_w >> 3;
@@ -80,7 +80,7 @@ impl LaunchLayout {
         const PHOTON_TEXT: f32 = 3.5;
         const GAP2: f32 = 1.5;
         const ATTEST_BLOCK: f32 = 5.;
-        // Below the attest block: 6 (empty) + 1 (version row, wired when ported) + 1 (bottom gap).
+        // Below the attest block: 6 (empty) + 1 (version row) + 1 (bottom gap).
         const RESERVED_BELOW: f32 = 8.;
 
         let units_total =
