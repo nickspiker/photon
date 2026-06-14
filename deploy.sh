@@ -1,22 +1,13 @@
 #!/bin/bash
 set -e
 
-# Read current binary version number
-VERSION_FILE="v"
-if [ -f "$VERSION_FILE" ]; then
-    FILE_SIZE=$(stat -c%s "$VERSION_FILE")
-    if [ "$FILE_SIZE" -eq 1 ]; then
-        VERSION=$(od -An -tu1 "$VERSION_FILE" | tr -d ' ')
-    else
-        VERSION=$(od -An -tu2 "$VERSION_FILE" | tr -d ' ')
-    fi
-else
-    VERSION=0
-    FILE_SIZE=1
-fi
-
-NEW_VERSION=$((VERSION + 1))
-echo "Deploy version: $NEW_VERSION"
+# The Cargo.toml version IS the displayed (dozenal) version, and it's the version we're currently
+# working on. This deploy SHIPS that current version as-is; only on FULL SUCCESS do we bump the patch
+# to the next number and commit. So Cargo.toml is never touched until everything has succeeded (no
+# half-deployed dirty tree), and the number only advances on a successful deploy — never on test or
+# full builds, which just inherit whatever the tree currently says.
+SHIP_VERSION=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"[0-9]+\.[0-9]+\.([0-9]+)".*/\1/')
+echo "Deploying version: $SHIP_VERSION"
 
 
 # Convert to dozenal names for display
@@ -39,7 +30,7 @@ dozenal_names() {
     done
     echo "$result"
 }
-DOZENAL_VERSION=$(dozenal_names $NEW_VERSION)
+DOZENAL_VERSION=$(dozenal_names $SHIP_VERSION)
 echo "Dozenal version: $DOZENAL_VERSION"
 
 # Allow release builds (bypasses build.rs safety check)
@@ -162,15 +153,11 @@ echo ""
 echo "Deploying website..."
 (cd /mnt/Chiton/MEGA/holdmyoscilloscope && ./deploy.sh)
 
-# Everything succeeded — now write the version file and commit
-if [ "$NEW_VERSION" -gt 255 ] && [ "$FILE_SIZE" -eq 1 ]; then
-    printf "\\x$(printf '%02x' $((NEW_VERSION & 0xFF)))\\x$(printf '%02x' $((NEW_VERSION >> 8)))" > "$VERSION_FILE"
-elif [ "$FILE_SIZE" -eq 2 ]; then
-    printf "\\x$(printf '%02x' $((NEW_VERSION & 0xFF)))\\x$(printf '%02x' $((NEW_VERSION >> 8)))" > "$VERSION_FILE"
-else
-    printf "\\x$(printf '%02x' $NEW_VERSION)" > "$VERSION_FILE"
-fi
-git add v && git commit -m "v$NEW_VERSION" && git push
+# Everything succeeded — version SHIP_VERSION is now public. Advance Cargo.toml to the next working
+# version and commit, so the tree is ready for the next cycle and `v<n>` marks the just-shipped release.
+NEXT_VERSION=$((SHIP_VERSION + 1))
+sed -i -E "s/^(version = \"[0-9]+\.[0-9]+\.)[0-9]+\"/\1${NEXT_VERSION}\"/" Cargo.toml
+git add Cargo.toml Cargo.lock && git commit -m "v$SHIP_VERSION deployed; working version → $NEXT_VERSION" && git push
 
 echo ""
 echo "Install with:"

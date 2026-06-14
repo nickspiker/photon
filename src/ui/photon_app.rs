@@ -45,14 +45,22 @@ const VERSION_COLOUR: u32 = 0x20_00_00_00;
 /// Colour for the zoom-percentage watermark at the top of the screen: pure white, α = 64 = 1/4 opacity (twice [`VERSION_COLOUR`]'s 1/8). Same α+darkness watermark scheme as the version — painted before the background noise so it reads as a faint top-centre indicator of the current `ru` zoom factor.
 const ZOOM_COLOUR: u32 = 0x40_00_00_00;
 
-/// Deploy version, little-endian, +1. The single `v` byte at repo root is bumped by the deploy pipeline; absent/oversized falls back to 0.
-const DEPLOY_VERSION_BYTES: &[u8] = include_bytes!("../../v");
+/// Contact name text on the Ready list — near-white. α+darkness (the format fluor's text/shape rasterizers expect; the legacy `theme::CONTACT_NAME` is visible-RGB and not interchangeable here).
+const CONTACT_NAME_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_F0_F0_F0));
+/// Hairline separating the user section from the contact list — dim grey, α+darkness.
+const SEPARATOR_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_50_50_50));
+/// Contact presence ring around a row avatar: green online, grey offline. α+darkness.
+const RING_ONLINE_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_00_C0_00));
+const RING_OFFLINE_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_50_50_50));
+/// Add-friend result text + the in-flight hourglass: green on success, red on not-found/error. α+darkness.
+const SEARCH_FOUND_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_40_E0_40));
+const SEARCH_FAIL_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_E0_40_40));
+/// Neutral hourglass tint while the search is in flight (soft grey-white). α+darkness.
+const HOURGLASS_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_C0_C0_C0));
+
+/// Deploy version = the crate's patch number from `Cargo.toml`, baked in at compile time. The Cargo version IS the version — `deploy.sh` bumps the patch and ships; local test/release builds inherit whatever the tree currently says, so the displayed number only advances on a real deploy. (Major/minor live in 0.0 today, so the patch is the whole counter; revisit the encoding if minor ever moves.)
 fn deploy_version() -> u32 {
-    match DEPLOY_VERSION_BYTES.len() {
-        1 => DEPLOY_VERSION_BYTES[0] as u32 + 1,
-        2 => u16::from_le_bytes([DEPLOY_VERSION_BYTES[0], DEPLOY_VERSION_BYTES[1]]) as u32 + 1,
-        _ => 0,
-    }
+    env!("CARGO_PKG_VERSION_PATCH").parse().unwrap_or(0)
 }
 
 /// Render `n` in dozenal (base 12) as a string of reserved control-code bytes: digit `d` (0..11) maps to codepoint `0x10 + d` (DLE..ESC), which the Oxanium `+glyphs` face draws as the dozenal glyph Zil..Stelor. The result is meant only for that font — the bytes are non-printing control codes everywhere else. Most-significant digit first; `0` renders as a single Zil (0x10).
@@ -66,6 +74,79 @@ fn dozenal_glyphs(mut n: u32) -> String {
         n /= 12;
     }
     digits.iter().rev().collect()
+}
+
+/// Signed distance from `(px,py)` to the capsule of radius `r` around segment `a→b`. Negative inside. The projection parameter `h` is clamped to `[0,1]` because that IS the capsule SDF — the closest point on a finite segment — not a defensive bound.
+fn dist_to_capsule(px: f32, py: f32, ax: f32, ay: f32, bx: f32, by: f32, r: f32) -> f32 {
+    let (pax, pay) = (px - ax, py - ay);
+    let (bax, bay) = (bx - ax, by - ay);
+    let denom = bax * bax + bay * bay;
+    let h = if denom > 0.0 {
+        ((pax * bax + pay * bay) / denom).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let (dx, dy) = (pax - bax * h, pay - bay * h);
+    (dx * dx + dy * dy).sqrt() - r
+}
+
+/// Draw an hourglass (two triangles meeting at a central point) centred at `(cx,cy)`, `size` px tall-ish, rotated `angle_deg`, in `colour` (α+darkness). SDF over the six capsule edges with a 1-pixel AA band; composes via `under()`. Port of the legacy search-in-flight icon.
+fn draw_hourglass(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, angle_deg: f32, colour: u32) {
+    use fluor::pixel::{Blend, BlendMode};
+    let scale = size / 1000.0;
+    let radius = (83.0 * scale) * 0.5; // stroke half-width
+    let (hw, hh) = (300.0 * scale, 400.0 * scale);
+    let a = (-angle_deg).to_radians();
+    let (cos_a, sin_a) = (a.cos(), a.sin());
+    // Six edges: top triangle (base + two sides to the centre apex) and bottom triangle (mirror).
+    let edges = [
+        ((-hw, -hh), (hw, -hh)),
+        ((-hw, -hh), (0.0, 0.0)),
+        ((hw, -hh), (0.0, 0.0)),
+        ((-hw, hh), (hw, hh)),
+        ((-hw, hh), (0.0, 0.0)),
+        ((hw, hh), (0.0, 0.0)),
+    ];
+    let (w, h) = (canvas.width, canvas.height);
+    let half = (size * 0.5 + 2.0) as isize;
+    let x0 = (cx as isize - half).max(0) as usize;
+    let x1 = ((cx as isize + half).max(0) as usize).min(w);
+    let y0 = (cy as isize - half).max(0) as usize;
+    let y1 = ((cy as isize + half).max(0) as usize).min(h);
+    if x0 >= x1 || y0 >= y1 {
+        return;
+    }
+    canvas.damage.add_bounds(x0, y0, x1, y1);
+    let dark = colour & 0x00FF_FFFF;
+    let base_a = (colour >> 24) & 0xFF;
+    for py in y0..y1 {
+        let row = py * w;
+        for px in x0..x1 {
+            // Inverse-rotate the sample into the hourglass's local frame.
+            let dx = px as f32 + 0.5 - cx;
+            let dy = py as f32 + 0.5 - cy;
+            let lx = dx * cos_a - dy * sin_a;
+            let ly = dx * sin_a + dy * cos_a;
+            let mut d = f32::MAX;
+            for ((ax, ay), (bx, by)) in edges {
+                let e = dist_to_capsule(lx, ly, ax, ay, bx, by, radius);
+                if e < d {
+                    d = e;
+                }
+            }
+            // Coverage AA across a 1px band at the zero level set (clamped to [0,1] — it's coverage, the algorithm).
+            let cov = (0.5 - d).clamp(0.0, 1.0);
+            if cov <= 0.0 {
+                continue;
+            }
+            let alpha = (base_a as f32 * cov) as u32;
+            if alpha == 0 {
+                continue;
+            }
+            let idx = row + px;
+            canvas.pixels[idx] = canvas.pixels[idx].under((alpha << 24) | dark, BlendMode::Normal);
+        }
+    }
 }
 
 /// Status-message colour for the "Attesting…" indicator that occupies the error slot while a handle query is in flight. Pure visible white, fully opaque — same slot as `ERROR_TEXT_COLOUR` but white instead of red so the user reads it as "neutral status" rather than "something went wrong".
@@ -160,6 +241,14 @@ pub struct PhotonApp {
     contacts_plus_btn: Option<Button>,
     /// In-memory contact list. Populated from `AttestationData.contacts` on attestation success and grown by `submit_add_friend` → `HandleQuery::search` results. Persistence (FlatStorage write on add) + rendering as scrollable rows below the search box land in subsequent slices.
     contacts: Vec<crate::types::Contact>,
+    /// `true` while an add-friend FGTW search is in flight (between `submit_add_friend` firing `hq.search` and `on_search_result` landing). Drives the rotating-hourglass-over-the-plus-button cue.
+    add_in_flight: bool,
+    /// Hourglass rotation in degrees, advanced with a stochastic wobble each tick while `add_in_flight`.
+    hourglass_angle: f32,
+    /// xorshift state for the hourglass wobble — avoids a `rand` call per frame.
+    hourglass_rng: u64,
+    /// Last add-friend result as (text, α+darkness colour), shown below the search box until the next search starts. `None` = nothing to show. "added {h}" green, "not found" / "error: …" red.
+    search_status: Option<(String, u32)>,
     /// Device keypair injected externally (Android: from `NetworkContext` via `set_device_keypair` before `init`). When `Some`, `init` uses it directly; when `None`, `init` derives a fresh keypair from `get_machine_fingerprint` (desktop path). Android MUST set this before `init` runs — leaving it `None` on Android would silently downgrade to a zeroed placeholder keypair, which would be a critical key-derivation failure.
     device_keypair: Option<crate::network::fgtw::Keypair>,
     /// One-shot Android soft-keyboard request. `change_focus` sets `Some(true)` when focus enters a textbox and `Some(false)` when it leaves; `wants_keyboard` returns and clears the value. The Activity reads the JNI signal after each touch and calls `InputMethodManager.show/hide` accordingly. Stays `None` on idle frames so the Activity doesn't churn the IME.
@@ -174,6 +263,8 @@ pub struct PhotonApp {
     avatar_hit_id: HitId,
     /// One-shot Android image-picker request. Set when the user taps the avatar; consumed by the JNI poll (`nativePollAvatarPicker`) which signals the Activity to launch `ACTION_GET_CONTENT`. Stays `None` on idle frames so the Activity doesn't churn.
     pending_picker_request: bool,
+    /// Contact-list scroll offset in pixels (Ready screen). 0 = top; grows as the user scrolls down. The user section (avatar/search) stays fixed; only the rows below the separator scroll. Re-clamped to the list extent each render.
+    contacts_scroll: isize,
     /// `true` while the cursor is over the Ready-screen avatar circle (desktop hover). Drives the "drag/drop to update avatar" hint below the avatar when no avatar is set yet.
     avatar_hovered: bool,
     /// `true` once the user has clicked the avatar to reveal the update hint (desktop, when an avatar IS already set — no constant prompt is shown in that case, so a click toggles the instruction on/off). Unused on Android, where a tap opens the picker directly.
@@ -212,6 +303,10 @@ impl PhotonApp {
             contacts_textbox: None,
             contacts_plus_btn: None,
             contacts: Vec::new(),
+            add_in_flight: false,
+            hourglass_angle: 0.0,
+            hourglass_rng: 0x9E37_79B9_7F4A_7C15,
+            search_status: None,
             device_keypair: None,
             pending_keyboard_request: None,
             device_avatar_pixels: None,
@@ -219,6 +314,7 @@ impl PhotonApp {
             device_avatar_scaled_diameter: 0,
             avatar_hit_id: HIT_NONE,
             pending_picker_request: false,
+            contacts_scroll: 0,
             avatar_hovered: false,
             avatar_hint_click: false,
         }
@@ -582,7 +678,12 @@ impl FluorApp for PhotonApp {
                     MouseScrollDelta::Pixels(_, y) => *y as isize,
                 };
                 if dy != 0 {
-                    self.bg_scroll = self.bg_scroll.wrapping_add(dy);
+                    if matches!(self.state, AppState::Ready) {
+                        // On the contacts screen the wheel scrolls the list, not the background. Down-scroll (negative dy) moves the list up (reveals lower contacts), so subtract; the render pass clamps to the list extent.
+                        self.contacts_scroll = (self.contacts_scroll - dy).max(0);
+                    } else {
+                        self.bg_scroll = self.bg_scroll.wrapping_add(dy);
+                    }
                     if let Some(chrome) = self.chrome.as_mut() {
                         chrome.invalidate_bg();
                     }
@@ -910,12 +1011,13 @@ impl FluorApp for PhotonApp {
         //   * `blink_timer.next_tick()` — drives the focused-textbox cursor pulse (random 0-300ms intervals); `None` while no textbox is focused.
         //   * `now` when an attestation is in flight — `tick()` advances `attest_anim_phase` at 1 cycle/sec for the "query in flight" wave shift; we need a wakeup every frame to keep it animating smoothly. Without this, the host blocks waiting for input and the animation stalls.
         let blink = self.blink_timer.next_tick();
-        let attest = matches!(
+        // An attestation OR an in-flight add-friend search both need a wakeup every frame to animate (the spectrum wave / the hourglass wobble).
+        let animating = matches!(
             self.state,
             AppState::Launch(LaunchState::Attesting) | AppState::Searching
-        )
-        .then(Instant::now);
-        match (blink, attest) {
+        ) || self.add_in_flight;
+        let anim = animating.then(Instant::now);
+        match (blink, anim) {
             (Some(b), Some(a)) => Some(b.min(a)),
             (Some(b), None) => Some(b),
             (None, Some(a)) => Some(a),
@@ -943,6 +1045,16 @@ impl FluorApp for PhotonApp {
             if let Some(chrome) = self.chrome.as_mut() {
                 chrome.invalidate_bg();
             }
+            needs_redraw = true;
+        }
+
+        // Add-friend hourglass: stochastic wobble (≈ −12..+13°/tick) while a search is in flight, so the icon "shakes" like sand. xorshift keeps it dependency-free; the icon lives in the foreground (not the bg layer), so a plain redraw repaints it.
+        if self.add_in_flight {
+            self.hourglass_rng ^= self.hourglass_rng << 13;
+            self.hourglass_rng ^= self.hourglass_rng >> 7;
+            self.hourglass_rng ^= self.hourglass_rng << 17;
+            let wobble = (self.hourglass_rng % 26) as f32 - 12.0; // −12..+13
+            self.hourglass_angle = (self.hourglass_angle + wobble).rem_euclid(360.0);
             needs_redraw = true;
         }
 
@@ -1352,15 +1464,28 @@ impl FluorApp for PhotonApp {
                 );
             }
 
-            // Contacts-page textbox + plus button. The plus button is OVERLAID inside the textbox right edge and ONLY renderedwhen the textbox has content — empty textbox shows no button.
+            // Contacts-page textbox + plus button. The plus button is OVERLAID inside the textbox right edge and ONLY rendered when the textbox has content — empty textbox shows no button. While an add-friend search is in flight, a rotating hourglass replaces the button (and the button is not hit-stampable, so it can't be re-clicked mid-search).
             //
-            // Under-blend semantics ("topmost paints first; later opaque dst wins"): paint the button FIRST so it's visually topmost, then the textbox under it. Textbox::render_content_into stamps hit_test_map unconditionally over its entire bbox, so after the textbox runs we re-stamp the button's bbox with the button's hit_id to recover correct click dispatch in the overlap.
+            // Under-blend semantics ("topmost paints first; later opaque dst wins"): paint the button/hourglass FIRST so it's visually topmost, then the textbox under it. Textbox::render_content_into stamps hit_test_map unconditionally over its entire bbox, so after the textbox runs we re-stamp the button's bbox with the button's hit_id to recover correct click dispatch in the overlap.
             let plus_visible = self
                 .contacts_textbox
                 .as_ref()
                 .map(|tb| !tb.chars.is_empty())
                 .unwrap_or(false);
-            let plus_bbox: Option<(isize, isize, isize, isize, HitId)> = if plus_visible {
+            let plus_bbox: Option<(isize, isize, isize, isize, HitId)> = if self.add_in_flight {
+                if let Some(btn) = self.contacts_plus_btn.as_ref() {
+                    let sz = btn.width.min(btn.height);
+                    draw_hourglass(
+                        &mut canvas,
+                        btn.center_x,
+                        btn.center_y,
+                        sz,
+                        self.hourglass_angle,
+                        HOURGLASS_COLOUR,
+                    );
+                }
+                None
+            } else if plus_visible {
                 self.contacts_plus_btn.as_mut().map(|btn| {
                     let id = btn.hit_id();
                     btn.render_content_into(
@@ -1378,6 +1503,34 @@ impl FluorApp for PhotonApp {
             } else {
                 None
             };
+            // Search box placeholder — same treatment as the launch screen's ∞: a grey prompt centred in the empty, unfocused box, painted BEFORE the textbox so the under-blend keeps it behind the empty pill fill. Clears on focus or first character.
+            let search_empty = self
+                .contacts_textbox
+                .as_ref()
+                .map(|t| t.chars.is_empty())
+                .unwrap_or(true);
+            let search_focused = self
+                .contacts_textbox
+                .as_ref()
+                .map(|t| Some(t.hit_id()) == self.focused)
+                .unwrap_or(false);
+            if search_empty && !search_focused {
+                if let Some(tb) = self.contacts_textbox.as_ref() {
+                    ctx.text.draw_text_center_u32(
+                        &mut canvas,
+                        "search | add",
+                        tb.center_x,
+                        tb.center_y,
+                        tb.font_size * 0.6,
+                        500,
+                        HINT_TEXT_COLOUR,
+                        "Oxanium",
+                        None,
+                        None,
+                        None,
+                    );
+                }
+            }
             if let Some(tb) = self.contacts_textbox.as_mut() {
                 let id = tb.hit_id();
                 tb.render_content_into(
@@ -1393,6 +1546,126 @@ impl FluorApp for PhotonApp {
             }
             if let Some((x0, y0, x1, y1, btn_id)) = plus_bbox {
                 restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, x0, y0, x1, y1, btn_id);
+            }
+
+            // Add-friend result text in the hint slot above the search box: green "added {h}", red "not found" / "error: …". Stays until the next search starts (cleared in `submit_add_friend`).
+            if let Some((text, colour)) = self.search_status.as_ref() {
+                let hint = ready_layout.hint;
+                if !hint.is_empty() {
+                    let region_h = (hint.y1 - hint.y0) as f32;
+                    let scx = (hint.x0 + hint.x1) as f32 * 0.5;
+                    let scy = (hint.y0 + hint.y1) as f32 * 0.5;
+                    ctx.text.draw_text_center_u32(
+                        &mut canvas,
+                        text,
+                        scx,
+                        scy,
+                        region_h * 0.6,
+                        500,
+                        *colour,
+                        "Oxanium",
+                        None,
+                        None,
+                        None,
+                    );
+                }
+            }
+
+            // ───────── Separator + scrollable contact list ─────────
+            // 1-pixel hairline centred in the separator slot (height 0 = hairline; the slot itself is just reserved breathing room around the line).
+            let sep = ready_layout.separator;
+            paint::fill_rect(
+                &mut canvas,
+                sep.x0 as isize,
+                ((sep.y0 + sep.y1) / 2) as isize,
+                (sep.x1 - sep.x0) as isize,
+                0,
+                SEPARATOR_COLOUR,
+                None,
+                None,
+            );
+
+            let rows = ready_layout.rows;
+            let row_h = ready_layout.row_height.max(1) as isize;
+            let diam = ready_layout.contact_avatar_diameter;
+            let avatar_r = diam as f32 * 0.5;
+            let rows_clip = fluor::paint::Clip::new(rows.x0, rows.y0, rows.x1, buf_h);
+
+            // Filter by the search text (case-insensitive substring on the handle); empty filter = all.
+            let filter: String = self
+                .contacts_textbox
+                .as_ref()
+                .map(|t| t.chars.iter().collect::<String>().to_lowercase())
+                .unwrap_or_default();
+            let matching: Vec<usize> = self
+                .contacts
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| filter.is_empty() || c.handle.as_str().to_lowercase().contains(&filter))
+                .map(|(i, _)| i)
+                .collect();
+
+            // Clamp scroll to the list extent (a wheel can't push past the last row).
+            let view_h = (buf_h as isize - rows.y0 as isize).max(0);
+            let max_scroll = (matching.len() as isize * row_h - view_h).max(0);
+            if self.contacts_scroll > max_scroll {
+                self.contacts_scroll = max_scroll;
+            }
+
+            // Row geometry: avatar on the left with a half-radius margin, name to its right.
+            let avatar_cx = rows.x0 as f32 + avatar_r * 1.5;
+            let text_x = avatar_cx + avatar_r * 1.5;
+            let text_size = row_h as f32 * 0.5;
+            let ring_thickness = (avatar_r * 0.15).max(1.0);
+            for (vis, &ci) in matching.iter().enumerate() {
+                let row_top = rows.y0 as isize + vis as isize * row_h - self.contacts_scroll;
+                if row_top + row_h <= rows.y0 as isize || row_top >= buf_h as isize {
+                    continue; // fully outside the visible list region
+                }
+                let cy = (row_top + row_h / 2) as f32;
+                let online = self.contacts[ci].is_online;
+
+                // Build/refresh the contact's scaled-avatar cache at the row diameter.
+                let has_avatar = self.contacts[ci].avatar_pixels.is_some();
+                if has_avatar
+                    && (self.contacts[ci].avatar_scaled.is_none()
+                        || self.contacts[ci].avatar_scaled_diameter != diam)
+                {
+                    let base = self.contacts[ci].avatar_pixels.as_ref().unwrap();
+                    let scaled = crate::ui::avatar_render::update_avatar_scaled(
+                        base,
+                        crate::ui::avatar::AVATAR_SIZE,
+                        diam,
+                    );
+                    self.contacts[ci].avatar_scaled = Some(scaled);
+                    self.contacts[ci].avatar_scaled_diameter = diam;
+                }
+
+                // Avatar (or placeholder) is topmost; the presence ring paints UNDER it so only the rim shows.
+                if let Some(scaled) = self.contacts[ci].avatar_scaled.as_ref() {
+                    crate::ui::avatar_render::draw_avatar(
+                        &mut canvas, avatar_cx, cy, avatar_r, scaled, diam, Some(rows_clip),
+                    );
+                } else {
+                    paint::draw_circle(&mut canvas, avatar_cx, cy, avatar_r, AVATAR_PLACEHOLDER, Some(rows_clip));
+                }
+                let ring = if online { RING_ONLINE_COLOUR } else { RING_OFFLINE_COLOUR };
+                paint::draw_circle(&mut canvas, avatar_cx, cy, avatar_r + ring_thickness, ring, Some(rows_clip));
+
+                // Handle name, vertically centred in the row, clipped to the list region.
+                ctx.text.draw_text_left_u32(
+                    &mut canvas,
+                    self.contacts[ci].handle.as_str(),
+                    text_x,
+                    cy,
+                    text_size,
+                    500,
+                    CONTACT_NAME_COLOUR,
+                    "Oxanium",
+                    Some(rows_clip),
+                    None,
+                    None,
+                );
             }
 
             // Persistent degraded-vault indicator: amber text at the bottom. The matching warm background tint already lives in the noise pass above (we swap BG_BASE → BG_BASE_WARNING) so we add no extra render pass here, just the text glyph. Full details live in the README.
@@ -1570,6 +1843,9 @@ impl PhotonApp {
         if let Some(hq) = self.handle_query.as_ref() {
             crate::log(&format!("add-friend: searching FGTW for '{}'", handle));
             hq.search(handle);
+            // Enter the search-in-flight visual state: rotating hourglass over the plus button, last result cleared.
+            self.add_in_flight = true;
+            self.search_status = None;
         }
     }
 
@@ -1732,20 +2008,24 @@ impl PhotonApp {
         }
     }
 
-    /// Handle a [`SearchResult`] from `HandleQuery::search`. On `Found`, build a `Contact` from the peer and append to `self.contacts` (skip if a contact with the same handle already exists; should be rare given `submit_add_friend` pre-checks, but the search races against attestation worker's contact load). Clears the textbox on success so the user can immediately search the next handle. On `NotFound`/`Error`, log only — UI search-result rendering into the hint slot lands in a follow-up.
+    /// Handle a [`SearchResult`] from `HandleQuery::search`. On `Found`, build a `Contact` from the peer and append to `self.contacts` (skip if a contact with the same handle already exists; should be rare given `submit_add_friend` pre-checks, but the search races against attestation worker's contact load). Ends the in-flight hourglass and sets the result text shown below the search box: green "added {h}", red "not found" / "error: …".
     fn on_search_result(&mut self, result: crate::ui::state::SearchResult) {
         use crate::ui::state::SearchResult;
+        // Search resolved — drop the hourglass regardless of which branch we take below.
+        self.add_in_flight = false;
         match result {
             SearchResult::Found(peer) => {
+                let handle = peer.handle.as_str().to_string();
                 let already = self
                     .contacts
                     .iter()
-                    .any(|c| c.handle.as_str().eq_ignore_ascii_case(peer.handle.as_str()));
+                    .any(|c| c.handle.as_str().eq_ignore_ascii_case(&handle));
                 if already {
                     crate::log(&format!(
                         "search-result: '{}' already in contacts — skipping add",
-                        peer.handle.as_str()
+                        handle
                     ));
+                    self.search_status = Some((format!("{handle} already added"), SEARCH_FOUND_COLOUR));
                     return;
                 }
                 let contact = crate::types::Contact::new(
@@ -1760,13 +2040,16 @@ impl PhotonApp {
                     self.contacts.len() + 1
                 ));
                 self.contacts.push(contact);
+                self.search_status = Some((format!("added {handle}"), SEARCH_FOUND_COLOUR));
                 // Textbox clearing post-search would be nice UX but Textbox has no public `clear` method yet — the user can select-all+delete or backspace. Punted to a fluor follow-up: either add `Textbox::clear` or a "consume submit" option that auto-clears on successful submit.
             }
             SearchResult::NotFound => {
                 crate::log("search-result: handle not found on FGTW");
+                self.search_status = Some(("not found".to_string(), SEARCH_FAIL_COLOUR));
             }
             SearchResult::Error(e) => {
                 crate::log(&format!("search-result: error '{}'", e));
+                self.search_status = Some((format!("error: {e}"), SEARCH_FAIL_COLOUR));
             }
         }
     }
