@@ -38,8 +38,12 @@ pub struct ReadyLayout {
     pub textbox: PixelRect,
     /// Thin horizontal separator between user section and contact rows. Half block width, centred.
     pub separator: PixelRect,
-    /// Remaining vertical space below the user section — where contact rows render (with scroll). Empty for now.
+    /// Remaining vertical space below the user section — where the scrollable contact rows render.
     pub rows: PixelRect,
+    /// Height of one contact row in pixels (avatar + handle text). 1.5× the layout unit for readability.
+    pub row_height: usize,
+    /// Diameter of a contact-row avatar circle (half the row height).
+    pub contact_avatar_diameter: usize,
 }
 
 impl ReadyLayout {
@@ -53,25 +57,25 @@ impl ReadyLayout {
         let block_h = buf_h;
 
         let perimeter = (buf_w + buf_h) as f32;
-        let span = if perimeter > 0.0 {
-            2.0 * buf_w as f32 * buf_h as f32 / perimeter
+        let span = if perimeter > 0. {
+            2. * buf_w as f32 * buf_h as f32 / perimeter
         } else {
-            0.0
+            0.
         };
 
         let total_units: f32 = V_SLICES.iter().sum();
         // Two constraints on unit_height: a span-driven term so the avatar stays reasonable on tall/narrow windows, and a height-driven term so it doesn't overflow on short/wide ones. Harmonic mean blends smoothly at the crossover.
-        let unit_from_span = (span / 32.0) * ru;
+        let unit_from_span = (span / 32.) * ru;
         let unit_from_height = block_h as f32 / total_units;
-        let unit_height = if unit_from_span + unit_from_height > 0.0 {
-            2.0 * unit_from_span * unit_from_height / (unit_from_span + unit_from_height)
+        let unit_height = if unit_from_span + unit_from_height > 0. {
+            2. * unit_from_span * unit_from_height / (unit_from_span + unit_from_height)
         } else {
-            0.0
+            0.
         };
 
         // Cumulative slice y-positions in pixels: accumulate the float total, truncate once per boundary so slices stay tight (no per-slice rounding drift).
         let mut v = [0_usize; 12];
-        let mut cum = 0.0_f32;
+        let mut cum = 0.;
         for (i, s) in V_SLICES.iter().enumerate() {
             v[i] = (cum * unit_height) as usize;
             cum += s;
@@ -96,6 +100,10 @@ impl ReadyLayout {
             block_y + v[IDX_SEPARATOR + 1],
         );
 
+        // Contact rows: 1.5× the unit for readability; the row avatar is half the row height.
+        let row_height = (unit_height * 1.5) as usize;
+        let contact_avatar_diameter = row_height / 2;
+
         ReadyLayout {
             avatar: slot(IDX_AVATAR),
             handle: slot(IDX_HANDLE),
@@ -103,6 +111,8 @@ impl ReadyLayout {
             textbox: slot(IDX_TEXTBOX),
             separator,
             rows: PixelRect::new(content_x, rows_y, block_x1, buf_h),
+            row_height,
+            contact_avatar_diameter,
         }
     }
 

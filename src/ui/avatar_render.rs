@@ -28,9 +28,7 @@ pub fn update_avatar_scaled(src: &[u8], src_size: usize, dst_diameter: usize) ->
     dst
 }
 
-/// Paint a circular avatar at `(cx, cy)` with fractional `radius`, sampling from a `scaled_diameter × scaled_diameter` BT.2020 γ=2.0 RGB texture. AA edge over the outer half-pixel; composes via `under()` so the caller can paint avatars on top of an existing partial composite.
-///
-/// `ring` is a future hook for the connectivity-indicator ring; currently unused — pass `None`.
+/// Paint a circular avatar at `(cx, cy)` with fractional `radius`, sampling from a `scaled_diameter × scaled_diameter` BT.2020 γ=2.0 RGB texture. AA edge over the outer half-pixel; composes via `under()` so the caller can paint avatars on top of an existing partial composite. `clip` restricts painting to a sub-rect (e.g. a scrolling list's visible region); `None` = whole buffer.
 pub fn draw_avatar(
     canvas: &mut Canvas,
     cx: Coord,
@@ -38,7 +36,7 @@ pub fn draw_avatar(
     radius: Coord,
     scaled: &[u8],
     scaled_diameter: usize,
-    _ring: Option<u32>,
+    clip: Option<Clip>,
 ) {
     let width = canvas.width;
     let height = canvas.height;
@@ -55,7 +53,7 @@ pub fn draw_avatar(
     let y_min = (cy - r_out) as i32;
     let y_max = (cy + r_out + 1.0) as i32;
     let Some((x_start, y_start, x_end, y_end)) =
-        Clip::intersect_bbox(None, width, height, x_min, x_max, y_min, y_max)
+        Clip::intersect_bbox(clip, width, height, x_min, x_max, y_min, y_max)
     else {
         return;
     };
