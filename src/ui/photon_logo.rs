@@ -1,10 +1,10 @@
-//! "Photon" wordmark for the Launch screen — direct port of the legacy `compositing.rs::draw_logo_text` (compositing.rs:5170-5340), preserving the legacy visible-RGB composite ops (wrap-add glow + highlight; alpha-weighted darken-toward-black body).
+//! "Photon" wordmark for the Launch screen — visible-RGB composite ops (wrap-add glow + highlight; alpha-weighted darken-toward-black body).
 //!
-//! Compose order matches legacy compositing.rs exactly: glow → body → highlight, painted bottom-up over a bg that's already in place (noise + chromatic wave). Each pass reads the pixel's visible RGB, applies the legacy op, writes back to α + darkness storage with α preserved.
+//! Compose order: glow → body → highlight, painted bottom-up over a bg that's already in place (noise + chromatic wave). Each pass reads the pixel's visible RGB, applies the op, writes back to α + darkness storage with α preserved.
 //!
 //! Visual layers (bottom to top in compose order):
 //! 1. **Glow scratch (`scratch_glow`)** — "Photon" rendered at [`LOGO_GLOW_GRAY`] gets horizontal+vertical exponential-falloff blur passes → soft outer halo. Wrap-added per visible-RGB channel over the bg (wraps to dark where the bg is already bright — the characteristic Photon chromatic interaction).
-//! 2. **Sharp body** — "Photon" rasterized as u8 glyph coverage; each coverage value `a` darkens the bg toward pure black via `visible_new = visible_bg × (255 − a) / 255` (legacy text colour is `LOGO_TEXT_COLOUR` = pure visible black).
+//! 2. **Sharp body** — "Photon" rasterized as u8 glyph coverage; each coverage value `a` darkens the bg toward pure black via `visible_new = visible_bg × (255 − a) / 255` (text colour is pure visible black).
 //! 3. **Highlight scratch (`scratch_highlight`)** — "Photon" rendered at [`LOGO_HIGHLIGHT_GRAY`] PLUS black-carve passes at `(x+1, y)` and `(x, y+1)` to bevel the right + bottom edges of every glyph, then a sharper horizontal-only blur. Wrap-added over the body → bright top-left rim with a beveled-into-the-surface look.
 //!
 //! Wrap-add (rather than saturating add) is intentional: where the bg is already light, the glow value wraps around darker — the chromatic interaction between the logo and the spectrum bar behind it that's part of Photon's visual identity. Don't "fix" it to saturating.
@@ -14,13 +14,13 @@
 use fluor::canvas::{Canvas, PixelRect};
 use fluor::text::TextRenderer;
 
-/// Legacy `theme::LOGO_GLOW_GRAY`. Grayscale weight written into the glow scratch — soft halo source.
+/// Grayscale weight written into the glow scratch — soft halo source.
 const LOGO_GLOW_GRAY: u8 = 192;
 
-/// Legacy `theme::LOGO_HIGHLIGHT_GRAY`. Grayscale weight written into the highlight scratch — tight rim source.
+/// Grayscale weight written into the highlight scratch — tight rim source.
 const LOGO_HIGHLIGHT_GRAY: u8 = 128;
 
-/// Aspect ratio (width : height) of the "Photon" wordmark at the rendered weight. Used by the harmonic-mean sizer to fit the text inside `rect`. Sourced from legacy `compositing.rs:5176`.
+/// Aspect ratio (width : height) of the "Photon" wordmark at the rendered weight. Used by the harmonic-mean sizer to fit the text inside `rect`.
 const TEXT_ASPECT: f32 = 6.;
 
 /// Oxanium font family name. Must match the family name in the loaded `.ttf` files (Oxanium-* weights all share this family). Weight 800 selects ExtraBold; weights 200/300/400/500/600/700/800 are loaded by `PhotonApp::init`.
