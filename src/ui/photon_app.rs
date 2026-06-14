@@ -1,8 +1,4 @@
-//! New [`PhotonApp`] under construction: a [`fluor::host::app::FluorApp`] impl that hosts Photon-desktop. Lives in a separate module from `super::app::PhotonApp` (the legacy 6 081-line owner of the per-platform renderer + 5 837-line `compositing.rs`) which is cfg-gated to Android as of Phase 0b+0e+0f. After the migration completes the legacy module deletes entirely.
-//!
-//! Phase 0c milestone: chrome only — perimeter, drop shadow, three buttons, app-icon orb slot. No app state, no widgets, no background, no screens. Phase 1+ rebuilds Launch / Ready / Searching / Conversation as widgets attached to this struct.
-//!
-//! Subsequent phases (1+) port Photon's state machine (`AppState`, network handles, contact list) into this struct's fields, add per-screen widgets, and wire cross-thread wake-ups through `FluorApp::on_user_event` using the [`super::PhotonEvent`] payload type.
+//! [`PhotonApp`]: the [`fluor::host::app::FluorApp`] impl that hosts Photon on desktop. Owns the app state machine (`AppState`), network handles, contact list, and the per-screen widgets (Launch / Ready / Searching / Conversation), drawing the chrome (perimeter, shadow, window buttons, app-icon orb) plus each screen's content, and routing cross-thread wake-ups through `FluorApp::on_user_event` with the [`super::PhotonEvent`] payload.
 
 use super::chromatic_wave::chromatic_wave;
 use super::launch_layout::{AttestBlockLayout, LaunchLayout};
@@ -39,6 +35,38 @@ const ERROR_TEXT_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_FF_50_5
 
 /// Hint-label colour for the static "handle" prompt under the textbox — visible RGB (160, 160, 160), soft grey, fully opaque. Quieter than `theme::TEXTBOX_TEXT` (visible 224/224/220) because the hint is contextual, not content — dim enough that the eye reads the textbox first and the hint only on attention.
 const HINT_TEXT_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_A0_A0_A0));
+
+/// Colour for the dormant infinity placeholder in the empty handle field — visible RGB(80, 80, 80), half the brightness of [`HINT_TEXT_COLOUR`]'s 160. Dim enough to read as "nothing here yet" rather than content.
+const INFINITY_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_50_50_50));
+
+/// Colour for the dozenal version glyphs at the bottom of the screen: pure white (darkness 0 across all channels), α = 32 = 1/8 opacity. Stored directly in fluor's α+darkness format — `draw_text_center_u32` multiplies the glyph coverage into this α, so the version reads as a faint watermark over the background noise.
+const VERSION_COLOUR: u32 = 0x20_00_00_00;
+
+/// Colour for the zoom-percentage watermark at the top of the screen: pure white, α = 64 = 1/4 opacity (twice [`VERSION_COLOUR`]'s 1/8). Same α+darkness watermark scheme as the version — painted before the background noise so it reads as a faint top-centre indicator of the current `ru` zoom factor.
+const ZOOM_COLOUR: u32 = 0x40_00_00_00;
+
+/// Deploy version, little-endian, +1. The single `v` byte at repo root is bumped by the deploy pipeline; absent/oversized falls back to 0.
+const DEPLOY_VERSION_BYTES: &[u8] = include_bytes!("../../v");
+fn deploy_version() -> u32 {
+    match DEPLOY_VERSION_BYTES.len() {
+        1 => DEPLOY_VERSION_BYTES[0] as u32 + 1,
+        2 => u16::from_le_bytes([DEPLOY_VERSION_BYTES[0], DEPLOY_VERSION_BYTES[1]]) as u32 + 1,
+        _ => 0,
+    }
+}
+
+/// Render `n` in dozenal (base 12) as a string of reserved control-code bytes: digit `d` (0..11) maps to codepoint `0x10 + d` (DLE..ESC), which the Oxanium `+glyphs` face draws as the dozenal glyph Zil..Stelor. The result is meant only for that font — the bytes are non-printing control codes everywhere else. Most-significant digit first; `0` renders as a single Zil (0x10).
+fn dozenal_glyphs(mut n: u32) -> String {
+    if n == 0 {
+        return char::from(0x10).to_string();
+    }
+    let mut digits = Vec::new();
+    while n > 0 {
+        digits.push(char::from(0x10 + (n % 12) as u8));
+        n /= 12;
+    }
+    digits.iter().rev().collect()
+}
 
 /// Status-message colour for the "Attesting…" indicator that occupies the error slot while a handle query is in flight. Pure visible white, fully opaque — same slot as `ERROR_TEXT_COLOUR` but white instead of red so the user reads it as "neutral status" rather than "something went wrong".
 const STATUS_TEXT_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_FF_FF_FF));
@@ -84,6 +112,10 @@ pub struct PhotonApp {
     event_proxy: Option<Arc<dyn WakeSender<PhotonEvent>>>,
     /// Vertical scroll offset for the background noise — drives `paint::background_noise`'s `scroll_offset` (visually translates the noise pattern up/down), `shimmer` (noise colour bias cycle), AND the chromatic wave's phase. MouseWheel events in `on_event` mutate this; everything else reads it.
     bg_scroll: isize,
+    /// Whether to paint the top-centre zoom-percentage watermark. The host swallows the zoom events (Ctrl/Cmd + scroll / ± / 0) and updates `ctx.viewport.ru` directly, so we can't observe a zoom event — instead `render` arms this when `ru` changes WHILE a zoom modifier is held, and the `ModifiersChanged` handler clears it the instant the modifier is released. Not time-based: it persists exactly as long as Ctrl/Cmd stays down after a zoom began. (Android pinch — show from two-fingers-down to release — waits on fluor's multi-touch `Touch` event, which doesn't exist yet.)
+    zoom_hint: bool,
+    /// Previous frame's `ru`, for the frame-to-frame change detection that arms `zoom_hint`. Seeded to 1.0 (the host's default zoom).
+    last_ru: f32,
     /// Wave-phase animation accumulator for the "query in flight" cue. Advances at `2π rad/s` (1 full cycle/sec) in `tick()` while `state == LaunchState::Attesting` (or future `AppState::Searching`); held constant otherwise so the wave stays idle when the app is. Summed into the scroll-driven base phase in `render()`. Wraps mod TAU each frame so it stays in `[0, 2π)` and float precision doesn't drift over a long-running query.
     attest_anim_phase: f32,
     /// Last `tick()` timestamp; used to compute the per-frame `delta_time` that `attest_anim_phase` advances by. `None` until the first tick fires.
@@ -142,6 +174,10 @@ pub struct PhotonApp {
     avatar_hit_id: HitId,
     /// One-shot Android image-picker request. Set when the user taps the avatar; consumed by the JNI poll (`nativePollAvatarPicker`) which signals the Activity to launch `ACTION_GET_CONTENT`. Stays `None` on idle frames so the Activity doesn't churn.
     pending_picker_request: bool,
+    /// `true` while the cursor is over the Ready-screen avatar circle (desktop hover). Drives the "drag/drop to update avatar" hint below the avatar when no avatar is set yet.
+    avatar_hovered: bool,
+    /// `true` once the user has clicked the avatar to reveal the update hint (desktop, when an avatar IS already set — no constant prompt is shown in that case, so a click toggles the instruction on/off). Unused on Android, where a tap opens the picker directly.
+    avatar_hint_click: bool,
 }
 
 impl PhotonApp {
@@ -152,6 +188,8 @@ impl PhotonApp {
             hit_counter: 0,
             event_proxy: None,
             bg_scroll: 0,
+            zoom_hint: false,
+            last_ru: 1.0,
             attest_anim_phase: 0.,
             last_tick: None,
             state: AppState::default(),
@@ -181,6 +219,8 @@ impl PhotonApp {
             device_avatar_scaled_diameter: 0,
             avatar_hit_id: HIT_NONE,
             pending_picker_request: false,
+            avatar_hovered: false,
+            avatar_hint_click: false,
         }
     }
 
@@ -263,15 +303,23 @@ impl Default for PhotonApp {
     }
 }
 
-/// Walk the (currently chrome-only) widget tree. Once Phase 1+ adds the launch screen widgets (logo, spectrograph, handle textbox), they yield BEFORE chrome — same ordering convention as fluor's panes example: content first, chrome last, matching macOS / GNOME tab traversal. Widget tree visit order: launch-screen content (textbox → attest button) FIRST, then chrome's four buttons. Matches macOS / GNOME convention where Tab traverses form fields before window-frame controls. `linear_tab_next` reads this order off the visit walk; `dispatch_click` / `dispatch_key` use it to route events by id. Container-impl on widgets the Launch screen doesn't own (Ready/Searching/Conversation widgets, when they land) gates on `state` so off-screen widgets neither hit-test nor cycle.
+/// Walk the widget tree. Screen content yields BEFORE chrome: launch-screen content (textbox → attest button) first, then chrome's four buttons — matching the macOS / GNOME convention where Tab traverses form fields before window-frame controls. `linear_tab_next` reads this order off the visit walk; `dispatch_click` / `dispatch_key` use it to route events by id. The walk gates on `state` so off-screen widgets neither hit-test nor cycle.
 impl Container for PhotonApp {
     fn visit(&mut self, f: &mut dyn FnMut(&mut dyn Widget)) {
         if matches!(self.state, AppState::Launch(_)) {
+            // The attest button is only part of the tree when there's a handle to attest — same reveal as the render gate. An empty field yields just the textbox, so Tab can't land focus on a button that isn't drawn and a hit-test can't dispatch to it.
+            let handle_entered = self
+                .textbox
+                .as_ref()
+                .map(|tb| !tb.chars.is_empty())
+                .unwrap_or(false);
             if let Some(tb) = self.textbox.as_mut() {
                 f(tb);
             }
-            if let Some(btn) = self.attest_btn.as_mut() {
-                f(btn);
+            if handle_entered {
+                if let Some(btn) = self.attest_btn.as_mut() {
+                    f(btn);
+                }
             }
         }
         if matches!(self.state, AppState::Ready) {
@@ -292,6 +340,7 @@ impl FluorApp for PhotonApp {
     type UserEvent = PhotonEvent;
 
     fn title(&self) -> &str {
+        // OS WINDOW title only (taskbar / alt-tab / WM) — set once at window creation via winit `with_title`. The brand name lives here. The DRAWN in-app title bar is separate: it's `chrome.set_title(...)` per-frame in `render` ("← Network" on launch, live peer count on Ready). The chrome is constructed with "Photon" too but the first render overrides it before the first rasterize, so the drawn bar never flashes the brand name.
         "Photon"
     }
 
@@ -313,11 +362,12 @@ impl FluorApp for PhotonApp {
     }
 
     fn init(&mut self, ctx: &mut Context) {
-        // Register Photon's Oxanium font weights with fluor's shared `TextRenderer` so the logo wordmark can resolve `Family::Name("Oxanium")`. Seven weights matches the legacy Photon font set; ExtraLight/Light/Regular/Medium/SemiBold/Bold/ExtraBold = numeric weights 200/300/400/500/600/700/800. The logo uses weight 800.
+        // Register Photon's Oxanium font weights with fluor's shared `TextRenderer` so the logo wordmark can resolve `Family::Name("Oxanium")`. ExtraLight/Light/Regular/Medium/SemiBold/Bold/ExtraBold = numeric weights 200/300/400/500/600/700/800. The logo uses weight 800.
         let db = ctx.text.font_system_mut().db_mut();
         db.load_font_data(include_bytes!("../../assets/Oxanium/Oxanium-ExtraLight.ttf").to_vec());
         db.load_font_data(include_bytes!("../../assets/Oxanium/Oxanium-Light.ttf").to_vec());
-        db.load_font_data(include_bytes!("../../assets/Oxanium/Oxanium-Regular.ttf").to_vec());
+        // Regular weight uses the `+glyphs` superset: identical to plain Oxanium-Regular for 0x20-0x7e (normal text) but adds the dozenal digit glyphs in the reserved control-code block 0x10-0x1b (DLE..ESC = digits 0..11, Zil..Stelor). Rendering a dozenal number is then a plain draw_text of those bytes at weight 400 — no runtime SVG, no separate font family. Other weights stay on the plain faces (the dozenal glyphs only need to exist at one weight, and the version string renders at 400).
+        db.load_font_data(include_bytes!("../../assets/Oxanium/Oxanium-Regular+glyphs.ttf").to_vec());
         db.load_font_data(include_bytes!("../../assets/Oxanium/Oxanium-Medium.ttf").to_vec());
         db.load_font_data(include_bytes!("../../assets/Oxanium/Oxanium-SemiBold.ttf").to_vec());
         db.load_font_data(include_bytes!("../../assets/Oxanium/Oxanium-Bold.ttf").to_vec());
@@ -342,7 +392,7 @@ impl FluorApp for PhotonApp {
             fluor::paint::DEBUG_SKIP_CONTROLS
                 .store(true, std::sync::atomic::Ordering::Relaxed);
         }
-        // Top-left orb's ring doubles as the FGTW connectivity indicator (port of the legacy compositing.rs connectivity dot). Initialize red/offline; `try_recv_online` flips to green once the FGTW reports the device is reachable.
+        // Top-left orb's ring doubles as the FGTW connectivity indicator. Initialize red/offline; `try_recv_online` flips to green once the FGTW reports the device is reachable.
         chrome.set_orb_tint(orb_tint_for(false));
         self.chrome = Some(chrome);
 
@@ -373,7 +423,7 @@ impl FluorApp for PhotonApp {
         self.avatar_hit_id = self.hit_counter;
         self.update_widget_layout(ctx);
 
-        // HandleQuery: device keypair is derived deterministically from the machine fingerprint (NEVER stored to disk per legacy convention — same machine yields the same keypair so attestations are reproducible across restarts). HandleQuery owns the UDP socket + sends/receives FGTW packets; an empty PeerStore wires the transport so query packets have somewhere to fan out to. Status checker, peer-update client, contact pubkeys etc. are deferred — they belong to later migration slices (Phase 2+). The proxy expect is structurally safe: fluor's host calls `set_event_proxy` BEFORE `init` (see `run_app` in fluor/src/host/app.rs), so `event_proxy` is always `Some` here.
+        // HandleQuery: device keypair is derived deterministically from the machine fingerprint (NEVER stored to disk — same machine yields the same keypair so attestations are reproducible across restarts). HandleQuery owns the UDP socket + sends/receives FGTW packets; an empty PeerStore wires the transport so query packets have somewhere to fan out to. The proxy expect is structurally safe: fluor's host calls `set_event_proxy` BEFORE `init` (see `run_app` in fluor/src/host/app.rs), so `event_proxy` is always `Some` here.
         let proxy = self
             .event_proxy
             .as_ref()
@@ -447,23 +497,31 @@ impl FluorApp for PhotonApp {
                     .as_ref()
                     .map(|c| c.hit_at(ctx.cursor_x, ctx.cursor_y))
                     .unwrap_or(HIT_NONE);
+                // While attesting, the launch textbox + attest button are inert: force their hover state off regardless of cursor position so neither lights up under the pointer during the frozen wait.
+                let launch_locked = matches!(self.state, AppState::Launch(ref s) if !s.can_edit_handle());
                 let mut changed = false;
                 if let Some(chrome) = self.chrome.as_mut() {
                     changed |= chrome.set_hover(new_hit);
                 }
                 if let Some(tb) = self.textbox.as_mut() {
-                    let want = new_hit == tb.hit_id();
+                    let want = !launch_locked && new_hit == tb.hit_id();
                     if tb.is_hovered() != want {
                         tb.set_hovered(want);
                         changed = true;
                     }
                 }
                 if let Some(btn) = self.attest_btn.as_mut() {
-                    let want = new_hit == btn.hit_id();
+                    let want = !launch_locked && new_hit == btn.hit_id();
                     if btn.is_hovered() != want {
                         btn.set_hovered(want);
                         changed = true;
                     }
+                }
+                // Avatar hover (Ready screen): drives the "drag/drop to update avatar" hint when no avatar is set yet. Detected via the avatar's hit-stamp rather than recomputing the circle.
+                let avatar_hover = self.avatar_hit_id != HIT_NONE && new_hit == self.avatar_hit_id;
+                if self.avatar_hovered != avatar_hover {
+                    self.avatar_hovered = avatar_hover;
+                    changed = true;
                 }
                 if changed {
                     ctx.window.request_redraw();
@@ -487,7 +545,23 @@ impl FluorApp for PhotonApp {
                         changed = true;
                     }
                 }
+                if self.avatar_hovered {
+                    self.avatar_hovered = false;
+                    changed = true;
+                }
                 if changed {
+                    ctx.window.request_redraw();
+                }
+                EventResponse::Pass
+            }
+            Event::ModifiersChanged(mods) => {
+                // Zoom hint persists only while a zoom modifier is held. The instant Ctrl/Cmd is released, drop the top-centre percentage watermark (render arms it when `ru` changes under a held modifier). Releasing focus mid-zoom also lands here via the WM clearing modifiers.
+                if !(mods.control_key() || mods.super_key()) && self.zoom_hint {
+                    self.zoom_hint = false;
+                    // The watermark lives in the bg layer, which `rasterize_bg` only repaints when dirty — invalidate it so the clearing frame actually re-runs the closure without the hint, instead of leaving the stale glyphs painted.
+                    if let Some(chrome) = self.chrome.as_mut() {
+                        chrome.invalidate_bg();
+                    }
                     ctx.window.request_redraw();
                 }
                 EventResponse::Pass
@@ -549,10 +623,17 @@ impl FluorApp for PhotonApp {
                     && matches!(self.state, AppState::Ready)
                     && self.avatar_hit_id != HIT_NONE
                 {
-                    if self.change_focus(None) {
-                        ctx.window.request_redraw();
+                    self.change_focus(None);
+                    // Android: a tap opens the system image picker directly (the picker IS the update mechanism). Desktop: there's no picker — the avatar updates by drag/drop — so a click toggles the "drag/drop to update avatar" instruction below the avatar (a constant prompt is only shown when no avatar is set yet).
+                    #[cfg(target_os = "android")]
+                    {
+                        self.pending_picker_request = true;
                     }
-                    self.pending_picker_request = true;
+                    #[cfg(not(target_os = "android"))]
+                    {
+                        self.avatar_hint_click = !self.avatar_hint_click;
+                    }
+                    ctx.window.request_redraw();
                     return EventResponse::Handled;
                 }
 
@@ -563,8 +644,26 @@ impl FluorApp for PhotonApp {
                         hit_is_focusable = true;
                     }
                 });
-                if hit_is_focusable && self.change_focus(Some(hit_id)) {
+                // While attesting, the launch screen is frozen: a click on the handle textbox OR the attest button is swallowed without effect. For the textbox this prevents refocus / cursor placement / drag-select arm; for the button it kills the press visual and the submit (which would no-op anyway). The submit path already dropped focus; this keeps a stray click from grabbing it back until the query resolves or the user escapes back to Fresh.
+                let launch_locked = matches!(self.state, AppState::Launch(ref s) if !s.can_edit_handle());
+                let locked_launch_widget = launch_locked
+                    && (self
+                        .textbox
+                        .as_ref()
+                        .map(|t| t.hit_id() == hit_id)
+                        .unwrap_or(false)
+                        || self
+                            .attest_btn
+                            .as_ref()
+                            .map(|b| b.hit_id() == hit_id)
+                            .unwrap_or(false));
+                if hit_is_focusable && !locked_launch_widget && self.change_focus(Some(hit_id)) {
                     ctx.window.request_redraw();
+                }
+
+                // Frozen launch widget during attesting: swallow the click without dispatching, so neither `Textbox::on_click` (cursor/selection) nor `Button::on_click` (press counter) fires.
+                if locked_launch_widget {
+                    return EventResponse::Handled;
                 }
 
                 // Dispatch the click via the fluor widget helper. Walks the tree once, finds the widget with `hit_id`, calls its `Click::on_click`. Returns `EventResponse::Pass` if the widget has no Click capability — covers chrome's app-icon orb (no action wired yet).
@@ -659,6 +758,22 @@ impl FluorApp for PhotonApp {
                 // Press-only routing for Tab / Esc / Enter and delivery to the focused widget. Released arms (key-up) don't insert characters or trigger actions, so we no-op them. `repeat` keys DO insert characters (auto-repeat typing) so we don't filter on it here.
                 if kev.state != ElementState::Pressed {
                     return EventResponse::Pass;
+                }
+
+                // Clipboard chords (Ctrl/Cmd + C / X / V) are intercepted HERE, before delivery to the focused widget — fluor's design keeps the OS clipboard (arboard) with the app, not on Textbox (the clipboard is a single global resource; threading it through every widget would be premature). Ctrl+A stays on the widget (pure selection, no OS resource). Desktop only: Android paste arrives through the IME commit path, and Redox has no arboard backend.
+                #[cfg(not(any(target_os = "redox", target_os = "android")))]
+                if ctx.modifiers.control_key() || ctx.modifiers.super_key() {
+                    if let Key::Character(c) = &kev.logical_key {
+                        let lc = c.to_lowercase();
+                        if lc == "c" || lc == "x" || lc == "v" {
+                            let resp = self.clipboard_chord(&lc, ctx.text);
+                            if matches!(resp, EventResponse::Handled) {
+                                ctx.window.request_redraw();
+                                self.blink_timer.start(Instant::now());
+                            }
+                            return resp;
+                        }
+                    }
                 }
 
                 match &kev.logical_key {
@@ -772,6 +887,20 @@ impl FluorApp for PhotonApp {
                 }
                 EventResponse::Pass
             }
+            Event::DroppedFile(path) => {
+                // Desktop avatar update: a file dropped on the window (Ready screen) is read and run through the same encode→save→load→install→upload pipeline as the Android picker. Ignored off the Ready screen and when no handle is attested yet (set_avatar_from_file no-ops without a handle). Android has no drop path — it uses the picker.
+                if matches!(self.state, AppState::Ready) {
+                    match std::fs::read(path) {
+                        Ok(bytes) => {
+                            self.set_avatar_from_file(bytes);
+                            self.avatar_hint_click = false; // a successful update clears the reveal
+                            ctx.window.request_redraw();
+                        }
+                        Err(e) => crate::log(&format!("avatar drop: read failed: {e}")),
+                    }
+                }
+                EventResponse::Handled
+            }
             _ => EventResponse::Pass,
         }
     }
@@ -805,7 +934,7 @@ impl FluorApp for PhotonApp {
         };
         self.last_tick = Some(now);
 
-        // Spectrum animation while attesting (port of legacy `compositing.rs:58-79`): wave phase advances at 2π rad/sec = 1 cycle/sec. Provides the visual "query in flight" cue the legacy build had — the bar slowly slides while we wait for FGTW to answer. Idle / Fresh / Error states leave the phase frozen so the screen stays calm.
+        // Spectrum animation while attesting: wave phase advances at 2π rad/sec = 1 cycle/sec. Provides the visual "query in flight" cue the legacy build had — the bar slowly slides while we wait for FGTW to answer. Idle / Fresh / Error states leave the phase frozen so the screen stays calm.
         if matches!(self.state, AppState::Launch(LaunchState::Attesting))
             || matches!(self.state, AppState::Searching)
         {
@@ -884,9 +1013,34 @@ impl FluorApp for PhotonApp {
         let buf_w = ctx.viewport.width_px as usize;
         let buf_h = ctx.viewport.height_px as usize;
 
+        // Arm the zoom hint: the host swallows zoom events and mutates `ru` directly, so we detect a zoom by `ru` changing frame-to-frame. Arm only when a zoom modifier is held (so a programmatic/resize ru change wouldn't trigger it, and merely holding Ctrl with no scroll doesn't either — the change is what arms it). `ModifiersChanged` clears it on release.
+        let zoom_mod_held = ctx.modifiers.control_key() || ctx.modifiers.super_key();
+        if ctx.viewport.ru != self.last_ru {
+            if zoom_mod_held {
+                self.zoom_hint = true;
+            }
+            self.last_ru = ctx.viewport.ru;
+        }
+        let show_zoom = self.zoom_hint;
+
+        // Title-bar text by screen, computed BEFORE the chrome borrow (peer count reads `self.handle_query` / `self.online`). Launch/attest shows the "← Network" affordance; once attested (Ready) it shows the live connection count — FGTW seed (counted when online) plus every distinct peer device in the store. `set_title` only re-rasterizes chrome when the string actually changes, so this is cheap to recompute each frame.
+        let title_text: String = if matches!(self.state, AppState::Ready) {
+            let store_peers = self
+                .handle_query
+                .as_ref()
+                .and_then(|hq| hq.get_transport())
+                .map(|t| t.lock().map(|s| s.peer_count()).unwrap_or(0))
+                .unwrap_or(0);
+            let n = store_peers + if self.online { 1 } else { 0 };
+            format!("{n} peers")
+        } else {
+            "\u{2190} Network".to_string()
+        };
+
         let Some(chrome) = self.chrome.as_mut() else {
             return;
         };
+        chrome.set_title(title_text);
 
         // Bg noise. `shimmer` is driven by `bg_scroll` and mixes into each row's starting colour — so the noise colour bias cycles as you scroll without changing the underlying pattern topology. `scroll_offset` is per-screen: Launch/Attest gets `0` (no vertical movement on the attest screen — shimmer only); future screens (Ready, Searching, Conversation) will pass `bg_scroll` so the noise pattern also translates with their page-scroll content. Phase 2+ branches on AppState to pick which.
         let bg_scroll = self.bg_scroll;
@@ -896,16 +1050,29 @@ impl FluorApp for PhotonApp {
         let layout = LaunchLayout::compute(buf_w, buf_h, ctx.viewport.ru);
         // Chromatic wave phase has two summands:
         //   * Scroll-driven base (`bg_scroll * 1/128 rad/scroll-unit`) — one wheel-notch ≈ 8 units → ~1/16 rad shift; user-tunable by changing the shift exponent.
-        //   * `attest_anim_phase` (advanced in `tick()` while `LaunchState::Attesting`) — the legacy "query in flight" cue, 1 cycle/sec.
+        //   * `attest_anim_phase` (advanced in `tick()` while `LaunchState::Attesting`) — the "query in flight" cue, 1 cycle/sec.
         // Summing them means the wave responds to BOTH inputs simultaneously: a user scrolling during an attestation still nudges the phase on top of the animation.
         let phase = bg_scroll as f32 * (1. / ((1 << 7) as f32)) + self.attest_anim_phase;
         let period_scale = 1.;
         let spectrum_rect = layout.spectrum;
         let logo_rect = layout.photon_text;
+        // Faint dozenal version watermark, bottom-centred on every screen. Size = half the "handle" hint text (hint slot height × 0.7, halved); rendered at weight 400 so it resolves to the Oxanium `+glyphs` face carrying the dozenal control-block glyphs, in near-transparent white (VERSION_COLOUR) so it sits in the background like a watermark rather than competing with the foreground.
+        let attest_for_version = AttestBlockLayout::compute(layout.attest_block);
+        let version_size = (attest_for_version.hint.y1 - attest_for_version.hint.y0) as f32 * 0.7 * 0.5;
+        let version_glyphs = dozenal_glyphs(deploy_version());
+        let version_cx = buf_w as f32 * 0.5;
+        let version_cy = buf_h as f32 - version_size;
+        // Zoom watermark, top-centre: current `ru` zoom factor as a decimal percentage ("100%", "103%"), twice the version size, at 1/4 opacity. Mirrors the version's bottom-centre placement (one font-size in from the edge). Integer percent — the ~3%/step zoom granularity makes decimals noise.
+        let zoom_size = version_size * 2.0;
+        let zoom_text = format!("{}%", (ctx.viewport.ru * 100.0).round() as i64);
+        let zoom_cx = buf_w as f32 * 0.5;
+        let zoom_cy = zoom_size;
         // Split-borrow `ctx.damage` (consumed by rasterize_bg's first arg) and `ctx.text` (captured by the closure for the logo's text rendering). These are disjoint fields of `Context` so the borrow checker allows both reborrows simultaneously. The closure is non-`move` so the text reborrow ends when rasterize_bg returns, leaving `ctx.text` available for `rasterize_chrome` on the next line.
         let text = &mut *ctx.text;
-        // Bg-first compose chain (matches legacy `compositing.rs` exactly): noise paints opaque, the wave reads it for the `sqrt(c*scale + c_bg²)` blend, then the logo (glow / body / highlight) paints over both via legacy visible-RGB ops. Each step preserves α on the pixels it touches. The wave + logo are Launch-screen chrome — once attested the user shouldn't be staring at the wordmark every time they open the app, so Ready / Searching / Conversation get just the background noise and let their own widgets own the canvas.
+        // Bg-first compose chain: noise paints opaque, the wave reads it for the `sqrt(c*scale + c_bg²)` blend, then the logo (glow / body / highlight) paints over both via legacy visible-RGB ops. Each step preserves α on the pixels it touches. The wave + logo are Launch-screen chrome — once attested the user shouldn't be staring at the wordmark every time they open the app, so Ready / Searching / Conversation get just the background noise and let their own widgets own the canvas.
         let on_launch = matches!(self.state, AppState::Launch(_));
+        // Version watermark shows ONLY on the attest screen (Launch) and the contacts screen (Ready) — not conversations or other screens. (Settings, when it lands, spells the version out in words rather than glyphs; that's its own render path.)
+        let show_version = on_launch || matches!(self.state, AppState::Ready);
         // Swap the noise base colour to BG_BASE_WARNING when the dual-ring vault flagged degraded this session — the noise pass already runs every frame so this changes a colour, not the pass count. None on the happy path keeps the default green-dark base from theme.rs.
         let bg_base = if self.vault_degraded {
             Some(crate::ui::theme::BG_BASE_WARNING)
@@ -918,6 +1085,38 @@ impl FluorApp for PhotonApp {
         #[cfg(not(target_os = "android"))]
         let bg_fullscreen = false;
         chrome.rasterize_bg(ctx.damage, |canvas| {
+            // Version watermark FIRST — fluor's `under()` is topmost-first, and `background_noise` composes UNDER existing content, so the version must be painted before the noise to survive. At α≈1/32 white the noise blends through ~97%, leaving it as a faint bottom-of-screen watermark. (This is what "before the background gets painted" meant — paint last and the opaque noise buries it.)
+            if show_version {
+                text.draw_text_center_u32(
+                    canvas,
+                    &version_glyphs,
+                    version_cx,
+                    version_cy,
+                    version_size,
+                    400,
+                    VERSION_COLOUR,
+                    "Oxanium",
+                    None,
+                    None,
+                    None,
+                );
+            }
+            // Zoom hint is independent of the version's screen gate — it shows on ANY screen, but only while actively zooming (a held zoom modifier after a `ru` change), per `show_zoom`.
+            if show_zoom {
+                text.draw_text_center_u32(
+                    canvas,
+                    &zoom_text,
+                    zoom_cx,
+                    zoom_cy,
+                    zoom_size,
+                    400,
+                    ZOOM_COLOUR,
+                    "Oxanium",
+                    None,
+                    None,
+                    None,
+                );
+            }
             paint::background_noise(canvas, shimmer, bg_fullscreen, scroll_offset, None, bg_base);
             if on_launch {
                 chromatic_wave(canvas, spectrum_rect, phase, period_scale);
@@ -938,6 +1137,18 @@ impl FluorApp for PhotonApp {
             let layout = LaunchLayout::compute(buf_w, buf_h, ctx.viewport.ru);
             let attest = AttestBlockLayout::compute(layout.attest_block);
             let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
+
+            // Clear the attest block's footprint in the shared hit_test_map BEFORE re-stamping this frame's widgets. Chrome only wipes the map on its own dirty cycles (`rasterize_chrome` early-returns when chrome is clean), but the launch widgets re-stamp every frame — so when the Attest button stops rendering (handle cleared to empty) on a chrome-clean frame, its old hit-rect would otherwise linger and keep dispatching pointer + hitmask. The attest_block is the only Photon-owned region of the map on this screen, so clearing the whole block each frame is the cheap correct reset; the textbox/button/∞ below re-stamp whatever is actually present.
+            restamp_hit_rect(
+                &mut chrome.hit_test_map,
+                buf_w,
+                buf_h,
+                layout.attest_block.x0 as isize,
+                layout.attest_block.y0 as isize,
+                layout.attest_block.x1 as isize,
+                layout.attest_block.y1 as isize,
+                HIT_NONE,
+            );
 
             // Status slot — `attest.error` rect above the textbox. Carries either the red error message (`LaunchState::Error`) or the white "Attesting…" indicator (`LaunchState::Attesting`); empty in Fresh. Same geometry for both so they swap in place; colour differentiates "something's wrong" from "we're working". Wave's 1-cycle/sec phase animation pairs with the "Attesting…" line as the secondary cue.
             let status: Option<(&str, u32)> = match launch_state {
@@ -989,6 +1200,42 @@ impl FluorApp for PhotonApp {
                 );
             }
 
+            // Resting-state gates for the attest slot. The handle textbox owns the empty/focused truth; the attest button and the infinity glyph are the two mutually-exclusive things that can occupy the slot below it.
+            // - handle_entered: any typed character → show the Attest button (mirrors the contacts plus-button's `!chars.is_empty()` reveal).
+            // - textbox_active: the textbox is focused (cursor in it) → the user is mid-entry even with no character yet, so the resting infinity steps aside.
+            let handle_entered = self
+                .textbox
+                .as_ref()
+                .map(|tb| !tb.chars.is_empty())
+                .unwrap_or(false);
+            let textbox_active = self
+                .textbox
+                .as_ref()
+                .map(|tb| Some(tb.hit_id()) == self.focused)
+                .unwrap_or(false);
+
+            // Dormant infinity centred IN the handle textbox — it sits where the typed handle will appear, a half-brightness grey placeholder for the resting field, shown only while the field is empty AND unfocused. Painted BEFORE the textbox: fluor's under-blend is "topmost paints first; later opaque dst wins", so the glyph must precede the textbox's empty-pill fill to survive (same ordering the contacts plus-button uses). The instant the user focuses (cursor in) or a character lands, the gate goes false and the textbox owns the slot alone.
+            // Anchor and size come straight off the textbox (`center_x/center_y/font_size`), so the glyph lands pixel-identical to where a typed character would — the textbox draws its own glyphs via `draw_text_center_u32` at the same anchor, so matching it here keeps the ∞ from sitting high or scaling differently.
+            if !handle_entered && !textbox_active {
+                if let Some(tb) = self.textbox.as_ref() {
+                    // ∞ ink sits ~1-2px high because `draw_text_center_u32` centres on the line box (ascent+descent), and a math symbol's ink rides the math axis, slightly above where baseline-seated text reads as centred. Nudge the y anchor down by font_size/32 (≈1-2px here, scales with zoom) to seat the glyph at the pill's visual centre.
+                    let baseline_nudge = tb.font_size * (1.0 / (1 << 5) as f32);
+                    ctx.text.draw_text_center_u32(
+                        &mut canvas,
+                        "\u{221E}",
+                        tb.center_x,
+                        tb.center_y + baseline_nudge,
+                        tb.font_size,
+                        400, // Same weight the textbox renders its own glyphs at (see textbox `measure_text_widths_per_char` / draw calls).
+                        INFINITY_COLOUR,
+                        "Oxanium",
+                        None,
+                        None,
+                        None,
+                    );
+                }
+            }
+
             if let Some(tb) = self.textbox.as_mut() {
                 let id = tb.hit_id();
                 tb.render_content_into(
@@ -1002,17 +1249,20 @@ impl FluorApp for PhotonApp {
                     id,
                 );
             }
-            if let Some(btn) = self.attest_btn.as_mut() {
-                let id = btn.hit_id();
-                btn.render_content_into(
-                    &mut canvas,
-                    0.,
-                    0.,
-                    ctx.text,
-                    None,
-                    Some(&mut chrome.hit_test_map),
-                    id,
-                );
+            // The Attest button only exists once there's a handle to attest. An empty, untouched field shows the dormant infinity in its place instead; a focused-but-empty field shows neither (the user is typing). Hiding the button also keeps its hit-rect out of `hit_test_map`, so an empty field can't dispatch a no-op attest click.
+            if handle_entered {
+                if let Some(btn) = self.attest_btn.as_mut() {
+                    let id = btn.hit_id();
+                    btn.render_content_into(
+                        &mut canvas,
+                        0.,
+                        0.,
+                        ctx.text,
+                        None,
+                        Some(&mut chrome.hit_test_map),
+                        id,
+                    );
+                }
             }
         }
 
@@ -1020,6 +1270,19 @@ impl FluorApp for PhotonApp {
         if matches!(self.state, AppState::Ready) {
             let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
             let ready_layout = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru);
+
+            // Clear the contacts textbox slot in the shared hit_test_map before re-stamping. Same reason as the launch screen: chrome only wipes the map on its own dirty cycles, but the textbox + overlaid plus-button re-stamp every frame, and the plus only renders when the field is non-empty. Without this, clearing the search field to empty on a chrome-clean frame would leave the plus-button's old hit-rect dispatching pointer + hitmask. The plus lives inside the textbox slot, so clearing that slot covers both.
+            restamp_hit_rect(
+                &mut chrome.hit_test_map,
+                buf_w,
+                buf_h,
+                ready_layout.textbox.x0 as isize,
+                ready_layout.textbox.y0 as isize,
+                ready_layout.textbox.x1 as isize,
+                ready_layout.textbox.y1 as isize,
+                HIT_NONE,
+            );
+
             let (cx, cy, radius) = ready_layout.avatar_center_radius();
             // 0xFFC5C5C5 in fluor's α+darkness format = α 0xFF, darkness 0xC5 each channel = visible RGB(0x3A, 0x3A, 0x3A) ≈ 22% brightness. Standalone constant (no theme.rs entry yet) — promote when Ready chrome gets a proper palette pass.
             const AVATAR_PLACEHOLDER: u32 = 0xFF_C5_C5_C5;
@@ -1059,7 +1322,37 @@ impl FluorApp for PhotonApp {
                 self.avatar_hit_id,
             );
 
-            // Contacts-page textbox + plus button. The plus button is OVERLAID inside the textbox right edge (legacy pattern) and ONLY rendered when the textbox has content — empty textbox shows no button.
+            // Avatar update hint, in the `hint` slot below the avatar. When no avatar is set yet it's a standing prompt (shown on hover; on Android, where there's no hover, shown unconditionally). When an avatar IS set, no constant prompt — the user reveals it by clicking the avatar (`avatar_hint_click`). Text is platform-specific: desktop updates by drag/drop, Android by the system picker.
+            #[cfg(target_os = "android")]
+            let avatar_hint_text = "tap to system image select avatar";
+            #[cfg(not(target_os = "android"))]
+            let avatar_hint_text = "drag/drop to update avatar";
+            let avatar_set = self.device_avatar_pixels.is_some();
+            let show_avatar_hint = if avatar_set {
+                self.avatar_hint_click
+            } else {
+                self.avatar_hovered || cfg!(target_os = "android")
+            };
+            if show_avatar_hint {
+                // Anchored directly below the avatar circle (not the hint slot), at half the hint slot's text size.
+                let size = (ready_layout.hint.y1 - ready_layout.hint.y0) as f32 * 0.3;
+                let hcy = cy + radius + size;
+                ctx.text.draw_text_center_u32(
+                    &mut canvas,
+                    avatar_hint_text,
+                    cx,
+                    hcy,
+                    size,
+                    500,
+                    HINT_TEXT_COLOUR,
+                    "Oxanium",
+                    None,
+                    None,
+                    None,
+                );
+            }
+
+            // Contacts-page textbox + plus button. The plus button is OVERLAID inside the textbox right edge and ONLY renderedwhen the textbox has content — empty textbox shows no button.
             //
             // Under-blend semantics ("topmost paints first; later opaque dst wins"): paint the button FIRST so it's visually topmost, then the textbox under it. Textbox::render_content_into stamps hit_test_map unconditionally over its entire bbox, so after the textbox runs we re-stamp the button's bbox with the button's hit_id to recover correct click dispatch in the overlap.
             let plus_visible = self
@@ -1198,7 +1491,7 @@ impl FluorApp for PhotonApp {
 
 impl PhotonApp {
     /// Send a [`PhotonEvent`] through the event-loop proxy. Returns `false` if the proxy hasn't been set yet (host hasn't called `set_event_proxy`) or if the event loop has closed. Background tasks clone the proxy once at startup and call this; UI-thread code should mutate state directly + return `true` from `tick` or `on_event` instead of going through the proxy.
-    #[allow(dead_code)] // Used by background tasks once Phase 1+ wires them in.
+    #[allow(dead_code)] // Wired for background tasks to push events onto the UI thread; no caller yet.
     pub fn send_event(&self, event: PhotonEvent) -> bool {
         match &self.event_proxy {
             Some(proxy) => proxy.send(event).is_ok(),
@@ -1212,9 +1505,9 @@ impl PhotonApp {
         let buf_h = ctx.viewport.height_px as usize;
         let layout = LaunchLayout::compute(buf_w, buf_h, ctx.viewport.ru);
         let attest = AttestBlockLayout::compute(layout.attest_block);
-        // Font size = textbox-slot height × 0.6. Derived from the pill so the text-to-pill ratio stays constant (= 1/0.72 ≈ 1.39) at any viewport — span/24 sized text via the harmonic-mean span which scales differently from pill_h (pill_h is linear in viewport_h, span is biased toward the narrower dim), so on a tall narrow phone the pill grew faster than the text and a soft-keyboard show/hide jumped the ratio from 1.43 to 1.12. Pill-derived sizing keeps padding around the text proportional, so descenders + ascenders never crowd the squircle edge. Same scalar drives the attest button so they read as a matched pair.
+        // Font size = textbox-slot height × 0.75. Derived from the pill so the text-to-pill ratio stays constant at any viewport — span/24 sized text via the harmonic-mean span which scales differently from pill_h (pill_h is linear in viewport_h, span is biased toward the narrower dim), so on a tall narrow phone the pill grew faster than the text and a soft-keyboard show/hide jumped the ratio. Pill-derived sizing keeps padding around the text proportional, so descenders + ascenders never crowd the squircle edge. Same scalar drives the attest button and the resting ∞ so they read as a matched set.
         let textbox_h = (attest.textbox.y1 as f32) - (attest.textbox.y0 as f32);
-        let font_size = textbox_h * 0.6;
+        let font_size = textbox_h * 0.75;
 
         if let Some(tb) = self.textbox.as_mut() {
             let (cx, cy, w, h) = rect_center_dims(attest.textbox);
@@ -1227,7 +1520,7 @@ impl PhotonApp {
             btn.set_font_size(font_size);
         }
 
-        // Contacts-page widgets: textbox takes the full ReadyLayout textbox slot; the plus button is OVERLAID inside the textbox's right edge (legacy compositing.rs pattern). Button size = 7/8 textbox height, inset from the right by 1/16 of the textbox height — same proportions as the legacy `tl.box_height * 7/8` / `tl.box_height / 16`. Same font_size as the launch widgets so zoom feels consistent across screens.
+        // Contacts-page widgets: textbox takes the full ReadyLayout textbox slot; the plus button is OVERLAID inside the textbox's right edge. Button size = 7/8 textbox height, inset from the right by 1/16 of the textbox height. Same font_size as the launch widgets so zoom feels consistent across screens.
         let ready_layout = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru);
         let slot = ready_layout.textbox;
         let slot_x0 = slot.x0 as f32;
@@ -1280,6 +1573,84 @@ impl PhotonApp {
         }
     }
 
+    /// Clipboard chord handler (desktop only). `op` is the lowercased character — "c" copy, "x" cut, "v" paste — acting on whichever textbox holds focus (launch handle or contacts search). Returns `Handled` when a textbox owned the focus, `Pass` otherwise (so the chord doesn't get eaten on a non-text screen). Copy/cut read `selected_text`; cut only deletes after the OS `set_text` succeeds, so a clipboard failure never silently destroys the selection. Paste inserts the clipboard string at the cursor (replacing any selection via `insert_str`). A launch-textbox edit clears a stale `Error` back to `Fresh`; the cursor blink reset is the caller's job.
+    #[cfg(not(any(target_os = "redox", target_os = "android")))]
+    fn clipboard_chord(&mut self, op: &str, text: &mut fluor::text::TextRenderer) -> EventResponse {
+        // Resolve focus to exactly one editable textbox; bail to Pass if focus is elsewhere (button, avatar, nothing).
+        let on_launch = self
+            .textbox
+            .as_ref()
+            .map(|t| Some(t.hit_id()) == self.focused)
+            .unwrap_or(false);
+        let on_contacts = self
+            .contacts_textbox
+            .as_ref()
+            .map(|t| Some(t.hit_id()) == self.focused)
+            .unwrap_or(false);
+        if !on_launch && !on_contacts {
+            return EventResponse::Pass;
+        }
+        // While attesting the handle field is frozen — no cut/paste mutating the in-flight handle (copy is harmless but we lock the whole field for consistency).
+        if on_launch && matches!(self.state, AppState::Launch(ref s) if !s.can_edit_handle()) {
+            return EventResponse::Handled;
+        }
+        let tb = if on_launch {
+            self.textbox.as_mut()
+        } else {
+            self.contacts_textbox.as_mut()
+        };
+        let Some(tb) = tb else {
+            return EventResponse::Pass;
+        };
+
+        match op {
+            "c" => {
+                if let Some(sel) = tb.selected_text() {
+                    if let Ok(mut clip) = arboard::Clipboard::new() {
+                        let _ = clip.set_text(sel);
+                    }
+                }
+            }
+            "x" => {
+                if let Some(sel) = tb.selected_text() {
+                    // Only delete after the clipboard accepts the text — a failed copy must not destroy the selection.
+                    let copied = arboard::Clipboard::new()
+                        .and_then(|mut clip| clip.set_text(sel))
+                        .is_ok();
+                    if copied {
+                        tb.delete_selection(text);
+                        if on_launch {
+                            self.clear_launch_error();
+                        }
+                    } else {
+                        crate::log("clipboard: copy failed, not cutting");
+                    }
+                }
+            }
+            "v" => {
+                if let Ok(mut clip) = arboard::Clipboard::new() {
+                    if let Ok(s) = clip.get_text() {
+                        if !s.is_empty() {
+                            tb.insert_str(&s, text);
+                            if on_launch {
+                                self.clear_launch_error();
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        EventResponse::Handled
+    }
+
+    /// A launch-handle edit invalidates any prior attestation error — drop `Error` back to `Fresh` so the red message clears and the user can resubmit. No-op off the launch screen or when not in an error state.
+    fn clear_launch_error(&mut self) {
+        if matches!(self.state, AppState::Launch(LaunchState::Error(_))) {
+            self.state = AppState::Launch(LaunchState::Fresh);
+        }
+    }
+
     /// Send the current textbox contents as an attestation query and transition Launch → Attesting. Called from Enter in the textbox path and from clicking the Attest button — same submit path. No-op if the textbox is empty, HandleQuery wasn't constructed (init failure path), or the launch sub-state forbids submission (`LaunchState::Attesting` — query already in flight; second submit would double-spend the ~5s memory-hard proof).
     fn submit_handle(&mut self) {
         if let AppState::Launch(s) = &self.state {
@@ -1302,7 +1673,7 @@ impl PhotonApp {
         }
     }
 
-    /// Handle a [`QueryResult`] arriving from HandleQuery's background worker. Transitions the launch state and stashes the proof on success — Phase 2 (Ready screen) is where the proof gets consumed by contact + storage init. For now success leaves the user on Launch with a "ready to advance" log line; persistence + screen transition land next slice.
+    /// Handle a [`QueryResult`] arriving from HandleQuery's background worker. On success, stashes the proof, loads the device avatar + contacts, and transitions to the Ready screen; on rejection/error, drops to `LaunchState::Error` and refocuses the handle field.
     fn on_query_result(&mut self, result: QueryResult) {
         use num_bigint::BigUint;
         match result {
@@ -1340,11 +1711,24 @@ impl PhotonApp {
                 );
                 eprintln!("attestation rejected: {msg}");
                 self.state = AppState::Launch(LaunchState::Error(msg));
+                self.refocus_handle_select_all();
             }
             QueryResult::Error(e) => {
                 eprintln!("attestation error: {e}");
                 self.state = AppState::Launch(LaunchState::Error(e));
+                self.refocus_handle_select_all();
             }
+        }
+    }
+
+    /// On an attestation error, return the user to an editable handle field with the whole handle selected. The submit path dropped focus into the frozen Attesting state; coming back to `Error` (which `can_edit_handle()` allows) we refocus the textbox and select-all so the most common fix — the handle is claimed, retype a different one — is one keystroke: the first character typed replaces the selection. On Android, `change_focus` into a textbox also re-raises the soft keyboard via the pending-keyboard signal.
+    fn refocus_handle_select_all(&mut self) {
+        let Some(id) = self.textbox.as_ref().map(|t| t.hit_id()) else {
+            return;
+        };
+        self.change_focus(Some(id));
+        if let Some(tb) = self.textbox.as_mut() {
+            tb.select_all();
         }
     }
 
