@@ -1,20 +1,20 @@
-//! Ready-screen layout: slice-based port of the legacy `app::ContactsUnifiedLayout` user-section. The window's content block divides into ~12.5 vertical units stacking gap / avatar / gap / handle / gap / hint / gap / textbox / gap / separator / gap. Below the user section a `rows` region holds the contact list (slice TBD when contact rendering lands).
+//! Ready-screen layout: the content block divides into vertical units stacking gap / avatar / gap / handle / gap / hint / gap / textbox / gap / separator / gap, with a `rows` region below for the (not-yet-built) scrollable contact list.
 //!
-//! Sizing follows the legacy harmonic-mean trick: `unit_height = HM(span/32 · ru, block.h / total_units)`. The span term keeps the avatar reasonable on a tall narrow window; the height term keeps it from blowing out on a wide short window. Harmonic mean is C¹ at the crossover, no kink as the aspect ratio changes.
+//! Sizing uses a harmonic-mean unit height: `unit_height = HM(span/32 · ru, block.h / total_units)`. The span term keeps the avatar reasonable on a tall narrow window; the height term keeps it from blowing out on a wide short window. Harmonic mean is C¹ at the crossover, no kink as the aspect ratio changes.
 //!
-//! Today only the avatar slot is rendered; the other slices are precomputed so the next slices (handle text, drag-and-drop hint, search box, separator, contact rows) drop straight into their named rects.
+//! Avatar, hint (the avatar-update prompt), and search textbox render into their named slots; the handle label is settings-gated (off by default) and the contact rows region awaits the list.
 
 use fluor::canvas::PixelRect;
 
-/// Vertical slices of the Ready user section. Sums to 12.5 units. Matches legacy `V_SLICES` in `app::ContactsUnifiedLayout::new`.
+/// Vertical slices of the Ready user section, in units (summed to derive the unit height).
 const V_SLICES: [f32; 11] = [
-    1.0,  // gap0
-    5.0,  // avatar
+    1.5,  // gap — top margin above the avatar
+    5.,  // avatar
     0.5,  // gap1
-    2.0,  // handle
-    0.0,  // gap2
+    2.,  // handle
+    0.,  // gap2
     1.5,  // hint
-    0.0,  // gap3
+    0.,  // gap3
     1.5,  // textbox (search)
     0.25, // gap4
     0.5,  // separator
@@ -32,7 +32,7 @@ pub struct ReadyLayout {
     pub avatar: PixelRect,
     /// Handle text slot (optional, settings-gated — off by default for security).
     pub handle: PixelRect,
-    /// Hint text slot — used for "drag and drop an image to upload avatar" when no avatar set.
+    /// Hint text slot — the avatar update prompt (drag/drop on desktop, tap-to-pick on Android).
     pub hint: PixelRect,
     /// Search/add textbox slot.
     pub textbox: PixelRect,
@@ -43,7 +43,7 @@ pub struct ReadyLayout {
 }
 
 impl ReadyLayout {
-    /// Compute the layout from viewport dimensions + ru zoom factor. `span` (harmonic mean of width and height) is computed internally — Photon's universal scaling unit. Mirrors `ContactsUnifiedLayout::new` from legacy. Block is the full viewport; chrome composites on top and the 1-unit gap0 at the slice stack's head keeps the avatar visually clear of the title bar.
+    /// Compute the layout from viewport dimensions + ru zoom factor. `span` (harmonic mean of width and height) is computed internally — Photon's universal scaling unit. Block is the full viewport; chrome composites on top and the gap at the slice stack's head keeps the avatar visually clear of the title bar.
     pub fn compute(buf_w: usize, buf_h: usize, ru: f32) -> Self {
         // Horizontal: 1/8 margin | 6/8 content | 1/8 margin (matches launch layout for visual continuity).
         let content_x = buf_w >> 3;
@@ -69,7 +69,7 @@ impl ReadyLayout {
             0.0
         };
 
-        // Cumulative slice y-positions in pixels. Match legacy slice_positions: accumulate float, round once per boundary to keep slices tight.
+        // Cumulative slice y-positions in pixels: accumulate the float total, truncate once per boundary so slices stay tight (no per-slice rounding drift).
         let mut v = [0_usize; 12];
         let mut cum = 0.0_f32;
         for (i, s) in V_SLICES.iter().enumerate() {

@@ -1,6 +1,4 @@
-//! Shared state types — `AppState`, `LaunchState`, network search result types. Lives outside the cfg-gated legacy stack (`app.rs` + `compositing.rs` + friends) because non-ui code (`network/handle_query`, `platform/jni_android`) depends on them.
-//!
-//! `app.rs` (Android-only as of Phase 0) re-exports these for source compatibility; desktop code imports them straight from `ui::state` or via the `crate::ui` re-exports.
+//! Shared state types — `AppState`, `LaunchState`, network search result types. Kept in their own module (not on `PhotonApp`) because non-ui code (`network/handle_query`, `platform/jni_android`) depends on them; import from `ui::state` or the `crate::ui` re-exports.
 
 use crate::types::HandleText;
 
