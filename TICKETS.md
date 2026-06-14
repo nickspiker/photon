@@ -87,30 +87,40 @@ Corresponding fluor commits (in `../fluor`):
 - `50b4ac0` — `background_noise` speckle→shimmer rename + power-of-two AGENT rule.
 - `a4b39a6` — `FluorApp::initial_size` hook.
 
-## What's next — concrete slices
+## Current status (this is well past the Phase-0 notes above)
 
-### Launch screen completion (current focus)
-1. ✅ **Chromatic wave** — done, `chromatic_wave.rs`.
-2. ✅ **Photon wordmark** — done, `photon_logo.rs` (uncommitted, build clean).
-3. ✅ **Unfocused chrome dim** — done, `WindowEvent::Focused` handler in `photon_app.rs`.
-4. **Handle textbox** — drop a `fluor::widgets::Textbox` into the `attest_block` region. ID via `widget::next_id(&mut self.hit_counter)`. Layout: subdivide `LaunchLayout::attest_block` (port `AttestBlockLayout::new` from `app.rs:374-389`: error / gap0 / textbox / gap1 / hint / gap2 / attest). Submit-on-Enter: intercept Enter in `PhotonApp`'s `Container` keyboard dispatch BEFORE delegating to `Textbox::Key`. Wire submit → existing `network/handle_query` code (currently dormant, no caller).
-5. **Attest button** — `fluor::widgets::Button` with label "Attest". Sits in the attest sub-region. on_click → same submission path as Enter. State machine: switch to `LaunchState::Attesting` while computing.
-6. **App-icon orb** — `DefaultChrome::new(..)` accepts an `Option<Icon>` for the app-icon slot. Wire Photon's existing icon asset (`assets/icon-*.png` or wherever it lives — `git grep include_bytes! src/main.rs` to find).
-7. **Tab/Esc focus** — `widget::linear_tab_next` over `Container::visit` order: textbox → button → chrome buttons. Esc clears focus.
-8. **"handle" label + "Attesting…" / error display** — port from legacy `compositing.rs:371-2280` (search for the hint region rendering).
-9. **Attestation wire-up** — Enter / Submit → call into `network/*` to launch the attest flow. Background completion notifies via `PhotonEvent::AttestationComplete` through the proxy → `FluorApp::on_user_event` → transition state to `AppState::Ready`.
+The **Launch/attest screen is complete** and the **Ready/contacts screen is largely built**. The commit-by-commit list above is historical (Phase 0); since then the desktop app has gained, on `photon_app.rs`:
 
-### Subsequent phases (per migration plan)
-- **Phase 2 — Ready**: post-attest contact list. Avatar LRU cache wraps as Photon-side `Avatar` widget. Contact rows = stacked `ContactRow` widgets.
-- **Phase 3 — Searching**: search bar (Textbox) + result list (reuse Avatar). Network search code already exists.
-- **Phase 4 — Conversation**: message list (likely needs a `ScrollContainer<W: Widget>` primitive added to fluor), input bar, send button, typing indicator, delivery status. The plan flags this is where fluor probably grows a scroll-container primitive.
-- **Phase 5 — Cleanup**: theme.rs ports to `fluor::theme::{pack_argb, dark}` format. Delete commented-out blocks left from Phase 0. Verify `compositing.rs` truly has no callers outside Android cfg-gate.
+- **Launch/attest**: handle textbox + Attest button (button only appears once a handle is typed; a grey ∞ placeholder sits in the empty field), attesting lockout (textbox + button go inert, no hover/click, during the query), error→refocus+select-all, clipboard (Ctrl/Cmd C/X/V via arboard), Tab/Esc focus, "handle" hint, "Attesting…"/error status, app-icon orb wired as the FGTW connectivity indicator, and the full attestation wire-up (Enter/click → `network/*` → `AppState::Ready`).
+- **Chrome title bar is dynamic**: "← Network" on launch, live "N peers" on Ready (the OS taskbar title stays "Photon").
+- **Version watermark** (bottom, dozenal glyphs from the Oxanium `+glyphs` control-code block, sourced from the **Cargo.toml version** — `v` file retired) and a **zoom-% watermark** (top, only while actively zooming).
+- **Ready/contacts**: avatar (drag/drop to update via the new `DroppedFile` path → `set_avatar_from_file`; tap-to-pick on Android; hover/click update hint), search/add textbox with placeholder, the "+" button, the **rotating-hourglass search-in-flight cue** + result text ("added {h}" / "not found" / "error"), and a **scrollable, filterable contact list** with presence rings.
 
-### Likely fluor-side enhancements surfacing during Phase 2-4
-- `Widget::tick(&mut self) -> bool` for self-animating widgets (if anything beyond bg noise needs per-frame updates).
-- `Textbox::set_submit_action(callback)` if Enter-submit becomes common.
+Corresponding fluor gains: `DroppedFile` event + winit mapping, `Viewport` zoom clamp (12.5–300%, release-gated), `chrome.set_title`, textbox arrow-collapses-to-selection-edge, `fill_rect` 0-dimension hairline convention, `draw_app_icon` thin-hairline ring.
+
+## Open tickets — active
+
+**Contacts / search screen**
+- **Search box too far from the avatar** — the "search | add" textbox should sit much closer to the avatar, UNLESS the user has opted to show their handle below the avatar (then the handle slot reclaims that space). Today the `handle` slot in `ReadyLayout` always reserves its units even when the handle isn't shown; collapse those units when the handle is hidden.
+- **Plus-button press fill is nasty** — clicking the "+" shows a weird fill while held. It should look identical to its idle state until you *release*; on release it flips to the orange + hourglass (search-in-flight). I.e. suppress the Button's pressed-state fill here, and switch to the hourglass on the release edge rather than mid-press.
+- **Not-found should select-all** — when a search returns "not found", auto-select the whole word in the search box (same reflex as the attest-error refocus+select-all) so the user can retype immediately.
+- **Row click → Conversation** — contact rows render + scroll + filter, but clicking one does nothing (no Conversation screen yet). Wire the geometric row hit-test → open conversation once that screen exists.
+- **Row hover highlight** — legacy dimmed/brightened the contact name on hover; not ported.
+- **Textbox glow on search state** — legacy tinted the search pill yellow-during / green-or-red-after; fluor's textbox glow is focus-driven, recolouring per state is a separate change.
+- **Auto-clear search box on successful add** — legacy cleared it; `fluor::widgets::Textbox` has no public `clear` yet (add `Textbox::clear` or a consume-on-submit option).
+
+**Conversation screen (Phase 4 — not started)**
+- Message list (likely needs a `ScrollContainer<W: Widget>` in fluor), input bar, send button, typing indicator, delivery status, message ordering, notifications.
+
+**Cleanup / migration tail**
+- `theme.rs` still in legacy 0xAARRGGBB — port to `fluor::theme::{pack_argb, dark}` (new desktop code currently inlines `dark(fmt(...))`).
+- Retire the legacy `app.rs` / `compositing.rs` (Android-gated) once host-android is fully on `photon_app`; the vestigial `v` file goes with them.
+- **Colourize handles** (spec below) — hook once contact rows want a per-handle accent colour.
+
+### Likely fluor-side enhancements still pending
+- `Textbox::clear` / consume-on-submit.
 - `ScrollContainer<W>` for the conversation message list.
-- Possibly more `background_noise` knobs (the user has been actively tuning shimmer + wave).
+- Android multi-touch (`Touch` event) — gates pinch-zoom and the two-finger zoom-hint.
 
 ## Non-obvious / open questions
 
