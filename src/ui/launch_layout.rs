@@ -4,7 +4,7 @@
 //!   * **`gap0`** (top margin above the spectrum) — `0.75` units in portrait/square, shrinking to `0.25` units in extreme landscape. Tight against the top edge when the window is short.
 //!   * **`gap1`** (vertical positioning of the wordmark relative to the spectrum) — `-2` units in portrait (wordmark floats UP into the bottom of the spectrum bar), `+2` units in extreme landscape (wordmark sits BELOW the spectrum with breathing room). Sign flip is intentional: in a short landscape window there's no room to overlap, the spectrum + text need to stack cleanly.
 //!
-//! Interpolation is `t = (tanh((aspect − 2) · 1.5) + 1) / 2` — a C∞ sigmoid, centred at aspect=2 with slope 1.5. Every derivative is continuous everywhere on ℝ, so the layout has no kinks as you drag the window edge through any aspect ratio. Portrait (aspect≈0.5) gives t≈0.01, square (aspect=1) t≈0.05, 16:9 t≈0.34, 21:9 t≈0.74, ultrawide (aspect≥3) t≈0.99.
+//! Interpolation is `t = (tanh((aspect − 2) · 1.5) + 1) / 2` — a C∞ sigmoid, centred at aspect=2 with slope 1.5. Every derivative is continuous everywhere on ℝ, so the layout has no kinks as you drag the window edge thru any aspect ratio. Portrait (aspect≈0.5) gives t≈0.01, square (aspect=1) t≈0.05, 16:9 t≈0.34, 21:9 t≈0.74, ultrawide (aspect≥3) t≈0.99.
 
 use fluor::canvas::PixelRect;
 
@@ -67,7 +67,7 @@ impl LaunchLayout {
         let content_x = buf_w >> 3;
         let content_w = buf_w - 2 * content_x;
 
-        // Aspect interpolant via tanh — C∞ everywhere, no clamp. Centred at aspect=2 with slope 1.5: portrait (aspect≈0.5) → t≈0.01, ultrawide (aspect≈3) → t≈0.99, square (aspect=1) → t≈0.05. The layout's first derivative w.r.t. aspect stays continuous through every resize step.
+        // Aspect interpolant via tanh — C∞ everywhere, no clamp. Centred at aspect=2 with slope 1.5: portrait (aspect≈0.5) → t≈0.01, ultrawide (aspect≈3) → t≈0.99, square (aspect=1) → t≈0.05. The layout's first derivative w.r.t. aspect stays continuous thru every resize step.
         let aspect = buf_w as f32 / buf_h as f32;
         let t = (((aspect - 2.) * 1.5).tanh() + 1.) * 0.5;
 

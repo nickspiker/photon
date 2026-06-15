@@ -14,7 +14,7 @@ impl Handle {
         }
     }
 
-    /// Generate handle proof for DHT lookup. Delegates to [`ihi::handle_to_proof`] — the canonical entry point per ihi's consolidation doc-comment ("every component in the stack should call this rather than rolling its own pre-hash step"). The username is encoded via `VsfType::x` (NFC normalization + Huffman codebook), BLAKE3-hashed, then fed through the memory-hard PoW.
+    /// Generate handle proof for DHT lookup. Delegates to [`ihi::handle_to_proof`] — the canonical entry point per ihi's consolidation doc-comment ("every component in the stack should call this rather than rolling its own pre-hash step"). The username is encoded via `VsfType::x` (NFC normalization + Huffman codebook), BLAKE3-hashed, then fed thru the memory-hard PoW.
     pub fn to_handle_proof(&self) -> [u8; 32] {
         Self::username_to_handle_proof(&self.text)
     }

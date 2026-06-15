@@ -92,7 +92,7 @@ async fn format_http_error(step: &str, response: reqwest::Response) -> String {
     format_http_error_from_bytes(step, status, &body_bytes)
 }
 
-/// Body-from-bytes variant — used by the announce path where the body was already buffered for VSF-error parsing before falling through to the generic formatter.
+/// Body-from-bytes variant — used by the announce path where the body was already buffered for VSF-error parsing before falling thru to the generic formatter.
 fn format_http_error_from_bytes(step: &str, status: reqwest::StatusCode, body: &[u8]) -> String {
     let body_preview = match std::str::from_utf8(body) {
         Ok(s) => s.trim().to_string(),

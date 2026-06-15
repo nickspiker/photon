@@ -364,21 +364,21 @@ impl PTManager {
                 } else {
                     100.0
                 };
-                let throughput_kbps = if duration_ms > 0 {
+                let thruput_kbps = if duration_ms > 0 {
                     (bytes as f64 * 8.0) / (duration_ms as f64) // kbps
                 } else {
                     0.0
                 };
-                let throughput_str = if throughput_kbps >= 1000.0 {
-                    format!("{:.1} Mbps", throughput_kbps / 1000.0)
+                let thruput_str = if thruput_kbps >= 1000.0 {
+                    format!("{:.1} Mbps", thruput_kbps / 1000.0)
                 } else {
-                    format!("{:.0} kbps", throughput_kbps)
+                    format!("{:.0} kbps", thruput_kbps)
                 };
 
                 crate::log(&format!(
                     "PT: → {} OK | {} | {:.1}s | {}B pkt | win {} | RTT {}ms | {:.0}% util ({} retx)",
                     peer_addr,
-                    throughput_str,
+                    thruput_str,
                     duration_ms as f64 / 1000.0,
                     packet_size,
                     max_window,

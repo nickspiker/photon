@@ -3644,7 +3644,7 @@ impl PhotonApp {
                                             "CLUTCH: Re-sending KEM response to {} (peer resent same offer)",
                                             contact.handle
                                         ));
-                                        // Don't continue - fall through to re-send KEM below
+                                        // Don't continue - fall thru to re-send KEM below
                                     } else {
                                         // Same keys but no KEM sent yet - truly duplicate, ignore
                                         crate::log(&format!(
@@ -4057,7 +4057,7 @@ impl PhotonApp {
                                         contact.clutch_their_eggs_proof = None;
                                         // Remove their old provenance (keep ours)
                                         contact.offer_provenances.retain(|p| p != &offer_provenance);
-                                        // Fall through - normal flow will store new offer and trigger keygen
+                                        // Fall thru - normal flow will store new offer and trigger keygen
                                     } else {
                                         crate::log(&format!(
                                             "CLUTCH: Received offer from {} but no keypairs (state={:?}) - triggering keygen",

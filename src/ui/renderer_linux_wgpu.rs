@@ -88,7 +88,7 @@ pub struct Renderer {
     cpu_buffer:        Vec<u32>,
     width:             u32,
     height:            u32,
-    /// Dirty row range — only these rows are uploaded to the GPU texture. Reset to (u32::MAX, 0) after each present (clean = min > max). Uses Cell for interior mutability so mark_rows can be called while the cpu_buffer is borrowed through WgpuBuffer.
+    /// Dirty row range — only these rows are uploaded to the GPU texture. Reset to (u32::MAX, 0) after each present (clean = min > max). Uses Cell for interior mutability so mark_rows can be called while the cpu_buffer is borrowed thru WgpuBuffer.
     dirty_y_min:       Cell<u32>,
     dirty_y_max:       Cell<u32>,
 }

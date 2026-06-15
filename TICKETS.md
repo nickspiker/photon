@@ -6,7 +6,7 @@ Working list for Photon. Top section is the **fluor-migration handoff** (current
 
 # Fluor migration — handoff notes
 
-Photon-desktop is mid-rewrite onto the **fluor v0.0.2** GUI toolkit (`../fluor`, path dep). The legacy 6,018-line `src/ui/app.rs` + 5,817-line `src/ui/compositing.rs` + per-platform renderer trio + supporting modules are **cfg-gated to Android only** as of Phase 0; desktop runs through a brand-new `src/ui/photon_app.rs` that impls `fluor::host::app::FluorApp` and rebuilds each screen as fluor-native paint primitives + widgets. This is **break-and-rebuild on main, no fork, no backwards compatibility** — small team, manually-coordinated update; the in-progress binary is not anyone's daily messenger.
+Photon-desktop is mid-rewrite onto the **fluor v0.0.2** GUI toolkit (`../fluor`, path dep). The legacy 6,018-line `src/ui/app.rs` + 5,817-line `src/ui/compositing.rs` + per-platform renderer trio + supporting modules are **cfg-gated to Android only** as of Phase 0; desktop runs thru a brand-new `src/ui/photon_app.rs` that impls `fluor::host::app::FluorApp` and rebuilds each screen as fluor-native paint primitives + widgets. This is **break-and-rebuild on main, no fork, no backwards compatibility** — small team, manually-coordinated update; the in-progress binary is not anyone's daily messenger.
 
 **Full plan**: `/home/nick/.claude/plans/buzzing-puzzling-yao.md` (read this first). It covers the original strategy, screen-by-screen phasing, and the carveouts (no Android migration, no softbuffer-patch port, no Spirix text yet).
 
@@ -33,7 +33,7 @@ Read [AGENT.md](AGENT.md) (Photon's) and [../fluor/AGENT.md](../fluor/AGENT.md) 
 - [src/ui/launch_layout.rs](src/ui/launch_layout.rs) — proportional-slicing layout calculator (port of `Layout::new`'s Launch arm). 22.75 vertical units; spectrum at top, logo overlapping (gap = -2), attest block below. Add Ready/Searching/Conversation layout structs here.
 - [src/ui/chromatic_wave.rs](src/ui/chromatic_wave.rs) — sine-modulated visible-spectrum colour bar. Port of legacy `draw_spectrum`. α + darkness format; scroll drives phase; `period_scale` parameter (currently held at `1.`).
 - [src/ui/photon_logo.rs](src/ui/photon_logo.rs) — "Photon" wordmark. Three-layer composition (glow + sharp body + highlight rim), Oxanium 800. Port of legacy `draw_logo_text`.
-- [src/ui/lms2006so.rs](src/ui/lms2006so.rs) — Stockman-Sharpe LMS2006SO colour-matching data, lifted from `colour.rs` so desktop can read it without dragging nalgebra in. Re-exported through `colour` for Android compat.
+- [src/ui/lms2006so.rs](src/ui/lms2006so.rs) — Stockman-Sharpe LMS2006SO colour-matching data, lifted from `colour.rs` so desktop can read it without dragging nalgebra in. Re-exported thru `colour` for Android compat.
 - [src/ui/state.rs](src/ui/state.rs) — `AppState` enum (`Launch(LaunchState) | Ready | Searching | Conversation | Connected{..}`), `FoundPeer`, `SearchResult`. Un-gated (network code depends on it).
 - [src/ui/mod.rs](src/ui/mod.rs) — module wiring; everything legacy is cfg-gated to Android, everything new is `#[cfg(not(target_os = "android"))]` or un-gated.
 
@@ -181,7 +181,7 @@ Once Photon-desktop is up enough to install on a Mac, re-verify this is/isn't ne
 
 ## Colourize handles
 
-Generate a deterministic colour per contact handle from a 32-byte hash. Fibonacci-lattice point on unit sphere → ray from cube centre through that point → first intersection with the RGB cube faces → that's the colour. Spreads evenly in colour space regardless of how many contacts there are.
+Generate a deterministic colour per contact handle from a 32-byte hash. Fibonacci-lattice point on unit sphere → ray from cube centre thru that point → first intersection with the RGB cube faces → that's the colour. Spreads evenly in colour space regardless of how many contacts there are.
 
 ```rust
 fn colourize(hash: [u8; 32], num_handles: usize) -> [f32; 3] {
@@ -192,7 +192,7 @@ fn colourize(hash: [u8; 32], num_handles: usize) -> [f32; 3] {
     let (x, y, z) = fibonacci_sphere_point(index, num_handles);
 
     // Sphere is centered at origin, radius 1
-    // Project ray from cube center (0.5, 0.5, 0.5) through sphere point
+    // Project ray from cube center (0.5, 0.5, 0.5) thru sphere point
     // Find intersection with RGB cube [0,1]³
 
     let ray_dir = (x, y, z); // normalized direction

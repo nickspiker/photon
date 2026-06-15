@@ -2,7 +2,7 @@
 //!
 //! Avatar storage is VSF γ=2.0 u8 RGB. The Android ANativeWindow buffer is tagged BT.2020 + γ=2.2 + full-range — we ship γ=2.0 pixels into it because there is no `TRANSFER_GAMMA2_0` constant, and γ=2.2 is the closest named transfer Android offers (see fluor::host::android::surface for the full trade-off note). The result is a slight darkening on Android that we accept; ferros honours γ=2.0 end-to-end.
 //!
-//! The conversion is a single spectral 3×3 matrix multiply in linear: VSF RGB primaries (703/523/462 nm, Illuminant E) → Rec.2020 primaries (630/532/467 nm, D65). The `vsf::colour::VSF_RGB2REC2020` matrix bakes in the E→D65 chromatic adaptation, so the caller does nothing extra; D50 (the ICC profile reference whitepoint) never enters this path because we are not round-tripping through XYZ.
+//! The conversion is a single spectral 3×3 matrix multiply in linear: VSF RGB primaries (703/523/462 nm, Illuminant E) → Rec.2020 primaries (630/532/467 nm, D65). The `vsf::colour::VSF_RGB2REC2020` matrix bakes in the E→D65 chromatic adaptation, so the caller does nothing extra; D50 (the ICC profile reference whitepoint) never enters this path because we are not round-tripping thru XYZ.
 
 use vsf::colour::convert::apply_matrix_3x3_f32;
 use vsf::colour::VSF_RGB2REC2020;

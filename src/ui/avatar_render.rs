@@ -1,6 +1,6 @@
 //! Avatar render — Mitchell resize + textured AA circle into a fluor `Canvas`.
 //!
-//! Inputs are γ=2.0 BT.2020 u8 RGB (already through `colour_convert::vsf_rgb_to_bt2020`); the buffer is α + darkness packed (see `fluor::pixel`). The render path samples each output pixel from the pre-scaled texture, converts it to a darkness-packed pixel via `fluor::theme::dark(fmt(visible))`, and composes through `under()` — matching the convention every other photon rasterizer follows.
+//! Inputs are γ=2.0 BT.2020 u8 RGB (already thru `colour_convert::vsf_rgb_to_bt2020`); the buffer is α + darkness packed (see `fluor::pixel`). The render path samples each output pixel from the pre-scaled texture, converts it to a darkness-packed pixel via `fluor::theme::dark(fmt(visible))`, and composes thru `under()` — matching the convention every other photon rasterizer follows.
 
 use fluor::canvas::Canvas;
 use fluor::coord::Coord;
