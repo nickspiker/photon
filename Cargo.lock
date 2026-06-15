@@ -1174,15 +1174,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "custodes"
-version = "0.0.0"
-dependencies = [
- "blake3",
- "libc",
- "vsf 0.8.0",
-]
-
-[[package]]
 name = "data-encoding"
 version = "2.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2616,6 +2607,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "manifestus"
+version = "0.0.0"
+dependencies = [
+ "blake3",
+ "libc",
+ "vsf 0.8.0",
+]
+
+[[package]]
 name = "maybe-rayon"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3450,7 +3450,6 @@ dependencies = [
  "cosmic-text",
  "criterion",
  "curve25519-dalek",
- "custodes",
  "dirs",
  "ed25519-dalek",
  "env_logger",
@@ -3469,6 +3468,7 @@ dependencies = [
  "k256",
  "libc",
  "log",
+ "manifestus",
  "ndk",
  "ndk-sys",
  "num-bigint",

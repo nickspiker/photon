@@ -1,15 +1,15 @@
-//! Flat opaque storage — custodes Vault backend (spine ring + plow tract + COW HAMT over mirrored files).
+//! Flat opaque storage — manifestus Vault backend (spine ring + plow tract + COW HAMT over mirrored files).
 //!
 //! Two mirror files per (handle, device), named via passless-key v0 so one directory holds many users' vaults under opaque 43-char names: ring 0 at the XDG config path, ring 1 at the XDG data path. Geometry lives in the vault's own spine entries — the filesystem is a witness, never the authority.
 //!
 //! Crash model: power loss at ANY byte boundary is normal operation. Every block self-validates; the committed generation defines exactly which writes exist; the rollback fence keeps the last 4 generations fully restorable. Open replicates divergent mirrors block-level (verified, never a file copy) before composing them.
 //!
-//! Public API (`new`, `read`, `write`, `delete`, `degraded`) unchanged through three backends now — callers in `contacts.rs`, `friendship.rs`, etc. have never known.
+//! Public API (`new`, `read`, `write`, `delete`, `degraded`) unchanged thru three backends now — callers in `contacts.rs`, `friendship.rs`, etc. have never known.
 
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use custodes::{verified_replicate, FileDev, Mirror, Vault, HOST_RING_LOG2};
+use manifestus::{verified_replicate, FileDev, Mirror, Vault, HOST_RING_LOG2};
 
 use crate::storage::{decrypt_bytes, encrypt_bytes};
 
@@ -29,7 +29,7 @@ pub enum StorageError {
     Io(std::io::Error),
     Crypto(String),
     Parse(String),
-    /// Vault-layer error from the custodes backend.
+    /// Vault-layer error from the manifestus backend.
     Vault(String),
 }
 
@@ -45,8 +45,8 @@ impl From<String> for StorageError {
     }
 }
 
-impl From<custodes::Error> for StorageError {
-    fn from(e: custodes::Error) -> Self {
+impl From<manifestus::Error> for StorageError {
+    fn from(e: manifestus::Error) -> Self {
         StorageError::Vault(e.to_string())
     }
 }
@@ -64,12 +64,12 @@ impl std::fmt::Display for StorageError {
 
 // ============================================================================ FlatStorage ================================================================
 
-/// All Photon disk I/O goes through this struct. Initialized once at auth with the handle + device_secret; the dual-ring vault is opened (or formatted) during construction. Callers only see logical keys; vault internals + per-key encryption are managed below.
+/// All Photon disk I/O goes thru this struct. Initialized once at auth with the handle + device_secret; the dual-ring vault is opened (or formatted) during construction. Callers only see logical keys; vault internals + per-key encryption are managed below.
 pub struct FlatStorage {
     /// Frozen v0 handle_seed (`passless_key::handle_seed(handle)`). Used as the per-key encryption derivation root. Decoupled from `ihi::handle_to_hash` so future ihi changes (NFC fixes, Huffman tweaks) don't orphan local vaults.
     handle_seed: [u8; 32],
     device_secret: [u8; 32],
-    /// The custodes engine. Mutex chosen over RefCell so future multi-threaded callers Just Work; cost is negligible in the single-threaded case.
+    /// The manifestus engine. Mutex chosen over RefCell so future multi-threaded callers Just Work; cost is negligible in the single-threaded case.
     vault: Mutex<Vault<FileDev, FileDev>>,
     /// Mirrors diverged at open and were replicated back into agreement — surface to the UI banner alongside live degradation.
     healed_at_open: bool,
@@ -93,7 +93,7 @@ impl FlatStorage {
 
         // Converge divergent mirrors (stale restore, missed writes, fresh second file) BEFORE composing them — block-level, verified, idempotent, never a file copy.
         let healed = verified_replicate(&mut a, &mut b, HOST_RING_LOG2)?;
-        let healed_at_open = healed != custodes::Replicated::default();
+        let healed_at_open = healed != manifestus::Replicated::default();
         if healed_at_open {
             crate::log(&format!(
                 "STORAGE: mirrors diverged at open — replicated {} spine + {} tract blocks",
@@ -173,12 +173,12 @@ impl FlatStorage {
     }
 }
 
-/// Map a logical key string to the fixed 32-byte entry address custodes wants. Pure function of the key — the vault file is already per-(handle, device, app) so no identity material needs mixing here.
+/// Map a logical key string to the fixed 32-byte entry address manifestus wants. Pure function of the key — the vault file is already per-(handle, device, app) so no identity material needs mixing here.
 fn derive_entry_key(key: &str) -> [u8; 32] {
     blake3::derive_key("photon.storage.entry.v0", key.as_bytes())
 }
 
-/// Caller-clock timestamp for record metadata (`created_at`). Unix seconds — custodes never interprets it; it exists for GC policy and debugging.
+/// Caller-clock timestamp for record metadata (`created_at`). Unix seconds — manifestus never interprets it; it exists for GC policy and debugging.
 fn unix_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

@@ -1067,20 +1067,20 @@ async fn run_checker(
                                         } else {
                                             100.0
                                         };
-                                        let throughput_kbps = if duration_ms > 0 {
+                                        let thruput_kbps = if duration_ms > 0 {
                                             (bytes as f64 * 8.0) / (duration_ms as f64)
                                         } else {
                                             0.0
                                         };
-                                        let throughput_str = if throughput_kbps >= 1000.0 {
-                                            format!("{:.1} Mbps", throughput_kbps / 1000.0)
+                                        let thruput_str = if thruput_kbps >= 1000.0 {
+                                            format!("{:.1} Mbps", thruput_kbps / 1000.0)
                                         } else {
-                                            format!("{:.0} kbps", throughput_kbps)
+                                            format!("{:.0} kbps", thruput_kbps)
                                         };
                                         crate::log(&format!(
                                             "PT: ← {} OK | {} | {:.1}s | {} pkts | {:.0}% util ({} dups)",
                                             src_addr,
-                                            throughput_str,
+                                            thruput_str,
                                             duration_ms as f64 / 1000.0,
                                             packets,
                                             utilization,
@@ -1621,7 +1621,7 @@ async fn run_checker(
 
         // NOTE: "Process CLUTCH requests" block REMOVED Full 8-primitive CLUTCH uses ClutchOfferRequest and ClutchKemResponseRequest which are processed below using TCP/PT transport.
 
-        // Process message requests (encrypted chat messages - CHAIN format) Routed through PT for unified transport (UDP → TCP after 1s → relay fallback)
+        // Process message requests (encrypted chat messages - CHAIN format) Routed thru PT for unified transport (UDP → TCP after 1s → relay fallback)
         while let Ok(request) = message_rx.try_recv() {
             // Use the eagle_time from encryption - nonce is derived from this so we MUST use the same timestamp the sender encrypted with
             let timestamp = request.eagle_time;
@@ -1650,7 +1650,7 @@ async fn run_checker(
 
             let msg_bytes = msg.to_vsf_bytes();
             if !msg_bytes.is_empty() {
-                // Route through PT - handles UDP, TCP after 1s, relay fallback
+                // Route thru PT - handles UDP, TCP after 1s, relay fallback
                 let pt_bytes = {
                     let mut pt_mgr = pt.lock().unwrap();
                     pt_mgr.send_with_pubkey(
@@ -1664,7 +1664,7 @@ async fn run_checker(
             }
         }
 
-        // Process ACK requests (message acknowledgments - CHAIN format) Routed through PT for unified transport (UDP → TCP after 1s → relay fallback)
+        // Process ACK requests (message acknowledgments - CHAIN format) Routed thru PT for unified transport (UDP → TCP after 1s → relay fallback)
         while let Ok(request) = ack_rx.try_recv() {
             let timestamp = eagle_time_now();
 
@@ -1694,7 +1694,7 @@ async fn run_checker(
 
             let msg_bytes = msg.to_vsf_bytes();
             if !msg_bytes.is_empty() {
-                // Route through PT - handles UDP, TCP after 1s, relay fallback
+                // Route thru PT - handles UDP, TCP after 1s, relay fallback
                 let pt_bytes = {
                     let mut pt_mgr = pt.lock().unwrap();
                     pt_mgr.send_with_pubkey(

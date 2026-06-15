@@ -131,7 +131,7 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeResize(
     ctx.shell.resize(width as u32, height as u32);
 }
 
-/// Returns: 1=show keyboard, -1=hide keyboard, 0=no change. AndroidShell::on_touch reads PhotonApp::wants_keyboard after dispatching the touch through the widget tree; the JNI shim just forwards the int.
+/// Returns: 1=show keyboard, -1=hide keyboard, 0=no change. AndroidShell::on_touch reads PhotonApp::wants_keyboard after dispatching the touch thru the widget tree; the JNI shim just forwards the int.
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeOnTouch(
@@ -260,7 +260,7 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeOnScale(
 }
 
 
-/// Avatar from image picker. NOT in AndroidShell — photon-specific (decodes via the existing avatar pipeline). Funnels raw file bytes (JPEG/PNG/WebP — Android side intentionally does NOT decode through `BitmapFactory` because that destroys ICC profile data) through `PhotonApp::set_avatar_from_file`, which encodes to VSF, saves to the encrypted handle-keyed store, reloads, colour-converts to BT.2020 γ=2.0 for the surface buffer, and (when a handle_proof is available) uploads to FGTW.
+/// Avatar from image picker. NOT in AndroidShell — photon-specific (decodes via the existing avatar pipeline). Funnels raw file bytes (JPEG/PNG/WebP — Android side intentionally does NOT decode thru `BitmapFactory` because that destroys ICC profile data) thru `PhotonApp::set_avatar_from_file`, which encodes to VSF, saves to the encrypted handle-keyed store, reloads, colour-converts to BT.2020 γ=2.0 for the surface buffer, and (when a handle_proof is available) uploads to FGTW.
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeSetAvatarFromFile(
