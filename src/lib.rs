@@ -149,6 +149,9 @@ pub extern "system" fn JNI_OnLoad(vm: jni::JavaVM, _: *mut std::os::raw::c_void)
         }
     }));
 
+    // Hand tohu the JavaVM so its device oracle can read Settings.Secure.ANDROID_ID itself (via ActivityThread.currentApplication()). Done here because JNI_OnLoad is where the vm is handed to us; the actual fetch happens later, once the Application exists.
+    tohu::device::android_init(vm);
+
     log::info!("Photon JNI loaded (PID: {})", std::process::id());
     jni::sys::JNI_VERSION_1_6
 }

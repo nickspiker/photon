@@ -3402,15 +3402,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "passless-key"
-version = "0.0.0"
-dependencies = [
- "base64",
- "blake3",
- "unicode-normalization",
-]
-
-[[package]]
 name = "paste"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3474,7 +3465,6 @@ dependencies = [
  "num-bigint",
  "p256",
  "p384",
- "passless-key",
  "pollster",
  "pqc_dilithium",
  "pqcrypto-hqc",
@@ -3496,6 +3486,7 @@ dependencies = [
  "subtle",
  "thiserror 2.0.18",
  "thread-priority",
+ "tohu",
  "tokio",
  "tokio-tungstenite",
  "voca",
@@ -5116,6 +5107,16 @@ name = "to_method"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c7c4ceeeca15c8384bbc3e011dbd8fccb7f068a440b752b7d9b32ceb0ca0e2e8"
+
+[[package]]
+name = "tohu"
+version = "0.0.0"
+dependencies = [
+ "base64",
+ "blake3",
+ "jni",
+ "unicode-normalization",
+]
 
 [[package]]
 name = "tokio"
