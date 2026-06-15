@@ -373,7 +373,23 @@ impl NetworkContext {
         // Hand the storage layer both ring dirs so the dual-ring vault can place primary on internal and shadow on external — see [storage::flat::set_android_vault_dirs].
         crate::storage::flat::set_android_vault_dirs(data_dir.to_string(), shadow_dir.to_string());
 
-        let keypair = derive_device_keypair(fingerprint);
+        // tohu reads Settings.Secure.ANDROID_ID itself (via the JavaVM handed to it in JNI_OnLoad). Fall back to the Java-pushed `fingerprint` if tohu's fetch errors, so a wrong JNI path logs loudly instead of bricking the app. NOTE: switching the oracle to pure ANDROID_ID changes device_secret vs the old Java-pushed value — existing Android vaults must be cleared.
+        let oracle = match tohu::device::machine_fingerprint() {
+            Ok(id) => {
+                info!(
+                    "NetworkContext: device oracle via tohu (ANDROID_ID), {} bytes",
+                    id.len()
+                );
+                id
+            }
+            Err(e) => {
+                error!(
+                    "NetworkContext: tohu device oracle failed ({e}); falling back to Java-pushed fingerprint"
+                );
+                fingerprint.to_vec()
+            }
+        };
+        let keypair = derive_device_keypair(&oracle);
 
         info!(
             "NetworkContext: Device pubkey: {}",
