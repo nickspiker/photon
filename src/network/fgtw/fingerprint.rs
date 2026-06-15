@@ -76,64 +76,8 @@ pub fn derive_device_keypair(fingerprint: &[u8]) -> Keypair {
     Keypair::from_seed(&seed)
 }
 
-/// Get machine fingerprint for deterministic key derivation
-///
-/// Linux: /etc/machine-id (stable across reboots, unique per install) Windows: MachineGuid from registry macOS: IOPlatformUUID (hardware-burned, survives reinstalls) Android: Handled separately via JNI with device fingerprint
-#[cfg(target_os = "linux")]
+/// Machine fingerprint for deterministic key derivation — delegates to tohu's per-platform device oracle so the read logic lives once in the shared crate, not duplicated across every stack app. Desktop only: on Android the keypair is derived from the JNI-fetched oracle (today pushed via `NetworkContext`; `tohu::device` owns the in-Rust fetch once it's device-verified). Source per platform: Linux `/etc/machine-id` · Windows `MachineGuid` · macOS `IOPlatformUUID` · other `/etc/hostid`→`/etc/hostname`.
+#[cfg(not(target_os = "android"))]
 pub fn get_machine_fingerprint() -> io::Result<Vec<u8>> {
-    std::fs::read("/etc/machine-id")
-}
-
-#[cfg(target_os = "windows")]
-pub fn get_machine_fingerprint() -> io::Result<Vec<u8>> {
-    // Read MachineGuid from registry
-    use std::process::Command;
-    let output = Command::new("reg")
-        .args([
-            "query",
-            "HKLM\\SOFTWARE\\Microsoft\\Cryptography",
-            "/v",
-            "MachineGuid",
-        ])
-        .output()?;
-    Ok(output.stdout)
-}
-
-#[cfg(target_os = "macos")]
-pub fn get_machine_fingerprint() -> io::Result<Vec<u8>> {
-    // Extract IOPlatformUUID - hardware-burned, survives OS reinstalls. Must extract ONLY this field; the full ioreg output contains dynamic fields (memory addresses, timestamps) that change between runs.
-    use std::process::Command;
-    let output = Command::new("ioreg")
-        .args(["-rd1", "-c", "IOPlatformExpertDevice"])
-        .output()?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    for line in stdout.lines() {
-        if line.contains("IOPlatformUUID") {
-            // Line format: "IOPlatformUUID" = "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"
-            if let Some(start) = line.rfind('"') {
-                if let Some(end) = line[..start].rfind('"') {
-                    let uuid = &line[end + 1..start];
-                    if uuid.len() > 8 {
-                        return Ok(uuid.as_bytes().to_vec());
-                    }
-                }
-            }
-        }
-    }
-    Err(io::Error::new(io::ErrorKind::NotFound, "IOPlatformUUID not found"))
-}
-
-#[cfg(not(any(
-    target_os = "linux",
-    target_os = "windows",
-    target_os = "macos",
-    target_os = "android"
-)))]
-pub fn get_machine_fingerprint() -> io::Result<Vec<u8>> {
-    // Fallback for other Unix-like systems (FreeBSD, etc.) Try /etc/hostid first, then hostname
-    if let Ok(hostid) = std::fs::read("/etc/hostid") {
-        return Ok(hostid);
-    }
-    let hostname = std::fs::read("/etc/hostname").unwrap_or_else(|_| b"unknown".to_vec());
-    Ok(hostname)
+    tohu::device::machine_fingerprint()
 }

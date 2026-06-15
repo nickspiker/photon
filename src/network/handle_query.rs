@@ -489,7 +489,7 @@ impl HandleQuery {
                         #[cfg(feature = "development")]
                         {
                             use num_bigint::BigUint;
-                            let handle_seed = passless_key::handle_seed(&handle);
+                            let handle_seed = tohu::handle_seed(&handle);
                             crate::log(&format!(
                                 "Development: identity_seed = {}  handle_seed = {}  device_secret = {}",
                                 voca::encode(BigUint::from_bytes_be(&identity_seed)),
