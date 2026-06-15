@@ -1,4 +1,4 @@
-//! [`PhotonApp`]: the [`fluor::host::app::FluorApp`] impl that hosts Photon on desktop. Owns the app state machine (`AppState`), network handles, contact list, and the per-screen widgets (Launch / Ready / Searching / Conversation), drawing the chrome (perimeter, shadow, window buttons, app-icon orb) plus each screen's content, and routing cross-thread wake-ups through `FluorApp::on_user_event` with the [`super::PhotonEvent`] payload.
+//! [`PhotonApp`]: the [`fluor::host::app::FluorApp`] impl that hosts Photon on desktop. Owns the app state machine (`AppState`), network handles, contact list, and the per-screen widgets (Launch / Ready / Searching / Conversation), drawing the chrome (perimeter, shadow, window buttons, app-icon orb) plus each screen's content, and routing cross-thread wake-ups thru `FluorApp::on_user_event` with the [`super::PhotonEvent`] payload.
 
 use super::chromatic_wave::chromatic_wave;
 use super::launch_layout::{AttestBlockLayout, LaunchLayout};
@@ -74,6 +74,37 @@ fn dozenal_glyphs(mut n: u32) -> String {
         n /= 12;
     }
     digits.iter().rev().collect()
+}
+
+/// Number of pips in each posture meter (Security / Recovery on the Ready strip): low / medium / high.
+const POSTURE_PIPS: usize = 3;
+/// Filled-pip colours by level — warm orange (low) → amber (mid) → green (high); empty pips use [`POSTURE_OFF_COLOUR`]. α+darkness format (opaque), the space the shape rasterizers expect.
+const POSTURE_LOW_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_E0_70_30));
+const POSTURE_MID_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_E0_C0_30));
+const POSTURE_HIGH_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_40_E0_40));
+const POSTURE_OFF_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_40_40_40));
+
+/// Filled-pip colour for a meter showing `filled` of [`POSTURE_PIPS`].
+fn posture_colour(filled: usize) -> u32 {
+    match filled {
+        0 | 1 => POSTURE_LOW_COLOUR,
+        2 => POSTURE_MID_COLOUR,
+        _ => POSTURE_HIGH_COLOUR,
+    }
+}
+
+/// Security and Recovery posture for the current identity — each a count of filled pips out of [`POSTURE_PIPS`]. Two orthogonal axes, surfaced on the Ready-screen bottom strip:
+///   * Security — how hard it is for an attacker to steal or forge this identity. Bounded by the device root. Today every platform derives `device_secret` from a *readable* fingerprint (Linux machine-id, Windows MachineGuid, macOS IOPlatformUUID), so same-privilege code can lift it: 1 pip everywhere. A root-gated firmware fact would be 2; a hardware enclave or PIPE, 3.
+///   * Recovery — how hard it is for the *owner* to lose this identity for good. For a single device it is whether the root survives a factory reset: macOS's IOPlatformUUID is firmware and re-derives after a wipe (2); Linux machine-id, Windows MachineGuid and Android's ANDROID_ID are software / reset-volatile (1). Device redundancy (Mirrored), a durable anchor (desktop/PIPE) and social vouching raise this toward 3.
+///
+/// This is the single seam multi-device, vouching and PIPE plug into: they change what this returns and nothing else.
+fn identity_posture() -> (usize, usize) {
+    let security = 1; // readable root on every platform today
+    #[cfg(target_os = "macos")]
+    let recovery = 2; // IOPlatformUUID is firmware — survives a factory reset
+    #[cfg(not(target_os = "macos"))]
+    let recovery = 1; // software / reset-volatile root, single device
+    (security, recovery)
 }
 
 /// Signed distance from `(px,py)` to the capsule of radius `r` around segment `a→b`. Negative inside. The projection parameter `h` is clamped to `[0,1]` because that IS the capsule SDF — the closest point on a finite segment — not a defensive bound.
@@ -209,7 +240,7 @@ pub struct PhotonApp {
     attest_btn: Option<Button>,
     /// Currently-focused widget id, or `None` when nothing's focused (Esc, background click, first launch). Source of truth for keyboard delivery — widgets' internal `focused` flags are derived state set by `widget::apply_focus_change` after this updates.
     focused: Option<HitId>,
-    /// Blinkey timer for the focused textbox cursor. `tick()` polls it and writes `textbox.blinkey_visible` accordingly; resets on every keystroke so the cursor stays solid through typing instead of strobing.
+    /// Blinkey timer for the focused textbox cursor. `tick()` polls it and writes `textbox.blinkey_visible` accordingly; resets on every keystroke so the cursor stays solid thru typing instead of strobing.
     blink_timer: BlinkTimer,
     /// `true` while a left-mouse-button drag is extending the textbox selection (set on left-press over a focused textbox, cleared on left-release). `CursorMoved` consults this to decide whether to grow the selection toward the cursor — otherwise hover updates are the only thing CursorMoved touches.
     is_dragging_select: bool,
@@ -227,7 +258,7 @@ pub struct PhotonApp {
     show_hitmask: bool,
     /// 256-entry colour table indexed by `hit_test_map` byte. Regenerated each time `[]h` toggles on so distinct IDs get visibly distinct colours. Empty until the chord first arms; cleared back to empty has no effect (the overlay skips when empty).
     debug_hit_colours: Vec<u32>,
-    /// "Were both brackets held last frame?" — read in `damage_rect` so the frame following a release still includes the chord-hint bbox (one extra paint to clear stale hint pixels), and the toggle is debounced through a full frame.
+    /// "Were both brackets held last frame?" — read in `damage_rect` so the frame following a release still includes the chord-hint bbox (one extra paint to clear stale hint pixels), and the toggle is debounced thru a full frame.
     last_chord_held: bool,
     /// Attested handle, set on `QueryResult::Success`. Used by the Ready screen for the optional handle label below the avatar (gated by user settings — defaults off for security). `None` while the user is still on Launch.
     attested_handle: Option<String>,
@@ -320,7 +351,7 @@ impl PhotonApp {
         }
     }
 
-    /// Inject the device keypair before `init` runs. Used by the Android JNI shim to pass through the keypair that `PhotonConnectionService` derives from the OS-provided device fingerprint — that fingerprint lives in Java (`Build.FINGERPRINT` / `Settings.Secure.ANDROID_ID`) and reaches the native side via `NetworkContext`. On desktop this stays unset; `init` falls back to `get_machine_fingerprint` (which reads `/etc/machine-id` etc.) and derives the keypair internally.
+    /// Inject the device keypair before `init` runs. Used by the Android JNI shim to pass thru the keypair that `PhotonConnectionService` derives from the OS-provided device fingerprint — that fingerprint lives in Java (`Build.FINGERPRINT` / `Settings.Secure.ANDROID_ID`) and reaches the native side via `NetworkContext`. On desktop this stays unset; `init` falls back to `get_machine_fingerprint` (which reads `/etc/machine-id` etc.) and derives the keypair internally.
     pub fn set_device_keypair(&mut self, keypair: crate::network::fgtw::Keypair) {
         self.device_keypair = Some(keypair);
     }
@@ -514,7 +545,7 @@ impl FluorApp for PhotonApp {
             12.,
             "+",
         ));
-        // Reserve a hit-id for the Ready-screen avatar circle. Not a Widget — the avatar is just a paint primitive — so click dispatch is handled directly in `on_event`'s MouseInput::Pressed arm, not through `widget::dispatch_click`. Incrementing the shared counter keeps the contiguous-id contract intact for the `[]h` debug overlay.
+        // Reserve a hit-id for the Ready-screen avatar circle. Not a Widget — the avatar is just a paint primitive — so click dispatch is handled directly in `on_event`'s MouseInput::Pressed arm, not thru `widget::dispatch_click`. Incrementing the shared counter keeps the contiguous-id contract intact for the `[]h` debug overlay.
         self.hit_counter = self.hit_counter.wrapping_add(1);
         self.avatar_hit_id = self.hit_counter;
         self.update_widget_layout(ctx);
@@ -538,7 +569,7 @@ impl FluorApp for PhotonApp {
                 {
                     panic!(
                         "PhotonApp::set_device_keypair must be called before init on Android — \
-                         the JNI shim wires through the keypair derived from the OS fingerprint \
+                         the JNI shim wires thru the keypair derived from the OS fingerprint \
                          in PhotonConnectionService; a missing keypair here means the wiring was \
                          skipped and would produce a zeroed/insecure key derivation"
                     );
@@ -861,7 +892,7 @@ impl FluorApp for PhotonApp {
                     return EventResponse::Pass;
                 }
 
-                // Clipboard chords (Ctrl/Cmd + C / X / V) are intercepted HERE, before delivery to the focused widget — fluor's design keeps the OS clipboard (arboard) with the app, not on Textbox (the clipboard is a single global resource; threading it through every widget would be premature). Ctrl+A stays on the widget (pure selection, no OS resource). Desktop only: Android paste arrives through the IME commit path, and Redox has no arboard backend.
+                // Clipboard chords (Ctrl/Cmd + C / X / V) are intercepted HERE, before delivery to the focused widget — fluor's design keeps the OS clipboard (arboard) with the app, not on Textbox (the clipboard is a single global resource; threading it thru every widget would be premature). Ctrl+A stays on the widget (pure selection, no OS resource). Desktop only: Android paste arrives thru the IME commit path, and Redox has no arboard backend.
                 #[cfg(not(any(target_os = "redox", target_os = "android")))]
                 if ctx.modifiers.control_key() || ctx.modifiers.super_key() {
                     if let Key::Character(c) = &kev.logical_key {
@@ -878,7 +909,7 @@ impl FluorApp for PhotonApp {
                 }
 
                 match &kev.logical_key {
-                    // Tab cycles focus through the widget tree in registration order (launch widgets first, then chrome). Intercepted BEFORE delivery so textbox can't swallow it as "\t" insertion.
+                    // Tab cycles focus thru the widget tree in registration order (launch widgets first, then chrome). Intercepted BEFORE delivery so textbox can't swallow it as "\t" insertion.
                     Key::Named(NamedKey::Tab) => {
                         let dir = if ctx.modifiers.shift_key() {
                             TabDir::Backward
@@ -955,7 +986,7 @@ impl FluorApp for PhotonApp {
                                 widget::dispatch_key(self, focus_id, kev, ctx.modifiers, ctx.text);
                             if matches!(resp, EventResponse::Handled) {
                                 ctx.window.request_redraw();
-                                // Reset blink so the cursor stays solid through fast typing instead of blinking mid-keystroke.
+                                // Reset blink so the cursor stays solid thru fast typing instead of blinking mid-keystroke.
                                 self.blink_timer.start(Instant::now());
                             }
                             return resp;
@@ -989,7 +1020,7 @@ impl FluorApp for PhotonApp {
                 EventResponse::Pass
             }
             Event::DroppedFile(path) => {
-                // Desktop avatar update: a file dropped on the window (Ready screen) is read and run through the same encode→save→load→install→upload pipeline as the Android picker. Ignored off the Ready screen and when no handle is attested yet (set_avatar_from_file no-ops without a handle). Android has no drop path — it uses the picker.
+                // Desktop avatar update: a file dropped on the window (Ready screen) is read and run thru the same encode→save→load→install→upload pipeline as the Android picker. Ignored off the Ready screen and when no handle is attested yet (set_avatar_from_file no-ops without a handle). Android has no drop path — it uses the picker.
                 if matches!(self.state, AppState::Ready) {
                     match std::fs::read(path) {
                         Ok(bytes) => {
@@ -1117,7 +1148,7 @@ impl FluorApp for PhotonApp {
     }
 
     fn render(&mut self, target: &mut [u32], ctx: &mut Context) {
-        // Compute chord-held state BEFORE taking the mutable `chrome` borrow — `brackets_held` reads `&self` and the chrome borrow lives through the entire render. Update `last_chord_held` here too so the next frame's `damage_rect` knows whether to include the hint bbox for the one-frame clear.
+        // Compute chord-held state BEFORE taking the mutable `chrome` borrow — `brackets_held` reads `&self` and the chrome borrow lives thru the entire render. Update `last_chord_held` here too so the next frame's `damage_rect` knows whether to include the hint bbox for the one-frame clear.
         let held_now = self.brackets_held(Instant::now());
         self.last_chord_held = held_now;
         let show_hitmask = self.show_hitmask;
@@ -1158,7 +1189,7 @@ impl FluorApp for PhotonApp {
         let bg_scroll = self.bg_scroll;
         let shimmer = bg_scroll as usize;
         let scroll_offset = 0; // Launch only for now.
-        // Launch layout: faithful proportional slicing port from legacy `Layout::new` — spectrum near the top, logo wordmark overlapping its bottom, attest block (textbox + hint + button) below. Compute every frame; cheap and lets resize flow through without a separate cache.
+        // Launch layout: faithful proportional slicing port from legacy `Layout::new` — spectrum near the top, logo wordmark overlapping its bottom, attest block (textbox + hint + button) below. Compute every frame; cheap and lets resize flow thru without a separate cache.
         let layout = LaunchLayout::compute(buf_w, buf_h, ctx.viewport.ru);
         // Chromatic wave phase has two summands:
         //   * Scroll-driven base (`bg_scroll * 1/128 rad/scroll-unit`) — one wheel-notch ≈ 8 units → ~1/16 rad shift; user-tunable by changing the shift exponent.
@@ -1168,11 +1199,12 @@ impl FluorApp for PhotonApp {
         let period_scale = 1.;
         let spectrum_rect = layout.spectrum;
         let logo_rect = layout.photon_text;
-        // Faint dozenal version watermark, bottom-centred on every screen. Size = half the "handle" hint text (hint slot height × 0.7, halved); rendered at weight 400 so it resolves to the Oxanium `+glyphs` face carrying the dozenal control-block glyphs, in near-transparent white (VERSION_COLOUR) so it sits in the background like a watermark rather than competing with the foreground.
+        // Faint dozenal version watermark, bottom-left on every screen it shows. Size = half the "handle" hint text (hint slot height × 0.7, halved); rendered at weight 400 so it resolves to the Oxanium `+glyphs` face carrying the dozenal control-block glyphs, in near-transparent white (VERSION_COLOUR) so it sits in the background like a watermark rather than competing with the foreground.
         let attest_for_version = AttestBlockLayout::compute(layout.attest_block);
         let version_size = (attest_for_version.hint.y1 - attest_for_version.hint.y0) as f32 * 0.7 * 0.5;
         let version_glyphs = dozenal_glyphs(deploy_version());
-        let version_cx = buf_w as f32 * 0.5;
+        // Bottom-LEFT watermark; the Security/Recovery posture meters sit bottom-right on the Ready strip. Left edge one font-size in from the screen edge, mirroring the posture group's right margin.
+        let version_x = version_size;
         let version_cy = buf_h as f32 - version_size;
         // Zoom watermark, top-centre: current `ru` zoom factor as a decimal percentage ("100%", "103%"), twice the version size, at 1/4 opacity. Mirrors the version's bottom-centre placement (one font-size in from the edge). Integer percent — the ~3%/step zoom granularity makes decimals noise.
         let zoom_size = version_size * 2.0;
@@ -1191,18 +1223,15 @@ impl FluorApp for PhotonApp {
         } else {
             None
         };
-        // `fullscreen` controls the 1-pixel inset around the noise: on desktop we leave a 1-px ring for the window perimeter / shadow band so the noise doesn't draw under the chrome's edge stroke; on Android (fullscreen surface, no chrome edges, no shadow) we paint right to the screen edge or you get a 1-px white frame.
-        #[cfg(target_os = "android")]
-        let bg_fullscreen = true;
-        #[cfg(not(target_os = "android"))]
-        let bg_fullscreen = false;
+        // The 1-px noise inset exists ONLY to clear the window perimeter hairline / shadow band — so gate it on whether that perimeter is actually drawn, which is exactly `!chrome.full_edge`. A windowed desktop draws the perimeter → inset. A maximized/fullscreen desktop goes full_edge (no perimeter) and Android forces full_edge too → paint to the screen edge, else a 1-px unpainted border shows. (Earlier this was hardcoded per-OS, so desktop-maximized still inset for a perimeter that wasn't there.) `|| cfg!(android)` keeps the Android always-fullscreen guarantee even on a transient pre-resize frame where full_edge hasn't synced yet.
+        let bg_fullscreen = chrome.full_edge || cfg!(target_os = "android");
         chrome.rasterize_bg(ctx.damage, |canvas| {
-            // Version watermark FIRST — fluor's `under()` is topmost-first, and `background_noise` composes UNDER existing content, so the version must be painted before the noise to survive. At α≈1/32 white the noise blends through ~97%, leaving it as a faint bottom-of-screen watermark. (This is what "before the background gets painted" meant — paint last and the opaque noise buries it.)
+            // Version watermark FIRST — fluor's `under()` is topmost-first, and `background_noise` composes UNDER existing content, so the version must be painted before the noise to survive. At α≈1/32 white the noise blends thru ~97%, leaving it as a faint bottom-of-screen watermark. (This is what "before the background gets painted" meant — paint last and the opaque noise buries it.)
             if show_version {
-                text.draw_text_center_u32(
+                text.draw_text_left_u32(
                     canvas,
                     &version_glyphs,
-                    version_cx,
+                    version_x,
                     version_cy,
                     version_size,
                     400,
@@ -1690,6 +1719,45 @@ impl FluorApp for PhotonApp {
                     None,
                 );
             }
+
+            // Security & Recovery posture meters, bottom-right of the Ready strip (the dozenal version sits bottom-left). Two orthogonal axes — see `identity_posture`. Drawn into `target` at full opacity (unlike the watermark version) so they read as a real, glanceable status affordance, aligned to the version's baseline band. Read-only for now; the tap-to-device-sheet lands with the first modal primitive.
+            {
+                let (sec, rec) = identity_posture();
+                let label_size = version_size;
+                let pip_r = version_size * 0.30;
+                let pip_pitch = pip_r * 2.6;
+                let pips_span = pip_pitch * (POSTURE_PIPS as f32 - 1.0) + pip_r * 2.0;
+                let lp_gap = version_size * 0.5; // label → first pip
+                let group_gap = version_size * 1.2; // Sec group → Rec group
+                let w_sec = ctx.text.measure_text_width("Sec", label_size, 500, "Oxanium");
+                let w_rec = ctx.text.measure_text_width("Rec", label_size, 500, "Oxanium");
+                let total = w_sec + lp_gap + pips_span + group_gap + w_rec + lp_gap + pips_span;
+                let mut x = buf_w as f32 - version_size - total; // right margin mirrors the version's left margin
+                let strip_cy = version_cy;
+                for (label, w_label, filled) in [("Sec", w_sec, sec), ("Rec", w_rec, rec)] {
+                    ctx.text.draw_text_left_u32(
+                        &mut canvas,
+                        label,
+                        x,
+                        strip_cy,
+                        label_size,
+                        500,
+                        HINT_TEXT_COLOUR,
+                        "Oxanium",
+                        None,
+                        None,
+                        None,
+                    );
+                    x += w_label + lp_gap;
+                    let on = posture_colour(filled);
+                    for i in 0..POSTURE_PIPS {
+                        let pcx = x + pip_r + i as f32 * pip_pitch;
+                        let colour = if i < filled { on } else { POSTURE_OFF_COLOUR };
+                        paint::draw_circle(&mut canvas, pcx, strip_cy, pip_r, colour, None);
+                    }
+                    x += pips_span + group_gap;
+                }
+            }
         }
 
         chrome.flatten_into(target, buf_w, buf_h, None);
@@ -1763,7 +1831,7 @@ impl FluorApp for PhotonApp {
 }
 
 impl PhotonApp {
-    /// Send a [`PhotonEvent`] through the event-loop proxy. Returns `false` if the proxy hasn't been set yet (host hasn't called `set_event_proxy`) or if the event loop has closed. Background tasks clone the proxy once at startup and call this; UI-thread code should mutate state directly + return `true` from `tick` or `on_event` instead of going through the proxy.
+    /// Send a [`PhotonEvent`] thru the event-loop proxy. Returns `false` if the proxy hasn't been set yet (host hasn't called `set_event_proxy`) or if the event loop has closed. Background tasks clone the proxy once at startup and call this; UI-thread code should mutate state directly + return `true` from `tick` or `on_event` instead of going thru the proxy.
     #[allow(dead_code)] // Wired for background tasks to push events onto the UI thread; no caller yet.
     pub fn send_event(&self, event: PhotonEvent) -> bool {
         match &self.event_proxy {
@@ -1966,7 +2034,7 @@ impl PhotonApp {
                 // Stash the handle for the Ready screen (the optional label below the avatar). Settings persistence + the actual gate on whether to show it land in a later slice — for now Ready always renders the placeholder without text.
                 self.attested_handle = Some(data.handle.clone());
                 self.vault_degraded = data.vault_degraded;
-                // Pull this device's avatar from local storage and colour-convert to BT.2020 γ=2.0 for the Ready screen render. Storage-miss = `None`; the Ready render falls through to the grey placeholder. Image-picker writes (`nativeSetAvatarFromFile`) go through a separate path that lands in a follow-up slice.
+                // Pull this device's avatar from local storage and colour-convert to BT.2020 γ=2.0 for the Ready screen render. Storage-miss = `None`; the Ready render falls thru to the grey placeholder. Image-picker writes (`nativeSetAvatarFromFile`) go thru a separate path that lands in a follow-up slice.
                 if let Some((_, vsf_rgb)) = crate::ui::avatar::load_avatar(&data.handle) {
                     self.device_avatar_pixels =
                         Some(crate::ui::colour_convert::vsf_rgb_to_bt2020(&vsf_rgb));

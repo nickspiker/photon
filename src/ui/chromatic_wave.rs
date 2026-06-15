@@ -33,7 +33,7 @@ pub fn chromatic_wave(canvas: &mut Canvas, rect: PixelRect, phase: f32, period_s
     const LAMBDA_START: usize = 350 - START_NM;
     const LAMBDA_END: usize = 750 - START_NM;
 
-    // α + darkness: stored RGB = visible RGB XOR 0x00FFFFFF; alpha is the top byte and is preserved through the blend.
+    // α + darkness: stored RGB = visible RGB XOR 0x00FFFFFF; alpha is the top byte and is preserved thru the blend.
     const VISIBLE_FLIP: u32 = 0x00FFFFFF;
     const RGB_MASK: u32 = 0x00FFFFFF;
     const ALPHA_MASK: u32 = 0xFF000000;
