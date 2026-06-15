@@ -112,7 +112,7 @@ Both parties maintain identical chain states. Deterministic:
 
 ### 2.3 Why Full 512 Links for All Chains?
 
-Each participant stores full 512 links for ALL chains (their own + others'), even though:
+Each participant stores full 512 links for ALL chains (their own + others'), even tho:
 - Your own chain: only need active portion (256 links) for sending
 - Their chains: need history for decrypting retries
 

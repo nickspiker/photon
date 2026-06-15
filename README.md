@@ -226,7 +226,7 @@ impl Chain {
     /// Advance chain after ACK: rotate all links, derive new link[0]
     pub fn advance(&mut self, plaintext_hash: &[u8; 32]) {
         let old_top = self.links[0];
-        // Rotate all links down (forces full 8KB through BLAKE3)
+        // Rotate all links down (forces full 8KB thru BLAKE3)
         for i in (1..256).rev() {
             self.links[i] = self.links[i - 1];
         }

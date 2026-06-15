@@ -324,7 +324,7 @@ impl FriendshipChains {
     /// - 20 eggs from 8 algorithms (4 classical + 4 post-quantum)
     /// - Memory-hard 2MB intermediate state
     /// - Three hash algorithms in parallel (smear_hash)
-    /// - No compression: full entropy preserved through derivation
+    /// - No compression: full entropy preserved thru derivation
     pub fn from_clutch(participants: &[[u8; 32]], eggs: &[[u8; 32]]) -> Self {
         use crate::crypto::clutch::{
             avalanche_expand_eggs, derive_chain_from_avalanche, derive_conversation_token,

@@ -50,7 +50,7 @@ pub fn encrypt_bytes(plaintext: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String
     Ok(out)
 }
 
-/// Decrypt a blob produced by [`encrypt_bytes`]. Expects `[nonce: 12B] || [ciphertext + 16B auth tag]`. AEAD failure (wrong key, tampered ciphertext, truncated input) flows through as a stringified error.
+/// Decrypt a blob produced by [`encrypt_bytes`]. Expects `[nonce: 12B] || [ciphertext + 16B auth tag]`. AEAD failure (wrong key, tampered ciphertext, truncated input) flows thru as a stringified error.
 pub fn decrypt_bytes(blob: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {
     if blob.len() < 12 + 16 {
         return Err(format!(
@@ -65,7 +65,7 @@ pub fn decrypt_bytes(blob: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {
         .map_err(|e| e.to_string())
 }
 
-/// Unified disk write: all storage writes go through this function. Every write is read-back-verified before returning success — if the bytes on disk don't match the bytes we asked to write, the call returns an error and the caller treats that as a hard failure. No "best effort" path; silent corruption is forbidden, and the cost of a `fs::read` per write is cheap against the cost of discovering on next launch that a contact's messages didn't actually persist.
+/// Unified disk write: all storage writes go thru this function. Every write is read-back-verified before returning success — if the bytes on disk don't match the bytes we asked to write, the call returns an error and the caller treats that as a hard failure. No "best effort" path; silent corruption is forbidden, and the cost of a `fs::read` per write is cheap against the cost of discovering on next launch that a contact's messages didn't actually persist.
 ///
 /// - Ensures parent directory exists
 /// - Writes to a fresh-random-named sibling first, then atomically renames into place
@@ -135,7 +135,7 @@ pub fn write_file(path: &Path, data: &[u8], label: &str) -> Result<(), std::io::
     }
 }
 
-/// Unified disk read: all storage reads go through this function.
+/// Unified disk read: all storage reads go thru this function.
 ///
 /// Logs a contextual error message on failure and returns the io::Error.
 pub fn read_file(path: &Path, label: &str) -> Result<Vec<u8>, std::io::Error> {

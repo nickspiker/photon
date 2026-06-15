@@ -1,4 +1,4 @@
-//! Stockman-Sharpe 2-deg 2006 LMS cone fundamentals (LMS2006SO), 1-nm steps from 390 to 830 nm (481 wavelengths × 3 channels). Used by the chromatic-wave colour-bar on desktop and (via re-export through [`super::colour`]) by the legacy Android compositing path. Un-gated because desktop needs it; the broader nalgebra-typed colour-conversion matrices stay in [`super::colour`] which is still Android-only.
+//! Stockman-Sharpe 2-deg 2006 LMS cone fundamentals (LMS2006SO), 1-nm steps from 390 to 830 nm (481 wavelengths × 3 channels). Used by the chromatic-wave colour-bar on desktop and (via re-export thru [`super::colour`]) by the legacy Android compositing path. Un-gated because desktop needs it; the broader nalgebra-typed colour-conversion matrices stay in [`super::colour`] which is still Android-only.
 pub static _LMS2006SO_SCALE: f32 = 1.7102058280935600E-02;
 pub static LMS2006SO: [f32; 1443] = [
     // 2006 LMS 2° Standard Observer interleaved [L,M,S,L,M,S,...] starting from 350 and going to 830nm in 1nm steps

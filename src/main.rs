@@ -101,6 +101,6 @@ fn main() {
         }
     }
 
-    // Hand off to fluor's host. PhotonApp::new() is parameterless: the host hands us the event-loop proxy via FluorApp::set_event_proxy and the initial viewport via FluorApp::init, so there's nothing to thread through up-front.
+    // Hand off to fluor's host. PhotonApp::new() is parameterless: the host hands us the event-loop proxy via FluorApp::set_event_proxy and the initial viewport via FluorApp::init, so there's nothing to thread thru up-front.
     fluor::host::app::run_app(PhotonApp::new()).expect("event loop failed");
 }
