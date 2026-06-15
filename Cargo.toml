@@ -95,7 +95,8 @@ vsf = { version = "0.8", features = ["crypto", "inspect", "text-encode"] }
 # Global = algorithm/geometry core only (no windowing backend). The desktop target block below adds `host-winit` so Cargo unions to {std, text, simd, rayon, host-winit} for desktop builds; the Android target stays at the default set so its dep graph excludes softbuffer/arboard/winit. This is the first step of the `host-android` plan — Android stays on the legacy compositor for now, but the fluor algorithm code is shared by both targets going forward.
 fluor = { path = "../fluor", default-features = false, features = ["std", "text", "simd", "rayon"] }
 ihi = "0.0.47"
-passless-key = { path = "../passless-key" }
+# Device identity + frozen v0 key derivation (was passless-key; dir + package renamed → tohu). Owns the per-platform device oracle (machine fingerprint / ANDROID_ID) and the handle→seed→vault derivation.
+tohu = { path = "../tohu" }
 # Storage/vault engine. Renamed custodes → manifestus (package + dir + `manifestus::` paths); the `custodes` name now belongs to the separate K-of-N social-recovery crate at ../custodes.
 manifestus = { path = "../manifestus" }
 voca = "0.0.0"

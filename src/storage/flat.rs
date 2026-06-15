@@ -66,7 +66,7 @@ impl std::fmt::Display for StorageError {
 
 /// All Photon disk I/O goes thru this struct. Initialized once at auth with the handle + device_secret; the dual-ring vault is opened (or formatted) during construction. Callers only see logical keys; vault internals + per-key encryption are managed below.
 pub struct FlatStorage {
-    /// Frozen v0 handle_seed (`passless_key::handle_seed(handle)`). Used as the per-key encryption derivation root. Decoupled from `ihi::handle_to_hash` so future ihi changes (NFC fixes, Huffman tweaks) don't orphan local vaults.
+    /// Frozen v0 handle_seed (`tohu::handle_seed(handle)`). Used as the per-key encryption derivation root. Decoupled from `ihi::handle_to_hash` so future ihi changes (NFC fixes, Huffman tweaks) don't orphan local vaults.
     handle_seed: [u8; 32],
     device_secret: [u8; 32],
     /// The manifestus engine. Mutex chosen over RefCell so future multi-threaded callers Just Work; cost is negligible in the single-threaded case.
@@ -78,8 +78,8 @@ pub struct FlatStorage {
 impl FlatStorage {
     /// Initialize storage. Called once at auth time. Derives the per-handle vault filename and anchor key via `passless-key` v0, opens the dual rings at `{config_dir,data_dir}/Photon/<base64url>.vsf`. Same `(handle, device)` always reproduces the same vault path and key.
     pub fn new(handle: &str, device_secret: [u8; 32]) -> Result<Self, StorageError> {
-        let handle_seed = passless_key::handle_seed(handle);
-        let filename = passless_key::vault_path_name(PASSLESS_APP_ID, &handle_seed, &device_secret);
+        let handle_seed = tohu::handle_seed(handle);
+        let filename = tohu::vault_path_name(PASSLESS_APP_ID, &handle_seed, &device_secret);
         let paths = vault_paths(&filename)?;
 
         for p in &paths {
