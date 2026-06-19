@@ -33,11 +33,6 @@ const CHORD_RELEASE_GRACE: Duration = Duration::from_millis(40);
 /// Error-state message colour for the Launch screen's error slot — visible RGB (255, 80, 80), bright red, fully opaque. `fluor::theme::dark(fmt(visible_argb))` does the same compile-time pack as fluor's theme constants: `fmt` is identity on desktop and an R↔B swap on Android (RGBA_8888 byte order in the ANativeWindow buffer), `dark` flips RGB → darkness and sets α=0xFF.
 const ERROR_TEXT_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_FF_50_50));
 
-/// Hint-label colour for the static "handle" prompt under the textbox — visible RGB (160, 160, 160), soft grey, fully opaque. Quieter than `theme::TEXTBOX_TEXT` (visible 224/224/220) because the hint is contextual, not content — dim enough that the eye reads the textbox first and the hint only on attention.
-const HINT_TEXT_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_A0_A0_A0));
-
-/// Colour for the dormant infinity placeholder in the empty handle field — visible RGB(80, 80, 80), half the brightness of [`HINT_TEXT_COLOUR`]'s 160. Dim enough to read as "nothing here yet" rather than content.
-const INFINITY_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_50_50_50));
 
 /// Colour for the dozenal version glyphs at the bottom of the screen: pure white (darkness 0 across all channels), α = 32 = 1/8 opacity. Stored directly in fluor's α+darkness format — `draw_text_center_u32` multiplies the glyph coverage into this α, so the version reads as a faint watermark over the background noise.
 const VERSION_COLOUR: u32 = 0x20_00_00_00;
@@ -47,8 +42,8 @@ const ZOOM_COLOUR: u32 = 0x40_00_00_00;
 
 /// Contact name text on the Ready list — near-white. α+darkness (the format fluor's text/shape rasterizers expect; the legacy `theme::CONTACT_NAME` is visible-RGB and not interchangeable here).
 const CONTACT_NAME_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_F0_F0_F0));
-/// Hairline separating the user section from the contact list — dim grey, α+darkness.
-const SEPARATOR_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_50_50_50));
+/// Hairline separating the user section from the contact list — pure white at 1/4 opacity (α=64), the same translucent treatment as the hints + zoom watermark. The 0-height `fill_rect` lays the whole 1px line at this α, so it reads as faint light over the dark background.
+const SEPARATOR_COLOUR: u32 = 0x40_00_00_00;
 /// Contact presence ring around a row avatar: green online, grey offline. α+darkness.
 const RING_ONLINE_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_00_C0_00));
 const RING_OFFLINE_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_50_50_50));
@@ -260,8 +255,8 @@ pub struct PhotonApp {
     debug_hit_colours: Vec<u32>,
     /// "Were both brackets held last frame?" — read in `damage_rect` so the frame following a release still includes the chord-hint bbox (one extra paint to clear stale hint pixels), and the toggle is debounced thru a full frame.
     last_chord_held: bool,
-    /// Attested handle, set on `QueryResult::Success`. Used by the Ready screen for the optional handle label below the avatar (gated by user settings — defaults off for security). `None` while the user is still on Launch.
-    attested_handle: Option<String>,
+    /// The device's session identity (register-shaped roots), set on `QueryResult::Success`. `None` while the user is still on Launch. Replaces the handle string — Photon never holds the plaintext handle past first attest; an optional "show my handle" label would re-prompt rather than store it.
+    session: Option<tohu::SessionIdentity>,
     /// True when the dual-ring vault flagged a damaged ring on open this session. Drives the persistent amber banner on the Ready screen. Sticky for the session.
     vault_degraded: bool,
     /// FGTW connectivity state — flipped by `HandleQuery::try_recv_online`. Drives the top-left chrome orb's colour (red offline / green online). Starts false; the background worker reports the first real status within the first second of launch.
@@ -328,7 +323,7 @@ impl PhotonApp {
             show_hitmask: false,
             debug_hit_colours: Vec::new(),
             last_chord_held: false,
-            attested_handle: None,
+            session: None,
             vault_degraded: false,
             online: false,
             contacts_textbox: None,
@@ -365,10 +360,10 @@ impl PhotonApp {
 
     /// Encode + save + reload an avatar image picked from the OS image picker. Pipeline: raw file bytes → `encode_avatar_from_image` (handles JPEG/PNG/WebP and the ICC-profile colour management — VSF spectral γ=2.0 RGB out) → `save_avatar` (encrypted handle-keyed storage) → `load_avatar` (round-trip check) → `vsf_rgb_to_bt2020` (display conversion for the Android BT.2020 buffer tag) → installed as `device_avatar_pixels` with the scaled cache invalidated. Uploads to FGTW when a `handle_proof` is available so other devices can fetch it. Skipped if the user hasn't attested yet (no handle to derive the storage key from).
     pub fn set_avatar_from_file(&mut self, image_bytes: Vec<u8>) {
-        let handle = match &self.attested_handle {
-            Some(h) => h.clone(),
+        let identity_seed = match &self.session {
+            Some(s) => s.identity_seed,
             None => {
-                crate::log("avatar picker: ignored — no attested handle yet");
+                crate::log("avatar picker: ignored — not attested yet");
                 return;
             }
         };
@@ -383,11 +378,11 @@ impl PhotonApp {
                 return;
             }
         };
-        if let Err(e) = crate::ui::avatar::save_avatar(&av1_data, &handle) {
+        if let Err(e) = crate::ui::avatar::save_avatar_from_seed(&av1_data, &identity_seed) {
             crate::log(&format!("avatar picker: save failed: {e}"));
             return;
         }
-        let Some((_, vsf_rgb)) = crate::ui::avatar::load_avatar(&handle) else {
+        let Some((_, vsf_rgb)) = crate::ui::avatar::load_avatar_from_seed(&identity_seed) else {
             crate::log("avatar picker: post-save load failed");
             return;
         };
@@ -401,7 +396,7 @@ impl PhotonApp {
             .and_then(|hq| hq.get_handle_proof());
         match (self.device_keypair.as_ref(), proof) {
             (Some(kp), Some(hp)) => {
-                match crate::ui::avatar::upload_avatar(&kp.secret, &handle, &hp) {
+                match crate::ui::avatar::upload_avatar_from_seed(&kp.secret, &identity_seed, &hp) {
                     Ok(_) => crate::log("avatar picker: FGTW upload ok"),
                     Err(e) => {
                         crate::log(&format!("avatar picker: FGTW upload failed: {e}"))
@@ -588,6 +583,19 @@ impl FluorApp for PhotonApp {
         let peer_store = Arc::new(Mutex::new(PeerStore::new()));
         hq.set_transport(peer_store);
         self.handle_query = Some(hq);
+
+        // Auto-resume from the remembered session roots. If tohu has this login's roots (persisted on a prior, FGTW-confirmed attest), paint Ready IMMEDIATELY from local state — we already own this identity, so there is no reason to block the first frame on the network. The avatar comes from a local cache file (no vault, no network); contacts + peer presence + cloud-merge arrive a beat later via the background `query_resume` and merge in through `on_query_result`. A rejection (handle claimed by another device) bails back to the attest screen; a transient network error leaves the local session on Ready untouched.
+        // None (first run / post-logout) falls through to the normal typed-attest flow.
+        if let Some(remembered) = tohu::session() {
+            self.session = Some(remembered);
+            self.device_avatar_pixels = crate::ui::avatar::load_avatar_from_seed(&remembered.identity_seed)
+                .map(|(_, vsf_rgb)| crate::ui::colour_convert::vsf_rgb_to_bt2020(&vsf_rgb));
+            self.state = AppState::Ready;
+            if let Some(hq) = self.handle_query.as_ref() {
+                crate::log("UI: resumed to Ready from local session roots (tohu) — FGTW announce + presence run in background");
+                hq.query_resume(remembered);
+            }
+        }
     }
 
     fn on_resize(&mut self, _width: u32, _height: u32, ctx: &mut Context) {
@@ -644,6 +652,21 @@ impl FluorApp for PhotonApp {
                         changed = true;
                     }
                 }
+                // Ready-screen search box + plus button. Their hit IDs only land in the map while the contacts screen renders them, so matching `new_hit` is naturally screen-safe — no state gate needed.
+                if let Some(tb) = self.contacts_textbox.as_mut() {
+                    let want = new_hit == tb.hit_id();
+                    if tb.is_hovered() != want {
+                        tb.set_hovered(want);
+                        changed = true;
+                    }
+                }
+                if let Some(btn) = self.contacts_plus_btn.as_mut() {
+                    let want = new_hit == btn.hit_id();
+                    if btn.is_hovered() != want {
+                        btn.set_hovered(want);
+                        changed = true;
+                    }
+                }
                 // Avatar hover (Ready screen): drives the "drag/drop to update avatar" hint when no avatar is set yet. Detected via the avatar's hit-stamp rather than recomputing the circle.
                 let avatar_hover = self.avatar_hit_id != HIT_NONE && new_hit == self.avatar_hit_id;
                 if self.avatar_hovered != avatar_hover {
@@ -667,6 +690,18 @@ impl FluorApp for PhotonApp {
                     }
                 }
                 if let Some(btn) = self.attest_btn.as_mut() {
+                    if btn.is_hovered() {
+                        btn.set_hovered(false);
+                        changed = true;
+                    }
+                }
+                if let Some(tb) = self.contacts_textbox.as_mut() {
+                    if tb.is_hovered() {
+                        tb.set_hovered(false);
+                        changed = true;
+                    }
+                }
+                if let Some(btn) = self.contacts_plus_btn.as_mut() {
                     if btn.is_hovered() {
                         btn.set_hovered(false);
                         changed = true;
@@ -1333,7 +1368,7 @@ impl FluorApp for PhotonApp {
                     cy,
                     region_h * 0.7,
                     500,
-                    HINT_TEXT_COLOUR,
+                    fluor::theme::HINT_COLOUR,
                     "Oxanium",
                     None,
                     None,
@@ -1368,7 +1403,7 @@ impl FluorApp for PhotonApp {
                         tb.center_y + baseline_nudge,
                         tb.font_size,
                         400, // Same weight the textbox renders its own glyphs at (see textbox `measure_text_widths_per_char` / draw calls).
-                        INFINITY_COLOUR,
+                        fluor::theme::HINT_COLOUR,
                         "Oxanium",
                         None,
                         None,
@@ -1485,7 +1520,7 @@ impl FluorApp for PhotonApp {
                     hcy,
                     size,
                     500,
-                    HINT_TEXT_COLOUR,
+                    fluor::theme::HINT_COLOUR,
                     "Oxanium",
                     None,
                     None,
@@ -1552,7 +1587,7 @@ impl FluorApp for PhotonApp {
                         tb.center_y,
                         tb.font_size * 0.6,
                         500,
-                        HINT_TEXT_COLOUR,
+                        fluor::theme::HINT_COLOUR,
                         "Oxanium",
                         None,
                         None,
@@ -1742,7 +1777,7 @@ impl FluorApp for PhotonApp {
                         strip_cy,
                         label_size,
                         500,
-                        HINT_TEXT_COLOUR,
+                        fluor::theme::HINT_COLOUR,
                         "Oxanium",
                         None,
                         None,
@@ -1893,12 +1928,12 @@ impl PhotonApp {
         if handle.is_empty() {
             return;
         }
-        if self.attested_handle.as_deref() == Some(handle.as_str()) {
-            crate::log(&format!(
-                "add-friend: refusing to add own handle '{}'",
-                handle
-            ));
-            return;
+        if let Some(s) = &self.session {
+            // Compare the typed handle's identity_seed (cheap BLAKE3, not the ~1s proof) to our own.
+            if crate::storage::contacts::derive_identity_seed(&handle) == s.identity_seed {
+                crate::log("add-friend: refusing to add own handle");
+                return;
+            }
         }
         if self
             .contacts
@@ -2020,24 +2055,25 @@ impl PhotonApp {
     /// Handle a [`QueryResult`] arriving from HandleQuery's background worker. On success, stashes the proof, loads the device avatar + contacts, and transitions to the Ready screen; on rejection/error, drops to `LaunchState::Error` and refocuses the handle field.
     fn on_query_result(&mut self, result: QueryResult) {
         use num_bigint::BigUint;
+        // Resume painted Ready optimistically from local state, so a result arriving while we're already past Launch is a background refresh (presence / contacts / cloud-merge), NOT a first attest. This gates the bailouts below: a transient network error must not knock a valid local session off Ready.
+        let in_app = !matches!(self.state, AppState::Launch(_));
         match result {
             QueryResult::Success(data) => {
                 if let Some(hq) = self.handle_query.as_ref() {
-                    hq.set_handle_proof(data.handle_proof, &data.handle);
+                    hq.set_handle_proof(data.handle_proof);
                 }
-                // Pubkey emitted as voca-encoded camelCase so a user reading the log can double-click + paste the value as a single word (matches `Development:` key lines from handle_query.rs).
+                // Pubkey emitted as voca-encoded camelCase so a user reading the log can double-click + paste the value as a single word (matches `Development:` key lines from handle_query.rs). The handle is deliberately NOT logged — Photon never surfaces the plaintext handle.
                 eprintln!(
-                    "attestation success: handle = {}  pubkey = {}",
-                    data.handle,
+                    "attestation success: pubkey = {}",
                     voca::encode(BigUint::from_bytes_be(&data.handle_proof))
                 );
-                // Stash the handle for the Ready screen (the optional label below the avatar). Settings persistence + the actual gate on whether to show it land in a later slice — for now Ready always renders the placeholder without text.
-                self.attested_handle = Some(data.handle.clone());
+                // Adopt the session roots the worker just derived + persisted (register-shaped, no handle string). Shared across the user's TOKEN apps, gone at logout; a close/reopen resumes from these without re-typing or recomputing the proof.
+                self.session = tohu::session();
                 self.vault_degraded = data.vault_degraded;
-                // Pull this device's avatar from local storage and colour-convert to BT.2020 γ=2.0 for the Ready screen render. Storage-miss = `None`; the Ready render falls thru to the grey placeholder. Image-picker writes (`nativeSetAvatarFromFile`) go thru a separate path that lands in a follow-up slice.
-                if let Some((_, vsf_rgb)) = crate::ui::avatar::load_avatar(&data.handle) {
+                // The worker already loaded this device's avatar (keyed on identity_seed) into `data.avatar_pixels`; colour-convert it to BT.2020 γ=2.0 for the Ready screen. `None` = storage-miss → grey placeholder.
+                if let Some(vsf_rgb) = &data.avatar_pixels {
                     self.device_avatar_pixels =
-                        Some(crate::ui::colour_convert::vsf_rgb_to_bt2020(&vsf_rgb));
+                        Some(crate::ui::colour_convert::vsf_rgb_to_bt2020(vsf_rgb));
                     self.device_avatar_scaled = None;
                     self.device_avatar_scaled_diameter = 0;
                 }
@@ -2054,13 +2090,21 @@ impl PhotonApp {
                     voca::encode(BigUint::from_bytes_be(peer.device_pubkey.as_bytes()))
                 );
                 eprintln!("attestation rejected: {msg}");
+                // The handle is owned by another device — our stored roots are contested. Clear them so the next launch can't auto-resume into the same rejection, and bail to the attest screen (even from an optimistic Ready: this is the genuine takeover case).
+                tohu::clear_session();
+                self.session = None;
                 self.state = AppState::Launch(LaunchState::Error(msg));
                 self.refocus_handle_select_all();
             }
             QueryResult::Error(e) => {
                 eprintln!("attestation error: {e}");
-                self.state = AppState::Launch(LaunchState::Error(e));
-                self.refocus_handle_select_all();
+                if in_app {
+                    // Transient network failure on a resume refresh — the local session is still valid. Stay on Ready; the next presence cycle retries. Do NOT drop the user back to the attest screen.
+                    crate::log("UI: background refresh failed (network); staying on local session");
+                } else {
+                    self.state = AppState::Launch(LaunchState::Error(e));
+                    self.refocus_handle_select_all();
+                }
             }
         }
     }

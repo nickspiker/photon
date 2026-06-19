@@ -491,7 +491,7 @@ mod tests {
         // Test keys — handle string identifies the vault (passless-key derives the rest).
         let device_secret = [0xBB; 32];
 
-        let storage = FlatStorage::new("friendship-test", device_secret).unwrap();
+        let storage = FlatStorage::new(crate::storage::APP, "friendship-test", device_secret).unwrap();
 
         // Save
         save_friendship_chains(&chains, &storage).unwrap();
