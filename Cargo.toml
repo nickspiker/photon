@@ -99,6 +99,8 @@ ihi = "0.0.47"
 tohu = { path = "../tohu" }
 # Storage/vault engine. Renamed custodes → manifestus (package + dir + `manifestus::` paths); the `custodes` name now belongs to the separate K-of-N social-recovery crate at ../custodes.
 manifestus = { path = "../manifestus" }
+# Encrypted keyed storage adapter (per-key ChaCha20-Poly1305 over a manifestus vault). Extracted from photon's old src/storage/flat.rs so idiosync and other stack apps share one storage layer; photon's FlatStorage/encrypt_bytes/etc. now re-export from here.
+kete = { path = "../kete" }
 voca = "0.0.0"
 num-bigint = "0.4"
 rav1e = { version = "0.7", default-features = false }

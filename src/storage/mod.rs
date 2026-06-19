@@ -1,9 +1,18 @@
 pub mod cloud;
 pub mod contacts;
-pub mod flat;
 pub mod friendship;
 
-pub use flat::{FlatStorage, StorageError};
+// The storage adapter (was `flat.rs`) now lives in the shared `kete` crate. Re-export its surface so existing call sites — `crate::storage::FlatStorage`, `StorageError`, `encrypt_bytes`/`decrypt_bytes` (used by cloud.rs) — keep resolving unchanged.
+pub use kete::{App, FlatStorage, StorageError, decrypt_bytes, encrypt_bytes};
+
+/// Photon's app namespace for kete. `id`/`dir` reproduce the original baked-in `"photon"` / `"Photon"` constants exactly, so every existing vault's filename and KDF contexts are unchanged.
+pub const APP: kete::App<'static> = kete::App {
+    id: "photon",
+    dir: "Photon",
+};
+
+#[cfg(target_os = "android")]
+pub use kete::set_android_vault_dirs;
 
 /// Returns ~/.config/photon/ (or Android equivalent). All Photon files live here.
 pub fn photon_config_dir() -> Result<std::path::PathBuf, std::io::Error> {
@@ -24,46 +33,10 @@ pub fn photon_config_dir() -> Result<std::path::PathBuf, std::io::Error> {
 // ============================================================================
 // Unified Storage I/O ============================================================================
 
-use chacha20poly1305::{
-    aead::{Aead, KeyInit},
-    ChaCha20Poly1305, Nonce,
-};
-use rand::RngCore;
 use std::fs;
 use std::path::Path;
 
-// ============================================================================
-// Shared encryption (one ChaCha20-Poly1305 call site for the whole project) ====================
-
-/// Encrypt with ChaCha20-Poly1305 + a fresh 12-byte random nonce. Output layout is `[nonce: 12B] || [ciphertext + 16B auth tag]` — both local-disk (`flat.rs`) and cloud (`cloud.rs`) blobs share this format so a future cross-cutting change (algorithm bump, AAD scheme, etc.) lands in one place. Returns the error stringified — callers wrap into their domain error type.
-pub fn encrypt_bytes(plaintext: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {
-    let cipher = ChaCha20Poly1305::new(key.into());
-    let mut nonce_bytes = [0u8; 12];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
-    let nonce = Nonce::from(nonce_bytes);
-    let ciphertext = cipher
-        .encrypt(&nonce, plaintext)
-        .map_err(|e| e.to_string())?;
-    let mut out = Vec::with_capacity(12 + ciphertext.len());
-    out.extend_from_slice(&nonce_bytes);
-    out.extend_from_slice(&ciphertext);
-    Ok(out)
-}
-
-/// Decrypt a blob produced by [`encrypt_bytes`]. Expects `[nonce: 12B] || [ciphertext + 16B auth tag]`. AEAD failure (wrong key, tampered ciphertext, truncated input) flows thru as a stringified error.
-pub fn decrypt_bytes(blob: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {
-    if blob.len() < 12 + 16 {
-        return Err(format!(
-            "ciphertext too short: {} bytes (need ≥ 28 for nonce + auth tag)",
-            blob.len()
-        ));
-    }
-    let (nonce_bytes, ciphertext) = blob.split_at(12);
-    let cipher = ChaCha20Poly1305::new(key.into());
-    cipher
-        .decrypt(Nonce::from_slice(nonce_bytes), ciphertext)
-        .map_err(|e| e.to_string())
-}
+// The shared ChaCha20-Poly1305 (`encrypt_bytes`/`decrypt_bytes`) moved to the `kete` crate and is re-exported above; cloud.rs and FlatStorage use it there.
 
 /// Unified disk write: all storage writes go thru this function. Every write is read-back-verified before returning success — if the bytes on disk don't match the bytes we asked to write, the call returns an error and the caller treats that as a hard failure. No "best effort" path; silent corruption is forbidden, and the cost of a `fs::read` per write is cheap against the cost of discovering on next launch that a contact's messages didn't actually persist.
 ///

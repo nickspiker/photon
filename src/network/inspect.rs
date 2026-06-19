@@ -46,7 +46,6 @@ pub fn vsf_inspect(data: &[u8], transport: &str, direction: &str, addr: &str) ->
 
     result
 }
-
 /// Decode VSF variable-length uint (for PT DATA sequence numbers)
 #[cfg(feature = "development")]
 fn decode_vsf_varint(bytes: &[u8]) -> Option<(usize, usize)> {

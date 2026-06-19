@@ -617,6 +617,18 @@ Photon demonstrates the social attestation and recovery model works before apply
 
 ---
 
+## Terminology
+
+- **handle** — your identity: any Unicode string, a shared secret given to contacts out-of-band. `handle_seed = BLAKE3(NFC(handle))` stays on the device; `handle_proof` (the handle-layer *ihi*) is the public lookup key.
+- ***ira*** — the device's permanent identity. Photon derives keys from it thru `tohu`; under PIPE it is silicon-rooted.
+- **CLUTCH** — the key-generation ceremony that establishes a relationship.
+- **CHAIN** — rolling per-message encryption over an established session.
+- **RUA** — the handle-addressed async dead-drop for offline peers and first contact.
+
+Full cross-stack glossary: `GLOSSARY.md` in the ferros repo.
+
+---
+
 ## License
 
 MIT OR Apache-2.0 (dual-licensed)

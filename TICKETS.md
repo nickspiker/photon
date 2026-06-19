@@ -6,9 +6,9 @@ Working list for Photon. Top section is the **fluor-migration handoff** (current
 
 # Fluor migration — handoff notes
 
-Photon-desktop is mid-rewrite onto the **fluor v0.0.2** GUI toolkit (`../fluor`, path dep). The legacy 6,018-line `src/ui/app.rs` + 5,817-line `src/ui/compositing.rs` + per-platform renderer trio + supporting modules are **cfg-gated to Android only** as of Phase 0; desktop runs thru a brand-new `src/ui/photon_app.rs` that impls `fluor::host::app::FluorApp` and rebuilds each screen as fluor-native paint primitives + widgets. This is **break-and-rebuild on main, no fork, no backwards compatibility** — small team, manually-coordinated update; the in-progress binary is not anyone's daily messenger.
+Photon has been rewritten onto the **fluor** GUI toolkit (`../fluor`, path dep). **All platforms now share one UI**: `src/ui/photon_app.rs` impls `fluor::host::app::FluorApp` and runs under `fluor::host::app::run_app` on desktop (host-winit) and `fluor::host::android::AndroidShell` on Android (host-android, Phase 2.3+). The legacy stack — `src/ui/{app,compositing,colour,drawing,keyboard,mouse,text_editing,text_rasterizing,renderer_android}.rs` — is **retired**: the files still sit on disk but are no longer in the module tree (no `mod` declaration in `ui/mod.rs`), so nothing compiles them. They're dead code, kept only as a porting reference, pending deletion. This was **break-and-rebuild on main, no fork, no backwards compatibility** — small team, manually-coordinated update; the in-progress binary is not anyone's daily messenger.
 
-**Full plan**: `/home/nick/.claude/plans/buzzing-puzzling-yao.md` (read this first). It covers the original strategy, screen-by-screen phasing, and the carveouts (no Android migration, no softbuffer-patch port, no Spirix text yet).
+**Full plan**: `/home/nick/.claude/plans/buzzing-puzzling-yao.md` (the original strategy + screen-by-screen phasing — note it predates the Android migration landing, so its carveouts are partly out of date). What's changed since: **Android migration is done** — fluor grew `host-android`, and Android now runs the same `photon_app` as desktop (legacy compositor retired). Still outstanding from the original carveouts: no softbuffer-patch port, no Spirix text yet.
 
 ## Conventions — these are load-bearing
 
@@ -35,16 +35,17 @@ Read [AGENT.md](AGENT.md) (Photon's) and [../fluor/AGENT.md](../fluor/AGENT.md) 
 - [src/ui/photon_logo.rs](src/ui/photon_logo.rs) — "Photon" wordmark. Three-layer composition (glow + sharp body + highlight rim), Oxanium 800. Port of legacy `draw_logo_text`.
 - [src/ui/lms2006so.rs](src/ui/lms2006so.rs) — Stockman-Sharpe LMS2006SO colour-matching data, lifted from `colour.rs` so desktop can read it without dragging nalgebra in. Re-exported thru `colour` for Android compat.
 - [src/ui/state.rs](src/ui/state.rs) — `AppState` enum (`Launch(LaunchState) | Ready | Searching | Conversation | Connected{..}`), `FoundPeer`, `SearchResult`. Un-gated (network code depends on it).
-- [src/ui/mod.rs](src/ui/mod.rs) — module wiring; everything legacy is cfg-gated to Android, everything new is `#[cfg(not(target_os = "android"))]` or un-gated.
+- [src/ui/mod.rs](src/ui/mod.rs) — module wiring. The legacy modules are **gone from the tree** (no `mod` declarations); `ui` is the fluor `photon_app` set, shared by desktop and Android. Its header comment is the canonical statement of the retired-legacy / shared-fluor-UI state.
 
-### Legacy stack — cfg-gated to Android, awaiting migration
-- [src/ui/app.rs](src/ui/app.rs) (6,018 lines, Android-only) — legacy `PhotonApp` (renamed to avoid clash), full state machine + render loop. Read this when porting Ready/Searching/Conversation screens; **don't add features here for desktop**.
-- [src/ui/compositing.rs](src/ui/compositing.rs) (5,817 lines, Android-only) — `draw_spectrum` (done → chromatic_wave.rs), `draw_logo_text` (done → photon_logo.rs), `draw_textbox` (TODO: use `fluor::widgets::Textbox`), avatar / contact row / message bubble paint paths (TODO: Photon-side Widgets per migration plan), `draw_background_texture` pass-through deleted in `4689655`.
-- [src/ui/colour.rs](src/ui/colour.rs) (Android-only) — nalgebra-typed LMS-to-* matrices. LMS2006SO array was moved out to `lms2006so.rs` (un-gated); the matrices stay because nalgebra is Android-side only.
-- `src/ui/text_rasterizing.rs` (1,185 lines, Android-only) — cosmic-text + swash wrapper. Replaced by `fluor::text::TextRenderer` (same engine). Font loading moved to `PhotonApp::init` via `ctx.text.font_system_mut().db_mut().load_font_data(...)`.
-- `src/ui/text_editing.rs`, `src/ui/mouse.rs`, `src/ui/keyboard.rs` — all Android-only. Replaced by fluor's `Textbox` widget + WindowEvent dispatch.
-- `src/ui/drawing.rs` — Android-only legacy noise + edges. Replaced by `fluor::paint::background_noise` etc.
-- `src/ui/renderer_android.rs` — kept until fluor grows `host-android`.
+### Legacy stack — RETIRED (orphaned on disk, not compiled, pending deletion)
+These files still exist but are in **no `mod` declaration**, so they compile on no platform — dead code kept only as a porting reference until deleted. (They were never truly "Android-only"; Android now runs the same fluor `photon_app`.) What each was the source of:
+- [src/ui/app.rs](src/ui/app.rs) (~6,018 lines) — the old `PhotonApp` state machine + render loop. Mine it for any not-yet-ported screen logic (Conversation), then delete.
+- [src/ui/compositing.rs](src/ui/compositing.rs) (~5,817 lines) — `draw_spectrum` → chromatic_wave.rs (done), `draw_logo_text` → photon_logo.rs (done), `draw_textbox` → `fluor::widgets::Textbox` (done), avatar / contact-row / message-bubble paint paths (rows done; bubbles pending Conversation).
+- [src/ui/colour.rs](src/ui/colour.rs) — nalgebra LMS-to-* matrices; the LMS2006SO array moved to `lms2006so.rs` (live).
+- `src/ui/text_rasterizing.rs` — cosmic-text + swash wrapper → `fluor::text::TextRenderer` (same engine).
+- `src/ui/{text_editing,mouse,keyboard}.rs` → fluor's `Textbox` widget + `FluorApp` event dispatch.
+- `src/ui/drawing.rs` — legacy noise + edges → `fluor::paint::background_noise` etc.
+- `src/ui/renderer_android.rs` → superseded by `fluor::host::android` (host-android landed).
 
 ### Untouched — survives the migration
 - `src/network/*` — TCP + FGTW + handle queries + announcements. Will reconnect to new UI when attest-action wiring lands.
@@ -109,12 +110,16 @@ Corresponding fluor gains: `DroppedFile` event + winit mapping, `Viewport` zoom 
 - **Textbox glow on search state** — legacy tinted the search pill yellow-during / green-or-red-after; fluor's textbox glow is focus-driven, recolouring per state is a separate change.
 - **Auto-clear search box on successful add** — legacy cleared it; `fluor::widgets::Textbox` has no public `clear` yet (add `Textbox::clear` or a consume-on-submit option).
 
+**Identity / attest screen**
+- **Handle-loss warning** — the attest screen must say plainly that the handle has NO recovery: forget it and you lose the identity *and* burn the name permanently — the `handle_proof` stays bound to a now-dead device, unreclaimable by you (you've lost the only proof-of-ownership input) and unavailable to anyone else (the attestation gate blocks re-claim); new hardware does not help. Wording lives by the handle field, before they commit. See tohu `docs/handle.md` § "Loss — forgetting the handle burns it."
+- **Push multi-device immediately after attest** — redundancy is the only protection against handle loss, so right after a successful attest, prompt to add a 2nd and 3rd device, and reflect it in the Security/Recovery posture strip (a lone device reads Recovery-low). This is the recovery story until vouching / PIPE land. tohu stores only the seed by default (never the plain string), so "add devices" — not "write it down" — is the sanctioned answer.
+
 **Conversation screen (Phase 4 — not started)**
 - Message list (likely needs a `ScrollContainer<W: Widget>` in fluor), input bar, send button, typing indicator, delivery status, message ordering, notifications.
 
 **Cleanup / migration tail**
 - `theme.rs` still in legacy 0xAARRGGBB — port to `fluor::theme::{pack_argb, dark}` (new desktop code currently inlines `dark(fmt(...))`).
-- Retire the legacy `app.rs` / `compositing.rs` (Android-gated) once host-android is fully on `photon_app`; the vestigial `v` file goes with them.
+- **Delete the orphaned legacy files** — `src/ui/{app,compositing,colour,drawing,keyboard,mouse,text_editing,text_rasterizing,renderer_android}.rs`. host-android landed and Android is on `photon_app`, so they're dead code (no `mod` declaration); they survive only as a porting reference. Mine `app.rs`/`compositing.rs` for the remaining Conversation-screen logic, then remove the lot (the vestigial `v` file goes with them).
 - **Colourize handles** (spec below) — hook once contact rows want a per-handle accent colour.
 
 ### Likely fluor-side enhancements still pending
@@ -147,9 +152,9 @@ If you only want to compile-check fast without signing: `cargo build --bin photo
 
 # Legacy backlog (pre-fluor)
 
-Several of these are dormant during the migration but still relevant once each screen lands. Don't fix them in the legacy `compositing.rs` / `app.rs` (Android-gated, going away); fix in the new fluor-native path.
+Several of these are dormant during the migration but still relevant once each screen lands. Don't fix them in the retired `compositing.rs` / `app.rs` (orphaned, pending deletion); fix in the fluor-native path.
 
-- **Relative Unit (RU's) scaling code/variable, pinch zoom on touch** — Android. Affects how widgets scale across DPIs. fluor's `viewport.effective_span()` is the new RU; desktop already uses it. Android side keeps the old code until host-android lands.
+- **Relative Unit (RU's) scaling code/variable, pinch zoom on touch** — fluor's `viewport.effective_span()` is the RU on every platform now (host-android landed, so Android no longer keeps the old code). Pinch-zoom on touch still waits on fluor's multi-touch `Touch` event.
 - **Notifications for messages** — needed once Conversation screen is back online (Phase 4).
 - **Message display order** — somewhat out of order. Bug in legacy; re-verify after Phase 4 rebuild.
 - **Send button doesn't work** — use Enter key for now. Fix when Phase 4 wires the send button in fluor.
@@ -162,7 +167,7 @@ Several of these are dormant during the migration but still relevant once each s
 
 ## macOS softbuffer transparent-window present-on-clean
 
-From a prior session, an untested fix landed in `compositing.rs` (Android-gated now). Quoted verbatim:
+From a prior session, an untested fix landed in the now-retired `compositing.rs` (orphaned — so this snippet is dead; re-evaluate against fluor's softbuffer/wgpu renderer path instead). Quoted verbatim:
 
 > ● Update(src/ui/compositing.rs) Gotta actually test this
 >   ```rust
