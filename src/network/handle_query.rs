@@ -22,7 +22,6 @@ use fluor::host::WakeSender;
 /// Data loaded during attestation (all blocking work done in background)
 #[derive(Debug, Clone)]
 pub struct AttestationData {
-    pub handle: String,
     pub handle_proof: [u8; 32],
     pub identity_seed: [u8; 32],
     pub contacts: Vec<crate::types::Contact>,
@@ -31,6 +30,13 @@ pub struct AttestationData {
     pub peers: Vec<PeerRecord>,
     /// True if FlatStorage detected a damaged ring during open this session (missing, permission-denied, corrupt, or HMAC-bad). UI renders a persistent degraded banner when true. Sticky for the session — only clears on next process restart after both rings open cleanly.
     pub vault_degraded: bool,
+}
+
+/// A request to the attestation worker.
+/// First attest carries the typed handle (the one moment the string exists — the worker derives the roots, persists them, and drops it); resume carries the cached session roots, so it touches neither the string nor the ~1s proof recompute.
+pub enum QueryRequest {
+    FirstAttest(String),
+    Resume(tohu::SessionIdentity),
 }
 
 /// Result of a handle query
@@ -50,7 +56,7 @@ pub enum QueryResult {
 /// - Handle search
 pub struct HandleQuery {
     // Attestation channels
-    query_sender: Sender<String>,
+    query_sender: Sender<QueryRequest>,
     query_receiver: Receiver<QueryResult>,
 
     // Connectivity channel
@@ -63,7 +69,6 @@ pub struct HandleQuery {
     // Shared state
     transport: Arc<Mutex<Option<Arc<Mutex<PeerStore>>>>>,
     last_handle_proof: Arc<Mutex<Option<[u8; 32]>>>,
-    last_handle: Arc<Mutex<Option<String>>>,
 
     // UDP socket for P2P and StatusChecker (bound to PHOTON_PORT 4383)
     socket: Arc<Mutex<Arc<UdpSocket>>>,
@@ -135,7 +140,7 @@ impl HandleQuery {
         event_proxy: Option<Arc<dyn WakeSender<PhotonEvent>>>,
     ) -> Self {
         // Create all channels
-        let (query_tx, query_rx_worker) = channel::<String>();
+        let (query_tx, query_rx_worker) = channel::<QueryRequest>();
         let (query_tx_result, query_rx) = channel::<QueryResult>();
         let (online_tx, online_rx) = channel::<bool>();
         let (search_tx, search_rx_worker) = channel::<String>();
@@ -143,7 +148,6 @@ impl HandleQuery {
         // Shared state
         let transport = Arc::new(Mutex::new(None::<Arc<Mutex<PeerStore>>>));
         let last_handle_proof = Arc::new(Mutex::new(None::<[u8; 32]>));
-        let last_handle = Arc::new(Mutex::new(None::<String>));
 
         // Bind UDP socket - tries 4383 → 3546 → ephemeral
         let (initial_socket, initial_port) = bind_photon_socket();
@@ -193,7 +197,6 @@ impl HandleQuery {
             search_receiver: search_rx,
             transport,
             last_handle_proof,
-            last_handle,
             socket,
             port,
         }
@@ -202,7 +205,7 @@ impl HandleQuery {
     #[cfg(target_os = "android")]
     fn new_internal(device_keypair: Keypair) -> Self {
         // Create all channels
-        let (query_tx, query_rx_worker) = channel::<String>();
+        let (query_tx, query_rx_worker) = channel::<QueryRequest>();
         let (query_tx_result, query_rx) = channel::<QueryResult>();
         let (online_tx, online_rx) = channel::<bool>();
         let (search_tx, search_rx_worker) = channel::<String>();
@@ -210,7 +213,6 @@ impl HandleQuery {
         // Shared state
         let transport = Arc::new(Mutex::new(None::<Arc<Mutex<PeerStore>>>));
         let last_handle_proof = Arc::new(Mutex::new(None::<[u8; 32]>));
-        let last_handle = Arc::new(Mutex::new(None::<String>));
 
         // Bind UDP socket - tries 4383 → 3546 → ephemeral
         let (initial_socket, initial_port) = bind_photon_socket();
@@ -260,7 +262,6 @@ impl HandleQuery {
             search_receiver: search_rx,
             transport,
             last_handle_proof,
-            last_handle,
             socket,
             port,
         }
@@ -399,7 +400,7 @@ impl HandleQuery {
 
     /// Spawn attestation query worker
     fn spawn_query_worker(
-        rx: Receiver<String>,
+        rx: Receiver<QueryRequest>,
         tx: Sender<QueryResult>,
         transport: Arc<Mutex<Option<Arc<Mutex<PeerStore>>>>>,
         handle_proof_store: Arc<Mutex<Option<[u8; 32]>>>,
@@ -410,14 +411,24 @@ impl HandleQuery {
         thread::spawn(move || {
             crate::log("Network: Query worker initialized");
 
-            while let Ok(handle) = rx.recv() {
-                crate::log(&format!("Network: Querying handle '{}'...", handle));
+            while let Ok(req) = rx.recv() {
+                // Resolve the session roots.
+                // First attest is the one moment the handle string exists: derive the three roots (the ~1s spaghettify happens here, once), persist them so a later resume skips both the string and the recompute, then let the string drop.
+                // Resume hands the cached roots straight in — no string, no proof recompute.
+                let (identity_seed, vault_seed, handle_proof, persist_session) = match req {
+                    QueryRequest::FirstAttest(handle) => {
+                        let identity_seed = crate::storage::contacts::derive_identity_seed(&handle);
+                        let vault_seed = tohu::handle_seed(&handle);
+                        let handle_proof = Handle::username_to_handle_proof(&handle); // ~1s
+                        // Defer persistence until FGTW confirms ownership (below) — a rejected attest must NOT leave session roots that would auto-resume into the same rejection next launch.
+                        (identity_seed, vault_seed, handle_proof, true)
+                    }
+                    QueryRequest::Resume(s) => (s.identity_seed, s.vault_seed, s.handle_proof, false),
+                };
+                crate::log("Network: Querying handle...");
 
                 // Get current port for FGTW query (always PHOTON_PORT now)
                 let current_port = *port.lock().unwrap();
-
-                // Compute handle_proof (expensive - ~1 second)
-                let handle_proof = Handle::username_to_handle_proof(&handle);
 
                 // Wait for transport
                 let transport_arc = loop {
@@ -430,16 +441,12 @@ impl HandleQuery {
                 };
 
                 // Query FGTW
-                let result = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("Failed to create tokio runtime")
-                    .block_on(load_bootstrap_peers(
-                        &keypair,
-                        handle_proof,
-                        current_port,
-                        &handle,
-                    ));
+                let result = crate::network::http::runtime().block_on(load_bootstrap_peers(
+                    &keypair,
+                    handle_proof,
+                    current_port,
+                    &identity_seed,
+                ));
 
                 // Add peers to store (skip our own device)
                 let our_pubkey = keypair.public.as_bytes();
@@ -476,20 +483,25 @@ impl HandleQuery {
 
                     if is_ours {
                         *handle_proof_store.lock().unwrap() = Some(handle_proof);
-                        crate::log(&format!(
-                            "Network: Handle '{}' registered to this device",
-                            handle
-                        ));
+                        crate::log("Network: Handle registered to this device");
+
+                        // Ownership confirmed — now it is safe to remember the session roots for resume.
+                        if persist_session {
+                            let _ = tohu::set_session(&tohu::SessionIdentity {
+                                identity_seed,
+                                vault_seed,
+                                handle_proof,
+                            });
+                        }
 
                         // === Load all data in background (proof → network → disk → cloud) ===
                         let device_secret_bytes = *keypair.secret.as_bytes();
-                        let identity_seed = crate::storage::contacts::derive_identity_seed(&handle);
 
                         // Dev-mode tap so `vaultinfo` can decrypt this session's vault end-to-end. Logged at the same point in the flow the values themselves come into existence so it's obvious from the trace which run produced which keys. Spaces around `=` so double-clicking the value in a terminal selects only the encoded token. Values printed in voca FULL (PascalCase word concatenation, ~22 words for a 32-byte key) — denser than hex on the page, copy-pasteable as one token, and reads aloud cleanly. `vaultinfo` auto-detects voca vs hex on input. Never enabled in release builds.
                         #[cfg(feature = "development")]
                         {
                             use num_bigint::BigUint;
-                            let handle_seed = tohu::handle_seed(&handle);
+                            let handle_seed = vault_seed;
                             crate::log(&format!(
                                 "Development: identity_seed = {}  handle_seed = {}  device_secret = {}",
                                 voca::encode(BigUint::from_bytes_be(&identity_seed)),
@@ -499,7 +511,7 @@ impl HandleQuery {
                         }
 
                         // Initialize FlatStorage for this session. A bare `return` here would silently strand the UI on the Attesting spinner because the result channel never gets a verdict — the worker has already proven FGTW says the handle is ours, but with no local vault we can't reach Ready. Surface the failure as a QueryResult::Error so the Launch screen flips to its error state and the user sees what happened.
-                        let storage = match crate::storage::FlatStorage::new(&handle, device_secret_bytes) {
+                        let storage = match crate::storage::FlatStorage::new_with_seed(crate::storage::APP, vault_seed, device_secret_bytes) {
                             Ok(s) => s,
                             Err(e) => {
                                 let msg = format!("storage init failed: {}", e);
@@ -570,7 +582,7 @@ impl HandleQuery {
                         crate::log(&format!("Network: Loaded {} friendships", friendships.len()));
 
                         // Load local avatar
-                        let avatar_pixels = crate::avatar::load_avatar(&handle).map(|(_, p)| p);
+                        let avatar_pixels = crate::avatar::load_avatar_from_seed(&identity_seed).map(|(_, p)| p);
 
                         // Cloud sync (download + merge)
                         crate::log("Network: Syncing with cloud...");
@@ -613,7 +625,6 @@ impl HandleQuery {
                         crate::log("Network: Background loading complete");
 
                         QueryResult::Success(Box::new(AttestationData {
-                            handle: handle.clone(),
                             handle_proof,
                             identity_seed,
                             contacts,
@@ -623,10 +634,7 @@ impl HandleQuery {
                             vault_degraded,
                         }))
                     } else {
-                        crate::log(&format!(
-                            "Network: Handle '{}' is CLAIMED by another device",
-                            handle
-                        ));
+                        crate::log("Network: Handle is CLAIMED by another device");
                         QueryResult::AlreadyAttested(result.peers[0].clone())
                     }
                 };
@@ -687,9 +695,15 @@ impl HandleQuery {
 
     // ===== Public API =====
 
-    /// Query/attest a handle (non-blocking)
+    /// First attest from a typed handle (non-blocking).
+    /// The worker derives + persists the session roots, so subsequent launches use [`query_resume`](Self::query_resume) instead.
     pub fn query(&self, handle: String) {
-        let _ = self.query_sender.send(handle);
+        let _ = self.query_sender.send(QueryRequest::FirstAttest(handle));
+    }
+
+    /// Resume attestation from the cached session roots (non-blocking) — no handle string, no ~1s proof recompute.
+    pub fn query_resume(&self, session: tohu::SessionIdentity) {
+        let _ = self.query_sender.send(QueryRequest::Resume(session));
     }
 
     /// Check if an attestation response is ready (non-blocking)
@@ -712,14 +726,9 @@ impl HandleQuery {
         self.search_receiver.try_recv().ok()
     }
 
-    /// Store handle_proof and handle string after successful attestation
-    pub fn set_handle_proof(&self, handle_proof: [u8; 32], handle: &str) {
-        let mut proof_guard = self.last_handle_proof.lock().unwrap();
-        *proof_guard = Some(handle_proof);
-        drop(proof_guard);
-
-        let mut handle_guard = self.last_handle.lock().unwrap();
-        *handle_guard = Some(handle.to_string());
+    /// Cache handle_proof after successful attestation (used for in-session handle searches).
+    pub fn set_handle_proof(&self, handle_proof: [u8; 32]) {
+        *self.last_handle_proof.lock().unwrap() = Some(handle_proof);
     }
 
     /// Get stored handle_proof (for computing handle searches)

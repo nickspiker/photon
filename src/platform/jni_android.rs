@@ -371,7 +371,7 @@ impl NetworkContext {
         // Set global Android data directory for avatar storage
         crate::avatar::set_android_data_dir(data_dir.to_string());
         // Hand the storage layer both ring dirs so the dual-ring vault can place primary on internal and shadow on external — see [storage::flat::set_android_vault_dirs].
-        crate::storage::flat::set_android_vault_dirs(data_dir.to_string(), shadow_dir.to_string());
+        crate::storage::set_android_vault_dirs(data_dir.to_string(), shadow_dir.to_string());
 
         // tohu reads Settings.Secure.ANDROID_ID itself (via the JavaVM handed to it in JNI_OnLoad). Fall back to the Java-pushed `fingerprint` if tohu's fetch errors, so a wrong JNI path logs loudly instead of bricking the app. NOTE: switching the oracle to pure ANDROID_ID changes device_secret vs the old Java-pushed value — existing Android vaults must be cleared.
         let oracle = match tohu::device::machine_fingerprint() {

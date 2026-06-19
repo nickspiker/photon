@@ -2491,6 +2491,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "kete"
+version = "0.0.0"
+dependencies = [
+ "blake3",
+ "chacha20poly1305 0.11.0-rc.3",
+ "dirs",
+ "log",
+ "manifestus",
+ "rand 0.8.5",
+ "tohu",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3457,6 +3470,7 @@ dependencies = [
  "img-parts",
  "jni",
  "k256",
+ "kete",
  "libc",
  "log",
  "manifestus",

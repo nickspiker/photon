@@ -115,14 +115,14 @@ fn format_http_error_from_bytes(step: &str, status: reqwest::StatusCode, body: &
 /// * `device_key` - Device's Ed25519 keypair
 /// * `handle_proof` - Handle proof hash
 /// * `port` - Local P2P port
-/// * `handle` - User's handle string (for avatar keypair derivation)
+/// * `identity_seed` - The owner's `ihi::handle_to_hash` root (for avatar keypair derivation; no handle string)
 pub async fn load_bootstrap_peers(
     device_key: &Keypair,
     handle_proof: [u8; 32],
     port: u16,
-    handle: &str,
+    identity_seed: &[u8; 32],
 ) -> BootstrapResult {
-    match load_bootstrap_peers_inner(device_key, handle_proof, port, handle).await {
+    match load_bootstrap_peers_inner(device_key, handle_proof, port, identity_seed).await {
         Ok(peers) => BootstrapResult { peers, error: None },
         Err(e) => BootstrapResult {
             peers: vec![],
@@ -136,12 +136,10 @@ async fn load_bootstrap_peers_inner(
     device_key: &Keypair,
     handle_proof: [u8; 32],
     port: u16,
-    handle: &str,
+    identity_seed: &[u8; 32],
 ) -> Result<Vec<PeerRecord>, String> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+    // Shared async client — pools on the process-wide runtime, so the TLS session is reused across announces (challenge + announce here are two requests on one warm connection). The per-request `.timeout(10s)` below preserves the old client-level budget.
+    let client = crate::network::http::async_client();
 
     // Get challenge from FGTW (POST / with VSF section "challenge")
     let challenge_vsf = {
@@ -155,6 +153,7 @@ async fn load_bootstrap_peers_inner(
 
     let challenge_response = client
         .post(FGTW_URL)
+        .timeout(std::time::Duration::from_secs(10))
         .header("Content-Type", "application/octet-stream")
         .body(challenge_vsf)
         .send()
@@ -183,7 +182,7 @@ async fn load_bootstrap_peers_inner(
 
     // Derive avatar keypair for authentication
     let (_, avatar_verifying_key) =
-        crate::avatar::derive_avatar_keypair(&device_key.secret, handle);
+        crate::avatar::derive_avatar_keypair_from_seed(&device_key.secret, identity_seed);
     let avatar_pub_key = Some(*avatar_verifying_key.as_bytes());
 
     // Build announce message with challenge response and avatar pubkey
@@ -198,6 +197,7 @@ async fn load_bootstrap_peers_inner(
     // Send announce to FGTW
     let announce_response = client
         .post(FGTW_URL)
+        .timeout(std::time::Duration::from_secs(10))
         .header("Content-Type", "application/octet-stream")
         .body(announce_bytes)
         .send()

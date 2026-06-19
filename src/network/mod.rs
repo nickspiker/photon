@@ -1,5 +1,6 @@
 pub mod fgtw;
 pub mod handle_query;
+pub mod http;
 pub mod inspect;
 #[cfg(not(target_os = "android"))]
 pub mod peer_updates;
