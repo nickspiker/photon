@@ -781,28 +781,33 @@ pub fn avatar_cache_path(storage_key: &str) -> std::io::Result<std::path::PathBu
 
 /// Load avatar from local cache by handle (checks avatars/ directory) Returns None if not cached locally
 pub fn load_cached_avatar(handle: &str) -> Option<(usize, Vec<u8>)> {
-    let storage_key = avatar_storage_key(handle);
+    load_cached_avatar_from_seed(ihi::handle_to_hash(handle).as_bytes())
+}
+
+/// `load_cached_avatar` from the already-derived `identity_seed`. String-free owner path.
+pub fn load_cached_avatar_from_seed(identity_seed: &[u8; 32]) -> Option<(usize, Vec<u8>)> {
+    let storage_key = avatar_storage_key_from_seed(identity_seed);
     let cache_path = avatar_cache_path(&storage_key).ok()?;
 
     if !cache_path.exists() {
         return None;
     }
 
-    let vsf_data = crate::storage::read_file(&cache_path, &format!("avatar/{}", handle)).ok()?;
-    crate::log(&format!("Avatar: Loading {} from local cache", handle));
-    load_avatar_from_bytes(&vsf_data, handle)
+    let vsf_data = crate::storage::read_file(&cache_path, &format!("avatar/{}", storage_key)).ok()?;
+    crate::log(&format!("Avatar: Loading {} from local cache", storage_key));
+    load_avatar_from_bytes_from_seed(&vsf_data, identity_seed)
 }
 
 /// Save avatar VSF bytes to local cache by handle
 fn save_avatar_to_cache(handle: &str, vsf_data: &[u8]) -> std::io::Result<()> {
-    let storage_key = avatar_storage_key(handle);
+    save_avatar_to_cache_from_seed(ihi::handle_to_hash(handle).as_bytes(), vsf_data)
+}
+
+fn save_avatar_to_cache_from_seed(identity_seed: &[u8; 32], vsf_data: &[u8]) -> std::io::Result<()> {
+    let storage_key = avatar_storage_key_from_seed(identity_seed);
     let cache_path = avatar_cache_path(&storage_key)?;
-    crate::storage::write_file(&cache_path, vsf_data, &format!("avatar/{}", handle))?;
-    crate::log(&format!(
-        "Avatar: Cached {} locally ({}...)",
-        handle,
-        &storage_key[..8]
-    ));
+    crate::storage::write_file(&cache_path, vsf_data, &format!("avatar/{}", storage_key))?;
+    crate::log(&format!("Avatar: Cached locally ({}...)", &storage_key[..8]));
     Ok(())
 }
 
@@ -811,10 +816,18 @@ pub fn load_avatar(handle: &str) -> Option<(usize, Vec<u8>)> {
     load_cached_avatar(handle)
 }
 
-/// Load avatar from raw VSF bytes (used for both local and network avatars)
-///
-/// Avatar data is encrypted with handle-derived key, so handle is required for decryption. Format: v'e'(encrypted v'a'(AV1 data))
+/// `load_avatar` from the already-derived `identity_seed`. String-free owner path.
+pub fn load_avatar_from_seed(identity_seed: &[u8; 32]) -> Option<(usize, Vec<u8>)> {
+    load_cached_avatar_from_seed(identity_seed)
+}
+
+/// Load avatar from raw VSF bytes (used for both local and network avatars). Avatar data is encrypted with the identity-seed-derived key. Format: v'e'(encrypted v'a'(AV1 data))
 pub fn load_avatar_from_bytes(vsf_data: &[u8], handle: &str) -> Option<(usize, Vec<u8>)> {
+    load_avatar_from_bytes_from_seed(vsf_data, ihi::handle_to_hash(handle).as_bytes())
+}
+
+/// `load_avatar_from_bytes` from the already-derived `identity_seed`.
+pub fn load_avatar_from_bytes_from_seed(vsf_data: &[u8], identity_seed: &[u8; 32]) -> Option<(usize, Vec<u8>)> {
     // Verify this is an unmodified original before processing
     if let Err(e) = vsf::verification::is_original(vsf_data) {
         crate::log(&format!(
@@ -837,7 +850,7 @@ pub fn load_avatar_from_bytes(vsf_data: &[u8], handle: &str) -> Option<(usize, V
     }
 
     // Decrypt to get raw AV1 data
-    let av1_data = match decrypt_av1_data(&parsed.data, handle) {
+    let av1_data = match decrypt_av1_data_from_seed(&parsed.data, identity_seed) {
         Ok(data) => data,
         Err(e) => {
             crate::log(&format!("Avatar: Decryption failed: {}", e));
@@ -864,10 +877,15 @@ pub fn load_avatar_from_bytes(vsf_data: &[u8], handle: &str) -> Option<(usize, V
 
 /// Save avatar to disk as VSF by handle Uses "image" section with "pixels" field containing v'e'(encrypted v'a'(AV1)) Only people who know the handle plaintext can decrypt the avatar. Stored in avatars/ directory using handle-based storage key
 pub fn save_avatar(av1_data: &[u8], handle: &str) -> std::io::Result<()> {
+    save_avatar_from_seed(av1_data, ihi::handle_to_hash(handle).as_bytes())
+}
+
+/// `save_avatar` from the already-derived `identity_seed`. String-free owner path.
+pub fn save_avatar_from_seed(av1_data: &[u8], identity_seed: &[u8; 32]) -> std::io::Result<()> {
     use vsf::{VsfBuilder, VsfType};
 
     // Encrypt AV1 data (wraps in v'a' then encrypts)
-    let encrypted = encrypt_av1_data(av1_data, handle)
+    let encrypted = encrypt_av1_data_from_seed(av1_data, identity_seed)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
     // Build VSF with v'e' wrapped encrypted payload
@@ -881,14 +899,14 @@ pub fn save_avatar(av1_data: &[u8], handle: &str) -> std::io::Result<()> {
         .build()
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
-    // Save to avatars directory using handle's storage key
-    save_avatar_to_cache(handle, &vsf_bytes)
+    // Save to avatars directory using the identity seed's storage key
+    save_avatar_to_cache_from_seed(identity_seed, &vsf_bytes)
 }
 
 const FGTW_URL: &str = "https://fgtw.org";
 
 /// Extract AV1 data from avatar VSF (decrypts v'e' wrapper)
-fn extract_av1_data(vsf_bytes: &[u8], handle: &str) -> Result<Vec<u8>, String> {
+fn extract_av1_data_from_seed(vsf_bytes: &[u8], identity_seed: &[u8; 32]) -> Result<Vec<u8>, String> {
     let parsed = vsf::builders::parse_compressed_image(vsf_bytes)?;
 
     if parsed.encoding != b'e' {
@@ -898,7 +916,7 @@ fn extract_av1_data(vsf_bytes: &[u8], handle: &str) -> Result<Vec<u8>, String> {
         ));
     }
 
-    decrypt_av1_data(&parsed.data, handle)
+    decrypt_av1_data_from_seed(&parsed.data, identity_seed)
 }
 
 /// Get avatar's provenance hash by handle (if cached locally) Used to include in ping/pong messages for avatar sync
@@ -974,12 +992,18 @@ pub fn derive_avatar_keypair(
     device_secret: &SigningKey,
     handle: &str,
 ) -> (SigningKey, VerifyingKey) {
-    let handle_hash = ihi::handle_to_hash(handle);
+    derive_avatar_keypair_from_seed(device_secret, ihi::handle_to_hash(handle).as_bytes())
+}
 
-    // Derive avatar private key seed: BLAKE3(device_priv || handle_hash || "handle-avatar")
+/// `derive_avatar_keypair` from the already-derived `identity_seed` (= `ihi::handle_to_hash` bytes), so the owner never needs the handle string post-attest. Byte-identical to the handle path.
+pub fn derive_avatar_keypair_from_seed(
+    device_secret: &SigningKey,
+    identity_seed: &[u8; 32],
+) -> (SigningKey, VerifyingKey) {
+    // Derive avatar private key seed: BLAKE3(device_priv || identity_seed || "handle-avatar")
     let mut hasher = blake3::Hasher::new();
     hasher.update(device_secret.as_bytes());
-    hasher.update(handle_hash.as_bytes());
+    hasher.update(identity_seed);
     hasher.update(b"handle-avatar");
     let seed = hasher.finalize();
 
@@ -1000,10 +1024,14 @@ pub fn derive_avatar_keypair(
 /// # Returns
 /// Base64url-encoded 32-byte hash (no padding)
 pub fn avatar_storage_key(handle: &str) -> String {
+    avatar_storage_key_from_seed(ihi::handle_to_hash(handle).as_bytes())
+}
+
+/// `avatar_storage_key` from the already-derived `identity_seed`. Byte-identical to the handle path.
+pub fn avatar_storage_key_from_seed(identity_seed: &[u8; 32]) -> String {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 
-    let handle_hash = ihi::handle_to_hash(handle);
-    let mut salted = handle_hash.as_bytes().to_vec();
+    let mut salted = identity_seed.to_vec();
     salted.extend_from_slice(b"avatar");
     let avatar_hash = blake3::hash(&salted);
     URL_SAFE_NO_PAD.encode(avatar_hash.as_bytes())
@@ -1018,8 +1046,12 @@ pub fn avatar_storage_key(handle: &str) -> String {
 ///
 /// # Returns 32-byte AES-256-GCM key
 pub fn derive_avatar_encryption_key(handle: &str) -> [u8; 32] {
-    let handle_hash = ihi::handle_to_hash(handle);
-    let mut salted = handle_hash.as_bytes().to_vec();
+    derive_avatar_encryption_key_from_seed(ihi::handle_to_hash(handle).as_bytes())
+}
+
+/// `derive_avatar_encryption_key` from the already-derived `identity_seed`. Byte-identical to the handle path.
+pub fn derive_avatar_encryption_key_from_seed(identity_seed: &[u8; 32]) -> [u8; 32] {
+    let mut salted = identity_seed.to_vec();
     salted.extend_from_slice(b"avatar-encryption");
     *blake3::hash(&salted).as_bytes()
 }
@@ -1035,14 +1067,19 @@ pub fn derive_avatar_encryption_key(handle: &str) -> [u8; 32] {
 /// # Returns
 /// Encrypted blob ready to be wrapped in v'e'
 pub fn encrypt_av1_data(av1_data: &[u8], handle: &str) -> Result<Vec<u8>, String> {
+    encrypt_av1_data_from_seed(av1_data, ihi::handle_to_hash(handle).as_bytes())
+}
+
+/// `encrypt_av1_data` from the already-derived `identity_seed`. Byte-compatible with the handle path.
+pub fn encrypt_av1_data_from_seed(av1_data: &[u8], identity_seed: &[u8; 32]) -> Result<Vec<u8>, String> {
     use aes_gcm::{aead::Aead, Aes256Gcm, KeyInit};
     use rand::RngCore;
 
     // Build v'a' wrapped AV1 data
     let va_wrapped = encode_va_wrapper(av1_data);
 
-    // Derive encryption key from handle
-    let key = derive_avatar_encryption_key(handle);
+    // Derive encryption key from the identity seed
+    let key = derive_avatar_encryption_key_from_seed(identity_seed);
     let cipher =
         Aes256Gcm::new_from_slice(&key).map_err(|e| format!("Failed to create cipher: {}", e))?;
 
@@ -1074,6 +1111,11 @@ pub fn encrypt_av1_data(av1_data: &[u8], handle: &str) -> Result<Vec<u8>, String
 /// # Returns
 /// Raw AV1 OBU bitstream
 pub fn decrypt_av1_data(encrypted: &[u8], handle: &str) -> Result<Vec<u8>, String> {
+    decrypt_av1_data_from_seed(encrypted, ihi::handle_to_hash(handle).as_bytes())
+}
+
+/// `decrypt_av1_data` from the already-derived `identity_seed`. Byte-compatible with the handle path.
+pub fn decrypt_av1_data_from_seed(encrypted: &[u8], identity_seed: &[u8; 32]) -> Result<Vec<u8>, String> {
     use aes_gcm::{aead::Aead, Aes256Gcm, KeyInit};
 
     if encrypted.len() < 12 + 16 {
@@ -1089,8 +1131,8 @@ pub fn decrypt_av1_data(encrypted: &[u8], handle: &str) -> Result<Vec<u8>, Strin
         .map_err(|_| "Failed to extract nonce")?;
     let ciphertext = &encrypted[12..];
 
-    // Derive encryption key from handle
-    let key = derive_avatar_encryption_key(handle);
+    // Derive encryption key from the identity seed
+    let key = derive_avatar_encryption_key_from_seed(identity_seed);
     let cipher =
         Aes256Gcm::new_from_slice(&key).map_err(|e| format!("Failed to create cipher: {}", e))?;
 
@@ -1218,7 +1260,7 @@ fn decode_vsf_length(buf: &[u8]) -> Result<(usize, usize), String> {
 /// Complete signed VSF bytes ready for upload
 pub fn build_signed_avatar_vsf(
     av1_data: &[u8],
-    handle: &str,
+    identity_seed: &[u8; 32],
     avatar_signing_key: &SigningKey,
     avatar_verifying_key: &VerifyingKey,
 ) -> Result<Vec<u8>, String> {
@@ -1226,7 +1268,7 @@ pub fn build_signed_avatar_vsf(
     use vsf::{VsfBuilder, VsfType};
 
     // Encrypt AV1 data (wraps in v'a' then encrypts)
-    let encrypted = encrypt_av1_data(av1_data, handle)?;
+    let encrypted = encrypt_av1_data_from_seed(av1_data, identity_seed)?;
 
     // Build VSF with avatar pubkey and signature placeholder Uses "image" section with "pixels" v'e' field for encrypted data
     let vsf_bytes = VsfBuilder::new()
@@ -1294,26 +1336,35 @@ pub fn upload_avatar(
     handle: &str,
     handle_proof: &[u8; 32],
 ) -> Result<String, String> {
+    upload_avatar_from_seed(device_secret, ihi::handle_to_hash(handle).as_bytes(), handle_proof)
+}
+
+/// `upload_avatar` from the already-derived `identity_seed`. String-free owner path.
+pub fn upload_avatar_from_seed(
+    device_secret: &SigningKey,
+    identity_seed: &[u8; 32],
+    handle_proof: &[u8; 32],
+) -> Result<String, String> {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 
-    // Read from cache by handle
-    let storage_key = avatar_storage_key(handle);
+    // Read from cache by the identity seed's storage key
+    let storage_key = avatar_storage_key_from_seed(identity_seed);
     let cache_path = avatar_cache_path(&storage_key).map_err(|e| e.to_string())?;
-    let local_vsf = crate::storage::read_file(&cache_path, &format!("avatar/{}", handle))
-        .map_err(|e| format!("Failed to read avatar for {}: {}", handle, e))?;
+    let local_vsf = crate::storage::read_file(&cache_path, &format!("avatar/{}", storage_key))
+        .map_err(|e| format!("Failed to read avatar: {}", e))?;
 
     // Verify local file is unmodified original
     vsf::verification::is_original(&local_vsf)?;
 
     // Extract AV1 data from local avatar VSF (decrypts if encrypted)
-    let av1_data = extract_av1_data(&local_vsf, handle)?;
+    let av1_data = extract_av1_data_from_seed(&local_vsf, identity_seed)?;
 
     // Derive avatar keypair
-    let (avatar_signing, avatar_verifying) = derive_avatar_keypair(device_secret, handle);
+    let (avatar_signing, avatar_verifying) = derive_avatar_keypair_from_seed(device_secret, identity_seed);
 
     // Build signed VSF for upload (re-encrypts the AV1 data)
     let signed_vsf =
-        build_signed_avatar_vsf(&av1_data, handle, &avatar_signing, &avatar_verifying)?;
+        build_signed_avatar_vsf(&av1_data, identity_seed, &avatar_signing, &avatar_verifying)?;
 
     // storage_key already computed above when reading from cache
     let url = format!("{}/avatar/{}", FGTW_URL, storage_key);
@@ -1329,9 +1380,9 @@ pub fn upload_avatar(
     // Encode handle_proof for header
     let handle_proof_b64 = URL_SAFE_NO_PAD.encode(handle_proof);
 
-    let client = reqwest::blocking::Client::new();
-    let response = client
+    let response = crate::network::http::blocking()
         .put(&url)
+        .timeout(std::time::Duration::from_secs(30))
         .header("Content-Type", "application/octet-stream")
         .header("X-Handle-Proof", handle_proof_b64)
         .body(signed_vsf)
@@ -1374,8 +1425,11 @@ pub fn download_avatar(handle: &str) -> Option<(usize, Vec<u8>)> {
         &storage_key[..8]
     ));
 
-    let client = reqwest::blocking::Client::new();
-    let response = client.get(&url).send().ok()?;
+    let response = crate::network::http::blocking()
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(30))
+        .send()
+        .ok()?;
 
     if !response.status().is_success() {
         crate::log(&format!("Avatar: FGTW returned {}", response.status()));
@@ -1431,8 +1485,11 @@ pub fn sync_avatar_bidirectional(
     let local_ts = get_local_avatar_timestamp(handle);
 
     // Query server for avatar with timestamp header
-    let client = reqwest::blocking::Client::new();
-    let response = match client.get(&url).send() {
+    let response = match crate::network::http::blocking()
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(30))
+        .send()
+    {
         Ok(r) => r,
         Err(e) => return AvatarSyncResult::Error(format!("Network error: {}", e)),
     };
