@@ -50,8 +50,8 @@ const RING_OFFLINE_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_50_50
 /// Add-friend result text + the in-flight hourglass: green on success, red on not-found/error. α+darkness.
 const SEARCH_FOUND_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_40_E0_40));
 const SEARCH_FAIL_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_E0_40_40));
-/// Neutral hourglass tint while the search is in flight (soft grey-white). α+darkness.
-const HOURGLASS_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_C0_C0_C0));
+/// Hourglass tint while the search is in flight (orange). α+darkness.
+const HOURGLASS_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_FF_A5_00));
 
 /// Deploy version = the crate's patch number from `Cargo.toml`, baked in at compile time. The Cargo version IS the version — `deploy.sh` bumps the patch and ships; local test/release builds inherit whatever the tree currently says, so the displayed number only advances on a real deploy. (Major/minor live in 0.0 today, so the patch is the whole counter; revisit the encoding if minor ever moves.)
 fn deploy_version() -> u32 {
@@ -265,7 +265,9 @@ pub struct PhotonApp {
     contacts_textbox: Option<Textbox>,
     /// Plus button to the right of `contacts_textbox` — clicking it (or pressing Enter in the textbox) triggers the add-contact flow (`HandleQuery::search`). Will eventually carry an idle "+" glyph and an in-progress rotating-hourglass animation (legacy port from `compositing.rs`); that lands when `ProgressButton` gets extracted to fluor.
     contacts_plus_btn: Option<Button>,
-    /// In-memory contact list. Populated from `AttestationData.contacts` on attestation success and grown by `submit_add_friend` → `HandleQuery::search` results. Persistence (FlatStorage write on add) + rendering as scrollable rows below the search box land in subsequent slices.
+    /// Encrypted local storage — initialized after attestation success with the device secret + handle.
+    storage: Option<crate::storage::FlatStorage>,
+    /// Contact list. Populated from `AttestationData.contacts` on attestation success and grown by `submit_add_friend` → `HandleQuery::search` results. Persisted to FlatStorage on add.
     contacts: Vec<crate::types::Contact>,
     /// `true` while an add-friend FGTW search is in flight (between `submit_add_friend` firing `hq.search` and `on_search_result` landing). Drives the rotating-hourglass-over-the-plus-button cue.
     add_in_flight: bool,
@@ -326,6 +328,7 @@ impl PhotonApp {
             online: false,
             contacts_textbox: None,
             contacts_plus_btn: None,
+            storage: None,
             contacts: Vec::new(),
             add_in_flight: false,
             hourglass_angle: 0.0,
@@ -588,6 +591,25 @@ impl FluorApp for PhotonApp {
             self.device_avatar_pixels = crate::ui::avatar::load_avatar_from_seed(&remembered.identity_seed)
                 .map(|(_, vsf_rgb)| crate::ui::colour_convert::vsf_rgb_to_bt2020(&vsf_rgb));
             self.hints_dismissed = false; // fresh Ready entry → the avatar prompt gets a chance until first interaction
+            // Initialize local storage and load contacts immediately so the contact list is visible before the FGTW round-trip completes.
+            if let Some(kp) = &self.device_keypair {
+                let device_secret = *kp.secret.as_bytes();
+                match crate::storage::FlatStorage::new(
+                    crate::storage::APP,
+                    remembered.vault_seed,
+                    device_secret,
+                ) {
+                    Ok(s) => {
+                        self.contacts = crate::storage::contacts::load_all_contacts(&s);
+                        crate::log(&format!(
+                            "UI: loaded {} contact(s) from local vault on resume",
+                            self.contacts.len()
+                        ));
+                        self.storage = Some(s);
+                    }
+                    Err(e) => crate::log(&format!("STORAGE: init failed on resume: {}", e)),
+                }
+            }
             self.state = AppState::Ready;
             if let Some(hq) = self.handle_query.as_ref() {
                 crate::log("UI: resumed to Ready from local session roots (tohu) — FGTW announce + presence run in background");
@@ -1923,9 +1945,10 @@ impl PhotonApp {
         if let Some(hq) = self.handle_query.as_ref() {
             crate::log(&format!("add-friend: searching FGTW for '{}'", handle));
             hq.search(handle);
-            // Enter the search-in-flight visual state: rotating hourglass over the plus button, last result cleared.
+            // Enter the search-in-flight visual state: rotating hourglass over the plus button, last result cleared. Defocus the textbox so further typing doesn't mutate the handle being searched.
             self.add_in_flight = true;
             self.search_status = None;
+            self.change_focus(None);
         }
     }
 
@@ -2054,12 +2077,37 @@ impl PhotonApp {
                     self.device_avatar_scaled = None;
                     self.device_avatar_scaled_diameter = 0;
                 }
-                self.contacts = data.contacts.clone();
-                crate::log(&format!(
-                    "UI: loaded {} contact(s) into Ready state",
-                    self.contacts.len()
-                ));
-                self.hints_dismissed = false; // fresh Ready entry → the avatar prompt gets a chance until first interaction
+                // Initialize local encrypted storage from the session's vault_seed + device secret.
+                if let Some(session) = &self.session {
+                    if let Some(kp) = &self.device_keypair {
+                        let device_secret = *kp.secret.as_bytes();
+                        match crate::storage::FlatStorage::new(
+                            crate::storage::APP,
+                            session.vault_seed,
+                            device_secret,
+                        ) {
+                            Ok(s) => self.storage = Some(s),
+                            Err(e) => crate::log(&format!("STORAGE: init failed: {}", e)),
+                        }
+                    }
+                }
+                // Merge incoming contacts with any already loaded locally — union by handle_proof so contacts added on another device (via FGTW/cloud) appear without losing locally-added ones.
+                let mut added = 0usize;
+                for incoming in &data.contacts {
+                    let dominated = self.contacts.iter().any(|c| c.handle_proof == incoming.handle_proof);
+                    if !dominated {
+                        self.contacts.push(incoming.clone());
+                        added += 1;
+                    }
+                }
+                if added > 0 {
+                    crate::log(&format!(
+                        "UI: merged {} new contact(s) from FGTW (total: {})",
+                        added,
+                        self.contacts.len()
+                    ));
+                }
+                self.hints_dismissed = false;
                 self.state = AppState::Ready;
             }
             QueryResult::AlreadyAttested(peer) => {
@@ -2098,6 +2146,17 @@ impl PhotonApp {
         }
     }
 
+    /// Refocus the contacts textbox and select all text — used on search failure so the user can immediately retype.
+    fn refocus_contacts_select_all(&mut self) {
+        let Some(id) = self.contacts_textbox.as_ref().map(|t| t.hit_id()) else {
+            return;
+        };
+        self.change_focus(Some(id));
+        if let Some(tb) = self.contacts_textbox.as_mut() {
+            tb.select_all();
+        }
+    }
+
     /// Handle a [`SearchResult`] from `HandleQuery::search`. On `Found`, build a `Contact` from the peer and append to `self.contacts` (skip if a contact with the same handle already exists; should be rare given `submit_add_friend` pre-checks, but the search races against attestation worker's contact load). Ends the in-flight hourglass and sets the result text shown below the search box: green "added {h}", red "not found" / "error: …".
     fn on_search_result(&mut self, result: crate::ui::state::SearchResult) {
         use crate::ui::state::SearchResult;
@@ -2130,16 +2189,27 @@ impl PhotonApp {
                     self.contacts.len() + 1
                 ));
                 self.contacts.push(contact);
+                if let Some(storage) = self.storage.as_ref() {
+                    if let Some(c) = self.contacts.last() {
+                        if let Err(e) = crate::storage::contacts::save_contact(c, storage) {
+                            crate::log(&format!("Failed to save contact: {}", e));
+                        }
+                    }
+                }
                 self.search_status = Some((format!("added {handle}"), SEARCH_FOUND_COLOUR));
-                // Textbox clearing post-search would be nice UX but Textbox has no public `clear` method yet — the user can select-all+delete or backspace. Punted to a fluor follow-up: either add `Textbox::clear` or a "consume submit" option that auto-clears on successful submit.
+                if let Some(tb) = self.contacts_textbox.as_mut() {
+                    tb.clear();
+                }
             }
             SearchResult::NotFound => {
                 crate::log("search-result: handle not found on FGTW");
                 self.search_status = Some(("not found".to_string(), SEARCH_FAIL_COLOUR));
+                self.refocus_contacts_select_all();
             }
             SearchResult::Error(e) => {
                 crate::log(&format!("search-result: error '{}'", e));
                 self.search_status = Some((format!("error: {e}"), SEARCH_FAIL_COLOUR));
+                self.refocus_contacts_select_all();
             }
         }
     }
