@@ -488,10 +488,10 @@ mod tests {
         let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
         let chains = FriendshipChains::from_clutch(&[alice, bob], &eggs);
 
-        // Test keys — handle string identifies the vault (passless-key derives the rest).
+        let test_seed = [0xAA; 32];
         let device_secret = [0xBB; 32];
 
-        let storage = FlatStorage::new(crate::storage::APP, "friendship-test", device_secret).unwrap();
+        let storage = FlatStorage::new(crate::storage::APP, test_seed, device_secret).unwrap();
 
         // Save
         save_friendship_chains(&chains, &storage).unwrap();

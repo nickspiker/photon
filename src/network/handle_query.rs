@@ -418,7 +418,7 @@ impl HandleQuery {
                 let (identity_seed, vault_seed, handle_proof, persist_session) = match req {
                     QueryRequest::FirstAttest(handle) => {
                         let identity_seed = crate::storage::contacts::derive_identity_seed(&handle);
-                        let vault_seed = tohu::handle_seed(&handle);
+                        let vault_seed = identity_seed;
                         let handle_proof = Handle::username_to_handle_proof(&handle); // ~1s
                         // Defer persistence until FGTW confirms ownership (below) — a rejected attest must NOT leave session roots that would auto-resume into the same rejection next launch.
                         (identity_seed, vault_seed, handle_proof, true)
@@ -511,7 +511,7 @@ impl HandleQuery {
                         }
 
                         // Initialize FlatStorage for this session. A bare `return` here would silently strand the UI on the Attesting spinner because the result channel never gets a verdict — the worker has already proven FGTW says the handle is ours, but with no local vault we can't reach Ready. Surface the failure as a QueryResult::Error so the Launch screen flips to its error state and the user sees what happened.
-                        let storage = match crate::storage::FlatStorage::new_with_seed(crate::storage::APP, vault_seed, device_secret_bytes) {
+                        let storage = match crate::storage::FlatStorage::new(crate::storage::APP, vault_seed, device_secret_bytes) {
                             Ok(s) => s,
                             Err(e) => {
                                 let msg = format!("storage init failed: {}", e);
