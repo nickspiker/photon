@@ -93,10 +93,10 @@ echo ""
 echo "Signing macOS ARM64 binary..."
 ./target/release/photon-signature-signer target/aarch64-apple-darwin/release/photon-messenger
 
-# Build Android APK
+# Build Android APK (build-only; this script does its own R2 upload below)
 echo ""
 echo "Building Android release..."
-./build-android.sh
+./scripts/android/build.sh
 
 # R2 bucket for releases (flat structure with release type in filename)
 R2_BUCKET="holdmyoscilloscope"
@@ -127,14 +127,14 @@ wrangler r2 object put "$R2_BUCKET/$R2_PATH/photon-messenger-android-release.apk
 
 # Upload install scripts and assets
 wrangler r2 object put "$R2_BUCKET/$R2_PATH/install-release.sh" \
-    --file install-release.sh --content-type text/plain --remote
+    --file installers/install-release.sh --content-type text/plain --remote
 wrangler r2 object put "$R2_BUCKET/$R2_PATH/icon-1024.png" \
     --file assets/icon-1024.png --content-type image/png --remote
 wrangler r2 object put "$R2_BUCKET/$R2_PATH/app.png" \
     --file assets/icon-256.png --content-type image/png --remote
 
 # Patch and upload install-release.ps1 with correct hash
-sed "s/\$expectedHash = \"[A-F0-9]*\"/\$expectedHash = \"$WINDOWS_SHA256\"/" install-release.ps1 > /tmp/install-release.ps1
+sed "s/\$expectedHash = \"[A-F0-9]*\"/\$expectedHash = \"$WINDOWS_SHA256\"/" installers/install-release.ps1 > /tmp/install-release.ps1
 wrangler r2 object put "$R2_BUCKET/$R2_PATH/install-release.ps1" \
     --file /tmp/install-release.ps1 --content-type text/plain --remote
 
