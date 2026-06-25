@@ -52,6 +52,8 @@ const SEARCH_FOUND_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_40_E0
 const SEARCH_FAIL_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_E0_40_40));
 /// Hourglass tint while the search is in flight (orange). α+darkness.
 const HOURGLASS_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_FF_A5_00));
+/// Grey placeholder circle for contacts/avatars without a loaded image.
+const AVATAR_PLACEHOLDER: u32 = 0xFF_C5_C5_C5;
 
 /// Deploy version = the crate's patch number from `Cargo.toml`, baked in at compile time. The Cargo version IS the version — `deploy.sh` bumps the patch and ships; local test/release builds inherit whatever the tree currently says, so the displayed number only advances on a real deploy. (Major/minor live in 0.0 today, so the patch is the whole counter; revisit the encoding if minor ever moves.)
 fn deploy_version() -> u32 {
@@ -291,10 +293,18 @@ pub struct PhotonApp {
     avatar_hit_id: HitId,
     /// One-shot Android image-picker request. Set when the user taps the avatar; consumed by the JNI poll (`nativePollAvatarPicker`) which signals the Activity to launch `ACTION_GET_CONTENT`. Stays `None` on idle frames so the Activity doesn't churn.
     pending_picker_request: bool,
+    /// Index of the contact currently open in Conversation view, or `None` when on the Ready (contacts list) screen.
+    active_contact: Option<usize>,
+    /// Base hit ID for contact rows. Row `i` gets `contact_hit_base + i`. Allocated in `init` after the other widget IDs.
+    contact_hit_base: HitId,
+    /// Hit ID for the "← Contacts" back button on the Conversation screen.
+    back_btn_hit_id: HitId,
     /// Contact-list scroll offset in pixels (Ready screen). 0 = top; grows as the user scrolls down. The user section (avatar/search) stays fixed; only the rows below the separator scroll. Re-clamped to the list extent each render.
     contacts_scroll: isize,
     /// `true` once the user has interacted (any click or keystroke) since the last transition into `Ready` — hides the standing avatar prompt. Hints are event-shown and interaction-cleared, never hover- or time-driven; reset to `false` on each `Ready` entry. See [`clear_hints`].
     hints_dismissed: bool,
+    /// `true` while the cursor is over the Ready-screen avatar circle. Drives the "drag/drop to update avatar" hover hint.
+    avatar_hovered: bool,
 }
 
 impl PhotonApp {
@@ -340,9 +350,13 @@ impl PhotonApp {
             device_avatar_scaled: None,
             device_avatar_scaled_diameter: 0,
             avatar_hit_id: HIT_NONE,
+            active_contact: None,
+            contact_hit_base: HIT_NONE,
+            back_btn_hit_id: HIT_NONE,
             pending_picker_request: false,
             contacts_scroll: 0,
             hints_dismissed: false,
+            avatar_hovered: false,
         }
     }
 
@@ -543,6 +557,13 @@ impl FluorApp for PhotonApp {
         // Reserve a hit-id for the Ready-screen avatar circle. Not a Widget — the avatar is just a paint primitive — so click dispatch is handled directly in `on_event`'s MouseInput::Pressed arm, not thru `widget::dispatch_click`. Incrementing the shared counter keeps the contiguous-id contract intact for the `[]h` debug overlay.
         self.hit_counter = self.hit_counter.wrapping_add(1);
         self.avatar_hit_id = self.hit_counter;
+        // Reserve a block of 256 hit IDs for contact rows. Row i stamps `contact_hit_base + i`.
+        self.hit_counter = self.hit_counter.wrapping_add(1);
+        self.contact_hit_base = self.hit_counter;
+        self.hit_counter = self.hit_counter.wrapping_add(255);
+        // Back button on conversation screen.
+        self.hit_counter = self.hit_counter.wrapping_add(1);
+        self.back_btn_hit_id = self.hit_counter;
         self.update_widget_layout(ctx);
 
         // HandleQuery: device keypair is derived deterministically from the machine fingerprint (NEVER stored to disk — same machine yields the same keypair so attestations are reproducible across restarts). HandleQuery owns the UDP socket + sends/receives FGTW packets; an empty PeerStore wires the transport so query packets have somewhere to fan out to. The proxy expect is structurally safe: fluor's host calls `set_event_proxy` BEFORE `init` (see `run_app` in fluor/src/host/app.rs), so `event_proxy` is always `Some` here.
@@ -687,6 +708,13 @@ impl FluorApp for PhotonApp {
                         changed = true;
                     }
                 }
+                {
+                    let want = self.avatar_hit_id != HIT_NONE && new_hit == self.avatar_hit_id;
+                    if self.avatar_hovered != want {
+                        self.avatar_hovered = want;
+                        changed = true;
+                    }
+                }
                 if changed {
                     ctx.window.request_redraw();
                 }
@@ -810,6 +838,37 @@ impl FluorApp for PhotonApp {
                     }
                     ctx.window.request_redraw();
                     return EventResponse::Handled;
+                }
+
+                // Back button on conversation screen.
+                if hit_id == self.back_btn_hit_id
+                    && matches!(self.state, AppState::Conversation)
+                    && self.back_btn_hit_id != HIT_NONE
+                {
+                    self.state = AppState::Ready;
+                    self.active_contact = None;
+                    ctx.window.request_redraw();
+                    return EventResponse::Handled;
+                }
+
+                // Contact row tap — hit IDs in [contact_hit_base, contact_hit_base + 255].
+                if matches!(self.state, AppState::Ready)
+                    && self.contact_hit_base != HIT_NONE
+                    && hit_id >= self.contact_hit_base
+                    && hit_id < self.contact_hit_base.wrapping_add(256)
+                {
+                    let ci = (hit_id - self.contact_hit_base) as usize;
+                    if ci < self.contacts.len() {
+                        crate::log(&format!(
+                            "contact-tap: opening conversation with '{}'",
+                            self.contacts[ci].handle.as_str()
+                        ));
+                        self.active_contact = Some(ci);
+                        self.state = AppState::Conversation;
+                        self.change_focus(None);
+                        ctx.window.request_redraw();
+                        return EventResponse::Handled;
+                    }
                 }
 
                 // Focus follows click for focusable widgets (textbox + attest button). Chrome buttons aren't focusable (their `Widget::focus()` returns None) so a click on close/min/max leaves the prior focus intact — matches GNOME / macOS convention. We can't borrow `self` mutably twice in one walk, so determine "is this id focusable" via a pre-walk, then change_focus before the dispatch.
@@ -970,6 +1029,12 @@ impl FluorApp for PhotonApp {
                     }
                     // Esc clears focus. Also cancels an in-flight attestation back to Fresh — without this the user is stuck on the "Attesting…" indicator with no way out if the FGTW response never lands (offline FGTW, peer worker stall, etc.). Android back routes here via `nativeOnBackPressed` → Escape.
                     Key::Named(NamedKey::Escape) => {
+                        if matches!(self.state, AppState::Conversation) {
+                            self.state = AppState::Ready;
+                            self.active_contact = None;
+                            ctx.window.request_redraw();
+                            return EventResponse::Handled;
+                        }
                         if matches!(self.state, AppState::Launch(LaunchState::Attesting)) {
                             self.state = AppState::Launch(LaunchState::Fresh);
                             ctx.window.request_redraw();
@@ -1210,7 +1275,12 @@ impl FluorApp for PhotonApp {
         let show_zoom = self.zoom_hint && cfg!(feature = "development");
 
         // Title-bar text by screen, computed BEFORE the chrome borrow (peer count reads `self.handle_query` / `self.online`). Launch/attest shows the "← Network" affordance; once attested (Ready) it shows the live connection count — FGTW seed (counted when online) plus every distinct peer device in the store. `set_title` only re-rasterizes chrome when the string actually changes, so this is cheap to recompute each frame.
-        let title_text: String = if matches!(self.state, AppState::Ready) {
+        let title_text: String = if matches!(self.state, AppState::Conversation) {
+            self.active_contact
+                .and_then(|ci| self.contacts.get(ci))
+                .map(|c| c.handle.as_str().to_string())
+                .unwrap_or_else(|| "Conversation".to_string())
+        } else if matches!(self.state, AppState::Ready) {
             let store_peers = self
                 .handle_query
                 .as_ref()
@@ -1469,7 +1539,6 @@ impl FluorApp for PhotonApp {
 
             let (cx, cy, radius) = ready_layout.avatar_center_radius();
             // 0xFFC5C5C5 in fluor's α+darkness format = α 0xFF, darkness 0xC5 each channel = visible RGB(0x3A, 0x3A, 0x3A) ≈ 22% brightness. Standalone constant (no theme.rs entry yet) — promote when Ready chrome gets a proper palette pass.
-            const AVATAR_PLACEHOLDER: u32 = 0xFF_C5_C5_C5;
             if self.device_avatar_pixels.is_some() {
                 let diameter = (radius * 2.0) as usize;
                 if self.device_avatar_scaled.is_none()
@@ -1506,9 +1575,9 @@ impl FluorApp for PhotonApp {
                 self.avatar_hit_id,
             );
 
-            // Avatar update hint below the circle — DESKTOP ONLY. On Android, tapping the grey circle to pick an image is self-evident, so no prompt. On desktop the avatar updates by drag/drop (not obvious), so a standing "drag/drop" prompt shows while no avatar is set AND the user hasn't interacted yet this Ready session; any click or keystroke dismisses it (event-driven — never hover or time, per `clear_hints`).
+            // Avatar update hint below the circle — DESKTOP ONLY, shown on hover. On Android, tapping the grey circle to pick an image is self-evident.
             #[cfg(not(target_os = "android"))]
-            if self.device_avatar_pixels.is_none() && !self.hints_dismissed {
+            if self.avatar_hovered {
                 // Anchored directly below the avatar circle (not the hint slot), at half the hint slot's text size.
                 let size = (ready_layout.hint.y1 - ready_layout.hint.y0) as f32 * 0.3;
                 let hcy = cy + radius + size;
@@ -1729,6 +1798,21 @@ impl FluorApp for PhotonApp {
                     None,
                     None,
                 );
+
+                // Stamp the row into the hit map so clicks dispatch to this contact.
+                if ci < 256 {
+                    let row_hit = self.contact_hit_base.wrapping_add(ci as HitId);
+                    restamp_hit_rect(
+                        &mut chrome.hit_test_map,
+                        buf_w,
+                        buf_h,
+                        rows.x0 as isize,
+                        row_top.max(rows.y0 as isize),
+                        rows.x1 as isize,
+                        (row_top + row_h).min(buf_h as isize),
+                        row_hit,
+                    );
+                }
             }
 
             // Persistent degraded-vault indicator: amber text at the bottom. The matching warm background tint already lives in the noise pass above (we swap BG_BASE → BG_BASE_WARNING) so we add no extra render pass here, just the text glyph. Full details live in the README.
@@ -1794,6 +1878,100 @@ impl FluorApp for PhotonApp {
             }
         }
 
+        // Conversation screen — shows the selected contact's name, clutch state, and (eventually) messages.
+        if matches!(self.state, AppState::Conversation) {
+            let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
+            if let Some(ci) = self.active_contact {
+                if ci < self.contacts.len() {
+                    let contact = &self.contacts[ci];
+                    let ru = ctx.viewport.ru;
+                    let unit = (buf_h as f32 * 0.04 * ru).max(12.0);
+
+                    // Back arrow (top-left) — below the chrome title bar area.
+                    let back_y = buf_h as f32 * 0.06 + unit;
+                    let back_size = unit * 0.8;
+                    let back_text = "\u{2190} Contacts";
+                    ctx.text.draw_text_left_u32(
+                        &mut canvas,
+                        back_text,
+                        unit,
+                        back_y,
+                        back_size,
+                        500,
+                        CONTACT_NAME_COLOUR,
+                        "Oxanium",
+                        None, None, None,
+                    );
+                    // Stamp the back button hit rect.
+                    let back_w = ctx.text.measure_text_width(back_text, back_size, 500, "Oxanium");
+                    restamp_hit_rect(
+                        &mut chrome.hit_test_map,
+                        buf_w,
+                        buf_h,
+                        0,
+                        (back_y - back_size) as isize,
+                        (unit + back_w + unit) as isize,
+                        (back_y + back_size) as isize,
+                        self.back_btn_hit_id,
+                    );
+
+                    // Contact name, centred
+                    let name_y = back_y + unit * 2.5;
+                    let name_size = unit * 1.2;
+                    ctx.text.draw_text_center_u32(
+                        &mut canvas,
+                        contact.handle.as_str(),
+                        buf_w as f32 * 0.5,
+                        name_y,
+                        name_size,
+                        600,
+                        CONTACT_NAME_COLOUR,
+                        "Oxanium",
+                        None, None, None,
+                    );
+
+                    // Avatar
+                    let avatar_y = name_y + unit * 3.0;
+                    let avatar_diam = (unit * 3.0) as usize;
+                    let avatar_r = avatar_diam as f32 * 0.5;
+                    let avatar_cx = buf_w as f32 * 0.5;
+                    if let Some(scaled) = contact.avatar_scaled.as_ref() {
+                        crate::ui::avatar_render::draw_avatar(
+                            &mut canvas, avatar_cx, avatar_y, avatar_r, scaled, avatar_diam, None,
+                        );
+                    } else {
+                        paint::draw_circle(&mut canvas, avatar_cx, avatar_y, avatar_r, AVATAR_PLACEHOLDER, None);
+                    }
+                    let ring = if contact.is_online { RING_ONLINE_COLOUR } else { RING_OFFLINE_COLOUR };
+                    let ring_thick = (avatar_r * 0.15).max(1.0);
+                    paint::draw_circle(&mut canvas, avatar_cx, avatar_y, avatar_r + ring_thick, ring, None);
+
+                    // CLUTCH state
+                    let clutch_y = avatar_y + avatar_r + unit * 2.0;
+                    let clutch_label = match contact.clutch_state {
+                        crate::types::ClutchState::Pending => "CLUTCH: pending",
+                        crate::types::ClutchState::AwaitingProof => "CLUTCH: awaiting proof",
+                        crate::types::ClutchState::Complete => "CLUTCH: complete",
+                    };
+                    let clutch_colour = match contact.clutch_state {
+                        crate::types::ClutchState::Complete => SEARCH_FOUND_COLOUR,
+                        _ => HOURGLASS_COLOUR,
+                    };
+                    ctx.text.draw_text_center_u32(
+                        &mut canvas,
+                        clutch_label,
+                        buf_w as f32 * 0.5,
+                        clutch_y,
+                        unit * 0.7,
+                        500,
+                        clutch_colour,
+                        "Oxanium",
+                        None, None, None,
+                    );
+                }
+            }
+        }
+
         chrome.flatten_into(target, buf_w, buf_h, None);
 
         // Hit-mask overlay (`[]h`): replace every pixel with the opaque random colour for its hit_test_map ID. Drawn LAST over everything (including chrome + chord hint) — hit testing is per-final-pixel anyway, so the overlay shows exactly what `hit_at` would return. `.get` keeps the index lookup safe for any stale stamp at an unregistered high ID.
@@ -1853,6 +2031,16 @@ impl FluorApp for PhotonApp {
             if tb.hit_id() == hit {
                 return CursorIcon::Text;
             }
+        }
+        // Contact rows and conversation back button — pointer cursor.
+        if self.contact_hit_base != HIT_NONE
+            && hit >= self.contact_hit_base
+            && hit < self.contact_hit_base.wrapping_add(256)
+        {
+            return CursorIcon::Pointer;
+        }
+        if hit == self.back_btn_hit_id && self.back_btn_hit_id != HIT_NONE {
+            return CursorIcon::Pointer;
         }
         match chrome::get_resize_edge(ctx.viewport.width_px, ctx.viewport.height_px, x, y) {
             ResizeEdge::Top | ResizeEdge::Bottom => CursorIcon::NsResize,
@@ -1927,13 +2115,7 @@ impl PhotonApp {
         if handle.is_empty() {
             return;
         }
-        if let Some(s) = &self.session {
-            // Compare the typed handle's identity_seed (cheap BLAKE3, not the ~1s proof) to our own.
-            if crate::storage::contacts::derive_identity_seed(&handle) == s.identity_seed {
-                crate::log("add-friend: refusing to add own handle");
-                return;
-            }
-        }
+
         if self
             .contacts
             .iter()
@@ -1942,6 +2124,39 @@ impl PhotonApp {
             crate::log(&format!("add-friend: '{}' already in contacts", handle));
             return;
         }
+        // Self-contact: if the handle matches our own identity, create the contact directly — FGTW won't return our own record as a search result.
+        let is_self = self.session.as_ref().map_or(false, |s| {
+            crate::storage::contacts::derive_identity_seed(&handle) == s.identity_seed
+        });
+        if is_self {
+            if let Some(session) = &self.session {
+                let handle_text = crate::types::HandleText::new(&handle);
+                let device_pubkey = self.device_keypair.as_ref()
+                    .map(|kp| crate::types::DevicePubkey::from_bytes(*kp.public.as_bytes()))
+                    .unwrap_or_else(|| crate::types::DevicePubkey::from_bytes([0u8; 32]));
+                let mut contact = crate::types::Contact::new(
+                    handle_text,
+                    session.handle_proof,
+                    device_pubkey,
+                );
+                contact.clutch_state = crate::types::ClutchState::Complete;
+                crate::log("add-friend: self-contact — CLUTCH auto-completed");
+                self.contacts.push(contact);
+                if let Some(storage) = self.storage.as_ref() {
+                    if let Some(c) = self.contacts.last() {
+                        if let Err(e) = crate::storage::contacts::save_contact(c, storage) {
+                            crate::log(&format!("Failed to save contact: {}", e));
+                        }
+                    }
+                }
+                self.search_status = Some((format!("added {handle}"), SEARCH_FOUND_COLOUR));
+                if let Some(tb) = self.contacts_textbox.as_mut() {
+                    tb.clear();
+                }
+            }
+            return;
+        }
+
         if let Some(hq) = self.handle_query.as_ref() {
             crate::log(&format!("add-friend: searching FGTW for '{}'", handle));
             hq.search(handle);
@@ -2177,12 +2392,16 @@ impl PhotonApp {
                     self.search_status = Some((format!("{handle} already added"), SEARCH_FOUND_COLOUR));
                     return;
                 }
-                let contact = crate::types::Contact::new(
+                let mut contact = crate::types::Contact::new(
                     peer.handle.clone(),
                     peer.handle_proof,
                     peer.device_pubkey.clone(),
                 )
                 .with_ip(peer.ip);
+                // Self-contact: same identity, no key exchange needed.
+                if self.session.as_ref().map(|s| s.identity_seed) == Some(contact.handle_hash) {
+                    contact.clutch_state = crate::types::ClutchState::Complete;
+                }
                 crate::log(&format!(
                     "search-result: added contact '{}' (total: {})",
                     contact.handle.as_str(),
