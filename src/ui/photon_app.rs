@@ -46,7 +46,7 @@ const CONTACT_NAME_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_F0_F0
 const SEPARATOR_COLOUR: u32 = 0x40_00_00_00;
 /// Contact presence ring around a row avatar: green online, grey offline. α+darkness.
 const RING_ONLINE_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_00_C0_00));
-const RING_OFFLINE_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_50_50_50));
+const RING_OFFLINE_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_28_28_28));
 /// Add-friend result text + the in-flight hourglass: green on success, red on not-found/error. α+darkness.
 const SEARCH_FOUND_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_40_E0_40));
 const SEARCH_FAIL_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_E0_40_40));
@@ -1817,7 +1817,7 @@ impl FluorApp for PhotonApp {
             let avatar_cx = rows.x0 as f32 + avatar_r * 1.5;
             let text_x = avatar_cx + avatar_r * 1.5;
             let text_size = row_h as f32 * 0.5;
-            let ring_thickness = (avatar_r * 0.15).max(1.0);
+            let ring_thickness = (avatar_r * 0.0375).max(1.0);
             for (vis, &ci) in matching.iter().enumerate() {
                 let row_top = rows.y0 as isize + vis as isize * row_h - self.contacts_scroll;
                 if row_top + row_h <= rows.y0 as isize || row_top >= buf_h as isize {
@@ -2012,7 +2012,7 @@ impl FluorApp for PhotonApp {
                         paint::draw_circle(&mut canvas, avatar_cx, avatar_y, avatar_r, AVATAR_PLACEHOLDER, None);
                     }
                     let ring = if contact.is_online { RING_ONLINE_COLOUR } else { RING_OFFLINE_COLOUR };
-                    let ring_thick = (avatar_r * 0.15).max(1.0);
+                    let ring_thick = (avatar_r * 0.0375).max(1.0);
                     paint::draw_circle(&mut canvas, avatar_cx, avatar_y, avatar_r + ring_thick, ring, None);
 
                     // CLUTCH state
