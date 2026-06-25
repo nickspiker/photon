@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 #[cfg(not(target_os = "android"))]
 use crate::ui::PhotonEvent;
 #[cfg(not(target_os = "android"))]
-use winit::event_loop::EventLoopProxy;
+use fluor::host::WakeSender;
 
 /// Shared contact list - UI updates this, background thread reads it
 pub type ContactPubkeys = Arc<Mutex<Vec<DevicePubkey>>>;
@@ -240,16 +240,16 @@ pub struct StatusChecker {
 }
 
 impl StatusChecker {
-    /// Create a new status checker using a shared socket (Desktop version with EventLoopProxy)
+    /// Create a new status checker using a shared socket (Desktop version with a fluor wake sender)
     ///
-    /// `socket` is the shared UDP socket from HandleQuery (same port announced to FGTW). `keypair` is the device keypair (same one used for FGTW registration). `contacts` is shared with UI - only respond to pings from pubkeys in this list. `sync_records` is shared with UI - provides last_received_ef6 for each conversation `event_proxy` is used to wake the event loop when network data arrives.
+    /// `socket` is the shared UDP socket from HandleQuery (same port announced to FGTW). `keypair` is the device keypair (same one used for FGTW registration). `contacts` is shared with UI - only respond to pings from pubkeys in this list. `sync_records` is shared with UI - provides last_received_ef6 for each conversation. `event_proxy` is the fluor `WakeSender` used to wake the UI thread when network data arrives (was winit's `EventLoopProxy` pre-migration; HandleQuery took the same path).
     #[cfg(not(target_os = "android"))]
     pub fn new(
         socket: Arc<UdpSocket>,
         keypair: Keypair,
         contacts: ContactPubkeys,
         sync_records: SyncRecordsProvider,
-        event_proxy: EventLoopProxy<PhotonEvent>,
+        event_proxy: Arc<dyn WakeSender<PhotonEvent>>,
     ) -> Result<Self, String> {
         let (ping_tx, ping_rx) = channel::<PingRequest>();
         let (message_tx, message_rx) = channel::<MessageRequest>();
@@ -507,13 +507,13 @@ impl StatusChecker {
     }
 }
 
-/// Event loop proxy type alias for optional use
+/// Wake-sender type alias for optional use. Desktop carries a fluor `WakeSender` (post-migration; was winit's `EventLoopProxy`); Android has no UI-thread wake here (the JNI/Choreographer path drives redraws), so it stays unit.
 #[cfg(not(target_os = "android"))]
-type OptionalEventProxy = Option<EventLoopProxy<PhotonEvent>>;
+type OptionalEventProxy = Option<Arc<dyn WakeSender<PhotonEvent>>>;
 #[cfg(target_os = "android")]
 type OptionalEventProxy = Option<()>;
 
-/// Send a status update and wake the event loop if proxy is available
+/// Send a status update and wake the UI thread if a wake sender is available
 fn send_status_update(
     status_tx: &Sender<StatusUpdate>,
     update: StatusUpdate,
@@ -522,7 +522,7 @@ fn send_status_update(
     let _ = status_tx.send(update);
     #[cfg(not(target_os = "android"))]
     if let Some(proxy) = event_proxy {
-        if let Err(e) = proxy.send_event(PhotonEvent::NetworkUpdate) {
+        if let Err(e) = proxy.send(PhotonEvent::NetworkUpdate) {
             crate::log(&format!("Status: Failed to send wake event: {:?}", e));
         }
     }
