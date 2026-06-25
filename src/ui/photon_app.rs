@@ -6,19 +6,19 @@ use super::photon_logo::paint_photon_logo;
 use super::ready_layout::ReadyLayout;
 use super::state::{AppState, LaunchState};
 use super::PhotonEvent;
-use crate::network::fgtw::{derive_device_keypair, PeerStore};
 #[cfg(not(target_os = "android"))]
 use crate::network::fgtw::get_machine_fingerprint;
+use crate::network::fgtw::{derive_device_keypair, PeerStore};
 use crate::network::{HandleQuery, QueryResult};
 use fluor::canvas::{Canvas, PixelRect};
 use fluor::coord::Coord;
+use fluor::event::{
+    CursorIcon, ElementState, Event, Ime, Key, MouseButton, MouseScrollDelta, NamedKey,
+};
 use fluor::geom::Viewport;
 use fluor::host::app::{Context, EventResponse, FluorApp};
 use fluor::host::chrome::{self, ResizeEdge};
 use fluor::host::chrome_widget::DefaultChrome;
-use fluor::event::{
-    CursorIcon, ElementState, Event, Ime, Key, MouseButton, MouseScrollDelta, NamedKey,
-};
 use fluor::host::widget::{self, Container, TabDir, Widget};
 use fluor::paint::{self, HitId, HIT_NONE};
 use fluor::widgets::{BlinkTimer, Button, Textbox};
@@ -32,7 +32,6 @@ const CHORD_RELEASE_GRACE: Duration = Duration::from_millis(40);
 
 /// Error-state message colour for the Launch screen's error slot — visible RGB (255, 80, 80), bright red, fully opaque. `fluor::theme::dark(fmt(visible_argb))` does the same compile-time pack as fluor's theme constants: `fmt` is identity on desktop and an R↔B swap on Android (RGBA_8888 byte order in the ANativeWindow buffer), `dark` flips RGB → darkness and sets α=0xFF.
 const ERROR_TEXT_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_FF_50_50));
-
 
 /// Colour for the dozenal version glyphs at the bottom of the screen: pure white (darkness 0 across all channels), α = 32 = 1/8 opacity. Stored directly in fluor's α+darkness format — `draw_text_center_u32` multiplies the glyph coverage into this α, so the version reads as a faint watermark over the background noise.
 const VERSION_COLOUR: u32 = 0x20_00_00_00;
@@ -452,9 +451,7 @@ impl PhotonApp {
             (Some(kp), Some(hp)) => {
                 match crate::ui::avatar::upload_avatar_from_seed(&kp.secret, &identity_seed, &hp) {
                     Ok(_) => crate::log("avatar picker: FGTW upload ok"),
-                    Err(e) => {
-                        crate::log(&format!("avatar picker: FGTW upload failed: {e}"))
-                    }
+                    Err(e) => crate::log(&format!("avatar picker: FGTW upload failed: {e}")),
                 }
             }
             _ => crate::log("avatar picker: skipping FGTW upload — keypair / proof unavailable"),
@@ -543,17 +540,18 @@ impl FluorApp for PhotonApp {
         db.load_font_data(include_bytes!("../../assets/Oxanium/Oxanium-ExtraLight.ttf").to_vec());
         db.load_font_data(include_bytes!("../../assets/Oxanium/Oxanium-Light.ttf").to_vec());
         // Regular weight uses the `+glyphs` superset: identical to plain Oxanium-Regular for 0x20-0x7e (normal text) but adds the dozenal digit glyphs in the reserved control-code block 0x10-0x1b (DLE..ESC = digits 0..11, Zil..Stelor). Rendering a dozenal number is then a plain draw_text of those bytes at weight 400 — no runtime SVG, no separate font family. Other weights stay on the plain faces (the dozenal glyphs only need to exist at one weight, and the version string renders at 400).
-        db.load_font_data(include_bytes!("../../assets/Oxanium/Oxanium-Regular+glyphs.ttf").to_vec());
+        db.load_font_data(
+            include_bytes!("../../assets/Oxanium/Oxanium-Regular+glyphs.ttf").to_vec(),
+        );
         db.load_font_data(include_bytes!("../../assets/Oxanium/Oxanium-Medium.ttf").to_vec());
         db.load_font_data(include_bytes!("../../assets/Oxanium/Oxanium-SemiBold.ttf").to_vec());
         db.load_font_data(include_bytes!("../../assets/Oxanium/Oxanium-Bold.ttf").to_vec());
         db.load_font_data(include_bytes!("../../assets/Oxanium/Oxanium-ExtraBold.ttf").to_vec());
 
         // Chrome owns its own hit-test map sized to the viewport, allocates four hit-ids for its buttons via the threaded counter, and stamps the perimeter + button rasters in `rasterize_chrome`. The Photon orb (chromatic starburst — same brand mark as the OS-level app icon) ships as a VSF image and decodes into the chrome's app_icon slot.
-        let orb_icon = fluor::host::icon::Icon::from_vsf_bytes(include_bytes!(
-            "../../assets/photon-orb.vsf"
-        ))
-        .ok();
+        let orb_icon =
+            fluor::host::icon::Icon::from_vsf_bytes(include_bytes!("../../assets/photon-orb.vsf"))
+                .ok();
         let mut chrome = DefaultChrome::new(
             ctx.viewport,
             "Photon",
@@ -565,8 +563,7 @@ impl FluorApp for PhotonApp {
         #[cfg(target_os = "android")]
         {
             chrome.set_full_edge(true);
-            fluor::paint::DEBUG_SKIP_CONTROLS
-                .store(true, std::sync::atomic::Ordering::Relaxed);
+            fluor::paint::DEBUG_SKIP_CONTROLS.store(true, std::sync::atomic::Ordering::Relaxed);
         }
         // Top-left orb's ring doubles as the FGTW connectivity indicator. Initialize red/offline; `try_recv_online` flips to green once the FGTW reports the device is reachable.
         chrome.set_orb_tint(orb_tint_for(false));
@@ -585,15 +582,7 @@ impl FluorApp for PhotonApp {
         ));
         // Contacts-page widgets — same placeholder shape; geometry set every frame via `update_widget_layout` based on ReadyLayout. The plus button label is "+" for now; the rotating-hourglass animation lands in a follow-up when we extract `ProgressButton` into fluor.
         self.contacts_textbox = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
-        self.contacts_plus_btn = Some(Button::new(
-            &mut self.hit_counter,
-            0.,
-            0.,
-            1.,
-            1.,
-            12.,
-            "+",
-        ));
+        self.contacts_plus_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., "+"));
         // Reserve a hit-id for the Ready-screen avatar circle. Not a Widget — the avatar is just a paint primitive — so click dispatch is handled directly in `on_event`'s MouseInput::Pressed arm, not thru `widget::dispatch_click`. Incrementing the shared counter keeps the contiguous-id contract intact for the `[]h` debug overlay.
         self.hit_counter = self.hit_counter.wrapping_add(1);
         self.avatar_hit_id = self.hit_counter;
@@ -662,7 +651,9 @@ impl FluorApp for PhotonApp {
         {
             match crate::network::status::StatusChecker::new(
                 hq.socket(),
-                self.device_keypair.clone().expect("device_keypair set above"),
+                self.device_keypair
+                    .clone()
+                    .expect("device_keypair set above"),
                 self.contact_pubkeys.clone(),
                 self.sync_records.clone(),
                 proxy.clone(),
@@ -681,10 +672,11 @@ impl FluorApp for PhotonApp {
         // None (first run / post-logout) falls through to the normal typed-attest flow.
         if let Some(remembered) = tohu::session() {
             self.session = Some(remembered);
-            self.device_avatar_pixels = crate::ui::avatar::load_avatar_from_seed(&remembered.identity_seed)
-                .map(|(_, vsf_rgb)| crate::ui::colour_convert::vsf_rgb_to_bt2020(&vsf_rgb));
+            self.device_avatar_pixels =
+                crate::ui::avatar::load_avatar_from_seed(&remembered.identity_seed)
+                    .map(|(_, vsf_rgb)| crate::ui::colour_convert::vsf_rgb_to_bt2020(&vsf_rgb));
             self.hints_dismissed = false; // fresh Ready entry → the avatar prompt gets a chance until first interaction
-            // Initialize local storage and load contacts immediately so the contact list is visible before the FGTW round-trip completes.
+                                          // Initialize local storage and load contacts immediately so the contact list is visible before the FGTW round-trip completes.
             if let Some(kp) = &self.device_keypair {
                 let device_secret = *kp.secret.as_bytes();
                 match crate::storage::FlatStorage::new_with_seed(
@@ -967,13 +959,8 @@ impl FluorApp for PhotonApp {
                 }
 
                 // Dispatch the click via the fluor widget helper. Walks the tree once, finds the widget with `hit_id`, calls its `Click::on_click`. Returns `EventResponse::Pass` if the widget has no Click capability — covers chrome's app-icon orb (no action wired yet).
-                let response = widget::dispatch_click(
-                    self,
-                    hit_id,
-                    ctx.cursor_x,
-                    ctx.cursor_y,
-                    ctx.modifiers,
-                );
+                let response =
+                    widget::dispatch_click(self, hit_id, ctx.cursor_x, ctx.cursor_y, ctx.modifiers);
 
                 // Arm drag-select if the click landed on the (now-focused) textbox. CursorMoved consults `is_dragging_select` to grow the selection; release clears it. Set AFTER dispatch so Textbox::on_click has placed the cursor at the click position first — drag then extends from there.
                 let textbox_focused = self
@@ -1010,7 +997,11 @@ impl FluorApp for PhotonApp {
                 }
 
                 // Attest button: poll `take_click` AFTER release — Button::on_click increments the counter at press; we observe the rising edge here so submit fires once per press/release pair regardless of how chrome dispatches subsequent events.
-                let clicked = self.attest_btn.as_mut().map(|b| b.take_click()).unwrap_or(false);
+                let clicked = self
+                    .attest_btn
+                    .as_mut()
+                    .map(|b| b.take_click())
+                    .unwrap_or(false);
                 if clicked {
                     self.submit_handle();
                     ctx.window.request_redraw();
@@ -1134,9 +1125,14 @@ impl FluorApp for PhotonApp {
                             return EventResponse::Handled;
                         }
                         if let Some(focus_id) = self.focused {
-                            let resp = widget::dispatch_key(self, focus_id, kev, ctx.modifiers, ctx.text);
+                            let resp =
+                                widget::dispatch_key(self, focus_id, kev, ctx.modifiers, ctx.text);
                             // Either button can activate on Enter; poll both and route to the matching submit.
-                            let attest_clicked = self.attest_btn.as_mut().map(|b| b.take_click()).unwrap_or(false);
+                            let attest_clicked = self
+                                .attest_btn
+                                .as_mut()
+                                .map(|b| b.take_click())
+                                .unwrap_or(false);
                             if attest_clicked {
                                 self.submit_handle();
                             }
@@ -1148,7 +1144,10 @@ impl FluorApp for PhotonApp {
                             if plus_clicked {
                                 self.submit_add_friend();
                             }
-                            if attest_clicked || plus_clicked || matches!(resp, EventResponse::Handled) {
+                            if attest_clicked
+                                || plus_clicked
+                                || matches!(resp, EventResponse::Handled)
+                            {
                                 ctx.window.request_redraw();
                             }
                             return resp;
@@ -1371,7 +1370,7 @@ impl FluorApp for PhotonApp {
         let bg_scroll = self.bg_scroll;
         let shimmer = bg_scroll as usize;
         let scroll_offset = 0; // Launch only for now.
-        // Launch layout: faithful proportional slicing port from legacy `Layout::new` — spectrum near the top, logo wordmark overlapping its bottom, attest block (textbox + hint + button) below. Compute every frame; cheap and lets resize flow thru without a separate cache.
+                               // Launch layout: faithful proportional slicing port from legacy `Layout::new` — spectrum near the top, logo wordmark overlapping its bottom, attest block (textbox + hint + button) below. Compute every frame; cheap and lets resize flow thru without a separate cache.
         let layout = LaunchLayout::compute(buf_w, buf_h, ctx.viewport.ru);
         // Chromatic wave phase has two summands:
         //   * Scroll-driven base (`bg_scroll * 1/128 rad/scroll-unit`) — one wheel-notch ≈ 8 units → ~1/16 rad shift; user-tunable by changing the shift exponent.
@@ -1383,7 +1382,8 @@ impl FluorApp for PhotonApp {
         let logo_rect = layout.photon_text;
         // Faint dozenal version watermark, bottom-left on every screen it shows. Size = half the "handle" hint text (hint slot height × 0.7, halved); rendered at weight 400 so it resolves to the Oxanium `+glyphs` face carrying the dozenal control-block glyphs, in near-transparent white (VERSION_COLOUR) so it sits in the background like a watermark rather than competing with the foreground.
         let attest_for_version = AttestBlockLayout::compute(layout.attest_block);
-        let version_size = (attest_for_version.hint.y1 - attest_for_version.hint.y0) as f32 * 0.7 * 0.5;
+        let version_size =
+            (attest_for_version.hint.y1 - attest_for_version.hint.y0) as f32 * 0.7 * 0.5;
         let version_glyphs = dozenal_glyphs(deploy_version());
         // Bottom-LEFT watermark; the Security/Recovery posture meters sit bottom-right on the Ready strip. Left edge one font-size in from the screen edge, mirroring the posture group's right margin.
         let version_x = version_size;
@@ -1476,7 +1476,9 @@ impl FluorApp for PhotonApp {
             // Status slot — `attest.error` rect above the textbox. Carries either the red error message (`LaunchState::Error`) or the white "Attesting…" indicator (`LaunchState::Attesting`); empty in Fresh. Same geometry for both so they swap in place; colour differentiates "something's wrong" from "we're working". Wave's 1-cycle/sec phase animation pairs with the "Attesting…" line as the secondary cue.
             let status: Option<(&str, u32)> = match launch_state {
                 LaunchState::Attesting => Some(("Attesting\u{2026}", STATUS_TEXT_COLOUR)),
-                LaunchState::Error(msg) if !msg.is_empty() => Some((msg.as_str(), ERROR_TEXT_COLOUR)),
+                LaunchState::Error(msg) if !msg.is_empty() => {
+                    Some((msg.as_str(), ERROR_TEXT_COLOUR))
+                }
                 _ => None,
             };
             if let Some((text, colour)) = status {
@@ -1614,11 +1616,12 @@ impl FluorApp for PhotonApp {
                     || self.device_avatar_scaled_diameter != diameter
                 {
                     let base = self.device_avatar_pixels.as_ref().unwrap();
-                    self.device_avatar_scaled = Some(crate::ui::avatar_render::update_avatar_scaled(
-                        base,
-                        crate::ui::avatar::AVATAR_SIZE,
-                        diameter,
-                    ));
+                    self.device_avatar_scaled =
+                        Some(crate::ui::avatar_render::update_avatar_scaled(
+                            base,
+                            crate::ui::avatar::AVATAR_SIZE,
+                            diameter,
+                        ));
                     self.device_avatar_scaled_diameter = diameter;
                 }
                 crate::ui::avatar_render::draw_avatar(
@@ -1746,7 +1749,16 @@ impl FluorApp for PhotonApp {
                 );
             }
             if let Some((x0, y0, x1, y1, btn_id)) = plus_bbox {
-                restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, x0, y0, x1, y1, btn_id);
+                restamp_hit_rect(
+                    &mut chrome.hit_test_map,
+                    buf_w,
+                    buf_h,
+                    x0,
+                    y0,
+                    x1,
+                    y1,
+                    btn_id,
+                );
             }
 
             // Add-friend result text in the hint slot above the search box: green "added {h}", red "not found" / "error: …". Stays until the next search starts (cleared in `submit_add_friend`).
@@ -1802,7 +1814,9 @@ impl FluorApp for PhotonApp {
                 .contacts
                 .iter()
                 .enumerate()
-                .filter(|(_, c)| filter.is_empty() || c.handle.as_str().to_lowercase().contains(&filter))
+                .filter(|(_, c)| {
+                    filter.is_empty() || c.handle.as_str().to_lowercase().contains(&filter)
+                })
                 .map(|(i, _)| i)
                 .collect();
 
@@ -1845,13 +1859,37 @@ impl FluorApp for PhotonApp {
                 // Avatar (or placeholder) is topmost; the presence ring paints UNDER it so only the rim shows.
                 if let Some(scaled) = self.contacts[ci].avatar_scaled.as_ref() {
                     crate::ui::avatar_render::draw_avatar(
-                        &mut canvas, avatar_cx, cy, avatar_r, scaled, diam, Some(rows_clip),
+                        &mut canvas,
+                        avatar_cx,
+                        cy,
+                        avatar_r,
+                        scaled,
+                        diam,
+                        Some(rows_clip),
                     );
                 } else {
-                    paint::draw_circle(&mut canvas, avatar_cx, cy, avatar_r, AVATAR_PLACEHOLDER, Some(rows_clip));
+                    paint::draw_circle(
+                        &mut canvas,
+                        avatar_cx,
+                        cy,
+                        avatar_r,
+                        AVATAR_PLACEHOLDER,
+                        Some(rows_clip),
+                    );
                 }
-                let ring = if online { RING_ONLINE_COLOUR } else { RING_OFFLINE_COLOUR };
-                paint::draw_circle(&mut canvas, avatar_cx, cy, avatar_r + ring_thickness, ring, Some(rows_clip));
+                let ring = if online {
+                    RING_ONLINE_COLOUR
+                } else {
+                    RING_OFFLINE_COLOUR
+                };
+                paint::draw_circle(
+                    &mut canvas,
+                    avatar_cx,
+                    cy,
+                    avatar_r + ring_thickness,
+                    ring,
+                    Some(rows_clip),
+                );
 
                 // Handle name, vertically centred in the row, clipped to the list region.
                 ctx.text.draw_text_left_u32(
@@ -1916,8 +1954,12 @@ impl FluorApp for PhotonApp {
                 let pips_span = pip_pitch * (POSTURE_PIPS as f32 - 1.0) + pip_r * 2.0;
                 let lp_gap = version_size * 0.5; // label → first pip
                 let group_gap = version_size * 1.2; // Sec group → Rec group
-                let w_sec = ctx.text.measure_text_width("Sec", label_size, 500, "Oxanium");
-                let w_rec = ctx.text.measure_text_width("Rec", label_size, 500, "Oxanium");
+                let w_sec = ctx
+                    .text
+                    .measure_text_width("Sec", label_size, 500, "Oxanium");
+                let w_rec = ctx
+                    .text
+                    .measure_text_width("Rec", label_size, 500, "Oxanium");
                 let total = w_sec + lp_gap + pips_span + group_gap + w_rec + lp_gap + pips_span;
                 let mut x = buf_w as f32 - version_size - total; // right margin mirrors the version's left margin
                 let strip_cy = version_cy;
@@ -1969,10 +2011,14 @@ impl FluorApp for PhotonApp {
                         500,
                         CONTACT_NAME_COLOUR,
                         "Oxanium",
-                        None, None, None,
+                        None,
+                        None,
+                        None,
                     );
                     // Stamp the back button hit rect.
-                    let back_w = ctx.text.measure_text_width(back_text, back_size, 500, "Oxanium");
+                    let back_w = ctx
+                        .text
+                        .measure_text_width(back_text, back_size, 500, "Oxanium");
                     restamp_hit_rect(
                         &mut chrome.hit_test_map,
                         buf_w,
@@ -1996,7 +2042,9 @@ impl FluorApp for PhotonApp {
                         600,
                         CONTACT_NAME_COLOUR,
                         "Oxanium",
-                        None, None, None,
+                        None,
+                        None,
+                        None,
                     );
 
                     // Avatar
@@ -2006,14 +2054,38 @@ impl FluorApp for PhotonApp {
                     let avatar_cx = buf_w as f32 * 0.5;
                     if let Some(scaled) = contact.avatar_scaled.as_ref() {
                         crate::ui::avatar_render::draw_avatar(
-                            &mut canvas, avatar_cx, avatar_y, avatar_r, scaled, avatar_diam, None,
+                            &mut canvas,
+                            avatar_cx,
+                            avatar_y,
+                            avatar_r,
+                            scaled,
+                            avatar_diam,
+                            None,
                         );
                     } else {
-                        paint::draw_circle(&mut canvas, avatar_cx, avatar_y, avatar_r, AVATAR_PLACEHOLDER, None);
+                        paint::draw_circle(
+                            &mut canvas,
+                            avatar_cx,
+                            avatar_y,
+                            avatar_r,
+                            AVATAR_PLACEHOLDER,
+                            None,
+                        );
                     }
-                    let ring = if contact.is_online { RING_ONLINE_COLOUR } else { RING_OFFLINE_COLOUR };
+                    let ring = if contact.is_online {
+                        RING_ONLINE_COLOUR
+                    } else {
+                        RING_OFFLINE_COLOUR
+                    };
                     let ring_thick = (avatar_r * 0.0375).max(1.0);
-                    paint::draw_circle(&mut canvas, avatar_cx, avatar_y, avatar_r + ring_thick, ring, None);
+                    paint::draw_circle(
+                        &mut canvas,
+                        avatar_cx,
+                        avatar_y,
+                        avatar_r + ring_thick,
+                        ring,
+                        None,
+                    );
 
                     // CLUTCH state
                     let clutch_y = avatar_y + avatar_r + unit * 2.0;
@@ -2035,7 +2107,9 @@ impl FluorApp for PhotonApp {
                         500,
                         clutch_colour,
                         "Oxanium",
-                        None, None, None,
+                        None,
+                        None,
+                        None,
                     );
                 }
             }
@@ -2200,14 +2274,13 @@ impl PhotonApp {
         if is_self {
             if let Some(session) = &self.session {
                 let handle_text = crate::types::HandleText::new(&handle);
-                let device_pubkey = self.device_keypair.as_ref()
+                let device_pubkey = self
+                    .device_keypair
+                    .as_ref()
                     .map(|kp| crate::types::DevicePubkey::from_bytes(*kp.public.as_bytes()))
                     .unwrap_or_else(|| crate::types::DevicePubkey::from_bytes([0u8; 32]));
-                let mut contact = crate::types::Contact::new(
-                    handle_text,
-                    session.handle_proof,
-                    device_pubkey,
-                );
+                let mut contact =
+                    crate::types::Contact::new(handle_text, session.handle_proof, device_pubkey);
                 contact.clutch_state = crate::types::ClutchState::Complete;
                 crate::log("add-friend: self-contact — CLUTCH auto-completed");
                 self.contacts.push(contact);
@@ -2375,7 +2448,10 @@ impl PhotonApp {
                 // Merge incoming contacts with any already loaded locally — union by handle_proof so contacts added on another device (via FGTW/cloud) appear without losing locally-added ones.
                 let mut added = 0usize;
                 for incoming in &data.contacts {
-                    let dominated = self.contacts.iter().any(|c| c.handle_proof == incoming.handle_proof);
+                    let dominated = self
+                        .contacts
+                        .iter()
+                        .any(|c| c.handle_proof == incoming.handle_proof);
                     if !dominated {
                         self.contacts.push(incoming.clone());
                         added += 1;
@@ -2455,7 +2531,8 @@ impl PhotonApp {
                         "search-result: '{}' already in contacts — skipping add",
                         handle
                     ));
-                    self.search_status = Some((format!("{handle} already added"), SEARCH_FOUND_COLOUR));
+                    self.search_status =
+                        Some((format!("{handle} already added"), SEARCH_FOUND_COLOUR));
                     return;
                 }
                 let mut contact = crate::types::Contact::new(
@@ -2531,7 +2608,9 @@ impl PhotonApp {
         let mut pinged = 0;
         for contact in &self.contacts {
             let addr = match (contact.local_ip, contact.local_port) {
-                (Some(ip), Some(port)) => Some(std::net::SocketAddr::new(std::net::IpAddr::V4(ip), port)),
+                (Some(ip), Some(port)) => {
+                    Some(std::net::SocketAddr::new(std::net::IpAddr::V4(ip), port))
+                }
                 _ => contact.ip,
             };
             if let Some(ip) = addr {
@@ -2557,7 +2636,9 @@ impl PhotonApp {
             return;
         };
         let addr = match (contact.local_ip, contact.local_port) {
-            (Some(ip), Some(port)) => Some(std::net::SocketAddr::new(std::net::IpAddr::V4(ip), port)),
+            (Some(ip), Some(port)) => {
+                Some(std::net::SocketAddr::new(std::net::IpAddr::V4(ip), port))
+            }
             _ => contact.ip,
         };
         if let Some(ip) = addr {
@@ -2573,7 +2654,13 @@ impl PhotonApp {
         };
         let mut changed = false;
         while let Some(update) = checker.try_recv() {
-            if let StatusUpdate::Online { peer_pubkey, is_online, peer_addr, .. } = update {
+            if let StatusUpdate::Online {
+                peer_pubkey,
+                is_online,
+                peer_addr,
+                ..
+            } = update
+            {
                 for contact in &mut self.contacts {
                     if contact.public_identity == peer_pubkey {
                         if let Some(addr) = peer_addr {
@@ -2601,7 +2688,9 @@ impl PhotonApp {
     /// Every textbox photon owns, tagged by role, in registration order. THE single source of truth for "what textboxes exist" — focus / IME / blink / freeze all iterate this instead of naming `self.textbox` / `self.contacts_textbox` (and, later, the conversation compose bar) one at a time. Adding a textbox means adding one arm here, not touching `is_textbox` / `focused_textbox_mut` / the blink loop / the freeze pass separately (the lockstep this comment used to warn about). Roles stay distinct because callers that need per-role behaviour (freeze keys off Launch-vs-Contacts busy state; the launch box gates the Attest button; the contacts box filters the list) match on [`TextboxRole`].
     fn textboxes_mut(&mut self) -> impl Iterator<Item = (TextboxRole, &mut Textbox)> {
         [
-            self.textbox.as_mut().map(|t| (TextboxRole::LaunchHandle, t)),
+            self.textbox
+                .as_mut()
+                .map(|t| (TextboxRole::LaunchHandle, t)),
             self.contacts_textbox
                 .as_mut()
                 .map(|t| (TextboxRole::ContactsSearch, t)),

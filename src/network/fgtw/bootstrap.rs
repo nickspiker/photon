@@ -103,7 +103,10 @@ fn format_http_error_from_bytes(step: &str, status: reqwest::StatusCode, body: &
     let body_is_just_reason =
         body_preview.eq_ignore_ascii_case(canonical) || body_preview.is_empty();
     if body_is_just_reason {
-        format!("FGTW {step}: server answered {} {canonical} with no detail", status.as_u16())
+        format!(
+            "FGTW {step}: server answered {} {canonical} with no detail",
+            status.as_u16()
+        )
     } else {
         format!("FGTW {step} {}: {body_preview}", status.as_u16())
     }
@@ -442,10 +445,7 @@ fn build_announce_message(
 
     #[cfg(feature = "development")]
     crate::log(&crate::network::inspect::vsf_inspect(
-        &vsf_bytes,
-        "FGTW",
-        "TX",
-        "announce",
+        &vsf_bytes, "FGTW", "TX", "announce",
     ));
 
     Ok(vsf_bytes)

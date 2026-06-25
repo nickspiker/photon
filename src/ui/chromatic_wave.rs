@@ -23,8 +23,7 @@ pub fn chromatic_wave(canvas: &mut Canvas, rect: PixelRect, phase: f32, period_s
     canvas.damage.add(PixelRect::new(x0, y0, x1, y1));
 
     // Harmonic mean of region dims for brightness scaling — keeps the bar's overall energy stable across aspect ratios. Matches legacy line 5103. The `2` is part of the harmonic-mean formula, not a tuning knob.
-    let region_span =
-        2. * region_w as f32 * region_h as f32 / (region_w as f32 + region_h as f32);
+    let region_span = 2. * region_w as f32 * region_h as f32 / (region_w as f32 + region_h as f32);
     // Base waves count = aspect × 2 (legacy line 5106), then multiplied by the scroll-driven period_scale. The `2` is the legacy waves-per-aspect ratio, not a tuning knob.
     let waves_per_region = (region_w as f32 / region_h as f32 * 2.) * period_scale;
 
@@ -68,8 +67,8 @@ pub fn chromatic_wave(canvas: &mut Canvas, rect: PixelRect, phase: f32, period_s
                 / (scale.abs() + amplitude / region_span * (1. / ((1 << 2) as f32)));
 
             // Wavelength index runs blue → red as x_flipped decreases; `region_w.max(1)` is a no-op guard since `region_w ≥ 1` follows from the early-return on `x0 >= x1`, but kept verbatim to match legacy.
-            let wavelength_idx = LAMBDA_START
-                + ((region_w - 1 - x) * (LAMBDA_END - LAMBDA_START)) / region_w;
+            let wavelength_idx =
+                LAMBDA_START + ((region_w - 1 - x) * (LAMBDA_END - LAMBDA_START)) / region_w;
             let lms_idx = wavelength_idx * 3;
 
             let l = LMS2006SO[lms_idx];
@@ -77,9 +76,9 @@ pub fn chromatic_wave(canvas: &mut Canvas, rect: PixelRect, phase: f32, period_s
             let s = LMS2006SO[lms_idx + 2];
 
             // LMS → REC2020 magic 9 (identical numeric values to compositing.rs:5148-5154 and to colour.rs's LMS2REC2020 matrix; trailing zeros from the legacy 16-digit form stripped — f32 has ~7 digits of precision so the trimmed last digit was already noise).
-            let r =  3.16824109881169 * l + -2.15688285649183 * m +  0.0964568792112096 * s;
-            let g = -0.266362510245695 * l +  1.40494573257753 * m + -0.175554801656117  * s;
-            let b =  0.00389152987374033 * l + -0.0205676800313948 * m + 0.945832607950864 * s;
+            let r = 3.16824109881169 * l + -2.15688285649183 * m + 0.0964568792112096 * s;
+            let g = -0.266362510245695 * l + 1.40494573257753 * m + -0.175554801656117 * s;
+            let b = 0.00389152987374033 * l + -0.0205676800313948 * m + 0.945832607950864 * s;
 
             let idx = row_base + px;
             let existing = canvas.pixels[idx];

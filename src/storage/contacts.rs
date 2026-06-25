@@ -27,10 +27,9 @@ fn vsf_to_oscillations(v: &VsfType) -> i64 {
         v => {
             let et = EagleTime::new_from_vsf(v.clone());
             et.oscillations().unwrap_or(0)
-        },
+        }
     }
 }
-
 
 /// Static identity data stored in the contact list index
 #[derive(Clone, Debug)]
@@ -53,7 +52,11 @@ pub fn derive_identity_seed(handle: &str) -> [u8; 32] {
 
 /// Logical key for a contact's data
 fn contact_key(their_identity_seed: &[u8; 32], suffix: &str) -> String {
-    format!("contacts/{}/{}", hex::encode(&their_identity_seed[..8]), suffix)
+    format!(
+        "contacts/{}/{}",
+        hex::encode(&their_identity_seed[..8]),
+        suffix
+    )
 }
 
 // ============================================================================
@@ -94,9 +97,7 @@ pub fn save_contact_list(
 }
 
 /// Load the contact list from encrypted index with schema validation
-pub fn load_contact_list(
-    storage: &FlatStorage,
-) -> Result<Vec<ContactIdentity>, StorageError> {
+pub fn load_contact_list(storage: &FlatStorage) -> Result<Vec<ContactIdentity>, StorageError> {
     let vsf_bytes = match storage.read("contacts/index")? {
         Some(b) => b,
         None => return Ok(Vec::new()),
@@ -151,10 +152,7 @@ fn contact_state_schema() -> SectionSchema {
 }
 
 /// Save contact state (mutable data) with schema validation
-pub fn save_contact_state(
-    contact: &Contact,
-    storage: &FlatStorage,
-) -> Result<(), StorageError> {
+pub fn save_contact_state(contact: &Contact, storage: &FlatStorage) -> Result<(), StorageError> {
     let identity_seed = derive_identity_seed(contact.handle.as_str());
 
     let schema = contact_state_schema();
@@ -236,7 +234,10 @@ pub fn load_contact_state(
     };
 
     #[cfg(feature = "development")]
-    crate::network::inspect::vsf_read_decrypted(&vsf_bytes, &contact_key(&their_identity_seed, "state"));
+    crate::network::inspect::vsf_read_decrypted(
+        &vsf_bytes,
+        &contact_key(&their_identity_seed, "state"),
+    );
 
     let mut ptr = 0;
     let section = VsfSection::parse(&vsf_bytes, &mut ptr)
@@ -310,10 +311,7 @@ pub fn load_contact_state(
 // High-Level API ============================================================================
 
 /// Save a contact (updates both list and state)
-pub fn save_contact(
-    contact: &Contact,
-    storage: &FlatStorage,
-) -> Result<(), StorageError> {
+pub fn save_contact(contact: &Contact, storage: &FlatStorage) -> Result<(), StorageError> {
     // Save state file
     save_contact_state(contact, storage)?;
 
@@ -451,7 +449,10 @@ pub fn load_clutch_keypairs(
     };
 
     #[cfg(feature = "development")]
-    crate::network::inspect::vsf_read_decrypted(&vsf_bytes, &contact_key(&their_identity_seed, "keypairs"));
+    crate::network::inspect::vsf_read_decrypted(
+        &vsf_bytes,
+        &contact_key(&their_identity_seed, "keypairs"),
+    );
 
     let mut ptr = 0;
     let section = VsfSection::parse(&vsf_bytes, &mut ptr)
@@ -629,7 +630,10 @@ pub fn load_clutch_slots(
     };
 
     #[cfg(feature = "development")]
-    crate::network::inspect::vsf_read_decrypted(&vsf_bytes, &contact_key(&their_identity_seed, "slots"));
+    crate::network::inspect::vsf_read_decrypted(
+        &vsf_bytes,
+        &contact_key(&their_identity_seed, "slots"),
+    );
 
     let mut ptr = 0;
     let section = VsfSection::parse(&vsf_bytes, &mut ptr)
@@ -1052,10 +1056,7 @@ pub fn delete_clutch_slots(handle: &str, storage: &FlatStorage) -> Result<(), St
 use crate::types::ChatMessage;
 
 /// Save messages for a contact
-pub fn save_messages(
-    contact: &Contact,
-    storage: &FlatStorage,
-) -> Result<(), StorageError> {
+pub fn save_messages(contact: &Contact, storage: &FlatStorage) -> Result<(), StorageError> {
     if contact.messages.is_empty() {
         return Ok(()); // Nothing to save
     }
@@ -1092,10 +1093,7 @@ pub fn save_messages(
 }
 
 /// Load messages for a contact
-pub fn load_messages(
-    contact: &mut Contact,
-    storage: &FlatStorage,
-) -> Result<(), StorageError> {
+pub fn load_messages(contact: &mut Contact, storage: &FlatStorage) -> Result<(), StorageError> {
     let their_identity_seed = derive_identity_seed(contact.handle.as_str());
 
     let vsf_bytes = match storage.read(&contact_key(&their_identity_seed, "messages"))? {
@@ -1104,7 +1102,10 @@ pub fn load_messages(
     };
 
     #[cfg(feature = "development")]
-    crate::network::inspect::vsf_read_decrypted(&vsf_bytes, &contact_key(&their_identity_seed, "messages"));
+    crate::network::inspect::vsf_read_decrypted(
+        &vsf_bytes,
+        &contact_key(&their_identity_seed, "messages"),
+    );
 
     let mut ptr = 0;
     let section = VsfSection::parse(&vsf_bytes, &mut ptr)
@@ -1122,7 +1123,7 @@ pub fn load_messages(
                 v => {
                     let et = EagleTime::new_from_vsf(v.clone());
                     et.oscillations().unwrap_or(0)
-                },
+                }
             };
             let is_outgoing = match &field.values[2] {
                 VsfType::u3(v) => *v != 0,
@@ -1207,5 +1208,4 @@ mod tests {
         let expected_seed = derive_identity_seed(&identity.handle);
         assert_eq!(derived_seed, expected_seed);
     }
-
 }

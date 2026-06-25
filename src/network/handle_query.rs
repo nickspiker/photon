@@ -25,8 +25,11 @@ pub struct AttestationData {
     pub handle_proof: [u8; 32],
     pub identity_seed: [u8; 32],
     pub contacts: Vec<crate::types::Contact>,
-    pub friendships: Vec<(crate::types::friendship::FriendshipId, crate::types::friendship::FriendshipChains)>,
-    pub avatar_pixels: Option<Vec<u8>>,  // Local avatar if exists
+    pub friendships: Vec<(
+        crate::types::friendship::FriendshipId,
+        crate::types::friendship::FriendshipChains,
+    )>,
+    pub avatar_pixels: Option<Vec<u8>>, // Local avatar if exists
     pub peers: Vec<PeerRecord>,
     /// True if FlatStorage detected a damaged ring during open this session (missing, permission-denied, corrupt, or HMAC-bad). UI renders a persistent degraded banner when true. Sticky for the session — only clears on next process restart after both rings open cleanly.
     pub vault_degraded: bool,
@@ -376,10 +379,7 @@ impl HandleQuery {
                         }
                         Err(e) => {
                             if first_check || prev_online {
-                                crate::log(&format!(
-                                    "Network: FGTW status check failed: {}",
-                                    e
-                                ));
+                                crate::log(&format!("Network: FGTW status check failed: {}", e));
                             }
                             false
                         }
@@ -420,10 +420,12 @@ impl HandleQuery {
                         let identity_seed = crate::storage::contacts::derive_identity_seed(&handle);
                         let vault_seed = identity_seed;
                         let handle_proof = Handle::username_to_handle_proof(&handle); // ~1s
-                        // Defer persistence until FGTW confirms ownership (below) — a rejected attest must NOT leave session roots that would auto-resume into the same rejection next launch.
+                                                                                      // Defer persistence until FGTW confirms ownership (below) — a rejected attest must NOT leave session roots that would auto-resume into the same rejection next launch.
                         (identity_seed, vault_seed, handle_proof, true)
                     }
-                    QueryRequest::Resume(s) => (s.identity_seed, s.vault_seed, s.handle_proof, false),
+                    QueryRequest::Resume(s) => {
+                        (s.identity_seed, s.vault_seed, s.handle_proof, false)
+                    }
                 };
                 crate::log("Network: Querying handle...");
 
@@ -511,7 +513,11 @@ impl HandleQuery {
                         }
 
                         // Initialize FlatStorage for this session. A bare `return` here would silently strand the UI on the Attesting spinner because the result channel never gets a verdict — the worker has already proven FGTW says the handle is ours, but with no local vault we can't reach Ready. Surface the failure as a QueryResult::Error so the Launch screen flips to its error state and the user sees what happened.
-                        let storage = match crate::storage::FlatStorage::new_with_seed(crate::storage::APP, vault_seed, device_secret_bytes) {
+                        let storage = match crate::storage::FlatStorage::new_with_seed(
+                            crate::storage::APP,
+                            vault_seed,
+                            device_secret_bytes,
+                        ) {
                             Ok(s) => s,
                             Err(e) => {
                                 let msg = format!("storage init failed: {}", e);
@@ -528,10 +534,9 @@ impl HandleQuery {
 
                         // Load messages for each contact
                         for contact in &mut contacts {
-                            if let Err(e) = crate::storage::contacts::load_messages(
-                                contact,
-                                &storage,
-                            ) {
+                            if let Err(e) =
+                                crate::storage::contacts::load_messages(contact, &storage)
+                            {
                                 crate::log(&format!(
                                     "Network: Failed to load messages for {}: {}",
                                     contact.handle.as_str(),
@@ -549,10 +554,12 @@ impl HandleQuery {
                                     contact.offer_provenances = state.offer_provenances;
                                     contact.ceremony_id = state.ceremony_id;
                                 }
-                                if let Ok(Some(keypairs)) = crate::storage::contacts::load_clutch_keypairs(
-                                    contact.handle.as_str(),
-                                    &storage,
-                                ) {
+                                if let Ok(Some(keypairs)) =
+                                    crate::storage::contacts::load_clutch_keypairs(
+                                        contact.handle.as_str(),
+                                        &storage,
+                                    )
+                                {
                                     contact.clutch_our_keypairs = Some(keypairs);
                                     if contact.clutch_slots.is_empty() {
                                         contact.init_clutch_slots(identity_seed);
@@ -561,7 +568,9 @@ impl HandleQuery {
                                     if let Some(ref kp) = contact.clutch_our_keypairs {
                                         use crate::crypto::clutch::ClutchOfferPayload;
                                         let our_offer = ClutchOfferPayload::from_keypairs(kp);
-                                        if let Some(local_slot) = contact.get_slot_mut(&identity_seed) {
+                                        if let Some(local_slot) =
+                                            contact.get_slot_mut(&identity_seed)
+                                        {
                                             if local_slot.offer.is_none() {
                                                 local_slot.offer = Some(our_offer);
                                             }
@@ -574,40 +583,51 @@ impl HandleQuery {
 
                         // Load friendship chains from disk (by friendship_id stored in each contact)
                         crate::log("Network: Loading friendship chains...");
-                        let friendship_ids: Vec<crate::types::FriendshipId> = contacts
-                            .iter()
-                            .filter_map(|c| c.friendship_id)
-                            .collect();
-                        let friendships = crate::storage::friendship::load_all_friendships(&friendship_ids, &storage);
-                        crate::log(&format!("Network: Loaded {} friendships", friendships.len()));
+                        let friendship_ids: Vec<crate::types::FriendshipId> =
+                            contacts.iter().filter_map(|c| c.friendship_id).collect();
+                        let friendships = crate::storage::friendship::load_all_friendships(
+                            &friendship_ids,
+                            &storage,
+                        );
+                        crate::log(&format!(
+                            "Network: Loaded {} friendships",
+                            friendships.len()
+                        ));
 
                         // Load local avatar
-                        let avatar_pixels = crate::avatar::load_avatar_from_seed(&identity_seed).map(|(_, p)| p);
+                        let avatar_pixels =
+                            crate::avatar::load_avatar_from_seed(&identity_seed).map(|(_, p)| p);
 
                         // Cloud sync (download + merge)
                         crate::log("Network: Syncing with cloud...");
-                        if let Ok(Some(cloud_contacts)) = crate::storage::cloud::load_contacts_from_cloud(
-                            &identity_seed,
-                            &keypair,
-                        ) {
+                        if let Ok(Some(cloud_contacts)) =
+                            crate::storage::cloud::load_contacts_from_cloud(
+                                &identity_seed,
+                                &keypair,
+                            )
+                        {
                             // Merge cloud contacts we don't have locally
                             for cc in cloud_contacts {
-                                let exists = contacts.iter().any(|c| c.handle_proof == cc.handle_proof);
+                                let exists =
+                                    contacts.iter().any(|c| c.handle_proof == cc.handle_proof);
                                 if !exists {
                                     let mut contact = cc.to_contact();
                                     // Load CLUTCH state for cloud contact too
                                     if contact.clutch_state != crate::types::ClutchState::Complete {
-                                        if let Ok(Some(state)) = crate::storage::contacts::load_clutch_slots(
-                                            contact.handle.as_str(),
-                                            &storage,
-                                        ) {
+                                        if let Ok(Some(state)) =
+                                            crate::storage::contacts::load_clutch_slots(
+                                                contact.handle.as_str(),
+                                                &storage,
+                                            )
+                                        {
                                             contact.clutch_slots = state.slots;
                                             contact.offer_provenances = state.offer_provenances;
                                             contact.ceremony_id = state.ceremony_id;
                                         }
                                     }
                                     // Save to local storage
-                                    let _ = crate::storage::contacts::save_contact(&contact, &storage);
+                                    let _ =
+                                        crate::storage::contacts::save_contact(&contact, &storage);
                                     contacts.push(contact);
                                 }
                             }

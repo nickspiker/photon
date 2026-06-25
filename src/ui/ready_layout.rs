@@ -9,12 +9,12 @@ use fluor::canvas::PixelRect;
 /// Vertical slices of the Ready user section, in units (summed to derive the unit height).
 const V_SLICES: [f32; 11] = [
     1.5,  // gap — top margin above the avatar
-    5.,  // avatar
+    5.,   // avatar
     0.5,  // gap1
-    2.,  // handle
-    0.,  // gap2
+    2.,   // handle
+    0.,   // gap2
     1.5,  // hint
-    0.,  // gap3
+    0.,   // gap3
     1.5,  // textbox (search)
     0.25, // gap4
     0.5,  // separator

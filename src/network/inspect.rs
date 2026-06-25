@@ -187,8 +187,7 @@ use vsf::VsfType;
 pub fn vsf_write(
     path: &Path,
     encrypted: &[u8],
-    #[cfg_attr(not(feature = "development"), allow(unused_variables))]
-    label: &str,
+    #[cfg_attr(not(feature = "development"), allow(unused_variables))] label: &str,
     #[allow(unused_variables)] decrypted: Option<&[u8]>,
     device_secret: &[u8; 32],
 ) -> std::io::Result<()> {

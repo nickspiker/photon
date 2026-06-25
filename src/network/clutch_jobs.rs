@@ -2,9 +2,9 @@
 //!
 //! Each stage runs off-thread (keypair generation, KEM encapsulation, ceremony avalanche-expand) and posts its result back over an `mpsc` channel that the UI drains in its tick. These types were extracted from the retired `src/ui/app.rs` so the active `PhotonApp` (`src/ui/photon_app.rs`) can own the CLUTCH job pipeline without importing from a module slated for deletion. The spawning + draining logic lives in `photon_app.rs`; this module is just the shared shapes.
 
+use crate::crypto::clutch::ClutchAllKeypairs;
 use crate::crypto::clutch::{ClutchKemResponsePayload, ClutchKemSharedSecrets};
 use crate::types::{ContactId, FriendshipChains};
-use crate::crypto::clutch::ClutchAllKeypairs;
 use std::net::SocketAddr;
 
 /// Result from background CLUTCH keypair generation (the 8 ephemeral keypairs for one ceremony).

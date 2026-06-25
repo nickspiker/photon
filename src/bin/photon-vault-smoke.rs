@@ -21,7 +21,11 @@ fn main() {
     println!("=== photon-vault-smoke ===");
     println!("Initializing FlatStorage …");
 
-    let storage = match FlatStorage::new_with_seed(photon_messenger::storage::APP, TEST_VAULT_SEED, TEST_DEVICE_SECRET) {
+    let storage = match FlatStorage::new_with_seed(
+        photon_messenger::storage::APP,
+        TEST_VAULT_SEED,
+        TEST_DEVICE_SECRET,
+    ) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("FATAL: FlatStorage::new failed: {}", e);
@@ -34,7 +38,10 @@ fn main() {
     println!("\nWriting three logical keys …");
     let payloads: &[(&str, &[u8])] = &[
         ("contacts/index", b"alice,bob,carol"),
-        ("contacts/aabbccdd/state", b"trust=verified,added=2026-06-08"),
+        (
+            "contacts/aabbccdd/state",
+            b"trust=verified,added=2026-06-08",
+        ),
         (
             "contacts/aabbccdd/messages",
             b"[{from:alice,text:hi,time:1717873617}]",
@@ -119,7 +126,10 @@ fn main() {
                 println!("  ✓ {} still readable", key)
             }
             other => {
-                eprintln!("FATAL: {} unexpectedly affected by delete: {:?}", key, other);
+                eprintln!(
+                    "FATAL: {} unexpectedly affected by delete: {:?}",
+                    key, other
+                );
                 std::process::exit(1);
             }
         }

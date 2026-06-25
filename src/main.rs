@@ -72,7 +72,9 @@ fn main() {
     photon_messenger::log("Photon Messenger - Distilled to what messaging actually requires, for true data sovereignty");
     photon_messenger::log("by Nick Spiker <fractaldecoder@proton.me>");
     photon_messenger::log("");
-    photon_messenger::log("I built this to give you the best damn secure messaging experience possible.");
+    photon_messenger::log(
+        "I built this to give you the best damn secure messaging experience possible.",
+    );
     photon_messenger::log("Your data belongs to you—no servers, no tracking, no compromises.");
     photon_messenger::log("");
     photon_messenger::log("Found a bug? Have feedback? Email me: fractaldecoder@proton.me");

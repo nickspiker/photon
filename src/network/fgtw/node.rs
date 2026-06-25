@@ -136,7 +136,11 @@ impl KBucket {
         }
 
         // Bucket is full - check if we can evict a stale entry
-        if let Some(pos) = self.entries.iter().position(|c| c.is_stale(crate::KBUCKET_STALE_OSC)) {
+        if let Some(pos) = self
+            .entries
+            .iter()
+            .position(|c| c.is_stale(crate::KBUCKET_STALE_OSC))
+        {
             // Evict stale entry (older than 1 hour)
             self.entries.remove(pos);
             self.entries.push(contact);

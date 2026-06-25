@@ -44,9 +44,9 @@ impl PartySlot {
 #[derive(Clone, Debug)]
 pub struct ChatMessage {
     pub content: String,
-    pub timestamp: i64,    // Eagle time oscillations (i64, ~1.42 GHz since Apollo 11 landing)
+    pub timestamp: i64, // Eagle time oscillations (i64, ~1.42 GHz since Apollo 11 landing)
     pub is_outgoing: bool, // true = we sent it, false = they sent it
-    pub delivered: bool,   // true = confirmed delivered to recipient
+    pub delivered: bool, // true = confirmed delivered to recipient
 }
 
 impl ChatMessage {
@@ -258,7 +258,10 @@ impl Contact {
     }
 
     /// Get the best address to reach this contact. If we share the same public IP (same NAT), use their local_ip to bypass AP isolation. Otherwise use their public IP.
-    pub fn best_addr(&self, our_public_ip: Option<std::net::IpAddr>) -> Option<std::net::SocketAddr> {
+    pub fn best_addr(
+        &self,
+        our_public_ip: Option<std::net::IpAddr>,
+    ) -> Option<std::net::SocketAddr> {
         let public_addr = self.ip?;
 
         // If peer has a local_ip and we share the same public IP, use local_ip
