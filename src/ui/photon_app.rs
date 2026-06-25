@@ -196,6 +196,7 @@ const CHORD_HINTS: &[(&str, &str)] = &[
     ("W", "Damage rect outline (Where)"),
     ("D", "Screen-buffer decay (fade)"),
     ("B", "Finalize copy-pass blue tint"),
+    ("N", "Nuke vault + session (dev only)"),
 ];
 
 /// Bounding rect the chord hint panel covers — matches `paint::draw_chord_hint`'s positioning math so `damage_rect` can union it when both brackets are held. Pulled out of the panes example with the same math; if fluor's hint geometry changes, this needs updating in lockstep.
@@ -5535,6 +5536,34 @@ impl PhotonApp {
                 let cur = paint::DEBUG_SHOW_OPAQUE_SCAN.load(Ordering::Relaxed);
                 paint::DEBUG_SHOW_OPAQUE_SCAN.store(!cur, Ordering::Relaxed);
                 eprintln!("[]b opaque-scan tint = {}", !cur);
+            }
+            'n' => {
+                // Nuke local vault + session — forces re-attest on next launch. Wipes every .vsf in the Photon app dirs (catches old-path strays and derivation-change orphans), then clears the in-RAM session. Only fires in development builds.
+                let mut count = 0usize;
+                let wipe_dir = |dir: Option<std::path::PathBuf>, count: &mut usize| {
+                    let Some(base) = dir else { return };
+                    let app_dir = base.join(crate::storage::APP.dir);
+                    let rd = match std::fs::read_dir(&app_dir) {
+                        Ok(rd) => rd,
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+                        Err(e) => { eprintln!("[]n WARN: read_dir {}: {}", app_dir.display(), e); return }
+                    };
+                    for entry in rd.flatten() {
+                        let p = entry.path();
+                        if p.extension().map_or(false, |e| e == "vsf") {
+                            match std::fs::remove_file(&p) {
+                                Ok(()) => { eprintln!("[]n deleted {}", p.display()); *count += 1; }
+                                Err(e) => eprintln!("[]n WARN: could not delete {}: {}", p.display(), e),
+                            }
+                        }
+                    }
+                };
+                wipe_dir(dirs::config_dir(), &mut count);
+                wipe_dir(dirs::data_dir(), &mut count);
+                tohu::clear_session();
+                self.session = None;
+                self.storage = None;
+                eprintln!("[]n nuked {} vault file(s); session cleared — restart or re-attest", count);
             }
             _ => acted = false,
         }
