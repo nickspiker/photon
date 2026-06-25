@@ -1,6 +1,6 @@
 [package]
 name = "photon-messenger"
-version = "0.0.18"
+version = "0.0.19"
 edition = "2021"
 authors = ["Nick Spiker <fractaldecoder@proton.me>"]
 license = "MIT OR Apache-2.0"
@@ -151,10 +151,11 @@ android_logger = "0.15.0"
 # fluor's Android backend — ANativeWindow surface + JNI shims + Choreographer-driven render scheduling. Same `PhotonApp` FluorApp impl runs on Android (via AndroidShell) and desktop (via host-winit's DesktopShell). winit no longer appears in the Android dep graph — fluor's `WakeSender` trait abstracts cross-thread wake-up (which previously needed `winit::event_loop::EventLoopProxy<UserEvent>` in the trait signature), so the platform-data-types-only `winit` dep + the `android-activity` compile-glue dep + the `android_main` linker shim all retire.
 fluor = { path = "../fluor", default-features = false, features = ["host-android"] }
 
-# Redox uses Orbital, not X11
+# Redox uses Orbital, not X11 — winit's Orbital backend + softbuffer both support Redox. fluor's `host-winit` feature now carries only winit + softbuffer (wgpu/arboard moved to per-target blocks that exclude Redox), so the same FluorApp host that runs on desktop compiles here too. No arboard (Redox has no clipboard backend); clipboard chords are cfg'd out in src/ui/keyboard.rs.
 [target.'cfg(target_os = "redox")'.dependencies]
 winit = { version = "0.30.12", default-features = false, features = ["rwh_06"] }
 softbuffer = { version = "0.4", default-features = false }
+fluor = { path = "../fluor", default-features = false, features = ["host-winit"] }
 
 # Desktop platforms (not Redox, not Android): default winit/softbuffer + if-watch + arboard, plus fluor's `host-winit` feature (Cargo unions features across target blocks, so the global `default-features = false` set is augmented here rather than overridden).
 [target.'cfg(not(any(target_os = "redox", target_os = "android")))'.dependencies]
