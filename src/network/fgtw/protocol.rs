@@ -43,10 +43,10 @@ pub enum FgtwMessage {
     ///
     /// Note: Avatar is fetched by handle, not exchanged in ping/pong. Storage key = BLAKE3(BLAKE3(handle) || "avatar")
     StatusPing {
-        timestamp: i64, // Eagle time oscillations (i64)
+        timestamp: i64,              // Eagle time oscillations (i64)
         sender_pubkey: DevicePubkey, // Who is pinging (for response routing)
-        provenance_hash: [u8; 32], // BLAKE3(sender_pubkey || timestamp_oscillations)
-        signature: [u8; 64], // Ed25519 signature of provenance_hash
+        provenance_hash: [u8; 32],   // BLAKE3(sender_pubkey || timestamp_oscillations)
+        signature: [u8; 64],         // Ed25519 signature of provenance_hash
     },
     /// P2P status pong - "yes I'm online"
     ///
@@ -207,7 +207,10 @@ impl FgtwMessage {
                             data: socketaddr_to_bytes(&peer.ip),
                         }),
                     ));
-                    fields.push((format!("{}_last_seen", prefix), VsfType::e(vsf::types::EtType::e6(peer.last_seen))));
+                    fields.push((
+                        format!("{}_last_seen", prefix),
+                        VsfType::e(vsf::types::EtType::e6(peer.last_seen)),
+                    ));
                 }
 
                 builder.add_section("fgtw", fields).build()

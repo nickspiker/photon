@@ -1,6 +1,6 @@
 use crate::types::Seed;
 use blake3::Hasher;
-use ihi::{spaghettify, smear_hash};
+use ihi::{smear_hash, spaghettify};
 use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::Zeroize;
 

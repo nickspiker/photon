@@ -142,10 +142,7 @@ impl PeerUpdateClient {
                                     // Ignore text, pong, frame messages
                                 }
                                 Err(e) => {
-                                    crate::log(&format!(
-                                        "PeerUpdate: WebSocket error: {}",
-                                        e
-                                    ));
+                                    crate::log(&format!("PeerUpdate: WebSocket error: {}", e));
                                     break;
                                 }
                             }
@@ -209,8 +206,8 @@ impl PeerUpdateClient {
     /// Parse VSF peer_update message into PeerUpdate struct
     fn parse_peer_update(data: &[u8]) -> Option<PeerUpdate> {
         use vsf::file_format::VsfHeader;
-        use vsf::VsfSection;
         use vsf::types::VsfType;
+        use vsf::VsfSection;
 
         // Parse VSF header
         let (header, header_end) = VsfHeader::decode(data).ok()?;

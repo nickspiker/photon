@@ -160,7 +160,10 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeSetDisplayColor
     let mut m = [0f32; 9];
     let mut p = [0f32; 6];
     if let Err(e) = env.get_float_array_region(&rgb_to_xyz, 0, &mut m) {
-        error!("nativeSetDisplayColorSpace: rgb_to_xyz read failed: {:?}", e);
+        error!(
+            "nativeSetDisplayColorSpace: rgb_to_xyz read failed: {:?}",
+            e
+        );
         return;
     }
     if let Err(e) = env.get_float_array_region(&primaries, 0, &mut p) {
@@ -258,7 +261,6 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeOnScale(
     };
     ctx.shell.on_scale(scale_factor);
 }
-
 
 /// Avatar from image picker. NOT in AndroidShell — photon-specific (decodes via the existing avatar pipeline). Funnels raw file bytes (JPEG/PNG/WebP — Android side intentionally does NOT decode thru `BitmapFactory` because that destroys ICC profile data) thru `PhotonApp::set_avatar_from_file`, which encodes to VSF, saves to the encrypted handle-keyed store, reloads, colour-converts to BT.2020 γ=2.0 for the surface buffer, and (when a handle_proof is available) uploads to FGTW.
 #[cfg(target_os = "android")]
@@ -460,7 +462,11 @@ pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeNetwor
         "NetworkContext: fingerprint {} bytes, data_dir: {}, shadow_dir: {}",
         fingerprint_bytes.len(),
         data_dir_str,
-        if shadow_dir_str.is_empty() { "<none>" } else { &shadow_dir_str },
+        if shadow_dir_str.is_empty() {
+            "<none>"
+        } else {
+            &shadow_dir_str
+        },
     );
 
     let context = Box::new(NetworkContext::new(
@@ -501,7 +507,9 @@ pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeNetwor
 
 #[cfg(target_os = "android")]
 #[no_mangle]
-pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeGetDevicePubkey<'local>(
+pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeGetDevicePubkey<
+    'local,
+>(
     env: JNIEnv<'local>,
     _class: JClass<'local>,
     network_ptr: jlong,
