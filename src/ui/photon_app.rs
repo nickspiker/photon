@@ -291,10 +291,8 @@ pub struct PhotonApp {
     pending_picker_request: bool,
     /// Contact-list scroll offset in pixels (Ready screen). 0 = top; grows as the user scrolls down. The user section (avatar/search) stays fixed; only the rows below the separator scroll. Re-clamped to the list extent each render.
     contacts_scroll: isize,
-    /// `true` while the cursor is over the Ready-screen avatar circle (desktop hover). Drives the "drag/drop to update avatar" hint below the avatar when no avatar is set yet.
-    avatar_hovered: bool,
-    /// `true` once the user has clicked the avatar to reveal the update hint (desktop, when an avatar IS already set — no constant prompt is shown in that case, so a click toggles the instruction on/off). Unused on Android, where a tap opens the picker directly.
-    avatar_hint_click: bool,
+    /// `true` once the user has interacted (any click or keystroke) since the last transition into `Ready` — hides the standing avatar prompt. Hints are event-shown and interaction-cleared, never hover- or time-driven; reset to `false` on each `Ready` entry. See [`clear_hints`].
+    hints_dismissed: bool,
 }
 
 impl PhotonApp {
@@ -341,8 +339,7 @@ impl PhotonApp {
             avatar_hit_id: HIT_NONE,
             pending_picker_request: false,
             contacts_scroll: 0,
-            avatar_hovered: false,
-            avatar_hint_click: false,
+            hints_dismissed: false,
         }
     }
 
@@ -590,6 +587,7 @@ impl FluorApp for PhotonApp {
             self.session = Some(remembered);
             self.device_avatar_pixels = crate::ui::avatar::load_avatar_from_seed(&remembered.identity_seed)
                 .map(|(_, vsf_rgb)| crate::ui::colour_convert::vsf_rgb_to_bt2020(&vsf_rgb));
+            self.hints_dismissed = false; // fresh Ready entry → the avatar prompt gets a chance until first interaction
             self.state = AppState::Ready;
             if let Some(hq) = self.handle_query.as_ref() {
                 crate::log("UI: resumed to Ready from local session roots (tohu) — FGTW announce + presence run in background");
@@ -667,12 +665,6 @@ impl FluorApp for PhotonApp {
                         changed = true;
                     }
                 }
-                // Avatar hover (Ready screen): drives the "drag/drop to update avatar" hint when no avatar is set yet. Detected via the avatar's hit-stamp rather than recomputing the circle.
-                let avatar_hover = self.avatar_hit_id != HIT_NONE && new_hit == self.avatar_hit_id;
-                if self.avatar_hovered != avatar_hover {
-                    self.avatar_hovered = avatar_hover;
-                    changed = true;
-                }
                 if changed {
                     ctx.window.request_redraw();
                 }
@@ -706,10 +698,6 @@ impl FluorApp for PhotonApp {
                         btn.set_hovered(false);
                         changed = true;
                     }
-                }
-                if self.avatar_hovered {
-                    self.avatar_hovered = false;
-                    changed = true;
                 }
                 if changed {
                     ctx.window.request_redraw();
@@ -762,6 +750,8 @@ impl FluorApp for PhotonApp {
                 button: MouseButton::Left,
                 ..
             } => {
+                // Any click dismisses the standing hints (event-driven — never hover or time).
+                self.clear_hints();
                 let hit_id = self
                     .chrome
                     .as_ref()
@@ -791,14 +781,10 @@ impl FluorApp for PhotonApp {
                     && self.avatar_hit_id != HIT_NONE
                 {
                     self.change_focus(None);
-                    // Android: a tap opens the system image picker directly (the picker IS the update mechanism). Desktop: there's no picker — the avatar updates by drag/drop — so a click toggles the "drag/drop to update avatar" instruction below the avatar (a constant prompt is only shown when no avatar is set yet).
+                    // Android: a tap opens the system image picker directly (the picker IS the update mechanism — tapping the grey circle is self-evident, so no on-screen prompt). Desktop: no picker — the avatar updates by drag/drop — the click just dismisses hints (above) and is swallowed here.
                     #[cfg(target_os = "android")]
                     {
                         self.pending_picker_request = true;
-                    }
-                    #[cfg(not(target_os = "android"))]
-                    {
-                        self.avatar_hint_click = !self.avatar_hint_click;
                     }
                     ctx.window.request_redraw();
                     return EventResponse::Handled;
@@ -895,6 +881,8 @@ impl FluorApp for PhotonApp {
                 EventResponse::Pass
             }
             Event::KeyboardInput { event: kev, .. } => {
+                // Any keystroke dismisses the standing hints (event-driven — never hover or time).
+                self.clear_hints();
                 // Bracket chord first — tracks Press/Release timestamps regardless of focus so the debug overlay arms as soon as both brackets are held, and the chord action runs before delivery to the focused widget (so an action letter like 'h' doesn't also type into the textbox).
                 if let Key::Character(c) = &kev.logical_key {
                     let cs = c.as_str();
@@ -1031,25 +1019,23 @@ impl FluorApp for PhotonApp {
                 }
             }
             Event::Ime(Ime::Commit(s)) => {
-                // Android: soft IME committed `s` (typing, swipe, autocomplete). Deliver into the focused textbox via `insert_str`. Backspace arrives as the literal "\b" character from PhotonSurfaceView's deleteSurroundingText / composing-text replacement path, so peel those off and route to `backspace`. Anything else gets inserted verbatim. No-op when no textbox is focused (focus might sit on the attest button via Tab).
-                let focused = self.focused;
-                let tb_focused = self
-                    .textbox
-                    .as_ref()
-                    .map(|t| Some(t.hit_id()) == focused)
-                    .unwrap_or(false);
-                if tb_focused {
-                    if let Some(tb) = self.textbox.as_mut() {
-                        for c in s.chars() {
-                            if c == '\u{0008}' {
-                                tb.backspace(ctx.text);
-                            } else {
-                                tb.insert_char(c, ctx.text);
-                            }
+                // IME typing also dismisses the standing hints (event-driven — never hover or time).
+                self.clear_hints();
+                // Android: soft IME committed `s` (typing, swipe, autocomplete). Route it to whichever textbox holds focus — the attest handle field OR the contacts search box. (This used to be hardcoded to the attest box, so typing on the contacts screen was silently dropped on Android even though focus + the soft keyboard were correct; desktop never hit this because physical keys go thru the focus-generic `widget::dispatch_key`.) Backspace arrives as the literal "\b" character from PhotonSurfaceView's deleteSurroundingText / composing-text replacement path, so peel those off and route to `backspace`; everything else inserts verbatim. No-op when no textbox is focused (focus might sit on the attest button via Tab).
+                let mut handled = false;
+                if let Some(tb) = self.focused_textbox_mut() {
+                    for c in s.chars() {
+                        if c == '\u{0008}' {
+                            tb.backspace(ctx.text);
+                        } else {
+                            tb.insert_char(c, ctx.text);
                         }
-                        self.blink_timer.start(Instant::now());
-                        ctx.window.request_redraw();
                     }
+                    handled = true;
+                }
+                if handled {
+                    self.blink_timer.start(Instant::now());
+                    ctx.window.request_redraw();
                     return EventResponse::Handled;
                 }
                 EventResponse::Pass
@@ -1060,7 +1046,6 @@ impl FluorApp for PhotonApp {
                     match std::fs::read(path) {
                         Ok(bytes) => {
                             self.set_avatar_from_file(bytes);
-                            self.avatar_hint_click = false; // a successful update clears the reveal
                             ctx.window.request_redraw();
                         }
                         Err(e) => crate::log(&format!("avatar drop: read failed: {e}")),
@@ -1199,7 +1184,8 @@ impl FluorApp for PhotonApp {
             }
             self.last_ru = ctx.viewport.ru;
         }
-        let show_zoom = self.zoom_hint;
+        // Dev-only: the zoom-% readout is a debugging aid, not a shipped affordance.
+        let show_zoom = self.zoom_hint && cfg!(feature = "development");
 
         // Title-bar text by screen, computed BEFORE the chrome borrow (peer count reads `self.handle_query` / `self.online`). Launch/attest shows the "← Network" affordance; once attested (Ready) it shows the live connection count — FGTW seed (counted when online) plus every distinct peer device in the store. `set_title` only re-rasterizes chrome when the string actually changes, so this is cheap to recompute each frame.
         let title_text: String = if matches!(self.state, AppState::Ready) {
@@ -1498,24 +1484,15 @@ impl FluorApp for PhotonApp {
                 self.avatar_hit_id,
             );
 
-            // Avatar update hint, in the `hint` slot below the avatar. When no avatar is set yet it's a standing prompt (shown on hover; on Android, where there's no hover, shown unconditionally). When an avatar IS set, no constant prompt — the user reveals it by clicking the avatar (`avatar_hint_click`). Text is platform-specific: desktop updates by drag/drop, Android by the system picker.
-            #[cfg(target_os = "android")]
-            let avatar_hint_text = "tap to system image select avatar";
+            // Avatar update hint below the circle — DESKTOP ONLY. On Android, tapping the grey circle to pick an image is self-evident, so no prompt. On desktop the avatar updates by drag/drop (not obvious), so a standing "drag/drop" prompt shows while no avatar is set AND the user hasn't interacted yet this Ready session; any click or keystroke dismisses it (event-driven — never hover or time, per `clear_hints`).
             #[cfg(not(target_os = "android"))]
-            let avatar_hint_text = "drag/drop to update avatar";
-            let avatar_set = self.device_avatar_pixels.is_some();
-            let show_avatar_hint = if avatar_set {
-                self.avatar_hint_click
-            } else {
-                self.avatar_hovered || cfg!(target_os = "android")
-            };
-            if show_avatar_hint {
+            if self.device_avatar_pixels.is_none() && !self.hints_dismissed {
                 // Anchored directly below the avatar circle (not the hint slot), at half the hint slot's text size.
                 let size = (ready_layout.hint.y1 - ready_layout.hint.y0) as f32 * 0.3;
                 let hcy = cy + radius + size;
                 ctx.text.draw_text_center_u32(
                     &mut canvas,
-                    avatar_hint_text,
+                    "drag/drop to update avatar",
                     cx,
                     hcy,
                     size,
@@ -2082,6 +2059,7 @@ impl PhotonApp {
                     "UI: loaded {} contact(s) into Ready state",
                     self.contacts.len()
                 ));
+                self.hints_dismissed = false; // fresh Ready entry → the avatar prompt gets a chance until first interaction
                 self.state = AppState::Ready;
             }
             QueryResult::AlreadyAttested(peer) => {
@@ -2167,6 +2145,12 @@ impl PhotonApp {
     }
 
     /// Apply a focus change: update `self.focused`, then walk the widget tree via `apply_focus_change` so the old + new widgets fire `set_focused(false/true)` and mark their caches dirty. Returns `true` if anything changed (caller decides whether to request a redraw — most callers do). Also drops a one-shot Android keyboard-show/hide request when focus enters or leaves a textbox; the Activity reads it via `FluorApp::wants_keyboard` after each touch and raises / dismisses the soft IME accordingly.
+    /// Dismiss the standing hints (the desktop avatar prompt) and clear the transient search status. Called on any click or keystroke: hints are event-shown and interaction-cleared — never hover- or time-driven. The avatar prompt's dismissal is reset on each `Ready` entry.
+    fn clear_hints(&mut self) {
+        self.hints_dismissed = true;
+        self.search_status = None;
+    }
+
     fn change_focus(&mut self, new: Option<HitId>) -> bool {
         if new == self.focused {
             return false;
@@ -2195,6 +2179,18 @@ impl PhotonApp {
                 .as_ref()
                 .map(|t| t.hit_id())
                 == Some(id)
+    }
+
+    /// The textbox that currently holds focus (launch handle field or contacts search box), or `None`. The mutable counterpart to [`is_textbox`] — the Android IME commit path routes the committed string here, since (unlike desktop keys) it has no focus-generic dispatcher. Keep this and `is_textbox` in lockstep: a future textbox (the Conversation input bar) must be added to both.
+    fn focused_textbox_mut(&mut self) -> Option<&mut Textbox> {
+        let focused = self.focused?;
+        if self.textbox.as_ref().map(|t| t.hit_id()) == Some(focused) {
+            return self.textbox.as_mut();
+        }
+        if self.contacts_textbox.as_ref().map(|t| t.hit_id()) == Some(focused) {
+            return self.contacts_textbox.as_mut();
+        }
+        None
     }
 
     /// True iff both `[` and `]` are currently held. A bracket is "held" if its press timestamp is more recent than its release timestamp, OR the release was within [`CHORD_RELEASE_GRACE`] — that grace absorbs X11's habit of firing a synthetic Release for a held key the instant another key is pressed.

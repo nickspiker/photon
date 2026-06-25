@@ -1,18 +1,20 @@
 #!/bin/bash
 # Install an already-built Photon APK to a connected Android device over ADB.
 #
-# This does NOT build — run build-android.sh (release) or build-android-dev.sh (dev + logging) first,
-# or let deploy.sh produce the release APK. Then push it to the phone with this, no rebuild.
+# This does NOT build — run ./scripts/android/build.sh (release APK) first, or let deploy.sh produce
+# it. (To build AND push in one step, use ./scripts/android/{dev,release}-{adb,network}.sh instead.)
+# Then push the prebuilt APK to the phone with this, no rebuild.
 #
 # Usage:
-#   ./install-android.sh                 # newest of the release / debug APKs
-#   ./install-android.sh release         # force the release APK
-#   ./install-android.sh debug           # force the debug APK
-#   ./install-android.sh path/to.apk     # an explicit APK
+#   ./scripts/android/install.sh                 # newest of the release / debug APKs
+#   ./scripts/android/install.sh release         # force the release APK
+#   ./scripts/android/install.sh debug           # force the debug APK
+#   ./scripts/android/install.sh path/to.apk     # an explicit APK
 set -e
 
 PKG="com.photon.messenger"
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$(dirname "$0")/../.." # repo root — APK paths below are relative to it
+SCRIPT_DIR="$(pwd)"
 RELEASE_APK="$SCRIPT_DIR/android/app/build/outputs/apk/release/app-release.apk"
 DEBUG_APK="$SCRIPT_DIR/android/app/build/outputs/apk/debug/app-debug.apk"
 
@@ -43,7 +45,7 @@ esac
 
 if [ -z "$APK" ] || [ ! -f "$APK" ]; then
     echo "ERROR: no APK to install (looked for $RELEASE_APK and $DEBUG_APK)."
-    echo "       Build one first: ./build-android.sh   (or ./build-android-dev.sh for logging)"
+    echo "       Build one first: ./scripts/android/build.sh   (or ./scripts/android/dev-adb.sh to build + install)"
     exit 1
 fi
 
