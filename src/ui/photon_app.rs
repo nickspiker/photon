@@ -212,6 +212,13 @@ fn chord_hint_bbox(viewport: Viewport, vw: usize, vh: usize) -> PixelRect {
     PixelRect::new(x0, y0, x1, y1)
 }
 
+/// Which textbox a registry entry is, so callers that need per-role behaviour can branch (freeze keys off Launch-vs-Contacts busy state; the launch box gates the Attest button; the contacts box filters the contact list). Generic concerns — focus, IME routing, blink — ignore the role and treat every entry the same. Add the conversation compose bar here when it lands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TextboxRole {
+    LaunchHandle,
+    ContactsSearch,
+}
+
 /// Photon-desktop as a `FluorApp`. Owns fluor's `DefaultChrome` (window frame), the dense hit-id counter for widget allocation, and an optional event-loop proxy clone for waking from background tasks.
 ///
 /// `chrome` is `Option` because [`DefaultChrome::new`] needs the actual viewport size, which the host doesn't hand the app until [`FluorApp::init`] fires. `new()` is parameterless; everything else allocates in `init`.
@@ -615,7 +622,7 @@ impl FluorApp for PhotonApp {
             // Initialize local storage and load contacts immediately so the contact list is visible before the FGTW round-trip completes.
             if let Some(kp) = &self.device_keypair {
                 let device_secret = *kp.secret.as_bytes();
-                match crate::storage::FlatStorage::new(
+                match crate::storage::FlatStorage::new_with_seed(
                     crate::storage::APP,
                     remembered.vault_seed,
                     device_secret,
@@ -673,21 +680,20 @@ impl FluorApp for PhotonApp {
                     .as_ref()
                     .map(|c| c.hit_at(ctx.cursor_x, ctx.cursor_y))
                     .unwrap_or(HIT_NONE);
-                // While attesting, the launch textbox + attest button are inert: force their hover state off regardless of cursor position so neither lights up under the pointer during the frozen wait.
-                let launch_locked = matches!(self.state, AppState::Launch(ref s) if !s.can_edit_handle());
+                // Frozen (busy) widgets are inert under the pointer for free: `set_enabled(false)` clears their hover and `Textbox/Button::set_hovered` is a no-op while disabled, so a cursor passing over a busy field can't re-light it — no per-state gate needed here.
                 let mut changed = false;
                 if let Some(chrome) = self.chrome.as_mut() {
                     changed |= chrome.set_hover(new_hit);
                 }
                 if let Some(tb) = self.textbox.as_mut() {
-                    let want = !launch_locked && new_hit == tb.hit_id();
+                    let want = new_hit == tb.hit_id();
                     if tb.is_hovered() != want {
                         tb.set_hovered(want);
                         changed = true;
                     }
                 }
                 if let Some(btn) = self.attest_btn.as_mut() {
-                    let want = !launch_locked && new_hit == btn.hit_id();
+                    let want = new_hit == btn.hit_id();
                     if btn.is_hovered() != want {
                         btn.set_hovered(want);
                         changed = true;
@@ -878,26 +884,9 @@ impl FluorApp for PhotonApp {
                         hit_is_focusable = true;
                     }
                 });
-                // While attesting, the launch screen is frozen: a click on the handle textbox OR the attest button is swallowed without effect. For the textbox this prevents refocus / cursor placement / drag-select arm; for the button it kills the press visual and the submit (which would no-op anyway). The submit path already dropped focus; this keeps a stray click from grabbing it back until the query resolves or the user escapes back to Fresh.
-                let launch_locked = matches!(self.state, AppState::Launch(ref s) if !s.can_edit_handle());
-                let locked_launch_widget = launch_locked
-                    && (self
-                        .textbox
-                        .as_ref()
-                        .map(|t| t.hit_id() == hit_id)
-                        .unwrap_or(false)
-                        || self
-                            .attest_btn
-                            .as_ref()
-                            .map(|b| b.hit_id() == hit_id)
-                            .unwrap_or(false));
-                if hit_is_focusable && !locked_launch_widget && self.change_focus(Some(hit_id)) {
+                // A busy (frozen) field/button is already invisible to this path: its `focus()` accessor returns `None` (so `hit_is_focusable` is false — no refocus) and its `click()` accessor returns `None` (so `dispatch_click` below no-ops to `Pass`). No explicit launch-locked swallow needed anymore.
+                if hit_is_focusable && self.change_focus(Some(hit_id)) {
                     ctx.window.request_redraw();
-                }
-
-                // Frozen launch widget during attesting: swallow the click without dispatching, so neither `Textbox::on_click` (cursor/selection) nor `Button::on_click` (press counter) fires.
-                if locked_launch_widget {
-                    return EventResponse::Handled;
                 }
 
                 // Dispatch the click via the fluor widget helper. Walks the tree once, finds the widget with `hit_id`, calls its `Click::on_click`. Returns `EventResponse::Pass` if the widget has no Click capability — covers chrome's app-icon orb (no action wired yet).
@@ -1167,6 +1156,9 @@ impl FluorApp for PhotonApp {
         let now = Instant::now();
         let mut needs_redraw = false;
 
+        // Freeze / unfreeze the busy widgets (attest field+button while attesting, search box+plus while adding) before anything else this frame — disabled widgets drop out of dispatch via their fluor accessors.
+        self.sync_busy_freeze();
+
         // Compute per-tick delta_time for the attest-animation accumulator. `last_tick` is None on the very first tick — bootstrap to "zero elapsed" so the accumulator doesn't take a huge jump on startup.
         let delta_time = match self.last_tick {
             Some(prev) => now.duration_since(prev).as_secs_f32(),
@@ -1198,12 +1190,7 @@ impl FluorApp for PhotonApp {
 
         // Drive the blinkey on the focused textbox. `BlinkTimer::poll(now)` returns `true` ONLY on the rising edge of each fire (then schedules the next random 0-300ms interval and returns false the rest of the time). On each fire, toggle the focused textbox's blinkey via `flip_blinkey` — which is a no-op on an unfocused textbox, so we can call it on every textbox without gating.
         if self.blink_timer.poll(now) {
-            if let Some(tb) = self.textbox.as_mut() {
-                if tb.flip_blinkey() {
-                    needs_redraw = true;
-                }
-            }
-            if let Some(tb) = self.contacts_textbox.as_mut() {
+            for (_, tb) in self.textboxes_mut() {
                 if tb.flip_blinkey() {
                     needs_redraw = true;
                 }
@@ -2184,10 +2171,7 @@ impl PhotonApp {
         if !on_launch && !on_contacts {
             return EventResponse::Pass;
         }
-        // While attesting the handle field is frozen — no cut/paste mutating the in-flight handle (copy is harmless but we lock the whole field for consistency).
-        if on_launch && matches!(self.state, AppState::Launch(ref s) if !s.can_edit_handle()) {
-            return EventResponse::Handled;
-        }
+        // A busy field can't be the clipboard target: `sync_busy_freeze` releases focus before disabling it, so `on_launch`/`on_contacts` (which key off `self.focused`) are already false above. No separate attesting/add-in-flight gate needed.
         let tb = if on_launch {
             self.textbox.as_mut()
         } else {
@@ -2296,7 +2280,7 @@ impl PhotonApp {
                 if let Some(session) = &self.session {
                     if let Some(kp) = &self.device_keypair {
                         let device_secret = *kp.secret.as_bytes();
-                        match crate::storage::FlatStorage::new(
+                        match crate::storage::FlatStorage::new_with_seed(
                             crate::storage::APP,
                             session.vault_seed,
                             device_secret,
@@ -2457,29 +2441,63 @@ impl PhotonApp {
         true
     }
 
-    /// True iff `id` belongs to one of photon's textboxes (launch handle textbox or contacts search textbox). Used by `change_focus` to detect focus transitions into / out of a text-input target so the Android IME show/hide signal can be triggered.
-    fn is_textbox(&self, id: Option<HitId>) -> bool {
+    /// Every textbox photon owns, tagged by role, in registration order. THE single source of truth for "what textboxes exist" — focus / IME / blink / freeze all iterate this instead of naming `self.textbox` / `self.contacts_textbox` (and, later, the conversation compose bar) one at a time. Adding a textbox means adding one arm here, not touching `is_textbox` / `focused_textbox_mut` / the blink loop / the freeze pass separately (the lockstep this comment used to warn about). Roles stay distinct because callers that need per-role behaviour (freeze keys off Launch-vs-Contacts busy state; the launch box gates the Attest button; the contacts box filters the list) match on [`TextboxRole`].
+    fn textboxes_mut(&mut self) -> impl Iterator<Item = (TextboxRole, &mut Textbox)> {
+        [
+            self.textbox.as_mut().map(|t| (TextboxRole::LaunchHandle, t)),
+            self.contacts_textbox
+                .as_mut()
+                .map(|t| (TextboxRole::ContactsSearch, t)),
+        ]
+        .into_iter()
+        .flatten()
+    }
+
+    /// Drive the disabled state of every textbox + its sibling button off the "query in flight" busy flags, in ONE place. A busy field returns `None` from its fluor capability accessors, so click / key / Tab / hover dispatch skip it for free — replacing the per-screen hand-rolled "swallow the click / force hover off / lock the field" code that used to live scattered across `on_event`. Symmetric across screens: the launch handle field + Attest button freeze while attesting (`!can_edit_handle()`), the contacts search box + plus button freeze while an add-friend search is in flight (`add_in_flight`).
+    ///
+    /// Order matters: if the currently-focused widget is about to be disabled, release focus FIRST (via `change_focus(None)`), because a disabled widget's `focus()` accessor returns `None` and `apply_focus_change` could no longer reach it to clear `set_focused`. Called every `tick`; `set_enabled` is idempotent so steady-state frames are free.
+    fn sync_busy_freeze(&mut self) {
+        let busy_launch = matches!(self.state, AppState::Launch(ref s) if !s.can_edit_handle());
+        let busy_contacts = self.add_in_flight;
+
+        // Release focus before disabling the widget that holds it.
+        let focused = self.focused;
+        let focus_on_launch = self.textbox.as_ref().map(|t| t.hit_id()) == focused
+            || self.attest_btn.as_ref().map(|b| b.hit_id()) == focused;
+        let focus_on_contacts = self.contacts_textbox.as_ref().map(|t| t.hit_id()) == focused
+            || self.contacts_plus_btn.as_ref().map(|b| b.hit_id()) == focused;
+        if (busy_launch && focus_on_launch) || (busy_contacts && focus_on_contacts) {
+            self.change_focus(None);
+        }
+
+        if let Some(tb) = self.textbox.as_mut() {
+            tb.set_enabled(!busy_launch);
+        }
+        if let Some(btn) = self.attest_btn.as_mut() {
+            btn.set_enabled(!busy_launch);
+        }
+        if let Some(tb) = self.contacts_textbox.as_mut() {
+            tb.set_enabled(!busy_contacts);
+        }
+        if let Some(btn) = self.contacts_plus_btn.as_mut() {
+            btn.set_enabled(!busy_contacts);
+        }
+    }
+
+    /// True iff `id` belongs to one of photon's textboxes. Used by `change_focus` to detect focus transitions into / out of a text-input target so the Android IME show/hide signal can be triggered.
+    fn is_textbox(&mut self, id: Option<HitId>) -> bool {
         let Some(id) = id else {
             return false;
         };
-        self.textbox.as_ref().map(|t| t.hit_id()) == Some(id)
-            || self
-                .contacts_textbox
-                .as_ref()
-                .map(|t| t.hit_id())
-                == Some(id)
+        self.textboxes_mut().any(|(_, t)| t.hit_id() == id)
     }
 
-    /// The textbox that currently holds focus (launch handle field or contacts search box), or `None`. The mutable counterpart to [`is_textbox`] — the Android IME commit path routes the committed string here, since (unlike desktop keys) it has no focus-generic dispatcher. Keep this and `is_textbox` in lockstep: a future textbox (the Conversation input bar) must be added to both.
+    /// The textbox that currently holds focus, or `None`. The Android IME commit path routes the committed string here, since (unlike desktop keys) it has no focus-generic dispatcher.
     fn focused_textbox_mut(&mut self) -> Option<&mut Textbox> {
         let focused = self.focused?;
-        if self.textbox.as_ref().map(|t| t.hit_id()) == Some(focused) {
-            return self.textbox.as_mut();
-        }
-        if self.contacts_textbox.as_ref().map(|t| t.hit_id()) == Some(focused) {
-            return self.contacts_textbox.as_mut();
-        }
-        None
+        self.textboxes_mut()
+            .find(|(_, t)| t.hit_id() == focused)
+            .map(|(_, t)| t)
     }
 
     /// True iff both `[` and `]` are currently held. A bracket is "held" if its press timestamp is more recent than its release timestamp, OR the release was within [`CHORD_RELEASE_GRACE`] — that grace absorbs X11's habit of firing a synthetic Release for a held key the instant another key is pressed.
