@@ -46,7 +46,10 @@ fn chains_schema() -> SectionSchema {
 
 /// Logical storage key for a friendship's chains
 fn chains_key(friendship_id: &FriendshipId) -> String {
-    format!("friendship/{}/chains", hex::encode(&friendship_id.as_bytes()[..8]))
+    format!(
+        "friendship/{}/chains",
+        hex::encode(&friendship_id.as_bytes()[..8])
+    )
 }
 
 /// Save FriendshipChains to disk
@@ -112,7 +115,10 @@ pub fn save_friendship_chains(
         let plaintext_str = String::from_utf8_lossy(&pending.plaintext).into_owned();
 
         builder = builder
-            .append_multi("pending_eagle_time", vec![VsfType::e(vsf::types::EtType::e6(pending.eagle_time))])
+            .append_multi(
+                "pending_eagle_time",
+                vec![VsfType::e(vsf::types::EtType::e6(pending.eagle_time))],
+            )
             .map_err(|e| StorageError::Parse(e.to_string()))?
             .append_multi("pending_plaintext", vec![VsfType::x(plaintext_str)])
             .map_err(|e| StorageError::Parse(e.to_string()))?
@@ -171,7 +177,10 @@ pub fn save_friendship_chains(
     for time_opt in chains.last_received_times() {
         let time_val = time_opt.unwrap_or(0); // 0 means no messages received yet
         builder = builder
-            .append_multi("last_received_time", vec![VsfType::e(vsf::types::EtType::e6(time_val))])
+            .append_multi(
+                "last_received_time",
+                vec![VsfType::e(vsf::types::EtType::e6(time_val))],
+            )
             .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
 
@@ -189,12 +198,12 @@ pub fn load_friendship_chains(
 ) -> Result<FriendshipChains, StorageError> {
     use crate::types::friendship::PendingMessage;
 
-    let vsf_bytes = storage
-        .read(&chains_key(friendship_id))?
-        .ok_or_else(|| StorageError::Parse(format!(
+    let vsf_bytes = storage.read(&chains_key(friendship_id))?.ok_or_else(|| {
+        StorageError::Parse(format!(
             "No chains found for friendship {}",
             hex::encode(&friendship_id.as_bytes()[..8])
-        )))?;
+        ))
+    })?;
 
     #[cfg(feature = "development")]
     crate::network::inspect::vsf_read_decrypted(&vsf_bytes, &chains_key(friendship_id));
@@ -217,9 +226,7 @@ pub fn load_friendship_chains(
     }
 
     if participants.is_empty() {
-        return Err(StorageError::Parse(
-            "No participants found".to_string(),
-        ));
+        return Err(StorageError::Parse("No participants found".to_string()));
     }
 
     // Extract chain bytes (vC per participant, 512×32 = 16KB each)
@@ -230,9 +237,7 @@ pub fn load_friendship_chains(
         }
     }
     if chain_bytes.is_empty() {
-        return Err(StorageError::Parse(
-            "Missing chain data".to_string(),
-        ));
+        return Err(StorageError::Parse("Missing chain data".to_string()));
     }
 
     // === Hash chain state (v2) ===
@@ -438,9 +443,7 @@ pub fn load_friendship_chains(
         last_plaintexts,
         last_received_times,
     )
-    .ok_or_else(|| {
-        StorageError::Parse("Failed to reconstruct chains".to_string())
-    })
+    .ok_or_else(|| StorageError::Parse("Failed to reconstruct chains".to_string()))
 }
 
 /// Load all friendships for the given friendship IDs

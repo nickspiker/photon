@@ -1010,10 +1010,7 @@ async fn run_checker(
                                 }
                             }
                             Err(e) => {
-                                crate::log(&format!(
-                                    "Status: Failed to convert TCP stream: {}",
-                                    e
-                                ));
+                                crate::log(&format!("Status: Failed to convert TCP stream: {}", e));
                             }
                         }
                     }
@@ -1200,9 +1197,7 @@ async fn run_checker(
                                             ));
                                             continue;
                                         }
-                                        crate::log(
-                                            "PT: Parsed as ClutchComplete (VSF verified)",
-                                        );
+                                        crate::log("PT: Parsed as ClutchComplete (VSF verified)");
                                         send_status_update(
                                             &status_tx_recv,
                                             StatusUpdate::ClutchCompleteReceived {

@@ -30,7 +30,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let private_key_path = if let Ok(env_path) = std::env::var("PHOTON_SIGNING_KEY") {
         let p = PathBuf::from(&env_path);
         if !p.exists() {
-            eprintln!("\nERROR: PHOTON_SIGNING_KEY set but file not found: {}", env_path);
+            eprintln!(
+                "\nERROR: PHOTON_SIGNING_KEY set but file not found: {}",
+                env_path
+            );
             std::process::exit(1);
         }
         p
@@ -42,7 +45,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/home/nick/MEGA/code/keys/photon-signing-key".to_string(),
             format!("{}/MEGA/Code/keys/photon-signing-key", home),
             format!("{}/Code/keys/photon-signing-key", home),
-            format!("{}/Library/Application Support/photon/photon-signing-key", home),
+            format!(
+                "{}/Library/Application Support/photon/photon-signing-key",
+                home
+            ),
         ];
 
         match key_locations.iter().map(PathBuf::from).find(|p| p.exists()) {

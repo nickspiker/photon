@@ -505,7 +505,10 @@ impl PTManager {
 
                 // Build relay info if needed (requires recipient pubkey and original payload)
                 let relay = if use_relay {
-                    match (transfer.recipient_pubkey, transfer.original_payload.as_ref()) {
+                    match (
+                        transfer.recipient_pubkey,
+                        transfer.original_payload.as_ref(),
+                    ) {
                         (Some(pubkey), Some(payload)) => {
                             crate::log(&format!(
                                 "PT: SPEC stream '{}' to {} - falling back to relay",

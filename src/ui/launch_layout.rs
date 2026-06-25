@@ -46,8 +46,18 @@ impl AttestBlockLayout {
         Self {
             error: PixelRect::new(block_x, block_y + v[0], block_x + block_w, block_y + v[1]),
             textbox: PixelRect::new(block_x, block_y + v[2], block_x + block_w, block_y + v[3]),
-            hint: PixelRect::new(narrow_x, block_y + v[4], narrow_x + narrow_w, block_y + v[5]),
-            attest: PixelRect::new(narrow_x, block_y + v[6], narrow_x + narrow_w, block_y + v[7]),
+            hint: PixelRect::new(
+                narrow_x,
+                block_y + v[4],
+                narrow_x + narrow_w,
+                block_y + v[5],
+            ),
+            attest: PixelRect::new(
+                narrow_x,
+                block_y + v[6],
+                narrow_x + narrow_w,
+                block_y + v[7],
+            ),
         }
     }
 }
