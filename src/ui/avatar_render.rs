@@ -12,8 +12,15 @@ pub fn update_avatar_scaled(src: &[u8], src_size: usize, dst_diameter: usize) ->
     use resize::Pixel::RGB8;
     use resize::Type::Mitchell;
 
-    let mut resizer = resize::new(src_size, src_size, dst_diameter, dst_diameter, RGB8, Mitchell)
-        .expect("avatar resize: failed to build resizer");
+    let mut resizer = resize::new(
+        src_size,
+        src_size,
+        dst_diameter,
+        dst_diameter,
+        RGB8,
+        Mitchell,
+    )
+    .expect("avatar resize: failed to build resizer");
     let mut dst = vec![0u8; dst_diameter * dst_diameter * 3];
     let src_rgb: &[rgb::RGB8] = unsafe {
         core::slice::from_raw_parts(src.as_ptr() as *const rgb::RGB8, src_size * src_size)
@@ -24,7 +31,9 @@ pub fn update_avatar_scaled(src: &[u8], src_size: usize, dst_diameter: usize) ->
             dst_diameter * dst_diameter,
         )
     };
-    resizer.resize(src_rgb, dst_rgb).expect("avatar resize failed");
+    resizer
+        .resize(src_rgb, dst_rgb)
+        .expect("avatar resize failed");
     dst
 }
 

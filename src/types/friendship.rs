@@ -842,8 +842,7 @@ impl FriendshipChains {
     ) -> bool {
         // Find the pending message by eagle_time and plaintext_hash (exact i64 match)
         let pos = self.pending_messages.iter().position(|m| {
-            m.eagle_time == acked_eagle_time
-                && &m.plaintext_hash == acked_plaintext_hash
+            m.eagle_time == acked_eagle_time && &m.plaintext_hash == acked_plaintext_hash
         });
 
         if let Some(idx) = pos {

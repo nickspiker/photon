@@ -3,7 +3,7 @@ pub mod contacts;
 pub mod friendship;
 
 // The storage adapter (was `flat.rs`) now lives in the shared `kete` crate. Re-export its surface so existing call sites — `crate::storage::FlatStorage`, `StorageError`, `encrypt_bytes`/`decrypt_bytes` (used by cloud.rs) — keep resolving unchanged.
-pub use kete::{App, FlatStorage, StorageError, decrypt_bytes, encrypt_bytes};
+pub use kete::{decrypt_bytes, encrypt_bytes, App, FlatStorage, StorageError};
 
 /// Photon's app namespace for kete. `id`/`dir` reproduce the original baked-in `"photon"` / `"Photon"` constants exactly, so every existing vault's filename and KDF contexts are unchanged.
 pub const APP: kete::App<'static> = kete::App {
@@ -19,14 +19,15 @@ pub fn photon_config_dir() -> Result<std::path::PathBuf, std::io::Error> {
     #[cfg(target_os = "android")]
     {
         use crate::ui::avatar::get_android_data_dir;
-        get_android_data_dir()
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "Android data dir not set"))
+        get_android_data_dir().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::NotFound, "Android data dir not set")
+        })
     }
     #[cfg(not(target_os = "android"))]
     {
-        dirs::config_dir()
-            .map(|p| p.join("photon"))
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "config dir not found"))
+        dirs::config_dir().map(|p| p.join("photon")).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::NotFound, "config dir not found")
+        })
     }
 }
 
@@ -53,7 +54,10 @@ pub fn write_file(path: &Path, data: &[u8], label: &str) -> Result<(), std::io::
     // Ensure parent directory exists
     if let Some(parent) = path.parent() {
         if let Err(e) = fs::create_dir_all(parent) {
-            crate::log(&format!("STORAGE: Failed to create dir for {}: {}", label, e));
+            crate::log(&format!(
+                "STORAGE: Failed to create dir for {}: {}",
+                label, e
+            ));
             return Err(e);
         }
     }

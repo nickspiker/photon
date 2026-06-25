@@ -86,9 +86,18 @@ pub async fn put_blob(
         "blob_put",
         vec![
             ("key".to_string(), VsfType::d(storage_key.to_string())),
-            ("signature".to_string(), VsfType::ge(key_signature.to_bytes().to_vec())),
-            ("timestamp".to_string(), VsfType::e(vsf::types::EtType::e6(vsf::eagle_time_oscillations()))),
-            ("handle_proof".to_string(), VsfType::hP(handle_proof.to_vec())),
+            (
+                "signature".to_string(),
+                VsfType::ge(key_signature.to_bytes().to_vec()),
+            ),
+            (
+                "timestamp".to_string(),
+                VsfType::e(vsf::types::EtType::e6(vsf::eagle_time_oscillations())),
+            ),
+            (
+                "handle_proof".to_string(),
+                VsfType::hP(handle_proof.to_vec()),
+            ),
             ("data".to_string(), VsfType::v(b'e', data.to_vec())),
         ],
     )?;
@@ -211,15 +220,26 @@ pub fn put_blob_blocking(
         "blob_put",
         vec![
             ("key".to_string(), VsfType::d(storage_key.to_string())),
-            ("signature".to_string(), VsfType::ge(key_signature.to_bytes().to_vec())),
-            ("timestamp".to_string(), VsfType::e(vsf::types::EtType::e6(vsf::eagle_time_oscillations()))),
-            ("handle_proof".to_string(), VsfType::hP(handle_proof.to_vec())),
+            (
+                "signature".to_string(),
+                VsfType::ge(key_signature.to_bytes().to_vec()),
+            ),
+            (
+                "timestamp".to_string(),
+                VsfType::e(vsf::types::EtType::e6(vsf::eagle_time_oscillations())),
+            ),
+            (
+                "handle_proof".to_string(),
+                VsfType::hP(handle_proof.to_vec()),
+            ),
             ("data".to_string(), VsfType::v(b'e', data.to_vec())),
         ],
     )?;
 
     #[cfg(feature = "development")]
-    crate::log(&format!("Cloud: put_blob_blocking: sending blob_put VSF..."));
+    crate::log(&format!(
+        "Cloud: put_blob_blocking: sending blob_put VSF..."
+    ));
 
     let response = client
         .post(FGTW_URL)
@@ -229,7 +249,10 @@ pub fn put_blob_blocking(
         .map_err(|e| BlobError::Network(format!("PUT request failed: {}", e)))?;
 
     #[cfg(feature = "development")]
-    crate::log(&format!("Cloud: put_blob_blocking: response status {}", response.status()));
+    crate::log(&format!(
+        "Cloud: put_blob_blocking: response status {}",
+        response.status()
+    ));
 
     let status = response.status();
     if status.is_success() {
@@ -327,7 +350,10 @@ pub async fn delete_blob(storage_key: &str, device_keypair: &Keypair) -> Result<
         "blob_delete",
         vec![
             ("key".to_string(), VsfType::d(storage_key.to_string())),
-            ("signature".to_string(), VsfType::ge(key_signature.to_bytes().to_vec())),
+            (
+                "signature".to_string(),
+                VsfType::ge(key_signature.to_bytes().to_vec()),
+            ),
         ],
     )?;
 

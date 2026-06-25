@@ -62,8 +62,14 @@ pub async fn send_via_relay(
         keypair,
         "relay",
         vec![
-            ("recipient".to_string(), VsfType::kx(recipient_pubkey.to_vec())),
-            ("payload".to_string(), VsfType::v(b'r', message_bytes.to_vec())),
+            (
+                "recipient".to_string(),
+                VsfType::kx(recipient_pubkey.to_vec()),
+            ),
+            (
+                "payload".to_string(),
+                VsfType::v(b'r', message_bytes.to_vec()),
+            ),
         ],
     )?;
 
@@ -126,14 +132,15 @@ pub async fn fetch_relay_messages(keypair: &Keypair) -> Result<Vec<u8>, String> 
 
         // Parse response VSF to extract messages
         use vsf::file_format::{VsfHeader, VsfSection};
-        let (_, header_end) = VsfHeader::decode(&bytes)
-            .map_err(|e| format!("Parse response header: {}", e))?;
+        let (_, header_end) =
+            VsfHeader::decode(&bytes).map_err(|e| format!("Parse response header: {}", e))?;
 
         let mut ptr = header_end;
         let section = VsfSection::parse(&bytes, &mut ptr)
             .map_err(|e| format!("Parse fetched section: {}", e))?;
 
-        let messages = section.get_field("messages")
+        let messages = section
+            .get_field("messages")
             .and_then(|f| f.values.first())
             .and_then(|v| match v {
                 VsfType::v(_, data) => Some(data.clone()),
@@ -168,8 +175,14 @@ pub fn send_via_relay_sync(
         keypair,
         "relay",
         vec![
-            ("recipient".to_string(), VsfType::kx(recipient_pubkey.to_vec())),
-            ("payload".to_string(), VsfType::v(b'r', message_bytes.to_vec())),
+            (
+                "recipient".to_string(),
+                VsfType::kx(recipient_pubkey.to_vec()),
+            ),
+            (
+                "payload".to_string(),
+                VsfType::v(b'r', message_bytes.to_vec()),
+            ),
         ],
     )?;
 
@@ -222,14 +235,15 @@ pub fn fetch_relay_messages_sync(keypair: &Keypair) -> Result<Vec<u8>, String> {
 
         // Parse response VSF to extract messages
         use vsf::file_format::{VsfHeader, VsfSection};
-        let (_, header_end) = VsfHeader::decode(&bytes)
-            .map_err(|e| format!("Parse response header: {}", e))?;
+        let (_, header_end) =
+            VsfHeader::decode(&bytes).map_err(|e| format!("Parse response header: {}", e))?;
 
         let mut ptr = header_end;
         let section = VsfSection::parse(&bytes, &mut ptr)
             .map_err(|e| format!("Parse fetched section: {}", e))?;
 
-        let messages = section.get_field("messages")
+        let messages = section
+            .get_field("messages")
             .and_then(|f| f.values.first())
             .and_then(|v| match v {
                 VsfType::v(_, data) => Some(data.clone()),
