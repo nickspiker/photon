@@ -494,7 +494,7 @@ mod tests {
         let test_seed = [0xAA; 32];
         let device_secret = [0xBB; 32];
 
-        let storage = FlatStorage::new(crate::storage::APP, test_seed, device_secret).unwrap();
+        let storage = FlatStorage::new_with_seed(crate::storage::APP, test_seed, device_secret).unwrap();
 
         // Save
         save_friendship_chains(&chains, &storage).unwrap();

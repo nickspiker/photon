@@ -690,7 +690,7 @@ impl FluorApp for PhotonApp {
                                           // Initialize local storage and load contacts immediately so the contact list is visible before the FGTW round-trip completes.
             if let Some(kp) = &self.device_keypair {
                 let device_secret = *kp.secret.as_bytes();
-                match crate::storage::FlatStorage::new(
+                match crate::storage::FlatStorage::new_with_seed(
                     crate::storage::APP,
                     remembered.vault_seed,
                     device_secret,
@@ -2474,7 +2474,7 @@ impl PhotonApp {
                 if let Some(session) = &self.session {
                     if let Some(kp) = &self.device_keypair {
                         let device_secret = *kp.secret.as_bytes();
-                        match crate::storage::FlatStorage::new(
+                        match crate::storage::FlatStorage::new_with_seed(
                             crate::storage::APP,
                             session.vault_seed,
                             device_secret,

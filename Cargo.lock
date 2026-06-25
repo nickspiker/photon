@@ -1573,7 +1573,6 @@ dependencies = [
 name = "fluor"
 version = "0.0.2"
 dependencies = [
- "arboard",
  "block2 0.6.2",
  "cosmic-text",
  "jni",
@@ -5129,6 +5128,7 @@ dependencies = [
  "base64",
  "blake3",
  "jni",
+ "unicode-normalization",
 ]
 
 [[package]]
