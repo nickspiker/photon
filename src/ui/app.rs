@@ -14,34 +14,12 @@ use crate::network::StatusChecker;
 use crate::network::{HandleQuery, QueryResult};
 use crate::types::{ChatMessage, Contact, ContactId, FriendshipChains, FriendshipId, HandleText};
 
-/// Result from background CLUTCH keypair generation
-pub struct ClutchKeygenResult {
-    pub contact_id: ContactId,
-    pub keypairs: ClutchAllKeypairs,
-    // NOTE: ceremony_id is now computed on-demand from handle_hashes + offer_provenances after we receive enough offers (2 for 2-party DM). No longer computed in background.
-}
-
-/// Result from background CLUTCH KEM encapsulation
-pub struct ClutchKemEncapResult {
-    pub contact_id: ContactId,
-    pub kem_response: crate::crypto::clutch::ClutchKemResponsePayload,
-    pub local_secrets: crate::crypto::clutch::ClutchKemSharedSecrets,
-    pub ceremony_id: [u8; 32],
-    pub conversation_token: [u8; 32],
-    pub peer_addr: std::net::SocketAddr,
-}
-
-/// Result from background CLUTCH ceremony completion (avalanche_expand)
-pub struct ClutchCeremonyResult {
-    pub contact_id: ContactId,
-    pub friendship_chains: FriendshipChains,
-    pub eggs_proof: [u8; 32],
-    pub their_handle_hash: [u8; 32],
-    pub ceremony_id: [u8; 32],
-    pub conversation_token: [u8; 32],
-    pub peer_addr: std::net::SocketAddr,
-    pub their_hqc_prefix: [u8; 8],
-}
+// The three background-CLUTCH result payloads moved to `crate::network::clutch_jobs`
+// so the active PhotonApp can own the job pipeline without importing from this
+// (retired) module. Re-imported here so the legacy app.rs still compiles until it's deleted.
+pub use crate::network::clutch_jobs::{
+    ClutchCeremonyResult, ClutchKemEncapResult, ClutchKeygenResult,
+};
 
 #[cfg(not(target_os = "android"))]
 use winit::{

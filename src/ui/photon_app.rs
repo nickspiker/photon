@@ -250,6 +250,21 @@ pub struct PhotonApp {
     is_dragging_select: bool,
     /// HandleQuery client — owns the UDP socket, device keypair, and FGTW peer store. Submission calls `handle_query.query(handle)`; `tick()` polls `try_recv()` for results. `None` until init.
     handle_query: Option<HandleQuery>,
+    /// Per-contact presence + CLUTCH ceremony driver. Shares HandleQuery's UDP socket; pings contacts, receives pongs (→ `is_online`), and runs the slot-based CLUTCH offer/KEM/complete exchange. `None` until init. Ported from the retired `app.rs` — the fluor migration left this whole subsystem behind, so contacts showed offline and CLUTCH never started.
+    status_checker: Option<crate::network::status::StatusChecker>,
+    /// Pubkeys the status checker will answer pings from — kept in lockstep with `self.contacts` (seeded on resume-load, appended on add). Shared `Arc<Mutex<..>>` with the checker thread.
+    contact_pubkeys: crate::network::status::ContactPubkeys,
+    /// Last-received-message markers per conversation, for retransmit. Inert in v1 (messaging not yet ported) — an empty shared vec the checker reads and never finds anything in.
+    sync_records: crate::network::status::SyncRecordsProvider,
+    /// Background CLUTCH keypair-generation results (the 8 ephemeral keypairs per ceremony). Drained in `tick` → stores keypairs on the contact + flips it to a ready-to-offer state.
+    clutch_keygen_tx: std::sync::mpsc::Sender<crate::network::ClutchKeygenResult>,
+    clutch_keygen_rx: std::sync::mpsc::Receiver<crate::network::ClutchKeygenResult>,
+    /// Background KEM-encapsulation results (responder's reply to an offer). Drained in `tick` → sends the KEM response.
+    clutch_kem_encap_tx: std::sync::mpsc::Sender<crate::network::ClutchKemEncapResult>,
+    clutch_kem_encap_rx: std::sync::mpsc::Receiver<crate::network::ClutchKemEncapResult>,
+    /// Background ceremony-completion results (avalanche-expand → friendship chains + eggs proof). Drained in `tick` → sends complete, marks the contact CLUTCH-complete.
+    clutch_ceremony_tx: std::sync::mpsc::Sender<crate::network::ClutchCeremonyResult>,
+    clutch_ceremony_rx: std::sync::mpsc::Receiver<crate::network::ClutchCeremonyResult>,
     /// Last `[` Press timestamp; `None` until first press. Combined with `chord_lb_release` decides whether `[` is currently held — see `brackets_held`.
     chord_lb_press: Option<Instant>,
     /// Last `[` Release timestamp. `None` until first release.
@@ -333,6 +348,24 @@ impl PhotonApp {
             blink_timer: BlinkTimer::new(),
             is_dragging_select: false,
             handle_query: None,
+            status_checker: None,
+            contact_pubkeys: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            sync_records: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            clutch_keygen_tx: {
+                let (tx, _) = std::sync::mpsc::channel();
+                tx
+            },
+            clutch_keygen_rx: std::sync::mpsc::channel().1,
+            clutch_kem_encap_tx: {
+                let (tx, _) = std::sync::mpsc::channel();
+                tx
+            },
+            clutch_kem_encap_rx: std::sync::mpsc::channel().1,
+            clutch_ceremony_tx: {
+                let (tx, _) = std::sync::mpsc::channel();
+                tx
+            },
+            clutch_ceremony_rx: std::sync::mpsc::channel().1,
             chord_lb_press: None,
             chord_lb_release: None,
             chord_rb_press: None,
@@ -610,6 +643,38 @@ impl FluorApp for PhotonApp {
         };
         let peer_store = Arc::new(Mutex::new(PeerStore::new()));
         hq.set_transport(peer_store);
+
+        // Wire the CLUTCH job channels (replace the disconnected placeholders from `new`).
+        {
+            let (ktx, krx) = std::sync::mpsc::channel();
+            self.clutch_keygen_tx = ktx;
+            self.clutch_keygen_rx = krx;
+            let (etx, erx) = std::sync::mpsc::channel();
+            self.clutch_kem_encap_tx = etx;
+            self.clutch_kem_encap_rx = erx;
+            let (ctx_, crx) = std::sync::mpsc::channel();
+            self.clutch_ceremony_tx = ctx_;
+            self.clutch_ceremony_rx = crx;
+        }
+
+        // Spawn the presence + CLUTCH status checker on HandleQuery's shared socket. Desktop only — Android's checker takes no wake sender (its redraws come thru the JNI/Choreographer path). Done BEFORE `hq` is moved into the field so we can take its socket.
+        #[cfg(not(target_os = "android"))]
+        {
+            match crate::network::status::StatusChecker::new(
+                hq.socket(),
+                self.device_keypair.clone().expect("device_keypair set above"),
+                self.contact_pubkeys.clone(),
+                self.sync_records.clone(),
+                proxy.clone(),
+            ) {
+                Ok(c) => {
+                    self.status_checker = Some(c);
+                    crate::log("UI: status checker started (presence + CLUTCH)");
+                }
+                Err(e) => crate::log(&format!("UI: status checker failed to start: {e}")),
+            }
+        }
+
         self.handle_query = Some(hq);
 
         // Auto-resume from the remembered session roots. If tohu has this login's roots (persisted on a prior, FGTW-confirmed attest), paint Ready IMMEDIATELY from local state — we already own this identity, so there is no reason to block the first frame on the network. The avatar comes from a local cache file (no vault, no network); contacts + peer presence + cloud-merge arrive a beat later via the background `query_resume` and merge in through `on_query_result`. A rejection (handle claimed by another device) bails back to the attest screen; a transient network error leaves the local session on Ready untouched.
@@ -633,6 +698,14 @@ impl FluorApp for PhotonApp {
                             "UI: loaded {} contact(s) from local vault on resume",
                             self.contacts.len()
                         ));
+                        // Seed the checker's answerable-pubkey set with every loaded contact so pongs from them are honoured.
+                        if let Ok(mut pks) = self.contact_pubkeys.lock() {
+                            for c in &self.contacts {
+                                if !pks.contains(&c.public_identity) {
+                                    pks.push(c.public_identity.clone());
+                                }
+                            }
+                        }
                         self.storage = Some(s);
                     }
                     Err(e) => crate::log(&format!("STORAGE: init failed on resume: {}", e)),
@@ -643,6 +716,8 @@ impl FluorApp for PhotonApp {
                 crate::log("UI: resumed to Ready from local session roots (tohu) — FGTW announce + presence run in background");
                 hq.query_resume(remembered);
             }
+            // Kick presence immediately for the just-loaded contacts so their online rings reflect reality without waiting for the FGTW round-trip.
+            self.ping_contacts();
         }
     }
 
@@ -872,6 +947,8 @@ impl FluorApp for PhotonApp {
                         self.active_contact = Some(ci);
                         self.state = AppState::Conversation;
                         self.change_focus(None);
+                        // Refresh this contact's presence on conversation-enter so the header reflects reality promptly.
+                        self.ping_contact(ci);
                         ctx.window.request_redraw();
                         return EventResponse::Handled;
                     }
@@ -1195,6 +1272,11 @@ impl FluorApp for PhotonApp {
                     needs_redraw = true;
                 }
             }
+        }
+
+        // Drain per-contact presence updates (pongs → is_online / ip). CLUTCH job drains land alongside this in the follow-up commit.
+        if self.check_status_updates() {
+            needs_redraw = true;
         }
 
         // Drain handle_query results. `try_recv` is non-blocking; we collect into local Vecs so the immutable borrow on `handle_query` ends before the `&mut self` handlers run. Three channels feed in: attestation results, connectivity changes, handle searches.
@@ -2439,6 +2521,81 @@ impl PhotonApp {
         // Restart blink so the cursor lands solid on the newly-focused textbox instead of mid-cycle dark. `start` resets the phase to the start of the visible half whether the timer was already running or not.
         self.blink_timer.start(Instant::now());
         true
+    }
+
+    /// Ping every contact to learn its online status (and let it learn ours — NAT hole-punch). Prefers the LAN IPv4 (`local_ip:local_port`) over the FGTW-reported `ip` so same-network peers reach each other directly (hairpin-NAT workaround), then fires a LAN broadcast so peers on the same network discover each other's local addresses. Pongs arrive async and flip `is_online` via `check_status_updates`. Ported from the retired app.rs `ping_contacts`.
+    fn ping_contacts(&mut self) {
+        let Some(checker) = self.status_checker.as_ref() else {
+            return;
+        };
+        let mut pinged = 0;
+        for contact in &self.contacts {
+            let addr = match (contact.local_ip, contact.local_port) {
+                (Some(ip), Some(port)) => Some(std::net::SocketAddr::new(std::net::IpAddr::V4(ip), port)),
+                _ => contact.ip,
+            };
+            if let Some(ip) = addr {
+                checker.ping(ip, contact.public_identity.clone());
+                pinged += 1;
+            }
+        }
+        if pinged > 0 {
+            crate::log(&format!("Status: pinged {pinged} contact(s)"));
+        }
+        // LAN broadcast for same-network local-IP discovery (hairpin-NAT workaround).
+        if let (Some(session), Some(hq)) = (self.session.as_ref(), self.handle_query.as_ref()) {
+            checker.send_lan_broadcast(session.handle_proof, hq.port());
+        }
+    }
+
+    /// Ping a single contact (on conversation-enter) so its presence refreshes promptly. Same LAN-IPv4-preferring address selection as `ping_contacts`.
+    fn ping_contact(&mut self, idx: usize) {
+        let Some(checker) = self.status_checker.as_ref() else {
+            return;
+        };
+        let Some(contact) = self.contacts.get(idx) else {
+            return;
+        };
+        let addr = match (contact.local_ip, contact.local_port) {
+            (Some(ip), Some(port)) => Some(std::net::SocketAddr::new(std::net::IpAddr::V4(ip), port)),
+            _ => contact.ip,
+        };
+        if let Some(ip) = addr {
+            checker.ping(ip, contact.public_identity.clone());
+        }
+    }
+
+    /// Drain `StatusUpdate`s from the checker and apply them to contacts. v1 (presence checkpoint) handles only `Online`: match the pong's pubkey to a contact, update its `ip` from the source address, and flip `is_online`. Returns true if any contact changed (→ redraw the list ring). The CLUTCH arms (offer/KEM/complete) land in the follow-up commit. Chat/ack/PT arms are intentionally ignored (messaging not yet ported).
+    fn check_status_updates(&mut self) -> bool {
+        use crate::network::status::StatusUpdate;
+        let Some(checker) = self.status_checker.as_ref() else {
+            return false;
+        };
+        let mut changed = false;
+        while let Some(update) = checker.try_recv() {
+            if let StatusUpdate::Online { peer_pubkey, is_online, peer_addr, .. } = update {
+                for contact in &mut self.contacts {
+                    if contact.public_identity == peer_pubkey {
+                        if let Some(addr) = peer_addr {
+                            if contact.ip != Some(addr) {
+                                contact.ip = Some(addr);
+                            }
+                        }
+                        if contact.is_online != is_online {
+                            contact.is_online = is_online;
+                            changed = true;
+                            crate::log(&format!(
+                                "Status: {} is now {}",
+                                contact.handle,
+                                if is_online { "ONLINE" } else { "offline" }
+                            ));
+                        }
+                    }
+                }
+            }
+            // CLUTCH + chat arms deliberately unhandled in the presence checkpoint — added next commit.
+        }
+        changed
     }
 
     /// Every textbox photon owns, tagged by role, in registration order. THE single source of truth for "what textboxes exist" — focus / IME / blink / freeze all iterate this instead of naming `self.textbox` / `self.contacts_textbox` (and, later, the conversation compose bar) one at a time. Adding a textbox means adding one arm here, not touching `is_textbox` / `focused_textbox_mut` / the blink loop / the freeze pass separately (the lockstep this comment used to warn about). Roles stay distinct because callers that need per-role behaviour (freeze keys off Launch-vs-Contacts busy state; the launch box gates the Attest button; the contacts box filters the list) match on [`TextboxRole`].
