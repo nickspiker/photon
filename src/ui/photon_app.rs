@@ -3010,7 +3010,13 @@ impl PhotonApp {
                 // This is what unblocks a same-router peer whose stored WAN IPv6 says "No route to host" — the case where m never received an offer.
                 self.refresh_contact_addrs_from_peers(&data.peers);
                 self.hints_dismissed = false;
-                self.state = AppState::Ready;
+                // Only flip to Ready on the INITIAL attest (we were still on the Launch screen).
+                // This Success branch also fires on every recurring background resume refresh — if
+                // the user has already navigated in-app (Ready, or inside a Conversation), forcing
+                // Ready here would yank them out of an open chat back to the contact list each sweep.
+                if !in_app {
+                    self.state = AppState::Ready;
+                }
             }
             QueryResult::AlreadyAttested(peer) => {
                 let msg = format!(
