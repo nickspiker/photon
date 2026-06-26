@@ -14,6 +14,15 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
+    <!-- Sticky session broadcast — only apps signed with the same key may receive it -->
+    <uses-permission android:name="android.permission.BROADCAST_STICKY" />
+    <uses-permission android:name="com.photon.SESSION_READ" />
+
+    <!-- Signature-level permission gates who can receive the sticky session broadcast -->
+    <permission
+        android:name="com.photon.SESSION_READ"
+        android:protectionLevel="signature" />
+
     <application
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
