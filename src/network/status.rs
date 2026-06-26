@@ -1271,6 +1271,17 @@ async fn run_checker(
                             parse_clutch_complete_vsf_without_recipient_check(msg_bytes)
                         {
                             crate::log("UDP: Received ClutchComplete directly (VSF verified)");
+                            // Delivery ack — ClutchComplete is sent as a reliable PT packet; without
+                            // acking it the sender's stop-and-wait queue head never clears and it
+                            // blocks every later packet (chat) behind it. Pure transport "bytes got
+                            // here"; the proof's own convergence logic is layered on top.
+                            {
+                                let ack_bytes = {
+                                    let pt_mgr = pt_recv.lock().unwrap();
+                                    pt_mgr.build_packet_ack(msg_bytes)
+                                };
+                                udp::send(&socket_recv, &ack_bytes, src_addr).await;
+                            }
                             send_status_update(
                                 &status_tx_recv,
                                 StatusUpdate::ClutchCompleteReceived {
