@@ -5042,9 +5042,9 @@ impl PhotonApp {
                                 }
                             } else {
                                 // No ceremony_id yet - check if we have keypairs and if KEM targets them This happens when keypairs are loaded from disk but offers not yet exchanged
-                                if let Some(ref our_keys) = contact.clutch_our_keypairs {
+                                if let Some(our_keys_cloned) = contact.clutch_our_keypairs.clone() {
                                     let our_hqc_prefix: [u8; 8] =
-                                        our_keys.hqc256_public[..8].try_into().unwrap();
+                                        our_keys_cloned.hqc256_public[..8].try_into().unwrap();
                                     let all_zeros = their_kem.target_hqc_pub_prefix == [0u8; 8];
                                     if !all_zeros
                                         && their_kem.target_hqc_pub_prefix != our_hqc_prefix
@@ -5057,12 +5057,35 @@ impl PhotonApp {
                                         ));
                                         break;
                                     }
-                                    // KEM targets our current keypairs - queue it for processing when ceremony_id arrives
+                                    // KEM targets our current keypairs. The other side already
+                                    // had both offer provenances and computed ceremony_id. Adopt
+                                    // it directly and decapsulate immediately — waiting for their
+                                    // offer to re-arrive over lossy UDP would deadlock indefinitely.
                                     crate::log(&format!(
-                                        "CLUTCH: KEM response from {} arrived before ceremony_id - queuing for later",
+                                        "CLUTCH: KEM response from {} arrived before ceremony_id - adopting peer's ceremony_id and decapsulating now",
                                         contact.handle
                                     ));
-                                    contact.clutch_pending_kem = Some(their_kem.clone());
+                                    contact.ceremony_id = Some(received_ceremony_id);
+                                    // Initialize slots if needed
+                                    if contact.clutch_slots.is_empty() {
+                                        contact.init_clutch_slots(our_handle_hash);
+                                    }
+                                    use crate::crypto::clutch::ClutchKemSharedSecrets;
+                                    let remote_secrets =
+                                        ClutchKemSharedSecrets::decapsulate_from_peer(
+                                            &their_kem,
+                                            &our_keys_cloned,
+                                        );
+                                    if let Some(remote_slot) =
+                                        contact.get_slot_mut(&their_handle_hash)
+                                    {
+                                        remote_slot.kem_secrets_from_them =
+                                            Some(remote_secrets);
+                                        crate::log(&format!(
+                                            "CLUTCH: Decapsulated KEM from {} (ceremony_id adopted from peer)",
+                                            contact.handle
+                                        ));
+                                    }
                                     break;
                                 } else {
                                     // No keypairs at all - stale KEM encrypted to unknown keys
