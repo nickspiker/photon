@@ -1466,6 +1466,25 @@ async fn run_checker(
                                         continue;
                                     }
 
+                                    // A chat IS liveness proof — stronger than a pong. Clear the
+                                    // sender's ping-failure counter and mark them online, so the
+                                    // ping-timeout can't flip a peer offline while they're actively
+                                    // messaging us (the "shows offline but receives messages" bug).
+                                    {
+                                        let mut failures = failed_pings_recv.lock().unwrap();
+                                        failures.retain(|(k, _)| k != sender_pubkey.as_bytes());
+                                    }
+                                    send_status_update(
+                                        &status_tx_recv,
+                                        StatusUpdate::Online {
+                                            peer_pubkey: sender_pubkey,
+                                            is_online: true,
+                                            peer_addr: Some(src_addr),
+                                            sync_records: vec![],
+                                        },
+                                        &event_proxy_recv,
+                                    );
+
                                     // Forward to UI for decryption
                                     send_status_update(
                                         &status_tx_recv,
