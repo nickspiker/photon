@@ -58,6 +58,10 @@ const SEARCH_FAIL_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_E0_40_
 const HOURGLASS_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_FF_A5_00));
 /// Grey placeholder circle for contacts/avatars without a loaded image.
 const AVATAR_PLACEHOLDER: u32 = 0xFF_C5_C5_C5;
+/// Thin white rule between conversation messages. α+darkness.
+const DIVIDER_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_FF_FF_FF));
+/// Dim grey for the compose-box placeholder text. α+darkness.
+const LABEL_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_80_80_80));
 
 /// Deploy version = the crate's patch number from `Cargo.toml`, baked in at compile time. The Cargo version IS the version — `deploy.sh` bumps the patch and ships; local test/release builds inherit whatever the tree currently says, so the displayed number only advances on a real deploy. (Major/minor live in 0.0 today, so the patch is the whole counter; revisit the encoding if minor ever moves.)
 fn deploy_version() -> u32 {
@@ -200,6 +204,48 @@ const PRESENCE_IDLE_NEAR: std::time::Duration = std::time::Duration::from_secs(3
 /// Idle past this → drop from idle (1min) to deep-idle (15min).
 const PRESENCE_IDLE_FAR: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
+/// Deterministic per-party text colour for the conversation view, derived from a handle hash.
+///
+/// PLACEHOLDER (v1): hue from the hash, fixed saturation + lightness, plain HSL→sRGB. Both your
+/// colour (your handle hash) and theirs (their handle hash) come from this, so a party always reads
+/// the same colour. FOLLOW-UP: replace the body with a perceptually-uniform generator — pin perceived
+/// lightness to ~50% via the vsf spectral/LMS pipeline (`vsf/src/colour/spectral/`) so every party's
+/// colour reads at equal brightness while hue+saturation vary by handle. Keep this signature so the
+/// swap is a drop-in. Returns packed ARGB (0xAARRGGBB), run through `theme`'s `fmt` for Android.
+fn party_colour(handle_hash: &[u8; 32]) -> u32 {
+    // Hue across the full wheel from the first two hash bytes; fixed S/L for now.
+    let hue = (u16::from_le_bytes([handle_hash[0], handle_hash[1]]) as f32 / 65535.0) * 360.0;
+    let s = 0.55_f32;
+    let l = 0.62_f32; // sRGB lightness placeholder; perceptual-50% lands in the follow-up.
+
+    // Standard HSL→RGB.
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let hp = hue / 60.0;
+    let x = c * (1.0 - (hp % 2.0 - 1.0).abs());
+    let (r1, g1, b1) = match hp as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let m = l - c / 2.0;
+    let r = ((r1 + m) * 255.0).round() as u32;
+    let g = ((g1 + m) * 255.0).round() as u32;
+    let b = ((b1 + m) * 255.0).round() as u32;
+    // visible-RGB (0x00RRGGBB) → stored α+darkness, matching the file's other colour consts.
+    let visible = (r << 16) | (g << 8) | b;
+    fluor::theme::dark(fluor::theme::fmt(visible))
+}
+
+/// Dim a stored α+darkness colour to ~half opacity (for undelivered outgoing messages). The stored
+/// high byte is opacity (α), so scaling it down makes the glyph fainter against the background.
+fn dim_colour(c: u32) -> u32 {
+    let a = ((c >> 24) & 0xFF) / 2;
+    (c & 0x00FF_FFFF) | (a << 24)
+}
+
 /// Debug chord bindings shown in the hint overlay while `[ + ]` are held. Keep in sync with the dispatch in `on_event`'s KeyboardInput arm — adding a row here without wiring its handler (or vice versa) silently drops the binding.
 const CHORD_HINTS: &[(&str, &str)] = &[
     ("h", "Hit-mask overlay"),
@@ -239,6 +285,7 @@ fn chord_hint_bbox(viewport: Viewport, vw: usize, vh: usize) -> PixelRect {
 enum TextboxRole {
     LaunchHandle,
     ContactsSearch,
+    MessageCompose,
 }
 
 /// Photon-desktop as a `FluorApp`. Owns fluor's `DefaultChrome` (window frame), the dense hit-id counter for widget allocation, and an optional event-loop proxy clone for waking from background tasks.
@@ -320,6 +367,8 @@ pub struct PhotonApp {
     contacts_textbox: Option<Textbox>,
     /// Plus button to the right of `contacts_textbox` — clicking it (or pressing Enter in the textbox) triggers the add-contact flow (`HandleQuery::search`). Will eventually carry an idle "+" glyph and an in-progress rotating-hourglass animation (legacy port from `compositing.rs`); that lands when `ProgressButton` gets extracted to fluor.
     contacts_plus_btn: Option<Button>,
+    /// Conversation-screen message compose box (Conversation state). Distinct from the launch/search boxes so content never bleeds between screens. Enter sends (`submit_message`); the contents encrypt onto the open contact's friendship chain.
+    message_textbox: Option<Textbox>,
     /// Encrypted local storage — initialized after attestation success with the device secret + handle.
     storage: Option<crate::storage::FlatStorage>,
     /// Contact list. Populated from `AttestationData.contacts` on attestation success and grown by `submit_add_friend` → `HandleQuery::search` results. Persisted to FlatStorage on add.
@@ -413,6 +462,7 @@ impl PhotonApp {
             vault_degraded: false,
             online: false,
             contacts_textbox: None,
+            message_textbox: None,
             contacts_plus_btn: None,
             storage: None,
             contacts: Vec::new(),
@@ -548,6 +598,12 @@ impl Container for PhotonApp {
                 f(btn);
             }
         }
+        if matches!(self.state, AppState::Conversation) {
+            // The compose box is the only focusable widget in a conversation; yielding it here wires click-to-focus, Tab, and key dispatch.
+            if let Some(tb) = self.message_textbox.as_mut() {
+                f(tb);
+            }
+        }
         if let Some(chrome) = self.chrome.as_mut() {
             chrome.visit(f);
         }
@@ -628,6 +684,8 @@ impl FluorApp for PhotonApp {
         // Contacts-page widgets — same placeholder shape; geometry set every frame via `update_widget_layout` based on ReadyLayout. The plus button label is "+" for now; the rotating-hourglass animation lands in a follow-up when we extract `ProgressButton` into fluor.
         self.contacts_textbox = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
         self.contacts_plus_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., "+"));
+        // Conversation compose box — placeholder geometry; positioned each frame via `update_widget_layout`.
+        self.message_textbox = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
         // Reserve a hit-id for the Ready-screen avatar circle. Not a Widget — the avatar is just a paint primitive — so click dispatch is handled directly in `on_event`'s MouseInput::Pressed arm, not thru `widget::dispatch_click`. Incrementing the shared counter keeps the contiguous-id contract intact for the `[]h` debug overlay.
         self.hit_counter = self.hit_counter.wrapping_add(1);
         self.avatar_hit_id = self.hit_counter;
@@ -960,6 +1018,16 @@ impl FluorApp for PhotonApp {
                     if matches!(self.state, AppState::Ready) {
                         // On the contacts screen the wheel scrolls the list, not the background. Down-scroll (negative dy) moves the list up (reveals lower contacts), so subtract; the render pass clamps to the list extent.
                         self.contacts_scroll = (self.contacts_scroll - dy).max(0);
+                    } else if matches!(self.state, AppState::Conversation) {
+                        // In a conversation the wheel scrolls the message history. The list lays out
+                        // bottom-up with newest at the bottom; a positive offset pushes messages down
+                        // (reveals older ones above). Scroll-up (positive dy) shows older → add.
+                        if let Some(ci) = self.active_contact {
+                            if let Some(contact) = self.contacts.get_mut(ci) {
+                                contact.message_scroll_offset =
+                                    (contact.message_scroll_offset + dy as f32 * 8.0).max(0.0);
+                            }
+                        }
                     } else {
                         self.bg_scroll = self.bg_scroll.wrapping_add(dy);
                     }
@@ -1223,6 +1291,32 @@ impl FluorApp for PhotonApp {
                             .unwrap_or(false);
                         if focused_is_contacts_textbox {
                             self.submit_add_friend();
+                            ctx.window.request_redraw();
+                            return EventResponse::Handled;
+                        }
+                        let focused_is_compose = self
+                            .message_textbox
+                            .as_ref()
+                            .map(|t| Some(t.hit_id()) == self.focused)
+                            .unwrap_or(false);
+                        if focused_is_compose {
+                            // Shift+Enter inserts a newline (multi-line compose); plain Enter sends.
+                            if ctx.modifiers.shift_key() {
+                                if let Some(focus_id) = self.focused {
+                                    let resp = widget::dispatch_key(
+                                        self,
+                                        focus_id,
+                                        kev,
+                                        ctx.modifiers,
+                                        ctx.text,
+                                    );
+                                    if matches!(resp, EventResponse::Handled) {
+                                        ctx.window.request_redraw();
+                                    }
+                                    return resp;
+                                }
+                            }
+                            self.submit_message();
                             ctx.window.request_redraw();
                             return EventResponse::Handled;
                         }
@@ -2216,8 +2310,8 @@ impl FluorApp for PhotonApp {
                         None,
                     );
 
-                    // CLUTCH state
-                    let clutch_y = avatar_y + avatar_r + unit * 2.0;
+                    // CLUTCH state (compact, under the avatar)
+                    let clutch_y = avatar_y + avatar_r + unit * 1.5;
                     let clutch_label = match contact.clutch_state {
                         crate::types::ClutchState::Pending => "CLUTCH: pending",
                         crate::types::ClutchState::AwaitingProof => "CLUTCH: awaiting proof",
@@ -2232,7 +2326,7 @@ impl FluorApp for PhotonApp {
                         clutch_label,
                         buf_w as f32 * 0.5,
                         clutch_y,
-                        unit * 0.7,
+                        unit * 0.6,
                         500,
                         clutch_colour,
                         "Oxanium",
@@ -2240,6 +2334,130 @@ impl FluorApp for PhotonApp {
                         None,
                         None,
                     );
+
+                    // ── Message list ───────────────────────────────────────────
+                    // Text-only, right-aligned (outgoing) / left-aligned (incoming),
+                    // one thin white divider after every message. Newest at the
+                    // bottom, just above the compose bar; older scroll up off-screen.
+                    let our_handle_hash =
+                        self.session.as_ref().map(|s| s.identity_seed).unwrap_or([0u8; 32]);
+                    let our_colour = party_colour(&our_handle_hash);
+                    let their_colour = party_colour(&contact.handle_hash);
+
+                    let msg_size = unit * 0.62;
+                    let line_h = msg_size * 1.6; // text + breathing room per message
+                    let pad_x = unit; // left/right inset
+                    let list_top = clutch_y + unit * 1.2;
+                    // Compose bar reserves the bottom strip; the list lives between.
+                    let compose_h = unit * 1.8;
+                    let list_bottom = buf_h as f32 - compose_h - unit * 0.5;
+                    let list_clip = fluor::paint::Clip::new(
+                        0,
+                        list_top as usize,
+                        buf_w,
+                        list_bottom as usize,
+                    );
+
+                    // Lay messages out bottom-up so the newest sits at list_bottom.
+                    let n = contact.messages.len();
+                    let mut y = list_bottom - msg_size + contact.message_scroll_offset;
+                    for msg in contact.messages.iter().rev() {
+                        if y < list_top - line_h {
+                            break; // scrolled above the visible region
+                        }
+                        // Divider under this message (between it and the next-newer one).
+                        paint::fill_rect(
+                            &mut canvas,
+                            pad_x as isize,
+                            (y + msg_size * 0.5) as isize,
+                            (buf_w as f32 - pad_x * 2.0) as isize,
+                            (ru.max(1.0)) as isize,
+                            DIVIDER_COLOUR,
+                            Some(list_clip),
+                            None,
+                        );
+                        // Dim outgoing until delivered; incoming always full.
+                        let colour = if msg.is_outgoing {
+                            if msg.delivered {
+                                our_colour
+                            } else {
+                                dim_colour(our_colour)
+                            }
+                        } else {
+                            their_colour
+                        };
+                        if msg.is_outgoing {
+                            ctx.text.draw_text_right_u32(
+                                &mut canvas,
+                                &msg.content,
+                                buf_w as f32 - pad_x,
+                                y,
+                                msg_size,
+                                500,
+                                colour,
+                                "Open Sans",
+                                Some(list_clip),
+                                None,
+                                None,
+                            );
+                        } else {
+                            ctx.text.draw_text_left_u32(
+                                &mut canvas,
+                                &msg.content,
+                                pad_x,
+                                y,
+                                msg_size,
+                                500,
+                                colour,
+                                "Open Sans",
+                                Some(list_clip),
+                                None,
+                                None,
+                            );
+                        }
+                        y -= line_h;
+                    }
+                    let _ = n;
+
+                    // ── Compose box (pinned bottom) ────────────────────────────
+                    let compose_empty = self
+                        .message_textbox
+                        .as_ref()
+                        .map(|t| t.chars.is_empty())
+                        .unwrap_or(true);
+                    let compose_focused = self
+                        .message_textbox
+                        .as_ref()
+                        .map(|t| Some(t.hit_id()) == self.focused)
+                        .unwrap_or(false);
+                    if compose_empty && !compose_focused {
+                        ctx.text.draw_text_left_u32(
+                            &mut canvas,
+                            "message",
+                            pad_x * 1.2,
+                            buf_h as f32 - compose_h * 0.5,
+                            msg_size,
+                            400,
+                            LABEL_COLOUR,
+                            "Open Sans",
+                            None,
+                            None,
+                            None,
+                        );
+                    }
+                    if let Some(tb) = self.message_textbox.as_mut() {
+                        let id = tb.hit_id();
+                        tb.render_content_into(
+                            &mut canvas,
+                            0.,
+                            0.,
+                            ctx.text,
+                            None,
+                            None,
+                            Some(&mut chrome.hit_test_map),
+                            id,
+                        );
+                    }
                 }
             }
         }
@@ -2376,6 +2594,18 @@ impl PhotonApp {
             btn.set_rect(plus_cx, plus_cy, plus_size, plus_size);
             btn.set_font_size(font_size);
         }
+
+        // Conversation compose box: a full-width strip pinned to the bottom. Geometry must match the
+        // render block's `compose_h = unit * 1.8` and `unit = max(buf_h*0.04*ru, 12)`.
+        let unit = (buf_h as f32 * 0.04 * ctx.viewport.ru).max(12.0);
+        let compose_h = unit * 1.8;
+        let compose_w = buf_w as f32 - unit * 2.0;
+        let compose_cx = buf_w as f32 * 0.5;
+        let compose_cy = buf_h as f32 - compose_h * 0.5;
+        if let Some(tb) = self.message_textbox.as_mut() {
+            tb.set_rect(compose_cx, compose_cy, compose_w, compose_h);
+            tb.set_font_size(font_size, ctx.text);
+        }
     }
 
     /// Submit the contacts-page textbox contents as an FGTW handle search. Called from Enter in `contacts_textbox` and from clicking `contacts_plus_btn`. Bails on empty input, on no `HandleQuery` available (init failure path), and on a search for the user's own attested handle (would just find their own device — no point). Successful Found results land in `tick()`'s drain loop and append to `self.contacts`. Persistence + UI transition into a search-in-flight visual state (the rotating-hourglass plus button) ride in subsequent slices.
@@ -2510,6 +2740,129 @@ impl PhotonApp {
     fn clear_launch_error(&mut self) {
         if matches!(self.state, AppState::Launch(LaunchState::Error(_))) {
             self.state = AppState::Launch(LaunchState::Fresh);
+        }
+    }
+
+    /// Encrypt + send the compose-box contents to the open contact, append it as an outgoing bubble, and persist. No-op unless a CLUTCH-Complete contact is open with a friendship chain and the box is non-empty. The crypto/wire/persist layers already exist (`FriendshipChains::prepare_send`, `StatusChecker::send_message`, `save_messages`); this is the UI→chain→network glue.
+    fn submit_message(&mut self) {
+        use vsf::schema::section::FieldValue;
+
+        let Some(ci) = self.active_contact else { return };
+        let our_handle_hash = match self.session.as_ref().map(|s| s.identity_seed) {
+            Some(h) => h,
+            None => return,
+        };
+
+        // Pull + trim the compose text; bail on empty.
+        let text: String = match self.message_textbox.as_ref() {
+            Some(tb) => tb.chars.iter().collect(),
+            None => return,
+        };
+        let text = text.trim().to_string();
+        if text.is_empty() {
+            return;
+        }
+
+        // Contact must be CLUTCH-Complete with a friendship chain.
+        let (friendship_id, recipient_pubkey, addr_pair) = {
+            let Some(contact) = self.contacts.get(ci) else { return };
+            if contact.clutch_state != crate::types::ClutchState::Complete {
+                crate::log("CHAT: cannot send — CLUTCH not complete");
+                return;
+            }
+            let Some(fid) = contact.friendship_id else {
+                crate::log("CHAT: cannot send — no friendship chain");
+                return;
+            };
+            (fid, contact.public_identity.key, contact.race_addrs())
+        };
+        let Some((peer_addr, _alt)) = addr_pair else {
+            crate::log("CHAT: cannot send — no known address for contact");
+            return;
+        };
+
+        let eagle_time = vsf::eagle_time_oscillations();
+
+        // Build the message VSF the receiver parses: (message: x{text}, hp{incorporated_hp}, hR{pad}),
+        // field order shuffled to enforce type-marker (not positional) parsing. Mirrors the proven
+        // send-side shape; the receive path reads it back via VsfField::parse.
+        let (ciphertext, prev_msg_hp, conversation_token) = {
+            let Some((_, chains)) = self
+                .friendship_chains
+                .iter_mut()
+                .find(|(id, _)| *id == friendship_id)
+            else {
+                crate::log("CHAT: friendship chains missing for open contact");
+                return;
+            };
+            let incorporated_hp = chains.last_incorporated_hp().map(|h| *h).unwrap_or([0u8; 32]);
+            let mut values = vec![
+                vsf::VsfType::x(text.clone()),
+                vsf::VsfType::hp(incorporated_hp.to_vec()),
+            ];
+            // Short random pad (median ~53B) for traffic-analysis resistance.
+            let pad_len = rand::random::<u8>()
+                .min(rand::random::<u8>())
+                .min(rand::random::<u8>()) as usize;
+            if pad_len > 0 {
+                let pad: Vec<u8> = (0..pad_len).map(|_| rand::random()).collect();
+                values.push(vsf::VsfType::hR(pad));
+            }
+            use rand::seq::SliceRandom;
+            values.shuffle(&mut rand::thread_rng());
+            let payload = FieldValue::new("message", values).flatten();
+
+            let conv_token = chains.conversation_token;
+            match chains.prepare_send(&our_handle_hash, payload, eagle_time) {
+                Some((ct, prev, _msg_hp, _ph)) => (ct, prev, conv_token),
+                None => {
+                    crate::log("CHAT: prepare_send failed (not a participant)");
+                    return;
+                }
+            }
+        };
+
+        // CRASH SAFETY: persist chains (pending message + last_sent_hash) BEFORE the network send —
+        // disk is the commit point, the network is just notification.
+        if let Some(storage) = self.storage.as_ref() {
+            if let Some((_, chains)) = self
+                .friendship_chains
+                .iter()
+                .find(|(id, _)| *id == friendship_id)
+            {
+                if let Err(e) = crate::storage::friendship::save_friendship_chains(chains, storage) {
+                    crate::log(&format!("STORAGE CRITICAL: save chains before send: {}", e));
+                }
+            }
+        }
+
+        // Send over PT (UDP-preferred, TCP/relay fallback already wired).
+        if let Some(ref checker) = self.status_checker {
+            checker.send_message(crate::network::status::MessageRequest {
+                peer_addr,
+                recipient_pubkey,
+                conversation_token,
+                prev_msg_hp,
+                ciphertext,
+                eagle_time,
+            });
+            crate::log(&format!("CHAT: sent message ({} chars) to contact", text.len()));
+        }
+
+        // Append the outgoing bubble (delivered=false until the ACK lands), persist, clear the box.
+        if let Some(contact) = self.contacts.get_mut(ci) {
+            contact.insert_message_sorted(ChatMessage::new_with_timestamp(
+                text, true, eagle_time,
+            ));
+            contact.message_scroll_offset = 0.0;
+            if let Some(storage) = self.storage.as_ref() {
+                if let Err(e) = crate::storage::contacts::save_messages(contact, storage) {
+                    crate::log(&format!("STORAGE: failed to save messages: {}", e));
+                }
+            }
+        }
+        if let Some(tb) = self.message_textbox.as_mut() {
+            tb.clear();
         }
     }
 
@@ -5815,6 +6168,9 @@ impl PhotonApp {
             self.contacts_textbox
                 .as_mut()
                 .map(|t| (TextboxRole::ContactsSearch, t)),
+            self.message_textbox
+                .as_mut()
+                .map(|t| (TextboxRole::MessageCompose, t)),
         ]
         .into_iter()
         .flatten()
