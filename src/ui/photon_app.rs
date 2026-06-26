@@ -325,6 +325,8 @@ pub struct PhotonApp {
     avatar_hit_id: HitId,
     /// One-shot Android image-picker request. Set when the user taps the avatar; consumed by the JNI poll (`nativePollAvatarPicker`) which signals the Activity to launch `ACTION_GET_CONTENT`. Stays `None` on idle frames so the Activity doesn't churn.
     pending_picker_request: bool,
+    /// One-shot signal for the Android sticky session broadcast: 1=send, -1=clear, 0=nothing. Set by attest success and []n nuke.
+    pending_broadcast_signal: i8,
     /// Index of the contact currently open in Conversation view, or `None` when on the Ready (contacts list) screen.
     active_contact: Option<usize>,
     /// Base hit ID for contact rows. Row `i` gets `contact_hit_base + i`. Allocated in `init` after the other widget IDs.
@@ -405,6 +407,7 @@ impl PhotonApp {
             contact_hit_base: HIT_NONE,
             back_btn_hit_id: HIT_NONE,
             pending_picker_request: false,
+            pending_broadcast_signal: 0,
             contacts_scroll: 0,
             hints_dismissed: false,
             avatar_hovered: false,
@@ -421,6 +424,15 @@ impl PhotonApp {
         let req = self.pending_picker_request;
         self.pending_picker_request = false;
         req
+    }
+
+    /// One-shot poll for the Android sticky session broadcast signal. Returns `1` after a
+    /// successful attest (Kotlin should call `sendSessionBroadcast()`), `-1` after a vault nuke
+    /// (Kotlin should call `clearSessionBroadcast()`), `0` otherwise.
+    pub fn take_broadcast_signal(&mut self) -> i8 {
+        let s = self.pending_broadcast_signal;
+        self.pending_broadcast_signal = 0;
+        s
     }
 
     /// Encode + save + reload an avatar image picked from the OS image picker. Pipeline: raw file bytes → `encode_avatar_from_image` (handles JPEG/PNG/WebP and the ICC-profile colour management — VSF spectral γ=2.0 RGB out) → `save_avatar` (encrypted handle-keyed storage) → `load_avatar` (round-trip check) → `vsf_rgb_to_bt2020` (display conversion for the Android BT.2020 buffer tag) → installed as `device_avatar_pixels` with the scaled cache invalidated. Uploads to FGTW when a `handle_proof` is available so other devices can fetch it. Skipped if the user hasn't attested yet (no handle to derive the storage key from).
@@ -2463,6 +2475,7 @@ impl PhotonApp {
                 );
                 // Adopt the session roots the worker just derived + persisted (register-shaped, no handle string). Shared across the user's TOKEN apps, gone at logout; a close/reopen resumes from these without re-typing or recomputing the proof.
                 self.session = tohu::session();
+                self.pending_broadcast_signal = 1;
                 self.vault_degraded = data.vault_degraded;
                 // The worker already loaded this device's avatar (keyed on identity_seed) into `data.avatar_pixels`; colour-convert it to BT.2020 γ=2.0 for the Ready screen. `None` = storage-miss → grey placeholder.
                 if let Some(vsf_rgb) = &data.avatar_pixels {
@@ -3076,7 +3089,27 @@ impl PhotonApp {
                         }
                     }
 
-                    // Process any pending KEM response that arrived before keygen completed
+                    // Process any pending KEM response that arrived before keygen completed.
+                    // Also compute ceremony_id here if provenances are ready — the KEM may have
+                    // arrived in the network thread between when we added our provenance and when
+                    // the main loop got here to run the ceremony_id derivation above.
+                    if contact.clutch_pending_kem.is_some() {
+                        if contact.ceremony_id.is_none()
+                            && contact.offer_provenances.len() >= 2
+                        {
+                            let ceremony_id = *CeremonyId::derive(
+                                &[our_handle_hash, contact.handle_hash],
+                                &contact.offer_provenances,
+                            )
+                            .as_bytes();
+                            contact.ceremony_id = Some(ceremony_id);
+                            crate::log(&format!(
+                                "CLUTCH: Computed ceremony_id for {} while draining queued KEM",
+                                contact.handle
+                            ));
+                        }
+                    }
+
                     if let Some(pending_kem) = contact.clutch_pending_kem.take() {
                         crate::log(&format!(
                             "CLUTCH: Processing queued KEM response from {}",
@@ -3092,6 +3125,48 @@ impl PhotonApp {
                             let remote_hash = contact.handle_hash;
                             if let Some(remote_slot) = contact.get_slot_mut(&remote_hash) {
                                 remote_slot.kem_secrets_from_them = Some(remote_secrets);
+                                crate::log(&format!(
+                                    "CLUTCH: Decapsulated queued KEM from {} - stored in slot",
+                                    contact.handle
+                                ));
+                            }
+
+                            // If we haven't sent our own KEM encap yet, do it now.
+                            // This covers the case where their KEM arrived before we had
+                            // ceremony_id, so the normal encap-trigger was skipped.
+                            let already_sent_kem = contact
+                                .get_slot(&our_handle_hash)
+                                .map(|s| s.kem_secrets_to_them.is_some())
+                                .unwrap_or(false);
+                            if !already_sent_kem
+                                && !contact.clutch_kem_encap_in_progress
+                                && kem_encap_spawn.is_none()
+                            {
+                                if let Some(ceremony_id) = contact.ceremony_id {
+                                    if let Some(ip) = contact.ip {
+                                        let conv_token = derive_conversation_token(&[
+                                            our_handle_hash,
+                                            contact.handle_hash,
+                                        ]);
+                                        let remote_offer = contact
+                                            .get_slot(&contact.handle_hash)
+                                            .and_then(|s| s.offer.clone());
+                                        if let Some(remote_offer) = remote_offer {
+                                            contact.clutch_kem_encap_in_progress = true;
+                                            kem_encap_spawn = Some((
+                                                contact.id.clone(),
+                                                remote_offer,
+                                                ceremony_id,
+                                                conv_token,
+                                                ip,
+                                            ));
+                                            crate::log(&format!(
+                                                "CLUTCH: Spawning KEM encap for {} after draining queued KEM",
+                                                contact.handle
+                                            ));
+                                        }
+                                    }
+                                }
                             }
 
                             // Persist slot state after processing pending KEM
@@ -5563,6 +5638,7 @@ impl PhotonApp {
                 tohu::clear_session();
                 self.session = None;
                 self.storage = None;
+                self.pending_broadcast_signal = -1;
                 eprintln!("[]n nuked {} vault file(s); session cleared — restart or re-attest", count);
             }
             _ => acted = false,

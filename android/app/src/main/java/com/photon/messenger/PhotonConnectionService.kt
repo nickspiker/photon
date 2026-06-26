@@ -35,6 +35,9 @@ class PhotonConnectionService : Service() {
         const val NOTIFICATION_ID = 1001
         private const val TAG = "PhotonService"
         private const val POLL_INTERVAL_MS = 1000L // 1 second network polling
+        const val SESSION_ACTION = "com.photon.SESSION"
+        const val SESSION_PERMISSION = "com.photon.SESSION_READ"
+        const val SESSION_EXTRA_VSF = "vsf"
     }
 
     // Native network context pointer (HandleQuery + FgtwTransport)
@@ -60,6 +63,13 @@ class PhotonConnectionService : Service() {
     private external fun nativeNetworkDestroy(networkPtr: Long)
     private external fun nativeNetworkPoll(networkPtr: Long)  // Check for incoming messages, refresh peers
     private external fun nativeGetDevicePubkey(networkPtr: Long): String
+
+    // Session broadcast — VSF capsule carrying identity_seed + vault_seed + handle_proof.
+    // Sticky broadcast survives uninstall/reinstall (OS holds it); dies on reboot (desired).
+    // Seeds never leave Rust — nativeSendSessionBroadcast reads tohu::session() internally.
+    private external fun nativeSendSessionBroadcast(context: android.content.Context)
+    private external fun nativeClearSessionBroadcast(context: android.content.Context)
+
 
     override fun onCreate() {
         super.onCreate()
@@ -100,6 +110,34 @@ class PhotonConnectionService : Service() {
             networkPtr = 0
         }
         super.onDestroy()
+    }
+
+    /**
+     * Broadcast the session capsule as a sticky broadcast so it survives reinstall.
+     * Called after successful attestation. Rust reads the seeds from tohu::session() — they
+     * never surface in Kotlin.
+     */
+    fun sendSessionBroadcast() {
+        nativeSendSessionBroadcast(this)
+    }
+
+    /**
+     * Remove the sticky session broadcast. Called on logout / vault nuke.
+     */
+    fun clearSessionBroadcast() {
+        nativeClearSessionBroadcast(this)
+        Log.d(TAG, "Session broadcast cleared")
+    }
+
+    /**
+     * Read the sticky session broadcast from the OS (query without registering a receiver).
+     * Returns the raw VSF bytes, or null if no broadcast is present.
+     */
+    fun readSessionBroadcast(): ByteArray? {
+        val filter = android.content.IntentFilter(SESSION_ACTION)
+        @Suppress("UnspecifiedRegisterReceiverFlag")
+        val intent = registerReceiver(null, filter) ?: return null
+        return intent.getByteArrayExtra(SESSION_EXTRA_VSF)
     }
 
     /**
