@@ -806,6 +806,7 @@ impl HandleQuery {
             handle_proof,
             device_pubkey: peer.device_pubkey.clone(),
             ip: peer.ip,
+            local_ip: peer.local_ip,
         }))
     }
 

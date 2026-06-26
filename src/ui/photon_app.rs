@@ -2517,6 +2517,13 @@ impl PhotonApp {
                         self.contacts.len()
                     ));
                 }
+                // Refresh existing contacts' WAN + LAN addresses from the FGTW peer list.
+                // FGTW reports both a public and a same-LAN address per device; pulling the LAN
+                // address in lets the offer/KEM send race the LAN path against the WAN path right
+                // away, instead of waiting for LAN multicast (which routers often drop) or a pong.
+                // This is what unblocks a same-router peer whose stored WAN IPv6 says "No route to
+                // host" — the case where m never received an offer.
+                self.refresh_contact_addrs_from_peers(&data.peers);
                 self.hints_dismissed = false;
                 self.state = AppState::Ready;
             }
@@ -2593,7 +2600,8 @@ impl PhotonApp {
                     peer.handle_proof,
                     peer.device_pubkey.clone(),
                 )
-                .with_ip(peer.ip);
+                .with_ip(peer.ip)
+                .with_local_ip(peer.local_ip, peer.ip.port());
                 // Self-contact: same identity, no key exchange needed.
                 let is_self = self.session.as_ref().map(|s| s.identity_seed) == Some(contact.handle_hash);
                 if is_self {
@@ -3004,8 +3012,12 @@ impl PhotonApp {
                                         }
 
                                         if let Some(ref checker) = self.status_checker {
+                                            let (primary, alt) = contact
+                                                .race_addrs()
+                                                .unwrap_or((ip, None));
                                             checker.send_offer(ClutchOfferRequest {
-                                                peer_addr: ip,
+                                                peer_addr: primary,
+                                                alt_addr: alt,
                                                 vsf_bytes,
                                             });
                                             contact.clutch_offer_sent = true;
@@ -3275,8 +3287,12 @@ impl PhotonApp {
 
                     // Send the KEM response
                     if let Some(ref checker) = self.status_checker {
+                        let (primary, alt) = contact
+                            .race_addrs()
+                            .unwrap_or((result.peer_addr, None));
                         checker.send_kem_response(ClutchKemResponseRequest {
-                            peer_addr: result.peer_addr,
+                            peer_addr: primary,
+                            alt_addr: alt,
                             conversation_token: result.conversation_token,
                             ceremony_id: result.ceremony_id,
                             payload: result.kem_response,
@@ -3403,8 +3419,12 @@ impl PhotonApp {
                         eggs_proof: result.eggs_proof,
                     };
 
+                    let (primary, alt) = contact
+                        .race_addrs()
+                        .unwrap_or((result.peer_addr, None));
                     checker.send_complete_proof(ClutchCompleteRequest {
-                        peer_addr: result.peer_addr,
+                        peer_addr: primary,
+                        alt_addr: alt,
                         conversation_token: result.conversation_token,
                         ceremony_id: result.ceremony_id,
                         payload,
@@ -3659,8 +3679,37 @@ impl PhotonApp {
         );
     }
 
-    /// Ping all contacts that have IP addresses (call periodically)
+    /// Cross-reference the FGTW peer list into existing contacts, updating each matched contact's
+    /// public address (`ip`) and same-LAN address (`local_ip`/`local_port`).
+    /// Matched by handle_proof + device_pubkey so the right device's record updates the right
+    /// contact. Only IPv4 LAN addresses are stored (the hairpin case the `local_ip` field is typed
+    /// for); a v6-only peer just refreshes the WAN address. The send path races both (see
+    /// [`crate::types::Contact::race_addrs`]).
+    fn refresh_contact_addrs_from_peers(
+        &mut self,
+        peers: &[crate::network::fgtw::PeerRecord],
+    ) {
+        for peer in peers {
+            for contact in self.contacts.iter_mut() {
+                if contact.handle_proof == peer.handle_proof
+                    && contact.public_identity.as_bytes() == peer.device_pubkey.as_bytes()
+                {
+                    contact.ip = Some(peer.ip);
+                    if let Some(std::net::IpAddr::V4(v4)) = peer.local_ip {
+                        contact.local_ip = Some(v4);
+                        contact.local_port = Some(peer.ip.port());
+                        crate::log(&format!(
+                            "UI: refreshed {} addrs from FGTW — WAN {} / LAN {}:{}",
+                            contact.handle, peer.ip, v4, peer.ip.port()
+                        ));
+                    }
+                    break;
+                }
+            }
+        }
+    }
 
+    /// Ping all contacts that have IP addresses (call periodically)
     fn ping_contacts(&mut self) {
         let Some(checker) = self.status_checker.as_ref() else {
             return;
@@ -3835,8 +3884,12 @@ impl PhotonApp {
                                                     }
                                                 }
 
+                                                let (primary, alt) = contact
+                                                    .race_addrs()
+                                                    .unwrap_or((ip, None));
                                                 checker.send_offer(ClutchOfferRequest {
-                                                    peer_addr: ip,
+                                                    peer_addr: primary,
+                                                    alt_addr: alt,
                                                     vsf_bytes,
                                                 });
                                                 contact.clutch_offer_sent = true;
@@ -4673,8 +4726,16 @@ impl PhotonApp {
                                                     .push(our_offer_provenance);
                                             }
 
+                                            // The offer arrived from sender_addr, so that path is
+                                            // known-reachable — use it as primary and race the
+                                            // contact's other known address as the alternate.
+                                            let alt = contact
+                                                .race_addrs()
+                                                .and_then(|(p, a)| a.or(Some(p)))
+                                                .filter(|a| *a != sender_addr);
                                             checker.send_offer(ClutchOfferRequest {
                                                 peer_addr: sender_addr,
+                                                alt_addr: alt,
                                                 vsf_bytes,
                                             });
                                             contact.clutch_offer_sent = true;
@@ -4751,8 +4812,13 @@ impl PhotonApp {
                                     if let Some(ceremony_id) = contact.ceremony_id {
                                         use crate::network::status::ClutchKemResponseRequest;
 
+                                        let alt = contact
+                                            .race_addrs()
+                                            .and_then(|(p, a)| a.or(Some(p)))
+                                            .filter(|a| *a != sender_addr);
                                         checker.send_kem_response(ClutchKemResponseRequest {
                                             peer_addr: sender_addr,
+                                            alt_addr: alt,
                                             conversation_token: conv_token,
                                             ceremony_id,
                                             payload: kem_response,

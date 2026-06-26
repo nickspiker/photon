@@ -243,6 +243,19 @@ impl Contact {
         self
     }
 
+    /// Record the same-LAN address FGTW reported for this device's last announce, alongside the
+    /// public address from [`with_ip`](Self::with_ip). Lets the offer/KEM send race the LAN path
+    /// against the WAN path without waiting for LAN multicast discovery (which routers often drop).
+    /// Only IPv4 LAN addresses are stored — `local_ip`/`local_port` are typed for the v4 hairpin
+    /// case; a v6 local address is left unset and the WAN path carries it.
+    pub fn with_local_ip(mut self, local_ip: Option<std::net::IpAddr>, port: u16) -> Self {
+        if let Some(std::net::IpAddr::V4(v4)) = local_ip {
+            self.local_ip = Some(v4);
+            self.local_port = Some(port);
+        }
+        self
+    }
+
     pub fn with_seed(mut self, seed: Seed) -> Self {
         self.relationship_seed = Some(seed);
         self
@@ -276,6 +289,22 @@ impl Contact {
         }
 
         Some(public_addr)
+    }
+
+    /// Returns the (primary, alternate) address pair for racing a CLUTCH transfer across both the
+    /// same-LAN and public paths. Primary is the LAN address (preferred — no router hairpin, no AP
+    /// isolation), alternate is the public address. When no LAN address is known, primary is the
+    /// public address and alternate is `None`. PT sends the SPEC to both and locks onto whichever
+    /// ACKs first (see [`crate::network::pt::PtManager::send_with_pubkey_and_alt`]).
+    pub fn race_addrs(&self) -> Option<(SocketAddr, Option<SocketAddr>)> {
+        let public_addr = self.ip?;
+        if let (Some(local_v4), Some(local_port)) = (self.local_ip, self.local_port) {
+            let lan = SocketAddr::new(std::net::IpAddr::V4(local_v4), local_port);
+            if lan != public_addr {
+                return Some((lan, Some(public_addr)));
+            }
+        }
+        Some((public_addr, None))
     }
 
     pub fn can_be_custodian(&self) -> bool {
