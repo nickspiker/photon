@@ -4502,6 +4502,11 @@ impl PhotonApp {
                                 }
                             }
 
+                            // True only on the offline→online EDGE, not every online ping/chat.
+                            // Retransmit-of-pending (below) keys off this — without the edge gate it
+                            // re-fired on every received chat (now that a chat marks the sender
+                            // online), resending all pending messages in a storm.
+                            let came_online = is_online && !contact.is_online;
                             if contact.is_online != is_online {
                                 contact.is_online = is_online;
                                 changed = true;
@@ -4594,8 +4599,10 @@ impl PhotonApp {
                                 }
                             }
 
-                            // Queue retransmit of pending messages when contact comes online
-                            if is_online {
+                            // Queue retransmit of pending messages only on the offline→online EDGE
+                            // (not every online update) — otherwise every received chat would
+                            // re-trigger a full pending resend.
+                            if came_online {
                                 if let (Some(fid), Some(ip)) = (contact.friendship_id, contact.ip) {
                                     // Look up sync record for this friendship's conversation_token
                                     let last_received = if let Some((_, chains)) =
