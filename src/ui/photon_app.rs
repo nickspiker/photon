@@ -720,8 +720,31 @@ impl FluorApp for PhotonApp {
                                 }
                             }
                         }
+                        // Rehydrate each contact's saved ephemeral keypairs from disk (~588KB each).
+                        // load_contact_state deliberately doesn't pull these (they're huge and live
+                        // in a separate vault key), so without this every resume re-runs the
+                        // McEliece-heavy keygen below — which is what froze the UI on launch. Loading
+                        // the persisted keypairs makes the re-key filter a no-op for contacts that
+                        // already have them, so keygen only fires for genuinely keyless Pending ones.
+                        for contact in self.contacts.iter_mut() {
+                            if contact.clutch_our_keypairs.is_none() {
+                                match crate::storage::contacts::load_clutch_keypairs(
+                                    contact.handle.as_str(),
+                                    &s,
+                                ) {
+                                    Ok(Some(keypairs)) => {
+                                        contact.clutch_our_keypairs = Some(keypairs);
+                                    }
+                                    Ok(None) => {}
+                                    Err(e) => crate::log(&format!(
+                                        "CLUTCH: failed to rehydrate keypairs for {}: {}",
+                                        contact.handle, e
+                                    )),
+                                }
+                            }
+                        }
                         self.storage = Some(s);
-                        // Re-key any Pending contact whose ephemeral keypairs weren't persisted/rehydrated — load_contact_state doesn't restore clutch_our_keypairs, so without this a resumed Pending contact can never send its offer (it sticks on Pending forever). This is the exact fix for contacts added before this machinery existed.
+                        // Re-key only Pending contacts that still have no keypairs after the rehydrate above — without keypairs a Pending contact can never send its offer (it sticks on Pending forever). This is the fallback for contacts added before the keypairs were ever persisted.
                         let our_handle_hash = remembered.identity_seed;
                         let to_rekey: Vec<(ContactId, [u8; 32])> = self
                             .contacts
@@ -2716,8 +2739,12 @@ impl PhotonApp {
         #[cfg(not(target_os = "android"))]
         let proxy = self.event_proxy.clone();
 
-        std::thread::spawn(move || {
-            #[cfg(feature = "development")]
+        // Keypair generation includes McEliece460896 — very CPU-heavy (large matrix build).
+        // On resume every Pending contact re-keys at once (two contacts = two McEliece keygens in
+        // parallel), so this MUST run at Min priority or it starves the UI render thread and the
+        // window freezes until keygen finishes — the "GUI loads but you can't do anything until it
+        // syncs" symptom. Matches the Min-priority KEM-encap and ceremony-expand threads.
+        let thread_body = move || {
             #[cfg(feature = "development")]
             crate::log("CLUTCH: Background keypair generation started...");
             let keypairs = generate_all_ephemeral_keypairs();
@@ -2733,7 +2760,23 @@ impl PhotonApp {
             // Wake the event loop so it processes the result
             #[cfg(not(target_os = "android"))]
             if let Some(p) = proxy.as_ref() { let _ = p.send(crate::ui::PhotonEvent::ClutchKeygenComplete); }
-        });
+        };
+
+        #[cfg(not(target_os = "redox"))]
+        {
+            use thread_priority::{ThreadBuilderExt, ThreadPriority};
+            std::thread::Builder::new()
+                .name("clutch-keygen".to_string())
+                .spawn_with_priority(ThreadPriority::Min, move |_| thread_body())
+                .expect("Failed to spawn CLUTCH keygen thread");
+        }
+        #[cfg(target_os = "redox")]
+        {
+            std::thread::Builder::new()
+                .name("clutch-keygen".to_string())
+                .spawn(thread_body)
+                .expect("Failed to spawn CLUTCH keygen thread");
+        }
     }
 
     /// Spawn background thread to perform CLUTCH KEM encapsulation. The PQ KEMs (~800ms total) are slow, so we do them off the main thread. Results are received via clutch_kem_encap_rx and processed in check_clutch_kem_encaps().
@@ -3677,11 +3720,16 @@ impl PhotonApp {
         &mut self,
         peers: &[crate::network::fgtw::PeerRecord],
     ) {
+        // Addresses whose transfers must be cancelled because they went stale (collected here so
+        // the checker borrow stays out of the contact-iter loop).
+        let mut stale_addrs: Vec<std::net::SocketAddr> = Vec::new();
         for peer in peers {
             for contact in self.contacts.iter_mut() {
                 if contact.handle_proof == peer.handle_proof
                     && contact.public_identity.as_bytes() == peer.device_pubkey.as_bytes()
                 {
+                    let old_ip = contact.ip;
+                    let old_local = contact.local_ip;
                     contact.ip = Some(peer.ip);
                     if let Some(std::net::IpAddr::V4(v4)) = peer.local_ip {
                         contact.local_ip = Some(v4);
@@ -3691,8 +3739,34 @@ impl PhotonApp {
                             contact.handle, peer.ip, v4, peer.ip.port()
                         ));
                     }
+                    // If the address actually moved while a CLUTCH offer was already sent, that
+                    // offer is in flight to a now-dead address (the "No route to host" retries we
+                    // kept hammering). Cancel the stale transfer and reset clutch_offer_sent so the
+                    // contact's next online pong re-sends the offer to the fresh address, with the
+                    // LAN path now raced alongside. Without this the one-shot flag blocks re-send
+                    // and the ceremony stalls forever on the dead path.
+                    let addr_changed =
+                        old_ip != contact.ip || old_local != contact.local_ip;
+                    if addr_changed
+                        && contact.clutch_offer_sent
+                        && contact.clutch_state == crate::types::ClutchState::Pending
+                    {
+                        if let Some(stale) = old_ip {
+                            stale_addrs.push(stale);
+                        }
+                        contact.clutch_offer_sent = false;
+                        crate::log(&format!(
+                            "CLUTCH: {} address changed — cancelling stale offer transfer, will re-send to fresh address",
+                            contact.handle
+                        ));
+                    }
                     break;
                 }
+            }
+        }
+        if let Some(checker) = self.status_checker.as_ref() {
+            for addr in stale_addrs {
+                checker.clear_pt_sends(addr);
             }
         }
     }
