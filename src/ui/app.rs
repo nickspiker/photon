@@ -14,9 +14,7 @@ use crate::network::StatusChecker;
 use crate::network::{HandleQuery, QueryResult};
 use crate::types::{ChatMessage, Contact, ContactId, FriendshipChains, FriendshipId, HandleText};
 
-// The three background-CLUTCH result payloads moved to `crate::network::clutch_jobs`
-// so the active PhotonApp can own the job pipeline without importing from this
-// (retired) module. Re-imported here so the legacy app.rs still compiles until it's deleted.
+// The three background-CLUTCH result payloads moved to `crate::network::clutch_jobs` so the active PhotonApp can own the job pipeline without importing from this (retired) module. Re-imported here so the legacy app.rs still compiles until it's deleted.
 pub use crate::network::clutch_jobs::{
     ClutchCeremonyResult, ClutchKemEncapResult, ClutchKeygenResult,
 };
