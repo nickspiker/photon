@@ -58,7 +58,8 @@ pub struct FoundPeer {
     pub handle: HandleText,
     pub handle_proof: [u8; 32], // Cached handle_proof (expensive - ~1 second to compute)
     pub device_pubkey: crate::types::DevicePubkey,
-    pub ip: std::net::SocketAddr,
+    pub ip: std::net::SocketAddr, // Public (WAN) address from FGTW
+    pub local_ip: Option<std::net::IpAddr>, // Same-LAN address from FGTW, for hairpin-NAT direct connect
 }
 
 #[derive(Debug, Clone)]
