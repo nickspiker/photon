@@ -745,13 +745,16 @@ impl FluorApp for PhotonApp {
                             }
                         }
                         self.storage = Some(s);
-                        // Re-key only Pending contacts that still have no keypairs after the rehydrate above — without keypairs a Pending contact can never send its offer (it sticks on Pending forever). This is the fallback for contacts added before the keypairs were ever persisted.
+                        // Force any self-contact Complete before re-keying so it's excluded below (a self-contact has no peer to key with).
+                        self.settle_self_contacts();
+                        // Re-key only Pending contacts that still have no keypairs after the rehydrate above — without keypairs a Pending contact can never send its offer (it sticks on Pending forever). This is the fallback for contacts added before the keypairs were ever persisted. Self-contact excluded (same identity, no exchange).
                         let our_handle_hash = remembered.identity_seed;
                         let to_rekey: Vec<(ContactId, [u8; 32])> = self
                             .contacts
                             .iter_mut()
                             .filter(|c| {
-                                c.clutch_state == crate::types::ClutchState::Pending
+                                c.handle_hash != our_handle_hash
+                                    && c.clutch_state == crate::types::ClutchState::Pending
                                     && c.clutch_our_keypairs.is_none()
                                     && !c.clutch_keygen_in_progress
                             })
@@ -2553,13 +2556,16 @@ impl PhotonApp {
                             }
                         }
                     }
+                    // A merged self-contact (notes-to-self) needs no key exchange — force it Complete so it's skipped by the keygen filter below.
+                    self.settle_self_contacts();
                     let our_handle_hash =
                         self.session.as_ref().map(|s| s.identity_seed).unwrap_or([0u8; 32]);
                     let to_keygen: Vec<(ContactId, [u8; 32])> = self
                         .contacts
                         .iter_mut()
                         .filter(|c| {
-                            merged_ids.iter().any(|(id, _)| *id == c.id)
+                            c.handle_hash != our_handle_hash
+                                && merged_ids.iter().any(|(id, _)| *id == c.id)
                                 && c.clutch_state == crate::types::ClutchState::Pending
                                 && c.clutch_our_keypairs.is_none()
                                 && !c.clutch_keygen_in_progress
@@ -3812,6 +3818,44 @@ impl PhotonApp {
                 checker.clear_pt_sends(addr);
             }
         }
+    }
+
+    /// True if `handle_hash` is our own identity — i.e. this contact is the user's self-contact
+    /// (notes to self / future multi-device sync). A self-contact shares our single seed, so there
+    /// is no peer to exchange keys with: CLUTCH must be forced Complete and keygen/offer/ceremony
+    /// skipped entirely. Without this a self-contact runs a pointless CLUTCH loop against its own
+    /// device and never settles.
+    fn is_self_contact(&self, handle_hash: &[u8; 32]) -> bool {
+        self.session
+            .as_ref()
+            .is_some_and(|s| s.identity_seed == *handle_hash)
+    }
+
+    /// Force every self-contact in the list to CLUTCH-Complete and clear any in-flight CLUTCH work.
+    /// Applied after contacts load on resume and after cloud/FGTW merges, since those paths build
+    /// contacts as Pending by default. Returns true if any contact changed.
+    fn settle_self_contacts(&mut self) -> bool {
+        let Some(our_seed) = self.session.as_ref().map(|s| s.identity_seed) else {
+            return false;
+        };
+        let mut changed = false;
+        for contact in self.contacts.iter_mut() {
+            if contact.handle_hash == our_seed
+                && contact.clutch_state != crate::types::ClutchState::Complete
+            {
+                contact.clutch_state = crate::types::ClutchState::Complete;
+                contact.clutch_keygen_in_progress = false;
+                changed = true;
+                crate::log(&format!(
+                    "CLUTCH: self-contact '{}' auto-completed (no key exchange with self)",
+                    contact.handle
+                ));
+                if let Some(storage) = self.storage.as_ref() {
+                    let _ = crate::storage::contacts::save_contact(contact, storage);
+                }
+            }
+        }
+        changed
     }
 
     /// Ping all contacts that have IP addresses (call periodically)
