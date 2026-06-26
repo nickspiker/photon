@@ -426,9 +426,7 @@ impl PhotonApp {
         req
     }
 
-    /// One-shot poll for the Android sticky session broadcast signal. Returns `1` after a
-    /// successful attest (Kotlin should call `sendSessionBroadcast()`), `-1` after a vault nuke
-    /// (Kotlin should call `clearSessionBroadcast()`), `0` otherwise.
+    /// One-shot poll for the Android sticky session broadcast signal. Returns `1` after a successful attest (Kotlin should call `sendSessionBroadcast()`), `-1` after a vault nuke (Kotlin should call `clearSessionBroadcast()`), `0` otherwise.
     pub fn take_broadcast_signal(&mut self) -> i8 {
         let s = self.pending_broadcast_signal;
         self.pending_broadcast_signal = 0;
@@ -2518,11 +2516,8 @@ impl PhotonApp {
                     ));
                 }
                 // Refresh existing contacts' WAN + LAN addresses from the FGTW peer list.
-                // FGTW reports both a public and a same-LAN address per device; pulling the LAN
-                // address in lets the offer/KEM send race the LAN path against the WAN path right
-                // away, instead of waiting for LAN multicast (which routers often drop) or a pong.
-                // This is what unblocks a same-router peer whose stored WAN IPv6 says "No route to
-                // host" — the case where m never received an offer.
+                // FGTW reports both a public and a same-LAN address per device; pulling the LAN address in lets the offer/KEM send race the LAN path against the WAN path right away, instead of waiting for LAN multicast (which routers often drop) or a pong.
+                // This is what unblocks a same-router peer whose stored WAN IPv6 says "No route to host" — the case where m never received an offer.
                 self.refresh_contact_addrs_from_peers(&data.peers);
                 self.hints_dismissed = false;
                 self.state = AppState::Ready;
@@ -3102,9 +3097,7 @@ impl PhotonApp {
                     }
 
                     // Process any pending KEM response that arrived before keygen completed.
-                    // Also compute ceremony_id here if provenances are ready — the KEM may have
-                    // arrived in the network thread between when we added our provenance and when
-                    // the main loop got here to run the ceremony_id derivation above.
+                    // Also compute ceremony_id here if provenances are ready — the KEM may have arrived in the network thread between when we added our provenance and when the main loop got here to run the ceremony_id derivation above.
                     if contact.clutch_pending_kem.is_some() {
                         if contact.ceremony_id.is_none()
                             && contact.offer_provenances.len() >= 2
@@ -3144,8 +3137,7 @@ impl PhotonApp {
                             }
 
                             // If we haven't sent our own KEM encap yet, do it now.
-                            // This covers the case where their KEM arrived before we had
-                            // ceremony_id, so the normal encap-trigger was skipped.
+                            // This covers the case where their KEM arrived before we had ceremony_id, so the normal encap-trigger was skipped.
                             let already_sent_kem = contact
                                 .get_slot(&our_handle_hash)
                                 .map(|s| s.kem_secrets_to_them.is_some())
@@ -3679,12 +3671,8 @@ impl PhotonApp {
         );
     }
 
-    /// Cross-reference the FGTW peer list into existing contacts, updating each matched contact's
-    /// public address (`ip`) and same-LAN address (`local_ip`/`local_port`).
-    /// Matched by handle_proof + device_pubkey so the right device's record updates the right
-    /// contact. Only IPv4 LAN addresses are stored (the hairpin case the `local_ip` field is typed
-    /// for); a v6-only peer just refreshes the WAN address. The send path races both (see
-    /// [`crate::types::Contact::race_addrs`]).
+    /// Cross-reference the FGTW peer list into existing contacts, updating each matched contact's public address (`ip`) and same-LAN address (`local_ip`/`local_port`).
+    /// Matched by handle_proof + device_pubkey so the right device's record updates the right contact. Only IPv4 LAN addresses are stored (the hairpin case the `local_ip` field is typed for); a v6-only peer just refreshes the WAN address. The send path races both (see [`crate::types::Contact::race_addrs`]).
     fn refresh_contact_addrs_from_peers(
         &mut self,
         peers: &[crate::network::fgtw::PeerRecord],
@@ -4726,9 +4714,7 @@ impl PhotonApp {
                                                     .push(our_offer_provenance);
                                             }
 
-                                            // The offer arrived from sender_addr, so that path is
-                                            // known-reachable — use it as primary and race the
-                                            // contact's other known address as the alternate.
+                                            // The offer arrived from sender_addr, so that path is known-reachable — use it as primary and race the contact's other known address as the alternate.
                                             let alt = contact
                                                 .race_addrs()
                                                 .and_then(|(p, a)| a.or(Some(p)))
@@ -5123,10 +5109,7 @@ impl PhotonApp {
                                         ));
                                         break;
                                     }
-                                    // KEM targets our current keypairs. The other side already
-                                    // had both offer provenances and computed ceremony_id. Adopt
-                                    // it directly and decapsulate immediately — waiting for their
-                                    // offer to re-arrive over lossy UDP would deadlock indefinitely.
+                                    // KEM targets our current keypairs. The other side already had both offer provenances and computed ceremony_id. Adopt it directly and decapsulate immediately — waiting for their offer to re-arrive over lossy UDP would deadlock indefinitely.
                                     crate::log(&format!(
                                         "CLUTCH: KEM response from {} arrived before ceremony_id - adopting peer's ceremony_id and decapsulating now",
                                         contact.handle

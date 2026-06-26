@@ -50,9 +50,7 @@ pub enum PTError {
 /// Outbound transfer (we're sending)
 pub struct OutboundTransfer {
     pub peer_addr: SocketAddr,
-    /// Alternate address to race the SPEC against (e.g. LAN when `peer_addr` is WAN, or vice
-    /// versa). FGTW reports both a public and a same-LAN address per device; we send the SPEC to
-    /// both until one ACKs, then lock `peer_addr` to whichever path answered. `None` = single path.
+    /// Alternate address to race the SPEC against (e.g. LAN when `peer_addr` is WAN, or vice versa). FGTW reports both a public and a same-LAN address per device; we send the SPEC to both until one ACKs, then lock `peer_addr` to whichever path answered. `None` = single path.
     pub alt_addr: Option<SocketAddr>,
     pub stream_id: u8,      // 'a'-'z' for concurrent transfer routing
     pub transfer_id: usize, // Monotonic ID for external tracking
