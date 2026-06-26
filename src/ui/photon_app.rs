@@ -599,9 +599,19 @@ impl Container for PhotonApp {
             }
         }
         if matches!(self.state, AppState::Conversation) {
-            // The compose box is the only focusable widget in a conversation; yielding it here wires click-to-focus, Tab, and key dispatch.
-            if let Some(tb) = self.message_textbox.as_mut() {
-                f(tb);
+            // The compose box is the only focusable widget in a conversation; yielding it here wires
+            // click-to-focus, Tab, and key dispatch. Only when CLUTCH is Complete — before that the
+            // box isn't rendered and sending no-ops, so it must not be focusable either (otherwise a
+            // click or Tab could land focus on an invisible dead input).
+            let complete = self
+                .active_contact
+                .and_then(|ci| self.contacts.get(ci))
+                .map(|c| c.clutch_state == crate::types::ClutchState::Complete)
+                .unwrap_or(false);
+            if complete {
+                if let Some(tb) = self.message_textbox.as_mut() {
+                    f(tb);
+                }
             }
         }
         if let Some(chrome) = self.chrome.as_mut() {
@@ -825,28 +835,12 @@ impl FluorApp for PhotonApp {
                             }
                         }
                         self.storage = Some(s);
-                        // Force any self-contact Complete before re-keying so it's excluded below (a self-contact has no peer to key with).
+                        // Force any self-contact Complete before re-keying so it's excluded (a self-contact has no peer to key with).
                         self.settle_self_contacts();
-                        // Re-key only Pending contacts that still have no keypairs after the rehydrate above — without keypairs a Pending contact can never send its offer (it sticks on Pending forever). This is the fallback for contacts added before the keypairs were ever persisted. Self-contact excluded (same identity, no exchange).
-                        let our_handle_hash = remembered.identity_seed;
-                        let to_rekey: Vec<(ContactId, [u8; 32])> = self
-                            .contacts
-                            .iter_mut()
-                            .filter(|c| {
-                                c.handle_hash != our_handle_hash
-                                    && c.clutch_state == crate::types::ClutchState::Pending
-                                    && c.clutch_our_keypairs.is_none()
-                                    && !c.clutch_keygen_in_progress
-                            })
-                            .map(|c| {
-                                c.clutch_keygen_in_progress = true;
-                                (c.id.clone(), c.handle_hash)
-                            })
-                            .collect();
-                        for (cid, their_hh) in to_rekey {
-                            crate::log("CLUTCH: resume re-keygen for Pending contact without keypairs");
-                            self.spawn_clutch_keygen(cid, our_handle_hash, their_hh);
-                        }
+                        // Re-key Pending contacts that still lack keypairs after the rehydrate — but
+                        // ONE AT A TIME (spawn_next_pending_keygen, repeated each tick), never all at
+                        // once: parallel McEliece keygens on launch starved the UI thread.
+                        self.spawn_next_pending_keygen();
                     }
                     Err(e) => crate::log(&format!("STORAGE: init failed on resume: {}", e)),
                 }
@@ -1494,6 +1488,10 @@ impl FluorApp for PhotonApp {
         if self.check_clutch_keygens() {
             needs_redraw = true;
         }
+        // Serialized keygen queue: once the in-flight keygen (if any) has completed and cleared its
+        // flag above, start the next Pending-keyless contact's keygen. One McEliece at a time keeps
+        // the UI responsive on a multi-contact launch instead of spawning them all at once.
+        self.spawn_next_pending_keygen();
         if self.check_clutch_kem_encaps() {
             needs_redraw = true;
         }
@@ -2335,6 +2333,11 @@ impl FluorApp for PhotonApp {
                         None,
                     );
 
+                    // Message history + compose box only exist once CLUTCH is Complete — before that
+                    // there's no chain to encrypt on, and sending no-ops. Until then the screen shows
+                    // just the avatar + "CLUTCH: …" status (above), so the user isn't presented a dead
+                    // input box for a contact they can't message yet.
+                    if contact.clutch_state == crate::types::ClutchState::Complete {
                     // ── Message list ───────────────────────────────────────────
                     // Text-only, right-aligned (outgoing) / left-aligned (incoming),
                     // one thin white divider after every message. Newest at the
@@ -2458,6 +2461,7 @@ impl FluorApp for PhotonApp {
                             id,
                         );
                     }
+                    } // end CLUTCH-Complete gate (message list + compose box)
                 }
             }
         }
@@ -2963,27 +2967,11 @@ impl PhotonApp {
                     }
                     // A merged self-contact (notes-to-self) needs no key exchange — force it Complete so it's skipped by the keygen filter below.
                     self.settle_self_contacts();
-                    let our_handle_hash =
-                        self.session.as_ref().map(|s| s.identity_seed).unwrap_or([0u8; 32]);
-                    let to_keygen: Vec<(ContactId, [u8; 32])> = self
-                        .contacts
-                        .iter_mut()
-                        .filter(|c| {
-                            c.handle_hash != our_handle_hash
-                                && merged_ids.iter().any(|(id, _)| *id == c.id)
-                                && c.clutch_state == crate::types::ClutchState::Pending
-                                && c.clutch_our_keypairs.is_none()
-                                && !c.clutch_keygen_in_progress
-                        })
-                        .map(|c| {
-                            c.clutch_keygen_in_progress = true;
-                            (c.id.clone(), c.handle_hash)
-                        })
-                        .collect();
-                    for (cid, their_hh) in to_keygen {
-                        crate::log("CLUTCH: keygen for merged cloud/FGTW contact without keypairs");
-                        self.spawn_clutch_keygen(cid, our_handle_hash, their_hh);
-                    }
+                    // Kick at most ONE keygen now; the rest are serialized by spawn_next_pending_keygen
+                    // (called each tick) so we never run two McEliece keygens at once — two in parallel
+                    // on launch starved the UI thread (the "first launch hangs" symptom). The Pending +
+                    // keyless contacts are picked up one at a time as each keygen completes.
+                    self.spawn_next_pending_keygen();
                 }
                 // Merge the friendship chains the worker loaded from disk into the live map. Without
                 // this, resumed contacts have no chains in self.friendship_chains and sending fails
@@ -3192,6 +3180,36 @@ impl PhotonApp {
         // Update the shared provider
         let mut provider = self.sync_records.lock().unwrap();
         *provider = records;
+    }
+
+    /// Spawn at most ONE CLUTCH keygen, for the first Pending contact that needs keypairs, but only
+    /// if no keygen is already running. McEliece keygen is heavy; running several in parallel (e.g.
+    /// after a multi-contact cloud merge on launch) starves the UI thread. Serializing to one-at-a-time
+    /// keeps the app responsive — each completion frees the slot and `tick()` calls this again to start
+    /// the next. Returns true if a keygen was spawned.
+    fn spawn_next_pending_keygen(&mut self) -> bool {
+        let Some(our_handle_hash) = self.session.as_ref().map(|s| s.identity_seed) else {
+            return false;
+        };
+        // One keygen at a time.
+        if self.contacts.iter().any(|c| c.clutch_keygen_in_progress) {
+            return false;
+        }
+        let next = self.contacts.iter_mut().find(|c| {
+            c.handle_hash != our_handle_hash
+                && c.clutch_state == crate::types::ClutchState::Pending
+                && c.clutch_our_keypairs.is_none()
+                && !c.clutch_keygen_in_progress
+        });
+        if let Some(c) = next {
+            c.clutch_keygen_in_progress = true;
+            let (cid, their_hh) = (c.id.clone(), c.handle_hash);
+            crate::log("CLUTCH: spawning keygen for Pending contact (serialized, one at a time)");
+            self.spawn_clutch_keygen(cid, our_handle_hash, their_hh);
+            true
+        } else {
+            false
+        }
     }
 
     pub fn spawn_clutch_keygen(
