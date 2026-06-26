@@ -121,6 +121,22 @@ impl PTManager {
         data: Vec<u8>,
         recipient_pubkey: Option<[u8; 32]>,
     ) -> Vec<u8> {
+        self.send_with_pubkey_and_alt(peer_addr, None, data, recipient_pubkey)
+    }
+
+    /// Same as [`send_with_pubkey`](Self::send_with_pubkey), but races the SPEC against an
+    /// alternate address. FGTW reports both a public (WAN) and a same-LAN address per device; when
+    /// the primary path is unreachable (e.g. WAN IPv6 returns "No route to host" between two peers
+    /// behind the same router), the SPEC retries hit `alt_addr` too and the transfer locks onto
+    /// whichever path ACKs first. Caller should pass the LAN address as `peer_addr` (preferred) and
+    /// the WAN address as `alt_addr`.
+    pub fn send_with_pubkey_and_alt(
+        &mut self,
+        peer_addr: SocketAddr,
+        alt_addr: Option<SocketAddr>,
+        data: Vec<u8>,
+        recipient_pubkey: Option<[u8; 32]>,
+    ) -> Vec<u8> {
         // Small payload - send directly, no sharding needed Note: For small payloads, relay fallback happens at the caller level
         if data.len() <= Self::SINGLE_PACKET_MAX {
             return data;
@@ -132,6 +148,8 @@ impl PTManager {
         self.next_transfer_id += 1;
 
         let mut transfer = OutboundTransfer::new(peer_addr, data, stream_id, transfer_id);
+        // Don't race against the same address twice (caller may pass equal LAN/WAN).
+        transfer.alt_addr = alt_addr.filter(|a| *a != peer_addr);
 
         // Store pubkey for relay fallback
         if let Some(pubkey) = recipient_pubkey {
@@ -198,12 +216,21 @@ impl PTManager {
     ) -> Vec<Vec<u8>> {
         let mut packets = Vec::new();
 
-        // Find the transfer by peer AND stream_id
-        if let Some(transfer) = self
-            .outbound
-            .iter_mut()
-            .find(|t| t.peer_addr == peer_addr && t.stream_id == stream_id)
-        {
+        // Find the transfer by stream_id, accepting the ACK from either the primary path or the
+        // raced alternate (LAN vs WAN). Whichever address answered is the reachable one, so lock
+        // the transfer onto it and drop the alternate — DATA/ACK route by (peer_addr, stream_id),
+        // so all subsequent packets must use the path that ACKed.
+        if let Some(transfer) = self.outbound.iter_mut().find(|t| {
+            t.stream_id == stream_id && (t.peer_addr == peer_addr || t.alt_addr == Some(peer_addr))
+        }) {
+            if transfer.peer_addr != peer_addr {
+                crate::log(&format!(
+                    "PT: SPEC ACK arrived on alternate path {} (was {}) for stream '{}' - locking onto it",
+                    peer_addr, transfer.peer_addr, stream_id as char
+                ));
+                transfer.peer_addr = peer_addr;
+            }
+            transfer.alt_addr = None;
             transfer.spec_acked = true;
             transfer.state = TransferState::Transferring;
             transfer.last_activity = Instant::now();
@@ -540,10 +567,21 @@ impl PTManager {
 
                 to_send.push(TickSend {
                     peer_addr: transfer.peer_addr,
-                    wire_bytes: spec_bytes,
+                    wire_bytes: spec_bytes.clone(),
                     also_tcp: transfer.spec_tcp_fallback,
                     relay,
                 });
+
+                // Race the SPEC against the alternate path (LAN vs WAN) until one ACKs. Relay is
+                // intentionally not duplicated here — it's a last resort attached to the primary.
+                if let Some(alt) = transfer.alt_addr {
+                    to_send.push(TickSend {
+                        peer_addr: alt,
+                        wire_bytes: spec_bytes,
+                        also_tcp: transfer.spec_tcp_fallback,
+                        relay: None,
+                    });
+                }
             }
 
             // Check for DATA packet timeouts (only during transfer phase)

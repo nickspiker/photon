@@ -97,7 +97,8 @@ pub struct PTSendRequest {
 /// Uses pre-built VSF bytes from build_clutch_offer_vsf(). The caller builds the VSF to capture the offer_provenance (hp field).
 #[derive(Clone)]
 pub struct ClutchOfferRequest {
-    pub peer_addr: SocketAddr, // Port comes from FGTW (peer's photon_port)
+    pub peer_addr: SocketAddr, // Primary path (LAN-preferred); port comes from FGTW (peer's photon_port)
+    pub alt_addr: Option<SocketAddr>, // Alternate path raced alongside (WAN) — see PtManager::send_with_pubkey_and_alt
     pub vsf_bytes: Vec<u8>,    // Pre-built and signed VSF message
 }
 
@@ -106,7 +107,8 @@ pub struct ClutchOfferRequest {
 /// Uses VSF format with proper signing and verification. See protocol.rs build_clutch_kem_response_vsf() for format details.
 #[derive(Clone)]
 pub struct ClutchKemResponseRequest {
-    pub peer_addr: SocketAddr, // Port comes from FGTW (peer's photon_port)
+    pub peer_addr: SocketAddr, // Primary path (LAN-preferred); port comes from FGTW (peer's photon_port)
+    pub alt_addr: Option<SocketAddr>, // Alternate path raced alongside (WAN)
     pub conversation_token: [u8; 32], // Privacy-preserving smear_hash of sorted participant seeds
     pub ceremony_id: [u8; 32], // Deterministic from sorted handle_hashes
     pub payload: crate::crypto::clutch::ClutchKemResponsePayload,
@@ -119,7 +121,8 @@ pub struct ClutchKemResponseRequest {
 /// Uses VSF format with proper signing and verification. See protocol.rs build_clutch_complete_vsf() for format details.
 #[derive(Clone)]
 pub struct ClutchCompleteRequest {
-    pub peer_addr: SocketAddr, // Port comes from FGTW (peer's photon_port)
+    pub peer_addr: SocketAddr, // Primary path (LAN-preferred); port comes from FGTW (peer's photon_port)
+    pub alt_addr: Option<SocketAddr>, // Alternate path raced alongside (WAN)
     pub conversation_token: [u8; 32], // Privacy-preserving smear_hash of sorted participant seeds
     pub ceremony_id: [u8; 32], // Deterministic from sorted handle_hashes
     pub payload: crate::crypto::clutch::ClutchCompletePayload,
@@ -1736,12 +1739,15 @@ async fn run_checker(
                 }
             }
 
-            // Send via PT - handles retries/fallback internally
+            // Send via PT - handles retries/fallback internally. Races LAN vs WAN if alt given.
             let bytes_to_send = {
                 let mut pt_mgr = pt.lock().unwrap();
-                pt_mgr.send(request.peer_addr, vsf_bytes)
+                pt_mgr.send_with_pubkey_and_alt(request.peer_addr, request.alt_addr, vsf_bytes, None)
             };
             udp::send(&socket, &bytes_to_send, request.peer_addr).await;
+            if let Some(alt) = request.alt_addr {
+                udp::send(&socket, &bytes_to_send, alt).await;
+            }
         }
 
         // Process CLUTCH KEM response requests
@@ -1773,12 +1779,15 @@ async fn run_checker(
                 crate::log(&format!("Status: ClutchKemResponse VSF:\n{}", inspection));
             }
 
-            // Send via PT - handles retries/fallback internally
+            // Send via PT - handles retries/fallback internally. Races LAN vs WAN if alt given.
             let bytes_to_send = {
                 let mut pt_mgr = pt.lock().unwrap();
-                pt_mgr.send(request.peer_addr, vsf_bytes)
+                pt_mgr.send_with_pubkey_and_alt(request.peer_addr, request.alt_addr, vsf_bytes, None)
             };
             udp::send(&socket, &bytes_to_send, request.peer_addr).await;
+            if let Some(alt) = request.alt_addr {
+                udp::send(&socket, &bytes_to_send, alt).await;
+            }
         }
 
         // Process CLUTCH complete proof requests
@@ -1810,12 +1819,16 @@ async fn run_checker(
                 crate::log(&format!("Status: ClutchComplete VSF:\n{}", inspection));
             }
 
-            // Send via PT - handles retries/fallback internally
+            // Send via PT - handles retries/fallback internally. Races LAN vs WAN if alt given.
+            // (Complete proof is small and sent directly, so racing here is just dual UDP send.)
             let bytes_to_send = {
                 let mut pt_mgr = pt.lock().unwrap();
-                pt_mgr.send(request.peer_addr, vsf_bytes)
+                pt_mgr.send_with_pubkey_and_alt(request.peer_addr, request.alt_addr, vsf_bytes, None)
             };
             udp::send(&socket, &bytes_to_send, request.peer_addr).await;
+            if let Some(alt) = request.alt_addr {
+                udp::send(&socket, &bytes_to_send, alt).await;
+            }
         }
 
         // Process LAN discovery requests via multicast (more reliable than broadcast)
