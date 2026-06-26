@@ -167,6 +167,7 @@ impl HandleQuery {
         let transport_query = transport.clone();
         let transport_search = transport.clone();
         let handle_proof_store = last_handle_proof.clone();
+        let handle_proof_search = last_handle_proof.clone();
         let identity_seed_store = last_identity_seed.clone();
         let identity_seed_search = last_identity_seed.clone();
         let keypair_query = device_keypair.clone();
@@ -197,6 +198,7 @@ impl HandleQuery {
             transport_search,
             keypair_search,
             identity_seed_search,
+            handle_proof_search,
             port_search,
         );
 
@@ -240,6 +242,7 @@ impl HandleQuery {
         let transport_query = transport.clone();
         let transport_search = transport.clone();
         let handle_proof_store = last_handle_proof.clone();
+        let handle_proof_search = last_handle_proof.clone();
         let identity_seed_store = last_identity_seed.clone();
         let identity_seed_search = last_identity_seed.clone();
         let keypair_query = device_keypair.clone();
@@ -270,6 +273,7 @@ impl HandleQuery {
             transport_search,
             keypair_search,
             identity_seed_search,
+            handle_proof_search,
             port_search,
         );
 
@@ -686,6 +690,7 @@ impl HandleQuery {
         transport: Arc<Mutex<Option<Arc<Mutex<PeerStore>>>>>,
         keypair: Keypair,
         identity_seed: Arc<Mutex<Option<[u8; 32]>>>,
+        our_handle_proof: Arc<Mutex<Option<[u8; 32]>>>,
         port: Arc<Mutex<u16>>,
     ) {
         thread::spawn(move || {
@@ -712,6 +717,7 @@ impl HandleQuery {
                     &transport_arc,
                     &keypair,
                     &identity_seed,
+                    &our_handle_proof,
                     &port,
                 );
 
@@ -727,6 +733,7 @@ impl HandleQuery {
         peer_store: &Arc<Mutex<PeerStore>>,
         keypair: &Keypair,
         identity_seed: &Arc<Mutex<Option<[u8; 32]>>>,
+        our_handle_proof: &Arc<Mutex<Option<[u8; 32]>>>,
         port: &Arc<Mutex<u16>>,
     ) -> SearchResult {
         // First pass — local peer store
@@ -734,7 +741,10 @@ impl HandleQuery {
             return result;
         }
 
-        // Not found locally — re-announce with our own credentials to pull a fresh peer list, then retry. Only possible once we've attested (identity_seed is set).
+        // Not found locally — re-announce with our own credentials to pull a fresh peer list, then
+        // retry. This is the critical path for "both attested, THEN added each other": the target
+        // registered on FGTW after our last fetch, so it's absent from the local store until we
+        // re-query. Only possible once we've attested (identity_seed + handle_proof are set).
         let (seed, our_port) = {
             let s = identity_seed.lock().unwrap();
             let p = port.lock().unwrap();
@@ -744,18 +754,12 @@ impl HandleQuery {
             }
         };
 
-        let our_handle_proof = {
-            let store = peer_store.lock().unwrap();
-            // Derive our own handle_proof from the known peers (we're in the store as a device).
-            // Simpler: re-announce always uses our attested handle_proof, which we can't store here without another arc. Use identity_seed to re-derive it via spaghettify — but that's expensive. Instead just call load_bootstrap_peers with the keypair's handle_proof, which we get from the first peer matching our pubkey.
-            let our_pubkey = keypair.public.as_bytes();
-            store.get_all_peers()
-                .iter()
-                .find(|p| p.device_pubkey.as_bytes() == our_pubkey)
-                .map(|p| p.handle_proof)
-        };
-
-        let our_handle_proof = match our_handle_proof {
+        // Use our cached attested handle_proof directly (set by the query worker at attest success).
+        // Earlier this scanned the peer store for our own device record and bailed to NotFound if
+        // absent — which is EXACTLY the fresh-attest case (store not yet populated with ourselves),
+        // so the refresh never ran and the peer stayed unfindable until a restart. The arc always
+        // has it post-attest.
+        let our_handle_proof = match *our_handle_proof.lock().unwrap() {
             Some(hp) => hp,
             None => return SearchResult::NotFound,
         };
