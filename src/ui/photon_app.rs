@@ -186,17 +186,18 @@ const STATUS_TEXT_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_FF_FF_
 
 /// Debug chord bindings shown in the hint overlay while `[ + ]` are held. Keep in sync with the dispatch in `on_event`'s KeyboardInput arm — adding a row here without wiring its handler (or vice versa) silently drops the binding.
 const CHORD_HINTS: &[(&str, &str)] = &[
-    ("H", "Hit-mask overlay"),
-    ("P", "Skip premultiply"),
-    ("A", "Show alpha (cycle)"),
-    ("C", "Skip chrome"),
-    ("L", "Skip controls"),
-    ("R", "Force redraw"),
-    ("F", "FPS / per-stage timings strip"),
-    ("W", "Damage rect outline (Where)"),
-    ("D", "Screen-buffer decay (fade)"),
-    ("B", "Finalize copy-pass blue tint"),
-    ("N", "Nuke vault + session (dev only)"),
+    ("h", "Hit-mask overlay"),
+    ("p", "Skip premultiply"),
+    ("a", "Show alpha (cycle)"),
+    ("c", "Skip chrome"),
+    ("l", "Skip controls"),
+    ("r", "Force redraw"),
+    ("f", "FPS / per-stage timings strip"),
+    ("w", "Damage rect outline (Where)"),
+    ("d", "Screen-buffer decay (fade)"),
+    ("b", "Finalize copy-pass blue tint"),
+    ("n", "Nuke vault — keeps you attested (dev only)"),
+    ("u", "Un-attest — clear session, keep vault (dev only)"),
 ];
 
 /// Bounding rect the chord hint panel covers — matches `paint::draw_chord_hint`'s positioning math so `damage_rect` can union it when both brackets are held. Pulled out of the panes example with the same math; if fluor's hint geometry changes, this needs updating in lockstep.
@@ -5832,7 +5833,7 @@ impl PhotonApp {
                 eprintln!("[]b opaque-scan tint = {}", !cur);
             }
             'n' => {
-                // Nuke local vault + session — forces re-attest on next launch. Wipes every .vsf in the Photon app dirs (catches old-path strays and derivation-change orphans), then clears the in-RAM session. Only fires in development builds.
+                // Nuke the local VAULT only — wipes every .vsf in the Photon app dirs (contacts, CLUTCH slots, ephemeral keypairs, friendship chains; also catches old-path strays and derivation-change orphans). Deliberately does NOT touch the tohu session: the identity_seed/vault_seed/handle_proof stay in memory + cache, so you remain attested on Ready with a freshly-empty vault. To clear the identity itself, use []u (de-attest). Only fires in development builds.
                 let mut count = 0usize;
                 let wipe_dir = |dir: Option<std::path::PathBuf>, count: &mut usize| {
                     let Some(base) = dir else { return };
@@ -5854,11 +5855,24 @@ impl PhotonApp {
                 };
                 wipe_dir(dirs::config_dir(), &mut count);
                 wipe_dir(dirs::data_dir(), &mut count);
+                // Drop the in-memory vault state so the UI reflects the wipe immediately. Keep the
+                // session + a live FlatStorage handle: it points at the now-empty dir and recreates
+                // files lazily on the next write, so the app stays usable without a relaunch.
+                self.contacts.clear();
+                self.friendship_chains.clear();
+                if let Ok(mut pks) = self.contact_pubkeys.lock() {
+                    pks.clear();
+                }
+                eprintln!("[]n nuked {} vault file(s); session kept (still attested)", count);
+            }
+            'u' => {
+                // De-attest — clear the tohu session (identity_seed/vault_seed/handle_proof) and drop back to the attest screen, leaving the vault on disk intact. The identity is deterministic from the handle, so re-typing it re-derives the same roots. Mirror of []n: []u forgets WHO you are, []n forgets WHAT you've stored. Only fires in development builds.
                 tohu::clear_session();
                 self.session = None;
-                self.storage = None;
-                self.pending_broadcast_signal = -1;
-                eprintln!("[]n nuked {} vault file(s); session cleared — restart or re-attest", count);
+                self.pending_broadcast_signal = -1; // Android: drop the sticky session broadcast.
+                self.state = AppState::Launch(LaunchState::Fresh);
+                self.refocus_handle_select_all();
+                eprintln!("[]u de-attested; session cleared — re-type handle to re-attest");
             }
             _ => acted = false,
         }
