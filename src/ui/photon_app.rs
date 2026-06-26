@@ -184,6 +184,9 @@ fn draw_hourglass(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, angle_deg: f
 /// Status-message colour for the "Attesting…" indicator that occupies the error slot while a handle query is in flight. Pure visible white, fully opaque — same slot as `ERROR_TEXT_COLOUR` but white instead of red so the user reads it as "neutral status" rather than "something went wrong".
 const STATUS_TEXT_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_FF_FF_FF));
 
+/// How often `tick()` re-runs the background presence ping sweep. Pongs flip contacts online/offline; without a recurring sweep a contact only goes online when you open its conversation. 5s balances responsiveness against UDP chatter for a small contact list.
+const PRESENCE_PING_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Debug chord bindings shown in the hint overlay while `[ + ]` are held. Keep in sync with the dispatch in `on_event`'s KeyboardInput arm — adding a row here without wiring its handler (or vice versa) silently drops the binding.
 const CHORD_HINTS: &[(&str, &str)] = &[
     ("h", "Hit-mask overlay"),
@@ -252,6 +255,8 @@ pub struct PhotonApp {
     focused: Option<HitId>,
     /// Blinkey timer for the focused textbox cursor. `tick()` polls it and writes `textbox.blinkey_visible` accordingly; resets on every keystroke so the cursor stays solid thru typing instead of strobing.
     blink_timer: BlinkTimer,
+    /// Last time `tick()` ran the background presence ping sweep (`ping_contacts`). `None` until the first sweep. Drives the recurring online/offline detection: `tick()` re-pings every `PRESENCE_PING_INTERVAL` and `wake_at()` schedules a wake for the next due sweep so presence keeps refreshing even while the app is idle (no input). Without this, contacts only flipped online when you opened their conversation.
+    last_presence_ping: Option<Instant>,
     /// `true` while a left-mouse-button drag is extending the textbox selection (set on left-press over a focused textbox, cleared on left-release). `CursorMoved` consults this to decide whether to grow the selection toward the cursor — otherwise hover updates are the only thing CursorMoved touches.
     is_dragging_select: bool,
     /// HandleQuery client — owns the UDP socket, device keypair, and FGTW peer store. Submission calls `handle_query.query(handle)`; `tick()` polls `try_recv()` for results. `None` until init.
@@ -359,6 +364,7 @@ impl PhotonApp {
             attest_btn: None,
             focused: None,
             blink_timer: BlinkTimer::new(),
+            last_presence_ping: None,
             is_dragging_select: false,
             handle_query: None,
             status_checker: None,
@@ -1288,12 +1294,13 @@ impl FluorApp for PhotonApp {
             AppState::Launch(LaunchState::Attesting) | AppState::Searching
         ) || self.add_in_flight;
         let anim = animating.then(Instant::now);
-        match (blink, anim) {
-            (Some(b), Some(a)) => Some(b.min(a)),
-            (Some(b), None) => Some(b),
-            (None, Some(a)) => Some(a),
-            (None, None) => None,
-        }
+        // Next background presence sweep — keeps online/offline rings refreshing while idle (no input/network). Only on Ready; first sweep is due immediately if never run.
+        let presence = matches!(self.state, AppState::Ready).then(|| {
+            self.last_presence_ping
+                .map_or_else(Instant::now, |last| last + PRESENCE_PING_INTERVAL)
+        });
+        // Soonest of all scheduled wakeups.
+        [blink, anim, presence].into_iter().flatten().min()
     }
 
     fn tick(&mut self, ctx: &mut Context) -> bool {
@@ -1338,6 +1345,20 @@ impl FluorApp for PhotonApp {
                 if tb.flip_blinkey() {
                     needs_redraw = true;
                 }
+            }
+        }
+
+        // Recurring background presence sweep — re-ping every contact every PRESENCE_PING_INTERVAL
+        // so online/offline rings stay live without the user opening a conversation. Only on the
+        // Ready screen (we have contacts + a checker). `wake_at()` schedules the next sweep so this
+        // fires even while the app is otherwise idle.
+        if matches!(self.state, AppState::Ready) {
+            let due = self
+                .last_presence_ping
+                .is_none_or(|last| now.duration_since(last) >= PRESENCE_PING_INTERVAL);
+            if due {
+                self.last_presence_ping = Some(now);
+                self.ping_contacts();
             }
         }
 
