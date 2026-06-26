@@ -184,8 +184,21 @@ fn draw_hourglass(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, angle_deg: f
 /// Status-message colour for the "Attesting…" indicator that occupies the error slot while a handle query is in flight. Pure visible white, fully opaque — same slot as `ERROR_TEXT_COLOUR` but white instead of red so the user reads it as "neutral status" rather than "something went wrong".
 const STATUS_TEXT_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_FF_FF_FF));
 
-/// How often `tick()` re-runs the background presence ping sweep. Pongs flip contacts online/offline; without a recurring sweep a contact only goes online when you open its conversation. 5s balances responsiveness against UDP chatter for a small contact list.
-const PRESENCE_PING_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+// Tiered presence-ping cadence — frequent while the user is engaged, sparse once they've walked
+// away, so an idle/unfocused window isn't waking the radio every few seconds for rings nobody is
+// watching. The tier is chosen by time-since-last-interaction; any interaction (input or focus
+// gain) resets the clock AND fires an immediate sweep, so presence is always fresh the moment the
+// user looks, regardless of how far the cadence had backed off.
+/// Active tier: sweep every 5s while interacting (idle < `PRESENCE_IDLE_NEAR`).
+const PRESENCE_PING_ACTIVE: std::time::Duration = std::time::Duration::from_secs(5);
+/// Idle tier: sweep every 1min once idle past `PRESENCE_IDLE_NEAR`.
+const PRESENCE_PING_IDLE: std::time::Duration = std::time::Duration::from_secs(60);
+/// Deep-idle tier: sweep every 15min once idle past `PRESENCE_IDLE_FAR`.
+const PRESENCE_PING_DEEP: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+/// Idle past this → drop from active (5s) to idle (1min).
+const PRESENCE_IDLE_NEAR: std::time::Duration = std::time::Duration::from_secs(30);
+/// Idle past this → drop from idle (1min) to deep-idle (15min).
+const PRESENCE_IDLE_FAR: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 /// Debug chord bindings shown in the hint overlay while `[ + ]` are held. Keep in sync with the dispatch in `on_event`'s KeyboardInput arm — adding a row here without wiring its handler (or vice versa) silently drops the binding.
 const CHORD_HINTS: &[(&str, &str)] = &[
@@ -255,8 +268,10 @@ pub struct PhotonApp {
     focused: Option<HitId>,
     /// Blinkey timer for the focused textbox cursor. `tick()` polls it and writes `textbox.blinkey_visible` accordingly; resets on every keystroke so the cursor stays solid thru typing instead of strobing.
     blink_timer: BlinkTimer,
-    /// Last time `tick()` ran the background presence ping sweep (`ping_contacts`). `None` until the first sweep. Drives the recurring online/offline detection: `tick()` re-pings every `PRESENCE_PING_INTERVAL` and `wake_at()` schedules a wake for the next due sweep so presence keeps refreshing even while the app is idle (no input). Without this, contacts only flipped online when you opened their conversation.
+    /// Last time `tick()` ran the background presence ping sweep (`ping_contacts`). `None` until the first sweep. Paired with `last_interaction` to drive the tiered cadence (see `presence_ping_interval`): `tick()` re-pings when due and `wake_at()` schedules the next due sweep so presence refreshes even while idle. Without this, contacts only flipped online when you opened their conversation.
     last_presence_ping: Option<Instant>,
+    /// Last time the user interacted with the app (any input event, or window focus-gain). `None` until the first interaction. The presence sweep tapers with idle time — frequent while you're actively using it, sparse when you've walked away — so an unfocused, untouched window isn't hitting the network every few seconds. Reset on interaction, which also triggers an immediate sweep so rings are fresh the instant you look. See `presence_ping_interval`.
+    last_interaction: Option<Instant>,
     /// `true` while a left-mouse-button drag is extending the textbox selection (set on left-press over a focused textbox, cleared on left-release). `CursorMoved` consults this to decide whether to grow the selection toward the cursor — otherwise hover updates are the only thing CursorMoved touches.
     is_dragging_select: bool,
     /// HandleQuery client — owns the UDP socket, device keypair, and FGTW peer store. Submission calls `handle_query.query(handle)`; `tick()` polls `try_recv()` for results. `None` until init.
@@ -365,6 +380,7 @@ impl PhotonApp {
             focused: None,
             blink_timer: BlinkTimer::new(),
             last_presence_ping: None,
+            last_interaction: None,
             is_dragging_select: false,
             handle_query: None,
             status_checker: None,
@@ -801,6 +817,10 @@ impl FluorApp for PhotonApp {
     }
 
     fn on_event(&mut self, event: &Event, ctx: &mut Context) -> EventResponse {
+        // Any event is user engagement — reset the presence-sweep idle clock so the cadence returns
+        // to the active (5s) tier. Cheap (just a timestamp); the immediate-sweep-on-focus is handled
+        // in the Focused arm below.
+        self.last_interaction = Some(Instant::now());
         match event {
             Event::CursorMoved { .. } => {
                 // Drag-select extension takes precedence over hover updates. Active iff we're inside a left-press-then-move sequence over the focused textbox; on first move during the drag we set the anchor to the cursor's pre-drag position (the click landed there via Textbox::on_click), then update `cursor` to the character nearest the live cursor X. `cursor_index_from_x` saturates internally — X past text bounds returns the first/last character index — so no clamp here.
@@ -914,6 +934,14 @@ impl FluorApp for PhotonApp {
                 EventResponse::Pass
             }
             Event::Focused(focused) => {
+                // On focus GAIN, force an immediate presence sweep so rings are fresh the instant
+                // the user looks — clearing last_presence_ping makes the next tick treat a sweep as
+                // due regardless of how far the idle cadence had backed off. (last_interaction was
+                // already stamped at the top of on_event, resetting the cadence to the active tier.)
+                if *focused {
+                    self.last_presence_ping = None;
+                    ctx.window.request_redraw();
+                }
                 // Chrome's edges + title + orb dim when the window loses focus (palette swap to `WINDOW_*_UNFOCUSED` + `TEXT_COLOUR_UNFOCUSED` + `ORB_DARKEN_UNFOCUSED`). The host independently dims the drop shadow via its own `is_focused` tracker; this handler just propagates to chrome's internal flag so the chrome layer re-rasterizes with the dimmed palette.
                 if let Some(chrome) = self.chrome.as_mut() {
                     if chrome.set_focused(*focused) {
@@ -1294,10 +1322,11 @@ impl FluorApp for PhotonApp {
             AppState::Launch(LaunchState::Attesting) | AppState::Searching
         ) || self.add_in_flight;
         let anim = animating.then(Instant::now);
-        // Next background presence sweep — keeps online/offline rings refreshing while idle (no input/network). Only on Ready; first sweep is due immediately if never run.
+        // Next background presence sweep — keeps online/offline rings refreshing while idle (no input/network). Only on Ready; first sweep is due immediately if never run. Interval tapers with idle time, so as the user stays away the scheduled wake naturally pushes further out.
         let presence = matches!(self.state, AppState::Ready).then(|| {
+            let now = Instant::now();
             self.last_presence_ping
-                .map_or_else(Instant::now, |last| last + PRESENCE_PING_INTERVAL)
+                .map_or(now, |last| last + self.presence_ping_interval(now))
         });
         // Soonest of all scheduled wakeups.
         [blink, anim, presence].into_iter().flatten().min()
@@ -1348,14 +1377,16 @@ impl FluorApp for PhotonApp {
             }
         }
 
-        // Recurring background presence sweep — re-ping every contact every PRESENCE_PING_INTERVAL
-        // so online/offline rings stay live without the user opening a conversation. Only on the
-        // Ready screen (we have contacts + a checker). `wake_at()` schedules the next sweep so this
-        // fires even while the app is otherwise idle.
+        // Recurring background presence sweep — re-ping every contact so online/offline rings stay
+        // live without the user opening a conversation. The interval tapers with idle time (5s
+        // active → 1min idle → 15min deep-idle) so an untouched window isn't hammering the network.
+        // Only on the Ready screen (we have contacts + a checker). `wake_at()` schedules the next
+        // sweep so this fires even while the app is otherwise idle.
         if matches!(self.state, AppState::Ready) {
+            let interval = self.presence_ping_interval(now);
             let due = self
                 .last_presence_ping
-                .is_none_or(|last| now.duration_since(last) >= PRESENCE_PING_INTERVAL);
+                .is_none_or(|last| now.duration_since(last) >= interval);
             if due {
                 self.last_presence_ping = Some(now);
                 self.ping_contacts();
@@ -3877,6 +3908,21 @@ impl PhotonApp {
             }
         }
         changed
+    }
+
+    /// Current presence-sweep interval, chosen by how long since the user last interacted.
+    /// Active (5s) while engaged → idle (1min) → deep-idle (15min). `now` is the tick's clock.
+    fn presence_ping_interval(&self, now: Instant) -> std::time::Duration {
+        let idle = self
+            .last_interaction
+            .map_or(std::time::Duration::ZERO, |last| now.duration_since(last));
+        if idle < PRESENCE_IDLE_NEAR {
+            PRESENCE_PING_ACTIVE
+        } else if idle < PRESENCE_IDLE_FAR {
+            PRESENCE_PING_IDLE
+        } else {
+            PRESENCE_PING_DEEP
+        }
     }
 
     /// Ping all contacts that have IP addresses (call periodically)
