@@ -2491,7 +2491,7 @@ dependencies = [
 
 [[package]]
 name = "kete"
-version = "0.0.0"
+version = "0.0.1"
 dependencies = [
  "blake3",
  "chacha20poly1305 0.11.0-rc.3",
@@ -2620,7 +2620,7 @@ dependencies = [
 
 [[package]]
 name = "manifestus"
-version = "0.0.0"
+version = "0.0.1"
 dependencies = [
  "blake3",
  "libc",
@@ -3503,7 +3503,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "voca",
- "vsf 0.8.0",
+ "vsf 0.8.2",
  "wgpu",
  "windows 0.58.0",
  "winit",
@@ -5123,7 +5123,7 @@ checksum = "c7c4ceeeca15c8384bbc3e011dbd8fccb7f068a440b752b7d9b32ceb0ca0e2e8"
 
 [[package]]
 name = "tohu"
-version = "0.0.0"
+version = "0.0.1"
 dependencies = [
  "base64",
  "blake3",
@@ -5555,6 +5555,21 @@ name = "vsf"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2c7481e6809ad0226db749bfb75818588fe205852f582fb8b84868aebd89170"
+dependencies = [
+ "bitvec",
+ "blake3",
+ "chrono",
+ "hex",
+ "i256",
+ "libm",
+ "num-complex",
+ "num-traits",
+ "spin",
+]
+
+[[package]]
+name = "vsf"
+version = "0.8.2"
 dependencies = [
  "aes-gcm 0.10.3",
  "bitvec",

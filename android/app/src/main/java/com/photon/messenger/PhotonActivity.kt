@@ -130,8 +130,10 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     private external fun nativeOnScale(contextPtr: Long, scaleFactor: Float)  // Pinch-to-zoom scale factor
     private external fun nativePollKeyboard(contextPtr: Long): Int  // Per-frame poll for show/hide soft IME — 1=show, -1=hide, 0=no change
     private external fun nativePollAvatarPicker(contextPtr: Long): Int  // Per-frame poll for the avatar image-picker request — 1=launch ACTION_GET_CONTENT, 0=no change
+    private external fun nativePollSessionBroadcast(contextPtr: Long): Int  // 1=send sticky broadcast, -1=clear, 0=no change
     private external fun nativeSetDisplayColorSpace(rgbToXyz: FloatArray, primaries: FloatArray)  // Display panel's RGB→XYZ_D50 (9 floats) + chromaticity primaries [Rx,Ry,Gx,Gy,Bx,By] (6 floats)
     private external fun nativeSetAvatarFromFile(contextPtr: Long, fileBytes: ByteArray)  // Raw image file bytes (preserves ICC profile)
+    private external fun nativeRestoreSessionFromVsf(vsfBytes: ByteArray): Int  // Restore session from sticky broadcast VSF capsule — call before nativeInitWithNetwork; returns 1 on success
     private external fun nativeDestroy(contextPtr: Long)
 
     // Notification permission request (Android 13+)
@@ -375,6 +377,15 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
             return
         }
 
+        // On first launch after reinstall the tohu session file is gone but the sticky broadcast
+        // may still hold the capsule. Restore before initializing the native UI so query_resume
+        // can skip re-attest on the first frame.
+        val broadcastVsf = service.readSessionBroadcast()
+        if (broadcastVsf != null && broadcastVsf.isNotEmpty()) {
+            val restored = nativeRestoreSessionFromVsf(broadcastVsf)
+            Log.d(TAG, "Session restore from sticky broadcast: $restored")
+        }
+
         val holder = surfaceView.holder
         // Samsung needs workarounds for Choreographer throttling
         val isSamsung = android.os.Build.MANUFACTURER.equals("samsung", ignoreCase = true)
@@ -451,6 +462,10 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
                 // Avatar tap (Ready screen) → launch the system image picker. App-driven, not touch-driven, so it polls alongside the keyboard signal instead of riding the nativeOnTouch return like the legacy 2-code path did.
                 if (nativePollAvatarPicker(nativePtr) == 1) {
                     openImagePicker()
+                }
+                when (nativePollSessionBroadcast(nativePtr)) {
+                    1 -> connectionService?.sendSessionBroadcast()
+                    -1 -> connectionService?.clearSessionBroadcast()
                 }
             }
             // Schedule next frame

@@ -101,6 +101,30 @@ Corresponding fluor gains: `DroppedFile` event + winit mapping, `Viewport` zoom 
 
 ## Open tickets — active
 
+**TOKEN session relay (Android sticky broadcast gossip)**
+
+Context: `sendStickyBroadcast` survives app uninstall only if the OS hasn't cleared app data. A full uninstall-with-data-clear wipes the sticky. However, if *any other TOKEN app* (basecalc, etc.) is installed, it can hold a copy and re-broadcast on Photon's behalf — so the session survives as long as at least one TOKEN app remains installed.
+
+Protocol:
+- Every TOKEN app listens for `com.photon.SESSION` (and equivalent actions for other TOKEN apps) and immediately re-broadcasts any capsule it receives as its *own* sticky. It becomes a relay node.
+- On receiving `PACKAGE_FULLY_REMOVED` for a TOKEN package, each surviving TOKEN app re-broadcasts that package's last known session capsule (which it cached by re-broadcasting earlier). The originating app's sticky is already gone at this point; the relay copy fills the gap.
+- On `ACTION_MY_PACKAGE_REPLACED` (update, not uninstall), no relay needed — the sticky survives an update.
+
+What each TOKEN app needs:
+1. A `BroadcastReceiver` registered in the manifest for all TOKEN session actions (`com.photon.SESSION`, `com.basecalc.SESSION`, …) with `android:permission="com.photon.SESSION_READ"` (signature-level — all TOKEN apps share the same signing key).
+2. On receive: call `sendStickyBroadcast` with the same intent under the same action. One sticky per TOKEN app action, held by every TOKEN app.
+3. A `PACKAGE_FULLY_REMOVED` receiver: on uninstall of a TOKEN package, re-send that package's last sticky from the local cache (the re-broadcast above is the cache — no separate storage needed).
+4. On first launch / `initializeNativeIfReady`: query *all* TOKEN session actions (not just `com.photon.SESSION`) — whichever returns a valid VSF capsule wins. Restore and re-broadcast to refresh all relays.
+
+Security: signature-level permission gates both send and receive. Only apps signed with the TOKEN key participate. The VSF capsule is BLAKE3-integrity-checked before any seeds are used (`unpack_session_vsf` verifies `hb` before reading fields).
+
+Notes:
+- The relay list (which actions to listen for / re-broadcast) is a compile-time constant in a shared TOKEN manifest or hardcoded per-app for now.
+- Reboot behaviour is preserved: sticky broadcasts die on reboot. The relay only extends survival across *uninstall*, not reboot. This is intentional — reboot = re-attest by default.
+- Implementation deferred until a second TOKEN app exists to test with. The Photon side (send/clear/restore) is already wired. What's missing is the relay receiver and the multi-action query on restore.
+
+
+
 **Contacts / search screen**
 - **Search box too far from the avatar** — the "search | add" textbox should sit much closer to the avatar, UNLESS the user has opted to show their handle below the avatar (then the handle slot reclaims that space). Today the `handle` slot in `ReadyLayout` always reserves its units even when the handle isn't shown; collapse those units when the handle is hidden.
 - **Plus-button press fill is nasty** — clicking the "+" shows a weird fill while held. It should look identical to its idle state until you *release*; on release it flips to the orange + hourglass (search-in-flight). I.e. suppress the Button's pressed-state fill here, and switch to the hourglass on the release edge rather than mid-press.
