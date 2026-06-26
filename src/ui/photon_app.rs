@@ -2522,12 +2522,14 @@ impl PhotonApp {
                 }
                 // Merge incoming contacts with any already loaded locally — union by handle_proof so contacts added on another device (via FGTW/cloud) appear without losing locally-added ones.
                 let mut added = 0usize;
+                let mut merged_ids: Vec<(ContactId, [u8; 32])> = Vec::new();
                 for incoming in &data.contacts {
                     let dominated = self
                         .contacts
                         .iter()
                         .any(|c| c.handle_proof == incoming.handle_proof);
                     if !dominated {
+                        merged_ids.push((incoming.id.clone(), incoming.handle_hash));
                         self.contacts.push(incoming.clone());
                         added += 1;
                     }
@@ -2538,6 +2540,39 @@ impl PhotonApp {
                         added,
                         self.contacts.len()
                     ));
+                    // Register the merged contacts' pubkeys so the checker answers their pings, and
+                    // kick CLUTCH keygen for any that arrived Pending without keypairs. The resume
+                    // path (load_all_contacts) already does this for locally-stored contacts, but
+                    // cloud/FGTW-merged contacts land here AFTER that ran — without this they sit
+                    // Pending forever with no keypairs, no offer, no connection (exactly what broke
+                    // after a []n nuke wiped the local vault and contacts came back only via cloud).
+                    if let Ok(mut pks) = self.contact_pubkeys.lock() {
+                        for c in &self.contacts {
+                            if !pks.contains(&c.public_identity) {
+                                pks.push(c.public_identity.clone());
+                            }
+                        }
+                    }
+                    let our_handle_hash =
+                        self.session.as_ref().map(|s| s.identity_seed).unwrap_or([0u8; 32]);
+                    let to_keygen: Vec<(ContactId, [u8; 32])> = self
+                        .contacts
+                        .iter_mut()
+                        .filter(|c| {
+                            merged_ids.iter().any(|(id, _)| *id == c.id)
+                                && c.clutch_state == crate::types::ClutchState::Pending
+                                && c.clutch_our_keypairs.is_none()
+                                && !c.clutch_keygen_in_progress
+                        })
+                        .map(|c| {
+                            c.clutch_keygen_in_progress = true;
+                            (c.id.clone(), c.handle_hash)
+                        })
+                        .collect();
+                    for (cid, their_hh) in to_keygen {
+                        crate::log("CLUTCH: keygen for merged cloud/FGTW contact without keypairs");
+                        self.spawn_clutch_keygen(cid, our_handle_hash, their_hh);
+                    }
                 }
                 // Refresh existing contacts' WAN + LAN addresses from the FGTW peer list.
                 // FGTW reports both a public and a same-LAN address per device; pulling the LAN address in lets the offer/KEM send race the LAN path against the WAN path right away, instead of waiting for LAN multicast (which routers often drop) or a pong.
