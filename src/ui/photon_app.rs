@@ -3444,6 +3444,10 @@ impl PhotonApp {
 
                 // Store our proof for later verification
                 contact.clutch_our_eggs_proof = Some(result.eggs_proof);
+                // Budget a handful of proof retransmits — the proof is a single unreliable UDP
+                // packet, so ping_contacts re-sends it until this drains, guaranteeing the peer
+                // gets it even on a lossy or freshly-changed path.
+                contact.clutch_proof_resends_left = 5;
 
                 // Check if we already received their proof (fast party case)
                 let their_early_proof = contact.clutch_their_eggs_proof;
@@ -3485,7 +3489,10 @@ impl PhotonApp {
                         contact.clutch_state = ClutchState::Complete;
                         // Store their HQC pub prefix to detect stale offers after restart
                         contact.completed_their_hqc_prefix = Some(result.their_hqc_prefix);
-                        contact.clutch_our_eggs_proof = None;
+                        // We're Complete, but the peer may not have our proof yet — we got theirs
+                        // first, and our single send (just above) might have dropped. Keep the proof
+                        // and the resend budget so ping_contacts keeps delivering it for a few more
+                        // cycles; that's exactly what stops the peer from hanging in AwaitingProof.
                         contact.clutch_their_eggs_proof = None;
                     } else {
                         // CRYPTOGRAPHIC FAILURE!
@@ -3795,6 +3802,69 @@ impl PhotonApp {
         // LAN broadcast for same-network local-IP discovery (hairpin-NAT workaround).
         if let (Some(session), Some(hq)) = (self.session.as_ref(), self.handle_query.as_ref()) {
             checker.send_lan_broadcast(session.handle_proof, hq.port());
+        }
+
+        // Retransmit the ClutchComplete proof for any contact with budget left. The proof is a lone
+        // unreliable UDP packet, so a single drop (or a send to a since-refreshed address) would
+        // strand the peer in AwaitingProof. Re-sending it for a few ping cycles converges both
+        // sides regardless of which completed first or which packet was lost. Self-terminates as the
+        // budget drains; a peer already Complete just ignores the duplicate.
+        self.retransmit_pending_clutch_proofs();
+    }
+
+    /// Re-send the ClutchComplete proof to every contact whose retransmit budget (`clutch_proof_resends_left`) is non-zero, decrementing each. See [`ping_contacts`] for why this exists. Clears our held proof once the budget reaches zero so it isn't kept forever.
+    fn retransmit_pending_clutch_proofs(&mut self) {
+        use crate::crypto::clutch::{derive_conversation_token, ClutchCompletePayload};
+        use crate::network::status::ClutchCompleteRequest;
+
+        let Some(our_handle_hash) = self.session.as_ref().map(|s| s.identity_seed) else {
+            return;
+        };
+        let Some(kp) = self.device_keypair.as_ref() else {
+            return;
+        };
+        let device_pubkey = *kp.public.as_bytes();
+        let device_secret = *kp.secret.as_bytes();
+        let Some(checker) = self.status_checker.as_ref() else {
+            return;
+        };
+
+        for contact in self.contacts.iter_mut() {
+            if contact.clutch_proof_resends_left == 0 {
+                continue;
+            }
+            let (Some(eggs_proof), Some(ceremony_id)) =
+                (contact.clutch_our_eggs_proof, contact.ceremony_id)
+            else {
+                // Nothing to resend (proof/ceremony cleared) — drop the budget.
+                contact.clutch_proof_resends_left = 0;
+                continue;
+            };
+            let Some((primary, alt)) = contact.race_addrs() else {
+                continue;
+            };
+            let conv_token =
+                derive_conversation_token(&[our_handle_hash, contact.handle_hash]);
+            checker.send_complete_proof(ClutchCompleteRequest {
+                peer_addr: primary,
+                alt_addr: alt,
+                conversation_token: conv_token,
+                ceremony_id,
+                payload: ClutchCompletePayload { eggs_proof },
+                device_pubkey,
+                device_secret,
+            });
+            contact.clutch_proof_resends_left -= 1;
+            crate::log(&format!(
+                "CLUTCH: Retransmitted proof to {} ({} resends left)",
+                contact.handle, contact.clutch_proof_resends_left
+            ));
+            // Budget exhausted — stop holding the proof.
+            if contact.clutch_proof_resends_left == 0
+                && contact.clutch_state == crate::types::ClutchState::Complete
+            {
+                contact.clutch_our_eggs_proof = None;
+            }
         }
     }
 
@@ -5400,7 +5470,10 @@ impl PhotonApp {
                                                         Some(prefix);
                                                 }
                                             }
-                                            contact.clutch_our_eggs_proof = None; // Clean up
+                                            // Keep our proof + resend budget: we just verified
+                                            // theirs, but ours may still be in flight or dropped.
+                                            // ping_contacts drains the budget over the next few
+                                            // cycles, then clears it — so neither side strands.
                                             contact.clutch_their_eggs_proof = None;
                                             changed = true;
 
