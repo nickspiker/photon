@@ -720,9 +720,7 @@ impl HandleQuery {
         });
     }
 
-    /// Look up a handle in the local peer store. If not found, re-announce to FGTW (which
-    /// refreshes the peer list) and retry once. This covers the common case where the target
-    /// registered after our last announce.
+    /// Look up a handle in the local peer store. If not found, re-announce to FGTW (which refreshes the peer list) and retry once. This covers the common case where the target registered after our last announce.
     fn search_with_refresh(
         handle: &str,
         handle_proof: [u8; 32],
@@ -736,8 +734,7 @@ impl HandleQuery {
             return result;
         }
 
-        // Not found locally — re-announce with our own credentials to pull a fresh peer list,
-        // then retry. Only possible once we've attested (identity_seed is set).
+        // Not found locally — re-announce with our own credentials to pull a fresh peer list, then retry. Only possible once we've attested (identity_seed is set).
         let (seed, our_port) = {
             let s = identity_seed.lock().unwrap();
             let p = port.lock().unwrap();
@@ -750,10 +747,7 @@ impl HandleQuery {
         let our_handle_proof = {
             let store = peer_store.lock().unwrap();
             // Derive our own handle_proof from the known peers (we're in the store as a device).
-            // Simpler: re-announce always uses our attested handle_proof, which we can't store here
-            // without another arc. Use identity_seed to re-derive it via spaghettify — but that's
-            // expensive. Instead just call load_bootstrap_peers with the keypair's handle_proof,
-            // which we get from the first peer matching our pubkey.
+            // Simpler: re-announce always uses our attested handle_proof, which we can't store here without another arc. Use identity_seed to re-derive it via spaghettify — but that's expensive. Instead just call load_bootstrap_peers with the keypair's handle_proof, which we get from the first peer matching our pubkey.
             let our_pubkey = keypair.public.as_bytes();
             store.get_all_peers()
                 .iter()
