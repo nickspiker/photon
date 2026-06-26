@@ -297,14 +297,23 @@ impl PTManager {
     /// Sender side: a packet delivery-ack arrived. Mark the matching in-flight packet delivered,
     /// drop it, and return the next queued packet's bytes for that peer to send now (stop-and-wait
     /// advance). Empty if no match or nothing queued.
-    pub fn handle_packet_ack(&mut self, peer_addr: SocketAddr, packet_hash: [u8; 32]) -> Vec<u8> {
-        // Remove the acked in-flight packet for this peer.
-        let before = self.outbound_packets.len();
-        self.outbound_packets
-            .retain(|p| !(p.peer_addr == peer_addr && p.packet_hash == packet_hash));
-        if self.outbound_packets.len() == before {
+    pub fn handle_packet_ack(&mut self, _ack_src: SocketAddr, packet_hash: [u8; 32]) -> Vec<u8> {
+        // Match by packet_hash ALONE — never by source address. The ack comes back from whatever
+        // address the receiver saw us on (IPv4-mapped `::ffff:` form, or the LAN vs WAN we raced),
+        // which routinely differs from the peer_addr we queued under. packet_hash = BLAKE3(payload)
+        // is globally unique, so it identifies the packet unambiguously. (Matching on peer_addr too
+        // was the bug: acks never matched, packets retransmitted forever and blocked the queue.)
+        let Some(pos) = self
+            .outbound_packets
+            .iter()
+            .position(|p| p.packet_hash == packet_hash)
+        else {
             return Vec::new(); // no match (already acked / unknown)
-        }
+        };
+        // Remember which peer this packet was for, so we promote that peer's next queued packet.
+        let peer_addr = self.outbound_packets[pos].peer_addr;
+        self.outbound_packets.remove(pos);
+
         // If nothing else is in flight to this peer, promote the next queued packet for it.
         let peer_busy = self
             .outbound_packets
