@@ -5841,32 +5841,22 @@ impl PhotonApp {
                                         ));
                                         break;
                                     }
-                                    // KEM targets our current keypairs. The other side already had both offer provenances and computed ceremony_id. Adopt it directly and decapsulate immediately — waiting for their offer to re-arrive over lossy UDP would deadlock indefinitely.
+                                    // KEM targets our current keys but we don't have ceremony_id yet
+                                    // — which means we haven't processed THEIR offer yet (ceremony_id
+                                    // derives from both offers). We can't complete without their
+                                    // offer (no offer → can't encapsulate our KEM → our slot never
+                                    // completes). QUEUE the KEM and wait for their offer to arrive; the
+                                    // ClutchOfferReceived path drains clutch_pending_kem once both
+                                    // offers are in and ceremony_id is derived. Their offer is a
+                                    // reliable PT stream now, so it WILL arrive — no deadlock. (The
+                                    // old "adopt ceremony_id + decapsulate + break" shortcut left our
+                                    // own slot incomplete and hung CLUTCH Pending forever.)
+                                    let _ = (our_keys_cloned, received_ceremony_id);
                                     crate::log(&format!(
-                                        "CLUTCH: KEM response from {} arrived before ceremony_id - adopting peer's ceremony_id and decapsulating now",
+                                        "CLUTCH: KEM from {} arrived before their offer/ceremony_id - queuing until offer arrives",
                                         contact.handle
                                     ));
-                                    contact.ceremony_id = Some(received_ceremony_id);
-                                    // Initialize slots if needed
-                                    if contact.clutch_slots.is_empty() {
-                                        contact.init_clutch_slots(our_handle_hash);
-                                    }
-                                    use crate::crypto::clutch::ClutchKemSharedSecrets;
-                                    let remote_secrets =
-                                        ClutchKemSharedSecrets::decapsulate_from_peer(
-                                            &their_kem,
-                                            &our_keys_cloned,
-                                        );
-                                    if let Some(remote_slot) =
-                                        contact.get_slot_mut(&their_handle_hash)
-                                    {
-                                        remote_slot.kem_secrets_from_them =
-                                            Some(remote_secrets);
-                                        crate::log(&format!(
-                                            "CLUTCH: Decapsulated KEM from {} (ceremony_id adopted from peer)",
-                                            contact.handle
-                                        ));
-                                    }
+                                    contact.clutch_pending_kem = Some(their_kem.clone());
                                     break;
                                 } else {
                                     // No keypairs at all - stale KEM encrypted to unknown keys
