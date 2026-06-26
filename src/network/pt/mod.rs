@@ -59,6 +59,12 @@ pub struct PTManager {
     outbound: Vec<OutboundTransfer>,
     /// Inbound transfers (we're receiving) - keyed by (peer, stream_id)
     inbound: Vec<InboundTransfer>,
+    /// Reliable small (≤1KB) packets awaiting delivery ack, in FIFO order. Per peer, only the
+    /// front packet is in flight (stop-and-wait): it retransmits on 1→2→…→60s backoff until the
+    /// receiver's delivery ack arrives, then it's popped and the next packet for that peer sends.
+    /// Strict ordering per peer; head-of-line blocking is intentional (a stuck packet means the
+    /// peer isn't answering, so nothing else would get through either).
+    outbound_packets: Vec<OutboundPacket>,
     /// Our keypair for signing
     keypair: Keypair,
     /// Stale timeout (no activity for this long = abort)
@@ -75,6 +81,7 @@ impl PTManager {
         Self {
             outbound: Vec::new(),
             inbound: Vec::new(),
+            outbound_packets: Vec::new(),
             keypair,
             stale_timeout: Duration::from_secs(30),
             next_stream_id: b'a',
@@ -136,9 +143,26 @@ impl PTManager {
         data: Vec<u8>,
         recipient_pubkey: Option<[u8; 32]>,
     ) -> Vec<u8> {
-        // Small payload - send directly, no sharding needed Note: For small payloads, relay fallback happens at the caller level
+        // Small payload — enqueue as a reliable packet (stop-and-wait, one in flight per peer,
+        // retransmitted on backoff in tick() until the receiver's delivery ack arrives). Returns
+        // the bytes to send NOW only if no packet is already in flight to this peer; otherwise it
+        // queues behind the in-flight head and goes out when that head is acked.
         if data.len() <= Self::SINGLE_PACKET_MAX {
-            return data;
+            let peer_busy = self
+                .outbound_packets
+                .iter()
+                .any(|p| p.peer_addr == peer_addr && p.in_flight);
+            let mut pkt = OutboundPacket::new(peer_addr, alt_addr, data, recipient_pubkey);
+            if peer_busy {
+                // Queue behind the in-flight head; nothing to send right now.
+                self.outbound_packets.push(pkt);
+                return Vec::new();
+            } else {
+                pkt.mark_sent();
+                let bytes = pkt.payload.clone();
+                self.outbound_packets.push(pkt);
+                return bytes;
+            }
         }
 
         // Large payload - full SPEC/DATA/ACK/COMPLETE flow
@@ -252,6 +276,54 @@ impl PTManager {
         packets
     }
 
+    /// Sentinel stream_id marking a PTAck as a small-PACKET delivery ack (not a stream ack). Real
+    /// stream ids are 'a'-'z' (0x61-0x7A); 0 is unused there, so handle_ack can route on it.
+    pub const PACKET_ACK_STREAM_ID: u8 = 0;
+
+    /// Receiver side: a small reliable packet arrived — return the delivery-ack bytes to send back
+    /// immediately, keyed by BLAKE3(payload). Pure transport ack (bytes received); the application
+    /// still processes the payload separately and may send its own semantic ack (e.g. MessageAck).
+    /// Idempotent: a duplicate packet (its ack was lost) just gets re-acked.
+    pub fn build_packet_ack(&self, payload: &[u8]) -> Vec<u8> {
+        let packet_hash = *blake3::hash(payload).as_bytes();
+        let ack = PTAck {
+            stream_id: Self::PACKET_ACK_STREAM_ID,
+            sequence: 0,
+            chunk_hash: packet_hash,
+        };
+        ack.to_vsf_bytes(&self.keypair)
+    }
+
+    /// Sender side: a packet delivery-ack arrived. Mark the matching in-flight packet delivered,
+    /// drop it, and return the next queued packet's bytes for that peer to send now (stop-and-wait
+    /// advance). Empty if no match or nothing queued.
+    pub fn handle_packet_ack(&mut self, peer_addr: SocketAddr, packet_hash: [u8; 32]) -> Vec<u8> {
+        // Remove the acked in-flight packet for this peer.
+        let before = self.outbound_packets.len();
+        self.outbound_packets
+            .retain(|p| !(p.peer_addr == peer_addr && p.packet_hash == packet_hash));
+        if self.outbound_packets.len() == before {
+            return Vec::new(); // no match (already acked / unknown)
+        }
+        // If nothing else is in flight to this peer, promote the next queued packet for it.
+        let peer_busy = self
+            .outbound_packets
+            .iter()
+            .any(|p| p.peer_addr == peer_addr && p.in_flight);
+        if peer_busy {
+            return Vec::new();
+        }
+        if let Some(next) = self
+            .outbound_packets
+            .iter_mut()
+            .find(|p| p.peer_addr == peer_addr && !p.in_flight)
+        {
+            next.mark_sent();
+            return next.payload.clone();
+        }
+        Vec::new()
+    }
+
     /// Handle received DATA packet Routes by (peer_addr, stream_id) to support concurrent transfers
     pub fn handle_data(&mut self, peer_addr: SocketAddr, data: PTData) -> Option<Vec<u8>> {
         // Find inbound transfer by peer AND stream_id
@@ -279,6 +351,15 @@ impl PTManager {
     /// Handle received ACK Routes by (peer_addr, stream_id) to support concurrent transfers
     pub fn handle_ack(&mut self, peer_addr: SocketAddr, ack: PTAck) -> Vec<Vec<u8>> {
         let mut packets = Vec::new();
+
+        // Small-packet delivery ack (sentinel stream_id) — advance the per-peer stop-and-wait queue.
+        if ack.stream_id == Self::PACKET_ACK_STREAM_ID {
+            let next = self.handle_packet_ack(peer_addr, ack.chunk_hash);
+            if !next.is_empty() {
+                packets.push(next);
+            }
+            return packets;
+        }
 
         // Check for SPEC ACK (seq = MAX)
         if ack.sequence == u32::MAX {
@@ -595,6 +676,36 @@ impl PTManager {
                         wire_bytes: data.to_bytes(),
                         tcp_payload: None,
                         relay: None, // DATA packets don't use relay
+                    });
+                }
+            }
+        }
+
+        // Retransmit reliable small packets whose backoff has elapsed (stop-and-wait per peer:
+        // only in-flight heads retransmit; queued packets wait for their head to be acked). Raced
+        // LAN/WAN like streams. No TCP/relay here — a 60s-capped UDP retry is the reliability for
+        // small packets; if a peer is truly unreachable, nothing flows anyway.
+        for pkt in self.outbound_packets.iter_mut() {
+            if pkt.in_flight && pkt.needs_retransmit() {
+                pkt.mark_retransmit();
+                crate::log(&format!(
+                    "PT: Retransmitting packet to {} (attempt {}, next backoff {}s)",
+                    pkt.peer_addr,
+                    pkt.retry_count,
+                    pkt.next_delay.as_secs()
+                ));
+                to_send.push(TickSend {
+                    peer_addr: pkt.peer_addr,
+                    wire_bytes: pkt.payload.clone(),
+                    tcp_payload: None,
+                    relay: None,
+                });
+                if let Some(alt) = pkt.alt_addr {
+                    to_send.push(TickSend {
+                        peer_addr: alt,
+                        wire_bytes: pkt.payload.clone(),
+                        tcp_payload: None,
+                        relay: None,
                     });
                 }
             }

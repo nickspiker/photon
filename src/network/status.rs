@@ -1288,6 +1288,27 @@ async fn run_checker(
 
                     match FgtwMessage::from_vsf_bytes(msg_bytes) {
                         Ok(message) => {
+                            // Delivery ack for RELIABLE small messages only (chat, MessageAck, CLUTCH
+                            // proof) — those are sent through PT's stop-and-wait queue and need a
+                            // delivery ack (keyed by BLAKE3(bytes)) so the sender stops retransmitting.
+                            // Ping/pong are best-effort on their own schedule (NOT queued reliably), so
+                            // acking them would be pointless noise. Pure transport "bytes received"; the
+                            // app still sends its own semantic reply (MessageAck). Packet-acks are
+                            // pt_ack frames handled earlier, so they never reach here (no ack-of-ack).
+                            let reliable = matches!(
+                                message,
+                                FgtwMessage::ChatMessage { .. }
+                                    | FgtwMessage::MessageAck { .. }
+                            );
+                            if reliable {
+                                let ack_bytes = {
+                                    let pt_mgr = pt_recv.lock().unwrap();
+                                    pt_mgr.build_packet_ack(msg_bytes)
+                                };
+                                if !ack_bytes.is_empty() {
+                                    udp::send(&socket_recv, &ack_bytes, src_addr).await;
+                                }
+                            }
                             match message {
                                 FgtwMessage::StatusPing {
                                     timestamp: _,
@@ -1657,8 +1678,12 @@ async fn run_checker(
                         Some(request.recipient_pubkey),
                     )
                 };
-                // PT returns the bytes to send (for small payloads, same as input)
-                udp::send(&socket, &pt_bytes, request.peer_addr).await;
+                // PT returns the first wire bytes to send, or EMPTY if this packet queued behind an
+                // in-flight one for this peer (stop-and-wait) — in that case tick() sends it once the
+                // head is acked. Don't emit an empty datagram.
+                if !pt_bytes.is_empty() {
+                    udp::send(&socket, &pt_bytes, request.peer_addr).await;
+                }
             }
         }
 
@@ -1701,8 +1726,10 @@ async fn run_checker(
                         Some(request.recipient_pubkey),
                     )
                 };
-                // PT returns the bytes to send (for small payloads, same as input)
-                udp::send(&socket, &pt_bytes, request.peer_addr).await;
+                // Empty = queued behind an in-flight packet (stop-and-wait); tick() will send it.
+                if !pt_bytes.is_empty() {
+                    udp::send(&socket, &pt_bytes, request.peer_addr).await;
+                }
             }
         }
 
