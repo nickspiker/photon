@@ -284,6 +284,22 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeSetAvatarFromFi
     ctx.shell.app().set_avatar_from_file(bytes);
 }
 
+/// Per-frame poll for the sticky session broadcast signal. Returns `1` after a successful
+/// attest (Kotlin should call `service.sendSessionBroadcast()`), `-1` after a vault nuke
+/// (Kotlin should call `service.clearSessionBroadcast()`), `0` otherwise. One-shot.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativePollSessionBroadcast(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    context_ptr: jlong,
+) -> jint {
+    let Some(ctx) = get_context(context_ptr) else {
+        return 0;
+    };
+    ctx.shell.app().take_broadcast_signal() as jint
+}
+
 /// Per-frame poll for the avatar image-picker request. Returns `1` when the user has tapped the avatar circle since the last poll, `0` otherwise. Kotlin's `doFrame` hook calls this alongside `nativePollKeyboard` and launches `ACTION_GET_CONTENT` on `1`. One-shot semantics: `PhotonApp::take_picker_request` clears the flag so consecutive polls without further taps yield `0`.
 #[cfg(target_os = "android")]
 #[no_mangle]
@@ -520,4 +536,158 @@ pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeGetDev
     };
     let hex = hex::encode(context.keypair.public.as_bytes());
     env.new_string(&hex).unwrap_or_else(|_| empty())
+}
+
+/// Restore a session from a VSF capsule read from the sticky broadcast. Called on first launch
+/// after reinstall, before the app UI initialises, so `query_resume` can skip re-attest.
+/// Returns `1` if the session was restored, `0` if the capsule was invalid or empty.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeRestoreSessionFromVsf(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    vsf_bytes: JByteArray<'_>,
+) -> jint {
+    let bytes = match env.convert_byte_array(&vsf_bytes) {
+        Ok(b) => b,
+        Err(e) => { error!("nativeRestoreSessionFromVsf: read bytes failed: {:?}", e); return 0; }
+    };
+    if bytes.is_empty() { return 0; }
+    match unpack_session_vsf(&bytes) {
+        Some(session) => {
+            match tohu::set_session(&session) {
+                Ok(()) => { info!("Session restored from sticky broadcast"); 1 }
+                Err(e) => { error!("nativeRestoreSessionFromVsf: set_session failed: {:?}", e); 0 }
+            }
+        }
+        None => { error!("nativeRestoreSessionFromVsf: unpack failed"); 0 }
+    }
+}
+
+// ============================================================================
+// Session broadcast — sticky broadcast carrying the VSF-sealed session capsule.
+// Survives app uninstall (OS holds the sticky); cleared on logout.
+// Permission: com.photon.SESSION_READ (signature-level, declared in manifest).
+// ============================================================================
+
+/// Pack a SessionIdentity into a VSF capsule: a full file with header, one
+/// section "session" containing three fields (is=hI, vs=hV, hp=hP), BLAKE3-sealed.
+#[cfg(target_os = "android")]
+fn pack_session_vsf(s: &tohu::SessionIdentity) -> Vec<u8> {
+    use vsf::{VsfBuilder, VsfType};
+    VsfBuilder::new()
+        .add_section(
+            "session",
+            vec![
+                ("is".to_string(), VsfType::hI(s.identity_seed.to_vec())),
+                ("vs".to_string(), VsfType::hV(s.vault_seed.to_vec())),
+                ("hp".to_string(), VsfType::hP(s.handle_proof.to_vec())),
+            ],
+        )
+        .build()
+        .expect("session VSF build")
+}
+
+/// Unpack a SessionIdentity from a VSF capsule produced by `pack_session_vsf`.
+/// Verifies the BLAKE3 rolling hash before reading any fields — returns `None` on
+/// tampered or truncated bytes.
+#[cfg(target_os = "android")]
+pub fn unpack_session_vsf(bytes: &[u8]) -> Option<tohu::SessionIdentity> {
+    use vsf::{parse, VsfType};
+    if let Err(e) = vsf::verification::verify_file_hash(bytes) {
+        error!("unpack_session_vsf: integrity check failed: {}", e);
+        return None;
+    }
+    let mut ptr = 0;
+    let mut identity_seed = None::<[u8; 32]>;
+    let mut vault_seed = None::<[u8; 32]>;
+    let mut handle_proof = None::<[u8; 32]>;
+    while ptr < bytes.len() {
+        match parse(bytes, &mut ptr) {
+            Ok(VsfType::hI(v)) if v.len() == 32 => {
+                identity_seed = Some(v.try_into().unwrap());
+            }
+            Ok(VsfType::hV(v)) if v.len() == 32 => {
+                vault_seed = Some(v.try_into().unwrap());
+            }
+            Ok(VsfType::hP(v)) if v.len() == 32 => {
+                handle_proof = Some(v.try_into().unwrap());
+            }
+            Err(_) => break,
+            _ => {}
+        }
+    }
+    Some(tohu::SessionIdentity {
+        identity_seed: identity_seed?,
+        vault_seed: vault_seed?,
+        handle_proof: handle_proof?,
+    })
+}
+
+/// Send (or replace) the sticky session broadcast. Reads the current session from
+/// `tohu::session()` — seeds never leave Rust. Called from Kotlin after attest succeeds.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeSendSessionBroadcast(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    context: JObject<'_>,
+) {
+    let session = match tohu::session() {
+        Some(s) => s,
+        None => { error!("nativeSendSessionBroadcast: no session stored"); return; }
+    };
+    let bytes = pack_session_vsf(&session);
+    let result = (|| -> Result<(), jni::errors::Error> {
+        let intent_class = env.find_class("android/content/Intent")?;
+        let action = env.new_string("com.photon.SESSION")?;
+        let intent = env.new_object(&intent_class, "(Ljava/lang/String;)V", &[(&action).into()])?;
+        let extra_key = env.new_string("vsf")?;
+        let arr = env.byte_array_from_slice(&bytes)?;
+        env.call_method(
+            &intent,
+            "putExtra",
+            "(Ljava/lang/String;[B)Landroid/content/Intent;",
+            &[(&extra_key).into(), (&arr).into()],
+        )?;
+        env.call_method(
+            &context,
+            "sendStickyBroadcast",
+            "(Landroid/content/Intent;)V",
+            &[(&intent).into()],
+        )?;
+        Ok(())
+    })();
+    if let Err(e) = result {
+        error!("nativeSendSessionBroadcast failed: {:?}", e);
+    } else {
+        info!("Session broadcast sent ({} bytes)", bytes.len());
+    }
+}
+
+/// Clear the sticky session broadcast. Called from Kotlin on logout.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeClearSessionBroadcast(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    context: JObject<'_>,
+) {
+    let result = (|| -> Result<(), jni::errors::Error> {
+        let intent_class = env.find_class("android/content/Intent")?;
+        let action = env.new_string("com.photon.SESSION")?;
+        let intent = env.new_object(&intent_class, "(Ljava/lang/String;)V", &[(&action).into()])?;
+        env.call_method(
+            &context,
+            "removeStickyBroadcast",
+            "(Landroid/content/Intent;)V",
+            &[(&intent).into()],
+        )?;
+        Ok(())
+    })();
+    if let Err(e) = result {
+        error!("nativeClearSessionBroadcast failed: {:?}", e);
+    } else {
+        info!("Session broadcast cleared");
+    }
 }

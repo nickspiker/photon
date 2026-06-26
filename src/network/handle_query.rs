@@ -72,6 +72,7 @@ pub struct HandleQuery {
     // Shared state
     transport: Arc<Mutex<Option<Arc<Mutex<PeerStore>>>>>,
     last_handle_proof: Arc<Mutex<Option<[u8; 32]>>>,
+    last_identity_seed: Arc<Mutex<Option<[u8; 32]>>>,
 
     // UDP socket for P2P and StatusChecker (bound to PHOTON_PORT 4383)
     socket: Arc<Mutex<Arc<UdpSocket>>>,
@@ -151,6 +152,7 @@ impl HandleQuery {
         // Shared state
         let transport = Arc::new(Mutex::new(None::<Arc<Mutex<PeerStore>>>));
         let last_handle_proof = Arc::new(Mutex::new(None::<[u8; 32]>));
+        let last_identity_seed = Arc::new(Mutex::new(None::<[u8; 32]>));
 
         // Bind UDP socket - tries 4383 → 3546 → ephemeral
         let (initial_socket, initial_port) = bind_photon_socket();
@@ -165,10 +167,13 @@ impl HandleQuery {
         let transport_query = transport.clone();
         let transport_search = transport.clone();
         let handle_proof_store = last_handle_proof.clone();
+        let identity_seed_store = last_identity_seed.clone();
+        let identity_seed_search = last_identity_seed.clone();
         let keypair_query = device_keypair.clone();
         let keypair_search = device_keypair.clone();
         let socket_query = socket.clone();
         let port_query = port.clone();
+        let port_search = port.clone();
 
         // Spawn connectivity monitoring thread
         Self::spawn_connectivity_worker(online_tx, event_proxy);
@@ -179,6 +184,7 @@ impl HandleQuery {
             query_tx_result,
             transport_query,
             handle_proof_store,
+            identity_seed_store,
             keypair_query,
             socket_query,
             port_query,
@@ -190,6 +196,8 @@ impl HandleQuery {
             search_tx_result,
             transport_search,
             keypair_search,
+            identity_seed_search,
+            port_search,
         );
 
         Self {
@@ -200,6 +208,7 @@ impl HandleQuery {
             search_receiver: search_rx,
             transport,
             last_handle_proof,
+            last_identity_seed,
             socket,
             port,
         }
@@ -216,6 +225,7 @@ impl HandleQuery {
         // Shared state
         let transport = Arc::new(Mutex::new(None::<Arc<Mutex<PeerStore>>>));
         let last_handle_proof = Arc::new(Mutex::new(None::<[u8; 32]>));
+        let last_identity_seed = Arc::new(Mutex::new(None::<[u8; 32]>));
 
         // Bind UDP socket - tries 4383 → 3546 → ephemeral
         let (initial_socket, initial_port) = bind_photon_socket();
@@ -230,10 +240,13 @@ impl HandleQuery {
         let transport_query = transport.clone();
         let transport_search = transport.clone();
         let handle_proof_store = last_handle_proof.clone();
+        let identity_seed_store = last_identity_seed.clone();
+        let identity_seed_search = last_identity_seed.clone();
         let keypair_query = device_keypair.clone();
         let keypair_search = device_keypair.clone();
         let socket_query = socket.clone();
         let port_query = port.clone();
+        let port_search = port.clone();
 
         // Spawn connectivity monitoring thread (simplified for Android)
         Self::spawn_connectivity_worker_android(online_tx);
@@ -244,6 +257,7 @@ impl HandleQuery {
             query_tx_result,
             transport_query,
             handle_proof_store,
+            identity_seed_store,
             keypair_query,
             socket_query,
             port_query,
@@ -255,6 +269,8 @@ impl HandleQuery {
             search_tx_result,
             transport_search,
             keypair_search,
+            identity_seed_search,
+            port_search,
         );
 
         Self {
@@ -265,6 +281,7 @@ impl HandleQuery {
             search_receiver: search_rx,
             transport,
             last_handle_proof,
+            last_identity_seed,
             socket,
             port,
         }
@@ -404,6 +421,7 @@ impl HandleQuery {
         tx: Sender<QueryResult>,
         transport: Arc<Mutex<Option<Arc<Mutex<PeerStore>>>>>,
         handle_proof_store: Arc<Mutex<Option<[u8; 32]>>>,
+        identity_seed_store: Arc<Mutex<Option<[u8; 32]>>>,
         keypair: Keypair,
         _socket: Arc<Mutex<Arc<UdpSocket>>>,
         port: Arc<Mutex<u16>>,
@@ -485,6 +503,7 @@ impl HandleQuery {
 
                     if is_ours {
                         *handle_proof_store.lock().unwrap() = Some(handle_proof);
+                        *identity_seed_store.lock().unwrap() = Some(identity_seed);
                         crate::log("Network: Handle registered to this device");
 
                         // Ownership confirmed — now it is safe to remember the session roots for resume.
@@ -666,6 +685,8 @@ impl HandleQuery {
         tx: Sender<SearchResult>,
         transport: Arc<Mutex<Option<Arc<Mutex<PeerStore>>>>>,
         keypair: Keypair,
+        identity_seed: Arc<Mutex<Option<[u8; 32]>>>,
+        port: Arc<Mutex<u16>>,
     ) {
         thread::spawn(move || {
             crate::log("Network: Search worker initialized");
@@ -673,7 +694,6 @@ impl HandleQuery {
             while let Ok(handle) = rx.recv() {
                 crate::log(&format!("Network: Searching for handle '{}'...", handle));
 
-                // Compute handle_proof
                 let handle_proof = Handle::username_to_handle_proof(&handle);
 
                 // Wait for transport
@@ -686,27 +706,107 @@ impl HandleQuery {
                     thread::sleep(Duration::from_millis(100));
                 };
 
-                // Local-peer-store-only lookup. The previous fall-through to `load_bootstrap_peers` re-issued an FGTW announce with a different handle_proof but this device's keypair — FGTW correctly rejects that as "handle mismatch" (a device may only own ONE handle). Searching for another peer needs either an FGTW query endpoint (not yet implemented) or a freshly-pulled peer list. For now we rely on the peer store populated by THIS device's own attestation response (which includes the FGTW-wide peer list).
-                //
-                // Caveat: if the searched peer registered AFTER our last announce, we won't see them until a re-announce / refresh. A periodic re-announce task lands when the rest of the find/talk flow is fleshed out.
-                let peer_store = transport_arc;
-                let store = peer_store.lock().unwrap();
-                let peers = store.get_devices_for_handle(&handle_proof);
-                let result = if let Some(peer) = peers.first() {
-                    SearchResult::Found(FoundPeer {
-                        handle: HandleText::new(&handle),
-                        handle_proof,
-                        device_pubkey: peer.device_pubkey.clone(),
-                        ip: peer.ip,
-                    })
-                } else {
-                    SearchResult::NotFound
-                };
-                drop(store);
+                let result = Self::search_with_refresh(
+                    &handle,
+                    handle_proof,
+                    &transport_arc,
+                    &keypair,
+                    &identity_seed,
+                    &port,
+                );
 
                 let _ = tx.send(result);
             }
         });
+    }
+
+    /// Look up a handle in the local peer store. If not found, re-announce to FGTW (which
+    /// refreshes the peer list) and retry once. This covers the common case where the target
+    /// registered after our last announce.
+    fn search_with_refresh(
+        handle: &str,
+        handle_proof: [u8; 32],
+        peer_store: &Arc<Mutex<PeerStore>>,
+        keypair: &Keypair,
+        identity_seed: &Arc<Mutex<Option<[u8; 32]>>>,
+        port: &Arc<Mutex<u16>>,
+    ) -> SearchResult {
+        // First pass — local peer store
+        if let Some(result) = Self::lookup_in_store(handle, handle_proof, peer_store) {
+            return result;
+        }
+
+        // Not found locally — re-announce with our own credentials to pull a fresh peer list,
+        // then retry. Only possible once we've attested (identity_seed is set).
+        let (seed, our_port) = {
+            let s = identity_seed.lock().unwrap();
+            let p = port.lock().unwrap();
+            match *s {
+                Some(seed) => (seed, *p),
+                None => return SearchResult::NotFound,
+            }
+        };
+
+        let our_handle_proof = {
+            let store = peer_store.lock().unwrap();
+            // Derive our own handle_proof from the known peers (we're in the store as a device).
+            // Simpler: re-announce always uses our attested handle_proof, which we can't store here
+            // without another arc. Use identity_seed to re-derive it via spaghettify — but that's
+            // expensive. Instead just call load_bootstrap_peers with the keypair's handle_proof,
+            // which we get from the first peer matching our pubkey.
+            let our_pubkey = keypair.public.as_bytes();
+            store.get_all_peers()
+                .iter()
+                .find(|p| p.device_pubkey.as_bytes() == our_pubkey)
+                .map(|p| p.handle_proof)
+        };
+
+        let our_handle_proof = match our_handle_proof {
+            Some(hp) => hp,
+            None => return SearchResult::NotFound,
+        };
+
+        crate::log(&format!("Network: '{}' not in local store — refreshing peer list from FGTW", handle));
+        let refresh = crate::network::http::runtime().block_on(
+            crate::network::fgtw::bootstrap::load_bootstrap_peers(
+                keypair,
+                our_handle_proof,
+                our_port,
+                &seed,
+            )
+        );
+
+        if refresh.peers.is_empty() {
+            return SearchResult::NotFound;
+        }
+
+        // Merge fresh peers into the store
+        let our_pubkey = keypair.public.as_bytes();
+        {
+            let mut store = peer_store.lock().unwrap();
+            for peer in refresh.peers.iter().filter(|p| p.device_pubkey.as_bytes() != our_pubkey) {
+                store.add_peer(peer.clone());
+            }
+        }
+
+        // Second pass after refresh
+        Self::lookup_in_store(handle, handle_proof, peer_store)
+            .unwrap_or(SearchResult::NotFound)
+    }
+
+    fn lookup_in_store(
+        handle: &str,
+        handle_proof: [u8; 32],
+        peer_store: &Arc<Mutex<PeerStore>>,
+    ) -> Option<SearchResult> {
+        let store = peer_store.lock().unwrap();
+        let peers = store.get_devices_for_handle(&handle_proof);
+        peers.first().map(|peer| SearchResult::Found(FoundPeer {
+            handle: HandleText::new(handle),
+            handle_proof,
+            device_pubkey: peer.device_pubkey.clone(),
+            ip: peer.ip,
+        }))
     }
 
     // ===== Public API =====
