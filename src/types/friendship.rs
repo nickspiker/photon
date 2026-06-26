@@ -833,6 +833,50 @@ impl FriendshipChains {
         self.last_sent_hash = Some(msg_hp);
     }
 
+    /// Encrypt a fresh outgoing message on OUR chain and record it pending.
+    ///
+    /// The exact inverse of the receive path: derive the salt from our previous plaintext, generate the scratch pad, encrypt with our current chain key. `plaintext` is the already-VSF-encoded message body (the `(message: x{text}, hp{incorporated_hp}, hR{pad})` field the receiver parses) — the caller builds it so this layer stays agnostic to message shape.
+    ///
+    /// Does NOT advance the chain — advancement is deferred to [`process_ack`](Self::process_ack), the same invariant the receive side relies on (advancing on send would desync if the peer never decrypts).
+    ///
+    /// Returns `(ciphertext, prev_msg_hp, msg_hp, plaintext_hash)` for the wire send, or `None` if `our_handle_hash` isn't a participant.
+    pub fn prepare_send(
+        &mut self,
+        our_handle_hash: &[u8; 32],
+        plaintext: Vec<u8>,
+        eagle_time: i64,
+    ) -> Option<(Vec<u8>, [u8; 32], [u8; 32], [u8; 32])> {
+        use crate::crypto::chain::{derive_salt, encrypt_layers, generate_scratch};
+
+        let our_idx = self.participant_index(our_handle_hash)?;
+        let our_chain = self.chains[our_idx].clone();
+
+        // Salt from our previous plaintext (empty on the first message) — both sides derive the same salt for the same chain position.
+        let salt = derive_salt(&self.last_plaintexts[our_idx], &our_chain);
+        let scratch = generate_scratch(&our_chain, &salt);
+        let et = vsf::EagleTime::from_oscillations(eagle_time);
+        let ciphertext = encrypt_layers(&plaintext, &our_chain, &scratch, &et);
+
+        // First message uses our anchor as prev_msg_hp (matches get_expected_prev_hp on the receiver).
+        let prev_msg_hp = self
+            .last_sent_hash
+            .unwrap_or(self.first_message_anchors[our_idx]);
+        let plaintext_hash = *blake3::hash(&plaintext).as_bytes();
+        let msg_hp = derive_msg_hp(&prev_msg_hp, &plaintext_hash, eagle_time);
+
+        // Record pending (stores plaintext for salt/ACK, ciphertext for resend; sets last_sent_hash).
+        self.add_pending(
+            eagle_time,
+            plaintext,
+            plaintext_hash,
+            prev_msg_hp,
+            msg_hp,
+            ciphertext.clone(),
+        );
+
+        Some((ciphertext, prev_msg_hp, msg_hp, plaintext_hash))
+    }
+
     /// Process ACK: find pending message, advance our chain, update last_plaintext, clear pending. Chain advancement is deferred to ACK to prevent desync — if we advanced on send and the receiver never processed the message, both sides' copies of our chain would diverge. Returns true if ACK was valid and chain was advanced.
     pub fn process_ack(
         &mut self,
