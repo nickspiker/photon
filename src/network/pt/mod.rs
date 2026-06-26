@@ -45,7 +45,11 @@ pub struct RelayInfo {
 pub struct TickSend {
     pub peer_addr: SocketAddr,
     pub wire_bytes: Vec<u8>,
-    pub also_tcp: bool,
+    /// When `Some`, also send this WHOLE VSF payload over a TCP connection (the reliable fallback).
+    /// UDP is preferred and carries `wire_bytes` (a PT shard); TCP is tried in parallel only after
+    /// the UDP SPEC has gone ~1s without an ACK, and carries the entire pre-sharded VSF once — no PT
+    /// stream framing, since TCP is ordered/reliable and the VSF `l` field self-frames the length.
+    pub tcp_payload: Option<Vec<u8>>,
     pub relay: Option<RelayInfo>,
 }
 
@@ -486,8 +490,8 @@ impl PTManager {
     }
 
     /// Periodic tick - check timeouts, send retransmits Returns TickSend structs with:
-    /// - peer_addr, wire_bytes: UDP packet to send
-    /// - also_tcp: if true, also send via TCP
+    /// - peer_addr, wire_bytes: UDP packet to send (the preferred path)
+    /// - tcp_payload: if Some, also send this whole VSF over TCP (reliable fallback, once per transfer)
     /// - relay: if Some, UDP+TCP failed, relay via /conduit with this info
     pub fn tick(&mut self) -> Vec<TickSend> {
         let mut to_send = Vec::new();
@@ -505,15 +509,21 @@ impl PTManager {
 
             // SPEC retry with exponential backoff
             if transfer.spec_needs_retry() {
-                // After 1s, also try TCP in parallel
+                // After 1s, also try TCP in parallel — but send the WHOLE VSF over TCP exactly
+                // once (not the SPEC shard, and not every retry). TCP is the reliable fallback;
+                // UDP sharding stays preferred and keeps going in parallel until one path ACKs.
                 let tcp_eligible = transfer.tcp_eligible();
-                if tcp_eligible && !transfer.spec_tcp_fallback {
+                let tcp_payload = if tcp_eligible && !transfer.tcp_sent {
                     transfer.set_spec_tcp_fallback();
+                    transfer.tcp_sent = true;
                     crate::log(&format!(
-                        "PT: SPEC for stream '{}' to {} - adding TCP parallel",
+                        "PT: SPEC for stream '{}' to {} - sending whole payload over TCP (fallback, once)",
                         transfer.stream_id as char, transfer.peer_addr
                     ));
-                }
+                    transfer.original_payload.clone()
+                } else {
+                    None
+                };
 
                 // Check if we should try relay (both UDP and TCP exhausted)
                 let use_relay = transfer.should_relay_fallback();
@@ -560,29 +570,30 @@ impl PTManager {
                 to_send.push(TickSend {
                     peer_addr: transfer.peer_addr,
                     wire_bytes: spec_bytes.clone(),
-                    also_tcp: transfer.spec_tcp_fallback,
+                    tcp_payload,
                     relay,
                 });
 
-                // Race the SPEC against the alternate path (LAN vs WAN) until one ACKs. Relay is intentionally not duplicated here — it's a last resort attached to the primary.
+                // Race the SPEC against the alternate path (LAN vs WAN) until one ACKs. Relay and the whole-payload TCP fallback are intentionally not duplicated here — they're attached to the primary path only (one TCP connection; 548 KB to both LAN and WAN would be wasteful).
                 if let Some(alt) = transfer.alt_addr {
                     to_send.push(TickSend {
                         peer_addr: alt,
                         wire_bytes: spec_bytes,
-                        also_tcp: transfer.spec_tcp_fallback,
+                        tcp_payload: None,
                         relay: None,
                     });
                 }
             }
 
-            // Check for DATA packet timeouts (only during transfer phase)
+            // Check for DATA packet timeouts (only during transfer phase). DATA retransmits are a
+            // UDP concern — the whole payload already went over TCP once (if eligible) during the
+            // SPEC phase, so no per-DATA TCP send here.
             if transfer.state == TransferState::Transferring {
-                let tcp_eligible = transfer.tcp_eligible();
                 for data in transfer.check_timeouts() {
                     to_send.push(TickSend {
                         peer_addr: transfer.peer_addr,
                         wire_bytes: data.to_bytes(),
-                        also_tcp: tcp_eligible,
+                        tcp_payload: None,
                         relay: None, // DATA packets don't use relay
                     });
                 }
