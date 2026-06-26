@@ -2985,6 +2985,26 @@ impl PhotonApp {
                         self.spawn_clutch_keygen(cid, our_handle_hash, their_hh);
                     }
                 }
+                // Merge the friendship chains the worker loaded from disk into the live map. Without
+                // this, resumed contacts have no chains in self.friendship_chains and sending fails
+                // with "friendship chains missing" — even though storage loaded them fine. Only add
+                // ids we don't already hold; an in-session chain (built at ceremony completion) is
+                // fresher than a disk copy, so never clobber it.
+                let mut merged_chains = 0usize;
+                for (fid, chains) in data.friendships {
+                    if !self.friendship_chains.iter().any(|(id, _)| *id == fid) {
+                        self.friendship_chains.push((fid, chains));
+                        merged_chains += 1;
+                    }
+                }
+                if merged_chains > 0 {
+                    crate::log(&format!(
+                        "UI: merged {} friendship chain(s) from disk (total: {})",
+                        merged_chains,
+                        self.friendship_chains.len()
+                    ));
+                    self.update_sync_records();
+                }
                 // Refresh existing contacts' WAN + LAN addresses from the FGTW peer list.
                 // FGTW reports both a public and a same-LAN address per device; pulling the LAN address in lets the offer/KEM send race the LAN path against the WAN path right away, instead of waiting for LAN multicast (which routers often drop) or a pong.
                 // This is what unblocks a same-router peer whose stored WAN IPv6 says "No route to host" — the case where m never received an offer.
