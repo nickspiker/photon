@@ -329,6 +329,86 @@ impl OutboundTransfer {
     }
 }
 
+/// A small (≤1KB) reliable packet awaiting delivery acknowledgement.
+///
+/// Distinct from [`OutboundTransfer`] (which carries the heavy stream machinery — windows, flight
+/// tracking, reassembly): a packet is one shot of opaque bytes. PT retransmits it on exponential
+/// backoff (1s → 2s → … → 60s, indefinitely) until the receiver returns a delivery ack keyed by
+/// `packet_hash`. Per-peer the queue runs strictly one-in-flight (stop-and-wait) — `in_flight` marks
+/// the head; the rest wait their turn. Delivery only: the receiver auto-acks on byte-receipt, BEFORE
+/// the app sees the payload. Any semantic ack (MessageAck advancing the chain) is the app's separate
+/// concern layered on top.
+pub struct OutboundPacket {
+    pub peer_addr: SocketAddr,
+    /// Alternate address raced alongside (LAN vs WAN), same as streams. `None` = single path.
+    pub alt_addr: Option<SocketAddr>,
+    /// The wire bytes (a complete signed VSF message ≤1KB).
+    pub payload: Vec<u8>,
+    /// BLAKE3(payload) — the delivery-ack key the receiver echoes.
+    pub packet_hash: [u8; 32],
+    /// Recipient device pubkey for relay fallback (optional), mirrors OutboundTransfer.
+    pub recipient_pubkey: Option<[u8; 32]>,
+    /// True once this packet is the in-flight head for its peer (being actively retransmitted).
+    /// Only one packet per peer is `in_flight` at a time.
+    pub in_flight: bool,
+    /// When the head was last (re)transmitted; `None` until it first goes in flight.
+    pub last_sent: Option<Instant>,
+    /// Current backoff delay before the next retransmit (1s → 2s → … → 60s cap).
+    pub next_delay: Duration,
+    pub retry_count: u32,
+}
+
+impl OutboundPacket {
+    /// Backoff ceiling — a peer that never answers parks here, retried forever (one in flight, so no flood).
+    pub const MAX_BACKOFF: Duration = Duration::from_secs(60);
+
+    pub fn new(
+        peer_addr: SocketAddr,
+        alt_addr: Option<SocketAddr>,
+        payload: Vec<u8>,
+        recipient_pubkey: Option<[u8; 32]>,
+    ) -> Self {
+        let packet_hash = *blake3::hash(&payload).as_bytes();
+        Self {
+            peer_addr,
+            alt_addr: alt_addr.filter(|a| Some(*a) != Some(peer_addr)),
+            payload,
+            packet_hash,
+            recipient_pubkey,
+            in_flight: false,
+            last_sent: None,
+            next_delay: Duration::from_secs(1),
+            retry_count: 0,
+        }
+    }
+
+    /// Record the initial transmission of this packet (becomes the in-flight head). The first
+    /// retransmit then waits `next_delay` = 1s; each retransmit doubles it via `mark_retransmit`.
+    pub fn mark_sent(&mut self) {
+        self.in_flight = true;
+        self.last_sent = Some(Instant::now());
+    }
+
+    /// Record a retransmit and double the backoff toward the 60s cap (1 → 2 → 4 → … → 60s).
+    pub fn mark_retransmit(&mut self) {
+        self.last_sent = Some(Instant::now());
+        self.retry_count += 1;
+        self.next_delay = self
+            .next_delay
+            .checked_mul(2)
+            .unwrap_or(Self::MAX_BACKOFF)
+            .min(Self::MAX_BACKOFF);
+    }
+
+    /// True when the in-flight head's backoff has elapsed and it should be retransmitted.
+    pub fn needs_retransmit(&self) -> bool {
+        match self.last_sent {
+            Some(t) => self.in_flight && t.elapsed() >= self.next_delay,
+            None => false,
+        }
+    }
+}
+
 /// Inbound transfer (we're receiving)
 pub struct InboundTransfer {
     pub peer_addr: SocketAddr,
