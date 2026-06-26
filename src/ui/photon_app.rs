@@ -5304,6 +5304,31 @@ impl PhotonApp {
                                 ));
                             }
 
+                            // Store OUR offer in OUR slot too — every slot needs offer + a KEM
+                            // contribution to be complete (PartySlot::is_complete). When their offer
+                            // arrives first and we go straight to the KEM-response path, our own slot
+                            // would otherwise keep offer=None forever, so all_slots_complete never
+                            // fires and the ceremony never runs (the one-sided-nuke re-key stall:
+                            // we have keys + sent a KEM, but our local offer was never recorded).
+                            if contact
+                                .get_slot(&our_handle_hash)
+                                .map(|s| s.offer.is_none())
+                                .unwrap_or(false)
+                            {
+                                if let Some(ref keypairs) = contact.clutch_our_keypairs {
+                                    let our_offer =
+                                        clutch::ClutchOfferPayload::from_keypairs(keypairs);
+                                    if let Some(local_slot) =
+                                        contact.get_slot_mut(&our_handle_hash)
+                                    {
+                                        local_slot.offer = Some(our_offer);
+                                        crate::log(
+                                            "CLUTCH: Stored our own offer in local slot (on offer-received)",
+                                        );
+                                    }
+                                }
+                            }
+
                             // Store their offer_provenance for ceremony_id derivation
                             if !contact.offer_provenances.contains(&offer_provenance) {
                                 contact.offer_provenances.push(offer_provenance);
@@ -5874,6 +5899,27 @@ impl PhotonApp {
                                         "CLUTCH: Decapsulated KEM from {} - stored in slot",
                                         contact.handle
                                     ));
+                                }
+
+                                // Backfill OUR offer in OUR slot if missing — guarantees
+                                // all_slots_complete can fire here. Covers the stall where our own
+                                // offer was never recorded (offer arrived before our keygen, or the
+                                // offer-received path didn't store it), leaving our slot offer=None
+                                // forever even though we have keys + KEM secrets.
+                                if contact
+                                    .get_slot(&our_handle_hash)
+                                    .map(|s| s.offer.is_none())
+                                    .unwrap_or(false)
+                                {
+                                    if let Some(ref keypairs) = contact.clutch_our_keypairs {
+                                        let our_offer = crate::crypto::clutch::ClutchOfferPayload::from_keypairs(keypairs);
+                                        if let Some(local_slot) =
+                                            contact.get_slot_mut(&our_handle_hash)
+                                        {
+                                            local_slot.offer = Some(our_offer);
+                                            crate::log("CLUTCH: Backfilled our own offer in local slot (on KEM received)");
+                                        }
+                                    }
                                 }
 
                                 // Persist slot state after receiving KEM
