@@ -1482,20 +1482,32 @@ impl FluorApp for PhotonApp {
         }
 
         // Drain per-contact presence + CLUTCH ceremony updates (pongs → is_online/ip; offers/KEM/complete → ceremony progress), plus the three background-job result channels (keygen / KEM-encap / ceremony-expand).
-        if self.check_status_updates() {
+        // TEMP instrumentation: log any tick phase that blocks the UI thread > 50ms so the launch hang is pinpointed in the trace rather than guessed at. Remove once the hang source is fixed.
+        macro_rules! timed {
+            ($label:literal, $body:expr) => {{
+                let __t = Instant::now();
+                let __r = $body;
+                let __ms = __t.elapsed().as_millis();
+                if __ms > 50 {
+                    crate::log(&format!("PERF: {} took {}ms (UI thread)", $label, __ms));
+                }
+                __r
+            }};
+        }
+        if timed!("check_status_updates", self.check_status_updates()) {
             needs_redraw = true;
         }
-        if self.check_clutch_keygens() {
+        if timed!("check_clutch_keygens", self.check_clutch_keygens()) {
             needs_redraw = true;
         }
         // Serialized keygen queue: once the in-flight keygen (if any) has completed and cleared its
         // flag above, start the next Pending-keyless contact's keygen. One McEliece at a time keeps
         // the UI responsive on a multi-contact launch instead of spawning them all at once.
-        self.spawn_next_pending_keygen();
-        if self.check_clutch_kem_encaps() {
+        timed!("spawn_next_pending_keygen", self.spawn_next_pending_keygen());
+        if timed!("check_clutch_kem_encaps", self.check_clutch_kem_encaps()) {
             needs_redraw = true;
         }
-        if self.check_clutch_ceremonies() {
+        if timed!("check_clutch_ceremonies", self.check_clutch_ceremonies()) {
             needs_redraw = true;
         }
 
@@ -1518,7 +1530,7 @@ impl FluorApp for PhotonApp {
             }
         }
         for result in drained {
-            self.on_query_result(result);
+            timed!("on_query_result", self.on_query_result(result));
             needs_redraw = true;
         }
         for search in drained_searches {
