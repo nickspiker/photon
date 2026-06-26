@@ -4332,10 +4332,20 @@ impl PhotonApp {
         self.retransmit_pending_clutch_proofs();
     }
 
-    /// Re-send the ClutchComplete proof to every contact whose retransmit budget (`clutch_proof_resends_left`) is non-zero, decrementing each. See [`ping_contacts`] for why this exists. Clears our held proof once the budget reaches zero so it isn't kept forever.
+    /// Re-send our ClutchComplete proof to contacts that still need it, each ping cycle.
+    ///
+    /// Two cases:
+    /// - **AwaitingProof**: we're not done — keep sending our proof EVERY cycle (until Complete).
+    ///   This is the recovery path for a peer whose proof we never received: our resends keep
+    ///   reaching them, and a Complete peer now replies with its proof (see the ClutchCompleteReceived
+    ///   Complete arm), letting us finish. Unbounded by design — AwaitingProof means "still trying".
+    /// - **Complete**: we're done, but the peer may have missed our proof. Drain a small bounded
+    ///   budget (`clutch_proof_resends_left`) of extra sends, then stop. The proof itself is now
+    ///   persisted, so even after the budget drains we can still answer an explicit re-request.
     fn retransmit_pending_clutch_proofs(&mut self) {
         use crate::crypto::clutch::{derive_conversation_token, ClutchCompletePayload};
         use crate::network::status::ClutchCompleteRequest;
+        use crate::types::ClutchState;
 
         let Some(our_handle_hash) = self.session.as_ref().map(|s| s.identity_seed) else {
             return;
@@ -4350,14 +4360,15 @@ impl PhotonApp {
         };
 
         for contact in self.contacts.iter_mut() {
-            if contact.clutch_proof_resends_left == 0 {
+            let awaiting = contact.clutch_state == ClutchState::AwaitingProof;
+            let complete_with_budget = contact.clutch_state == ClutchState::Complete
+                && contact.clutch_proof_resends_left > 0;
+            if !awaiting && !complete_with_budget {
                 continue;
             }
             let (Some(eggs_proof), Some(ceremony_id)) =
                 (contact.clutch_our_eggs_proof, contact.ceremony_id)
             else {
-                // Nothing to resend (proof/ceremony cleared) — drop the budget.
-                contact.clutch_proof_resends_left = 0;
                 continue;
             };
             let Some((primary, alt)) = contact.race_addrs() else {
@@ -4374,17 +4385,19 @@ impl PhotonApp {
                 device_pubkey,
                 device_secret,
             });
-            contact.clutch_proof_resends_left -= 1;
-            crate::log(&format!(
-                "CLUTCH: Retransmitted proof to {} ({} resends left)",
-                contact.handle, contact.clutch_proof_resends_left
-            ));
-            // Budget exhausted — stop holding the proof.
-            if contact.clutch_proof_resends_left == 0
-                && contact.clutch_state == crate::types::ClutchState::Complete
-            {
-                contact.clutch_our_eggs_proof = None;
+            if complete_with_budget {
+                contact.clutch_proof_resends_left -= 1;
             }
+            crate::log(&format!(
+                "CLUTCH: Retransmitted proof to {} ({}{})",
+                contact.handle,
+                if awaiting { "awaiting" } else { "complete" },
+                if complete_with_budget {
+                    format!(", {} left", contact.clutch_proof_resends_left)
+                } else {
+                    String::new()
+                }
+            ));
         }
     }
 
@@ -5902,8 +5915,13 @@ impl PhotonApp {
                     payload,
                     sender_addr: raw_sender_addr,
                 } => {
-                    use crate::crypto::clutch::derive_conversation_token;
+                    use crate::crypto::clutch::{derive_conversation_token, ClutchCompletePayload};
                     use crate::types::ClutchState;
+
+                    let device_pubkey =
+                        *self.device_keypair.as_ref().expect("device_keypair set in init").public.as_bytes();
+                    let device_secret =
+                        *self.device_keypair.as_ref().expect("device_keypair set in init").secret.as_bytes();
 
                     // Normalize to port 4383 (TCP source port is ephemeral)
                     let sender_addr =
@@ -6060,11 +6078,45 @@ impl PhotonApp {
                                     changed = true;
                                 }
                                 ClutchState::Complete => {
-                                    // Already complete - ignore duplicate
-                                    crate::log(&format!(
-                                        "CLUTCH: Ignoring duplicate proof from {} (already Complete)",
-                                        contact.handle
-                                    ));
+                                    // We're already Complete, but the peer is still sending its proof
+                                    // — that means OUR proof never reached them and they're stuck in
+                                    // AwaitingProof. Reply with our persisted proof so they can verify
+                                    // and finish. (Previously we ignored this, stranding the peer when
+                                    // our single proof send was lost.)
+                                    if let Some(our_proof) = contact.clutch_our_eggs_proof {
+                                        if let (Some(ceremony_id), Some((primary, alt))) =
+                                            (contact.ceremony_id, contact.race_addrs())
+                                        {
+                                            if let Some(ref checker) = self.status_checker {
+                                                let conv_token = derive_conversation_token(&[
+                                                    our_handle_hash,
+                                                    contact.handle_hash,
+                                                ]);
+                                                checker.send_complete_proof(
+                                                    crate::network::status::ClutchCompleteRequest {
+                                                        peer_addr: primary,
+                                                        alt_addr: alt,
+                                                        conversation_token: conv_token,
+                                                        ceremony_id,
+                                                        payload: ClutchCompletePayload {
+                                                            eggs_proof: our_proof,
+                                                        },
+                                                        device_pubkey,
+                                                        device_secret,
+                                                    },
+                                                );
+                                                crate::log(&format!(
+                                                    "CLUTCH: Re-sent our proof to {} (they're still AwaitingProof)",
+                                                    contact.handle
+                                                ));
+                                            }
+                                        }
+                                    } else {
+                                        crate::log(&format!(
+                                            "CLUTCH: Peer {} re-requesting proof but ours wasn't persisted — cannot answer",
+                                            contact.handle
+                                        ));
+                                    }
                                 }
                             }
                             break;
