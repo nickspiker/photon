@@ -8,6 +8,12 @@ use std::net::SocketAddr;
 
 /// Centralized UDP TX - logs via vsf_inspect then sends This is THE ONLY place UDP packets should be transmitted (except LAN broadcast)
 pub async fn send(socket: &tokio::net::UdpSocket, data: &[u8], addr: SocketAddr) {
+    // An empty payload is never a real datagram — it's PT's "queued, nothing to send now" signal
+    // (a small packet waiting behind an in-flight one in the stop-and-wait queue). Skip it so callers
+    // don't have to guard every send site.
+    if data.is_empty() {
+        return;
+    }
     #[cfg(feature = "development")]
     {
         let msg = vsf_inspect(data, "UDP", "TX", &addr.to_string());
