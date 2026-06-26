@@ -284,9 +284,7 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeSetAvatarFromFi
     ctx.shell.app().set_avatar_from_file(bytes);
 }
 
-/// Per-frame poll for the sticky session broadcast signal. Returns `1` after a successful
-/// attest (Kotlin should call `service.sendSessionBroadcast()`), `-1` after a vault nuke
-/// (Kotlin should call `service.clearSessionBroadcast()`), `0` otherwise. One-shot.
+/// Per-frame poll for the sticky session broadcast signal. Returns `1` after a successful attest (Kotlin should call `service.sendSessionBroadcast()`), `-1` after a vault nuke (Kotlin should call `service.clearSessionBroadcast()`), `0` otherwise. One-shot.
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativePollSessionBroadcast(
@@ -538,8 +536,7 @@ pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeGetDev
     env.new_string(&hex).unwrap_or_else(|_| empty())
 }
 
-/// Restore a session from a VSF capsule read from the sticky broadcast. Called on first launch
-/// after reinstall, before the app UI initialises, so `query_resume` can skip re-attest.
+/// Restore a session from a VSF capsule read from the sticky broadcast. Called on first launch after reinstall, before the app UI initialises, so `query_resume` can skip re-attest.
 /// Returns `1` if the session was restored, `0` if the capsule was invalid or empty.
 #[cfg(target_os = "android")]
 #[no_mangle]
@@ -570,8 +567,7 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeRestoreSessionF
 // Permission: com.photon.SESSION_READ (signature-level, declared in manifest).
 // ============================================================================
 
-/// Pack a SessionIdentity into a VSF capsule: a full file with header, one
-/// section "session" containing three fields (is=hI, vs=hV, hp=hP), BLAKE3-sealed.
+/// Pack a SessionIdentity into a VSF capsule: a full file with header, one section "session" containing three fields (is=hI, vs=hV, hp=hP), BLAKE3-sealed.
 #[cfg(target_os = "android")]
 fn pack_session_vsf(s: &tohu::SessionIdentity) -> Vec<u8> {
     use vsf::{VsfBuilder, VsfType};
@@ -589,8 +585,7 @@ fn pack_session_vsf(s: &tohu::SessionIdentity) -> Vec<u8> {
 }
 
 /// Unpack a SessionIdentity from a VSF capsule produced by `pack_session_vsf`.
-/// Verifies the BLAKE3 rolling hash before reading any fields — returns `None` on
-/// tampered or truncated bytes.
+/// Verifies the BLAKE3 rolling hash before reading any fields — returns `None` on tampered or truncated bytes.
 #[cfg(target_os = "android")]
 pub fn unpack_session_vsf(bytes: &[u8]) -> Option<tohu::SessionIdentity> {
     use vsf::{parse, VsfType};
