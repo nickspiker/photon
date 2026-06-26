@@ -149,6 +149,7 @@ fn contact_state_schema() -> SectionSchema {
         .field("friendship_id", TypeConstraint::AnyHash) // Links to friendship storage
         .field("last_seen", TypeConstraint::Any) // f64 Eagle Time
         .field("completed_their_hqc_prefix", TypeConstraint::AnyHash) // Detects stale offers (8 bytes)
+        .field("our_eggs_proof", TypeConstraint::AnyHash) // Our CLUTCH eggs proof — kept so a Complete contact can answer a peer still stuck in AwaitingProof (proof packet loss recovery)
 }
 
 /// Save contact state (mutable data) with schema validation
@@ -202,6 +203,11 @@ pub fn save_contact_state(contact: &Contact, storage: &FlatStorage) -> Result<()
                 "completed_their_hqc_prefix",
                 VsfType::hb(hqc_prefix.to_vec()),
             )
+            .map_err(|e| StorageError::Parse(e.to_string()))?;
+    }
+    if let Some(proof) = &contact.clutch_our_eggs_proof {
+        builder = builder
+            .set("our_eggs_proof", VsfType::hb(proof.to_vec()))
             .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
 
@@ -301,6 +307,11 @@ pub fn load_contact_state(
     if let Some(VsfType::hb(v)) = get_val("completed_their_hqc_prefix") {
         if v.len() == 8 {
             contact.completed_their_hqc_prefix = Some(v.as_slice().try_into().unwrap());
+        }
+    }
+    if let Some(VsfType::hb(v)) = get_val("our_eggs_proof") {
+        if v.len() == 32 {
+            contact.clutch_our_eggs_proof = Some(v.as_slice().try_into().unwrap());
         }
     }
 
