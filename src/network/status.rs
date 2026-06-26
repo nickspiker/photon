@@ -1901,13 +1901,16 @@ async fn run_checker(
             drop(pt_mgr);
 
             for tick in to_send {
-                // Always send UDP first
+                // Always send UDP first — UDP is the preferred path (PT shards over it).
                 udp::send(&socket, &tick.wire_bytes, tick.peer_addr).await;
 
-                // After 1s, also try TCP in parallel
-                if tick.also_tcp {
+                // TCP fallback: send the WHOLE VSF payload once (set by PT tick after the UDP SPEC
+                // went ~1s unacked). Not the PT shard — TCP is reliable + ordered and the VSF `l`
+                // field self-frames the length, so the receiver's tcp::recv reads it whole and the
+                // existing CLUTCH dispatch parses it directly.
+                if let Some(tcp_payload) = &tick.tcp_payload {
                     if let Err(e) =
-                        crate::network::tcp::send_tcp(&tick.wire_bytes, tick.peer_addr).await
+                        crate::network::tcp::send_tcp(tcp_payload, tick.peer_addr).await
                     {
                         crate::log(&format!("PT: TCP send failed to {}: {}", tick.peer_addr, e));
                     }

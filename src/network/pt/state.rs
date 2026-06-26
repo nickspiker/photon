@@ -72,6 +72,8 @@ pub struct OutboundTransfer {
     pub spec_next_delay: Duration,
     /// Whether to use TCP fallback for SPEC
     pub spec_tcp_fallback: bool,
+    /// Whether the whole-payload TCP fallback copy has already been sent. TCP is reliable + ordered and the VSF `l` field self-frames the payload, so the full VSF is sent over TCP exactly ONCE per transfer (not per shard / per retry tick — a 548 KB resend every tick would be brutal). UDP sharding stays the preferred path; this only fires after the UDP SPEC has gone unacked.
+    pub tcp_sent: bool,
     /// Recipient's device pubkey for relay fallback (optional)
     pub recipient_pubkey: Option<[u8; 32]>,
     /// Original payload for relay fallback (the full VSF before sharding)
@@ -107,6 +109,7 @@ impl OutboundTransfer {
             spec_retry_count: 0,
             spec_next_delay: Duration::from_secs(1),
             spec_tcp_fallback: false,
+            tcp_sent: false,
             recipient_pubkey: None,
             original_payload,
         }
