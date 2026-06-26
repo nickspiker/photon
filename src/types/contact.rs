@@ -136,6 +136,11 @@ pub struct Contact {
     pub clutch_our_eggs_proof: Option<[u8; 32]>,
     /// Peer's eggs_proof if received before we computed ours
     pub clutch_their_eggs_proof: Option<[u8; 32]>,
+    /// Bounded retransmit budget for our ClutchComplete proof.
+    /// The proof is a small single-packet UDP send with no PT retransmit, so one drop would strand the peer in AwaitingProof forever (the asymmetric-completion bug: we go Complete via early-proof, null our state, and never resend).
+    /// Set to a small N when we compute our eggs proof; ping_contacts re-sends the proof and decrements each cycle until it hits 0, so both sides converge even on a lossy or just-refreshed path.
+    /// Runtime-only — not persisted (a resumed Complete contact needs no further proof sends).
+    pub clutch_proof_resends_left: u8,
     /// Flag to prevent multiple concurrent keygens (race condition guard)
     pub clutch_keygen_in_progress: bool,
     /// Flag to prevent multiple concurrent KEM encapsulations
@@ -216,6 +221,7 @@ impl Contact {
             clutch_offer_sent: false,    // Track if we've sent our offer
             clutch_our_eggs_proof: None, // Our proof (stored while awaiting peer's)
             clutch_their_eggs_proof: None, // Peer's proof (if received early)
+            clutch_proof_resends_left: 0, // Bounded proof-retransmit budget (runtime only)
             clutch_keygen_in_progress: false, // No keygen running yet
             clutch_kem_encap_in_progress: false, // No KEM encap running yet
             clutch_ceremony_in_progress: false, // No ceremony completion running yet
