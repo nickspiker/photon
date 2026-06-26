@@ -6437,29 +6437,7 @@ impl PhotonApp {
                 if let Ok(mut pks) = self.contact_pubkeys.lock() {
                     pks.clear();
                 }
-                // Also clear the CLOUD contacts blob — it's keyed off the (surviving) identity, so a
-                // plain vault wipe leaves it intact and the next launch resurrects every contact from
-                // it (and re-runs their CLUTCH keygen, hanging the UI). Overwrite it with an empty
-                // list so the nuke is actually clean. Best-effort: a network failure just means the
-                // stale blob lingers until the next successful sync.
-                if let (Some(session), Some(kp), Some(hq)) = (
-                    self.session.as_ref(),
-                    self.device_keypair.as_ref(),
-                    self.handle_query.as_ref(),
-                ) {
-                    if let Some(handle_proof) = hq.get_handle_proof() {
-                        match crate::storage::cloud::sync_contacts_to_cloud(
-                            &[],
-                            &session.identity_seed,
-                            kp,
-                            &handle_proof,
-                        ) {
-                            Ok(()) => eprintln!("[]n cleared cloud contacts blob"),
-                            Err(e) => eprintln!("[]n WARN: could not clear cloud blob: {}", e),
-                        }
-                    }
-                }
-                eprintln!("[]n nuked {} vault file(s) + cloud blob; session kept (still attested)", count);
+                eprintln!("[]n nuked {} vault file(s); session kept (still attested)", count);
             }
             'u' => {
                 // De-attest — clear the tohu session (identity_seed/vault_seed/handle_proof) and drop back to the attest screen, leaving the vault on disk intact. The identity is deterministic from the handle, so re-typing it re-derives the same roots. Mirror of []n: []u forgets WHO you are, []n forgets WHAT you've stored. Only fires in development builds.
