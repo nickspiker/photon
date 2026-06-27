@@ -21,7 +21,11 @@ fn main() {
     println!("=== photon-vault-smoke ===");
     println!("Initializing FlatStorage …");
 
-    let storage = match FlatStorage::new(photon_messenger::storage::APP, TEST_VAULT_SEED, TEST_DEVICE_SECRET) {
+    let storage = match FlatStorage::new(
+        photon_messenger::storage::APP,
+        TEST_VAULT_SEED,
+        TEST_DEVICE_SECRET,
+    ) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("FATAL: FlatStorage::new failed: {}", e);

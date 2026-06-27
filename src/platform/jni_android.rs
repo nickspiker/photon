@@ -547,17 +547,29 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeRestoreSessionF
 ) -> jint {
     let bytes = match env.convert_byte_array(&vsf_bytes) {
         Ok(b) => b,
-        Err(e) => { error!("nativeRestoreSessionFromVsf: read bytes failed: {:?}", e); return 0; }
-    };
-    if bytes.is_empty() { return 0; }
-    match unpack_session_vsf(&bytes) {
-        Some(session) => {
-            match tohu::set_session(&session) {
-                Ok(()) => { info!("Session restored from sticky broadcast"); 1 }
-                Err(e) => { error!("nativeRestoreSessionFromVsf: set_session failed: {:?}", e); 0 }
-            }
+        Err(e) => {
+            error!("nativeRestoreSessionFromVsf: read bytes failed: {:?}", e);
+            return 0;
         }
-        None => { error!("nativeRestoreSessionFromVsf: unpack failed"); 0 }
+    };
+    if bytes.is_empty() {
+        return 0;
+    }
+    match unpack_session_vsf(&bytes) {
+        Some(session) => match tohu::set_session(&session) {
+            Ok(()) => {
+                info!("Session restored from sticky broadcast");
+                1
+            }
+            Err(e) => {
+                error!("nativeRestoreSessionFromVsf: set_session failed: {:?}", e);
+                0
+            }
+        },
+        None => {
+            error!("nativeRestoreSessionFromVsf: unpack failed");
+            0
+        }
     }
 }
 
@@ -630,7 +642,10 @@ pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeSendSe
 ) {
     let session = match tohu::session() {
         Some(s) => s,
-        None => { error!("nativeSendSessionBroadcast: no session stored"); return; }
+        None => {
+            error!("nativeSendSessionBroadcast: no session stored");
+            return;
+        }
     };
     let bytes = pack_session_vsf(&session);
     let result = (|| -> Result<(), jni::errors::Error> {

@@ -195,12 +195,14 @@ pub fn load_friendship_chains(
 ) -> Result<FriendshipChains, StorageError> {
     use crate::types::friendship::PendingMessage;
 
-    let vsf_bytes = storage.read_addr(&chains_key(friendship_id))?.ok_or_else(|| {
-        StorageError::Parse(format!(
-            "No chains found for friendship {}",
-            hex::encode(&friendship_id.as_bytes()[..8])
-        ))
-    })?;
+    let vsf_bytes = storage
+        .read_addr(&chains_key(friendship_id))?
+        .ok_or_else(|| {
+            StorageError::Parse(format!(
+                "No chains found for friendship {}",
+                hex::encode(&friendship_id.as_bytes()[..8])
+            ))
+        })?;
 
     #[cfg(feature = "development")]
     crate::network::inspect::vsf_read_decrypted(&vsf_bytes, "friendship/chains");

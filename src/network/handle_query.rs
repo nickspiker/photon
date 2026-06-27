@@ -536,7 +536,11 @@ impl HandleQuery {
                         }
 
                         // Initialize FlatStorage for this session. A bare `return` here would silently strand the UI on the Attesting spinner because the result channel never gets a verdict — the worker has already proven FGTW says the handle is ours, but with no local vault we can't reach Ready. Surface the failure as a QueryResult::Error so the Launch screen flips to its error state and the user sees what happened.
-                        let storage = match crate::storage::FlatStorage::new(crate::storage::APP, vault_seed, device_secret_bytes) {
+                        let storage = match crate::storage::FlatStorage::new(
+                            crate::storage::APP,
+                            vault_seed,
+                            device_secret_bytes,
+                        ) {
                             Ok(s) => std::sync::Arc::new(s),
                             Err(e) => {
                                 let msg = format!("storage init failed: {}", e);
@@ -615,7 +619,8 @@ impl HandleQuery {
 
                         // Load local avatar
                         let avatar_pixels =
-                            crate::avatar::load_avatar_from_seed(&identity_seed, &storage).map(|(_, p)| p);
+                            crate::avatar::load_avatar_from_seed(&identity_seed, &storage)
+                                .map(|(_, p)| p);
 
                         // Cloud sync (download + merge)
                         crate::log("Network: Syncing with cloud...");
@@ -764,14 +769,17 @@ impl HandleQuery {
             None => return SearchResult::NotFound,
         };
 
-        crate::log(&format!("Network: '{}' not in local store — refreshing peer list from FGTW", handle));
+        crate::log(&format!(
+            "Network: '{}' not in local store — refreshing peer list from FGTW",
+            handle
+        ));
         let refresh = crate::network::http::runtime().block_on(
             crate::network::fgtw::bootstrap::load_bootstrap_peers(
                 keypair,
                 our_handle_proof,
                 our_port,
                 &seed,
-            )
+            ),
         );
 
         if refresh.peers.is_empty() {
@@ -782,14 +790,17 @@ impl HandleQuery {
         let our_pubkey = keypair.public.as_bytes();
         {
             let mut store = peer_store.lock().unwrap();
-            for peer in refresh.peers.iter().filter(|p| p.device_pubkey.as_bytes() != our_pubkey) {
+            for peer in refresh
+                .peers
+                .iter()
+                .filter(|p| p.device_pubkey.as_bytes() != our_pubkey)
+            {
                 store.add_peer(peer.clone());
             }
         }
 
         // Second pass after refresh
-        Self::lookup_in_store(handle, handle_proof, peer_store)
-            .unwrap_or(SearchResult::NotFound)
+        Self::lookup_in_store(handle, handle_proof, peer_store).unwrap_or(SearchResult::NotFound)
     }
 
     fn lookup_in_store(
@@ -799,13 +810,15 @@ impl HandleQuery {
     ) -> Option<SearchResult> {
         let store = peer_store.lock().unwrap();
         let peers = store.get_devices_for_handle(&handle_proof);
-        peers.first().map(|peer| SearchResult::Found(FoundPeer {
-            handle: HandleText::new(handle),
-            handle_proof,
-            device_pubkey: peer.device_pubkey.clone(),
-            ip: peer.ip,
-            local_ip: peer.local_ip,
-        }))
+        peers.first().map(|peer| {
+            SearchResult::Found(FoundPeer {
+                handle: HandleText::new(handle),
+                handle_proof,
+                device_pubkey: peer.device_pubkey.clone(),
+                ip: peer.ip,
+                local_ip: peer.local_ip,
+            })
+        })
     }
 
     // ===== Public API =====
