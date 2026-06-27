@@ -99,7 +99,7 @@ pub struct PTSendRequest {
 pub struct ClutchOfferRequest {
     pub peer_addr: SocketAddr, // Primary path (LAN-preferred); port comes from FGTW (peer's photon_port)
     pub alt_addr: Option<SocketAddr>, // Alternate path raced alongside (WAN) — see PtManager::send_with_pubkey_and_alt
-    pub vsf_bytes: Vec<u8>,    // Pre-built and signed VSF message
+    pub vsf_bytes: Vec<u8>,           // Pre-built and signed VSF message
 }
 
 /// Request to send CLUTCH KEM response (~31KB) via TCP fallback
@@ -1308,8 +1308,7 @@ async fn run_checker(
                             // pt_ack frames handled earlier, so they never reach here (no ack-of-ack).
                             let reliable = matches!(
                                 message,
-                                FgtwMessage::ChatMessage { .. }
-                                    | FgtwMessage::MessageAck { .. }
+                                FgtwMessage::ChatMessage { .. } | FgtwMessage::MessageAck { .. }
                             );
                             if reliable {
                                 let ack_bytes = {
@@ -1799,7 +1798,12 @@ async fn run_checker(
             // Send via PT - handles retries/fallback internally. Races LAN vs WAN if alt given.
             let bytes_to_send = {
                 let mut pt_mgr = pt.lock().unwrap();
-                pt_mgr.send_with_pubkey_and_alt(request.peer_addr, request.alt_addr, vsf_bytes, None)
+                pt_mgr.send_with_pubkey_and_alt(
+                    request.peer_addr,
+                    request.alt_addr,
+                    vsf_bytes,
+                    None,
+                )
             };
             udp::send(&socket, &bytes_to_send, request.peer_addr).await;
             if let Some(alt) = request.alt_addr {
@@ -1839,7 +1843,12 @@ async fn run_checker(
             // Send via PT - handles retries/fallback internally. Races LAN vs WAN if alt given.
             let bytes_to_send = {
                 let mut pt_mgr = pt.lock().unwrap();
-                pt_mgr.send_with_pubkey_and_alt(request.peer_addr, request.alt_addr, vsf_bytes, None)
+                pt_mgr.send_with_pubkey_and_alt(
+                    request.peer_addr,
+                    request.alt_addr,
+                    vsf_bytes,
+                    None,
+                )
             };
             udp::send(&socket, &bytes_to_send, request.peer_addr).await;
             if let Some(alt) = request.alt_addr {
@@ -1880,7 +1889,12 @@ async fn run_checker(
             // (Complete proof is small and sent directly, so racing here is just dual UDP send.)
             let bytes_to_send = {
                 let mut pt_mgr = pt.lock().unwrap();
-                pt_mgr.send_with_pubkey_and_alt(request.peer_addr, request.alt_addr, vsf_bytes, None)
+                pt_mgr.send_with_pubkey_and_alt(
+                    request.peer_addr,
+                    request.alt_addr,
+                    vsf_bytes,
+                    None,
+                )
             };
             udp::send(&socket, &bytes_to_send, request.peer_addr).await;
             if let Some(alt) = request.alt_addr {
@@ -1966,8 +1980,7 @@ async fn run_checker(
                 // field self-frames the length, so the receiver's tcp::recv reads it whole and the
                 // existing CLUTCH dispatch parses it directly.
                 if let Some(tcp_payload) = &tick.tcp_payload {
-                    if let Err(e) =
-                        crate::network::tcp::send_tcp(tcp_payload, tick.peer_addr).await
+                    if let Err(e) = crate::network::tcp::send_tcp(tcp_payload, tick.peer_addr).await
                     {
                         crate::log(&format!("PT: TCP send failed to {}: {}", tick.peer_addr, e));
                     }
