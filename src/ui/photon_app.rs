@@ -1675,7 +1675,9 @@ impl FluorApp for PhotonApp {
                 .filter(|c| filter.is_empty() || c.handle.as_str().to_lowercase().contains(&filter))
                 .count();
             let block_bottom_at_zero = rl.rows.y0 as isize + n_matching as isize * row_h;
-            let max_scroll = (block_bottom_at_zero - buf_h as isize).max(0);
+            // The version footer rides the block one row-height past the last row; extend the scroll extent past it (footer gap + a row-height of bottom margin) so the user can scroll the version fully into view instead of the bottom edge swallowing it.
+            let block_end = block_bottom_at_zero + row_h * 2;
+            let max_scroll = (block_end - buf_h as isize).max(0);
             self.contacts_scroll = self.contacts_scroll.clamp(0, max_scroll);
             self.update_widget_layout(ctx);
             // Contacts version watermark rides the scroll block: it sits just past the last contact row (one row-height of breathing room) and scrolls up with everything else, rather than being pinned to the bottom. Stash the scrolled Y for the bg-layer closure below; other screens keep the pinned `version_cy`.
@@ -2154,9 +2156,10 @@ impl FluorApp for PhotonApp {
                 .map(|(i, _)| i)
                 .collect();
 
-            // Clamp scroll over the FULL block (user section + rows), hard-stop at both ends. Down-scroll stops when the last row's bottom reaches the screen bottom; up-scroll stops at rest (0), with the avatar at its natural top. `block_bottom_at_zero` is the last row's bottom edge at scroll 0 (`rows.y0` is the natural top of the rows region, already below the user section), so `max_scroll` is how far the block can travel before its bottom hits the viewport floor.
+            // Clamp scroll over the FULL block (user section + rows + version footer), hard-stop at both ends. Down-scroll stops when the version footer (one row past the last row) plus a row of bottom margin reaches the screen bottom; up-scroll stops at rest (0), with the avatar at its natural top. MUST match the pre-chrome clamp above (`block_end = block_bottom_at_zero + row_h*2`) so both passes agree within a frame.
             let block_bottom_at_zero = rows.y0 as isize + matching.len() as isize * row_h;
-            let max_scroll = (block_bottom_at_zero - buf_h as isize).max(0);
+            let block_end = block_bottom_at_zero + row_h * 2;
+            let max_scroll = (block_end - buf_h as isize).max(0);
             if self.contacts_scroll > max_scroll {
                 self.contacts_scroll = max_scroll;
             }
