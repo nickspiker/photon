@@ -21,13 +21,9 @@ android {
 
     signingConfigs {
         release {
-            // Canonical TOKEN signing key — every one of Nick's Android apps signs with the SAME
-            // keystore + alias ('token') so they share a deterministic per-device ANDROID_ID (TOKEN
-            // auth across the whole app family). FAIL LOUDLY if the keystore env isn't set: the old
-            // `?: "/dev/null"` fallback silently produced a junk-signed APK that couldn't update the
-            // installed app AND would have gotten a different ANDROID_ID — corrupting the very shared
-            // identity this key exists for. A missing keystore must abort the release build, not
-            // produce a wrongly-signed artifact.
+            // Canonical TOKEN signing key — every one of Nick's Android apps signs with the SAME keystore + alias ('token') so they share a deterministic per-device ANDROID_ID (TOKEN auth across the whole app family).
+            // FAIL LOUDLY if the keystore env isn't set: the old `?: "/dev/null"` fallback silently produced a junk-signed APK that couldn't update the installed app AND would have gotten a different ANDROID_ID — corrupting the very shared identity this key exists for.
+            // A missing keystore must abort the release build, not produce a wrongly-signed artifact.
             def ksPath = System.getenv("TOKEN_KEYSTORE_PATH")
             def ksPass = System.getenv("TOKEN_KEYSTORE_PASSWORD")
             if (!ksPath || !ksPass) {
