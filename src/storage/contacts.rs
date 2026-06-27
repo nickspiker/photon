@@ -1,15 +1,14 @@
 //! Contact persistence via FlatStorage.
 //!
-//! Logical key scheme:
-//! - Contact index: "contacts/index"
-//! - Contact state: "contacts/{hex8}/state"
-//! - Contact messages: "contacts/{hex8}/messages"
-//! - Contact keypairs: "contacts/{hex8}/keypairs"
-//! - Contact slots: "contacts/{hex8}/slots"
+//! Vault address scheme — every entry is `vault_key(domain, scope)`, a flat 32-byte address, never a path or an encoded string:
+//! - Contact index: `vault_key("contacts", my_vault_seed)` — self-scoped (this vault's own list)
+//! - Contact state: `vault_key("state", their_identity_seed)`
+//! - Contact keypairs: `vault_key("keypairs", their_identity_seed)`
+//! - Contact slots: `vault_key("slots", their_identity_seed)`
 //!
-//! where hex8 = hex::encode(&their_identity_seed[..8])
+//! Messages are NOT here — conversation content lives in the rārangi conversation DB keyed by `friendship_id`, not per-peer under a contact.
 //!
-//! All encryption, filename derivation, and atomicity is handled by FlatStorage.
+//! All encryption, addressing, and atomicity is handled by FlatStorage.
 
 use crate::crypto::clutch::ClutchKemResponsePayload;
 use crate::storage::{FlatStorage, StorageError};
@@ -50,13 +49,9 @@ pub fn derive_identity_seed(handle: &str) -> [u8; 32] {
     *ihi::handle_to_hash(handle).as_bytes()
 }
 
-/// Logical key for a contact's data
-fn contact_key(their_identity_seed: &[u8; 32], suffix: &str) -> String {
-    format!(
-        "contacts/{}/{}",
-        hex::encode(&their_identity_seed[..8]),
-        suffix
-    )
+/// Vault address for one of a contact's per-peer entries — `vault_key(domain, their_identity_seed)`. `domain` is the plain entry name ("state", "keypairs", "slots"); the peer's seed is the scope. No paths, no hex.
+fn contact_key(their_identity_seed: &[u8; 32], domain: &str) -> [u8; 32] {
+    crate::storage::vault_key(domain, their_identity_seed)
 }
 
 // ============================================================================
@@ -93,12 +88,12 @@ pub fn save_contact_list(
         .encode()
         .map_err(|e| StorageError::Parse(e.to_string()))?;
 
-    storage.write("contacts/index", &vsf_bytes)
+    storage.write_addr(&crate::storage::vault_key("contacts", storage.vault_seed()), &vsf_bytes)
 }
 
 /// Load the contact list from encrypted index with schema validation
 pub fn load_contact_list(storage: &FlatStorage) -> Result<Vec<ContactIdentity>, StorageError> {
-    let vsf_bytes = match storage.read("contacts/index")? {
+    let vsf_bytes = match storage.read_addr(&crate::storage::vault_key("contacts", storage.vault_seed()))? {
         Some(b) => b,
         None => return Ok(Vec::new()),
     };
@@ -209,7 +204,7 @@ pub fn save_contact_state(contact: &Contact, storage: &FlatStorage) -> Result<()
         .encode()
         .map_err(|e| StorageError::Parse(e.to_string()))?;
 
-    storage.write(&contact_key(&identity_seed, "state"), &vsf_bytes)
+    storage.write_addr(&contact_key(&identity_seed, "state"), &vsf_bytes)
 }
 
 /// Load contact state
@@ -219,7 +214,7 @@ pub fn load_contact_state(
 ) -> Result<Contact, StorageError> {
     let their_identity_seed = identity.identity_seed();
 
-    let vsf_bytes = match storage.read(&contact_key(&their_identity_seed, "state"))? {
+    let vsf_bytes = match storage.read_addr(&contact_key(&their_identity_seed, "state"))? {
         Some(b) => b,
         None => {
             // No state yet - return contact with just identity info
@@ -234,10 +229,7 @@ pub fn load_contact_state(
     };
 
     #[cfg(feature = "development")]
-    crate::network::inspect::vsf_read_decrypted(
-        &vsf_bytes,
-        &contact_key(&their_identity_seed, "state"),
-    );
+    crate::network::inspect::vsf_read_decrypted(&vsf_bytes, "contact/state");
 
     let mut ptr = 0;
     let section = VsfSection::parse(&vsf_bytes, &mut ptr)
@@ -357,12 +349,11 @@ pub fn load_all_contacts(storage: &FlatStorage) -> Vec<Contact> {
     contacts
 }
 
-/// Delete contact state from storage
+/// Delete a contact's per-peer entries from the vault. Conversation messages are NOT deleted here — they live in the rārangi conversation DB keyed by `friendship_id` (a conversation can outlive removing one party from contacts), and are reaped through that layer.
 pub fn delete_contact(identity_seed: &[u8; 32], storage: &FlatStorage) -> Result<(), StorageError> {
-    storage.delete(&contact_key(identity_seed, "state"))?;
-    storage.delete(&contact_key(identity_seed, "messages"))?;
-    storage.delete(&contact_key(identity_seed, "keypairs"))?;
-    storage.delete(&contact_key(identity_seed, "slots"))?;
+    storage.delete_addr(&contact_key(identity_seed, "state"))?;
+    storage.delete_addr(&contact_key(identity_seed, "keypairs"))?;
+    storage.delete_addr(&contact_key(identity_seed, "slots"))?;
     Ok(())
 }
 
@@ -424,7 +415,7 @@ pub fn save_clutch_keypairs(
 
     let vsf_bytes = section.encode();
 
-    storage.write(&contact_key(&their_identity_seed, "keypairs"), &vsf_bytes)?;
+    storage.write_addr(&contact_key(&their_identity_seed, "keypairs"), &vsf_bytes)?;
 
     #[cfg(feature = "development")]
     crate::log(&format!(
@@ -443,16 +434,13 @@ pub fn load_clutch_keypairs(
 ) -> Result<Option<ClutchAllKeypairs>, StorageError> {
     let their_identity_seed = derive_identity_seed(handle);
 
-    let vsf_bytes = match storage.read(&contact_key(&their_identity_seed, "keypairs"))? {
+    let vsf_bytes = match storage.read_addr(&contact_key(&their_identity_seed, "keypairs"))? {
         Some(b) => b,
         None => return Ok(None),
     };
 
     #[cfg(feature = "development")]
-    crate::network::inspect::vsf_read_decrypted(
-        &vsf_bytes,
-        &contact_key(&their_identity_seed, "keypairs"),
-    );
+    crate::network::inspect::vsf_read_decrypted(&vsf_bytes, "contact/keypairs");
 
     let mut ptr = 0;
     let section = VsfSection::parse(&vsf_bytes, &mut ptr)
@@ -474,7 +462,7 @@ pub fn load_clutch_keypairs(
 /// Delete CLUTCH keypairs (called after ceremony completes or on zeroize)
 pub fn delete_clutch_keypairs(handle: &str, storage: &FlatStorage) -> Result<(), StorageError> {
     let their_identity_seed = derive_identity_seed(handle);
-    storage.delete(&contact_key(&their_identity_seed, "keypairs"))?;
+    storage.delete_addr(&contact_key(&their_identity_seed, "keypairs"))?;
     #[cfg(feature = "development")]
     crate::log(&format!("STORAGE: Deleted CLUTCH keypairs for {}", handle));
     Ok(())
@@ -592,7 +580,7 @@ pub fn save_clutch_slots(
 
     let vsf_bytes = section.encode();
 
-    storage.write(&contact_key(&their_identity_seed, "slots"), &vsf_bytes)?;
+    storage.write_addr(&contact_key(&their_identity_seed, "slots"), &vsf_bytes)?;
 
     #[cfg(feature = "development")]
     crate::log(&format!(
@@ -624,16 +612,13 @@ pub fn load_clutch_slots(
 ) -> Result<Option<ClutchCeremonyState>, StorageError> {
     let their_identity_seed = derive_identity_seed(handle);
 
-    let vsf_bytes = match storage.read(&contact_key(&their_identity_seed, "slots"))? {
+    let vsf_bytes = match storage.read_addr(&contact_key(&their_identity_seed, "slots"))? {
         Some(b) => b,
         None => return Ok(None),
     };
 
     #[cfg(feature = "development")]
-    crate::network::inspect::vsf_read_decrypted(
-        &vsf_bytes,
-        &contact_key(&their_identity_seed, "slots"),
-    );
+    crate::network::inspect::vsf_read_decrypted(&vsf_bytes, "contact/slots");
 
     let mut ptr = 0;
     let section = VsfSection::parse(&vsf_bytes, &mut ptr)
@@ -1044,43 +1029,44 @@ fn parse_kem_response_payload(
 /// Delete CLUTCH slots (called after ceremony completes)
 pub fn delete_clutch_slots(handle: &str, storage: &FlatStorage) -> Result<(), StorageError> {
     let their_identity_seed = derive_identity_seed(handle);
-    storage.delete(&contact_key(&their_identity_seed, "slots"))?;
+    storage.delete_addr(&contact_key(&their_identity_seed, "slots"))?;
     #[cfg(feature = "development")]
     crate::log(&format!("STORAGE: Deleted CLUTCH slots for {}", handle));
     Ok(())
 }
 
 // ============================================================================
-// Message Storage ============================================================================
+// Message Storage — rārangi conversation rows ============================================================================
+//
+// Messages are conversation *content*, not contact state, so they live in the rārangi conversation DB rather than as a per-peer blob in the vault. Each conversation is one byte-keyed rārangi table addressed by its `friendship_id` (deterministic from the sorted participant seeds, so the same conversation resolves to the same table on every participant's — and every fleet — device). Each message is one row keyed by a monotonic counter (`Pk::Int(0)`, `1`, `2`, …): a conversation is an ordered sequence delivered in the same order everywhere, so message N is message N on every device, and the catalog gives chronological `list_in` for free.
 
 use crate::types::ChatMessage;
+use rarangi::{Db, Pk, Record, Value};
 
-/// Save messages for a contact
+/// The conversation id (rārangi table) for the 1:1 between us and `their_identity_seed`. Derived early from the two participant seeds — `FriendshipId::derive` is deterministic and needs no completed CLUTCH ceremony, so messages are always conversation-keyed. Group/fleet conversations derive the same way from their full sorted participant set.
+fn conversation_id(my_seed: &[u8; 32], their_identity_seed: &[u8; 32]) -> [u8; 32] {
+    *FriendshipId::derive(&[*my_seed, *their_identity_seed]).as_bytes()
+}
+
+/// Save a contact's messages as rows in the conversation table. Idempotent: each message is written at its sequence index, so re-saving the same history overwrites row-for-row identically.
 pub fn save_messages(contact: &Contact, storage: &FlatStorage) -> Result<(), StorageError> {
     if contact.messages.is_empty() {
         return Ok(()); // Nothing to save
     }
 
     let their_identity_seed = derive_identity_seed(contact.handle.as_str());
+    let table = conversation_id(storage.vault_seed(), &their_identity_seed);
 
-    // Build VSF section with messages
-    let mut section = VsfSection::new("messages");
-    for msg in &contact.messages {
-        // Each message: (content: x, timestamp: e, is_outgoing: u3, delivered: u3)
-        section.add_field_multi(
-            "msg",
-            vec![
-                VsfType::x(msg.content.clone()),
-                VsfType::e(vsf::types::EtType::e6(msg.timestamp)),
-                VsfType::u3(if msg.is_outgoing { 1 } else { 0 }),
-                VsfType::u3(if msg.delivered { 1 } else { 0 }),
-            ],
-        );
+    let mut db = Db::open(storage).map_err(|e| StorageError::Vault(e.to_string()))?;
+    for (i, msg) in contact.messages.iter().enumerate() {
+        let rec = Record::new()
+            .set("content", msg.content.clone())
+            .set("timestamp", Value::Time(msg.timestamp))
+            .set("is_outgoing", msg.is_outgoing as u64)
+            .set("delivered", msg.delivered as u64);
+        db.put_row_in(&table, Pk::Int(i as u64), &rec)
+            .map_err(|e| StorageError::Vault(e.to_string()))?;
     }
-
-    let vsf_bytes = section.encode();
-
-    storage.write(&contact_key(&their_identity_seed, "messages"), &vsf_bytes)?;
 
     #[cfg(feature = "development")]
     crate::log(&format!(
@@ -1092,63 +1078,30 @@ pub fn save_messages(contact: &Contact, storage: &FlatStorage) -> Result<(), Sto
     Ok(())
 }
 
-/// Load messages for a contact
+/// Load a contact's messages from the conversation table, in counter order (which is chronological).
 pub fn load_messages(contact: &mut Contact, storage: &FlatStorage) -> Result<(), StorageError> {
     let their_identity_seed = derive_identity_seed(contact.handle.as_str());
+    let table = conversation_id(storage.vault_seed(), &their_identity_seed);
 
-    let vsf_bytes = match storage.read(&contact_key(&their_identity_seed, "messages"))? {
-        Some(b) => b,
-        None => return Ok(()), // No messages yet
-    };
-
-    #[cfg(feature = "development")]
-    crate::network::inspect::vsf_read_decrypted(
-        &vsf_bytes,
-        &contact_key(&their_identity_seed, "messages"),
-    );
-
-    let mut ptr = 0;
-    let section = VsfSection::parse(&vsf_bytes, &mut ptr)
-        .map_err(|e| StorageError::Parse(format!("Messages parse: {}", e)))?;
+    let db = Db::open(storage).map_err(|e| StorageError::Vault(e.to_string()))?;
+    let pks = db.list_in(&table).map_err(|e| StorageError::Vault(e.to_string()))?;
 
     contact.messages.clear();
-    for field in section.get_fields("msg") {
-        if field.values.len() >= 4 {
-            let content = match &field.values[0] {
-                VsfType::x(s) => s.clone(),
-                _ => continue,
-            };
-            let timestamp = match &field.values[1] {
-                VsfType::e(vsf::types::EtType::e6(osc)) => *osc,
-                v => {
-                    let et = EagleTime::new_from_vsf(v.clone());
-                    et.oscillations().unwrap_or(0)
-                }
-            };
-            let is_outgoing = match &field.values[2] {
-                VsfType::u3(v) => *v != 0,
-                _ => false,
-            };
-            let delivered = match &field.values[3] {
-                VsfType::u3(v) => *v != 0,
-                _ => false,
-            };
-
-            contact.messages.push(ChatMessage {
-                content,
-                timestamp,
-                is_outgoing,
-                delivered,
-            });
-        }
+    for pk in pks {
+        let Some(rec) = db
+            .get_row_in(&table, pk.clone())
+            .map_err(|e| StorageError::Vault(e.to_string()))?
+        else {
+            continue;
+        };
+        let Some(content) = rec.text("content") else { continue };
+        contact.messages.push(ChatMessage {
+            content: content.to_string(),
+            timestamp: rec.time("timestamp").unwrap_or(0),
+            is_outgoing: rec.uint("is_outgoing").unwrap_or(0) != 0,
+            delivered: rec.uint("delivered").unwrap_or(0) != 0,
+        });
     }
-
-    // Sort messages by timestamp (ascending) to ensure correct chronological order This handles messages that may have been saved before sorted-insert was implemented
-    contact.messages.sort_by(|a, b| {
-        a.timestamp
-            .partial_cmp(&b.timestamp)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
 
     #[cfg(feature = "development")]
     crate::log(&format!(
@@ -1207,5 +1160,47 @@ mod tests {
         let derived_seed = identity.identity_seed();
         let expected_seed = derive_identity_seed(&identity.handle);
         assert_eq!(derived_seed, expected_seed);
+    }
+
+    /// Messages round-trip through `save_messages`/`load_messages` on a REAL encrypted vault: write three, close the vault, reopen from disk, read them back in order. Proves the rārangi conversation-row path end to end, not just in RAM.
+    #[test]
+    fn messages_round_trip_on_real_vault() {
+        use crate::types::HandleText;
+
+        let device_secret = [29u8; 32];
+        let vault_seed = *ihi::handle_to_hash("me-messages-test").as_bytes();
+        let app = crate::storage::APP;
+
+        let mut contact = Contact::new(HandleText::new("bob"), [3u8; 32], DevicePubkey::from_bytes([0u8; 32]));
+        contact.messages = vec![
+            ChatMessage { content: "hi".to_string(), timestamp: 100, is_outgoing: true, delivered: true },
+            ChatMessage { content: "hey".to_string(), timestamp: 200, is_outgoing: false, delivered: false },
+            ChatMessage { content: "👋 unicode".to_string(), timestamp: 300, is_outgoing: true, delivered: false },
+        ];
+
+        // session 1: save, then drop the vault (closes the on-disk files)
+        {
+            let storage = FlatStorage::new(app, vault_seed, device_secret).unwrap();
+            save_messages(&contact, &storage).unwrap();
+        }
+
+        // session 2: reopen from disk, load into a fresh contact
+        let storage = FlatStorage::new(app, vault_seed, device_secret).unwrap();
+        let mut loaded = Contact::new(HandleText::new("bob"), [3u8; 32], DevicePubkey::from_bytes([0u8; 32]));
+        load_messages(&mut loaded, &storage).unwrap();
+
+        assert_eq!(loaded.messages.len(), 3);
+        assert_eq!(loaded.messages[0].content, "hi");
+        assert_eq!(loaded.messages[0].timestamp, 100);
+        assert!(loaded.messages[0].is_outgoing && loaded.messages[0].delivered);
+        assert_eq!(loaded.messages[1].content, "hey");
+        assert!(!loaded.messages[1].is_outgoing && !loaded.messages[1].delivered);
+        assert_eq!(loaded.messages[2].content, "👋 unicode");
+
+        // Clean up the on-disk vault so reruns start fresh.
+        if let Ok([primary, shadow]) = kete::vault_ring_paths(app, &vault_seed, &device_secret) {
+            let _ = std::fs::remove_file(primary);
+            let _ = std::fs::remove_file(shadow);
+        }
     }
 }
