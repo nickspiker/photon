@@ -4540,14 +4540,26 @@ impl PhotonApp {
         };
         let mut pinged = 0;
         for contact in &self.contacts {
-            let addr = match (contact.local_ip, contact.local_port) {
+            // Ping the LAN address AND the public address (when both are known) rather than preferring LAN and never falling back. Two devices that once shared a LAN have a stored `local_ip`; the moment one moves to a different network (e.g. phone → cellular) that LAN address is stale and unreachable, but the public address in the registry is correct — pinging only LAN strands them offline forever. Each ping is tracked by a unique provenance hash and a single pong clears the whole per-contact failure counter (see status.rs StatusPong handler), so the unreachable address simply times out harmlessly while the reachable one keeps the contact online. On-LAN the LAN ping wins (no router hairpin / AP isolation); off-LAN the public ping wins.
+            let lan_addr = match (contact.local_ip, contact.local_port) {
                 (Some(ip), Some(port)) => {
                     Some(std::net::SocketAddr::new(std::net::IpAddr::V4(ip), port))
                 }
-                _ => contact.ip,
+                _ => None,
             };
-            if let Some(ip) = addr {
-                checker.ping(ip, contact.public_identity.clone());
+            let mut sent = false;
+            if let Some(addr) = lan_addr {
+                checker.ping(addr, contact.public_identity.clone());
+                sent = true;
+            }
+            // Public address — skip only if it's identical to the LAN address we already pinged.
+            if let Some(public) = contact.ip {
+                if Some(public) != lan_addr {
+                    checker.ping(public, contact.public_identity.clone());
+                    sent = true;
+                }
+            }
+            if sent {
                 pinged += 1;
             }
         }
@@ -4689,11 +4701,20 @@ impl PhotonApp {
                         if contact.public_identity == peer_pubkey {
                             // Note: ceremony_id is now computed from offer_provenances, not ping provenances. Offer provenances are collected when ClutchOfferReceived messages arrive.
 
-                            // Update IP from the ping/pong source address
+                            // Update the address from the ping/pong source — but keep PUBLIC and LAN addresses in their own fields. We now ping both the LAN (`local_ip`) and the public (`ip`) address every cycle, so pongs arrive from BOTH; blindly writing every `src_addr` into `contact.ip` made it flap between the public IPv6 and the `192.168.x` LAN address each cycle, corrupting `race_addrs` (which reads `ip` as the public path). So: a pong from a PUBLIC source refreshes `contact.ip` (the peer's WAN address may have changed); a pong from a PRIVATE/LAN source refreshes `contact.local_ip`/`local_port` instead, never clobbering the public address.
                             if let Some(addr) = peer_addr {
-                                if contact.ip != Some(addr) {
+                                if is_private_addr(&addr.ip()) {
+                                    if let std::net::IpAddr::V4(v4) = addr.ip() {
+                                        if contact.local_ip != Some(v4)
+                                            || contact.local_port != Some(addr.port())
+                                        {
+                                            contact.local_ip = Some(v4);
+                                            contact.local_port = Some(addr.port());
+                                        }
+                                    }
+                                } else if contact.ip != Some(addr) {
                                     crate::log(&format!(
-                                        "Status: Updated {} IP from ping/pong: {:?} -> {}",
+                                        "Status: Updated {} public IP from ping/pong: {:?} -> {}",
                                         contact.handle, contact.ip, addr
                                     ));
                                     contact.ip = Some(addr);
@@ -6761,6 +6782,29 @@ fn button_bbox(btn: &Button) -> (isize, isize, isize, isize) {
     let x1 = (btn.center_x + half_w) as isize;
     let y1 = (btn.center_y + half_h) as isize;
     (x0, y0, x1, y1)
+}
+
+/// True if `ip` is a private / non-routable address that must NOT be stored as a contact's public (`ip`) address — it belongs in `local_ip` instead. Covers IPv4 RFC1918 (10/8, 172.16/12, 192.168/16), link-local (169.254/16), loopback; IPv6 loopback, link-local (fe80::/10), unique-local (fc00::/7); and IPv4-mapped IPv6 (`::ffff:a.b.c.d`) by unwrapping to the embedded v4 (the ping/pong path reports LAN sources in exactly this mapped form, e.g. `::ffff:<lan-ip>`).
+fn is_private_addr(ip: &std::net::IpAddr) -> bool {
+    fn v4_private(o: [u8; 4]) -> bool {
+        o[0] == 10
+            || (o[0] == 172 && (16..=31).contains(&o[1]))
+            || (o[0] == 192 && o[1] == 168)
+            || (o[0] == 169 && o[1] == 254) // link-local
+            || o[0] == 127 // loopback
+    }
+    match ip {
+        std::net::IpAddr::V4(v4) => v4_private(v4.octets()),
+        std::net::IpAddr::V6(v6) => {
+            if let Some(mapped) = v6.to_ipv4_mapped() {
+                return v4_private(mapped.octets());
+            }
+            let seg = v6.segments();
+            v6.is_loopback()
+                || (seg[0] & 0xffc0) == 0xfe80 // link-local fe80::/10
+                || (seg[0] & 0xfe00) == 0xfc00 // unique-local fc00::/7
+        }
+    }
 }
 
 /// Stamp `hit_id` into every pixel of `hit_map` whose centre is inside the circle at `(cx, cy)` with radius `radius`. Bbox-clipped to the buffer extent; squared-distance test, no sqrt.
