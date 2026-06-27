@@ -791,24 +791,32 @@ impl FluorApp for PhotonApp {
             self.clutch_ceremony_rx = crx;
         }
 
-        // Spawn the presence + CLUTCH status checker on HandleQuery's shared socket. Desktop only — Android's checker takes no wake sender (its redraws come thru the JNI/Choreographer path). Done BEFORE `hq` is moved into the field so we can take its socket.
+        // Spawn the presence + CLUTCH status checker on HandleQuery's shared socket. Done BEFORE `hq` is moved into the field so we can take its socket. Without this the UDP recv/pong worker never runs — the socket is bound but nothing reads it or replies, so the device is invisible to every peer (no presence, no CLUTCH). The desktop and Android constructors differ only in the wake sender: desktop passes the winit event proxy; Android's redraws come thru the JNI/Choreographer path so its constructor takes none.
         #[cfg(not(target_os = "android"))]
-        {
-            match crate::network::status::StatusChecker::new(
-                hq.socket(),
-                self.device_keypair
-                    .clone()
-                    .expect("device_keypair set above"),
-                self.contact_pubkeys.clone(),
-                self.sync_records.clone(),
-                proxy.clone(),
-            ) {
-                Ok(c) => {
-                    self.status_checker = Some(c);
-                    crate::log("UI: status checker started (presence + CLUTCH)");
-                }
-                Err(e) => crate::log(&format!("UI: status checker failed to start: {e}")),
+        let checker_result = crate::network::status::StatusChecker::new(
+            hq.socket(),
+            self.device_keypair
+                .clone()
+                .expect("device_keypair set above"),
+            self.contact_pubkeys.clone(),
+            self.sync_records.clone(),
+            proxy.clone(),
+        );
+        #[cfg(target_os = "android")]
+        let checker_result = crate::network::status::StatusChecker::new(
+            hq.socket(),
+            self.device_keypair
+                .clone()
+                .expect("device_keypair set above"),
+            self.contact_pubkeys.clone(),
+            self.sync_records.clone(),
+        );
+        match checker_result {
+            Ok(c) => {
+                self.status_checker = Some(c);
+                crate::log("UI: status checker started (presence + CLUTCH)");
             }
+            Err(e) => crate::log(&format!("UI: status checker failed to start: {e}")),
         }
 
         self.handle_query = Some(hq);
@@ -2429,20 +2437,16 @@ impl FluorApp for PhotonApp {
                         None,
                     );
 
-                    // CLUTCH state (compact, under the name)
+                    // CLUTCH state (compact, under the name). Show the base state PLUS a behind-the-scenes detail (slot fill, keygen / KEM / proof stage) so a stuck handshake reads as "what's it waiting on" instead of a flat "pending" — see Contact::clutch_status_detail.
                     let clutch_y = name_y + unit * 1.5;
-                    let clutch_label = match contact.clutch_state {
-                        crate::types::ClutchState::Pending => "CLUTCH: pending",
-                        crate::types::ClutchState::AwaitingProof => "CLUTCH: awaiting proof",
-                        crate::types::ClutchState::Complete => "CLUTCH: complete",
-                    };
+                    let clutch_label = format!("CLUTCH: {}", contact.clutch_status_detail());
                     let clutch_colour = match contact.clutch_state {
                         crate::types::ClutchState::Complete => SEARCH_FOUND_COLOUR,
                         _ => HOURGLASS_COLOUR,
                     };
                     ctx.text.draw_text_center_u32(
                         &mut canvas,
-                        clutch_label,
+                        &clutch_label,
                         buf_w as f32 * 0.5,
                         clutch_y,
                         unit * 0.6,
