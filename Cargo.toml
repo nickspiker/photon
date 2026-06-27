@@ -101,6 +101,8 @@ tohu = { path = "../tohu" }
 manifestus = { path = "../manifestus" }
 # Encrypted keyed storage adapter (per-key ChaCha20-Poly1305 over a manifestus vault). Extracted from photon's old src/storage/flat.rs so idiosync and other stack apps share one storage layer; photon's FlatStorage/encrypt_bytes/etc. now re-export from here.
 kete = { path = "../kete" }
+# Conversation database over the kete vault — rows + catalog + content-addressed blobs. Messages (and later attachments/recordings) are stored here as rows in a byte-keyed table addressed by friendship_id, keyed by a monotonic per-message counter.
+rarangi = { path = "../rarangi" }
 voca = "0.0.0"
 num-bigint = "0.4"
 rav1e = { version = "0.7", default-features = false }

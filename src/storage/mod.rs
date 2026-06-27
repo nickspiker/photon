@@ -14,6 +14,18 @@ pub const APP: kete::App<'static> = kete::App {
 #[cfg(target_os = "android")]
 pub use kete::set_android_vault_dirs;
 
+/// The canonical vault address for a logical entry: `blake3_kdf("photon.storage.entry.v0", domain || scope)`.
+///
+/// `domain` is a plain English word naming *what kind* of entry this is ("avatar", "settings", "state", "chains", ...). `scope` is the 32-byte identity that the entry is *about*: our own vault seed for self/global entries, a peer's identity seed for per-peer entries, or a `friendship_id` for per-conversation entries. The vault file is already one-per-handle, so the address never needs to encode *whose vault* it is — only what the entry is and whom it concerns.
+///
+/// This replaces the old file-tree key strings (`contacts/{hex8}/state`, base64 avatar filenames). Nothing here is ever text-encoded: the 32-byte scope goes straight into the hash, and the result goes straight to `FlatStorage::{read,write,delete}_addr`. The matching KDF context is kete's own entry context, so these addresses share the app's one namespace.
+pub fn vault_key(domain: &str, scope: &[u8; 32]) -> [u8; 32] {
+    let mut input = Vec::with_capacity(domain.len() + 32);
+    input.extend_from_slice(domain.as_bytes());
+    input.extend_from_slice(scope);
+    blake3::derive_key(&format!("{}.storage.entry.v0", APP.id), &input)
+}
+
 /// Returns ~/.config/photon/ (or Android equivalent). All Photon files live here.
 pub fn photon_config_dir() -> Result<std::path::PathBuf, std::io::Error> {
     #[cfg(target_os = "android")]

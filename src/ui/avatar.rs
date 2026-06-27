@@ -774,58 +774,66 @@ pub fn get_android_data_dir() -> Option<std::path::PathBuf> {
     ANDROID_DATA_DIR.get().map(|s| std::path::PathBuf::from(s))
 }
 
-/// Get flat path for a cached avatar by its storage key. Avatars are public signed VSF — stored unencrypted directly in ~/.config/photon/, but with no filename prefix or other distinguishing marker so directory listings can't separate avatar files from FlatStorage blobs by name shape. The base64url storage_key is the FGTW URL anyone can compute from the handle; on disk it's the bare filename.
-pub fn avatar_cache_path(storage_key: &str) -> std::io::Result<std::path::PathBuf> {
-    Ok(crate::storage::photon_config_dir()?.join(storage_key))
+/// Load avatar from the local vault by handle. Returns None if not cached locally.
+pub fn load_cached_avatar(
+    handle: &str,
+    storage: &std::sync::Arc<crate::storage::FlatStorage>,
+) -> Option<(usize, Vec<u8>)> {
+    load_cached_avatar_from_seed(ihi::handle_to_hash(handle).as_bytes(), storage)
 }
 
-/// Load avatar from local cache by handle (checks avatars/ directory) Returns None if not cached locally
-pub fn load_cached_avatar(handle: &str) -> Option<(usize, Vec<u8>)> {
-    load_cached_avatar_from_seed(ihi::handle_to_hash(handle).as_bytes())
-}
-
-/// `load_cached_avatar` from the already-derived `identity_seed`. String-free owner path.
-pub fn load_cached_avatar_from_seed(identity_seed: &[u8; 32]) -> Option<(usize, Vec<u8>)> {
-    let storage_key = avatar_storage_key_from_seed(identity_seed);
-    let cache_path = avatar_cache_path(&storage_key).ok()?;
-
-    if !cache_path.exists() {
-        return None;
-    }
-
-    let vsf_data =
-        crate::storage::read_file(&cache_path, &format!("avatar/{}", storage_key)).ok()?;
-    crate::log(&format!("Avatar: Loading {} from local cache", storage_key));
+/// `load_cached_avatar` from the already-derived `identity_seed`. String-free owner path. The avatar VSF lives in the vault at `vault_key("avatar", identity_seed)` — no filesystem file, no base64 filename, the 32-byte address goes straight to the vault.
+pub fn load_cached_avatar_from_seed(
+    identity_seed: &[u8; 32],
+    storage: &std::sync::Arc<crate::storage::FlatStorage>,
+) -> Option<(usize, Vec<u8>)> {
+    let addr = crate::storage::vault_key("avatar", identity_seed);
+    let vsf_data = match storage.read_addr(&addr) {
+        Ok(Some(data)) => data,
+        Ok(None) => return None,
+        Err(e) => {
+            crate::log(&format!("Avatar: vault read failed: {}", e));
+            return None;
+        }
+    };
+    crate::log("Avatar: Loading from local vault");
     load_avatar_from_bytes_from_seed(&vsf_data, identity_seed)
 }
 
-/// Save avatar VSF bytes to local cache by handle
-fn save_avatar_to_cache(handle: &str, vsf_data: &[u8]) -> std::io::Result<()> {
-    save_avatar_to_cache_from_seed(ihi::handle_to_hash(handle).as_bytes(), vsf_data)
+/// Save avatar VSF bytes to the local vault by handle.
+fn save_avatar_to_cache(
+    handle: &str,
+    vsf_data: &[u8],
+    storage: &std::sync::Arc<crate::storage::FlatStorage>,
+) -> Result<(), crate::storage::StorageError> {
+    save_avatar_to_cache_from_seed(ihi::handle_to_hash(handle).as_bytes(), vsf_data, storage)
 }
 
 fn save_avatar_to_cache_from_seed(
     identity_seed: &[u8; 32],
     vsf_data: &[u8],
-) -> std::io::Result<()> {
-    let storage_key = avatar_storage_key_from_seed(identity_seed);
-    let cache_path = avatar_cache_path(&storage_key)?;
-    crate::storage::write_file(&cache_path, vsf_data, &format!("avatar/{}", storage_key))?;
-    crate::log(&format!(
-        "Avatar: Cached locally ({}...)",
-        &storage_key[..8]
-    ));
+    storage: &std::sync::Arc<crate::storage::FlatStorage>,
+) -> Result<(), crate::storage::StorageError> {
+    let addr = crate::storage::vault_key("avatar", identity_seed);
+    storage.write_addr(&addr, vsf_data)?;
+    crate::log("Avatar: Cached locally in vault");
     Ok(())
 }
 
-/// Load avatar from disk by handle (returns None if not cached)
-pub fn load_avatar(handle: &str) -> Option<(usize, Vec<u8>)> {
-    load_cached_avatar(handle)
+/// Load avatar from the local vault by handle (returns None if not cached)
+pub fn load_avatar(
+    handle: &str,
+    storage: &std::sync::Arc<crate::storage::FlatStorage>,
+) -> Option<(usize, Vec<u8>)> {
+    load_cached_avatar(handle, storage)
 }
 
 /// `load_avatar` from the already-derived `identity_seed`. String-free owner path.
-pub fn load_avatar_from_seed(identity_seed: &[u8; 32]) -> Option<(usize, Vec<u8>)> {
-    load_cached_avatar_from_seed(identity_seed)
+pub fn load_avatar_from_seed(
+    identity_seed: &[u8; 32],
+    storage: &std::sync::Arc<crate::storage::FlatStorage>,
+) -> Option<(usize, Vec<u8>)> {
+    load_cached_avatar_from_seed(identity_seed, storage)
 }
 
 /// Load avatar from raw VSF bytes (used for both local and network avatars). Avatar data is encrypted with the identity-seed-derived key. Format: v'e'(encrypted v'a'(AV1 data))
@@ -886,17 +894,25 @@ pub fn load_avatar_from_bytes_from_seed(
 }
 
 /// Save avatar to disk as VSF by handle Uses "image" section with "pixels" field containing v'e'(encrypted v'a'(AV1)) Only people who know the handle plaintext can decrypt the avatar. Stored in avatars/ directory using handle-based storage key
-pub fn save_avatar(av1_data: &[u8], handle: &str) -> std::io::Result<()> {
-    save_avatar_from_seed(av1_data, ihi::handle_to_hash(handle).as_bytes())
+pub fn save_avatar(
+    av1_data: &[u8],
+    handle: &str,
+    storage: &std::sync::Arc<crate::storage::FlatStorage>,
+) -> Result<(), crate::storage::StorageError> {
+    save_avatar_from_seed(av1_data, ihi::handle_to_hash(handle).as_bytes(), storage)
 }
 
 /// `save_avatar` from the already-derived `identity_seed`. String-free owner path.
-pub fn save_avatar_from_seed(av1_data: &[u8], identity_seed: &[u8; 32]) -> std::io::Result<()> {
+pub fn save_avatar_from_seed(
+    av1_data: &[u8],
+    identity_seed: &[u8; 32],
+    storage: &std::sync::Arc<crate::storage::FlatStorage>,
+) -> Result<(), crate::storage::StorageError> {
     use vsf::{VsfBuilder, VsfType};
 
     // Encrypt AV1 data (wraps in v'a' then encrypts)
     let encrypted = encrypt_av1_data_from_seed(av1_data, identity_seed)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        .map_err(crate::storage::StorageError::Crypto)?;
 
     // Build VSF with v'e' wrapped encrypted payload
     let vsf_bytes = VsfBuilder::new()
@@ -907,10 +923,10 @@ pub fn save_avatar_from_seed(av1_data: &[u8], identity_seed: &[u8; 32]) -> std::
             vec![("pixels".to_string(), VsfType::v(b'e', encrypted))],
         )
         .build()
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        .map_err(|e| crate::storage::StorageError::Crypto(format!("{}", e)))?;
 
-    // Save to avatars directory using the identity seed's storage key
-    save_avatar_to_cache_from_seed(identity_seed, &vsf_bytes)
+    // Save to the vault at the identity seed's avatar address
+    save_avatar_to_cache_from_seed(identity_seed, &vsf_bytes, storage)
 }
 
 const FGTW_URL: &str = "https://fgtw.org";
@@ -933,13 +949,15 @@ fn extract_av1_data_from_seed(
 }
 
 /// Get avatar's provenance hash by handle (if cached locally) Used to include in ping/pong messages for avatar sync
-pub fn get_avatar_provenance_hash(handle: &str) -> Option<[u8; 32]> {
+pub fn get_avatar_provenance_hash(
+    handle: &str,
+    storage: &std::sync::Arc<crate::storage::FlatStorage>,
+) -> Option<[u8; 32]> {
     use vsf::file_format::VsfHeader;
     use vsf::VsfType;
 
-    let storage_key = avatar_storage_key(handle);
-    let cache_path = avatar_cache_path(&storage_key).ok()?;
-    let vsf_data = crate::storage::read_file(&cache_path, &format!("avatar/{}", handle)).ok()?;
+    let addr = crate::storage::vault_key("avatar", ihi::handle_to_hash(handle).as_bytes());
+    let vsf_data = storage.read_addr(&addr).ok()??;
 
     // Parse header to extract provenance hash
     let (header, _) = VsfHeader::decode(&vsf_data).ok()?;
@@ -954,25 +972,26 @@ pub fn get_avatar_provenance_hash(handle: &str) -> Option<[u8; 32]> {
 }
 
 /// Get avatar's creation timestamp (Eagle Time) from local cache Returns None if not cached or parsing fails
-pub fn get_local_avatar_timestamp(handle: &str) -> Option<i64> {
+pub fn get_local_avatar_timestamp(
+    handle: &str,
+    storage: &std::sync::Arc<crate::storage::FlatStorage>,
+) -> Option<i64> {
     use vsf::file_format::VsfHeader;
     use vsf::types::EagleTime;
     use vsf::VsfType;
 
-    let storage_key = avatar_storage_key(handle);
-    let cache_path = avatar_cache_path(&storage_key).ok()?;
+    let addr = crate::storage::vault_key("avatar", ihi::handle_to_hash(handle).as_bytes());
 
-    #[cfg(feature = "development")]
-    crate::log(&format!(
-        "Avatar: Looking for local cache at {:?}",
-        cache_path
-    ));
-
-    let vsf_data = match crate::storage::read_file(&cache_path, &format!("avatar/{}", handle)) {
-        Ok(data) => data,
+    let vsf_data = match storage.read_addr(&addr) {
+        Ok(Some(data)) => data,
+        Ok(None) => {
+            #[cfg(feature = "development")]
+            crate::log("Avatar: No local cache in vault");
+            return None;
+        }
         Err(_e) => {
             #[cfg(feature = "development")]
-            crate::log(&format!("Avatar: No local cache: {}", _e));
+            crate::log(&format!("Avatar: vault read failed: {}", _e));
             return None;
         }
     };
@@ -1354,11 +1373,13 @@ pub fn upload_avatar(
     device_secret: &SigningKey,
     handle: &str,
     handle_proof: &[u8; 32],
+    storage: &std::sync::Arc<crate::storage::FlatStorage>,
 ) -> Result<String, String> {
     upload_avatar_from_seed(
         device_secret,
         ihi::handle_to_hash(handle).as_bytes(),
         handle_proof,
+        storage,
     )
 }
 
@@ -1367,14 +1388,18 @@ pub fn upload_avatar_from_seed(
     device_secret: &SigningKey,
     identity_seed: &[u8; 32],
     handle_proof: &[u8; 32],
+    storage: &std::sync::Arc<crate::storage::FlatStorage>,
 ) -> Result<String, String> {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 
-    // Read from cache by the identity seed's storage key
+    // Read the locally stored avatar VSF from the vault.
+    let local_vsf = storage
+        .read_addr(&crate::storage::vault_key("avatar", identity_seed))
+        .map_err(|e| format!("Failed to read avatar from vault: {}", e))?
+        .ok_or_else(|| "No local avatar to upload".to_string())?;
+
+    // The FGTW network locator (public wire address peers compute from a handle) is still the base64url storage key.
     let storage_key = avatar_storage_key_from_seed(identity_seed);
-    let cache_path = avatar_cache_path(&storage_key).map_err(|e| e.to_string())?;
-    let local_vsf = crate::storage::read_file(&cache_path, &format!("avatar/{}", storage_key))
-        .map_err(|e| format!("Failed to read avatar: {}", e))?;
 
     // Verify local file is unmodified original
     vsf::verification::is_original(&local_vsf)?;
@@ -1434,9 +1459,12 @@ pub fn upload_avatar_from_seed(
 /// * `handle` - The peer's handle string
 ///
 /// # Returns (size, pixels) if successful, None otherwise
-pub fn download_avatar(handle: &str) -> Option<(usize, Vec<u8>)> {
+pub fn download_avatar(
+    handle: &str,
+    storage: &std::sync::Arc<crate::storage::FlatStorage>,
+) -> Option<(usize, Vec<u8>)> {
     // Check local cache first (no network request needed)
-    if let Some(cached) = load_cached_avatar(handle) {
+    if let Some(cached) = load_cached_avatar(handle, storage) {
         return Some(cached);
     }
 
@@ -1471,7 +1499,7 @@ pub fn download_avatar(handle: &str) -> Option<(usize, Vec<u8>)> {
     ));
 
     // Save to local cache before decoding
-    let _ = save_avatar_to_cache(handle, &vsf_data);
+    let _ = save_avatar_to_cache(handle, &vsf_data, storage);
 
     // Verify, decrypt, and decode (FGTW stripped ke/ge, so only provenance hash is verified)
     load_avatar_from_bytes(&vsf_data, handle)
@@ -1501,12 +1529,13 @@ pub fn sync_avatar_bidirectional(
     device_secret: &SigningKey,
     handle: &str,
     handle_proof: Option<&[u8; 32]>,
+    storage: &std::sync::Arc<crate::storage::FlatStorage>,
 ) -> AvatarSyncResult {
     let storage_key = avatar_storage_key(handle);
     let url = format!("{}/avatar/{}", FGTW_URL, storage_key);
 
     // Get local timestamp (if we have a local avatar)
-    let local_ts = get_local_avatar_timestamp(handle);
+    let local_ts = get_local_avatar_timestamp(handle, storage);
 
     // Query server for avatar with timestamp header
     let response = match crate::network::http::blocking()
@@ -1524,7 +1553,7 @@ pub fn sync_avatar_bidirectional(
             // We have local, upload it (only if we have handle_proof)
             if let Some(hp) = handle_proof {
                 crate::log("Avatar sync: Server empty, uploading local");
-                match upload_avatar(device_secret, handle, hp) {
+                match upload_avatar(device_secret, handle, hp, storage) {
                     Ok(_) => return AvatarSyncResult::LocalNewer,
                     Err(e) => return AvatarSyncResult::Error(format!("Upload failed: {}", e)),
                 }
@@ -1563,7 +1592,7 @@ pub fn sync_avatar_bidirectional(
                 "RX",
                 &format!("/avatar/{}", &storage_key[..8]),
             ));
-            let _ = save_avatar_to_cache(handle, &vsf_data);
+            let _ = save_avatar_to_cache(handle, &vsf_data, storage);
             AvatarSyncResult::ServerNewer
         }
         (Some(local), Some(server)) => {
@@ -1574,7 +1603,7 @@ pub fn sync_avatar_bidirectional(
                         "Avatar sync: Local newer ({:.0} > {:.0}), uploading",
                         local, server
                     ));
-                    match upload_avatar(device_secret, handle, hp) {
+                    match upload_avatar(device_secret, handle, hp, storage) {
                         Ok(_) => AvatarSyncResult::LocalNewer,
                         Err(e) => AvatarSyncResult::Error(format!("Upload failed: {}", e)),
                     }
@@ -1599,7 +1628,7 @@ pub fn sync_avatar_bidirectional(
                     "RX",
                     &format!("/avatar/{}", &storage_key[..8]),
                 ));
-                let _ = save_avatar_to_cache(handle, &vsf_data);
+                let _ = save_avatar_to_cache(handle, &vsf_data, storage);
                 AvatarSyncResult::ServerNewer
             } else {
                 AvatarSyncResult::InSync
@@ -1609,7 +1638,7 @@ pub fn sync_avatar_bidirectional(
             // Have local but server didn't send timestamp (shouldn't happen) Upload to be safe (only if we have handle_proof)
             if let Some(hp) = handle_proof {
                 crate::log("Avatar sync: Server missing timestamp, uploading local");
-                match upload_avatar(device_secret, handle, hp) {
+                match upload_avatar(device_secret, handle, hp, storage) {
                     Ok(_) => AvatarSyncResult::LocalNewer,
                     Err(e) => AvatarSyncResult::Error(format!("Upload failed: {}", e)),
                 }
@@ -1632,7 +1661,7 @@ pub fn sync_avatar_bidirectional(
                 "RX",
                 &format!("/avatar/{}", &storage_key[..8]),
             ));
-            let _ = save_avatar_to_cache(handle, &vsf_data);
+            let _ = save_avatar_to_cache(handle, &vsf_data, storage);
             AvatarSyncResult::ServerNewer
         }
     }
@@ -1652,11 +1681,12 @@ pub struct AvatarDownloadResult {
 /// * `event_proxy` - Optional EventLoopProxy to wake the event loop when done
 pub fn download_avatar_background(
     handle: String,
+    storage: std::sync::Arc<crate::storage::FlatStorage>,
     tx: std::sync::mpsc::Sender<AvatarDownloadResult>,
     #[allow(unused_variables)] event_proxy: OptionalEventProxy,
 ) {
     std::thread::spawn(move || {
-        let result = download_avatar(&handle);
+        let result = download_avatar(&handle, &storage);
         let pixels = result.map(|(_, p)| p);
         let _ = tx.send(AvatarDownloadResult { handle, pixels });
 
@@ -1680,18 +1710,20 @@ pub fn sync_avatar_background(
     device_secret_bytes: [u8; 32],
     handle: String,
     handle_proof: Option<[u8; 32]>,
+    storage: std::sync::Arc<crate::storage::FlatStorage>,
     tx: std::sync::mpsc::Sender<AvatarDownloadResult>,
     #[allow(unused_variables)] event_proxy: OptionalEventProxy,
 ) {
     std::thread::spawn(move || {
         let device_secret = SigningKey::from_bytes(&device_secret_bytes);
-        let result = sync_avatar_bidirectional(&device_secret, &handle, handle_proof.as_ref());
+        let result =
+            sync_avatar_bidirectional(&device_secret, &handle, handle_proof.as_ref(), &storage);
 
         // Only send pixels if we downloaded a newer version from server
         let pixels = match result {
             AvatarSyncResult::ServerNewer => {
                 // Load the newly downloaded avatar from cache
-                load_cached_avatar(&handle).map(|(_, p)| p)
+                load_cached_avatar(&handle, &storage).map(|(_, p)| p)
             }
             AvatarSyncResult::LocalNewer => {
                 crate::log("Avatar sync: Uploaded local avatar to FGTW");
