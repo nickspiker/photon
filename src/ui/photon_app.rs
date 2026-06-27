@@ -265,7 +265,8 @@ const CHORD_HINTS: &[(&str, &str)] = &[
 /// Bounding rect the chord hint panel covers — matches `paint::draw_chord_hint`'s positioning math so `damage_rect` can union it when both brackets are held. Pulled out of the panes example with the same math; if fluor's hint geometry changes, this needs updating in lockstep.
 fn chord_hint_bbox(viewport: Viewport, vw: usize, vh: usize) -> PixelRect {
     let span = viewport.effective_span();
-    let font_size = (span * 0.014).max(11.0);
+    // Mirrors fluor's `draw_chord_hint`: `span × 0.014`, no pixel floor (kept in lockstep — see paint.rs).
+    let font_size = span * 0.014;
     let line_h = font_size * 1.55;
     let pad = font_size * 1.25;
     let line_count = CHORD_HINTS.len() as f32 + 1.5;
@@ -369,8 +370,8 @@ pub struct PhotonApp {
     contacts_plus_btn: Option<Button>,
     /// Conversation-screen message compose box (Conversation state). Distinct from the launch/search boxes so content never bleeds between screens. Enter sends (`submit_message`); the contents encrypt onto the open contact's friendship chain.
     message_textbox: Option<Textbox>,
-    /// Encrypted local storage — initialized after attestation success with the device secret + handle.
-    storage: Option<crate::storage::FlatStorage>,
+    /// Encrypted local storage — initialized after attestation success with the device secret + handle. Held behind an `Arc` so it can be handed to the avatar background-download/sync threads (a plain `&FlatStorage` borrow can't cross `thread::spawn`); the inner `Mutex<Vault>` makes `Arc<FlatStorage>` `Send + Sync`.
+    storage: Option<std::sync::Arc<crate::storage::FlatStorage>>,
     /// Contact list. Populated from `AttestationData.contacts` on attestation success and grown by `submit_add_friend` → `HandleQuery::search` results. Persisted to FlatStorage on add.
     contacts: Vec<crate::types::Contact>,
     /// `true` while an add-friend FGTW search is in flight (between `submit_add_friend` firing `hq.search` and `on_search_result` landing). Drives the rotating-hourglass-over-the-plus-button cue.
@@ -526,11 +527,18 @@ impl PhotonApp {
                 return;
             }
         };
-        if let Err(e) = crate::ui::avatar::save_avatar_from_seed(&av1_data, &identity_seed) {
+        let storage = match self.storage.clone() {
+            Some(s) => s,
+            None => {
+                crate::log("avatar picker: ignored — storage not initialized yet");
+                return;
+            }
+        };
+        if let Err(e) = crate::ui::avatar::save_avatar_from_seed(&av1_data, &identity_seed, &storage) {
             crate::log(&format!("avatar picker: save failed: {e}"));
             return;
         }
-        let Some((_, vsf_rgb)) = crate::ui::avatar::load_avatar_from_seed(&identity_seed) else {
+        let Some((_, vsf_rgb)) = crate::ui::avatar::load_avatar_from_seed(&identity_seed, &storage) else {
             crate::log("avatar picker: post-save load failed");
             return;
         };
@@ -544,7 +552,7 @@ impl PhotonApp {
             .and_then(|hq| hq.get_handle_proof());
         match (self.device_keypair.as_ref(), proof) {
             (Some(kp), Some(hp)) => {
-                match crate::ui::avatar::upload_avatar_from_seed(&kp.secret, &identity_seed, &hp) {
+                match crate::ui::avatar::upload_avatar_from_seed(&kp.secret, &identity_seed, &hp, &storage) {
                     Ok(_) => crate::log("avatar picker: FGTW upload ok"),
                     Err(e) => crate::log(&format!("avatar picker: FGTW upload failed: {e}")),
                 }
@@ -785,9 +793,6 @@ impl FluorApp for PhotonApp {
         // None (first run / post-logout) falls through to the normal typed-attest flow.
         if let Some(remembered) = tohu::session() {
             self.session = Some(remembered);
-            self.device_avatar_pixels =
-                crate::ui::avatar::load_avatar_from_seed(&remembered.identity_seed)
-                    .map(|(_, vsf_rgb)| crate::ui::colour_convert::vsf_rgb_to_bt2020(&vsf_rgb));
             self.hints_dismissed = false; // fresh Ready entry → the avatar prompt gets a chance until first interaction
                                           // Initialize local storage and load contacts immediately so the contact list is visible before the FGTW round-trip completes.
             if let Some(kp) = &self.device_keypair {
@@ -834,7 +839,13 @@ impl FluorApp for PhotonApp {
                                 }
                             }
                         }
-                        self.storage = Some(s);
+                        self.storage = Some(std::sync::Arc::new(s));
+                        // Load this device's avatar from the vault now that storage exists, and colour-convert it for the Ready screen. The vault read needs the just-built storage handle, so this can't run before storage init like the old filesystem path did.
+                        if let Some(storage) = self.storage.as_ref() {
+                            self.device_avatar_pixels =
+                                crate::ui::avatar::load_avatar_from_seed(&remembered.identity_seed, storage)
+                                    .map(|(_, vsf_rgb)| crate::ui::colour_convert::vsf_rgb_to_bt2020(&vsf_rgb));
+                        }
                         // Force any self-contact Complete before re-keying so it's excluded (a self-contact has no peer to key with).
                         self.settle_self_contacts();
                         // Re-key Pending contacts that still lack keypairs after the rehydrate — but
@@ -1620,7 +1631,9 @@ impl FluorApp for PhotonApp {
         let version_glyphs = dozenal_glyphs(deploy_version());
         // Bottom-LEFT watermark; the Security/Recovery posture meters sit bottom-right on the Ready strip. Left edge one font-size in from the screen edge, mirroring the posture group's right margin.
         let version_x = version_size;
-        let version_cy = buf_h as f32 - version_size;
+        // `draw_text_left_u32`'s y is the text BOX CENTRE, not the baseline/bottom. Anchor by the glyph bottom instead: put the text's bottom edge one `version_size` up from the window bottom (mirroring the one-`version_size` left margin), so the version reads as bottom-left-aligned from the corner rather than centre-aligned. line_height = size × 1.2 (the renderer's Metrics::relative ratio), so the centre sits half that above the bottom edge.
+        let version_line_h = version_size * 1.2;
+        let version_cy = buf_h as f32 - version_size - version_line_h * 0.5;
         // Zoom watermark, top-centre: current `ru` zoom factor as a decimal percentage ("100%", "103%"), twice the version size, at 1/4 opacity. Mirrors the version's bottom-centre placement (one font-size in from the edge). Integer percent — the ~3%/step zoom granularity makes decimals noise.
         let zoom_size = version_size * 2.0;
         let zoom_text = format!("{}%", (ctx.viewport.ru * 100.0).round() as i64);
@@ -2159,10 +2172,11 @@ impl FluorApp for PhotonApp {
             if self.vault_degraded {
                 // Visible RGB(255, 140, 0) amber. Packed: α=0xFF | darkness = (0x00, 0x73, 0xFF).
                 const DEGRADED_TEXT: u32 = 0xFF_00_73_FF;
-                let band_h = (buf_h / 24).max(20);
+                // Band height off the span-based layout unit (zoom-aware, aspect-ratio-robust, no pixel floor) — same scaling family as the rest of the screen.
+                let band_h = ready_layout.unit_height * 1.5;
                 let cx = buf_w as f32 * 0.5;
-                let cy = buf_h as f32 - band_h as f32 * 0.5;
-                let font_size = band_h as f32 * 0.6;
+                let cy = buf_h as f32 - band_h * 0.5;
+                let font_size = band_h * 0.6;
                 ctx.text.draw_text_center_u32(
                     &mut canvas,
                     "storage degraded",
@@ -2194,8 +2208,10 @@ impl FluorApp for PhotonApp {
                     .text
                     .measure_text_width("Rec", label_size, 500, "Oxanium");
                 let total = w_sec + lp_gap + pips_span + group_gap + w_rec + lp_gap + pips_span;
-                let mut x = buf_w as f32 - version_size - total; // right margin mirrors the version's left margin
-                let strip_cy = version_cy;
+                // Inset by 2× the version's margin (right + bottom) to clear the now-2×-larger bottom-right squircle corner — the same move the top-left orb made for its enlarged corner. The bottom-left version stays put (it sits by the small BL corner).
+                let mut x = buf_w as f32 - version_size * 2.0 - total;
+                // Centre sits a clean 2·version_size up from the bottom — matching the 2·version_size right inset. Independent of `version_cy` (which carries the version's bottom-edge anchor offset); the pip rows + labels here are centre-anchored, so this is a direct centre inset.
+                let strip_cy = buf_h as f32 - version_size * 2.0;
                 for (label, w_label, filled) in [("Sec", w_sec, sec), ("Rec", w_rec, rec)] {
                     ctx.text.draw_text_left_u32(
                         &mut canvas,
@@ -2229,7 +2245,9 @@ impl FluorApp for PhotonApp {
                 if ci < self.contacts.len() {
                     let contact = &self.contacts[ci];
                     let ru = ctx.viewport.ru;
-                    let unit = (buf_h as f32 * 0.04 * ru).max(12.0);
+                    // Scale off the SAME span-based harmonic unit the contacts screen uses, so the conversation screen scales identically (aspect-ratio-robust, zoom-aware, no hardcoded pixels) instead of the old crude height-only `buf_h·0.04` with a magic 12px floor.
+                    let conv_layout = ReadyLayout::compute(buf_w, buf_h, ru);
+                    let unit = conv_layout.unit_height;
 
                     // Back arrow (top-left) — below the chrome title bar area.
                     let back_y = buf_h as f32 * 0.06 + unit;
@@ -2280,10 +2298,10 @@ impl FluorApp for PhotonApp {
                         None,
                     );
 
-                    // Avatar
+                    // Avatar — sized to MATCH our own avatar on the Ready/contacts screen, so the friend's avatar here reads at the same scale. Both derive their radius from `ReadyLayout::avatar_center_radius` (a pure fn of viewport + zoom), so they stay identical across resize/zoom. Only the centre placement differs (centred on this screen vs. the Ready slot).
                     let avatar_y = name_y + unit * 3.0;
-                    let avatar_diam = (unit * 3.0) as usize;
-                    let avatar_r = avatar_diam as f32 * 0.5;
+                    let (_, _, avatar_r) = conv_layout.avatar_center_radius();
+                    let avatar_diam = (avatar_r * 2.0) as usize;
                     let avatar_cx = buf_w as f32 * 0.5;
                     if let Some(scaled) = contact.avatar_scaled.as_ref() {
                         crate::ui::avatar_render::draw_avatar(
@@ -2612,8 +2630,8 @@ impl PhotonApp {
         }
 
         // Conversation compose box: a full-width strip pinned to the bottom. Geometry must match the
-        // render block's `compose_h = unit * 1.8` and `unit = max(buf_h*0.04*ru, 12)`.
-        let unit = (buf_h as f32 * 0.04 * ctx.viewport.ru).max(12.0);
+        // render block's `compose_h = unit * 1.8`, where `unit` is ReadyLayout's span-based harmonic unit (same as the contacts screen — no hardcoded pixels).
+        let unit = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru).unit_height;
         let compose_h = unit * 1.8;
         let compose_w = buf_w as f32 - unit * 2.0;
         let compose_cx = buf_w as f32 * 0.5;
@@ -2939,7 +2957,7 @@ impl PhotonApp {
                             session.vault_seed,
                             device_secret,
                         ) {
-                            Ok(s) => self.storage = Some(s),
+                            Ok(s) => self.storage = Some(std::sync::Arc::new(s)),
                             Err(e) => crate::log(&format!("STORAGE: init failed: {}", e)),
                         }
                     }

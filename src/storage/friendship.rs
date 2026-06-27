@@ -1,8 +1,8 @@
 //! Friendship chain storage.
 //!
-//! Stores FriendshipChains via FlatStorage with logical keys: "friendship/{fid_hex8}/chains" where fid_hex8 = hex of first 8 bytes of friendship_id.
+//! Stores FriendshipChains as a single vault entry at `vault_key("chains", friendship_id)` — a flat 32-byte address, never a path. This is chain *state* (the ratchet machinery), not conversation *content*; content lives in the rārangi conversation DB.
 //!
-//! All encryption, filename derivation, and atomicity is handled by FlatStorage.
+//! All encryption, addressing, and atomicity is handled by FlatStorage.
 
 use vsf::schema::{SectionSchema, TypeConstraint};
 use vsf::{VsfSection, VsfType};
@@ -44,12 +44,9 @@ fn chains_schema() -> SectionSchema {
         .field("last_received_time", TypeConstraint::Any) // i64 oscillations, one per participant
 }
 
-/// Logical storage key for a friendship's chains
-fn chains_key(friendship_id: &FriendshipId) -> String {
-    format!(
-        "friendship/{}/chains",
-        hex::encode(&friendship_id.as_bytes()[..8])
-    )
+/// Vault address for a friendship's chain state — `vault_key("chains", friendship_id)`. The conversation id is the scope (already `blake3` of the sorted participant seeds, so 1/2/N participants all resolve here); "chains" names the entry.
+fn chains_key(friendship_id: &FriendshipId) -> [u8; 32] {
+    crate::storage::vault_key("chains", friendship_id.as_bytes())
 }
 
 /// Save FriendshipChains to disk
@@ -188,7 +185,7 @@ pub fn save_friendship_chains(
         .encode()
         .map_err(|e| StorageError::Parse(e.to_string()))?;
 
-    storage.write(&chains_key(friendship_id), &vsf_bytes)
+    storage.write_addr(&chains_key(friendship_id), &vsf_bytes)
 }
 
 /// Load FriendshipChains from disk
@@ -198,7 +195,7 @@ pub fn load_friendship_chains(
 ) -> Result<FriendshipChains, StorageError> {
     use crate::types::friendship::PendingMessage;
 
-    let vsf_bytes = storage.read(&chains_key(friendship_id))?.ok_or_else(|| {
+    let vsf_bytes = storage.read_addr(&chains_key(friendship_id))?.ok_or_else(|| {
         StorageError::Parse(format!(
             "No chains found for friendship {}",
             hex::encode(&friendship_id.as_bytes()[..8])
@@ -206,7 +203,7 @@ pub fn load_friendship_chains(
     })?;
 
     #[cfg(feature = "development")]
-    crate::network::inspect::vsf_read_decrypted(&vsf_bytes, &chains_key(friendship_id));
+    crate::network::inspect::vsf_read_decrypted(&vsf_bytes, "friendship/chains");
 
     // Parse VSF
     let mut ptr = 0;
@@ -476,7 +473,7 @@ pub fn delete_friendship_chains(
     friendship_id: &FriendshipId,
     storage: &FlatStorage,
 ) -> Result<(), StorageError> {
-    storage.delete(&chains_key(friendship_id))
+    storage.delete_addr(&chains_key(friendship_id))
 }
 
 #[cfg(test)]
