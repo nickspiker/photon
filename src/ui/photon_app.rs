@@ -537,11 +537,14 @@ impl PhotonApp {
                 return;
             }
         };
-        if let Err(e) = crate::ui::avatar::save_avatar_from_seed(&av1_data, &identity_seed, &storage) {
+        if let Err(e) =
+            crate::ui::avatar::save_avatar_from_seed(&av1_data, &identity_seed, &storage)
+        {
             crate::log(&format!("avatar picker: save failed: {e}"));
             return;
         }
-        let Some((_, vsf_rgb)) = crate::ui::avatar::load_avatar_from_seed(&identity_seed, &storage) else {
+        let Some((_, vsf_rgb)) = crate::ui::avatar::load_avatar_from_seed(&identity_seed, &storage)
+        else {
             crate::log("avatar picker: post-save load failed");
             return;
         };
@@ -555,7 +558,12 @@ impl PhotonApp {
             .and_then(|hq| hq.get_handle_proof());
         match (self.device_keypair.as_ref(), proof) {
             (Some(kp), Some(hp)) => {
-                match crate::ui::avatar::upload_avatar_from_seed(&kp.secret, &identity_seed, &hp, &storage) {
+                match crate::ui::avatar::upload_avatar_from_seed(
+                    &kp.secret,
+                    &identity_seed,
+                    &hp,
+                    &storage,
+                ) {
                     Ok(_) => crate::log("avatar picker: FGTW upload ok"),
                     Err(e) => crate::log(&format!("avatar picker: FGTW upload failed: {e}")),
                 }
@@ -711,7 +719,15 @@ impl FluorApp for PhotonApp {
         // Conversation compose box — placeholder geometry; positioned each frame via `update_widget_layout`.
         self.message_textbox = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
         // Send button overlaid in the compose box; "→" glyph. Geometry set each frame in `update_widget_layout`.
-        self.message_send_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., "\u{2192}"));
+        self.message_send_btn = Some(Button::new(
+            &mut self.hit_counter,
+            0.,
+            0.,
+            1.,
+            1.,
+            12.,
+            "\u{2192}",
+        ));
         // Reserve a hit-id for the Ready-screen avatar circle. Not a Widget — the avatar is just a paint primitive — so click dispatch is handled directly in `on_event`'s MouseInput::Pressed arm, not thru `widget::dispatch_click`. Incrementing the shared counter keeps the contiguous-id contract intact for the `[]h` debug overlay.
         self.hit_counter = self.hit_counter.wrapping_add(1);
         self.avatar_hit_id = self.hit_counter;
@@ -850,9 +866,13 @@ impl FluorApp for PhotonApp {
                         self.storage = Some(std::sync::Arc::new(s));
                         // Load this device's avatar from the vault now that storage exists, and colour-convert it for the Ready screen. The vault read needs the just-built storage handle, so this can't run before storage init like the old filesystem path did.
                         if let Some(storage) = self.storage.as_ref() {
-                            self.device_avatar_pixels =
-                                crate::ui::avatar::load_avatar_from_seed(&remembered.identity_seed, storage)
-                                    .map(|(_, vsf_rgb)| crate::ui::colour_convert::vsf_rgb_to_bt2020(&vsf_rgb));
+                            self.device_avatar_pixels = crate::ui::avatar::load_avatar_from_seed(
+                                &remembered.identity_seed,
+                                storage,
+                            )
+                            .map(|(_, vsf_rgb)| {
+                                crate::ui::colour_convert::vsf_rgb_to_bt2020(&vsf_rgb)
+                            });
                         }
                         // Force any self-contact Complete before re-keying so it's excluded (a self-contact has no peer to key with).
                         self.settle_self_contacts();
@@ -1046,6 +1066,8 @@ impl FluorApp for PhotonApp {
                     }
                     if let Some(chrome) = self.chrome.as_mut() {
                         chrome.invalidate_bg();
+                        // Scrolling moves the content (and therefore every per-pixel hit zone) but doesn't dirty the chrome layer on its own, so `rasterize_chrome` would early-return and skip its `hit_test_map.fill(HIT_NONE)` — leaving STALE hit stamps at the pre-scroll row/widget positions. Those ghosts make `hit_at` return the wrong id under the cursor after a scroll, so the hover overlay tints the wrong pixels. Invalidate chrome so the map is cleared and re-stamped against this frame's scrolled positions.
+                        chrome.invalidate_chrome();
                     }
                     ctx.window.request_redraw();
                 }
@@ -1542,7 +1564,10 @@ impl FluorApp for PhotonApp {
         // Serialized keygen queue: once the in-flight keygen (if any) has completed and cleared its
         // flag above, start the next Pending-keyless contact's keygen. One McEliece at a time keeps
         // the UI responsive on a multi-contact launch instead of spawning them all at once.
-        timed!("spawn_next_pending_keygen", self.spawn_next_pending_keygen());
+        timed!(
+            "spawn_next_pending_keygen",
+            self.spawn_next_pending_keygen()
+        );
         if timed!("check_clutch_kem_encaps", self.check_clutch_kem_encaps()) {
             needs_redraw = true;
         }
@@ -1647,9 +1672,7 @@ impl FluorApp for PhotonApp {
             let n_matching = self
                 .contacts
                 .iter()
-                .filter(|c| {
-                    filter.is_empty() || c.handle.as_str().to_lowercase().contains(&filter)
-                })
+                .filter(|c| filter.is_empty() || c.handle.as_str().to_lowercase().contains(&filter))
                 .count();
             let block_bottom_at_zero = rl.rows.y0 as isize + n_matching as isize * row_h;
             let max_scroll = (block_bottom_at_zero - buf_h as isize).max(0);
@@ -2433,161 +2456,164 @@ impl FluorApp for PhotonApp {
                     // just the avatar + "CLUTCH: …" status (above), so the user isn't presented a dead
                     // input box for a contact they can't message yet.
                     if contact.clutch_state == crate::types::ClutchState::Complete {
-                    // ── Message list ───────────────────────────────────────────
-                    // Text-only, right-aligned (outgoing) / left-aligned (incoming),
-                    // one thin white divider after every message. Newest at the
-                    // bottom, just above the compose bar; older scroll up off-screen.
-                    let our_handle_hash =
-                        self.session.as_ref().map(|s| s.identity_seed).unwrap_or([0u8; 32]);
-                    let our_colour = party_colour(&our_handle_hash);
-                    let their_colour = party_colour(&contact.handle_hash);
+                        // ── Message list ───────────────────────────────────────────
+                        // Text-only, right-aligned (outgoing) / left-aligned (incoming),
+                        // one thin white divider after every message. Newest at the
+                        // bottom, just above the compose bar; older scroll up off-screen.
+                        let our_handle_hash = self
+                            .session
+                            .as_ref()
+                            .map(|s| s.identity_seed)
+                            .unwrap_or([0u8; 32]);
+                        let our_colour = party_colour(&our_handle_hash);
+                        let their_colour = party_colour(&contact.handle_hash);
 
-                    let msg_size = unit * 0.62;
-                    let line_h = msg_size * 1.6; // text + breathing room per message
-                    let pad_x = unit; // left/right inset
-                    let list_top = clutch_y + unit * 1.2;
-                    // Compose bar reserves the bottom strip, lifted off the bottom edge by `compose_margin`. The list lives between list_top and list_bottom. Must match the layout pass's `compose_h`/`compose_margin` below.
-                    let compose_h = unit * 1.8;
-                    let compose_margin = unit * 0.8;
-                    let list_bottom = buf_h as f32 - compose_h - compose_margin - unit * 0.5;
-                    // Clamp so a short window (tall header) can never invert the clip (list_top > list_bottom) — that's what made every message vanish on resize. When there's no room, list_bottom collapses to list_top and the list is simply empty rather than drawing with a negative-height (inverted) clip.
-                    let list_bottom = list_bottom.max(list_top);
-                    let list_clip = fluor::paint::Clip::new(
-                        0,
-                        list_top as usize,
-                        buf_w,
-                        list_bottom as usize,
-                    );
-
-                    // Lay messages out bottom-up so the newest sits at list_bottom. Clamp scroll offset to the actual overscroll range so a stale offset from a previous (larger) window size can't push every message above list_top on resize.
-                    let n = contact.messages.len();
-                    let content_h = n as f32 * line_h;
-                    let view_h = (list_bottom - list_top).max(0.0);
-                    let max_scroll = (content_h - view_h).max(0.0);
-                    let scroll = contact.message_scroll_offset.clamp(0.0, max_scroll);
-                    let mut y = list_bottom - msg_size + scroll;
-                    for msg in contact.messages.iter().rev() {
-                        if y < list_top - line_h {
-                            break; // scrolled above the visible region
-                        }
-                        // Divider under this message (between it and the next-newer one).
-                        paint::fill_rect(
-                            &mut canvas,
-                            pad_x as isize,
-                            (y + msg_size * 0.5) as isize,
-                            (buf_w as f32 - pad_x * 2.0) as isize,
-                            (ru.max(1.0)) as isize,
-                            DIVIDER_COLOUR,
-                            Some(list_clip),
-                            None,
+                        let msg_size = unit * 0.62;
+                        let line_h = msg_size * 1.6; // text + breathing room per message
+                        let pad_x = unit; // left/right inset
+                        let list_top = clutch_y + unit * 1.2;
+                        // Compose bar reserves the bottom strip, lifted off the bottom edge by `compose_margin`. The list lives between list_top and list_bottom. Must match the layout pass's `compose_h`/`compose_margin` below.
+                        let compose_h = unit * 1.8;
+                        let compose_margin = unit * 0.8;
+                        let list_bottom = buf_h as f32 - compose_h - compose_margin - unit * 0.5;
+                        // Clamp so a short window (tall header) can never invert the clip (list_top > list_bottom) — that's what made every message vanish on resize. When there's no room, list_bottom collapses to list_top and the list is simply empty rather than drawing with a negative-height (inverted) clip.
+                        let list_bottom = list_bottom.max(list_top);
+                        let list_clip = fluor::paint::Clip::new(
+                            0,
+                            list_top as usize,
+                            buf_w,
+                            list_bottom as usize,
                         );
-                        // Dim outgoing until delivered; incoming always full.
-                        let colour = if msg.is_outgoing {
-                            if msg.delivered {
-                                our_colour
-                            } else {
-                                dim_colour(our_colour)
+
+                        // Lay messages out bottom-up so the newest sits at list_bottom. Clamp scroll offset to the actual overscroll range so a stale offset from a previous (larger) window size can't push every message above list_top on resize.
+                        let n = contact.messages.len();
+                        let content_h = n as f32 * line_h;
+                        let view_h = (list_bottom - list_top).max(0.0);
+                        let max_scroll = (content_h - view_h).max(0.0);
+                        let scroll = contact.message_scroll_offset.clamp(0.0, max_scroll);
+                        let mut y = list_bottom - msg_size + scroll;
+                        for msg in contact.messages.iter().rev() {
+                            if y < list_top - line_h {
+                                break; // scrolled above the visible region
                             }
-                        } else {
-                            their_colour
-                        };
-                        if msg.is_outgoing {
-                            ctx.text.draw_text_right_u32(
+                            // Divider under this message (between it and the next-newer one).
+                            paint::fill_rect(
                                 &mut canvas,
-                                &msg.content,
-                                buf_w as f32 - pad_x,
-                                y,
-                                msg_size,
-                                500,
-                                colour,
-                                "Open Sans",
+                                pad_x as isize,
+                                (y + msg_size * 0.5) as isize,
+                                (buf_w as f32 - pad_x * 2.0) as isize,
+                                (ru.max(1.0)) as isize,
+                                DIVIDER_COLOUR,
                                 Some(list_clip),
                                 None,
-                                None,
                             );
-                        } else {
+                            // Dim outgoing until delivered; incoming always full.
+                            let colour = if msg.is_outgoing {
+                                if msg.delivered {
+                                    our_colour
+                                } else {
+                                    dim_colour(our_colour)
+                                }
+                            } else {
+                                their_colour
+                            };
+                            if msg.is_outgoing {
+                                ctx.text.draw_text_right_u32(
+                                    &mut canvas,
+                                    &msg.content,
+                                    buf_w as f32 - pad_x,
+                                    y,
+                                    msg_size,
+                                    500,
+                                    colour,
+                                    "Open Sans",
+                                    Some(list_clip),
+                                    None,
+                                    None,
+                                );
+                            } else {
+                                ctx.text.draw_text_left_u32(
+                                    &mut canvas,
+                                    &msg.content,
+                                    pad_x,
+                                    y,
+                                    msg_size,
+                                    500,
+                                    colour,
+                                    "Open Sans",
+                                    Some(list_clip),
+                                    None,
+                                    None,
+                                );
+                            }
+                            y -= line_h;
+                        }
+                        let _ = n;
+
+                        // ── Compose box (pinned bottom) ────────────────────────────
+                        let compose_empty = self
+                            .message_textbox
+                            .as_ref()
+                            .map(|t| t.chars.is_empty())
+                            .unwrap_or(true);
+                        let compose_focused = self
+                            .message_textbox
+                            .as_ref()
+                            .map(|t| Some(t.hit_id()) == self.focused)
+                            .unwrap_or(false);
+                        let compose_cy = buf_h as f32 - compose_margin - compose_h * 0.5;
+                        if compose_empty && !compose_focused {
                             ctx.text.draw_text_left_u32(
                                 &mut canvas,
-                                &msg.content,
-                                pad_x,
-                                y,
+                                "message",
+                                pad_x * 1.2,
+                                compose_cy,
                                 msg_size,
-                                500,
-                                colour,
+                                400,
+                                LABEL_COLOUR,
                                 "Open Sans",
-                                Some(list_clip),
+                                None,
                                 None,
                                 None,
                             );
                         }
-                        y -= line_h;
-                    }
-                    let _ = n;
-
-                    // ── Compose box (pinned bottom) ────────────────────────────
-                    let compose_empty = self
-                        .message_textbox
-                        .as_ref()
-                        .map(|t| t.chars.is_empty())
-                        .unwrap_or(true);
-                    let compose_focused = self
-                        .message_textbox
-                        .as_ref()
-                        .map(|t| Some(t.hit_id()) == self.focused)
-                        .unwrap_or(false);
-                    let compose_cy = buf_h as f32 - compose_margin - compose_h * 0.5;
-                    if compose_empty && !compose_focused {
-                        ctx.text.draw_text_left_u32(
-                            &mut canvas,
-                            "message",
-                            pad_x * 1.2,
-                            compose_cy,
-                            msg_size,
-                            400,
-                            LABEL_COLOUR,
-                            "Open Sans",
-                            None,
-                            None,
-                            None,
-                        );
-                    }
-                    if let Some(tb) = self.message_textbox.as_mut() {
-                        let id = tb.hit_id();
-                        tb.render_content_into(
-                            &mut canvas,
-                            0.,
-                            0.,
-                            ctx.text,
-                            None,
-                            None,
-                            Some(&mut chrome.hit_test_map),
-                            id,
-                        );
-                    }
-                    // Send button — overlaid inside the compose box's right edge, mirroring the contacts-screen search '+' button (7/8 of the box height, inset from the right). Painted AFTER the textbox so it's visually on top (under-blend = topmost-first would bury it, so we re-stamp its hit rect afterward to recover click dispatch in the overlap). Geometry set in the layout pass.
-                    if let Some(btn) = self.message_send_btn.as_mut() {
-                        let id = btn.hit_id();
-                        btn.render_content_into(
-                            &mut canvas,
-                            0.,
-                            0.,
-                            ctx.text,
-                            None,
-                            Some(&mut chrome.hit_test_map),
-                            id,
-                        );
-                        let bbox = button_bbox(btn);
-                        restamp_hit_rect(
-                            &mut chrome.hit_test_map,
-                            buf_w,
-                            buf_h,
-                            bbox.0,
-                            bbox.1,
-                            bbox.2,
-                            bbox.3,
-                            id,
-                        );
-                    }
+                        if let Some(tb) = self.message_textbox.as_mut() {
+                            let id = tb.hit_id();
+                            tb.render_content_into(
+                                &mut canvas,
+                                0.,
+                                0.,
+                                ctx.text,
+                                None,
+                                None,
+                                Some(&mut chrome.hit_test_map),
+                                id,
+                            );
+                        }
+                        // Send button — overlaid inside the compose box's right edge, mirroring the contacts-screen search '+' button (7/8 of the box height, inset from the right). Painted AFTER the textbox so it's visually on top (under-blend = topmost-first would bury it, so we re-stamp its hit rect afterward to recover click dispatch in the overlap). Geometry set in the layout pass.
+                        if let Some(btn) = self.message_send_btn.as_mut() {
+                            let id = btn.hit_id();
+                            btn.render_content_into(
+                                &mut canvas,
+                                0.,
+                                0.,
+                                ctx.text,
+                                None,
+                                Some(&mut chrome.hit_test_map),
+                                id,
+                            );
+                            let bbox = button_bbox(btn);
+                            restamp_hit_rect(
+                                &mut chrome.hit_test_map,
+                                buf_w,
+                                buf_h,
+                                bbox.0,
+                                bbox.1,
+                                bbox.2,
+                                bbox.3,
+                                id,
+                            );
+                        }
                     } // end CLUTCH-Complete gate (message list + compose box)
                 }
             }
@@ -2887,7 +2913,9 @@ impl PhotonApp {
     fn submit_message(&mut self) {
         use vsf::schema::section::FieldValue;
 
-        let Some(ci) = self.active_contact else { return };
+        let Some(ci) = self.active_contact else {
+            return;
+        };
         let our_handle_hash = match self.session.as_ref().map(|s| s.identity_seed) {
             Some(h) => h,
             None => return,
@@ -2905,7 +2933,9 @@ impl PhotonApp {
 
         // Contact must be CLUTCH-Complete with a friendship chain.
         let (friendship_id, recipient_pubkey, addr_pair) = {
-            let Some(contact) = self.contacts.get(ci) else { return };
+            let Some(contact) = self.contacts.get(ci) else {
+                return;
+            };
             if contact.clutch_state != crate::types::ClutchState::Complete {
                 crate::log("CHAT: cannot send — CLUTCH not complete");
                 return;
@@ -2935,7 +2965,10 @@ impl PhotonApp {
                 crate::log("CHAT: friendship chains missing for open contact");
                 return;
             };
-            let incorporated_hp = chains.last_incorporated_hp().map(|h| *h).unwrap_or([0u8; 32]);
+            let incorporated_hp = chains
+                .last_incorporated_hp()
+                .map(|h| *h)
+                .unwrap_or([0u8; 32]);
             let mut values = vec![
                 vsf::VsfType::x(text.clone()),
                 vsf::VsfType::hp(incorporated_hp.to_vec()),
@@ -2970,7 +3003,8 @@ impl PhotonApp {
                 .iter()
                 .find(|(id, _)| *id == friendship_id)
             {
-                if let Err(e) = crate::storage::friendship::save_friendship_chains(chains, storage) {
+                if let Err(e) = crate::storage::friendship::save_friendship_chains(chains, storage)
+                {
                     crate::log(&format!("STORAGE CRITICAL: save chains before send: {}", e));
                 }
             }
@@ -2986,14 +3020,15 @@ impl PhotonApp {
                 ciphertext,
                 eagle_time,
             });
-            crate::log(&format!("CHAT: sent message ({} chars) to contact", text.len()));
+            crate::log(&format!(
+                "CHAT: sent message ({} chars) to contact",
+                text.len()
+            ));
         }
 
         // Append the outgoing bubble (delivered=false until the ACK lands), persist, clear the box.
         if let Some(contact) = self.contacts.get_mut(ci) {
-            contact.insert_message_sorted(ChatMessage::new_with_timestamp(
-                text, true, eagle_time,
-            ));
+            contact.insert_message_sorted(ChatMessage::new_with_timestamp(text, true, eagle_time));
             contact.message_scroll_offset = 0.0;
             if let Some(storage) = self.storage.as_ref() {
                 if let Err(e) = crate::storage::contacts::save_messages(contact, storage) {
@@ -3218,7 +3253,8 @@ impl PhotonApp {
                 .with_ip(peer.ip)
                 .with_local_ip(peer.local_ip, peer.ip.port());
                 // Self-contact: same identity, no key exchange needed.
-                let is_self = self.session.as_ref().map(|s| s.identity_seed) == Some(contact.handle_hash);
+                let is_self =
+                    self.session.as_ref().map(|s| s.identity_seed) == Some(contact.handle_hash);
                 if is_self {
                     contact.clutch_state = crate::types::ClutchState::Complete;
                 }
@@ -3242,7 +3278,11 @@ impl PhotonApp {
                     }
                 }
                 if !is_self {
-                    let our_handle_hash = self.session.as_ref().map(|s| s.identity_seed).unwrap_or([0u8; 32]);
+                    let our_handle_hash = self
+                        .session
+                        .as_ref()
+                        .map(|s| s.identity_seed)
+                        .unwrap_or([0u8; 32]);
                     self.spawn_clutch_keygen(contact_id, our_handle_hash, their_handle_hash);
                 }
                 if let Some(storage) = self.storage.as_ref() {
@@ -3386,7 +3426,9 @@ impl PhotonApp {
 
             // Wake the event loop so it processes the result
             #[cfg(not(target_os = "android"))]
-            if let Some(p) = proxy.as_ref() { let _ = p.send(crate::ui::PhotonEvent::ClutchKeygenComplete); }
+            if let Some(p) = proxy.as_ref() {
+                let _ = p.send(crate::ui::PhotonEvent::ClutchKeygenComplete);
+            }
         };
 
         #[cfg(not(target_os = "redox"))]
@@ -3443,7 +3485,9 @@ impl PhotonApp {
 
             // Wake the event loop so it processes the result
             #[cfg(not(target_os = "android"))]
-            if let Some(p) = proxy.as_ref() { let _ = p.send(crate::ui::PhotonEvent::ClutchKemEncapComplete); }
+            if let Some(p) = proxy.as_ref() {
+                let _ = p.send(crate::ui::PhotonEvent::ClutchKemEncapComplete);
+            }
         };
 
         #[cfg(not(target_os = "redox"))]
@@ -3521,7 +3565,9 @@ impl PhotonApp {
 
             // Wake the event loop so it processes the result
             #[cfg(not(target_os = "android"))]
-            if let Some(p) = proxy.as_ref() { let _ = p.send(crate::ui::PhotonEvent::ClutchCeremonyComplete); }
+            if let Some(p) = proxy.as_ref() {
+                let _ = p.send(crate::ui::PhotonEvent::ClutchCeremonyComplete);
+            }
         };
 
         #[cfg(not(target_os = "redox"))]
@@ -3546,8 +3592,7 @@ impl PhotonApp {
     /// Slot-based design: keypairs stored once, slots filled as messages arrive. Ceremony completes when all slots have offer + both KEM secret directions.
     pub fn check_clutch_keygens(&mut self) -> bool {
         use crate::crypto::clutch::{
-            derive_conversation_token, ClutchKemSharedSecrets,
-            ClutchOfferPayload,
+            derive_conversation_token, ClutchKemSharedSecrets, ClutchOfferPayload,
         };
         use crate::network::status::ClutchOfferRequest;
         use crate::types::CeremonyId;
@@ -3568,8 +3613,18 @@ impl PhotonApp {
             Some(h) => h,
             None => return changed,
         };
-        let device_pubkey = *self.device_keypair.as_ref().expect("device_keypair set in init").public.as_bytes();
-        let device_secret = *self.device_keypair.as_ref().expect("device_keypair set in init").secret.as_bytes();
+        let device_pubkey = *self
+            .device_keypair
+            .as_ref()
+            .expect("device_keypair set in init")
+            .public
+            .as_bytes();
+        let device_secret = *self
+            .device_keypair
+            .as_ref()
+            .expect("device_keypair set in init")
+            .secret
+            .as_bytes();
 
         while let Ok(result) = self.clutch_keygen_rx.try_recv() {
             let result_id_hex = hex::encode(&result.contact_id.as_bytes()[..4]);
@@ -3591,7 +3646,9 @@ impl PhotonApp {
                     changed = true;
 
                     // Persist keypairs to disk immediately (crash recovery)
-                    if let (Some(ref keypairs), Some(storage)) = (&contact.clutch_our_keypairs, self.storage.as_ref()) {
+                    if let (Some(ref keypairs), Some(storage)) =
+                        (&contact.clutch_our_keypairs, self.storage.as_ref())
+                    {
                         if let Err(e) = crate::storage::contacts::save_clutch_keypairs(
                             keypairs,
                             contact.handle.as_str(),
@@ -3662,13 +3719,15 @@ impl PhotonApp {
 
                                         // Persist provenance immediately
                                         if let Some(storage) = self.storage.as_ref() {
-                                            if let Err(e) = crate::storage::contacts::save_clutch_slots(
-                                                &contact.clutch_slots,
-                                                &contact.offer_provenances,
-                                                contact.ceremony_id,
-                                                contact.handle.as_str(),
-                                                storage,
-                                            ) {
+                                            if let Err(e) =
+                                                crate::storage::contacts::save_clutch_slots(
+                                                    &contact.clutch_slots,
+                                                    &contact.offer_provenances,
+                                                    contact.ceremony_id,
+                                                    contact.handle.as_str(),
+                                                    storage,
+                                                )
+                                            {
                                                 crate::log(&format!(
                                                     "Failed to persist CLUTCH provenance: {}",
                                                     e
@@ -3677,9 +3736,8 @@ impl PhotonApp {
                                         }
 
                                         if let Some(ref checker) = self.status_checker {
-                                            let (primary, alt) = contact
-                                                .race_addrs()
-                                                .unwrap_or((ip, None));
+                                            let (primary, alt) =
+                                                contact.race_addrs().unwrap_or((ip, None));
                                             checker.send_offer(ClutchOfferRequest {
                                                 peer_addr: primary,
                                                 alt_addr: alt,
@@ -3769,9 +3827,7 @@ impl PhotonApp {
                     // Process any pending KEM response that arrived before keygen completed.
                     // Also compute ceremony_id here if provenances are ready — the KEM may have arrived in the network thread between when we added our provenance and when the main loop got here to run the ceremony_id derivation above.
                     if contact.clutch_pending_kem.is_some() {
-                        if contact.ceremony_id.is_none()
-                            && contact.offer_provenances.len() >= 2
-                        {
+                        if contact.ceremony_id.is_none() && contact.offer_provenances.len() >= 2 {
                             let ceremony_id = *CeremonyId::derive(
                                 &[our_handle_hash, contact.handle_hash],
                                 &contact.offer_provenances,
@@ -3893,8 +3949,7 @@ impl PhotonApp {
             changed = true;
         }
 
-        if changed {
-        }
+        if changed {}
         changed
     }
 
@@ -3908,8 +3963,18 @@ impl PhotonApp {
             Some(h) => h,
             None => return changed,
         };
-        let device_pubkey = *self.device_keypair.as_ref().expect("device_keypair set in init").public.as_bytes();
-        let device_secret = *self.device_keypair.as_ref().expect("device_keypair set in init").secret.as_bytes();
+        let device_pubkey = *self
+            .device_keypair
+            .as_ref()
+            .expect("device_keypair set in init")
+            .public
+            .as_bytes();
+        let device_secret = *self
+            .device_keypair
+            .as_ref()
+            .expect("device_keypair set in init")
+            .secret
+            .as_bytes();
 
         while let Ok(result) = self.clutch_kem_encap_rx.try_recv() {
             let result_id_hex = hex::encode(&result.contact_id.as_bytes()[..4]);
@@ -3949,9 +4014,8 @@ impl PhotonApp {
 
                     // Send the KEM response
                     if let Some(ref checker) = self.status_checker {
-                        let (primary, alt) = contact
-                            .race_addrs()
-                            .unwrap_or((result.peer_addr, None));
+                        let (primary, alt) =
+                            contact.race_addrs().unwrap_or((result.peer_addr, None));
                         checker.send_kem_response(ClutchKemResponseRequest {
                             peer_addr: primary,
                             alt_addr: alt,
@@ -3992,8 +4056,7 @@ impl PhotonApp {
             changed = true;
         }
 
-        if changed {
-        }
+        if changed {}
         changed
     }
 
@@ -4008,8 +4071,18 @@ impl PhotonApp {
             Some(h) => h,
             None => return changed,
         };
-        let device_pubkey = *self.device_keypair.as_ref().expect("device_keypair set in init").public.as_bytes();
-        let device_secret = *self.device_keypair.as_ref().expect("device_keypair set in init").secret.as_bytes();
+        let device_pubkey = *self
+            .device_keypair
+            .as_ref()
+            .expect("device_keypair set in init")
+            .public
+            .as_bytes();
+        let device_secret = *self
+            .device_keypair
+            .as_ref()
+            .expect("device_keypair set in init")
+            .secret
+            .as_bytes();
 
         while let Ok(result) = self.clutch_ceremony_rx.try_recv() {
             let result_id_hex = hex::encode(&result.contact_id.as_bytes()[..4]);
@@ -4085,9 +4158,7 @@ impl PhotonApp {
                         eggs_proof: result.eggs_proof,
                     };
 
-                    let (primary, alt) = contact
-                        .race_addrs()
-                        .unwrap_or((result.peer_addr, None));
+                    let (primary, alt) = contact.race_addrs().unwrap_or((result.peer_addr, None));
                     checker.send_complete_proof(ClutchCompleteRequest {
                         peer_addr: primary,
                         alt_addr: alt,
@@ -4147,10 +4218,7 @@ impl PhotonApp {
 
                 // Save contact to persist friendship_id and clutch_state
                 if let Some(storage) = self.storage.as_ref() {
-                    if let Err(e) = crate::storage::contacts::save_contact(
-                        contact,
-                        storage,
-                    ) {
+                    if let Err(e) = crate::storage::contacts::save_contact(contact, storage) {
                         crate::log(&format!("Failed to save contact after CLUTCH: {}", e));
                     } else {
                         #[cfg(feature = "development")]
@@ -4159,9 +4227,10 @@ impl PhotonApp {
                     }
 
                     // Delete slots file - ceremony is complete, slots no longer needed
-                    if let Err(e) =
-                        crate::storage::contacts::delete_clutch_slots(contact_handle.as_str(), storage)
-                    {
+                    if let Err(e) = crate::storage::contacts::delete_clutch_slots(
+                        contact_handle.as_str(),
+                        storage,
+                    ) {
                         crate::log(&format!("Failed to delete CLUTCH slots: {}", e));
                     }
                 }
@@ -4174,8 +4243,7 @@ impl PhotonApp {
             }
         }
 
-        if changed {
-        }
+        if changed {}
         changed
     }
 
@@ -4333,7 +4401,12 @@ impl PhotonApp {
         // Mark ceremony in progress and spawn background thread
         contact.clutch_ceremony_in_progress = true;
 
-        let our_device_pub = *self.device_keypair.as_ref().expect("device_keypair set in init").public.as_bytes();
+        let our_device_pub = *self
+            .device_keypair
+            .as_ref()
+            .expect("device_keypair set in init")
+            .public
+            .as_bytes();
         self.spawn_clutch_ceremony(
             contact_id,
             our_handle_hash,
@@ -4350,10 +4423,7 @@ impl PhotonApp {
 
     /// Cross-reference the FGTW peer list into existing contacts, updating each matched contact's public address (`ip`) and same-LAN address (`local_ip`/`local_port`).
     /// Matched by handle_proof + device_pubkey so the right device's record updates the right contact. Only IPv4 LAN addresses are stored (the hairpin case the `local_ip` field is typed for); a v6-only peer just refreshes the WAN address. The send path races both (see [`crate::types::Contact::race_addrs`]).
-    fn refresh_contact_addrs_from_peers(
-        &mut self,
-        peers: &[crate::network::fgtw::PeerRecord],
-    ) {
+    fn refresh_contact_addrs_from_peers(&mut self, peers: &[crate::network::fgtw::PeerRecord]) {
         // Addresses whose transfers must be cancelled because they went stale (collected here so
         // the checker borrow stays out of the contact-iter loop).
         let mut stale_addrs: Vec<std::net::SocketAddr> = Vec::new();
@@ -4370,7 +4440,10 @@ impl PhotonApp {
                         contact.local_port = Some(peer.ip.port());
                         crate::log(&format!(
                             "UI: refreshed {} addrs from FGTW — WAN {} / LAN {}:{}",
-                            contact.handle, peer.ip, v4, peer.ip.port()
+                            contact.handle,
+                            peer.ip,
+                            v4,
+                            peer.ip.port()
                         ));
                     }
                     // If the address actually moved while a CLUTCH offer was already sent, that
@@ -4379,8 +4452,7 @@ impl PhotonApp {
                     // contact's next online pong re-sends the offer to the fresh address, with the
                     // LAN path now raced alongside. Without this the one-shot flag blocks re-send
                     // and the ceremony stalls forever on the dead path.
-                    let addr_changed =
-                        old_ip != contact.ip || old_local != contact.local_ip;
+                    let addr_changed = old_ip != contact.ip || old_local != contact.local_ip;
                     if addr_changed
                         && contact.clutch_offer_sent
                         && contact.clutch_state == crate::types::ClutchState::Pending
@@ -4523,8 +4595,7 @@ impl PhotonApp {
             let Some((primary, alt)) = contact.race_addrs() else {
                 continue;
             };
-            let conv_token =
-                derive_conversation_token(&[our_handle_hash, contact.handle_hash]);
+            let conv_token = derive_conversation_token(&[our_handle_hash, contact.handle_hash]);
             checker.send_complete_proof(ClutchCompleteRequest {
                 peer_addr: primary,
                 alt_addr: alt,
@@ -4591,7 +4662,7 @@ impl PhotonApp {
         let mut changed = false;
         let mut ceremony_completions: Vec<usize> = Vec::new(); // Contact indices to complete after loop
         let mut lan_ping_indices: Vec<usize> = Vec::new(); // Contact indices to ping immediately on new LAN discovery
-                                                               // Collect pending message retransmit requests (friendship_id, ip, handle, device_pubkey, last_received_ef6) to process after loop last_received_ef6 from pong tells us what they already have - only retransmit newer
+                                                           // Collect pending message retransmit requests (friendship_id, ip, handle, device_pubkey, last_received_ef6) to process after loop last_received_ef6 from pong tells us what they already have - only retransmit newer
         let mut retransmit_requests: Vec<(
             crate::types::FriendshipId,
             std::net::SocketAddr,
@@ -4687,8 +4758,16 @@ impl PhotonApp {
                                         match build_clutch_offer_vsf(
                                             &conversation_token,
                                             &payload,
-                                            self.device_keypair.as_ref().expect("device_keypair set in init").public.as_bytes(),
-                                            self.device_keypair.as_ref().expect("device_keypair set in init").secret.as_bytes(),
+                                            self.device_keypair
+                                                .as_ref()
+                                                .expect("device_keypair set in init")
+                                                .public
+                                                .as_bytes(),
+                                            self.device_keypair
+                                                .as_ref()
+                                                .expect("device_keypair set in init")
+                                                .secret
+                                                .as_bytes(),
                                         ) {
                                             Ok((vsf_bytes, our_offer_provenance)) => {
                                                 crate::log(&format!(
@@ -4725,9 +4804,8 @@ impl PhotonApp {
                                                     }
                                                 }
 
-                                                let (primary, alt) = contact
-                                                    .race_addrs()
-                                                    .unwrap_or((ip, None));
+                                                let (primary, alt) =
+                                                    contact.race_addrs().unwrap_or((ip, None));
                                                 checker.send_offer(ClutchOfferRequest {
                                                     peer_addr: primary,
                                                     alt_addr: alt,
@@ -4987,8 +5065,7 @@ impl PhotonApp {
                             };
 
                         // Advance their chain with bidirectional weave
-                        let eagle_time_for_advance =
-                            vsf::EagleTime::from_oscillations(timestamp);
+                        let eagle_time_for_advance = vsf::EagleTime::from_oscillations(timestamp);
                         chains.advance(
                             &from_handle_hash,
                             &eagle_time_for_advance,
@@ -5009,10 +5086,9 @@ impl PhotonApp {
 
                         // CRASH SAFETY: Persist to disk BEFORE sending ACK If we crash after ACK but before disk, sender thinks we have it but we don't. Disk write is the commit point - ACK is just notification. If chain save fails, DO NOT send ACK. Sender will retransmit and we can try again, preventing permanent desync.
                         if let Some(storage) = self.storage.as_ref() {
-                            if let Err(e) = crate::storage::friendship::save_friendship_chains(
-                                chains,
-                                storage,
-                            ) {
+                            if let Err(e) =
+                                crate::storage::friendship::save_friendship_chains(chains, storage)
+                            {
                                 crate::log(&format!(
                                     "STORAGE CRITICAL: Failed to save chains after recv, skipping ACK: {}",
                                     e
@@ -5036,17 +5112,18 @@ impl PhotonApp {
 
                             // Persist messages for UI
                             if let Some(storage) = self.storage.as_ref() {
-                                if let Err(e) = crate::storage::contacts::save_messages(
-                                    contact,
-                                    storage,
-                                ) {
+                                if let Err(e) =
+                                    crate::storage::contacts::save_messages(contact, storage)
+                                {
                                     crate::log(&format!("STORAGE: Failed to save messages: {}", e));
                                 }
                             }
                         }
 
                         // *** THEN send ACK - if we crash here, sender will resend, we can dedup *** Get recipient pubkey for relay fallback
-                        let recipient_pubkey = self.contacts.get(contact_idx)
+                        let recipient_pubkey = self
+                            .contacts
+                            .get(contact_idx)
                             .map(|c| *c.public_identity.as_bytes())
                             .unwrap_or([0u8; 32]);
                         if let Some(ref checker) = self.status_checker {
@@ -5167,10 +5244,12 @@ impl PhotonApp {
 
                                     // Delete persisted keypairs file (no longer needed)
                                     if let Some(storage) = self.storage.as_ref() {
-                                        if let Err(e) = crate::storage::contacts::delete_clutch_keypairs(
-                                            &handle_str,
-                                            storage,
-                                        ) {
+                                        if let Err(e) =
+                                            crate::storage::contacts::delete_clutch_keypairs(
+                                                &handle_str,
+                                                storage,
+                                            )
+                                        {
                                             crate::log(&format!(
                                                 "CLUTCH: Failed to delete keypairs file for {}: {}",
                                                 handle_str, e
@@ -5183,8 +5262,7 @@ impl PhotonApp {
                             // Persist chains (AGENT.md: every change hits disk)
                             if let Some(storage) = self.storage.as_ref() {
                                 if let Err(e) = crate::storage::friendship::save_friendship_chains(
-                                    chains,
-                                    storage,
+                                    chains, storage,
                                 ) {
                                     crate::log(&format!(
                                         "STORAGE CRITICAL: Failed to save chains after ACK: {}",
@@ -5218,10 +5296,9 @@ impl PhotonApp {
                             // Persist delivered status (AGENT.md: every change hits disk)
                             if found_msg {
                                 if let Some(storage) = self.storage.as_ref() {
-                                    if let Err(e) = crate::storage::contacts::save_messages(
-                                        contact,
-                                        storage,
-                                    ) {
+                                    if let Err(e) =
+                                        crate::storage::contacts::save_messages(contact, storage)
+                                    {
                                         crate::log(&format!(
                                             "STORAGE: Failed to save delivered status: {}",
                                             e
@@ -5262,8 +5339,7 @@ impl PhotonApp {
                     sender_addr: raw_sender_addr,
                 } => {
                     use crate::crypto::clutch::{
-                        derive_conversation_token,
-                        ClutchKemSharedSecrets, ClutchOfferPayload,
+                        derive_conversation_token, ClutchKemSharedSecrets, ClutchOfferPayload,
                     };
                     use crate::network::status::ClutchOfferRequest;
                     use crate::types::ClutchState;
@@ -5479,8 +5555,7 @@ impl PhotonApp {
                                 if let Some(ref keypairs) = contact.clutch_our_keypairs {
                                     let our_offer =
                                         clutch::ClutchOfferPayload::from_keypairs(keypairs);
-                                    if let Some(local_slot) =
-                                        contact.get_slot_mut(&our_handle_hash)
+                                    if let Some(local_slot) = contact.get_slot_mut(&our_handle_hash)
                                     {
                                         local_slot.offer = Some(our_offer);
                                         crate::log(
@@ -5580,8 +5655,16 @@ impl PhotonApp {
                                     match build_clutch_offer_vsf(
                                         &conv_token,
                                         &our_offer,
-                                        self.device_keypair.as_ref().expect("device_keypair set in init").public.as_bytes(),
-                                        self.device_keypair.as_ref().expect("device_keypair set in init").secret.as_bytes(),
+                                        self.device_keypair
+                                            .as_ref()
+                                            .expect("device_keypair set in init")
+                                            .public
+                                            .as_bytes(),
+                                        self.device_keypair
+                                            .as_ref()
+                                            .expect("device_keypair set in init")
+                                            .secret
+                                            .as_bytes(),
                                     ) {
                                         Ok((vsf_bytes, our_offer_provenance)) => {
                                             // Store our offer provenance
@@ -5688,8 +5771,18 @@ impl PhotonApp {
                                             conversation_token: conv_token,
                                             ceremony_id,
                                             payload: kem_response,
-                                            device_pubkey: *self.device_keypair.as_ref().expect("device_keypair set in init").public.as_bytes(),
-                                            device_secret: *self.device_keypair.as_ref().expect("device_keypair set in init").secret.as_bytes(),
+                                            device_pubkey: *self
+                                                .device_keypair
+                                                .as_ref()
+                                                .expect("device_keypair set in init")
+                                                .public
+                                                .as_bytes(),
+                                            device_secret: *self
+                                                .device_keypair
+                                                .as_ref()
+                                                .expect("device_keypair set in init")
+                                                .secret
+                                                .as_bytes(),
                                         });
                                         crate::log(&format!(
                                             "CLUTCH: Re-sent KEM response to {}",
@@ -5776,13 +5869,15 @@ impl PhotonApp {
 
                                         // Persist re-key state immediately
                                         if let Some(storage) = self.storage.as_ref() {
-                                            if let Err(e) = crate::storage::contacts::save_clutch_slots(
-                                                &contact.clutch_slots,
-                                                &contact.offer_provenances,
-                                                contact.ceremony_id,
-                                                contact.handle.as_str(),
-                                                storage,
-                                            ) {
+                                            if let Err(e) =
+                                                crate::storage::contacts::save_clutch_slots(
+                                                    &contact.clutch_slots,
+                                                    &contact.offer_provenances,
+                                                    contact.ceremony_id,
+                                                    contact.handle.as_str(),
+                                                    storage,
+                                                )
+                                            {
                                                 crate::log(&format!(
                                                     "Failed to persist re-key CLUTCH state: {}",
                                                     e
@@ -5817,7 +5912,8 @@ impl PhotonApp {
                                             "CLUTCH: Peer {} reset while we were AwaitingProof - resetting",
                                             contact.handle
                                         ));
-                                        if let Some(slot) = contact.get_slot_mut(&their_handle_hash) {
+                                        if let Some(slot) = contact.get_slot_mut(&their_handle_hash)
+                                        {
                                             slot.offer = None;
                                             slot.kem_secrets_from_them = None;
                                         }
@@ -5827,7 +5923,9 @@ impl PhotonApp {
                                         contact.clutch_our_eggs_proof = None;
                                         contact.clutch_their_eggs_proof = None;
                                         // Remove their old provenance (keep ours)
-                                        contact.offer_provenances.retain(|p| p != &offer_provenance);
+                                        contact
+                                            .offer_provenances
+                                            .retain(|p| p != &offer_provenance);
                                         // Fall thru - normal flow will store new offer and trigger keygen
                                     } else {
                                         crate::log(&format!(
@@ -5849,9 +5947,9 @@ impl PhotonApp {
                         self.friendship_chains.retain(|(id, _)| *id != old_id);
                         // Delete from disk
                         if let Some(storage) = self.storage.as_ref() {
-                            if let Err(e) =
-                                crate::storage::friendship::delete_friendship_chains(&old_id, storage)
-                            {
+                            if let Err(e) = crate::storage::friendship::delete_friendship_chains(
+                                &old_id, storage,
+                            ) {
                                 crate::log(&format!("CLUTCH: Failed to delete old chains: {}", e));
                             }
                         }
@@ -6230,8 +6328,7 @@ impl PhotonApp {
                                             if let Some(storage) = self.storage.as_ref() {
                                                 if let Err(e) =
                                                     crate::storage::contacts::save_contact(
-                                                        contact,
-                                                        storage,
+                                                        contact, storage,
                                                     )
                                                 {
                                                     crate::log(&format!(
@@ -6590,14 +6687,22 @@ impl PhotonApp {
                     let rd = match std::fs::read_dir(&app_dir) {
                         Ok(rd) => rd,
                         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
-                        Err(e) => { eprintln!("[]n WARN: read_dir {}: {}", app_dir.display(), e); return }
+                        Err(e) => {
+                            eprintln!("[]n WARN: read_dir {}: {}", app_dir.display(), e);
+                            return;
+                        }
                     };
                     for entry in rd.flatten() {
                         let p = entry.path();
                         if p.extension().map_or(false, |e| e == "vsf") {
                             match std::fs::remove_file(&p) {
-                                Ok(()) => { eprintln!("[]n deleted {}", p.display()); *count += 1; }
-                                Err(e) => eprintln!("[]n WARN: could not delete {}: {}", p.display(), e),
+                                Ok(()) => {
+                                    eprintln!("[]n deleted {}", p.display());
+                                    *count += 1;
+                                }
+                                Err(e) => {
+                                    eprintln!("[]n WARN: could not delete {}: {}", p.display(), e)
+                                }
                             }
                         }
                     }
@@ -6612,7 +6717,10 @@ impl PhotonApp {
                 if let Ok(mut pks) = self.contact_pubkeys.lock() {
                     pks.clear();
                 }
-                eprintln!("[]n nuked {} vault file(s); session kept (still attested)", count);
+                eprintln!(
+                    "[]n nuked {} vault file(s); session kept (still attested)",
+                    count
+                );
             }
             'u' => {
                 // De-attest — clear the tohu session (identity_seed/vault_seed/handle_proof) and drop back to the attest screen, leaving the vault on disk intact. The identity is deterministic from the handle, so re-typing it re-derives the same roots. Mirror of []n: []u forgets WHO you are, []n forgets WHAT you've stored. Only fires in development builds.
