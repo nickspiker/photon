@@ -1029,7 +1029,7 @@ impl FluorApp for PhotonApp {
                 };
                 if dy != 0 {
                     if matches!(self.state, AppState::Ready) {
-                        // On the contacts screen the wheel scrolls the list, not the background. Down-scroll (negative dy) moves the list up (reveals lower contacts), so subtract; the render pass clamps to the list extent.
+                        // On the contacts screen the wheel scrolls the WHOLE user section + list as one block. Down-scroll (negative dy) moves the block up (reveals lower contacts), so subtract; the render pass clamps to the full-block extent and re-runs `update_widget_layout` after the clamp so the search box + plus button (whose rects are set off `contacts_scroll`) track the clamped offset.
                         self.contacts_scroll = (self.contacts_scroll - dy).max(0);
                     } else if matches!(self.state, AppState::Conversation) {
                         // In a conversation the wheel scrolls the message history. The list lays out
@@ -1633,6 +1633,28 @@ impl FluorApp for PhotonApp {
             "\u{2190} Network".to_string()
         };
 
+        // Clamp the contacts block scroll and refresh the contacts widget layout BEFORE taking the long-lived `chrome` borrow. The whole user section (avatar, hint, search box, separator) now scrolls with the contact rows as one block, and the search box / plus button rects are positioned in `update_widget_layout` off `contacts_scroll`; doing this here (rather than inside the borrowed render block, which can't call `&mut self`) keeps the box, the avatar, and the rows all reading the SAME clamped offset within a frame — no one-frame mismatch at the over-scroll boundary. The formula matches the in-block geometry exactly: `max_scroll = (rows.y0 + matching·row_h) − buf_h`, hard-stopped at 0.
+        if matches!(self.state, AppState::Ready) {
+            let rl = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru);
+            let row_h = rl.row_height.max(1) as isize;
+            let filter: String = self
+                .contacts_textbox
+                .as_ref()
+                .map(|t| t.chars.iter().collect::<String>().to_lowercase())
+                .unwrap_or_default();
+            let n_matching = self
+                .contacts
+                .iter()
+                .filter(|c| {
+                    filter.is_empty() || c.handle.as_str().to_lowercase().contains(&filter)
+                })
+                .count();
+            let block_bottom_at_zero = rl.rows.y0 as isize + n_matching as isize * row_h;
+            let max_scroll = (block_bottom_at_zero - buf_h as isize).max(0);
+            self.contacts_scroll = self.contacts_scroll.clamp(0, max_scroll);
+            self.update_widget_layout(ctx);
+        }
+
         let Some(chrome) = self.chrome.as_mut() else {
             return;
         };
@@ -1671,8 +1693,9 @@ impl FluorApp for PhotonApp {
         let text = &mut *ctx.text;
         // Bg-first compose chain: noise paints opaque, the wave reads it for the `sqrt(c*scale + c_bg²)` blend, then the logo (glow / body / highlight) paints over both via legacy visible-RGB ops. Each step preserves α on the pixels it touches. The wave + logo are Launch-screen chrome — once attested the user shouldn't be staring at the wordmark every time they open the app, so Ready / Searching / Conversation get just the background noise and let their own widgets own the canvas.
         let on_launch = matches!(self.state, AppState::Launch(_));
-        // Version watermark shows ONLY on the attest screen (Launch) and the contacts screen (Ready) — not conversations or other screens. (Settings, when it lands, spells the version out in words rather than glyphs; that's its own render path.)
-        let show_version = on_launch || matches!(self.state, AppState::Ready);
+        // Version watermark shows on the attest screen (Launch), the contacts screen (Ready), and the conversation screen — not other screens. (Settings, when it lands, spells the version out in words rather than glyphs; that's its own render path.) It's a faint bottom-left watermark painted in the bg pass, so on the conversation screen it sits behind the lifted compose box rather than competing with it.
+        let show_version =
+            on_launch || matches!(self.state, AppState::Ready | AppState::Conversation);
         // Swap the noise base colour to BG_BASE_WARNING when the dual-ring vault flagged degraded this session — the noise pass already runs every frame so this changes a colour, not the pass count. None on the happy path keeps the default green-dark base from theme.rs.
         let bg_base = if self.vault_degraded {
             Some(crate::ui::theme::BG_BASE_WARNING)
@@ -1870,19 +1893,23 @@ impl FluorApp for PhotonApp {
             let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
             let ready_layout = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru);
 
-            // Clear the contacts textbox slot in the shared hit_test_map before re-stamping. Same reason as the launch screen: chrome only wipes the map on its own dirty cycles, but the textbox + overlaid plus-button re-stamp every frame, and the plus only renders when the field is non-empty. Without this, clearing the search field to empty on a chrome-clean frame would leave the plus-button's old hit-rect dispatching pointer + hitmask. The plus lives inside the textbox slot, so clearing that slot covers both.
+            // The whole user section (avatar, hint, search box + plus, separator) scrolls together with the contact rows as one block; `contacts_scroll` is the single block offset (0 = rest, avatar at its natural top). Subtract it from the Y of every scrolling element. The version watermark, Sec/Rec meters, and background do NOT scroll (rendered elsewhere / left unoffset here). The upper clamp lands below once `matching`/`rows` are known.
+            let scroll = self.contacts_scroll as f32;
+
+            // Clear the contacts textbox slot in the shared hit_test_map before re-stamping. Same reason as the launch screen: chrome only wipes the map on its own dirty cycles, but the textbox + overlaid plus-button re-stamp every frame, and the plus only renders when the field is non-empty. Without this, clearing the search field to empty on a chrome-clean frame would leave the plus-button's old hit-rect dispatching pointer + hitmask. The plus lives inside the textbox slot, so clearing that slot covers both. The slot scrolls with the block, so clear the SCROLLED rect (update_widget_layout offsets the textbox/button rects by the same `contacts_scroll`).
             restamp_hit_rect(
                 &mut chrome.hit_test_map,
                 buf_w,
                 buf_h,
                 ready_layout.textbox.x0 as isize,
-                ready_layout.textbox.y0 as isize,
+                ready_layout.textbox.y0 as isize - self.contacts_scroll,
                 ready_layout.textbox.x1 as isize,
-                ready_layout.textbox.y1 as isize,
+                ready_layout.textbox.y1 as isize - self.contacts_scroll,
                 HIT_NONE,
             );
 
-            let (cx, cy, radius) = ready_layout.avatar_center_radius();
+            let (cx, cy_natural, radius) = ready_layout.avatar_center_radius();
+            let cy = cy_natural - scroll;
             // 0xFFC5C5C5 in fluor's α+darkness format = α 0xFF, darkness 0xC5 each channel = visible RGB(0x3A, 0x3A, 0x3A) ≈ 22% brightness. Standalone constant (no theme.rs entry yet) — promote when Ready chrome gets a proper palette pass.
             if self.device_avatar_pixels.is_some() {
                 let diameter = (radius * 2.0) as usize;
@@ -2041,7 +2068,7 @@ impl FluorApp for PhotonApp {
                 if !hint.is_empty() {
                     let region_h = (hint.y1 - hint.y0) as f32;
                     let scx = (hint.x0 + hint.x1) as f32 * 0.5;
-                    let scy = (hint.y0 + hint.y1) as f32 * 0.5;
+                    let scy = (hint.y0 + hint.y1) as f32 * 0.5 - scroll;
                     ctx.text.draw_text_center_u32(
                         &mut canvas,
                         text,
@@ -2064,7 +2091,7 @@ impl FluorApp for PhotonApp {
             paint::fill_rect(
                 &mut canvas,
                 sep.x0 as isize,
-                ((sep.y0 + sep.y1) / 2) as isize,
+                ((sep.y0 + sep.y1) / 2) as isize - self.contacts_scroll,
                 (sep.x1 - sep.x0) as isize,
                 0,
                 SEPARATOR_COLOUR,
@@ -2076,7 +2103,8 @@ impl FluorApp for PhotonApp {
             let row_h = ready_layout.row_height.max(1) as isize;
             let diam = ready_layout.contact_avatar_diameter;
             let avatar_r = diam as f32 * 0.5;
-            let rows_clip = fluor::paint::Clip::new(rows.x0, rows.y0, rows.x1, buf_h);
+            // Rows now scroll up into (and past) where the user section sat, so the clip can no longer stop at `rows.y0`. Clip top = the top of the content area (0); the chrome title bar composites on top afterwards via `chrome.flatten_into`, exactly as it does for the unclipped avatar that already draws high. Keep the x extent at the rows' columns.
+            let rows_clip = fluor::paint::Clip::new(rows.x0, 0, rows.x1, buf_h);
 
             // Filter by the search text (case-insensitive substring on the handle); empty filter = all.
             let filter: String = self
@@ -2094,9 +2122,9 @@ impl FluorApp for PhotonApp {
                 .map(|(i, _)| i)
                 .collect();
 
-            // Clamp scroll to the list extent (a wheel can't push past the last row).
-            let view_h = (buf_h as isize - rows.y0 as isize).max(0);
-            let max_scroll = (matching.len() as isize * row_h - view_h).max(0);
+            // Clamp scroll over the FULL block (user section + rows), hard-stop at both ends. Down-scroll stops when the last row's bottom reaches the screen bottom; up-scroll stops at rest (0), with the avatar at its natural top. `block_bottom_at_zero` is the last row's bottom edge at scroll 0 (`rows.y0` is the natural top of the rows region, already below the user section), so `max_scroll` is how far the block can travel before its bottom hits the viewport floor.
+            let block_bottom_at_zero = rows.y0 as isize + matching.len() as isize * row_h;
+            let max_scroll = (block_bottom_at_zero - buf_h as isize).max(0);
             if self.contacts_scroll > max_scroll {
                 self.contacts_scroll = max_scroll;
             }
@@ -2108,8 +2136,8 @@ impl FluorApp for PhotonApp {
             let ring_thickness = (avatar_r * 0.0375).max(1.0);
             for (vis, &ci) in matching.iter().enumerate() {
                 let row_top = rows.y0 as isize + vis as isize * row_h - self.contacts_scroll;
-                if row_top + row_h <= rows.y0 as isize || row_top >= buf_h as isize {
-                    continue; // fully outside the visible list region
+                if row_top + row_h <= 0 || row_top >= buf_h as isize {
+                    continue; // fully outside the visible content area (rows now scroll up to the top, not just `rows.y0`)
                 }
                 let cy = (row_top + row_h / 2) as f32;
                 let online = self.contacts[ci].is_online;
@@ -2188,7 +2216,7 @@ impl FluorApp for PhotonApp {
                         buf_w,
                         buf_h,
                         rows.x0 as isize,
-                        row_top.max(rows.y0 as isize),
+                        row_top.max(0),
                         rows.x1 as isize,
                         (row_top + row_h).min(buf_h as isize),
                         row_hit,
@@ -2674,8 +2702,9 @@ impl PhotonApp {
         let slot_y0 = slot.y0 as f32;
         let slot_w = (slot.x1 - slot.x0) as f32;
         let slot_h = (slot.y1 - slot.y0) as f32;
+        // The search box + overlaid plus button scroll with the user section, so subtract the SAME `contacts_scroll` the render pass uses. Both passes read it from `self`, so the rendered content (drawn at this rect) and the hit-stamp (which follows the rect) move together; offsetting the rect moves visual + hit area as one.
         let tb_cx = slot_x0 + slot_w * 0.5;
-        let tb_cy = slot_y0 + slot_h * 0.5;
+        let tb_cy = slot_y0 + slot_h * 0.5 - self.contacts_scroll as f32;
         let plus_size = slot_h * 7.0 / 8.0;
         let plus_inset = slot_h / 16.0;
         let plus_cx = slot_x0 + slot_w - plus_inset - plus_size * 0.5;
@@ -4601,6 +4630,30 @@ impl PhotonApp {
                                     contact.handle,
                                     if is_online { "ONLINE" } else { "offline" }
                                 ));
+                            }
+
+                            // Deadlock recovery: a queued KEM with no offer means their offer never
+                            // arrived (lost in transit — their KEM landed but the larger offer transfer
+                            // didn't). We can't derive ceremony_id or complete our slot without it, and
+                            // there's no timeout on the queue, so this hangs Pending forever (only a
+                            // restart, which forces a fresh offer exchange, recovers it). Self-heal:
+                            // when we see a still-queued KEM on a pong AND we've already sent our offer
+                            // (so we're genuinely stuck, not mid-initial-exchange), reset
+                            // clutch_offer_sent so the offer-send block below re-fires this pong — our
+                            // re-sent offer prompts them to re-send theirs (the same path a restart
+                            // takes). Pong cadence rate-limits the re-request to one per pong. Only the
+                            // "their offer was lost" case is recoverable here; if a peer genuinely never
+                            // sends an offer, nothing we do fixes it.
+                            if is_online
+                                && contact.clutch_state == ClutchState::Pending
+                                && contact.clutch_pending_kem.is_some()
+                                && contact.clutch_offer_sent
+                            {
+                                crate::log(&format!(
+                                    "CLUTCH: still waiting for offer from {} (their KEM is queued) — re-requesting by re-sending our offer",
+                                    contact.handle
+                                ));
+                                contact.clutch_offer_sent = false;
                             }
 
                             // Send full offer when contact comes online and keys are ready Keys are pre-generated in background when contact is added Slot-based: send if Pending, have keypairs, haven't sent yet Note: ceremony_id is now computed AFTER offers are exchanged
