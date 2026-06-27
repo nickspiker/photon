@@ -537,7 +537,7 @@ impl HandleQuery {
 
                         // Initialize FlatStorage for this session. A bare `return` here would silently strand the UI on the Attesting spinner because the result channel never gets a verdict — the worker has already proven FGTW says the handle is ours, but with no local vault we can't reach Ready. Surface the failure as a QueryResult::Error so the Launch screen flips to its error state and the user sees what happened.
                         let storage = match crate::storage::FlatStorage::new(crate::storage::APP, vault_seed, device_secret_bytes) {
-                            Ok(s) => s,
+                            Ok(s) => std::sync::Arc::new(s),
                             Err(e) => {
                                 let msg = format!("storage init failed: {}", e);
                                 crate::log(&format!("Network: {}", msg));
@@ -615,7 +615,7 @@ impl HandleQuery {
 
                         // Load local avatar
                         let avatar_pixels =
-                            crate::avatar::load_avatar_from_seed(&identity_seed).map(|(_, p)| p);
+                            crate::avatar::load_avatar_from_seed(&identity_seed, &storage).map(|(_, p)| p);
 
                         // Cloud sync (download + merge)
                         crate::log("Network: Syncing with cloud...");

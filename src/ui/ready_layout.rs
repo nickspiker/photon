@@ -44,6 +44,8 @@ pub struct ReadyLayout {
     pub row_height: usize,
     /// Diameter of a contact-row avatar circle (half the row height).
     pub contact_avatar_diameter: usize,
+    /// The base layout unit: `HM(span/32 · ru, block_h / total_units)` — span-based, aspect-ratio-robust, zoom-aware, no hardcoded pixels. Other screens (e.g. Conversation) scale off this so they match the contacts screen's feel.
+    pub unit_height: f32,
 }
 
 impl ReadyLayout {
@@ -113,6 +115,7 @@ impl ReadyLayout {
             rows: PixelRect::new(content_x, rows_y, block_x1, buf_h),
             row_height,
             contact_avatar_diameter,
+            unit_height,
         }
     }
 
