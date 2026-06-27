@@ -370,6 +370,8 @@ pub struct PhotonApp {
     contacts_plus_btn: Option<Button>,
     /// Conversation-screen message compose box (Conversation state). Distinct from the launch/search boxes so content never bleeds between screens. Enter sends (`submit_message`); the contents encrypt onto the open contact's friendship chain.
     message_textbox: Option<Textbox>,
+    /// Send button overlaid inside `message_textbox`'s right edge — mirrors the contacts-screen search `+` button (same size, same overlay treatment). Clicking it sends the compose box contents, same as pressing Enter.
+    message_send_btn: Option<Button>,
     /// Encrypted local storage — initialized after attestation success with the device secret + handle. Held behind an `Arc` so it can be handed to the avatar background-download/sync threads (a plain `&FlatStorage` borrow can't cross `thread::spawn`); the inner `Mutex<Vault>` makes `Arc<FlatStorage>` `Send + Sync`.
     storage: Option<std::sync::Arc<crate::storage::FlatStorage>>,
     /// Contact list. Populated from `AttestationData.contacts` on attestation success and grown by `submit_add_friend` → `HandleQuery::search` results. Persisted to FlatStorage on add.
@@ -465,6 +467,7 @@ impl PhotonApp {
             contacts_textbox: None,
             message_textbox: None,
             contacts_plus_btn: None,
+            message_send_btn: None,
             storage: None,
             contacts: Vec::new(),
             add_in_flight: false,
@@ -620,6 +623,9 @@ impl Container for PhotonApp {
                 if let Some(tb) = self.message_textbox.as_mut() {
                     f(tb);
                 }
+                if let Some(btn) = self.message_send_btn.as_mut() {
+                    f(btn);
+                }
             }
         }
         if let Some(chrome) = self.chrome.as_mut() {
@@ -704,6 +710,8 @@ impl FluorApp for PhotonApp {
         self.contacts_plus_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., "+"));
         // Conversation compose box — placeholder geometry; positioned each frame via `update_widget_layout`.
         self.message_textbox = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
+        // Send button overlaid in the compose box; "→" glyph. Geometry set each frame in `update_widget_layout`.
+        self.message_send_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., "\u{2192}"));
         // Reserve a hit-id for the Ready-screen avatar circle. Not a Widget — the avatar is just a paint primitive — so click dispatch is handled directly in `on_event`'s MouseInput::Pressed arm, not thru `widget::dispatch_click`. Incrementing the shared counter keeps the contiguous-id contract intact for the `[]h` debug overlay.
         self.hit_counter = self.hit_counter.wrapping_add(1);
         self.avatar_hit_id = self.hit_counter;
@@ -1191,6 +1199,16 @@ impl FluorApp for PhotonApp {
                     self.submit_add_friend();
                     ctx.window.request_redraw();
                 }
+                // Conversation send button — same release-edge polling pattern as the plus button.
+                let send_clicked = self
+                    .message_send_btn
+                    .as_mut()
+                    .map(|b| b.take_click())
+                    .unwrap_or(false);
+                if send_clicked {
+                    self.submit_message();
+                    ctx.window.request_redraw();
+                }
                 EventResponse::Pass
             }
             Event::KeyboardInput { event: kev, .. } => {
@@ -1345,8 +1363,18 @@ impl FluorApp for PhotonApp {
                             if plus_clicked {
                                 self.submit_add_friend();
                             }
+                            // Send button Space-activation (when focused).
+                            let send_clicked = self
+                                .message_send_btn
+                                .as_mut()
+                                .map(|b| b.take_click())
+                                .unwrap_or(false);
+                            if send_clicked {
+                                self.submit_message();
+                            }
                             if attest_clicked
                                 || plus_clicked
+                                || send_clicked
                                 || matches!(resp, EventResponse::Handled)
                             {
                                 ctx.window.request_redraw();
@@ -2251,7 +2279,7 @@ impl FluorApp for PhotonApp {
 
                     // Back arrow (top-left) — below the chrome title bar area.
                     let back_y = buf_h as f32 * 0.06 + unit;
-                    let back_size = unit * 0.8;
+                    let back_size = unit * 1.15;
                     let back_text = "\u{2190} Contacts";
                     ctx.text.draw_text_left_u32(
                         &mut canvas,
@@ -2281,28 +2309,11 @@ impl FluorApp for PhotonApp {
                         self.back_btn_hit_id,
                     );
 
-                    // Contact name, centred
-                    let name_y = back_y + unit * 2.5;
-                    let name_size = unit * 1.2;
-                    ctx.text.draw_text_center_u32(
-                        &mut canvas,
-                        contact.handle.as_str(),
-                        buf_w as f32 * 0.5,
-                        name_y,
-                        name_size,
-                        600,
-                        CONTACT_NAME_COLOUR,
-                        "Oxanium",
-                        None,
-                        None,
-                        None,
-                    );
-
-                    // Avatar — sized to MATCH our own avatar on the Ready/contacts screen, so the friend's avatar here reads at the same scale. Both derive their radius from `ReadyLayout::avatar_center_radius` (a pure fn of viewport + zoom), so they stay identical across resize/zoom. Only the centre placement differs (centred on this screen vs. the Ready slot).
-                    let avatar_y = name_y + unit * 3.0;
+                    // Avatar FIRST, then the handle below it. Sized to MATCH our own avatar on the Ready/contacts screen, so the friend's avatar here reads at the same scale. Both derive their radius from `ReadyLayout::avatar_center_radius` (a pure fn of viewport + zoom), so they stay identical across resize/zoom. Only the centre placement differs (centred on this screen vs. the Ready slot).
                     let (_, _, avatar_r) = conv_layout.avatar_center_radius();
                     let avatar_diam = (avatar_r * 2.0) as usize;
                     let avatar_cx = buf_w as f32 * 0.5;
+                    let avatar_y = back_y + unit * 1.5 + avatar_r;
                     if let Some(scaled) = contact.avatar_scaled.as_ref() {
                         crate::ui::avatar_render::draw_avatar(
                             &mut canvas,
@@ -2338,8 +2349,25 @@ impl FluorApp for PhotonApp {
                         None,
                     );
 
-                    // CLUTCH state (compact, under the avatar)
-                    let clutch_y = avatar_y + avatar_r + unit * 1.5;
+                    // Contact name, centred BELOW the avatar.
+                    let name_size = unit * 1.2;
+                    let name_y = avatar_y + avatar_r + unit * 1.2;
+                    ctx.text.draw_text_center_u32(
+                        &mut canvas,
+                        contact.handle.as_str(),
+                        buf_w as f32 * 0.5,
+                        name_y,
+                        name_size,
+                        600,
+                        CONTACT_NAME_COLOUR,
+                        "Oxanium",
+                        None,
+                        None,
+                        None,
+                    );
+
+                    // CLUTCH state (compact, under the name)
+                    let clutch_y = name_y + unit * 1.5;
                     let clutch_label = match contact.clutch_state {
                         crate::types::ClutchState::Pending => "CLUTCH: pending",
                         crate::types::ClutchState::AwaitingProof => "CLUTCH: awaiting proof",
@@ -2381,9 +2409,12 @@ impl FluorApp for PhotonApp {
                     let line_h = msg_size * 1.6; // text + breathing room per message
                     let pad_x = unit; // left/right inset
                     let list_top = clutch_y + unit * 1.2;
-                    // Compose bar reserves the bottom strip; the list lives between.
+                    // Compose bar reserves the bottom strip, lifted off the bottom edge by `compose_margin`. The list lives between list_top and list_bottom. Must match the layout pass's `compose_h`/`compose_margin` below.
                     let compose_h = unit * 1.8;
-                    let list_bottom = buf_h as f32 - compose_h - unit * 0.5;
+                    let compose_margin = unit * 0.8;
+                    let list_bottom = buf_h as f32 - compose_h - compose_margin - unit * 0.5;
+                    // Clamp so a short window (tall header) can never invert the clip (list_top > list_bottom) — that's what made every message vanish on resize. When there's no room, list_bottom collapses to list_top and the list is simply empty rather than drawing with a negative-height (inverted) clip.
+                    let list_bottom = list_bottom.max(list_top);
                     let list_clip = fluor::paint::Clip::new(
                         0,
                         list_top as usize,
@@ -2391,9 +2422,13 @@ impl FluorApp for PhotonApp {
                         list_bottom as usize,
                     );
 
-                    // Lay messages out bottom-up so the newest sits at list_bottom.
+                    // Lay messages out bottom-up so the newest sits at list_bottom. Clamp scroll offset to the actual overscroll range so a stale offset from a previous (larger) window size can't push every message above list_top on resize.
                     let n = contact.messages.len();
-                    let mut y = list_bottom - msg_size + contact.message_scroll_offset;
+                    let content_h = n as f32 * line_h;
+                    let view_h = (list_bottom - list_top).max(0.0);
+                    let max_scroll = (content_h - view_h).max(0.0);
+                    let scroll = contact.message_scroll_offset.clamp(0.0, max_scroll);
+                    let mut y = list_bottom - msg_size + scroll;
                     for msg in contact.messages.iter().rev() {
                         if y < list_top - line_h {
                             break; // scrolled above the visible region
@@ -2463,12 +2498,13 @@ impl FluorApp for PhotonApp {
                         .as_ref()
                         .map(|t| Some(t.hit_id()) == self.focused)
                         .unwrap_or(false);
+                    let compose_cy = buf_h as f32 - compose_margin - compose_h * 0.5;
                     if compose_empty && !compose_focused {
                         ctx.text.draw_text_left_u32(
                             &mut canvas,
                             "message",
                             pad_x * 1.2,
-                            buf_h as f32 - compose_h * 0.5,
+                            compose_cy,
                             msg_size,
                             400,
                             LABEL_COLOUR,
@@ -2488,6 +2524,30 @@ impl FluorApp for PhotonApp {
                             None,
                             None,
                             Some(&mut chrome.hit_test_map),
+                            id,
+                        );
+                    }
+                    // Send button — overlaid inside the compose box's right edge, mirroring the contacts-screen search '+' button (7/8 of the box height, inset from the right). Painted AFTER the textbox so it's visually on top (under-blend = topmost-first would bury it, so we re-stamp its hit rect afterward to recover click dispatch in the overlap). Geometry set in the layout pass.
+                    if let Some(btn) = self.message_send_btn.as_mut() {
+                        let id = btn.hit_id();
+                        btn.render_content_into(
+                            &mut canvas,
+                            0.,
+                            0.,
+                            ctx.text,
+                            None,
+                            Some(&mut chrome.hit_test_map),
+                            id,
+                        );
+                        let bbox = button_bbox(btn);
+                        restamp_hit_rect(
+                            &mut chrome.hit_test_map,
+                            buf_w,
+                            buf_h,
+                            bbox.0,
+                            bbox.1,
+                            bbox.2,
+                            bbox.3,
                             id,
                         );
                     }
@@ -2629,16 +2689,24 @@ impl PhotonApp {
             btn.set_font_size(font_size);
         }
 
-        // Conversation compose box: a full-width strip pinned to the bottom. Geometry must match the
-        // render block's `compose_h = unit * 1.8`, where `unit` is ReadyLayout's span-based harmonic unit (same as the contacts screen — no hardcoded pixels).
+        // Conversation compose box: a full-width strip lifted off the bottom edge by `compose_margin`. Geometry must match the render block's `compose_h`/`compose_margin`/`compose_cy`, where `unit` is ReadyLayout's span-based harmonic unit (same as the contacts screen — no hardcoded pixels). The send button is OVERLAID inside the box's right edge, exactly like the contacts-screen `+` search button (7/8 of the box height, inset 1/16 from the right).
         let unit = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru).unit_height;
         let compose_h = unit * 1.8;
+        let compose_margin = unit * 0.8;
         let compose_w = buf_w as f32 - unit * 2.0;
         let compose_cx = buf_w as f32 * 0.5;
-        let compose_cy = buf_h as f32 - compose_h * 0.5;
+        let compose_cy = buf_h as f32 - compose_margin - compose_h * 0.5;
         if let Some(tb) = self.message_textbox.as_mut() {
             tb.set_rect(compose_cx, compose_cy, compose_w, compose_h);
             tb.set_font_size(font_size, ctx.text);
+        }
+        if let Some(btn) = self.message_send_btn.as_mut() {
+            let send_size = compose_h * 7.0 / 8.0;
+            let send_inset = compose_h / 16.0;
+            let box_right = compose_cx + compose_w * 0.5;
+            let send_cx = box_right - send_inset - send_size * 0.5;
+            btn.set_rect(send_cx, compose_cy, send_size, send_size);
+            btn.set_font_size(font_size);
         }
     }
 
