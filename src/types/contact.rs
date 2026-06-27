@@ -351,6 +351,46 @@ impl Contact {
         !self.clutch_slots.is_empty() && self.clutch_slots.iter().all(|s| s.is_complete())
     }
 
+    /// A behind-the-scenes, human-readable description of where the CLUTCH ceremony actually is — for the conversation-screen status line (and debugging asymmetric completion). A flat "pending" hides whether we're waiting on keygen, the offer, the peer's KEM, or the final proof; this spells out the live state from the slot/keypair/proof fields.
+    pub fn clutch_status_detail(&self) -> String {
+        match self.clutch_state {
+            ClutchState::Complete => "secured".to_string(),
+            ClutchState::AwaitingProof => {
+                if self.clutch_their_eggs_proof.is_some() {
+                    "verifying proof".to_string()
+                } else {
+                    "eggs hatched · awaiting peer proof".to_string()
+                }
+            }
+            ClutchState::Pending => {
+                // Slot fill progress: how many party slots have both an offer and a KEM direction.
+                let total = self.clutch_slots.len();
+                let filled = self.clutch_slots.iter().filter(|s| s.is_complete()).count();
+                let offers = self
+                    .clutch_slots
+                    .iter()
+                    .filter(|s| s.offer.is_some())
+                    .count();
+                // Lead with the most informative in-flight stage.
+                if self.clutch_ceremony_in_progress {
+                    "hatching eggs…".to_string()
+                } else if self.clutch_keygen_in_progress {
+                    "generating keys…".to_string()
+                } else if self.clutch_kem_encap_in_progress {
+                    "sealing KEM…".to_string()
+                } else if self.clutch_our_keypairs.is_none() {
+                    "no keys yet".to_string()
+                } else if total == 0 {
+                    "offer sent · awaiting peer".to_string()
+                } else if self.clutch_pending_kem.is_some() {
+                    format!("slots {filled}/{total} · queued KEM")
+                } else {
+                    format!("slots {filled}/{total} · offers {offers}/{total}")
+                }
+            }
+        }
+    }
+
     /// Insert a message in sorted order by timestamp (oldest first). Uses binary search for O(log n) position finding.
     pub fn insert_message_sorted(&mut self, msg: ChatMessage) {
         // Binary search for insertion point (maintains ascending timestamp order)
