@@ -23,6 +23,9 @@ android_build() {
     mkdir -p android/app/src/main/jniLibs/arm64-v8a
     cp "$so" android/app/src/main/jniLibs/arm64-v8a/
 
+    # photon-specific: google-services.json (Firebase). The shared keystore lib exports TOKEN_KEYS_DIR but no longer copies this itself (it's app-agnostic now); other apps sharing keystore.sh skip it.
+    cp "$TOKEN_KEYS_DIR/google-services.json" android/app/
+
     echo "Building APK with Gradle..."
     ( cd android && ./gradlew assembleRelease --rerun-tasks )
 
