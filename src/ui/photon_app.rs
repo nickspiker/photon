@@ -1634,6 +1634,8 @@ impl FluorApp for PhotonApp {
         };
 
         // Clamp the contacts block scroll and refresh the contacts widget layout BEFORE taking the long-lived `chrome` borrow. The whole user section (avatar, hint, search box, separator) now scrolls with the contact rows as one block, and the search box / plus button rects are positioned in `update_widget_layout` off `contacts_scroll`; doing this here (rather than inside the borrowed render block, which can't call `&mut self`) keeps the box, the avatar, and the rows all reading the SAME clamped offset within a frame — no one-frame mismatch at the over-scroll boundary. The formula matches the in-block geometry exactly: `max_scroll = (rows.y0 + matching·row_h) − buf_h`, hard-stopped at 0.
+        // Scrolled Y for the Ready-screen version watermark (rides the scroll block); `None` on other screens, where the version uses its pinned `version_cy`.
+        let mut ready_block_version_y: Option<f32> = None;
         if matches!(self.state, AppState::Ready) {
             let rl = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru);
             let row_h = rl.row_height.max(1) as isize;
@@ -1653,6 +1655,9 @@ impl FluorApp for PhotonApp {
             let max_scroll = (block_bottom_at_zero - buf_h as isize).max(0);
             self.contacts_scroll = self.contacts_scroll.clamp(0, max_scroll);
             self.update_widget_layout(ctx);
+            // Contacts version watermark rides the scroll block: it sits just past the last contact row (one row-height of breathing room) and scrolls up with everything else, rather than being pinned to the bottom. Stash the scrolled Y for the bg-layer closure below; other screens keep the pinned `version_cy`.
+            ready_block_version_y =
+                Some((block_bottom_at_zero + row_h - self.contacts_scroll) as f32);
         }
 
         let Some(chrome) = self.chrome.as_mut() else {
@@ -1707,11 +1712,13 @@ impl FluorApp for PhotonApp {
         chrome.rasterize_bg(ctx.damage, |canvas| {
             // Version watermark FIRST — fluor's `under()` is topmost-first, and `background_noise` composes UNDER existing content, so the version must be painted before the noise to survive. At α≈1/32 white the noise blends thru ~97%, leaving it as a faint bottom-of-screen watermark. (This is what "before the background gets painted" meant — paint last and the opaque noise buries it.)
             if show_version {
+                // On the Ready screen the version rides the scroll block (positioned past the last contact row); elsewhere it stays pinned at `version_cy`.
+                let vy = ready_block_version_y.unwrap_or(version_cy);
                 text.draw_text_left_u32(
                     canvas,
                     &version_glyphs,
                     version_x,
-                    version_cy,
+                    vy,
                     version_size,
                     400,
                     VERSION_COLOUR,
