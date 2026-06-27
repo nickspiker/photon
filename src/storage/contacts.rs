@@ -88,15 +88,19 @@ pub fn save_contact_list(
         .encode()
         .map_err(|e| StorageError::Parse(e.to_string()))?;
 
-    storage.write_addr(&crate::storage::vault_key("contacts", storage.vault_seed()), &vsf_bytes)
+    storage.write_addr(
+        &crate::storage::vault_key("contacts", storage.vault_seed()),
+        &vsf_bytes,
+    )
 }
 
 /// Load the contact list from encrypted index with schema validation
 pub fn load_contact_list(storage: &FlatStorage) -> Result<Vec<ContactIdentity>, StorageError> {
-    let vsf_bytes = match storage.read_addr(&crate::storage::vault_key("contacts", storage.vault_seed()))? {
-        Some(b) => b,
-        None => return Ok(Vec::new()),
-    };
+    let vsf_bytes =
+        match storage.read_addr(&crate::storage::vault_key("contacts", storage.vault_seed()))? {
+            Some(b) => b,
+            None => return Ok(Vec::new()),
+        };
 
     #[cfg(feature = "development")]
     crate::network::inspect::vsf_read_decrypted(&vsf_bytes, "contacts/index");
@@ -1084,7 +1088,9 @@ pub fn load_messages(contact: &mut Contact, storage: &FlatStorage) -> Result<(),
     let table = conversation_id(storage.vault_seed(), &their_identity_seed);
 
     let db = Db::open(storage).map_err(|e| StorageError::Vault(e.to_string()))?;
-    let pks = db.list_in(&table).map_err(|e| StorageError::Vault(e.to_string()))?;
+    let pks = db
+        .list_in(&table)
+        .map_err(|e| StorageError::Vault(e.to_string()))?;
 
     contact.messages.clear();
     for pk in pks {
@@ -1094,7 +1100,9 @@ pub fn load_messages(contact: &mut Contact, storage: &FlatStorage) -> Result<(),
         else {
             continue;
         };
-        let Some(content) = rec.text("content") else { continue };
+        let Some(content) = rec.text("content") else {
+            continue;
+        };
         contact.messages.push(ChatMessage {
             content: content.to_string(),
             timestamp: rec.time("timestamp").unwrap_or(0),
@@ -1171,11 +1179,30 @@ mod tests {
         let vault_seed = *ihi::handle_to_hash("me-messages-test").as_bytes();
         let app = crate::storage::APP;
 
-        let mut contact = Contact::new(HandleText::new("bob"), [3u8; 32], DevicePubkey::from_bytes([0u8; 32]));
+        let mut contact = Contact::new(
+            HandleText::new("bob"),
+            [3u8; 32],
+            DevicePubkey::from_bytes([0u8; 32]),
+        );
         contact.messages = vec![
-            ChatMessage { content: "hi".to_string(), timestamp: 100, is_outgoing: true, delivered: true },
-            ChatMessage { content: "hey".to_string(), timestamp: 200, is_outgoing: false, delivered: false },
-            ChatMessage { content: "👋 unicode".to_string(), timestamp: 300, is_outgoing: true, delivered: false },
+            ChatMessage {
+                content: "hi".to_string(),
+                timestamp: 100,
+                is_outgoing: true,
+                delivered: true,
+            },
+            ChatMessage {
+                content: "hey".to_string(),
+                timestamp: 200,
+                is_outgoing: false,
+                delivered: false,
+            },
+            ChatMessage {
+                content: "👋 unicode".to_string(),
+                timestamp: 300,
+                is_outgoing: true,
+                delivered: false,
+            },
         ];
 
         // session 1: save, then drop the vault (closes the on-disk files)
@@ -1186,7 +1213,11 @@ mod tests {
 
         // session 2: reopen from disk, load into a fresh contact
         let storage = FlatStorage::new(app, vault_seed, device_secret).unwrap();
-        let mut loaded = Contact::new(HandleText::new("bob"), [3u8; 32], DevicePubkey::from_bytes([0u8; 32]));
+        let mut loaded = Contact::new(
+            HandleText::new("bob"),
+            [3u8; 32],
+            DevicePubkey::from_bytes([0u8; 32]),
+        );
         load_messages(&mut loaded, &storage).unwrap();
 
         assert_eq!(loaded.messages.len(), 3);
