@@ -260,6 +260,7 @@ const CHORD_HINTS: &[(&str, &str)] = &[
     ("b", "Finalize copy-pass blue tint"),
     ("n", "Nuke vault — keeps you attested (dev only)"),
     ("u", "Un-attest — clear session, keep vault (dev only)"),
+    ("x", "Nuke + un-attest + EXIT for a clean relaunch (dev only)"),
 ];
 
 /// Bounding rect the chord hint panel covers — matches `paint::draw_chord_hint`'s positioning math so `damage_rect` can union it when both brackets are held. Pulled out of the panes example with the same math; if fluor's hint geometry changes, this needs updating in lockstep.
@@ -6855,6 +6856,42 @@ impl PhotonApp {
             && key_held(self.chord_rb_press, self.chord_rb_release, now)
     }
 
+    /// Delete every `.vsf` in the Photon app dirs (the on-disk vault: contacts, CLUTCH slots,
+    /// ephemeral keypairs, friendship chains, plus old-path strays and derivation-change orphans).
+    /// Returns the count deleted. Shared by the `[]n` (nuke, keep running) and `[]x` (nuke + exit)
+    /// chords; `tag` prefixes the log lines so you can tell which fired. Does NOT touch the tohu
+    /// session or any in-memory state — callers handle that.
+    fn dev_wipe_vault_files(tag: &str) -> usize {
+        let mut count = 0usize;
+        let wipe_dir = |dir: Option<std::path::PathBuf>, count: &mut usize| {
+            let Some(base) = dir else { return };
+            let app_dir = base.join(crate::storage::APP.dir);
+            let rd = match std::fs::read_dir(&app_dir) {
+                Ok(rd) => rd,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+                Err(e) => {
+                    eprintln!("{} WARN: read_dir {}: {}", tag, app_dir.display(), e);
+                    return;
+                }
+            };
+            for entry in rd.flatten() {
+                let p = entry.path();
+                if p.extension().map_or(false, |e| e == "vsf") {
+                    match std::fs::remove_file(&p) {
+                        Ok(()) => {
+                            eprintln!("{} deleted {}", tag, p.display());
+                            *count += 1;
+                        }
+                        Err(e) => eprintln!("{} WARN: could not delete {}: {}", tag, p.display(), e),
+                    }
+                }
+            }
+        };
+        wipe_dir(dirs::config_dir(), &mut count);
+        wipe_dir(dirs::data_dir(), &mut count);
+        count
+    }
+
     /// Dispatch a chord action character (`a`, `h`, `p`, etc.) that was pressed while both brackets are held. Returns true if anything happened (caller should request a redraw); false for unknown letters (no-op fallthrough — no whitelist so new bindings only add to dispatch, not gating).
     fn handle_chord_action(&mut self, ac: char, ctx: &mut Context) -> bool {
         use std::sync::atomic::Ordering;
@@ -6955,35 +6992,7 @@ impl PhotonApp {
             }
             'n' => {
                 // Nuke the local VAULT only — wipes every .vsf in the Photon app dirs (contacts, CLUTCH slots, ephemeral keypairs, friendship chains; also catches old-path strays and derivation-change orphans). Deliberately does NOT touch the tohu session: the identity_seed/vault_seed/handle_proof stay in memory + cache, so you remain attested on Ready with a freshly-empty vault. To clear the identity itself, use []u (de-attest). Only fires in development builds.
-                let mut count = 0usize;
-                let wipe_dir = |dir: Option<std::path::PathBuf>, count: &mut usize| {
-                    let Some(base) = dir else { return };
-                    let app_dir = base.join(crate::storage::APP.dir);
-                    let rd = match std::fs::read_dir(&app_dir) {
-                        Ok(rd) => rd,
-                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
-                        Err(e) => {
-                            eprintln!("[]n WARN: read_dir {}: {}", app_dir.display(), e);
-                            return;
-                        }
-                    };
-                    for entry in rd.flatten() {
-                        let p = entry.path();
-                        if p.extension().map_or(false, |e| e == "vsf") {
-                            match std::fs::remove_file(&p) {
-                                Ok(()) => {
-                                    eprintln!("[]n deleted {}", p.display());
-                                    *count += 1;
-                                }
-                                Err(e) => {
-                                    eprintln!("[]n WARN: could not delete {}: {}", p.display(), e)
-                                }
-                            }
-                        }
-                    }
-                };
-                wipe_dir(dirs::config_dir(), &mut count);
-                wipe_dir(dirs::data_dir(), &mut count);
+                let count = Self::dev_wipe_vault_files("[]n");
                 // Drop the in-memory vault state so the UI reflects the wipe immediately. Keep the
                 // session + a live FlatStorage handle: it points at the now-empty dir and recreates
                 // files lazily on the next write, so the app stays usable without a relaunch.
@@ -7005,6 +7014,19 @@ impl PhotonApp {
                 self.state = AppState::Launch(LaunchState::Fresh);
                 self.refocus_handle_select_all();
                 eprintln!("[]u de-attested; session cleared — re-type handle to re-attest");
+            }
+            'x' => {
+                // Full clean-slate reset for the dev loop: nuke the vault ([]n), clear the session
+                // ([]u), then KILL the process so the window dies and the next launch starts truly
+                // fresh — no lingering in-memory state, no half-reset UI. The disk wipe is the part
+                // that must persist; everything else dies with the process, so we exit right after.
+                let count = Self::dev_wipe_vault_files("[]x");
+                tohu::clear_session();
+                eprintln!(
+                    "[]x nuked {} vault file(s) + de-attested; exiting for a clean relaunch",
+                    count
+                );
+                std::process::exit(0);
             }
             _ => acted = false,
         }
