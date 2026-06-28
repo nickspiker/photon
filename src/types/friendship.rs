@@ -207,13 +207,6 @@ pub struct FriendshipChains {
     /// Last received message time per participant (for duplicate detection). Index matches chain index. None = no message received yet from that sender. If incoming message has eagle_time <= this value, it's a duplicate (skip).
     last_received_times: Vec<Option<i64>>,
 
-    /// Runtime-only (NOT persisted): the `(eagle_time, plaintext_hash)` of the most recently received
-    /// message, so a duplicate arrival (the sender retransmitted because OUR ACK was lost) can be
-    /// re-ACKed instead of silently dropped. Without this, a lost ACK never heals: the sender keeps
-    /// resending and eventually gives up, its chain frozen. Single-slot (latest only) is enough for the
-    /// common lost-ACK case; older duplicates just wait for the sender's give-up. Set on each successful
-    /// receive, before its ACK.
-    last_acked: Option<(i64, [u8; 32])>,
 
     // ==================== HASH CHAIN STATE ====================
     /// First message anchor per participant (deterministic starting point). Derived from: BLAKE3(DOMAIN_ANCHOR || participant_handle_hash || chain_fingerprint) where chain_fingerprint = BLAKE3(chain[256..512]). Both parties compute identical anchors from CLUTCH ceremony.
@@ -427,7 +420,6 @@ impl FriendshipChains {
             last_plaintexts,
             pending_messages: Vec::new(),
             last_received_times,
-            last_acked: None,
             first_message_anchors,
             last_received_hashes,
             last_sent_hash: None,
@@ -495,7 +487,6 @@ impl FriendshipChains {
             last_plaintexts,
             pending_messages,
             last_received_times,
-            last_acked: None,
             first_message_anchors,
             last_received_hashes,
             last_sent_hash,
@@ -597,7 +588,6 @@ impl FriendshipChains {
             last_plaintexts,
             pending_messages,
             last_received_times,
-            last_acked: None,
             first_message_anchors,
             last_received_hashes,
             last_sent_hash,
@@ -725,21 +715,6 @@ impl FriendshipChains {
         }
     }
 
-    /// Record the `(eagle_time, plaintext_hash)` of the message we just ACKed, so a later duplicate
-    /// (sender retransmitted because our ACK was lost) can be re-ACKed deterministically. Call right
-    /// before sending the ACK. See [`last_acked_hash`](Self::last_acked_hash).
-    pub fn set_last_acked(&mut self, eagle_time: i64, plaintext_hash: [u8; 32]) {
-        self.last_acked = Some((eagle_time, plaintext_hash));
-    }
-
-    /// If `eagle_time` matches the most recently ACKed message, return its `plaintext_hash` so the
-    /// caller can re-send the ACK for a duplicate (heals the lost-ACK case). Returns None otherwise.
-    pub fn last_acked_hash(&self, eagle_time: i64) -> Option<[u8; 32]> {
-        match self.last_acked {
-            Some((t, h)) if t == eagle_time => Some(h),
-            _ => None,
-        }
-    }
 
     // ==================== HASH CHAIN METHODS ====================
 
@@ -1485,19 +1460,4 @@ mod tests {
             .is_empty());
     }
 
-    #[test]
-    fn test_last_acked_reack_only_matches_latest() {
-        let alice = [1u8; 32];
-        let bob = [2u8; 32];
-        let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
-        let mut chains = FriendshipChains::from_clutch(&[alice, bob], &eggs);
-
-        assert_eq!(chains.last_acked_hash(500), None);
-        chains.set_last_acked(500, [0xBB; 32]);
-        assert_eq!(chains.last_acked_hash(500), Some([0xBB; 32]));
-        assert_eq!(chains.last_acked_hash(499), None); // only the latest is re-ACKable
-        chains.set_last_acked(600, [0xCC; 32]);
-        assert_eq!(chains.last_acked_hash(500), None);
-        assert_eq!(chains.last_acked_hash(600), Some([0xCC; 32]));
-    }
 }
