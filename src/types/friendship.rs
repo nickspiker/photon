@@ -711,6 +711,21 @@ impl FriendshipChains {
     /// Mark a message as received (update last received time for deduplication).
     pub fn mark_received(&mut self, sender_handle_hash: &[u8; 32], eagle_time: i64) {
         if let Some(idx) = self.participant_index(sender_handle_hash) {
+            // Tip-consistency guard: this is the conversation's high-water mark (the contiguous tip
+            // that becomes `last_received_osc`). It must only ever move FORWARD — a buffered /
+            // out-of-order ("ahead") message must never reach here (it's gated behind verify_chain_link
+            // and only processed in order, so its eagle_time is always strictly newer than the prior
+            // tip). If this ever fires, a non-contiguous message inflated the high-water mark, which
+            // would falsely tell the peer "I have everything up to here" and suppress a needed resend.
+            #[cfg(feature = "development")]
+            if let Some(prev) = self.last_received_times[idx] {
+                debug_assert!(
+                    eagle_time > prev,
+                    "mark_received went backward/non-monotonic: prev={} new={} — a buffered/out-of-order message inflated the contiguous tip",
+                    prev,
+                    eagle_time
+                );
+            }
             self.last_received_times[idx] = Some(eagle_time);
         }
     }
@@ -803,6 +818,29 @@ impl FriendshipChains {
             ));
         }
         due
+    }
+
+    /// Re-arm (reset the retransmit backoff for) pending messages NEWER than the peer's contiguous tip
+    /// `tip_osc` that have already EXHAUSTED `MAX_SEND_ATTEMPTS`. Drives stall recovery: a receiver
+    /// stalled on a gap keeps advertising its contiguous tip (its `last_received_osc`) in every ping's
+    /// sync record; if the gap-filling message was one the sender already gave up on, this revives it so
+    /// `collect_due_retransmits` will send it again. Without this, a message lost past 8 attempts is
+    /// permanently undelivered and the receiver stays stuck forever. Non-exhausted pendings are left
+    /// alone (their normal backoff already covers them). Returns how many were re-armed.
+    ///
+    /// `tip_osc` is the peer's newest CONTIGUOUS eagle_time ("I have everything up to here, in order"),
+    /// so anything with `eagle_time > tip_osc` is fair game to resend — it's either the missing message
+    /// or a successor the peer is buffering behind it.
+    pub fn rearm_pending_after(&mut self, tip_osc: i64, now_osc: i64) -> usize {
+        let mut rearmed = 0;
+        for msg in self.pending_messages.iter_mut() {
+            if msg.eagle_time > tip_osc && msg.attempts >= MAX_SEND_ATTEMPTS {
+                msg.attempts = 0;
+                msg.next_retry_osc = now_osc; // due immediately
+                rearmed += 1;
+            }
+        }
+        rearmed
     }
 
     /// Get pending messages that come after a given hash pointer. Used for resync: peer says "I have hash X", we return messages after X.
@@ -1460,4 +1498,37 @@ mod tests {
             .is_empty());
     }
 
+    #[test]
+    fn test_rearm_pending_after_revives_given_up_gap_filler() {
+        let alice = [1u8; 32];
+        let bob = [2u8; 32];
+        let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
+        let mut chains = FriendshipChains::from_clutch(&[alice, bob], &eggs);
+        let one_s = vsf::OSCILLATIONS_PER_SECOND as i64;
+        let t0 = 1_000_000_000i64;
+
+        // Two pending messages: an older one at t0 and a newer one at t0+10s.
+        chains.add_pending(t0, vec![1], [0xAA; 32], [0; 32], [9; 32], vec![1], vec![]);
+        chains.add_pending(t0 + 10 * one_s, vec![2], [0xBB; 32], [9; 32], [10; 32], vec![2], vec![]);
+
+        // Exhaust both by asking far in the future repeatedly.
+        for k in 1..20 {
+            let _ = chains.collect_due_retransmits(t0 + one_s * 60 * k);
+        }
+        let far = t0 + one_s * 1_000_000;
+        assert!(chains.collect_due_retransmits(far).is_empty(), "both exhausted");
+
+        // Peer's contiguous tip is t0 (it has the first message, is stalled missing the second).
+        // Re-arm should revive ONLY the newer message (eagle_time > tip), not the already-delivered one.
+        let rearmed = chains.rearm_pending_after(t0, far);
+        assert_eq!(rearmed, 1);
+
+        // Now the revived message is due again immediately; the t0 one stays retired.
+        let due = chains.collect_due_retransmits(far);
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].0, t0 + 10 * one_s);
+
+        // Re-arming past the newest tip revives nothing.
+        assert_eq!(chains.rearm_pending_after(t0 + 10 * one_s, far), 0);
+    }
 }
