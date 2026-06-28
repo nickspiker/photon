@@ -115,17 +115,8 @@ impl Settings {
         }
     }
 
-    /// Push the log-display knobs into vsf's inspector — UNLESS the `VSF_HEX_HEAD`/`VSF_HEX_TAIL`
-    /// env vars are set, in which case we leave vsf to read them itself (env is the quick per-run
-    /// override and must win over the persisted file). vsf's elision is a first-writer-wins
-    /// OnceLock, so calling `set_hex_elision` here would otherwise pre-empt the env path.
-    pub fn apply(&self) {
-        let env_override =
-            std::env::var_os("VSF_HEX_HEAD").is_some() || std::env::var_os("VSF_HEX_TAIL").is_some();
-        if !env_override {
-            vsf::inspect::set_hex_elision(self.hex_head, self.hex_tail);
-        }
-    }
+    /// No-op: vsf removed the runtime `set_hex_elision` API; hex elision is now a compile-time constant in vsf's inspect module. Settings are still persisted to disk for when/if vsf adds the runtime API back.
+    pub fn apply(&self) {}
 }
 
 #[cfg(test)]
