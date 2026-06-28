@@ -945,10 +945,18 @@ impl FriendshipChains {
     /// Does NOT advance the chain — advancement is deferred to [`process_ack`](Self::process_ack), the same invariant the receive side relies on (advancing on send would desync if the peer never decrypts).
     ///
     /// Returns `(ciphertext, prev_msg_hp, msg_hp, plaintext_hash)` for the wire send, or `None` if `our_handle_hash` isn't a participant.
+    /// `plaintext` is the FULL flattened VSF payload (`(message: x{}, hp{}, hR{pad})`) — this is what
+    /// goes on the wire (encrypted) and what both sides hash for `msg_hp`/ACK. `salt_text` is the bare
+    /// message x-text only: the salt source + the `our_plaintext` fed to the braid's `derive_fresh_link`
+    /// on ACK-advance. The two are SEPARATE on purpose — the random `hR` pad and the public `hp` are
+    /// traffic-analysis/wire concerns, never chain-key material, and keeping them out of the chain
+    /// ingredient keeps it valid UTF-8 (so it stores losslessly) and matches the receiver, which
+    /// advances + salts from the decrypted x-text only.
     pub fn prepare_send(
         &mut self,
         our_handle_hash: &[u8; 32],
         plaintext: Vec<u8>,
+        salt_text: Vec<u8>,
         eagle_time: i64,
         woven_strands: Vec<Vec<u8>>,
     ) -> Option<(Vec<u8>, [u8; 32], [u8; 32], [u8; 32])> {
@@ -981,13 +989,16 @@ impl FriendshipChains {
         let prev_msg_hp = self
             .last_sent_hash
             .unwrap_or(self.first_message_anchors[our_idx]);
+        // Hash + msg_hp are over the FULL payload (the receiver hashes the full decrypted bytes too).
         let plaintext_hash = *blake3::hash(&plaintext).as_bytes();
         let msg_hp = derive_msg_hp(&prev_msg_hp, &plaintext_hash, eagle_time);
 
-        // Record pending (stores plaintext for salt/ACK, ciphertext for resend; sets last_sent_hash).
+        // Pending stores the SALT-TEXT (not the full payload): process_ack advances the chain with it
+        // (as our_plaintext) and it becomes last_plaintext for the next salt — both must equal what the
+        // receiver uses, which is the decrypted x-text only.
         self.add_pending(
             eagle_time,
-            plaintext,
+            salt_text,
             plaintext_hash,
             prev_msg_hp,
             msg_hp,
