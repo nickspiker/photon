@@ -210,6 +210,9 @@ pub struct FriendshipChains {
     /// Hash pointer of the message whose weave we last incorporated. Included in outgoing messages as `their_incorporated_hp`. Acts as implicit ACK - tells peer we received up to this message.
     last_incorporated_hp: Option<[u8; 32]>,
 
+    /// The actual plaintext bytes of the message named by `last_incorporated_hp` — the peer plaintext we weave into our chain advancement when we send. Captured at receive time so `process_ack` advances with the EXACT same bytes the receiver used (the receiver resolves them from the message's `incorporated_hp` via its own pending list). Without this, `process_ack` fell back to "the latest peer plaintext I hold", which is order-dependent and diverges the ratchet from message 2 on. Each outgoing message snapshots this onto its `PendingMessage` so a later send can't change what a still-unacked message will weave.
+    last_incorporated_plaintext: Option<Vec<u8>>,
+
     /// Buffer for out-of-order messages (gap handling). When we receive a message with prev_msg_hp that doesn't match our last_received_hash, we store it here until the gap is filled.
     gap_buffer: Vec<BufferedMessage>,
 }
@@ -252,6 +255,8 @@ pub struct PendingMessage {
     pub msg_hp: [u8; 32],
     /// Encrypted ciphertext (for resend without re-encryption)
     pub ciphertext: Vec<u8>,
+    /// The peer plaintext this message wove into the chain (= `last_incorporated_plaintext` at send time, the bytes behind the `incorporated_hp` stamped on the wire). Frozen here so `process_ack` advances our chain with the exact same `their_plaintext` the receiver used to advance their copy — even if a later receive changed `last_incorporated_plaintext` before this message's ACK arrives. `None` = wove nothing (incorporated_hp was zero).
+    pub incorporated_plaintext: Option<Vec<u8>>,
 }
 
 // ============================================================================
@@ -391,6 +396,7 @@ impl FriendshipChains {
             last_received_weave: None,
             last_sent_weave: None,
             last_incorporated_hp: None,
+            last_incorporated_plaintext: None,
             gap_buffer: Vec::new(),
         }
     }
@@ -458,6 +464,7 @@ impl FriendshipChains {
             last_received_weave,
             last_sent_weave,
             last_incorporated_hp,
+            last_incorporated_plaintext: None, // Transient runtime weave snapshot, not persisted
             gap_buffer: Vec::new(), // Gap buffer is transient, not persisted
         })
     }
@@ -559,6 +566,7 @@ impl FriendshipChains {
             last_received_weave,
             last_sent_weave,
             last_incorporated_hp,
+            last_incorporated_plaintext: None, // Transient runtime weave snapshot, not persisted
             gap_buffer: Vec::new(), // Gap buffer is transient, not persisted
         })
     }
@@ -827,6 +835,9 @@ impl FriendshipChains {
             prev_msg_hp,
             msg_hp,
             ciphertext,
+            // Freeze the peer plaintext we're weaving into THIS message's chain step, so the matching
+            // process_ack advances with the same bytes regardless of later receives.
+            incorporated_plaintext: self.last_incorporated_plaintext.clone(),
         });
 
         // Update last_sent_hash for next message's prev_msg_hp
@@ -892,10 +903,12 @@ impl FriendshipChains {
         if let Some(idx) = pos {
             let pending = self.pending_messages.remove(idx);
 
-            // Get the other party's most recent plaintext for bidirectional weave
-            let their_plaintext: Option<Vec<u8>> = self
-                .other_participant(our_handle_hash)
-                .map(|their_hash| self.last_plaintext(their_hash).to_vec());
+            // Bidirectional weave: advance with the EXACT peer plaintext this message wove at send time
+            // (frozen on the PendingMessage), NOT the latest peer plaintext we now hold. The receiver
+            // advanced its copy of our chain using the plaintext named by this message's `incorporated_hp`
+            // (resolved from its own pending list); `pending.incorporated_plaintext` is that same value.
+            // Using "latest plaintext" here was the desync: it's order-dependent and diverged from msg 2 on.
+            let their_plaintext: Option<Vec<u8>> = pending.incorporated_plaintext.clone();
 
             // NOW advance our chain — receiver has confirmed they decrypted our message, so both sides can deterministically advance using the same inputs.
             let eagle_time = vsf::EagleTime::from_oscillations(pending.eagle_time);
@@ -982,6 +995,10 @@ impl FriendshipChains {
         let weave = derive_weave_hash(eagle_time, &msg_hp, plaintext);
         self.last_received_weave = Some(weave);
         self.last_incorporated_hp = Some(msg_hp);
+        // Snapshot the actual incorporated plaintext so our next send can weave the EXACT bytes the
+        // remote receiver will reconstruct from this message's `incorporated_hp` — keeping both copies
+        // of our chain in lockstep (see prepare_send / process_ack).
+        self.last_incorporated_plaintext = Some(plaintext.to_vec());
     }
 
     /// Get the last sent weave hash (what we sent = what they received). Used by receiver to advance their view of our chain with matching entropy.
