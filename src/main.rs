@@ -68,6 +68,15 @@ fn main() {
     photon_messenger::log(&format!("Ed25519 signature: {}", signature_hex));
     photon_messenger::log("");
 
+    // Load user settings (creates settings.vsf with defaults on first run) and apply the log-display
+    // knobs to vsf's inspector BEFORE any VSF gets dumped, so the very first packet logged is elided.
+    let settings = photon_messenger::storage::settings::Settings::load_or_create();
+    settings.apply();
+    photon_messenger::log(&format!(
+        "Settings: log hex elision head = {} tail = {} bytes",
+        settings.hex_head, settings.hex_tail
+    ));
+
     // Startup message
     photon_messenger::log("Photon Messenger - Distilled to what messaging actually requires, for true data sovereignty");
     photon_messenger::log("by Nick Spiker <fractaldecoder@proton.me>");
