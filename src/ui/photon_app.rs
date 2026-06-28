@@ -3046,8 +3046,13 @@ impl PhotonApp {
             values.shuffle(&mut rand::thread_rng());
             let payload = FieldValue::new("message", values).flatten();
 
+            // Chain ingredient = the bare x-text only (the hp/hR pad are siblings of x in the field,
+            // not part of it, and are never chain-key material). The full `payload` is what's
+            // encrypted onto the wire; `text` is what salts/advances the chain.
+            let salt_text = text.clone().into_bytes();
+
             let conv_token = chains.conversation_token;
-            match chains.prepare_send(&our_handle_hash, payload, eagle_time, woven_strands) {
+            match chains.prepare_send(&our_handle_hash, payload, salt_text, eagle_time, woven_strands) {
                 Some((ct, prev, _msg_hp, _ph)) => (ct, prev, conv_token),
                 None => {
                     crate::log("CHAT: prepare_send failed (not a participant)");
@@ -5258,8 +5263,9 @@ impl PhotonApp {
                         use crate::types::friendship::derive_msg_hp;
                         let msg_hp = derive_msg_hp(&prev_msg_hp, &plaintext_hash, timestamp);
 
-                        // Update their last_plaintext for next message's salt
-                        chains.set_last_plaintext(&from_handle_hash, plaintext.clone());
+                        // Update their last_plaintext for next message's salt — the x-text ONLY (must
+                        // match what the sender stored: salt source is text, never the full payload/pad).
+                        chains.set_last_plaintext(&from_handle_hash, message_text.clone().into_bytes());
 
                         // Update bidirectional entropy state (derive weave hash from full message context)
                         chains.update_received_for_mixing(timestamp, msg_hp, &plaintext);
@@ -5295,12 +5301,15 @@ impl PhotonApp {
                         let strand_refs: Vec<&[u8]> =
                             woven_strands.iter().map(|s| s.as_slice()).collect();
 
-                        // Advance their chain with the braid strands.
+                        // Advance their chain with the braid strands. our_plaintext = the decrypted
+                        // x-text ONLY (must match the sender's process_ack, which advances with the
+                        // stored salt-text — never the full payload/pad).
+                        let message_text_bytes = message_text.clone().into_bytes();
                         let eagle_time_for_advance = vsf::EagleTime::from_oscillations(timestamp);
                         chains.advance(
                             &from_handle_hash,
                             &eagle_time_for_advance,
-                            &plaintext,
+                            &message_text_bytes,
                             &strand_refs,
                         );
 
