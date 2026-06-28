@@ -29,7 +29,7 @@ fn chains_schema() -> SectionSchema {
         .field("last_received_hash", TypeConstraint::AnyHash) // One per participant (hp or empty hb)
         // Pending messages (v2) - each message has 6 fields
         .field("pending_eagle_time", TypeConstraint::Any)
-        .field("pending_plaintext", TypeConstraint::Utf8Text) // x: UTF-8 message text
+        .field("pending_plaintext", TypeConstraint::Wrapped(b'P')) // vP: RAW plaintext bytes (the flattened VSF payload — full of binary hp/pad, NOT valid UTF-8; storing as x lossily mangled it to U+FFFD and desynced the chain)
         .field("pending_plaintext_hash", TypeConstraint::AnyHash) // hp
         .field("pending_prev_msg_hp", TypeConstraint::AnyHash) // hp
         .field("pending_msg_hp", TypeConstraint::AnyHash) // hp
@@ -39,7 +39,7 @@ fn chains_schema() -> SectionSchema {
         .field("last_sent_weave", TypeConstraint::AnyHash) // hp: what we sent (what they received)
         .field("last_incorporated_hp", TypeConstraint::AnyHash) // hp: which of theirs we mixed in
         // Last plaintexts (v4) - needed for salt derivation after restart
-        .field("last_plaintext", TypeConstraint::Utf8Text) // x: UTF-8 text, one per participant
+        .field("last_plaintext", TypeConstraint::Wrapped(b'P')) // vP: RAW plaintext bytes (salt + braid weave ingredient — must round-trip byte-identical; see pending_plaintext)
         // Last received times (v5) - for duplicate detection after restart
         .field("last_received_time", TypeConstraint::Any) // i64 oscillations, one per participant
 }
@@ -108,16 +108,18 @@ pub fn save_friendship_chains(
 
     // === Pending messages (v2) ===
     for pending in chains.pending_messages() {
-        // Convert plaintext bytes to UTF-8 string for x type
-        let plaintext_str = String::from_utf8_lossy(&pending.plaintext).into_owned();
-
         builder = builder
             .append_multi(
                 "pending_eagle_time",
                 vec![VsfType::e(vsf::types::EtType::e6(pending.eagle_time))],
             )
             .map_err(|e| StorageError::Parse(e.to_string()))?
-            .append_multi("pending_plaintext", vec![VsfType::x(plaintext_str)])
+            // RAW bytes via vP — NEVER from_utf8_lossy (the plaintext is binary; lossy conversion
+            // mangles non-UTF-8 bytes to U+FFFD and desyncs the chain on reload).
+            .append_multi(
+                "pending_plaintext",
+                vec![VsfType::v(b'P', pending.plaintext.clone())],
+            )
             .map_err(|e| StorageError::Parse(e.to_string()))?
             .append_multi(
                 "pending_plaintext_hash",
@@ -163,10 +165,9 @@ pub fn save_friendship_chains(
 
     // === Last plaintexts (v4) - one per participant ===
     for plaintext in chains.last_plaintexts() {
-        // Convert plaintext bytes to UTF-8 string for x type
-        let plaintext_str = String::from_utf8_lossy(plaintext).into_owned();
+        // RAW bytes via vP — see pending_plaintext above; lossy UTF-8 would desync salt + braid weave.
         builder = builder
-            .append_multi("last_plaintext", vec![VsfType::x(plaintext_str)])
+            .append_multi("last_plaintext", vec![VsfType::v(b'P', plaintext.clone())])
             .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
 
@@ -287,7 +288,8 @@ pub fn load_friendship_chains(
         .iter()
         .filter_map(|f| f.values.first())
         .filter_map(|v| match v {
-            VsfType::x(s) => Some(s.as_bytes().to_vec()),
+            VsfType::v(b'P', data) => Some(data.clone()), // raw bytes (current)
+            VsfType::x(s) => Some(s.as_bytes().to_vec()), // legacy lossy-UTF-8 form
             _ => None,
         })
         .collect();
@@ -420,7 +422,8 @@ pub fn load_friendship_chains(
         .iter()
         .filter_map(|f| f.values.first())
         .filter_map(|v| match v {
-            VsfType::x(s) => Some(s.as_bytes().to_vec()),
+            VsfType::v(b'P', data) => Some(data.clone()), // raw bytes (current)
+            VsfType::x(s) => Some(s.as_bytes().to_vec()), // legacy lossy-UTF-8 form
             _ => None,
         })
         .collect();
