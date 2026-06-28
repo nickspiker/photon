@@ -524,13 +524,14 @@ impl PTManager {
         }
     }
 
-    /// Check if inbound transfer is complete, return COMPLETE packet to send
-    pub fn check_inbound_complete(&mut self, peer_addr: SocketAddr) -> Option<Vec<u8>> {
-        if let Some(transfer) = self
-            .inbound
-            .iter()
-            .find(|t| same_addr(t.peer_addr, peer_addr) && t.is_complete())
-        {
+    /// Check if a SPECIFIC inbound transfer (peer + stream) is complete, return its COMPLETE packet.
+    /// Stream-scoped: a peer can have several concurrent transfers (e.g. a CLUTCH offer AND a KEM
+    /// response in flight at once), and they must not be confused — matching by address alone grabs
+    /// whichever happens to be first in the vec, which silently drops the other.
+    pub fn check_inbound_complete(&mut self, peer_addr: SocketAddr, stream_id: u8) -> Option<Vec<u8>> {
+        if let Some(transfer) = self.inbound.iter().find(|t| {
+            same_addr(t.peer_addr, peer_addr) && t.stream_id == stream_id && t.is_complete()
+        }) {
             let complete = transfer.build_complete();
             return Some(complete.to_vsf_bytes(&self.keypair));
         }
@@ -545,11 +546,15 @@ impl PTManager {
             .map(|t| t.stats())
     }
 
-    /// Take completed inbound data (consumes transfer)
-    pub fn take_inbound_data(&mut self, peer_addr: SocketAddr) -> Option<Vec<u8>> {
-        // Find and remove the completed transfer
+    /// Take a SPECIFIC completed inbound transfer's data (consumes it). Stream-scoped — see
+    /// `check_inbound_complete`: draining by peer alone confuses concurrent transfers from the same
+    /// peer (e.g. a CLUTCH offer + KEM response), dropping one and deadlocking the ceremony.
+    pub fn take_inbound_data(&mut self, peer_addr: SocketAddr, stream_id: u8) -> Option<Vec<u8>> {
         let idx = self.inbound.iter().position(|t| {
-            same_addr(t.peer_addr, peer_addr) && t.is_complete() && t.receive_buffer.verify()
+            same_addr(t.peer_addr, peer_addr)
+                && t.stream_id == stream_id
+                && t.is_complete()
+                && t.receive_buffer.verify()
         })?;
 
         let transfer = self.inbound.remove(idx);
@@ -856,7 +861,7 @@ mod tests {
 
         // Check completion - header-only format
         let complete_bytes = receiver
-            .check_inbound_complete(peer_addr)
+            .check_inbound_complete(peer_addr, b'a')
             .expect("Should have COMPLETE");
         let (provenance, values) =
             parse_pt_header_field(&complete_bytes).expect("Failed to parse COMPLETE header");
@@ -869,7 +874,7 @@ mod tests {
 
         // Get received data
         let received = receiver
-            .take_inbound_data(peer_addr)
+            .take_inbound_data(peer_addr, b'a')
             .expect("Should have received data");
         assert_eq!(received, data);
     }
@@ -907,6 +912,44 @@ mod tests {
             .map(|t| t.send_buffer.data_hash())
             .collect();
         assert_ne!(hashes[0], hashes[1]);
+    }
+
+    #[test]
+    fn test_concurrent_inbound_drains_correct_stream() {
+        // The CLUTCH deadlock: two transfers from the SAME peer in flight at once (an offer + a KEM
+        // response). The completion check + drain must be stream-scoped, or one is silently dropped.
+        let keypair = test_keypair();
+        let mut mgr = PTManager::new(keypair);
+        let peer: SocketAddr = "127.0.0.1:12345".parse().unwrap();
+
+        // Two single-packet inbound transfers, distinct streams + distinct payloads.
+        let data_a = vec![0xAA; 64];
+        let data_b = vec![0xBB; 64];
+        let spec = |sid: u8, d: &[u8]| PTSpec {
+            stream_id: sid,
+            total_packets: 1,
+            packet_size: 1024,
+            total_size: d.len() as u32,
+            data_hash: *blake3::hash(d).as_bytes(),
+        };
+        mgr.handle_spec(peer, spec(b'a', &data_a));
+        mgr.handle_spec(peer, spec(b'b', &data_b));
+
+        // Deliver both final packets (order intentionally b-then-a to prove drain isn't positional).
+        mgr.handle_data(
+            peer,
+            PTData { stream_id: b'b', sequence: 0, payload: data_b.clone() },
+        );
+        mgr.handle_data(
+            peer,
+            PTData { stream_id: b'a', sequence: 0, payload: data_a.clone() },
+        );
+
+        // Drain by stream — each must yield ITS OWN payload, not whichever is first in the vec.
+        assert!(mgr.check_inbound_complete(peer, b'a').is_some());
+        assert!(mgr.check_inbound_complete(peer, b'b').is_some());
+        assert_eq!(mgr.take_inbound_data(peer, b'a'), Some(data_a));
+        assert_eq!(mgr.take_inbound_data(peer, b'b'), Some(data_b));
     }
 
     // Helper to parse VSF section fields (for legacy format like pt_spec)
