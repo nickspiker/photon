@@ -4840,6 +4840,29 @@ impl PhotonApp {
                     peer_addr,
                     sync_records,
                 } => {
+                    // Stall recovery (runs EVERY ping that carries sync records, not just the
+                    // offline→online edge): each record is the peer's contiguous tip
+                    // (last_received_osc = "I have everything in order up to here"). Re-arm any pending
+                    // message of ours that's newer than that tip AND has exhausted its retransmit
+                    // attempts — so a gap-filler the sender already gave up on gets resent, and a
+                    // receiver stuck behind a permanently-lost message un-sticks. collect_due_retransmits
+                    // (the tick path) then actually sends the revived messages.
+                    let now_osc = vsf::eagle_time_oscillations();
+                    for record in &sync_records {
+                        if let Some((_, chains)) = self
+                            .friendship_chains
+                            .iter_mut()
+                            .find(|(_, c)| c.conversation_token == record.conversation_token)
+                        {
+                            let n = chains.rearm_pending_after(record.last_received_osc, now_osc);
+                            if n > 0 {
+                                crate::log(&format!(
+                                    "CHAT: re-armed {} given-up pending msg(s) past peer tip {} (stall recovery)",
+                                    n, record.last_received_osc
+                                ));
+                            }
+                        }
+                    }
                     // Find matching contact and update status
                     for contact in &mut self.contacts {
                         if contact.public_identity == peer_pubkey {
