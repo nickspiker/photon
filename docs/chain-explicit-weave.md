@@ -1,6 +1,14 @@
-# Chain ratchet: explicit-hash weave (design)
+# The braid: explicit-hash weave (design)
 
 Status: **design only, not implemented.** Written 2026-06-28 from live both-sides logs (peer-B ↔ phone p). Fixes the message-chain desync that survives the `34fc92d` weave-snapshot fix.
+
+## Name: the braid (not a ratchet)
+
+This construction is the **braid** — not a ratchet. A ratchet only advances forward (monotonic, one-way); the braid reaches BACK into history and cross-weaves the peer's strand into our chain — bidirectional cross-entropy. The name is just "braid"; the window size is a parameter, not part of the name (don't bake a number in — it's tunable).
+
+What makes it categorically different from a double ratchet is the **reach**: a double ratchet's weave depth is 1 (it mixes only the immediately-preceding step). The braid's source is a **WINDOW** of recent messages (currently the last 256) — each message braids in exactly ONE prior peer message, but K (which one) is chosen at random from anywhere in that window, so which prior secret gets mixed is unpredictable. Window, not count: depth-1 weave per message, source ranging over the window.
+
+("Confluent" describes a PROPERTY, not part of the name: the explicit-hash references make any delivery order converge to the same braid state — Church-Rosser for the chain. Kept as rationale below, not in the term.)
 
 ## The two coupled bugs (from live evidence)
 
@@ -34,6 +42,33 @@ Stop deriving anything from "latest" or from ACK timing. Every message carries a
 
 ### Lookups need a hash-indexed window of prior messages
 Both sides must resolve a `msg_hp` from up to 256 prior messages. `get_pending_plaintext_by_hp` today searches only OUR unacked pending (the sender's outbound). For the receiver to resolve a weave K (one of ITS prior messages) and for random-from-256, we need a hash-indexed ring of the last 256 messages per chain (plaintext + msg_hp + seq), on BOTH the sent and received sides. This is the main new storage. Persisted so it survives restart (the salt/weave already need last_plaintext across restart — extend that to a 256-window).
+
+## The weave derivation: hash = pointer, plaintext = ingredient
+
+Settled mental model: **`incorporated_hp` (hash) is the on-wire POINTER naming which message is woven; the literal PLAINTEXT of that message is the INGREDIENT mixed into the secret.** The plaintext is NEVER sent — both sides already hold message K (peer authored it, we received+ACKed it). The hash carries no entropy (it's public + derivable); it only lets both sides agree WHICH plaintext to feed. So "take the literal message and append it" is exactly the mechanism — and it's already what `derive_fresh_link` does; the bug was only feeding a DIFFERENT plaintext on each side.
+
+### Field order + framing (REQUIRED, both sides byte-identical)
+Current `derive_fresh_link` (src/crypto/chain.rs:315) feeds `spaghettify(input)` where input = `DOMAIN + eagle_time + our_len+our_plaintext + chain_portion + their_len+their_plaintext` (ours first). REWRITE to lead with peer entropy:
+
+```
+spaghettify(
+    DOMAIN_ADVANCE
+    + eagle_time            (8 bytes, fixed LE)
+    + their_len (4 LE) + their_plaintext   ← PEER message K's plaintext, FIRST
+    + chain_portion         (fixed 256*32, the active links)
+    + our_len  (4 LE) + our_plaintext
+)
+```
+
+Rationale: the advance feeds the CUSTOM `spaghettify` mixer (not BLAKE3 directly). For BLAKE3 alone field order is security-neutral (avalanche is complete), but for a custom mixer leading with the high-entropy, hardest-to-predict input (the peer's woven plaintext) is the robust default — it avalanches the fixed/known portion (our plaintext, domain, chain links) rather than letting predictable bytes set a known prefix. Same principle as salt-before-password in a KDF.
+
+NON-NEGOTIABLE: keep LENGTH PREFIXES (or fixed delimiters) on every variable-length field. Injective/canonical framing is what prevents a concatenation collision (else "AB"+"C" and "A"+"BC" hash identically). Order is a free choice; unambiguous framing is not.
+
+This is a deliberate advance-derivation change: BOTH sides must change identically (any mismatch = total chain desync), and it makes all pre-change chains incompatible (dev: nuke+re-key; release: version bump).
+
+### Sync rules (decided)
+- **Weave K = a PEER message we've ACKed** (guaranteed both-held: they authored it, we received-and-acked it). Sender restricts the random-from-256 pick to ACKed peer messages, so it can never reference something the receiver lacks → no buffering/gap dependency for the weave itself. Bidirectional entropy (peer's content mixes into our chain), which is the existing `incorporated_hp` intent.
+- First message (no ACKed peer message yet) weaves nothing (`their_plaintext = None`), same as today's anchor case.
 
 ## Open questions for implementation
 - Exact "position" the receiver uses to advance deterministically: seq counter vs prev_msg_hp chain-walk. prev_msg_hp is already on the wire and already used for hash-chain continuity — likely the anchor.
