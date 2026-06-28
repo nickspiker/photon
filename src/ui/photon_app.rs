@@ -5085,12 +5085,19 @@ impl PhotonApp {
                         // most recently acked message, so the lost-ACK case heals instead of the sender
                         // retrying until it gives up and its chain stays frozen.
                         if chains.is_duplicate(&from_handle_hash, timestamp) {
-                            if let Some(ph) = chains.last_acked_hash(timestamp) {
-                                let recipient_pubkey = self
-                                    .contacts
-                                    .get(contact_idx)
-                                    .map(|c| *c.public_identity.as_bytes())
-                                    .unwrap_or([0u8; 32]);
+                            // Re-ACK from the stored message, looked up by its eagle_time. Unlike the old
+                            // single-slot last_acked (which only remembered the MOST RECENT ack and so
+                            // dropped any earlier duplicate → permanent sender stall), every received
+                            // message persists its own ack_hash, so ANY duplicate self-heals a lost ACK.
+                            let stored = self.contacts.get(contact_idx).and_then(|c| {
+                                let ack = c
+                                    .messages
+                                    .iter()
+                                    .find(|m| !m.is_outgoing && m.timestamp == timestamp)
+                                    .and_then(|m| m.ack_hash)?;
+                                Some((ack, *c.public_identity.as_bytes()))
+                            });
+                            if let Some((ph, recipient_pubkey)) = stored {
                                 if let Some(ref checker) = self.status_checker {
                                     checker.send_ack(AckRequest {
                                         peer_addr: sender_addr,
@@ -5106,7 +5113,7 @@ impl PhotonApp {
                                 }
                             } else {
                                 crate::log(&format!(
-                                    "CHAT: Skipping duplicate message from {} (eagle_time {})",
+                                    "CHAT: Skipping duplicate from {} (eagle_time {}) — no stored ack_hash (pre-fix message or outgoing)",
                                     handle, timestamp
                                 ));
                             }
@@ -5366,11 +5373,16 @@ impl PhotonApp {
                         // Add message to contact's message list and persist
                         if let Some(contact) = self.contacts.get_mut(contact_idx) {
                             // Use actual eagle_time and sorted insert for correct chronological order
-                            contact.insert_message_sorted(ChatMessage::new_with_timestamp(
-                                message_text,
-                                false,     // is_outgoing = false (received)
-                                timestamp, // Use message's actual eagle_time, not current time
-                            ));
+                            contact.insert_message_sorted(
+                                ChatMessage::new_with_timestamp(
+                                    message_text,
+                                    false,     // is_outgoing = false (received)
+                                    timestamp, // Use message's actual eagle_time, not current time
+                                )
+                                // Persist the ACK hash so a later duplicate (our ACK was lost) can be
+                                // re-ACKed from storage — keeps the sender's chain from stalling.
+                                .with_ack_hash(plaintext_hash),
+                            );
                             contact.message_scroll_offset = 0.0; // Scroll to show new message
                             changed = true;
 
@@ -5390,10 +5402,10 @@ impl PhotonApp {
                             .get(contact_idx)
                             .map(|c| *c.public_identity.as_bytes())
                             .unwrap_or([0u8; 32]);
-                        // Remember (eagle_time, plaintext_hash) so a duplicate retransmit (our ACK was
-                        // lost) can be re-ACKed instead of silently dropped. Set on the same `chains` we
-                        // just advanced (still borrowed from chains_result above).
-                        chains.set_last_acked(timestamp, plaintext_hash);
+                        // The re-ACK source is now the per-message ack_hash persisted on the stored
+                        // ChatMessage (see the duplicate handler above + with_ack_hash below), which
+                        // heals a lost ACK for ANY message — not just the most recent. The old
+                        // single-slot last_acked is retired.
                         if let Some(ref checker) = self.status_checker {
                             checker.send_ack(AckRequest {
                                 peer_addr: sender_addr,

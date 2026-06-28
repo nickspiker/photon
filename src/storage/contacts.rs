@@ -1071,12 +1071,17 @@ pub fn save_messages(contact: &Contact, storage: &FlatStorage) -> Result<(), Sto
         // `content_hash` = blake3 of the message text, stored so the braid's eagle_time->text weave
         // lookup has an integrity/tiebreak check (the adversarial multi-device-same-tick case).
         let content_hash = blake3::hash(msg.content.as_bytes());
-        let rec = Record::new()
+        let mut rec = Record::new()
             .set("content", msg.content.clone())
             .set("timestamp", Value::Time(msg.timestamp))
             .set("is_outgoing", msg.is_outgoing as u64)
             .set("delivered", msg.delivered as u64)
             .set("content_hash", content_hash.as_bytes().to_vec());
+        // ack_hash: the plaintext_hash we ACK a RECEIVED message with — persisted so a duplicate
+        // retransmit can be re-ACKed after restart (the sender's chain stalls without a matching ACK).
+        if let Some(ah) = msg.ack_hash {
+            rec = rec.set("ack_hash", ah.to_vec());
+        }
         db.put_row_in(&table, Pk::Int(msg.timestamp as u64), &rec)
             .map_err(|e| StorageError::Vault(e.to_string()))?;
     }
@@ -1112,11 +1117,16 @@ pub fn load_messages(contact: &mut Contact, storage: &FlatStorage) -> Result<(),
         let Some(content) = rec.text("content") else {
             continue;
         };
+        let ack_hash: Option<[u8; 32]> = rec
+            .bytes("ack_hash")
+            .filter(|b| b.len() == 32)
+            .map(|b| b.try_into().unwrap());
         contact.messages.push(ChatMessage {
             content: content.to_string(),
             timestamp: rec.time("timestamp").unwrap_or(0),
             is_outgoing: rec.uint("is_outgoing").unwrap_or(0) != 0,
             delivered: rec.uint("delivered").unwrap_or(0) != 0,
+            ack_hash,
         });
     }
 
@@ -1199,18 +1209,21 @@ mod tests {
                 timestamp: 100,
                 is_outgoing: true,
                 delivered: true,
+                ack_hash: None,
             },
             ChatMessage {
                 content: "hey".to_string(),
                 timestamp: 200,
                 is_outgoing: false,
                 delivered: false,
+                ack_hash: Some([0x7Au8; 32]), // received msg: its ACK hash must survive the round-trip
             },
             ChatMessage {
                 content: "👋 unicode".to_string(),
                 timestamp: 300,
                 is_outgoing: true,
                 delivered: false,
+                ack_hash: None,
             },
         ];
 
@@ -1235,7 +1248,12 @@ mod tests {
         assert!(loaded.messages[0].is_outgoing && loaded.messages[0].delivered);
         assert_eq!(loaded.messages[1].content, "hey");
         assert!(!loaded.messages[1].is_outgoing && !loaded.messages[1].delivered);
+        // The received message's ack_hash must survive the round-trip (re-ACK after restart);
+        // outgoing messages carry no ack_hash.
+        assert_eq!(loaded.messages[1].ack_hash, Some([0x7Au8; 32]));
+        assert_eq!(loaded.messages[0].ack_hash, None);
         assert_eq!(loaded.messages[2].content, "👋 unicode");
+        assert_eq!(loaded.messages[2].ack_hash, None);
 
         // Clean up the on-disk vault so reruns start fresh.
         if let Ok([primary, shadow]) = kete::vault_ring_paths(app, &vault_seed, &device_secret) {
