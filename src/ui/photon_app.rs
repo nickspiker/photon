@@ -4673,11 +4673,30 @@ impl PhotonApp {
             checker.send_lan_broadcast(session.handle_proof, hq.port());
         }
 
+        // Recovery for a side stranded in AwaitingProof: while the peer is ONLINE and we still hold
+        // our computed proof, keep the resend budget topped up so we keep re-sending our proof every
+        // few cycles. The peer — already Complete — now treats our repeated proof as an implicit
+        // re-request and re-sends its ClutchComplete (see the Complete-state duplicate handler). So a
+        // ClutchComplete dropped during the original ceremony (e.g. before the v4-mapped-v6 send fix,
+        // or any single UDP loss) self-heals once both sides are online, instead of leaving us
+        // AwaitingProof forever with the peer already Complete. Bounded per-cycle so an offline peer
+        // doesn't spin; it only tops up when we actually have the peer online with a proof to send.
+        for contact in self.contacts.iter_mut() {
+            if contact.is_online
+                && contact.clutch_state == crate::types::ClutchState::AwaitingProof
+                && contact.clutch_our_eggs_proof.is_some()
+                && contact.ceremony_id.is_some()
+                && contact.clutch_proof_resends_left == 0
+            {
+                contact.clutch_proof_resends_left = 1; // one re-send this cycle; re-armed next ping while still stuck
+            }
+        }
+
         // Retransmit the ClutchComplete proof for any contact with budget left. The proof is a lone
         // unreliable UDP packet, so a single drop (or a send to a since-refreshed address) would
         // strand the peer in AwaitingProof. Re-sending it for a few ping cycles converges both
         // sides regardless of which completed first or which packet was lost. Self-terminates as the
-        // budget drains; a peer already Complete just ignores the duplicate.
+        // budget drains; a peer already Complete re-arms its own resend on the duplicate.
         self.retransmit_pending_clutch_proofs();
     }
 
@@ -6720,11 +6739,29 @@ impl PhotonApp {
                                     changed = true;
                                 }
                                 ClutchState::Complete => {
-                                    // Already complete - ignore duplicate
-                                    crate::log(&format!(
-                                        "CLUTCH: Ignoring duplicate proof from {} (already Complete)",
-                                        contact.handle
-                                    ));
+                                    // We're Complete but the peer is STILL sending its proof — that
+                                    // means our ClutchComplete never reached them (a dropped proof
+                                    // strands them in AwaitingProof forever, since we'd otherwise
+                                    // ignore the duplicate). Treat the duplicate as an implicit
+                                    // re-request: re-arm our proof-resend budget so the next ping
+                                    // cycle re-sends our ClutchComplete. This is the recovery half of
+                                    // the asymmetric-completion bug (the other half is the AwaitingProof
+                                    // side re-sending its proof while the peer is online).
+                                    if contact.clutch_our_eggs_proof.is_some()
+                                        && contact.ceremony_id.is_some()
+                                    {
+                                        contact.clutch_proof_resends_left = 5;
+                                        changed = true;
+                                        crate::log(&format!(
+                                            "CLUTCH: Re-arming proof resend to {} — they re-sent their proof (our ClutchComplete was likely lost)",
+                                            contact.handle
+                                        ));
+                                    } else {
+                                        crate::log(&format!(
+                                            "CLUTCH: Duplicate proof from {} but our proof/ceremony cleared — cannot re-send",
+                                            contact.handle
+                                        ));
+                                    }
                                 }
                             }
                             break;
