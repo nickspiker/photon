@@ -210,26 +210,27 @@ pub struct FriendshipChains {
     /// Hash pointer of the message whose weave we last incorporated. Included in outgoing messages as `their_incorporated_hp`. Acts as implicit ACK - tells peer we received up to this message.
     last_incorporated_hp: Option<[u8; 32]>,
 
-    /// The actual plaintext bytes of the message named by `last_incorporated_hp` — the peer plaintext we weave into our chain advancement when we send. Captured at receive time so `process_ack` advances with the EXACT same bytes the receiver used (the receiver resolves them from the message's `incorporated_hp` via its own pending list). Without this, `process_ack` fell back to "the latest peer plaintext I hold", which is order-dependent and diverges the ratchet from message 2 on. Each outgoing message snapshots this onto its `PendingMessage` so a later send can't change what a still-unacked message will weave.
-    last_incorporated_plaintext: Option<Vec<u8>>,
-
     /// Buffer for out-of-order messages (gap handling). When we receive a message with prev_msg_hp that doesn't match our last_received_hash, we store it here until the gap is filled.
     gap_buffer: Vec<BufferedMessage>,
 }
 
-/// A message buffered due to gap in hash chain (out-of-order delivery). Stored until preceding messages arrive and gap is filled.
+/// A message buffered due to a gap in the hash chain (out-of-order delivery). Held until its
+/// predecessor arrives and the gap fills. Buffered BEFORE decrypt, so the message's own `msg_hp` is
+/// not yet known (it needs the plaintext hash); we key purely on the `prev_msg_hp` it awaits. When a
+/// successful decrypt advances `last_received_hash` to some `H`, every buffered entry with
+/// `prev_msg_hp == H` becomes contiguous and is reprocessed (which can cascade).
 #[derive(Clone)]
 pub struct BufferedMessage {
-    /// The message's hash pointer (for matching when gap fills)
-    pub msg_hp: [u8; 32],
-    /// The expected prev_msg_hp (what we need to receive first)
+    /// The predecessor hash this message is waiting on (its on-wire `prev_msg_hp`).
     pub prev_msg_hp: [u8; 32],
-    /// Sender's handle hash
+    /// Sender's handle hash.
     pub sender_handle_hash: [u8; 32],
-    /// Eagle time of message
-    pub eagle_time: f64,
-    /// Encrypted ciphertext (decrypt when gap fills)
+    /// Eagle time of the message (oscillations).
+    pub eagle_time: i64,
+    /// Encrypted ciphertext (decrypted when the gap fills).
     pub ciphertext: Vec<u8>,
+    /// Sender address, so the reprocess path can ACK exactly as the live path would.
+    pub sender_addr: std::net::SocketAddr,
 }
 
 /// A sent message awaiting ACK confirmation.
@@ -255,8 +256,12 @@ pub struct PendingMessage {
     pub msg_hp: [u8; 32],
     /// Encrypted ciphertext (for resend without re-encryption)
     pub ciphertext: Vec<u8>,
-    /// The peer plaintext this message wove into the chain (= `last_incorporated_plaintext` at send time, the bytes behind the `incorporated_hp` stamped on the wire). Frozen here so `process_ack` advances our chain with the exact same `their_plaintext` the receiver used to advance their copy — even if a later receive changed `last_incorporated_plaintext` before this message's ACK arrives. `None` = wove nothing (incorporated_hp was zero).
-    pub incorporated_plaintext: Option<Vec<u8>>,
+    /// The braid's woven peer strands frozen at send time — the EXACT plaintext bytes of the
+    /// (up to two) prior peer messages this message braided in, already sorted by eagle_time.
+    /// Frozen so `process_ack` advances our chain with the identical strands the receiver used to
+    /// advance its copy (the receiver resolves them from the two eagle_times on the wire). Length
+    /// 0 = anchor (wove nothing), 1 = single strand (early conversation), 2 = full braid.
+    pub woven_strands: Vec<Vec<u8>>,
 }
 
 // ============================================================================
@@ -396,7 +401,6 @@ impl FriendshipChains {
             last_received_weave: None,
             last_sent_weave: None,
             last_incorporated_hp: None,
-            last_incorporated_plaintext: None,
             gap_buffer: Vec::new(),
         }
     }
@@ -464,7 +468,6 @@ impl FriendshipChains {
             last_received_weave,
             last_sent_weave,
             last_incorporated_hp,
-            last_incorporated_plaintext: None, // Transient runtime weave snapshot, not persisted
             gap_buffer: Vec::new(), // Gap buffer is transient, not persisted
         })
     }
@@ -566,7 +569,6 @@ impl FriendshipChains {
             last_received_weave,
             last_sent_weave,
             last_incorporated_hp,
-            last_incorporated_plaintext: None, // Transient runtime weave snapshot, not persisted
             gap_buffer: Vec::new(), // Gap buffer is transient, not persisted
         })
     }
@@ -606,15 +608,18 @@ impl FriendshipChains {
     /// Call this when we receive confirmation that a message was decrypted.
     ///
     /// Bidirectional entropy: if `their_plaintext` is provided, it's mixed into the chain advancement. Pass the other party's most recent plaintext here.
+    /// Advance a participant's chain, braiding in `their_plaintexts` (the woven peer strands —
+    /// two for a full braid, or fewer early in the conversation; the caller passes them sorted
+    /// by eagle_time so both peers frame identically).
     pub fn advance(
         &mut self,
         sender_handle_hash: &[u8; 32],
         eagle_time: &vsf::EagleTime,
         our_plaintext: &[u8],
-        their_plaintext: Option<&[u8]>,
+        their_plaintexts: &[&[u8]],
     ) -> bool {
         if let Some(idx) = self.participant_index(sender_handle_hash) {
-            self.chains[idx].advance(eagle_time, our_plaintext, their_plaintext);
+            self.chains[idx].advance(eagle_time, our_plaintext, their_plaintexts);
             true
         } else {
             false
@@ -827,6 +832,7 @@ impl FriendshipChains {
         prev_msg_hp: [u8; 32],
         msg_hp: [u8; 32],
         ciphertext: Vec<u8>,
+        woven_strands: Vec<Vec<u8>>,
     ) {
         self.pending_messages.push(PendingMessage {
             eagle_time,
@@ -835,9 +841,9 @@ impl FriendshipChains {
             prev_msg_hp,
             msg_hp,
             ciphertext,
-            // Freeze the peer plaintext we're weaving into THIS message's chain step, so the matching
-            // process_ack advances with the same bytes regardless of later receives.
-            incorporated_plaintext: self.last_incorporated_plaintext.clone(),
+            // Freeze the braid's woven strands for THIS step so the matching process_ack advances
+            // with the exact bytes the receiver used, regardless of later receives.
+            woven_strands,
         });
 
         // Update last_sent_hash for next message's prev_msg_hp
@@ -856,6 +862,7 @@ impl FriendshipChains {
         our_handle_hash: &[u8; 32],
         plaintext: Vec<u8>,
         eagle_time: i64,
+        woven_strands: Vec<Vec<u8>>,
     ) -> Option<(Vec<u8>, [u8; 32], [u8; 32], [u8; 32])> {
         use crate::crypto::chain::{derive_salt, encrypt_layers, generate_scratch};
 
@@ -883,6 +890,7 @@ impl FriendshipChains {
             prev_msg_hp,
             msg_hp,
             ciphertext.clone(),
+            woven_strands,
         );
 
         Some((ciphertext, prev_msg_hp, msg_hp, plaintext_hash))
@@ -903,20 +911,19 @@ impl FriendshipChains {
         if let Some(idx) = pos {
             let pending = self.pending_messages.remove(idx);
 
-            // Bidirectional weave: advance with the EXACT peer plaintext this message wove at send time
-            // (frozen on the PendingMessage), NOT the latest peer plaintext we now hold. The receiver
-            // advanced its copy of our chain using the plaintext named by this message's `incorporated_hp`
-            // (resolved from its own pending list); `pending.incorporated_plaintext` is that same value.
-            // Using "latest plaintext" here was the desync: it's order-dependent and diverged from msg 2 on.
-            let their_plaintext: Option<Vec<u8>> = pending.incorporated_plaintext.clone();
-
-            // NOW advance our chain — receiver has confirmed they decrypted our message, so both sides can deterministically advance using the same inputs.
+            // The braid: advance with the EXACT woven strands this message braided at send time
+            // (frozen on the PendingMessage), NOT whatever we hold now. The receiver advanced its
+            // copy of our chain using the strands named by the two eagle_times on the wire; these
+            // frozen bytes are those same strands. Using "latest plaintext" here was the original
+            // desync (order-dependent). Strands are already sorted by eagle_time.
             let eagle_time = vsf::EagleTime::from_oscillations(pending.eagle_time);
+            let strand_refs: Vec<&[u8]> =
+                pending.woven_strands.iter().map(|s| s.as_slice()).collect();
             self.advance(
                 our_handle_hash,
                 &eagle_time,
                 &pending.plaintext,
-                their_plaintext.as_deref(),
+                &strand_refs,
             );
 
             // Update last_plaintext for salt derivation on next message
@@ -995,10 +1002,7 @@ impl FriendshipChains {
         let weave = derive_weave_hash(eagle_time, &msg_hp, plaintext);
         self.last_received_weave = Some(weave);
         self.last_incorporated_hp = Some(msg_hp);
-        // Snapshot the actual incorporated plaintext so our next send can weave the EXACT bytes the
-        // remote receiver will reconstruct from this message's `incorporated_hp` — keeping both copies
-        // of our chain in lockstep (see prepare_send / process_ack).
-        self.last_incorporated_plaintext = Some(plaintext.to_vec());
+        let _ = plaintext; // braid strands now come from the message DB at send time, not this snapshot
     }
 
     /// Get the last sent weave hash (what we sent = what they received). Used by receiver to advance their view of our chain with matching entropy.
@@ -1042,26 +1046,32 @@ impl FriendshipChains {
 
     // ==================== GAP BUFFER METHODS ====================
 
-    /// Add a message to the gap buffer (received out of order).
+    /// Buffer a message received out of order (its `prev_msg_hp` doesn't match what we've received so
+    /// far). Keyed on the awaited `prev_msg_hp`; deduped on (sender, eagle_time) since `msg_hp` is
+    /// unknown pre-decrypt.
     pub fn buffer_for_gap(
         &mut self,
-        msg_hp: [u8; 32],
         prev_msg_hp: [u8; 32],
         sender_handle_hash: [u8; 32],
-        eagle_time: f64,
+        eagle_time: i64,
         ciphertext: Vec<u8>,
+        sender_addr: std::net::SocketAddr,
     ) {
-        // Don't buffer duplicates
-        if self.gap_buffer.iter().any(|b| b.msg_hp == msg_hp) {
+        // Don't buffer duplicates (same sender + same 704ps tick = the same message).
+        if self
+            .gap_buffer
+            .iter()
+            .any(|b| b.sender_handle_hash == sender_handle_hash && b.eagle_time == eagle_time)
+        {
             return;
         }
 
         self.gap_buffer.push(BufferedMessage {
-            msg_hp,
             prev_msg_hp,
             sender_handle_hash,
             eagle_time,
             ciphertext,
+            sender_addr,
         });
     }
 
@@ -1185,7 +1195,7 @@ mod tests {
         // Advance Alice's chain (no bidirectional entropy for this test)
         let eagle_time = vsf::EagleTime::from_oscillations(vsf::eagle_time_oscillations());
         let plaintext_hash = [0xAA; 32];
-        assert!(chains.advance(&alice, &eagle_time, &plaintext_hash, None));
+        assert!(chains.advance(&alice, &eagle_time, &plaintext_hash, &[]));
 
         // Alice's key should change
         let alice_key_after = *chains.current_key(&alice).unwrap();
@@ -1256,5 +1266,45 @@ mod tests {
             chains1.current_key(&bob).unwrap(),
             chains2.current_key(&bob).unwrap()
         );
+    }
+
+    #[test]
+    fn test_gap_buffer_keys_on_prev_and_drains_on_fill() {
+        // Layer 1: an out-of-order message is buffered on the prev_msg_hp it awaits, and is released
+        // by take_buffered_for ONLY when that exact predecessor's msg_hp fills. This is the wiring the
+        // receive path relies on to replay buffered messages strictly in order.
+        let alice = [1u8; 32];
+        let bob = [2u8; 32];
+        let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
+        let mut chains = FriendshipChains::from_clutch(&[alice, bob], &eggs);
+
+        let addr: std::net::SocketAddr = "127.0.0.1:9000".parse().unwrap();
+        let prev_a = [0xA1u8; 32]; // predecessor msg2 is waiting on
+        let prev_b = [0xB2u8; 32]; // a different predecessor
+
+        // Buffer msg2 (awaiting prev_a) and an unrelated msg (awaiting prev_b).
+        chains.buffer_for_gap(prev_a, bob, 1000, vec![1, 2, 3], addr);
+        chains.buffer_for_gap(prev_b, bob, 1001, vec![4, 5, 6], addr);
+        assert_eq!(chains.gap_buffer_count(), 2);
+
+        // Duplicate (same sender + same eagle_time) is not re-buffered.
+        chains.buffer_for_gap(prev_a, bob, 1000, vec![1, 2, 3], addr);
+        assert_eq!(chains.gap_buffer_count(), 2);
+
+        // Filling an unrelated hash releases nothing.
+        assert!(chains.take_buffered_for(&[0xFFu8; 32]).is_empty());
+        assert_eq!(chains.gap_buffer_count(), 2);
+
+        // Filling prev_a releases exactly msg2; the prev_b waiter stays buffered.
+        let ready = chains.take_buffered_for(&prev_a);
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].eagle_time, 1000);
+        assert_eq!(ready[0].ciphertext, vec![1, 2, 3]);
+        assert_eq!(chains.gap_buffer_count(), 1);
+
+        let ready_b = chains.take_buffered_for(&prev_b);
+        assert_eq!(ready_b.len(), 1);
+        assert_eq!(ready_b[0].eagle_time, 1001);
+        assert_eq!(chains.gap_buffer_count(), 0);
     }
 }
