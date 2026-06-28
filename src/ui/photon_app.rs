@@ -4697,6 +4697,67 @@ impl PhotonApp {
         }
     }
 
+    /// Reliability sweep (every tick): resend any unacked outgoing message whose backoff deadline has
+    /// passed, with exponential backoff, until an ACK clears it or it exhausts its attempts. This is
+    /// the per-message retry the protocol was missing — without it, a single dropped message OR a
+    /// single dropped ACK desyncs the chain permanently (the sender advances on ACK, so a lost ACK
+    /// freezes its chain while the receiver's has moved on → every later message decrypts as garbage).
+    /// Resending is safe: the receiver dedupes by eagle_time and its ACK is deterministic, so a redelivered
+    /// message just yields a free re-ACK. Uses the same LAN-preferring `race_addrs()` as the live send.
+    fn retransmit_due_messages(&mut self) {
+        let now_osc = vsf::eagle_time_oscillations();
+
+        // Snapshot (friendship_id → primary addr + recipient pubkey) from contacts so we don't hold a
+        // contacts borrow across the mutable chains sweep. Only Complete contacts with a known address.
+        let routes: Vec<(crate::types::FriendshipId, std::net::SocketAddr, [u8; 32])> = self
+            .contacts
+            .iter()
+            .filter_map(|c| {
+                let fid = c.friendship_id?;
+                let (primary, _alt) = c.race_addrs()?;
+                Some((fid, primary, *c.public_identity.as_bytes()))
+            })
+            .collect();
+        if routes.is_empty() {
+            return;
+        }
+
+        let Some(checker) = self.status_checker.as_ref() else {
+            return;
+        };
+
+        for (fid, peer_addr, recipient_pubkey) in routes {
+            let Some((_, chains)) = self.friendship_chains.iter_mut().find(|(id, _)| *id == fid)
+            else {
+                continue;
+            };
+            let conversation_token = chains.conversation_token;
+            for (eagle_time, prev_msg_hp, ciphertext, attempts, exhausted) in
+                chains.collect_due_retransmits(now_osc)
+            {
+                checker.send_message(crate::network::status::MessageRequest {
+                    peer_addr,
+                    recipient_pubkey,
+                    conversation_token,
+                    prev_msg_hp,
+                    ciphertext,
+                    eagle_time,
+                });
+                if exhausted {
+                    crate::log(&format!(
+                        "CHAT: retransmit GAVE UP on msg eagle_time {} after {} attempts (undelivered)",
+                        eagle_time, attempts
+                    ));
+                } else {
+                    crate::log(&format!(
+                        "CHAT: retransmit msg eagle_time {} (attempt {})",
+                        eagle_time, attempts
+                    ));
+                }
+            }
+        }
+    }
+
     /// Ping a single contact (on conversation-enter) so its presence refreshes promptly. Same LAN-IPv4-preferring address selection as `ping_contacts`.
     fn ping_contact(&mut self, idx: usize) {
         let Some(checker) = self.status_checker.as_ref() else {
@@ -5012,12 +5073,37 @@ impl PhotonApp {
                             }
                         };
 
-                        // Deduplication: skip if we've already processed this exact message (UDP duplicates have identical eagle_time) Note: Sender learns our state via last_received_hp in ping/pong - no ACK needed for dupes
+                        // Deduplication: we've already processed this exact message (UDP duplicate, or —
+                        // the important case — the sender RETRANSMITTED because our ACK was lost). Don't
+                        // re-process (that would double-advance), but DO re-send the ACK if this is the
+                        // most recently acked message, so the lost-ACK case heals instead of the sender
+                        // retrying until it gives up and its chain stays frozen.
                         if chains.is_duplicate(&from_handle_hash, timestamp) {
-                            crate::log(&format!(
-                                "CHAT: Skipping duplicate message from {} (eagle_time {})",
-                                handle, timestamp
-                            ));
+                            if let Some(ph) = chains.last_acked_hash(timestamp) {
+                                let recipient_pubkey = self
+                                    .contacts
+                                    .get(contact_idx)
+                                    .map(|c| *c.public_identity.as_bytes())
+                                    .unwrap_or([0u8; 32]);
+                                if let Some(ref checker) = self.status_checker {
+                                    checker.send_ack(AckRequest {
+                                        peer_addr: sender_addr,
+                                        recipient_pubkey,
+                                        conversation_token,
+                                        acked_eagle_time: timestamp,
+                                        plaintext_hash: ph,
+                                    });
+                                    crate::log(&format!(
+                                        "CHAT: Re-ACKed duplicate from {} (eagle_time {}) — our earlier ACK was likely lost",
+                                        handle, timestamp
+                                    ));
+                                }
+                            } else {
+                                crate::log(&format!(
+                                    "CHAT: Skipping duplicate message from {} (eagle_time {})",
+                                    handle, timestamp
+                                ));
+                            }
                             continue;
                         }
 
@@ -5294,6 +5380,10 @@ impl PhotonApp {
                             .get(contact_idx)
                             .map(|c| *c.public_identity.as_bytes())
                             .unwrap_or([0u8; 32]);
+                        // Remember (eagle_time, plaintext_hash) so a duplicate retransmit (our ACK was
+                        // lost) can be re-ACKed instead of silently dropped. Set on the same `chains` we
+                        // just advanced (still borrowed from chains_result above).
+                        chains.set_last_acked(timestamp, plaintext_hash);
                         if let Some(ref checker) = self.status_checker {
                             checker.send_ack(AckRequest {
                                 peer_addr: sender_addr,
@@ -6656,6 +6746,14 @@ impl PhotonApp {
                 }
             }
         }
+
+        // Reliability: per-message retransmit with exponential backoff. The came-online loop above only
+        // fires on the offline→online EDGE, so a message (or its ACK) dropped while the peer was already
+        // online would otherwise never be resent — the exact desync seen live (msg 1 ACKed, msg 2
+        // garbage because the sender's chain never advanced on a lost ACK). This sweep runs every tick
+        // and resends any unacked pending whose backoff deadline has passed, until an ACK clears it or
+        // it exhausts its attempts.
+        self.retransmit_due_messages();
 
         // NOTE: Proactive CLUTCH initiation is now handled via background keygen:
         // 1. spawn_clutch_keygen() is called when contact is added (background thread)

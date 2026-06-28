@@ -366,6 +366,10 @@ pub fn load_friendship_chains(
             // this edge only matters if the app restarts mid-flight with an unacked message AND its braid
             // strands were non-empty — a known minor gap, not the steady-state desync this fix addresses.
             woven_strands: Vec::new(),
+            // Reliability state is runtime-only. A pending message reloaded after restart is eligible
+            // to resend immediately (attempts reset to 1, deadline = its eagle_time so it's already due).
+            attempts: 1,
+            next_retry_osc: eagle_times[i],
         })
         .collect();
 
