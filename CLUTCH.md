@@ -1,7 +1,7 @@
 # CLUTCH Protocol Specification v3.0
 
 **Protocol:** CLUTCH (Device-Bound Parallel Key Ceremony)
-**Related:** CHAIN.md (The Braid — post-CLUTCH rolling-chain encryption)
+**Related:** BRAID.md (The Braid — post-CLUTCH rolling-chain encryption)
 **Author:** Nick Spiker
 **Status:** Draft
 **License:** MIT OR Apache-2.0
@@ -11,9 +11,9 @@
 
 ## 0. Abstract
 
-CLUTCH is a one-time, device-bound key generation ceremony combining eight independent cryptographic primitives across diverse mathematical foundations into a single 256-byte shared seed. This seed bootstraps the CHAIN protocol (see CHAIN.md) for text, voice, and video communication.
+CLUTCH is a one-time, device-bound key generation ceremony combining eight independent cryptographic primitives across diverse mathematical foundations into a single 256-byte shared seed. This seed bootstraps the braid (see BRAID.md) for text, voice, and video communication.
 
-CLUTCH is not a handshake protocol. It is a **key generation ceremony** performed once per relationship per device pair. Relationship seeds are encrypted at rest using the device's private key, ensuring seeds are difficult to extract even if storage is compromised. All subsequent communication uses the CHAIN protocol—successful decryption *is* authentication.
+CLUTCH is not a handshake protocol. It is a **key generation ceremony** performed once per relationship per device pair. Relationship seeds are encrypted at rest using the device's private key, ensuring seeds are difficult to extract even if storage is compromised. All subsequent communication uses the braid—successful decryption *is* authentication.
 
 ---
 
@@ -29,7 +29,7 @@ All parties know each other's handles before the ceremony. Handles are never tra
 
 ### 1.2 Self-Authenticating Communication
 
-After CLUTCH completes, no further handshakes or identity proofs are required. The CHAIN protocol state is known only to the two participants. Successful decryption proves possession of the chain state, which proves continuous participation since the ceremony. See CHAIN.md for rolling encryption details.
+After CLUTCH completes, no further handshakes or identity proofs are required. The braid state is known only to the two participants. Successful decryption proves possession of the chain state, which proves continuous participation since the ceremony. See BRAID.md for rolling encryption details.
 
 ### 1.3 Pure P2P with Optional Infrastructure
 
@@ -89,7 +89,7 @@ CLUTCH employs eight key exchange primitives spanning four mathematical families
 
 ### 2.5 Rolling Chain Primitives (per-message)
 
-See CHAIN.md for full specification. Summary:
+See BRAID.md for full specification. Summary:
 
 | Primitive | Purpose | Family |
 |-----------|---------|--------|
@@ -99,7 +99,7 @@ See CHAIN.md for full specification. Summary:
 | ChaCha20Rng | PRNG salt source 0 | CSPRNG |
 | Pcg64 | PRNG salt source 1 | Fast PRNG |
 
-**Total: 14 cryptographic elements** (8 in CLUTCH + 1 handle PSK + 5 in CHAIN)
+**Total: 14 cryptographic elements** (8 in CLUTCH + 1 handle PSK + 5 in the braid)
 
 ### 2.6 Hardware-Attested Contextual KDF (HAC-KDF)
 
@@ -509,7 +509,7 @@ know the plaintext handle (the out-of-band shared secret).
 
 ## 5. Post-Ceremony: CHAIN Protocol
 
-After CLUTCH ceremony completes successfully, each party has identical 256-byte seeds. All subsequent communication uses the CHAIN protocol (see **CHAIN.md** for full specification).
+After CLUTCH ceremony completes successfully, each party has identical 256-byte seeds. All subsequent communication uses the braid (see **BRAID.md** for full specification).
 
 **Summary:**
 - Rolling chain state advances with every message (forward secrecy)
