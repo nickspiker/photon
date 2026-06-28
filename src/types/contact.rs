@@ -47,6 +47,12 @@ pub struct ChatMessage {
     pub timestamp: i64, // Eagle time oscillations (i64, ~1.42 GHz since Apollo 11 landing)
     pub is_outgoing: bool, // true = we sent it, false = they sent it
     pub delivered: bool, // true = confirmed delivered to recipient
+    /// For RECEIVED messages: the ACK plaintext_hash (blake3 of the full decrypted payload) we sent
+    /// back when we first processed this message. Stored so a duplicate retransmit (our ACK was lost)
+    /// can be re-ACKed with the SAME hash instead of being silently dropped — the sender's chain only
+    /// advances on a matching ACK, so a lost ACK would otherwise stall it forever. `None` for outgoing
+    /// messages and for received messages stored before this field existed.
+    pub ack_hash: Option<[u8; 32]>,
 }
 
 impl ChatMessage {
@@ -56,6 +62,7 @@ impl ChatMessage {
             timestamp: vsf::eagle_time_oscillations(),
             is_outgoing,
             delivered: false,
+            ack_hash: None,
         }
     }
 
@@ -66,7 +73,15 @@ impl ChatMessage {
             timestamp,
             is_outgoing,
             delivered: false,
+            ack_hash: None,
         }
+    }
+
+    /// Builder: attach the ACK hash (the plaintext_hash we ACK this message with). Used on the receive
+    /// path so a later duplicate can be re-ACKed from storage.
+    pub fn with_ack_hash(mut self, ack_hash: [u8; 32]) -> Self {
+        self.ack_hash = Some(ack_hash);
+        self
     }
 }
 
