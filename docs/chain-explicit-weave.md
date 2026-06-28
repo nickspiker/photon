@@ -67,8 +67,14 @@ NON-NEGOTIABLE: keep LENGTH PREFIXES (or fixed delimiters) on every variable-len
 This is a deliberate advance-derivation change: BOTH sides must change identically (any mismatch = total chain desync), and it makes all pre-change chains incompatible (dev: nuke+re-key; release: version bump).
 
 ### Sync rules (decided)
-- **Weave K = a PEER message we've ACKed** (guaranteed both-held: they authored it, we received-and-acked it). Sender restricts the random-from-256 pick to ACKed peer messages, so it can never reference something the receiver lacks → no buffering/gap dependency for the weave itself. Bidirectional entropy (peer's content mixes into our chain), which is the existing `incorporated_hp` intent.
-- First message (no ACKed peer message yet) weaves nothing (`their_plaintext = None`), same as today's anchor case.
+- **Weave K = a PEER message we've ACKed** (guaranteed both-held: they authored it, we received-and-acked it — so the SENDER knows the receiver holds it; survives reorder/restart). The eligible SET is the last 256 **ACKed peer messages** (recency eviction among ACKed ones — the ring tracks ACKed-ness, not just receipt). Sender restricts the pick to this set, so it can never reference something the receiver lacks → no buffering/gap dependency for the weave. Bidirectional entropy (peer's content into our chain), the existing `incorporated_hp` intent.
+
+### Selecting K — random index, NOT modulo
+`window = min(acked_peer_count, 256)`. Then:
+- `window == 0` (no ACKed peer message yet — brand-new conversation): weave **nothing**, `their_plaintext = None`. The anchor/first-message case, same as today.
+- `window >= 1`: `K = candidates[csprng.gen_range(0..window)]` — a random index BOUNDED BY `window`. The range naturally IS `window` (5 messages → pick 1 of 5; 32 → 1 of 32; 300 → 1 of the last 256). **Do NOT use `random % 256`**: it indexes past a small `n` (OOB), and `% n` reintroduces modulo bias. `gen_range(0..window)` is uniform + bounded + bias-free.
+
+**Selection is NON-DETERMINISTIC (CSPRNG/TRNG).** This is SAFE precisely because K is named explicitly on the wire (`incorporated_hp`): the receiver never guesses K, it reads the hash and looks it up. So the randomness costs nothing to sync and buys defense-in-depth — an attacker with partial state can't predict which prior secret mixes into the next braid step. Randomness helps the sender; the explicit hash makes it free for the receiver.
 
 ## Open questions for implementation
 - Exact "position" the receiver uses to advance deterministically: seq counter vs prev_msg_hp chain-walk. prev_msg_hp is already on the wire and already used for hash-chain continuity — likely the anchor.
