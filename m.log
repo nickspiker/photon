@@ -13,8 +13,8 @@ Found a bug? Have feedback? Email me: fractaldecoder@proton.me
 
 Network: Bound to port 4383 (UDP+TCP)
 Network: Using port 4383 for all traffic
-Network: Search worker initialized
 Network: Query worker initialized
+Network: Search worker initialized
 Status: Using socket on port 4383
 UI: status checker started (presence + CLUTCH)
 Status: Background thread started
@@ -584,7 +584,7 @@ RÅ
 < Versatile Storage Format
   z3⦉8⦊ version
   y3⦉8⦊ backward compat
-  e6⦉2026-JUN-28 11:52:25.312 AM⦊
+  e6⦉2026-JUN-28 12:30:49.898 PM⦊
   b3⦉90⦊ Header size Bytes ✓
   l3⦉106⦊ File length Bytes ✓
   hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
@@ -606,7 +606,7 @@ RÅ
 < Versatile Storage Format
   z3⦉8⦊ version
   y3⦉8⦊ backward compat
-  e6⦉2026-JUN-28 11:52:25.312 AM⦊
+  e6⦉2026-JUN-28 12:30:49.898 PM⦊
   b3⦉90⦊ Header size Bytes ✓
   l3⦉106⦊ File length Bytes ✓
   hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
@@ -628,7 +628,7 @@ RÅ
 < Versatile Storage Format
   z3⦉8⦊ version
   y3⦉8⦊ backward compat
-  e6⦉2026-JUN-28 11:52:25.312 AM⦊
+  e6⦉2026-JUN-28 12:30:49.898 PM⦊
   b3⦉90⦊ Header size Bytes ✓
   l3⦉106⦊ File length Bytes ✓
   hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
@@ -645,18 +645,16 @@ RÅ
    ]
 
 LAN: Broadcast 106 bytes to 192.168.0.255:4384 (from 192.168.0.153)
-LAN: Multicast RX 106 bytes from 192.168.0.153:51687
-LAN: Multicast RX 106 bytes from 192.168.0.153:54142
-LAN: Multicast RX 106 bytes from 192.168.0.153:51687
+LAN: Multicast RX 106 bytes from 192.168.0.153:61502
+LAN: Multicast RX 106 bytes from 192.168.0.153:60099
+LAN: Multicast RX 106 bytes from 192.168.0.153:61502
 Status: pinged 1 contact(s)
-LAN: Multicast RX 106 bytes from 192.168.0.197:41070
-Status: zeno is now ONLINE
 ═══ VSF UDP TX 239.104.199.144:4384 (106 bytes) ═══
 RÅ
 < Versatile Storage Format
   z3⦉8⦊ version
   y3⦉8⦊ backward compat
-  e6⦉2026-JUN-28 11:52:25.417 AM⦊
+  e6⦉2026-JUN-28 12:30:50.003 PM⦊
   b3⦉90⦊ Header size Bytes ✓
   l3⦉106⦊ File length Bytes ✓
   hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
@@ -678,7 +676,7 @@ RÅ
 < Versatile Storage Format
   z3⦉8⦊ version
   y3⦉8⦊ backward compat
-  e6⦉2026-JUN-28 11:52:25.417 AM⦊
+  e6⦉2026-JUN-28 12:30:50.003 PM⦊
   b3⦉90⦊ Header size Bytes ✓
   l3⦉106⦊ File length Bytes ✓
   hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
@@ -700,7 +698,7 @@ RÅ
 < Versatile Storage Format
   z3⦉8⦊ version
   y3⦉8⦊ backward compat
-  e6⦉2026-JUN-28 11:52:25.417 AM⦊
+  e6⦉2026-JUN-28 12:30:50.003 PM⦊
   b3⦉90⦊ Header size Bytes ✓
   l3⦉106⦊ File length Bytes ✓
   hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
@@ -717,24 +715,24 @@ RÅ
    ]
 
 LAN: Broadcast 106 bytes to 192.168.0.255:4384 (from 192.168.0.153)
-LAN: Multicast RX 106 bytes from 192.168.0.153:52492
-LAN: Multicast RX 106 bytes from 192.168.0.153:60291
-LAN: Multicast RX 106 bytes from 192.168.0.153:52492
+LAN: Multicast RX 106 bytes from 192.168.0.153:65238
+LAN: Multicast RX 106 bytes from 192.168.0.153:52899
+LAN: Multicast RX 106 bytes from 192.168.0.153:65238
 ═══ VSF FGTW RX challenge (170 bytes) ═══
 RÅ
 < Versatile Storage Format
   z3⦉8⦊ version
   y3⦉8⦊ backward compat
-  e6⦉2026-JUN-28 11:52:25.468 AM⦊
+  e6⦉2026-JUN-28 12:30:50.056 PM⦊
   b3⦉170⦊ Header size Bytes ✓
   l3⦉170⦊ File length Bytes ✓
   hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
-    9B20E97C2AD93C379079260A1D550DB4DC2B7792058776E090EC02EF1DC8F100
+    98C858E48E177AAC12D99AE1B5FA916F78CEEEAF46DBF2FD8344D2CE68191CC0
   ke3⦉31⦊ Ed25519 signer pubkey (32 Bytes)
     6D9F6E73BFA483115863427CC7505DC48FA7016A60A6F40205CA950D9BF05888
   ge3⦉63⦊ Ed25519 signature (64 Bytes)
-    6EBDF5F7C46D9FCACE39C0A4B8B20FBA6F9D9823B92C3FFF64AE8B417DBC22AB
-    0AE964583BC8BA4F1927921958A3BEAD3594559A36E053236D1E3941DF0F4609
+    EF21C790748807E7847B2304FEE9147D1E67B2EC1B990C736835021F67B652E4
+    E87D5221162A0D052193D130D8168CB857FCCB5444374AA3A6BA50B3E6420B0C
   n3⦉0⦊ labels
 >
 
@@ -743,16 +741,16 @@ RÅ
 < Versatile Storage Format
   z3⦉8⦊ version
   y3⦉8⦊ backward compat
-  e6⦉2026-JUN-28 11:52:25.427 AM⦊
+  e6⦉2026-JUN-28 12:30:50.042 PM⦊
   b3⦉196⦊ Header size Bytes ✓
   l4⦉398⦊ File length Bytes ✓
   hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
-    072DF8960C2A95AE0AF72C09EE2780650D8B850AA3ECFC10F99D95E9952607A4
+    351E94DEED0F6B4954C00A9BD1FA632C1833964CB46208DF599C65102621B3C8
   ke3⦉31⦊ Ed25519 signer pubkey (32 Bytes)
     FE46A74B0E90D8AB0D92EF1A6C6FE717A034C76484FFDD646E36EA03AEAF27F7
   ge3⦉63⦊ Ed25519 signature (64 Bytes)
-    E4163D9123A2F7E60DED084B3B8D881B32B65ADDBF973FBD09913D9AD7EC59A8
-    E8DEF9B3C55FA9E2E7661A0C204C3437EA2378F349FF8F0E2D3DEF4C27E9E10B
+    3DC32D8BA1A421E30CE510FDBD3C722B75187DD3C3A9A2D1CB1B93E2CB8D702F
+    66843D719EE1DFAEF3B9B368E474C4D7DCDEB8CBDC177C674CEE0FA0FD6FE70C
   n3⦉1⦊ labels
   (d3⦉8⦊announce
     o3⦉196⦊
@@ -762,25 +760,24 @@ RÅ
 >╮
  ╰[
   ╰─(d3⦉7⦊payload : ve3⦉181⦊0x
-                  B17CD2897C1CF3C0CF5FF59900C02393E7505967373F1212E318279506A2585B
-                  F4655DE2ADFE1B919BACDA1B4CB07900D417DED068CA11DBB59F55FE4157B308
-                  437D7EDD43A5788690D81D973E83A10F0AFC6FEC3A8B7F728E7D497BFE642DDB
-                  6A472A78782668B7FBD0A7E67D5D1E6F160E5CE2D2AB708E69B87B5148682D61
-                  ACBD29533B0754CC96E8254D0AEFABAE19C2D34356517B1E512E9B0A5C84B6C1
-                  544E88356D50811163D0D95F25980FCFCD6AF2DBB727)
+                  9B6F5964AE1C8C8BB9B30FCD3B94F803534C246D9852FD5E8E8672775EB89602
+                  FCBE2A3055F58739E845067D24F32EB93053ECE7CB680E5D1032ED5EBC7B43C1
+                  A96CAEE570E06D6CFA6307145C291F1106BFB6FAF8A4C575799E91D7B99E346B
+                  1722345740442A15F39BFAE4B05F5B52391A6A47063F6BE979DABF942E1076AD
+                  214D0DC1A169E3857A6950900B7D391E0B7E86EE50F1D345923D404B4AADFFB5
+                  F396E65CD049ACE4E8732E8A8CFE15E184EC33E2D005)
    ]
 
-LAN: Multicast RX 106 bytes from 192.168.0.197:60309
 ═══ VSF FGTW RX announce (455 bytes) ═══
 RÅ
 < Versatile Storage Format
   z3⦉8⦊ version
   y3⦉8⦊ backward compat
-  e6⦉2026-JUN-28 11:52:25.612 AM⦊
+  e6⦉2026-JUN-28 12:30:50.185 PM⦊
   b3⦉100⦊ Header size Bytes ✓
   l4⦉455⦊ File length Bytes ✓
   hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
-    9D237D0C3D93B85F2895B1BDDF5D18E40E629CB93058B6DA77ECC9E3592B8454
+    79665835FCDDB6F6112BD22D19A5EAC1CCCDB699D77C896C92EE2D19F21CB44C
   n3⦉1⦊ labels
   (d3⦉15⦊encrypted_peers
     o3⦉100⦊
@@ -790,17 +787,17 @@ RÅ
 >╮
  ╰[
   ╰─(d3⦉4⦊data : ve3⦉337⦊0x
-                  BC62F3C6CDDD45C0AF165C88CD005799975FF668CF09CD06E5B146CFF1BFD90B
-                  F23D8AD16A93E6F9B7442E2AE05F68A421BD06EED0823DC528BA44A723E60CBC
-                  0FF465BA0A080E5738F44554325F7DC0C95BCA8127616E875130328431FD9F22
-                  24FA0816D3566E922577BE4D45AE9CA5D89EC84BB53214A313D65DEECB1F6EAA
-                  FD959621F5A693B0621AFD294E23DAB23C31F5ACD2C8BF9670DF49FD4D0441B9
-                  3EFDC7DCA87EBF823D76C72ADE5C72B814666A1A812365DCFE0B4B4AEB9348B9
-                  82E698EA6491CD49304F92F4B910BC50BA01B4C439DB46A0038A9999385E12E4
-                  08D05D28C0F03859EF6EE0E736B745FBF51375665CC102A9589459156AD0F343
-                  4B3FFA18BFF3F69B55E87C8A4D78A4638F9BA9CDCB91ED22DFBE7088BD2C8C77
-                  79AABA5C1937DE6ECBDA3C592D0654313D7B5468628EC8FC10EDFAA20DF970A4
-                  4D6AB997A996AC174CAC49DB31B27480A29B)
+                  5CB234F5BD8E7AF524779E716477A98376A2BDE287546CCEBC8B22C571A9474D
+                  29C55DC6011EC19A7BD280F1A4D21957526BDD29B5CEF40268F4B3A240A073CF
+                  42D4F5869BF51EEB26C244E5487775FD855FEFF0E111BAF6486223A3871EDCA7
+                  9971CA117EB5E5C498A0A295BEB072D2692283F3184634763519D00F3A9C0E43
+                  5E876D26509BB3FCE7C0FDB2E05DBEC93416199EA621C8C1E5D0F5E1F5294879
+                  E73D7FF6D9E3D587AADB7E3ADD5983668C7598B3CB6348150365DC9F52678CF0
+                  02EA3F7C5AFE494FE26734DCA54AD10376AEE123280378F514085817C3A08882
+                  7E3E89542F3DE00CC28366FBA5ADA5DC71B64E065068C4C621F410B798A1F208
+                  EB2DAD1F847A98643A50480FDB667F2DF4FF8E81AED42DE5EE6A61B14CAF3016
+                  F3AC6920AB0CF46A308D0DEA558F716414C4A88D7DA1E268C2D684C68BAC143B
+                  2C794B6CD2391CE7C5FE4CE3FDCB5812466C)
    ]
 
 ═══ VSF FGTW Decrypted peers (278 bytes) ═══
@@ -834,7 +831,6 @@ FGTW: Received 2 peer(s)
 Network: Added 1 peer(s) to store
 Network: Handle registered to this device
 Development: identity_seed = DiscomfortZoneUndoingTangibleEarnestInvitationDimensionalMayoChamomileAtomicAdoptionEasiestSoftwareFavoriteInvertedSecrecyLongerHumanitySpoonOwnerZirconFertility  handle_seed = DiscomfortZoneUndoingTangibleEarnestInvitationDimensionalMayoChamomileAtomicAdoptionEasiestSoftwareFavoriteInvertedSecrecyLongerHumanitySpoonOwnerZirconFertility  device_secret = ParkingCredentialsContaminationGalliumSeminarUpperLanternExoticBeneficialLegitimateTexturePulsarTomatoEventualOakDancingCalderaImpatientHorticultureConvincingTrackerPotted
-LAN: Multicast RX 106 bytes from 192.168.0.197:55127
 Network: Loading contacts from disk...
 ═══ VSF Disk Read contacts/index (decrypted) (58 bytes) ═══
 [
@@ -873,10 +869,10 @@ Network: Loading contacts from disk...
        )
 ]
 
-STORAGE: Loaded 0 messages for zeno
+STORAGE: Loaded 4 messages for zeno
 Network: Loaded 1 contacts
 Network: Loading friendship chains...
-═══ VSF Disk Read friendship/chains (decrypted) (33167 bytes) ═══
+═══ VSF Disk Read friendship/chains (decrypted) (35534 bytes) ═══
 [
   ├─ (d3⦉7⦊version : u3⦉5⦊
   ┃    )
@@ -922,7 +918,6 @@ Network: Loading friendship chains...
   ┃               0000000000000000000000000000000000000000000000000000000000000000
   ┃               0000000000000000000000000000000000000000000000000000000000000000
   ┃               ... 14336 bytes omitted ...
-  ┃               CCC84A540389DD39BD94254E46B1C6D15BCCD8CE113341DDE8A4C31441EEBF61
   ┃               1AA33F3E1CEAF9FD1CEBEB1D24BE2ACDC5D0B820B3E25EBC6898AC6B9A4086C6
   ┃               B5AA9FBBAC21F831DCD6DABA6AB03D187B901113140212C4CC6E7D9468F48007
   ┃               4F5BCA4C88BFADB7E3E6EB44D3A736C6B9F0FBF3C47C28DB3B877D07DA11E43E
@@ -954,6 +949,7 @@ Network: Loading friendship chains...
   ┃               8AFC2BB87CB574B8C0A58EFB65B6249FA2029F86B6EAD44553DA6D77DE17B281
   ┃               66222EDB797E1167F8F73FEBCDAC3097866D08C575BB7857D0F21B7B6AA9924B
   ┃               08F30DDA9389C19C2F35782C88BF7D10667DB0EA715B0D2A933E0D44C2F34C2C
+  ┃               9042820622E42CA276D83B59C21DD4221FD0F366AAACC32AE0B422C267DA2C10
   ┃    )
   ├─ (d3⦉11⦊participant : hb3⦉31⦊⦉G^0*
   ┃       D63676222EECC9FEF067B8B075AE8BF376A7160363E6F11B60ED67112777D2EB
@@ -1026,19 +1022,98 @@ Network: Loading friendship chains...
   ┃               99EF1732C176EFD8D4756AD8A142C213247F9FF0FA1AC16CF939E695C8F58C11
   ┃               F6BD260D79AC507A73855FBBDA628FC90E84BF55454641C27750BE1F4671E8F4
   ┃    )
-  ├─ (d3⦉18⦊last_received_hash : hb3⦉0⦊⦉G^0*
-  ┃       
+  ├─ (d3⦉14⦊last_sent_hash : hp3⦉31⦊⦉G^0*
+  ┃       8701138D68247BDB1347E99D84766490B148BF905F816754F592536FB4E32505
+  ┃       ⦊
+  ┃    )
+  ├─ (d3⦉18⦊last_received_hash : hp3⦉31⦊⦉G^0*
+  ┃       93E67C82CBFA2D25A1CAEB1C4D56B1BBCF4819AF7285C80DC29BE26068E59B1E
   ┃       ⦊
   ┃    )
   ├─ (d3⦉18⦊last_received_hash : hb3⦉0⦊⦉G^0*
   ┃       
   ┃       ⦊
   ┃    )
-  ├─ (d3⦉14⦊last_plaintext : x3⦉0⦊""
+  ├─ (d3⦉18⦊pending_eagle_time : e6⦉2026-JUN-28 11:52:37.404 AM⦊
+  ┃    )
+  ├─ (d3⦉17⦊pending_plaintext : x3⦉163⦊"<163 bytes binary> 286433076D6573736167653A783304EFBFBDEFBFBDEFBFBD102C685233310F43626F3CEFBFBDEFBFBD2D2BEFBFBDEFBFBDEFBFBD64EFBFBDEFBFBDEFBFBD3135…"
+  ┃    )
+  ├─ (d3⦉22⦊pending_plaintext_hash : hp3⦉31⦊⦉G^0*
+  ┃       2BADF6201C2B3B159B943CE18E5DAF397F3BB1939F9B3580426060B4598A8DE8
+  ┃       ⦊
+  ┃    )
+  ├─ (d3⦉19⦊pending_prev_msg_hp : hp3⦉31⦊⦉G^0*
+  ┃       E05C8E4009DC945A648629E4771BE9A63E083BF9E14AA5C01D976000709A8898
+  ┃       ⦊
+  ┃    )
+  ├─ (d3⦉14⦊pending_msg_hp : hp3⦉31⦊⦉G^0*
+  ┃       FF9505AC114E4EB10773EB357E2DED4B09E5504F6FE91FCABA091B612102F1C4
+  ┃       ⦊
+  ┃    )
+  ├─ (d3⦉18⦊pending_ciphertext : vX3⦉111⦊0x
+  ┃               BCAF351407E195B1B7385CE2ABB05B2A47B7D5C1920656ACE7C3040FC50A1032
+  ┃               77AC695A60EB8E67951690F5DDE2CE5F53720B2BBC1F761D860D6D918030F858
+  ┃               AD55A527EE8082D0CA4D95BEB71BC0A29AA6EACB6166326497150AB94EEAF6D7
+  ┃               DF80504C61EB6377E39BFBA98CBD2DFF
+  ┃    )
+  ├─ (d3⦉18⦊pending_eagle_time : e6⦉2026-JUN-28 11:52:51.633 AM⦊
+  ┃    )
+  ├─ (d3⦉17⦊pending_plaintext : x3⦉227⦊"<227 bytes binary> 286433076D6573736167653A783304455A622C6536236B7A230707EFBFBD002C6870331FEFBFBDEFBFBD7CEFBFBDEFBFBDEFBFBD2D25EFBFBDEFBFBDEFBFBD1C…"
+  ┃    )
+  ├─ (d3⦉22⦊pending_plaintext_hash : hp3⦉31⦊⦉G^0*
+  ┃       13FB2A3A6FACD523C4C6AB88E8F71F4CCA50AA137EDD5AEB4D38A987C641C13F
+  ┃       ⦊
+  ┃    )
+  ├─ (d3⦉19⦊pending_prev_msg_hp : hp3⦉31⦊⦉G^0*
+  ┃       FF9505AC114E4EB10773EB357E2DED4B09E5504F6FE91FCABA091B612102F1C4
+  ┃       ⦊
+  ┃    )
+  ├─ (d3⦉14⦊pending_msg_hp : hp3⦉31⦊⦉G^0*
+  ┃       60C405B8A3E8BAAABC6A6FCFCBD3A41AECE19F63E1ECE033B1BCAC93EFA36D8A
+  ┃       ⦊
+  ┃    )
+  ├─ (d3⦉18⦊pending_ciphertext : vX3⦉145⦊0x
+  ┃               05E1385A2A05581BD7B0367E2CFC8836287E638080D58DA2AB70603926E424D2
+  ┃               75B76963848389C79C20D85ECA5780D18AC81EE37CD6EEC8B40CD82B6BF337E0
+  ┃               E55BF28FBE146DC25B9E1D058AA34E12844B68ECA620534753BCC28142A13DC3
+  ┃               B8956CBAF79092E4538A5605DF1BA93950C147400EDFBBED4821331A2727B397
+  ┃               1E0D3547A4DB0A9C3A2F4A898A9D5BD6A622
+  ┃    )
+  ├─ (d3⦉18⦊pending_eagle_time : e6⦉2026-JUN-28 11:53:00.717 AM⦊
+  ┃    )
+  ├─ (d3⦉17⦊pending_plaintext : x3⦉152⦊"<152 bytes binary> 286433076D6573736167653A6536236B7A230707EFBFBD002C6870331FEFBFBDEFBFBD7CEFBFBDEFBFBDEFBFBD2D25EFBFBDEFBFBDEFBFBD1C4D56EFBFBDEFBF…"
+  ┃    )
+  ├─ (d3⦉22⦊pending_plaintext_hash : hp3⦉31⦊⦉G^0*
+  ┃       4A65C3281A78244173CB4803215E54C228C9541FDEB23511411A45D14624B079
+  ┃       ⦊
+  ┃    )
+  ├─ (d3⦉19⦊pending_prev_msg_hp : hp3⦉31⦊⦉G^0*
+  ┃       60C405B8A3E8BAAABC6A6FCFCBD3A41AECE19F63E1ECE033B1BCAC93EFA36D8A
+  ┃       ⦊
+  ┃    )
+  ├─ (d3⦉14⦊pending_msg_hp : hp3⦉31⦊⦉G^0*
+  ┃       8701138D68247BDB1347E99D84766490B148BF905F816754F592536FB4E32505
+  ┃       ⦊
+  ┃    )
+  ├─ (d3⦉18⦊pending_ciphertext : vX3⦉96⦊0x
+  ┃               0449C7C3396037D6A9A5CEA559A3164A64851E64CDF0C1BF0F8149480F334098
+  ┃               D4AB05A1FFC77D09A7CBC37CCE5F49B80AA9B6C616D4E11AACBDE67A43B140FA
+  ┃               B8638B2C94A4CE2506FFE36532DF2A796DA6F6D0220B68CC4E3C6FF44DD6BA47
+  ┃               98
+  ┃    )
+  ├─ (d3⦉19⦊last_received_weave : hp3⦉31⦊⦉G^0*
+  ┃       EA90F701B639A0A1457022F8A5C49DFE96F9AA036389D954930B119CEF2629EE
+  ┃       ⦊
+  ┃    )
+  ├─ (d3⦉20⦊last_incorporated_hp : hp3⦉31⦊⦉G^0*
+  ┃       93E67C82CBFA2D25A1CAEB1C4D56B1BBCF4819AF7285C80DC29BE26068E59B1E
+  ┃       ⦊
+  ┃    )
+  ├─ (d3⦉14⦊last_plaintext : x3⦉195⦊"<195 bytes binary> 286433076D6573736167653A6852333CEFBFBD496F164749EFBFBDEFBFBDEFBFBD19EFBFBD2AEFBFBDEFBFBDEFBFBDEFBFBD2FEFBFBDEFBFBD1F0118EFBFBDEF…"
   ┃    )
   ├─ (d3⦉14⦊last_plaintext : x3⦉0⦊""
   ┃    )
-  ├─ (d3⦉18⦊last_received_time : e6⦉1969-JUL-20 1:17:40.000 PM⦊
+  ├─ (d3⦉18⦊last_received_time : e6⦉2026-JUN-28 11:52:44.381 AM⦊
   ┃    )
   ╰─ (d3⦉18⦊last_received_time : e6⦉1969-JUL-20 1:17:40.000 PM⦊
        )
@@ -1048,7 +1123,6 @@ CONV_TOKEN: input_len=92, input_hash=b2d3f1e82adad78e, sorted_seeds=6ee82ec3edfc
 CONV_TOKEN: spaghettify_result=2b757ad17ed325a7
 Network: Loaded 1 friendships
 Network: Syncing with cloud...
-LAN: Multicast RX 106 bytes from 192.168.0.197:47614
 FGTW: Downloaded blob (154 bytes)
 Cloud: Downloaded contacts blob (154 bytes)
 Cloud: Decoded 1 contacts
@@ -1057,124 +1131,28 @@ Cloud: About to call put_blob_blocking...
 Cloud: put_blob_blocking: creating HTTP client...
 Cloud: put_blob_blocking: signing request...
 Cloud: put_blob_blocking: sending blob_put VSF...
+contact-tap: opening conversation with 'zeno'
 Cloud: put_blob_blocking: response status 200 OK
 FGTW: Uploaded blob (154 bytes)
 Network: Background loading complete
 attestation success: pubkey = BafflesShockOxideCompromiseScavengerMontageUrgentHonorPublicUnfoundedInterviewBustedParSeasonedOutlineClinicalCocoonBlazeDeterministicAccordanceSmallGrace
 UI: merged 1 friendship chain(s) from disk (total: 1)
 UI: refreshed zeno addrs from FGTW — WAN [2600:100f:b07a:6db2:c688:1be7:17e4:b271]:4383 / LAN 192.168.0.197:4383
-PERF: on_query_result took 144ms (UI thread)
+PERF: on_query_result took 156ms (UI thread)
 Status: TIMEOUT (1/3) - 90e571bf906abc29 (waiting for more failures before offline)
-Status: pinged 1 contact(s)
-═══ VSF UDP TX 239.104.199.144:4384 (106 bytes) ═══
-RÅ
-< Versatile Storage Format
-  z3⦉8⦊ version
-  y3⦉8⦊ backward compat
-  e6⦉2026-JUN-28 11:52:30.404 AM⦊
-  b3⦉90⦊ Header size Bytes ✓
-  l3⦉106⦊ File length Bytes ✓
-  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
-    83BE43659842361DBB7495DB627109CAC2068F69315EFCDDC24D816EC78B63D1
-  n3⦉1⦊ labels
-  (d3⦉7⦊pt_disc
-    o3⦉90⦊
-    b3⦉16⦊
-    n3⦉1⦊
-  )
->╮
- ╰[
-  ╰─(d3⦉4⦊port : u4⦉4383⦊)
-   ]
-
-LAN: Multicast 106 bytes to 239.104.199.144:4384
-═══ VSF UDP TX [ff02::68c7:9014]:4384 (106 bytes) ═══
-RÅ
-< Versatile Storage Format
-  z3⦉8⦊ version
-  y3⦉8⦊ backward compat
-  e6⦉2026-JUN-28 11:52:30.404 AM⦊
-  b3⦉90⦊ Header size Bytes ✓
-  l3⦉106⦊ File length Bytes ✓
-  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
-    83BE43659842361DBB7495DB627109CAC2068F69315EFCDDC24D816EC78B63D1
-  n3⦉1⦊ labels
-  (d3⦉7⦊pt_disc
-    o3⦉90⦊
-    b3⦉16⦊
-    n3⦉1⦊
-  )
->╮
- ╰[
-  ╰─(d3⦉4⦊port : u4⦉4383⦊)
-   ]
-
-LAN: Multicast 106 bytes to [ff02::68c7:9014]:4384
-═══ VSF UDP TX 192.168.0.255:4384 (106 bytes) ═══
-RÅ
-< Versatile Storage Format
-  z3⦉8⦊ version
-  y3⦉8⦊ backward compat
-  e6⦉2026-JUN-28 11:52:30.404 AM⦊
-  b3⦉90⦊ Header size Bytes ✓
-  l3⦉106⦊ File length Bytes ✓
-  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
-    83BE43659842361DBB7495DB627109CAC2068F69315EFCDDC24D816EC78B63D1
-  n3⦉1⦊ labels
-  (d3⦉7⦊pt_disc
-    o3⦉90⦊
-    b3⦉16⦊
-    n3⦉1⦊
-  )
->╮
- ╰[
-  ╰─(d3⦉4⦊port : u4⦉4383⦊)
-   ]
-
-LAN: Broadcast 106 bytes to 192.168.0.255:4384 (from 192.168.0.153)
-LAN: Multicast RX 106 bytes from 192.168.0.153:49987
-LAN: Multicast RX 106 bytes from 192.168.0.153:60124
-LAN: Multicast RX 106 bytes from 192.168.0.153:49987
-contact-tap: opening conversation with 'zeno'
-Status: TIMEOUT (1/3) - 90e571bf906abc29 (waiting for more failures before offline)
-CHAT: sent message (4 chars) to contact
-Status: Sending CHAT_MESSAGE to 192.168.0.197:4383 (tok 2b757ad1...) via PT
-═══ VSF UDP TX 192.168.0.197:4383 (412 bytes) ═══
-RÅ
-< Versatile Storage Format
-  z3⦉8⦊ version
-  y3⦉8⦊ backward compat
-  e6⦉2026-JUN-28 11:52:37.404 AM⦊
-  b3⦉191⦊ Header size Bytes ✓
-  l4⦉412⦊ File length Bytes ✓
-  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
-    9978935B1C21E8A97BB2EFDA1C5A32C16AC6467B66103EFA6C39D2F79883E939
-  ke3⦉31⦊ Ed25519 signer pubkey (32 Bytes)
-    FE46A74B0E90D8AB0D92EF1A6C6FE717A034C76484FFDD646E36EA03AEAF27F7
-  ge3⦉63⦊ Ed25519 signature (64 Bytes)
-    D0BEA59D190B51E49174F67EF4FC294CB6C3A278E5BA13017F65A7B46E02055A
-    72D30AD639080FCB329535290D5F5F5F4FCBE1020DF5FD8A9955DF7F59924608
-  n3⦉1⦊ labels
-  (d3⦉3⦊msg
-    o3⦉191⦊
-    b3⦉221⦊
-    n3⦉3⦊
-  )
->╮
- ╰[
-  ├─(d3⦉3⦊tok : hg3⦉31⦊⦉G^0*
-  │       2B757AD17ED325A77A1EB13ABF66868D01ED5C687257CF44875690CB66B49C3B
-  │       ⦊)
-  ├─(d3⦉4⦊prev : hp3⦉31⦊⦉G^0*
-  │       E05C8E4009DC945A648629E4771BE9A63E083BF9E14AA5C01D976000709A8898
-  │       ⦊)
-  ╰─(d3⦉4⦊data : t3⦉1⦊u3 3⦉112⦊ [188,175,53,20,7,225,149,177,183,56,92,226,171,176,91,42,71,183,213,193,146,6,86,172,231,195,4,15,197,10,16,50,...] 112 u8 tensor)
-   ]
-
-STORAGE: Saved 1 messages for zeno
 Status: TIMEOUT (2/3) - 90e571bf906abc29 (waiting for more failures before offline)
-PT: Retransmitting packet to 192.168.0.197:4383 (attempt 1, next backoff 2s)
-═══ VSF UDP TX 192.168.0.197:4383 (412 bytes) ═══
+Status: TIMEOUT (3 consecutive) - 90e571bf906abc29 marked offline
+LAN: Multicast RX 106 bytes from 192.168.0.197:35132
+LAN: Multicast RX 106 bytes from 192.168.0.197:59802
+LAN: Multicast RX 106 bytes from 192.168.0.197:35209
+LAN: Multicast RX 106 bytes from 192.168.0.197:36073
+Status: zeno is now ONLINE
+CHAT: Retransmitting 3 of 3 pending message(s) to zeno (came online, last_received=None)
+CHAT: Retransmitted msg with eagle_time 2552267894785525760 to zeno
+CHAT: Retransmitted msg with eagle_time 2552267914997281280 to zeno
+CHAT: Retransmitted msg with eagle_time 2552267927899897856 to zeno
+Status: Sending CHAT_MESSAGE to [2600:100f:b07a:6db2:c688:1be7:17e4:b271]:4383 (tok 2b757ad1...) via PT
+═══ VSF UDP TX [2600:100f:b07a:6db2:c688:1be7:17e4:b271]:4383 (412 bytes) ═══
 RÅ
 < Versatile Storage Format
   z3⦉8⦊ version
@@ -1206,26 +1184,27 @@ RÅ
   ╰─(d3⦉4⦊data : t3⦉1⦊u3 3⦉112⦊ [188,175,53,20,7,225,149,177,183,56,92,226,171,176,91,42,71,183,213,193,146,6,86,172,231,195,4,15,197,10,16,50,...] 112 u8 tensor)
    ]
 
-PT: Retransmitting packet to 192.168.0.197:4383 (attempt 2, next backoff 4s)
-═══ VSF UDP TX 192.168.0.197:4383 (412 bytes) ═══
+Status: Sending CHAT_MESSAGE to [2600:100f:b07a:6db2:c688:1be7:17e4:b271]:4383 (tok 2b757ad1...) via PT
+Status: Sending CHAT_MESSAGE to [2600:100f:b07a:6db2:c688:1be7:17e4:b271]:4383 (tok 2b757ad1...) via PT
+═══ VSF UDP TX [2600:100f:b07a:6db2:c688:1be7:17e4:b271]:4383 (446 bytes) ═══
 RÅ
 < Versatile Storage Format
   z3⦉8⦊ version
   y3⦉8⦊ backward compat
-  e6⦉2026-JUN-28 11:52:37.404 AM⦊
+  e6⦉2026-JUN-28 11:52:51.633 AM⦊
   b3⦉191⦊ Header size Bytes ✓
-  l4⦉412⦊ File length Bytes ✓
+  l4⦉446⦊ File length Bytes ✓
   hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
-    9978935B1C21E8A97BB2EFDA1C5A32C16AC6467B66103EFA6C39D2F79883E939
+    0C2B223ECFFA6FACF1E47E6E4443D14FD277942218E460C1BD8A7B87053E98D1
   ke3⦉31⦊ Ed25519 signer pubkey (32 Bytes)
     FE46A74B0E90D8AB0D92EF1A6C6FE717A034C76484FFDD646E36EA03AEAF27F7
   ge3⦉63⦊ Ed25519 signature (64 Bytes)
-    D0BEA59D190B51E49174F67EF4FC294CB6C3A278E5BA13017F65A7B46E02055A
-    72D30AD639080FCB329535290D5F5F5F4FCBE1020DF5FD8A9955DF7F59924608
+    43581A46A6F326A21471ED539BCD8F1B55436EBECBFA13A867B59230835A3C6E
+    CE9F8CB258C53113B2D12B968FC41E3668E7B904A7EA65039814089E28BABF02
   n3⦉1⦊ labels
   (d3⦉3⦊msg
     o3⦉191⦊
-    b3⦉221⦊
+    b3⦉255⦊
     n3⦉3⦊
   )
 >╮
@@ -1234,9 +1213,41 @@ RÅ
   │       2B757AD17ED325A77A1EB13ABF66868D01ED5C687257CF44875690CB66B49C3B
   │       ⦊)
   ├─(d3⦉4⦊prev : hp3⦉31⦊⦉G^0*
-  │       E05C8E4009DC945A648629E4771BE9A63E083BF9E14AA5C01D976000709A8898
+  │       FF9505AC114E4EB10773EB357E2DED4B09E5504F6FE91FCABA091B612102F1C4
   │       ⦊)
-  ╰─(d3⦉4⦊data : t3⦉1⦊u3 3⦉112⦊ [188,175,53,20,7,225,149,177,183,56,92,226,171,176,91,42,71,183,213,193,146,6,86,172,231,195,4,15,197,10,16,50,...] 112 u8 tensor)
+  ╰─(d3⦉4⦊data : t3⦉1⦊u3 3⦉146⦊ [5,225,56,90,42,5,88,27,215,176,54,126,44,252,136,54,40,126,99,128,128,213,141,162,171,112,96,57,38,228,36,210,...] 146 u8 tensor)
+   ]
+
+═══ VSF UDP TX [2600:100f:b07a:6db2:c688:1be7:17e4:b271]:4383 (397 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉8⦊ version
+  y3⦉8⦊ backward compat
+  e6⦉2026-JUN-28 11:53:00.717 AM⦊
+  b3⦉191⦊ Header size Bytes ✓
+  l4⦉397⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    6A761B5E32481B3C9EEBBF12865AF1AB923410F950AF0EAA6A295D6FB9E6A9B2
+  ke3⦉31⦊ Ed25519 signer pubkey (32 Bytes)
+    FE46A74B0E90D8AB0D92EF1A6C6FE717A034C76484FFDD646E36EA03AEAF27F7
+  ge3⦉63⦊ Ed25519 signature (64 Bytes)
+    51590B99527F08A6D25C2CBE456126D39D2F1622AE9EAE82965C3239A0536A58
+    FE8E6D8F71297E0051F98100B05B05C795EFA24B330DC4C5BB70BAB15B00FE0D
+  n3⦉1⦊ labels
+  (d3⦉3⦊msg
+    o3⦉191⦊
+    b3⦉206⦊
+    n3⦉3⦊
+  )
+>╮
+ ╰[
+  ├─(d3⦉3⦊tok : hg3⦉31⦊⦉G^0*
+  │       2B757AD17ED325A77A1EB13ABF66868D01ED5C687257CF44875690CB66B49C3B
+  │       ⦊)
+  ├─(d3⦉4⦊prev : hp3⦉31⦊⦉G^0*
+  │       60C405B8A3E8BAAABC6A6FCFCBD3A41AECE19F63E1ECE033B1BCAC93EFA36D8A
+  │       ⦊)
+  ╰─(d3⦉4⦊data : t3⦉1⦊u3 3⦉97⦊ [4,73,199,195,57,96,55,214,169,165,206,165,89,163,22,74,100,133,30,100,205,240,193,191,15,129,73,72,15,51,64,152,...] 97 u8 tensor)
    ]
 
 ═══ VSF UDP RX [::ffff:192.168.0.197]:4383 (423 bytes) ═══
@@ -1271,84 +1282,7 @@ RÅ
   ╰─(d3⦉4⦊data : t3⦉1⦊u3 3⦉123⦊ [88,234,15,143,151,21,167,8,114,36,117,226,5,25,66,242,93,18,167,39,173,130,166,129,28,102,192,154,141,76,194,87,...] 123 u8 tensor)
    ]
 
-CHAT: Received message from zeno (eagle_time 2552267904695923712), 123 bytes ciphertext
-CHAIN DECRYPT: sender_handle_hash=6ee82ec3..., key=08f30dda..., salt=f6ca794e..., eagle_time=2552267904695923712, ciphertext_len=123
-CHAIN DECRYPT: raw plaintext bytes = [40, 100, 51, 7, 109, 101, 115, 115, 97, 103, 101, 58, 104, 82, 51, 60, 199, 73, 111, 22, 71, 73, 135, 247, 216, 25, 225, 42, 160, 181, 171, 201, 47, 141, 162, 31, 1, 24, 170, 179, 249, 244, 104, 248, 130, 227, 200, 237, 196, 189, 150, 229, 244, 47, 44, 151, 254, 231, 233, 131, 171, 49, 152, 224, 46, 162, 47, 143, 209, 181, 134, 204, 234, 198, 188, 185, 202, 44, 104, 112, 51, 31, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 44, 120, 51, 5, 18, 246, 43, 64, 41]
-CHAT: Decrypted message from zeno: "Tacos" (incorporated_hp=0000000000000000...)
-CHAT: Updated hash chain for zeno - msg_hp=93e67c82cbfa2d25...
-PT: Retransmitting packet to 192.168.0.197:4383 (attempt 3, next backoff 8s)
-═══ VSF UDP TX 192.168.0.197:4383 (412 bytes) ═══
-RÅ
-< Versatile Storage Format
-  z3⦉8⦊ version
-  y3⦉8⦊ backward compat
-  e6⦉2026-JUN-28 11:52:37.404 AM⦊
-  b3⦉191⦊ Header size Bytes ✓
-  l4⦉412⦊ File length Bytes ✓
-  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
-    9978935B1C21E8A97BB2EFDA1C5A32C16AC6467B66103EFA6C39D2F79883E939
-  ke3⦉31⦊ Ed25519 signer pubkey (32 Bytes)
-    FE46A74B0E90D8AB0D92EF1A6C6FE717A034C76484FFDD646E36EA03AEAF27F7
-  ge3⦉63⦊ Ed25519 signature (64 Bytes)
-    D0BEA59D190B51E49174F67EF4FC294CB6C3A278E5BA13017F65A7B46E02055A
-    72D30AD639080FCB329535290D5F5F5F4FCBE1020DF5FD8A9955DF7F59924608
-  n3⦉1⦊ labels
-  (d3⦉3⦊msg
-    o3⦉191⦊
-    b3⦉221⦊
-    n3⦉3⦊
-  )
->╮
- ╰[
-  ├─(d3⦉3⦊tok : hg3⦉31⦊⦉G^0*
-  │       2B757AD17ED325A77A1EB13ABF66868D01ED5C687257CF44875690CB66B49C3B
-  │       ⦊)
-  ├─(d3⦉4⦊prev : hp3⦉31⦊⦉G^0*
-  │       E05C8E4009DC945A648629E4771BE9A63E083BF9E14AA5C01D976000709A8898
-  │       ⦊)
-  ╰─(d3⦉4⦊data : t3⦉1⦊u3 3⦉112⦊ [188,175,53,20,7,225,149,177,183,56,92,226,171,176,91,42,71,183,213,193,146,6,86,172,231,195,4,15,197,10,16,50,...] 112 u8 tensor)
-   ]
-
-STORAGE: Saved 2 messages for zeno
-CHAT: Sent ACK to zeno (eagle_time 2552267904695923712, hash 2634f5497c275ec2...)
-PERF: check_status_updates took 382ms (UI thread)
-Status: Sending MESSAGE_ACK to [::ffff:192.168.0.197]:4383 (eagle_time 2552267904695923712) via PT
-CHAT: sent message (4 chars) to contact
-Status: Sending CHAT_MESSAGE to 192.168.0.197:4383 (tok 2b757ad1...) via PT
-STORAGE: Saved 3 messages for zeno
-PT: Retransmitting packet to 192.168.0.197:4383 (attempt 4, next backoff 16s)
-═══ VSF UDP TX 192.168.0.197:4383 (412 bytes) ═══
-RÅ
-< Versatile Storage Format
-  z3⦉8⦊ version
-  y3⦉8⦊ backward compat
-  e6⦉2026-JUN-28 11:52:37.404 AM⦊
-  b3⦉191⦊ Header size Bytes ✓
-  l4⦉412⦊ File length Bytes ✓
-  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
-    9978935B1C21E8A97BB2EFDA1C5A32C16AC6467B66103EFA6C39D2F79883E939
-  ke3⦉31⦊ Ed25519 signer pubkey (32 Bytes)
-    FE46A74B0E90D8AB0D92EF1A6C6FE717A034C76484FFDD646E36EA03AEAF27F7
-  ge3⦉63⦊ Ed25519 signature (64 Bytes)
-    D0BEA59D190B51E49174F67EF4FC294CB6C3A278E5BA13017F65A7B46E02055A
-    72D30AD639080FCB329535290D5F5F5F4FCBE1020DF5FD8A9955DF7F59924608
-  n3⦉1⦊ labels
-  (d3⦉3⦊msg
-    o3⦉191⦊
-    b3⦉221⦊
-    n3⦉3⦊
-  )
->╮
- ╰[
-  ├─(d3⦉3⦊tok : hg3⦉31⦊⦉G^0*
-  │       2B757AD17ED325A77A1EB13ABF66868D01ED5C687257CF44875690CB66B49C3B
-  │       ⦊)
-  ├─(d3⦉4⦊prev : hp3⦉31⦊⦉G^0*
-  │       E05C8E4009DC945A648629E4771BE9A63E083BF9E14AA5C01D976000709A8898
-  │       ⦊)
-  ╰─(d3⦉4⦊data : t3⦉1⦊u3 3⦉112⦊ [188,175,53,20,7,225,149,177,183,56,92,226,171,176,91,42,71,183,213,193,146,6,86,172,231,195,4,15,197,10,16,50,...] 112 u8 tensor)
-   ]
-
+CHAT: Skipping duplicate message from zeno (eagle_time 2552267904695923712)
 ═══ VSF UDP RX [::ffff:192.168.0.197]:4383 (365 bytes) ═══
 RÅ
 < Versatile Storage Format
@@ -1382,12 +1316,6 @@ RÅ
    ]
 
 CHAT: Received message from zeno (eagle_time 2552267921866224640), 65 bytes ciphertext
-CHAIN DECRYPT: sender_handle_hash=6ee82ec3..., key=90428206..., salt=df416cd0..., eagle_time=2552267921866224640, ciphertext_len=65
-CHAIN DECRYPT: raw plaintext bytes = [148, 75, 56, 158, 38, 107, 147, 121, 60, 222, 6, 128, 41, 242, 128, 179, 150, 20, 23, 96, 0, 154, 252, 247, 7, 41, 86, 189, 141, 140, 60, 101, 101, 29, 41, 45, 12, 145, 1, 74, 153, 236, 67, 9, 175, 56, 116, 97, 87, 177, 165, 235, 254, 82, 37, 28, 222, 67, 186, 240, 225, 34, 55, 197, 73]
-CHAT: VsfField parse error: Expected '(' at position 0, found Some(148)
-CHAT: sent message (3 chars) to contact
-Status: Sending CHAT_MESSAGE to 192.168.0.197:4383 (tok 2b757ad1...) via PT
-STORAGE: Saved 4 messages for zeno
 ═══ VSF UDP RX [::ffff:192.168.0.197]:4383 (501 bytes) ═══
 RÅ
 < Versatile Storage Format
@@ -1420,27 +1348,29 @@ RÅ
   ╰─(d3⦉4⦊data : t3⦉1⦊u3 3⦉200⦊ [73,68,251,93,88,99,218,204,96,57,112,192,58,19,126,136,69,27,126,250,107,250,186,30,168,40,141,158,95,93,29,111,...] 200 u8 tensor)
    ]
 
+CHAIN DECRYPT: sender_handle_hash=6ee82ec3..., key=90428206..., salt=ebaf822d..., eagle_time=2552267921866224640, ciphertext_len=65
+CHAIN DECRYPT: raw plaintext bytes = [160, 165, 214, 99, 104, 63, 125, 25, 114, 145, 173, 46, 187, 216, 210, 101, 191, 233, 98, 255, 246, 118, 213, 135, 60, 97, 34, 227, 208, 209, 235, 76, 10, 249, 172, 110, 233, 212, 17, 252, 218, 48, 69, 195, 46, 43, 211, 113, 7, 253, 48, 232, 171, 111, 179, 177, 81, 6, 178, 244, 80, 150, 115, 226, 20]
+CHAT: VsfField parse error: Expected '(' at position 0, found Some(160)
 CHAT: Hash chain gap from zeno - expected prev 93e67c82cbfa2d25..., got 49bf36bcac18e66d... — buffering (ahead of us)
-PT: Retransmitting packet to 192.168.0.197:4383 (attempt 5, next backoff 32s)
-═══ VSF UDP TX 192.168.0.197:4383 (412 bytes) ═══
+═══ VSF UDP RX [::ffff:192.168.0.197]:4383 (384 bytes) ═══
 RÅ
 < Versatile Storage Format
   z3⦉8⦊ version
   y3⦉8⦊ backward compat
-  e6⦉2026-JUN-28 11:52:37.404 AM⦊
+  e6⦉2026-JUN-28 12:31:05.286 PM⦊
   b3⦉191⦊ Header size Bytes ✓
-  l4⦉412⦊ File length Bytes ✓
+  l4⦉384⦊ File length Bytes ✓
   hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
-    9978935B1C21E8A97BB2EFDA1C5A32C16AC6467B66103EFA6C39D2F79883E939
+    11D8F03DAFA71867D5B6DA93B226FF269912FA15E83E6A954EBC59B3800B7346
   ke3⦉31⦊ Ed25519 signer pubkey (32 Bytes)
-    FE46A74B0E90D8AB0D92EF1A6C6FE717A034C76484FFDD646E36EA03AEAF27F7
+    90E571BF906ABC29B271ECD8E11B1589DE39636E0D7E89E427A0D9D785CD28C8
   ge3⦉63⦊ Ed25519 signature (64 Bytes)
-    D0BEA59D190B51E49174F67EF4FC294CB6C3A278E5BA13017F65A7B46E02055A
-    72D30AD639080FCB329535290D5F5F5F4FCBE1020DF5FD8A9955DF7F59924608
+    6C31657B6C131F17A79C21497408AC8643DAA43A127F4D4A674A42634D88329F
+    654450B2C19FE0ECF97C8872BB3D063B73494721CD2F7CDCFCD12DAF45393B02
   n3⦉1⦊ labels
   (d3⦉3⦊msg
     o3⦉191⦊
-    b3⦉221⦊
+    b3⦉193⦊
     n3⦉3⦊
   )
 >╮
@@ -1449,9 +1379,750 @@ RÅ
   │       2B757AD17ED325A77A1EB13ABF66868D01ED5C687257CF44875690CB66B49C3B
   │       ⦊)
   ├─(d3⦉4⦊prev : hp3⦉31⦊⦉G^0*
-  │       E05C8E4009DC945A648629E4771BE9A63E083BF9E14AA5C01D976000709A8898
+  │       D8C457D90A39A1D0C67256294ED55B8FFE722FD4A415DADFBDA24E9C23C7E259
   │       ⦊)
-  ╰─(d3⦉4⦊data : t3⦉1⦊u3 3⦉112⦊ [188,175,53,20,7,225,149,177,183,56,92,226,171,176,91,42,71,183,213,193,146,6,86,172,231,195,4,15,197,10,16,50,...] 112 u8 tensor)
+  ╰─(d3⦉4⦊data : t3⦉1⦊u3 3⦉84⦊ [92,15,7,91,171,106,175,113,194,201,131,119,163,210,243,232,15,147,214,173,118,82,54,203,176,187,126,127,240,24,103,240,...] 84 u8 tensor)
+   ]
+
+CHAT: Hash chain gap from zeno - expected prev 93e67c82cbfa2d25..., got d8c457d90a39a1d0... — buffering (ahead of us)
+═══ VSF UDP RX [::ffff:192.168.0.197]:4383 (423 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉8⦊ version
+  y3⦉8⦊ backward compat
+  e6⦉2026-JUN-28 11:52:44.381 AM⦊
+  b3⦉191⦊ Header size Bytes ✓
+  l4⦉423⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    DD9C63912DD6137B69FDE481E7D53C9C0A57B754A346BFBC18BBFC54EFDA1DDE
+  ke3⦉31⦊ Ed25519 signer pubkey (32 Bytes)
+    90E571BF906ABC29B271ECD8E11B1589DE39636E0D7E89E427A0D9D785CD28C8
+  ge3⦉63⦊ Ed25519 signature (64 Bytes)
+    262622BB021CD4B652F735C4B10B37DD6AD1760A87575D9316FAB988834663A5
+    D5AB0E942315F8C53C19C490D488E79BC4AB59DBAF934564C97A6983F78F7F04
+  n3⦉1⦊ labels
+  (d3⦉3⦊msg
+    o3⦉191⦊
+    b3⦉232⦊
+    n3⦉3⦊
+  )
+>╮
+ ╰[
+  ├─(d3⦉3⦊tok : hg3⦉31⦊⦉G^0*
+  │       2B757AD17ED325A77A1EB13ABF66868D01ED5C687257CF44875690CB66B49C3B
+  │       ⦊)
+  ├─(d3⦉4⦊prev : hp3⦉31⦊⦉G^0*
+  │       F5E81FFEC40F6501F22ABF83489D7D70D706350B09EE9D0CE46AB6ECCA250AF7
+  │       ⦊)
+  ╰─(d3⦉4⦊data : t3⦉1⦊u3 3⦉123⦊ [88,234,15,143,151,21,167,8,114,36,117,226,5,25,66,242,93,18,167,39,173,130,166,129,28,102,192,154,141,76,194,87,...] 123 u8 tensor)
+   ]
+
+CHAT: Skipping duplicate message from zeno (eagle_time 2552267904695923712)
+═══ VSF UDP RX [::ffff:192.168.0.197]:4383 (365 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉8⦊ version
+  y3⦉8⦊ backward compat
+  e6⦉2026-JUN-28 11:52:56.469 AM⦊
+  b3⦉191⦊ Header size Bytes ✓
+  l4⦉365⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    2F57D0CE82906438A7969D9F85CD46AE4DEEF58FC52796338F53D73F83076FE6
+  ke3⦉31⦊ Ed25519 signer pubkey (32 Bytes)
+    90E571BF906ABC29B271ECD8E11B1589DE39636E0D7E89E427A0D9D785CD28C8
+  ge3⦉63⦊ Ed25519 signature (64 Bytes)
+    80B8AE14538CFFC3A74443AE5EE7B662732BFE1223D6DBEFBF48C1B8D585E173
+    7DE161A00F1492E85FC4C4597C9D461ACE8B41493D79B6E499BA2A1AAD165905
+  n3⦉1⦊ labels
+  (d3⦉3⦊msg
+    o3⦉191⦊
+    b3⦉174⦊
+    n3⦉3⦊
+  )
+>╮
+ ╰[
+  ├─(d3⦉3⦊tok : hg3⦉31⦊⦉G^0*
+  │       2B757AD17ED325A77A1EB13ABF66868D01ED5C687257CF44875690CB66B49C3B
+  │       ⦊)
+  ├─(d3⦉4⦊prev : hp3⦉31⦊⦉G^0*
+  │       93E67C82CBFA2D25A1CAEB1C4D56B1BBCF4819AF7285C80DC29BE26068E59B1E
+  │       ⦊)
+  ╰─(d3⦉4⦊data : t3⦉1⦊u3 3⦉65⦊ [0,241,221,133,187,99,50,77,27,140,141,75,127,61,20,28,77,166,98,136,169,244,49,50,138,159,9,77,107,79,36,122,...] 65 u8 tensor)
+   ]
+
+CHAT: Received message from zeno (eagle_time 2552267921866224640), 65 bytes ciphertext
+═══ VSF UDP RX [::ffff:192.168.0.197]:4383 (501 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉8⦊ version
+  y3⦉8⦊ backward compat
+  e6⦉2026-JUN-28 11:53:04.933 AM⦊
+  b3⦉192⦊ Header size Bytes ✓
+  l4⦉501⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    896E68B214B0CDEC5AB1B727ED0602C897A87FBF23AB643F1A199BCD2C3EE335
+  ke3⦉31⦊ Ed25519 signer pubkey (32 Bytes)
+    90E571BF906ABC29B271ECD8E11B1589DE39636E0D7E89E427A0D9D785CD28C8
+  ge3⦉63⦊ Ed25519 signature (64 Bytes)
+    E0FAAC8B429986E492E5E065B1CC01EE2CE2E52CB13656D9FAEA8C2241260CAC
+    27FCFD6CF4239953819FD7CE33A782DAF526020031D3DC449EBE18F503BECC07
+  n3⦉1⦊ labels
+  (d3⦉3⦊msg
+    o3⦉192⦊
+    b4⦉309⦊
+    n3⦉3⦊
+  )
+>╮
+ ╰[
+  ├─(d3⦉3⦊tok : hg3⦉31⦊⦉G^0*
+  │       2B757AD17ED325A77A1EB13ABF66868D01ED5C687257CF44875690CB66B49C3B
+  │       ⦊)
+  ├─(d3⦉4⦊prev : hp3⦉31⦊⦉G^0*
+  │       49BF36BCAC18E66DD5BF27DEA9E31A57A865FC32CC27E1AB6E2FDFD0973CDEB4
+  │       ⦊)
+  ╰─(d3⦉4⦊data : t3⦉1⦊u3 3⦉200⦊ [73,68,251,93,88,99,218,204,96,57,112,192,58,19,126,136,69,27,126,250,107,250,186,30,168,40,141,158,95,93,29,111,...] 200 u8 tensor)
+   ]
+
+CHAIN DECRYPT: sender_handle_hash=6ee82ec3..., key=90428206..., salt=ebaf822d..., eagle_time=2552267921866224640, ciphertext_len=65
+CHAIN DECRYPT: raw plaintext bytes = [160, 165, 214, 99, 104, 63, 125, 25, 114, 145, 173, 46, 187, 216, 210, 101, 191, 233, 98, 255, 246, 118, 213, 135, 60, 97, 34, 227, 208, 209, 235, 76, 10, 249, 172, 110, 233, 212, 17, 252, 218, 48, 69, 195, 46, 43, 211, 113, 7, 253, 48, 232, 171, 111, 179, 177, 81, 6, 178, 244, 80, 150, 115, 226, 20]
+CHAT: VsfField parse error: Expected '(' at position 0, found Some(160)
+CHAT: Hash chain gap from zeno - expected prev 93e67c82cbfa2d25..., got 49bf36bcac18e66d... — buffering (ahead of us)
+═══ VSF UDP RX [::ffff:192.168.0.197]:4383 (384 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉8⦊ version
+  y3⦉8⦊ backward compat
+  e6⦉2026-JUN-28 12:31:05.286 PM⦊
+  b3⦉191⦊ Header size Bytes ✓
+  l4⦉384⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    11D8F03DAFA71867D5B6DA93B226FF269912FA15E83E6A954EBC59B3800B7346
+  ke3⦉31⦊ Ed25519 signer pubkey (32 Bytes)
+    90E571BF906ABC29B271ECD8E11B1589DE39636E0D7E89E427A0D9D785CD28C8
+  ge3⦉63⦊ Ed25519 signature (64 Bytes)
+    6C31657B6C131F17A79C21497408AC8643DAA43A127F4D4A674A42634D88329F
+    654450B2C19FE0ECF97C8872BB3D063B73494721CD2F7CDCFCD12DAF45393B02
+  n3⦉1⦊ labels
+  (d3⦉3⦊msg
+    o3⦉191⦊
+    b3⦉193⦊
+    n3⦉3⦊
+  )
+>╮
+ ╰[
+  ├─(d3⦉3⦊tok : hg3⦉31⦊⦉G^0*
+  │       2B757AD17ED325A77A1EB13ABF66868D01ED5C687257CF44875690CB66B49C3B
+  │       ⦊)
+  ├─(d3⦉4⦊prev : hp3⦉31⦊⦉G^0*
+  │       D8C457D90A39A1D0C67256294ED55B8FFE722FD4A415DADFBDA24E9C23C7E259
+  │       ⦊)
+  ╰─(d3⦉4⦊data : t3⦉1⦊u3 3⦉84⦊ [92,15,7,91,171,106,175,113,194,201,131,119,163,210,243,232,15,147,214,173,118,82,54,203,176,187,126,127,240,24,103,240,...] 84 u8 tensor)
+   ]
+
+CHAT: Hash chain gap from zeno - expected prev 93e67c82cbfa2d25..., got d8c457d90a39a1d0... — buffering (ahead of us)
+═══ VSF UDP RX [::ffff:192.168.0.197]:4383 (384 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉8⦊ version
+  y3⦉8⦊ backward compat
+  e6⦉2026-JUN-28 12:31:05.286 PM⦊
+  b3⦉191⦊ Header size Bytes ✓
+  l4⦉384⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    11D8F03DAFA71867D5B6DA93B226FF269912FA15E83E6A954EBC59B3800B7346
+  ke3⦉31⦊ Ed25519 signer pubkey (32 Bytes)
+    90E571BF906ABC29B271ECD8E11B1589DE39636E0D7E89E427A0D9D785CD28C8
+  ge3⦉63⦊ Ed25519 signature (64 Bytes)
+    6C31657B6C131F17A79C21497408AC8643DAA43A127F4D4A674A42634D88329F
+    654450B2C19FE0ECF97C8872BB3D063B73494721CD2F7CDCFCD12DAF45393B02
+  n3⦉1⦊ labels
+  (d3⦉3⦊msg
+    o3⦉191⦊
+    b3⦉193⦊
+    n3⦉3⦊
+  )
+>╮
+ ╰[
+  ├─(d3⦉3⦊tok : hg3⦉31⦊⦉G^0*
+  │       2B757AD17ED325A77A1EB13ABF66868D01ED5C687257CF44875690CB66B49C3B
+  │       ⦊)
+  ├─(d3⦉4⦊prev : hp3⦉31⦊⦉G^0*
+  │       D8C457D90A39A1D0C67256294ED55B8FFE722FD4A415DADFBDA24E9C23C7E259
+  │       ⦊)
+  ╰─(d3⦉4⦊data : t3⦉1⦊u3 3⦉84⦊ [92,15,7,91,171,106,175,113,194,201,131,119,163,210,243,232,15,147,214,173,118,82,54,203,176,187,126,127,240,24,103,240,...] 84 u8 tensor)
+   ]
+
+CHAT: Hash chain gap from zeno - expected prev 93e67c82cbfa2d25..., got d8c457d90a39a1d0... — buffering (ahead of us)
+═══ VSF UDP RX [::ffff:192.168.0.197]:4383 (423 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉8⦊ version
+  y3⦉8⦊ backward compat
+  e6⦉2026-JUN-28 11:52:44.381 AM⦊
+  b3⦉191⦊ Header size Bytes ✓
+  l4⦉423⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    DD9C63912DD6137B69FDE481E7D53C9C0A57B754A346BFBC18BBFC54EFDA1DDE
+  ke3⦉31⦊ Ed25519 signer pubkey (32 Bytes)
+    90E571BF906ABC29B271ECD8E11B1589DE39636E0D7E89E427A0D9D785CD28C8
+  ge3⦉63⦊ Ed25519 signature (64 Bytes)
+    262622BB021CD4B652F735C4B10B37DD6AD1760A87575D9316FAB988834663A5
+    D5AB0E942315F8C53C19C490D488E79BC4AB59DBAF934564C97A6983F78F7F04
+  n3⦉1⦊ labels
+  (d3⦉3⦊msg
+    o3⦉191⦊
+    b3⦉232⦊
+    n3⦉3⦊
+  )
+>╮
+ ╰[
+  ├─(d3⦉3⦊tok : hg3⦉31⦊⦉G^0*
+  │       2B757AD17ED325A77A1EB13ABF66868D01ED5C687257CF44875690CB66B49C3B
+  │       ⦊)
+  ├─(d3⦉4⦊prev : hp3⦉31⦊⦉G^0*
+  │       F5E81FFEC40F6501F22ABF83489D7D70D706350B09EE9D0CE46AB6ECCA250AF7
+  │       ⦊)
+  ╰─(d3⦉4⦊data : t3⦉1⦊u3 3⦉123⦊ [88,234,15,143,151,21,167,8,114,36,117,226,5,25,66,242,93,18,167,39,173,130,166,129,28,102,192,154,141,76,194,87,...] 123 u8 tensor)
+   ]
+
+CHAT: Skipping duplicate message from zeno (eagle_time 2552267904695923712)
+═══ VSF UDP RX [::ffff:192.168.0.197]:4383 (365 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉8⦊ version
+  y3⦉8⦊ backward compat
+  e6⦉2026-JUN-28 11:52:56.469 AM⦊
+  b3⦉191⦊ Header size Bytes ✓
+  l4⦉365⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    2F57D0CE82906438A7969D9F85CD46AE4DEEF58FC52796338F53D73F83076FE6
+  ke3⦉31⦊ Ed25519 signer pubkey (32 Bytes)
+    90E571BF906ABC29B271ECD8E11B1589DE39636E0D7E89E427A0D9D785CD28C8
+  ge3⦉63⦊ Ed25519 signature (64 Bytes)
+    80B8AE14538CFFC3A74443AE5EE7B662732BFE1223D6DBEFBF48C1B8D585E173
+    7DE161A00F1492E85FC4C4597C9D461ACE8B41493D79B6E499BA2A1AAD165905
+  n3⦉1⦊ labels
+  (d3⦉3⦊msg
+    o3⦉191⦊
+    b3⦉174⦊
+    n3⦉3⦊
+  )
+>╮
+ ╰[
+  ├─(d3⦉3⦊tok : hg3⦉31⦊⦉G^0*
+  │       2B757AD17ED325A77A1EB13ABF66868D01ED5C687257CF44875690CB66B49C3B
+  │       ⦊)
+  ├─(d3⦉4⦊prev : hp3⦉31⦊⦉G^0*
+  │       93E67C82CBFA2D25A1CAEB1C4D56B1BBCF4819AF7285C80DC29BE26068E59B1E
+  │       ⦊)
+  ╰─(d3⦉4⦊data : t3⦉1⦊u3 3⦉65⦊ [0,241,221,133,187,99,50,77,27,140,141,75,127,61,20,28,77,166,98,136,169,244,49,50,138,159,9,77,107,79,36,122,...] 65 u8 tensor)
+   ]
+
+CHAT: Received message from zeno (eagle_time 2552267921866224640), 65 bytes ciphertext
+═══ VSF UDP RX [::ffff:192.168.0.197]:4383 (501 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉8⦊ version
+  y3⦉8⦊ backward compat
+  e6⦉2026-JUN-28 11:53:04.933 AM⦊
+  b3⦉192⦊ Header size Bytes ✓
+  l4⦉501⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    896E68B214B0CDEC5AB1B727ED0602C897A87FBF23AB643F1A199BCD2C3EE335
+  ke3⦉31⦊ Ed25519 signer pubkey (32 Bytes)
+    90E571BF906ABC29B271ECD8E11B1589DE39636E0D7E89E427A0D9D785CD28C8
+  ge3⦉63⦊ Ed25519 signature (64 Bytes)
+    E0FAAC8B429986E492E5E065B1CC01EE2CE2E52CB13656D9FAEA8C2241260CAC
+    27FCFD6CF4239953819FD7CE33A782DAF526020031D3DC449EBE18F503BECC07
+  n3⦉1⦊ labels
+  (d3⦉3⦊msg
+    o3⦉192⦊
+    b4⦉309⦊
+    n3⦉3⦊
+  )
+>╮
+ ╰[
+  ├─(d3⦉3⦊tok : hg3⦉31⦊⦉G^0*
+  │       2B757AD17ED325A77A1EB13ABF66868D01ED5C687257CF44875690CB66B49C3B
+  │       ⦊)
+  ├─(d3⦉4⦊prev : hp3⦉31⦊⦉G^0*
+  │       49BF36BCAC18E66DD5BF27DEA9E31A57A865FC32CC27E1AB6E2FDFD0973CDEB4
+  │       ⦊)
+  ╰─(d3⦉4⦊data : t3⦉1⦊u3 3⦉200⦊ [73,68,251,93,88,99,218,204,96,57,112,192,58,19,126,136,69,27,126,250,107,250,186,30,168,40,141,158,95,93,29,111,...] 200 u8 tensor)
+   ]
+
+CHAIN DECRYPT: sender_handle_hash=6ee82ec3..., key=90428206..., salt=ebaf822d..., eagle_time=2552267921866224640, ciphertext_len=65
+CHAIN DECRYPT: raw plaintext bytes = [160, 165, 214, 99, 104, 63, 125, 25, 114, 145, 173, 46, 187, 216, 210, 101, 191, 233, 98, 255, 246, 118, 213, 135, 60, 97, 34, 227, 208, 209, 235, 76, 10, 249, 172, 110, 233, 212, 17, 252, 218, 48, 69, 195, 46, 43, 211, 113, 7, 253, 48, 232, 171, 111, 179, 177, 81, 6, 178, 244, 80, 150, 115, 226, 20]
+CHAT: VsfField parse error: Expected '(' at position 0, found Some(160)
+CHAT: Hash chain gap from zeno - expected prev 93e67c82cbfa2d25..., got 49bf36bcac18e66d... — buffering (ahead of us)
+CHAT: sent message (7 chars) to contact
+Status: Sending CHAT_MESSAGE to 192.168.0.197:4383 (tok 2b757ad1...) via PT
+═══ VSF UDP TX 192.168.0.197:4383 (408 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉8⦊ version
+  y3⦉8⦊ backward compat
+  e6⦉2026-JUN-28 12:31:10.942 PM⦊
+  b3⦉191⦊ Header size Bytes ✓
+  l4⦉408⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    B4CA98CCAAEF1AE2E6D83C18A55F2325F7A8C8663BB32C35D01F280887D551A8
+  ke3⦉31⦊ Ed25519 signer pubkey (32 Bytes)
+    FE46A74B0E90D8AB0D92EF1A6C6FE717A034C76484FFDD646E36EA03AEAF27F7
+  ge3⦉63⦊ Ed25519 signature (64 Bytes)
+    572E514183D985F6E4E08A500ED666884D68AF473DBCCE824B52BE2A533AB437
+    F1499E79C31BCEE86D2BC8A816DEFFA427D3FEC724336787C6E3414931564203
+  n3⦉1⦊ labels
+  (d3⦉3⦊msg
+    o3⦉191⦊
+    b3⦉217⦊
+    n3⦉3⦊
+  )
+>╮
+ ╰[
+  ├─(d3⦉3⦊tok : hg3⦉31⦊⦉G^0*
+  │       2B757AD17ED325A77A1EB13ABF66868D01ED5C687257CF44875690CB66B49C3B
+  │       ⦊)
+  ├─(d3⦉4⦊prev : hp3⦉31⦊⦉G^0*
+  │       8701138D68247BDB1347E99D84766490B148BF905F816754F592536FB4E32505
+  │       ⦊)
+  ╰─(d3⦉4⦊data : t3⦉1⦊u3 3⦉108⦊ [41,91,91,118,133,81,145,153,11,140,158,206,163,113,112,202,245,204,19,239,149,55,105,192,217,221,187,27,232,97,235,14,...] 108 u8 tensor)
+   ]
+
+STORAGE: Saved 1 messages for zeno
+PT: Retransmitting packet to 192.168.0.197:4383 (attempt 1, next backoff 2s)
+═══ VSF UDP TX 192.168.0.197:4383 (408 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉8⦊ version
+  y3⦉8⦊ backward compat
+  e6⦉2026-JUN-28 12:31:10.942 PM⦊
+  b3⦉191⦊ Header size Bytes ✓
+  l4⦉408⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    B4CA98CCAAEF1AE2E6D83C18A55F2325F7A8C8663BB32C35D01F280887D551A8
+  ke3⦉31⦊ Ed25519 signer pubkey (32 Bytes)
+    FE46A74B0E90D8AB0D92EF1A6C6FE717A034C76484FFDD646E36EA03AEAF27F7
+  ge3⦉63⦊ Ed25519 signature (64 Bytes)
+    572E514183D985F6E4E08A500ED666884D68AF473DBCCE824B52BE2A533AB437
+    F1499E79C31BCEE86D2BC8A816DEFFA427D3FEC724336787C6E3414931564203
+  n3⦉1⦊ labels
+  (d3⦉3⦊msg
+    o3⦉191⦊
+    b3⦉217⦊
+    n3⦉3⦊
+  )
+>╮
+ ╰[
+  ├─(d3⦉3⦊tok : hg3⦉31⦊⦉G^0*
+  │       2B757AD17ED325A77A1EB13ABF66868D01ED5C687257CF44875690CB66B49C3B
+  │       ⦊)
+  ├─(d3⦉4⦊prev : hp3⦉31⦊⦉G^0*
+  │       8701138D68247BDB1347E99D84766490B148BF905F816754F592536FB4E32505
+  │       ⦊)
+  ╰─(d3⦉4⦊data : t3⦉1⦊u3 3⦉108⦊ [41,91,91,118,133,81,145,153,11,140,158,206,163,113,112,202,245,204,19,239,149,55,105,192,217,221,187,27,232,97,235,14,...] 108 u8 tensor)
+   ]
+
+═══ VSF UDP RX [::ffff:192.168.0.197]:4383 (384 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉8⦊ version
+  y3⦉8⦊ backward compat
+  e6⦉2026-JUN-28 12:31:05.286 PM⦊
+  b3⦉191⦊ Header size Bytes ✓
+  l4⦉384⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    11D8F03DAFA71867D5B6DA93B226FF269912FA15E83E6A954EBC59B3800B7346
+  ke3⦉31⦊ Ed25519 signer pubkey (32 Bytes)
+    90E571BF906ABC29B271ECD8E11B1589DE39636E0D7E89E427A0D9D785CD28C8
+  ge3⦉63⦊ Ed25519 signature (64 Bytes)
+    6C31657B6C131F17A79C21497408AC8643DAA43A127F4D4A674A42634D88329F
+    654450B2C19FE0ECF97C8872BB3D063B73494721CD2F7CDCFCD12DAF45393B02
+  n3⦉1⦊ labels
+  (d3⦉3⦊msg
+    o3⦉191⦊
+    b3⦉193⦊
+    n3⦉3⦊
+  )
+>╮
+ ╰[
+  ├─(d3⦉3⦊tok : hg3⦉31⦊⦉G^0*
+  │       2B757AD17ED325A77A1EB13ABF66868D01ED5C687257CF44875690CB66B49C3B
+  │       ⦊)
+  ├─(d3⦉4⦊prev : hp3⦉31⦊⦉G^0*
+  │       D8C457D90A39A1D0C67256294ED55B8FFE722FD4A415DADFBDA24E9C23C7E259
+  │       ⦊)
+  ╰─(d3⦉4⦊data : t3⦉1⦊u3 3⦉84⦊ [92,15,7,91,171,106,175,113,194,201,131,119,163,210,243,232,15,147,214,173,118,82,54,203,176,187,126,127,240,24,103,240,...] 84 u8 tensor)
+   ]
+
+CHAT: Hash chain gap from zeno - expected prev 93e67c82cbfa2d25..., got d8c457d90a39a1d0... — buffering (ahead of us)
+PT: Retransmitting packet to 192.168.0.197:4383 (attempt 2, next backoff 4s)
+═══ VSF UDP TX 192.168.0.197:4383 (408 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉8⦊ version
+  y3⦉8⦊ backward compat
+  e6⦉2026-JUN-28 12:31:10.942 PM⦊
+  b3⦉191⦊ Header size Bytes ✓
+  l4⦉408⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    B4CA98CCAAEF1AE2E6D83C18A55F2325F7A8C8663BB32C35D01F280887D551A8
+  ke3⦉31⦊ Ed25519 signer pubkey (32 Bytes)
+    FE46A74B0E90D8AB0D92EF1A6C6FE717A034C76484FFDD646E36EA03AEAF27F7
+  ge3⦉63⦊ Ed25519 signature (64 Bytes)
+    572E514183D985F6E4E08A500ED666884D68AF473DBCCE824B52BE2A533AB437
+    F1499E79C31BCEE86D2BC8A816DEFFA427D3FEC724336787C6E3414931564203
+  n3⦉1⦊ labels
+  (d3⦉3⦊msg
+    o3⦉191⦊
+    b3⦉217⦊
+    n3⦉3⦊
+  )
+>╮
+ ╰[
+  ├─(d3⦉3⦊tok : hg3⦉31⦊⦉G^0*
+  │       2B757AD17ED325A77A1EB13ABF66868D01ED5C687257CF44875690CB66B49C3B
+  │       ⦊)
+  ├─(d3⦉4⦊prev : hp3⦉31⦊⦉G^0*
+  │       8701138D68247BDB1347E99D84766490B148BF905F816754F592536FB4E32505
+  │       ⦊)
+  ╰─(d3⦉4⦊data : t3⦉1⦊u3 3⦉108⦊ [41,91,91,118,133,81,145,153,11,140,158,206,163,113,112,202,245,204,19,239,149,55,105,192,217,221,187,27,232,97,235,14,...] 108 u8 tensor)
+   ]
+
+═══ VSF UDP RX [::ffff:192.168.0.197]:4383 (411 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉8⦊ version
+  y3⦉8⦊ backward compat
+  e6⦉2026-JUN-28 12:31:17.446 PM⦊
+  b3⦉191⦊ Header size Bytes ✓
+  l4⦉411⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    4A0FFAF39A8DB94822C2EAEE4993E3B27A7152A54B03BBF9F8DDD1F1F632D631
+  ke3⦉31⦊ Ed25519 signer pubkey (32 Bytes)
+    90E571BF906ABC29B271ECD8E11B1589DE39636E0D7E89E427A0D9D785CD28C8
+  ge3⦉63⦊ Ed25519 signature (64 Bytes)
+    C419E182C1E87A4EAFFEB91CD9138498730122CC415AFF6EF469C665EE65FFDF
+    84CF5A8E0D084E1FCF560C1F9201E28443189FDBD9B4F11636806EFB77CE3B0E
+  n3⦉1⦊ labels
+  (d3⦉3⦊msg
+    o3⦉191⦊
+    b3⦉220⦊
+    n3⦉3⦊
+  )
+>╮
+ ╰[
+  ├─(d3⦉3⦊tok : hg3⦉31⦊⦉G^0*
+  │       2B757AD17ED325A77A1EB13ABF66868D01ED5C687257CF44875690CB66B49C3B
+  │       ⦊)
+  ├─(d3⦉4⦊prev : hp3⦉31⦊⦉G^0*
+  │       63B6A77FDA58EC1DE3C2524D06E0FA1758C9ED11FCFDE3019B8DC505D75625C3
+  │       ⦊)
+  ╰─(d3⦉4⦊data : t3⦉1⦊u3 3⦉111⦊ [198,164,249,83,215,1,188,213,224,120,106,174,114,232,85,9,111,18,235,103,35,80,63,125,143,14,3,146,39,107,114,37,...] 111 u8 tensor)
+   ]
+
+CHAT: Hash chain gap from zeno - expected prev 93e67c82cbfa2d25..., got 63b6a77fda58ec1d... — buffering (ahead of us)
+PT: Retransmitting packet to 192.168.0.197:4383 (attempt 3, next backoff 8s)
+═══ VSF UDP TX 192.168.0.197:4383 (408 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉8⦊ version
+  y3⦉8⦊ backward compat
+  e6⦉2026-JUN-28 12:31:10.942 PM⦊
+  b3⦉191⦊ Header size Bytes ✓
+  l4⦉408⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    B4CA98CCAAEF1AE2E6D83C18A55F2325F7A8C8663BB32C35D01F280887D551A8
+  ke3⦉31⦊ Ed25519 signer pubkey (32 Bytes)
+    FE46A74B0E90D8AB0D92EF1A6C6FE717A034C76484FFDD646E36EA03AEAF27F7
+  ge3⦉63⦊ Ed25519 signature (64 Bytes)
+    572E514183D985F6E4E08A500ED666884D68AF473DBCCE824B52BE2A533AB437
+    F1499E79C31BCEE86D2BC8A816DEFFA427D3FEC724336787C6E3414931564203
+  n3⦉1⦊ labels
+  (d3⦉3⦊msg
+    o3⦉191⦊
+    b3⦉217⦊
+    n3⦉3⦊
+  )
+>╮
+ ╰[
+  ├─(d3⦉3⦊tok : hg3⦉31⦊⦉G^0*
+  │       2B757AD17ED325A77A1EB13ABF66868D01ED5C687257CF44875690CB66B49C3B
+  │       ⦊)
+  ├─(d3⦉4⦊prev : hp3⦉31⦊⦉G^0*
+  │       8701138D68247BDB1347E99D84766490B148BF905F816754F592536FB4E32505
+  │       ⦊)
+  ╰─(d3⦉4⦊data : t3⦉1⦊u3 3⦉108⦊ [41,91,91,118,133,81,145,153,11,140,158,206,163,113,112,202,245,204,19,239,149,55,105,192,217,221,187,27,232,97,235,14,...] 108 u8 tensor)
+   ]
+
+═══ VSF UDP RX [::ffff:192.168.0.197]:4383 (423 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉8⦊ version
+  y3⦉8⦊ backward compat
+  e6⦉2026-JUN-28 11:52:44.381 AM⦊
+  b3⦉191⦊ Header size Bytes ✓
+  l4⦉423⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    DD9C63912DD6137B69FDE481E7D53C9C0A57B754A346BFBC18BBFC54EFDA1DDE
+  ke3⦉31⦊ Ed25519 signer pubkey (32 Bytes)
+    90E571BF906ABC29B271ECD8E11B1589DE39636E0D7E89E427A0D9D785CD28C8
+  ge3⦉63⦊ Ed25519 signature (64 Bytes)
+    262622BB021CD4B652F735C4B10B37DD6AD1760A87575D9316FAB988834663A5
+    D5AB0E942315F8C53C19C490D488E79BC4AB59DBAF934564C97A6983F78F7F04
+  n3⦉1⦊ labels
+  (d3⦉3⦊msg
+    o3⦉191⦊
+    b3⦉232⦊
+    n3⦉3⦊
+  )
+>╮
+ ╰[
+  ├─(d3⦉3⦊tok : hg3⦉31⦊⦉G^0*
+  │       2B757AD17ED325A77A1EB13ABF66868D01ED5C687257CF44875690CB66B49C3B
+  │       ⦊)
+  ├─(d3⦉4⦊prev : hp3⦉31⦊⦉G^0*
+  │       F5E81FFEC40F6501F22ABF83489D7D70D706350B09EE9D0CE46AB6ECCA250AF7
+  │       ⦊)
+  ╰─(d3⦉4⦊data : t3⦉1⦊u3 3⦉123⦊ [88,234,15,143,151,21,167,8,114,36,117,226,5,25,66,242,93,18,167,39,173,130,166,129,28,102,192,154,141,76,194,87,...] 123 u8 tensor)
+   ]
+
+CHAT: Skipping duplicate message from zeno (eagle_time 2552267904695923712)
+═══ VSF UDP RX [::ffff:192.168.0.197]:4383 (365 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉8⦊ version
+  y3⦉8⦊ backward compat
+  e6⦉2026-JUN-28 11:52:56.469 AM⦊
+  b3⦉191⦊ Header size Bytes ✓
+  l4⦉365⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    2F57D0CE82906438A7969D9F85CD46AE4DEEF58FC52796338F53D73F83076FE6
+  ke3⦉31⦊ Ed25519 signer pubkey (32 Bytes)
+    90E571BF906ABC29B271ECD8E11B1589DE39636E0D7E89E427A0D9D785CD28C8
+  ge3⦉63⦊ Ed25519 signature (64 Bytes)
+    80B8AE14538CFFC3A74443AE5EE7B662732BFE1223D6DBEFBF48C1B8D585E173
+    7DE161A00F1492E85FC4C4597C9D461ACE8B41493D79B6E499BA2A1AAD165905
+  n3⦉1⦊ labels
+  (d3⦉3⦊msg
+    o3⦉191⦊
+    b3⦉174⦊
+    n3⦉3⦊
+  )
+>╮
+ ╰[
+  ├─(d3⦉3⦊tok : hg3⦉31⦊⦉G^0*
+  │       2B757AD17ED325A77A1EB13ABF66868D01ED5C687257CF44875690CB66B49C3B
+  │       ⦊)
+  ├─(d3⦉4⦊prev : hp3⦉31⦊⦉G^0*
+  │       93E67C82CBFA2D25A1CAEB1C4D56B1BBCF4819AF7285C80DC29BE26068E59B1E
+  │       ⦊)
+  ╰─(d3⦉4⦊data : t3⦉1⦊u3 3⦉65⦊ [0,241,221,133,187,99,50,77,27,140,141,75,127,61,20,28,77,166,98,136,169,244,49,50,138,159,9,77,107,79,36,122,...] 65 u8 tensor)
+   ]
+
+CHAT: Received message from zeno (eagle_time 2552267921866224640), 65 bytes ciphertext
+═══ VSF UDP RX [::ffff:192.168.0.197]:4383 (501 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉8⦊ version
+  y3⦉8⦊ backward compat
+  e6⦉2026-JUN-28 11:53:04.933 AM⦊
+  b3⦉192⦊ Header size Bytes ✓
+  l4⦉501⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    896E68B214B0CDEC5AB1B727ED0602C897A87FBF23AB643F1A199BCD2C3EE335
+  ke3⦉31⦊ Ed25519 signer pubkey (32 Bytes)
+    90E571BF906ABC29B271ECD8E11B1589DE39636E0D7E89E427A0D9D785CD28C8
+  ge3⦉63⦊ Ed25519 signature (64 Bytes)
+    E0FAAC8B429986E492E5E065B1CC01EE2CE2E52CB13656D9FAEA8C2241260CAC
+    27FCFD6CF4239953819FD7CE33A782DAF526020031D3DC449EBE18F503BECC07
+  n3⦉1⦊ labels
+  (d3⦉3⦊msg
+    o3⦉192⦊
+    b4⦉309⦊
+    n3⦉3⦊
+  )
+>╮
+ ╰[
+  ├─(d3⦉3⦊tok : hg3⦉31⦊⦉G^0*
+  │       2B757AD17ED325A77A1EB13ABF66868D01ED5C687257CF44875690CB66B49C3B
+  │       ⦊)
+  ├─(d3⦉4⦊prev : hp3⦉31⦊⦉G^0*
+  │       49BF36BCAC18E66DD5BF27DEA9E31A57A865FC32CC27E1AB6E2FDFD0973CDEB4
+  │       ⦊)
+  ╰─(d3⦉4⦊data : t3⦉1⦊u3 3⦉200⦊ [73,68,251,93,88,99,218,204,96,57,112,192,58,19,126,136,69,27,126,250,107,250,186,30,168,40,141,158,95,93,29,111,...] 200 u8 tensor)
+   ]
+
+CHAIN DECRYPT: sender_handle_hash=6ee82ec3..., key=90428206..., salt=ebaf822d..., eagle_time=2552267921866224640, ciphertext_len=65
+CHAIN DECRYPT: raw plaintext bytes = [160, 165, 214, 99, 104, 63, 125, 25, 114, 145, 173, 46, 187, 216, 210, 101, 191, 233, 98, 255, 246, 118, 213, 135, 60, 97, 34, 227, 208, 209, 235, 76, 10, 249, 172, 110, 233, 212, 17, 252, 218, 48, 69, 195, 46, 43, 211, 113, 7, 253, 48, 232, 171, 111, 179, 177, 81, 6, 178, 244, 80, 150, 115, 226, 20]
+CHAT: VsfField parse error: Expected '(' at position 0, found Some(160)
+CHAT: Hash chain gap from zeno - expected prev 93e67c82cbfa2d25..., got 49bf36bcac18e66d... — buffering (ahead of us)
+═══ VSF UDP RX [::ffff:192.168.0.197]:4383 (411 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉8⦊ version
+  y3⦉8⦊ backward compat
+  e6⦉2026-JUN-28 12:31:17.446 PM⦊
+  b3⦉191⦊ Header size Bytes ✓
+  l4⦉411⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    4A0FFAF39A8DB94822C2EAEE4993E3B27A7152A54B03BBF9F8DDD1F1F632D631
+  ke3⦉31⦊ Ed25519 signer pubkey (32 Bytes)
+    90E571BF906ABC29B271ECD8E11B1589DE39636E0D7E89E427A0D9D785CD28C8
+  ge3⦉63⦊ Ed25519 signature (64 Bytes)
+    C419E182C1E87A4EAFFEB91CD9138498730122CC415AFF6EF469C665EE65FFDF
+    84CF5A8E0D084E1FCF560C1F9201E28443189FDBD9B4F11636806EFB77CE3B0E
+  n3⦉1⦊ labels
+  (d3⦉3⦊msg
+    o3⦉191⦊
+    b3⦉220⦊
+    n3⦉3⦊
+  )
+>╮
+ ╰[
+  ├─(d3⦉3⦊tok : hg3⦉31⦊⦉G^0*
+  │       2B757AD17ED325A77A1EB13ABF66868D01ED5C687257CF44875690CB66B49C3B
+  │       ⦊)
+  ├─(d3⦉4⦊prev : hp3⦉31⦊⦉G^0*
+  │       63B6A77FDA58EC1DE3C2524D06E0FA1758C9ED11FCFDE3019B8DC505D75625C3
+  │       ⦊)
+  ╰─(d3⦉4⦊data : t3⦉1⦊u3 3⦉111⦊ [198,164,249,83,215,1,188,213,224,120,106,174,114,232,85,9,111,18,235,103,35,80,63,125,143,14,3,146,39,107,114,37,...] 111 u8 tensor)
+   ]
+
+CHAT: Hash chain gap from zeno - expected prev 93e67c82cbfa2d25..., got 63b6a77fda58ec1d... — buffering (ahead of us)
+═══ VSF UDP RX [::ffff:192.168.0.197]:4383 (384 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉8⦊ version
+  y3⦉8⦊ backward compat
+  e6⦉2026-JUN-28 12:31:05.286 PM⦊
+  b3⦉191⦊ Header size Bytes ✓
+  l4⦉384⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    11D8F03DAFA71867D5B6DA93B226FF269912FA15E83E6A954EBC59B3800B7346
+  ke3⦉31⦊ Ed25519 signer pubkey (32 Bytes)
+    90E571BF906ABC29B271ECD8E11B1589DE39636E0D7E89E427A0D9D785CD28C8
+  ge3⦉63⦊ Ed25519 signature (64 Bytes)
+    6C31657B6C131F17A79C21497408AC8643DAA43A127F4D4A674A42634D88329F
+    654450B2C19FE0ECF97C8872BB3D063B73494721CD2F7CDCFCD12DAF45393B02
+  n3⦉1⦊ labels
+  (d3⦉3⦊msg
+    o3⦉191⦊
+    b3⦉193⦊
+    n3⦉3⦊
+  )
+>╮
+ ╰[
+  ├─(d3⦉3⦊tok : hg3⦉31⦊⦉G^0*
+  │       2B757AD17ED325A77A1EB13ABF66868D01ED5C687257CF44875690CB66B49C3B
+  │       ⦊)
+  ├─(d3⦉4⦊prev : hp3⦉31⦊⦉G^0*
+  │       D8C457D90A39A1D0C67256294ED55B8FFE722FD4A415DADFBDA24E9C23C7E259
+  │       ⦊)
+  ╰─(d3⦉4⦊data : t3⦉1⦊u3 3⦉84⦊ [92,15,7,91,171,106,175,113,194,201,131,119,163,210,243,232,15,147,214,173,118,82,54,203,176,187,126,127,240,24,103,240,...] 84 u8 tensor)
+   ]
+
+CHAT: Hash chain gap from zeno - expected prev 93e67c82cbfa2d25..., got d8c457d90a39a1d0... — buffering (ahead of us)
+═══ VSF UDP RX [::ffff:192.168.0.197]:4383 (411 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉8⦊ version
+  y3⦉8⦊ backward compat
+  e6⦉2026-JUN-28 12:31:17.446 PM⦊
+  b3⦉191⦊ Header size Bytes ✓
+  l4⦉411⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    4A0FFAF39A8DB94822C2EAEE4993E3B27A7152A54B03BBF9F8DDD1F1F632D631
+  ke3⦉31⦊ Ed25519 signer pubkey (32 Bytes)
+    90E571BF906ABC29B271ECD8E11B1589DE39636E0D7E89E427A0D9D785CD28C8
+  ge3⦉63⦊ Ed25519 signature (64 Bytes)
+    C419E182C1E87A4EAFFEB91CD9138498730122CC415AFF6EF469C665EE65FFDF
+    84CF5A8E0D084E1FCF560C1F9201E28443189FDBD9B4F11636806EFB77CE3B0E
+  n3⦉1⦊ labels
+  (d3⦉3⦊msg
+    o3⦉191⦊
+    b3⦉220⦊
+    n3⦉3⦊
+  )
+>╮
+ ╰[
+  ├─(d3⦉3⦊tok : hg3⦉31⦊⦉G^0*
+  │       2B757AD17ED325A77A1EB13ABF66868D01ED5C687257CF44875690CB66B49C3B
+  │       ⦊)
+  ├─(d3⦉4⦊prev : hp3⦉31⦊⦉G^0*
+  │       63B6A77FDA58EC1DE3C2524D06E0FA1758C9ED11FCFDE3019B8DC505D75625C3
+  │       ⦊)
+  ╰─(d3⦉4⦊data : t3⦉1⦊u3 3⦉111⦊ [198,164,249,83,215,1,188,213,224,120,106,174,114,232,85,9,111,18,235,103,35,80,63,125,143,14,3,146,39,107,114,37,...] 111 u8 tensor)
+   ]
+
+CHAT: Hash chain gap from zeno - expected prev 93e67c82cbfa2d25..., got 63b6a77fda58ec1d... — buffering (ahead of us)
+CHAT: sent message (10 chars) to contact
+Status: Sending CHAT_MESSAGE to 192.168.0.197:4383 (tok 2b757ad1...) via PT
+STORAGE: Saved 2 messages for zeno
+═══ VSF UDP RX [::ffff:192.168.0.197]:4383 (411 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉8⦊ version
+  y3⦉8⦊ backward compat
+  e6⦉2026-JUN-28 12:31:17.446 PM⦊
+  b3⦉191⦊ Header size Bytes ✓
+  l4⦉411⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    4A0FFAF39A8DB94822C2EAEE4993E3B27A7152A54B03BBF9F8DDD1F1F632D631
+  ke3⦉31⦊ Ed25519 signer pubkey (32 Bytes)
+    90E571BF906ABC29B271ECD8E11B1589DE39636E0D7E89E427A0D9D785CD28C8
+  ge3⦉63⦊ Ed25519 signature (64 Bytes)
+    C419E182C1E87A4EAFFEB91CD9138498730122CC415AFF6EF469C665EE65FFDF
+    84CF5A8E0D084E1FCF560C1F9201E28443189FDBD9B4F11636806EFB77CE3B0E
+  n3⦉1⦊ labels
+  (d3⦉3⦊msg
+    o3⦉191⦊
+    b3⦉220⦊
+    n3⦉3⦊
+  )
+>╮
+ ╰[
+  ├─(d3⦉3⦊tok : hg3⦉31⦊⦉G^0*
+  │       2B757AD17ED325A77A1EB13ABF66868D01ED5C687257CF44875690CB66B49C3B
+  │       ⦊)
+  ├─(d3⦉4⦊prev : hp3⦉31⦊⦉G^0*
+  │       63B6A77FDA58EC1DE3C2524D06E0FA1758C9ED11FCFDE3019B8DC505D75625C3
+  │       ⦊)
+  ╰─(d3⦉4⦊data : t3⦉1⦊u3 3⦉111⦊ [198,164,249,83,215,1,188,213,224,120,106,174,114,232,85,9,111,18,235,103,35,80,63,125,143,14,3,146,39,107,114,37,...] 111 u8 tensor)
+   ]
+
+CHAT: Hash chain gap from zeno - expected prev 93e67c82cbfa2d25..., got 63b6a77fda58ec1d... — buffering (ahead of us)
+PT: Retransmitting packet to 192.168.0.197:4383 (attempt 4, next backoff 16s)
+═══ VSF UDP TX 192.168.0.197:4383 (408 bytes) ═══
+RÅ
+< Versatile Storage Format
+  z3⦉8⦊ version
+  y3⦉8⦊ backward compat
+  e6⦉2026-JUN-28 12:31:10.942 PM⦊
+  b3⦉191⦊ Header size Bytes ✓
+  l4⦉408⦊ File length Bytes ✓
+  hp3⦉31⦊ BLAKE3 provenance hash (32 Bytes)
+    B4CA98CCAAEF1AE2E6D83C18A55F2325F7A8C8663BB32C35D01F280887D551A8
+  ke3⦉31⦊ Ed25519 signer pubkey (32 Bytes)
+    FE46A74B0E90D8AB0D92EF1A6C6FE717A034C76484FFDD646E36EA03AEAF27F7
+  ge3⦉63⦊ Ed25519 signature (64 Bytes)
+    572E514183D985F6E4E08A500ED666884D68AF473DBCCE824B52BE2A533AB437
+    F1499E79C31BCEE86D2BC8A816DEFFA427D3FEC724336787C6E3414931564203
+  n3⦉1⦊ labels
+  (d3⦉3⦊msg
+    o3⦉191⦊
+    b3⦉217⦊
+    n3⦉3⦊
+  )
+>╮
+ ╰[
+  ├─(d3⦉3⦊tok : hg3⦉31⦊⦉G^0*
+  │       2B757AD17ED325A77A1EB13ABF66868D01ED5C687257CF44875690CB66B49C3B
+  │       ⦊)
+  ├─(d3⦉4⦊prev : hp3⦉31⦊⦉G^0*
+  │       8701138D68247BDB1347E99D84766490B148BF905F816754F592536FB4E32505
+  │       ⦊)
+  ╰─(d3⦉4⦊data : t3⦉1⦊u3 3⦉108⦊ [41,91,91,118,133,81,145,153,11,140,158,206,163,113,112,202,245,204,19,239,149,55,105,192,217,221,187,27,232,97,235,14,...] 108 u8 tensor)
    ]
 
 
