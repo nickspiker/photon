@@ -837,10 +837,43 @@ impl FluorApp for PhotonApp {
                 ) {
                     Ok(s) => {
                         self.contacts = crate::storage::contacts::load_all_contacts(&s);
+                        // Load each contact's conversation history too — load_all_contacts only loads
+                        // per-peer contact STATE from the vault, not the messages (those live in the
+                        // rārangi DB, loaded separately). Without this the resume frame paints contacts
+                        // with empty message lists, and the later query_resume result can't fix it:
+                        // on_query_result merges by handle_proof and SKIPS already-loaded contacts as
+                        // duplicates, so the message-bearing copy is discarded → history looks wiped
+                        // until the next app launch. Loading here makes resume show full history at once.
+                        for contact in &mut self.contacts {
+                            if let Err(e) = crate::storage::contacts::load_messages(contact, &s) {
+                                crate::log(&format!(
+                                    "UI: resume failed to load messages for {}: {}",
+                                    contact.handle.as_str(),
+                                    e
+                                ));
+                            }
+                        }
                         crate::log(&format!(
                             "UI: loaded {} contact(s) from local vault on resume",
                             self.contacts.len()
                         ));
+                        // Load friendship chains NOW too, not just contacts. Resume paints Ready and the
+                        // status checker starts answering immediately, but chains used to arrive only
+                        // later via query_resume — so any chat that landed in that window hit "No
+                        // friendship found for conversation_token" and was DROPPED (no chain = no
+                        // decrypt, no buffer). Loading chains here closes that gap so a peer messaging
+                        // us the instant we come back online doesn't lose messages. query_resume still
+                        // merges (and won't clobber these — it only adds ids we don't already hold).
+                        let friendship_ids: Vec<crate::types::FriendshipId> =
+                            self.contacts.iter().filter_map(|c| c.friendship_id).collect();
+                        let loaded_chains =
+                            crate::storage::friendship::load_all_friendships(&friendship_ids, &s);
+                        for (fid, chains) in loaded_chains {
+                            if !self.friendship_chains.iter().any(|(id, _)| *id == fid) {
+                                self.friendship_chains.push((fid, chains));
+                            }
+                        }
+                        self.update_sync_records();
                         // Seed the checker's answerable-pubkey set with every loaded contact so pongs from them are honoured.
                         if let Ok(mut pks) = self.contact_pubkeys.lock() {
                             for c in &self.contacts {
