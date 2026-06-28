@@ -1,6 +1,6 @@
 # The braid: explicit-hash weave (design)
 
-Status: **design only, not implemented.** Written 2026-06-28 from live both-sides logs (peer-B ↔ phone p). Fixes the message-chain desync that survives the `34fc92d` weave-snapshot fix.
+Status: **IMPLEMENTED** (commit 9bf1193) — this file is the design rationale; the authoritative spec of what shipped is [CHAIN.md](../CHAIN.md) ("The Braid", v0.1). Written 2026-06-28 from live both-sides logs (peer-B ↔ phone p) to fix the message-chain desync that survived the `34fc92d` weave-snapshot fix. The implementation diverged from this design in two ways worth noting: the weave reference is **eagle_time** (not msg_hp), and the "last 256" window is the **message-DB tail** (no separate ring).
 
 ## Name: the braid (not a ratchet)
 
