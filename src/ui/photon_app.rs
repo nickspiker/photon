@@ -2967,9 +2967,52 @@ impl PhotonApp {
 
         let eagle_time = vsf::eagle_time_oscillations();
 
-        // Build the message VSF the receiver parses: (message: x{text}, hp{incorporated_hp}, hR{pad}),
-        // field order shuffled to enforce type-marker (not positional) parsing. Mirrors the proven
-        // send-side shape; the receive path reads it back via VsfField::parse.
+        // The braid: choose up to TWO distinct prior PEER messages to weave into this chain step.
+        // Eligible = incoming messages (is_outgoing == false) in the last ≤256 of this conversation —
+        // any stored incoming row is one the receive path already ACKed, so the sender knows the peer
+        // holds it (both-held → identical strands → lockstep). The weave ingredient is the message's
+        // x-text (`content`), recoverable identically on both sides from the message DB. Each chosen
+        // message's eagle_time goes on the wire so the receiver resolves the SAME content.
+        //   0 eligible → weave nothing (anchor). 1 → single strand. ≥2 → two distinct (a true braid).
+        // Pick with gen_range (bounded, bias-free) — NEVER modulo. Strands are sorted by eagle_time so
+        // both peers frame derive_fresh_link identically regardless of pick order.
+        let (woven_strands, woven_times): (Vec<Vec<u8>>, Vec<i64>) = {
+            let mut chosen: Vec<(i64, Vec<u8>)> = Vec::new();
+            if let Some(contact) = self.contacts.get(ci) {
+                let window: Vec<&crate::types::ChatMessage> = contact
+                    .messages
+                    .iter()
+                    .rev()
+                    .filter(|m| !m.is_outgoing)
+                    .take(256)
+                    .collect();
+                use rand::Rng;
+                let mut rng = rand::thread_rng();
+                if window.len() == 1 {
+                    let m = window[0];
+                    chosen.push((m.timestamp, m.content.as_bytes().to_vec()));
+                } else if window.len() >= 2 {
+                    let i = rng.gen_range(0..window.len());
+                    let mut j = rng.gen_range(0..window.len() - 1);
+                    if j >= i {
+                        j += 1; // map [0, len-1) → [0, len)\{i} so j is distinct from i, uniformly
+                    }
+                    for &idx in &[i, j] {
+                        let m = window[idx];
+                        chosen.push((m.timestamp, m.content.as_bytes().to_vec()));
+                    }
+                }
+            }
+            chosen.sort_by_key(|(t, _)| *t);
+            let times = chosen.iter().map(|(t, _)| *t).collect();
+            let strands = chosen.into_iter().map(|(_, c)| c).collect();
+            (strands, times)
+        };
+
+        // Build the message VSF the receiver parses: (message: x{text}, hp{incorporated_hp},
+        // e6{woven_time}…, hR{pad}), field order shuffled to enforce type-marker (not positional)
+        // parsing. The e6 values name the woven peer messages (0, 1, or 2). The receive path reads
+        // them back via VsfField::parse.
         let (ciphertext, prev_msg_hp, conversation_token) = {
             let Some((_, chains)) = self
                 .friendship_chains
@@ -2987,6 +3030,10 @@ impl PhotonApp {
                 vsf::VsfType::x(text.clone()),
                 vsf::VsfType::hp(incorporated_hp.to_vec()),
             ];
+            // The braid: name each woven peer message by its eagle_time (e6). 0, 1, or 2 of these.
+            for &t in &woven_times {
+                values.push(vsf::VsfType::e(vsf::EtType::e6(t)));
+            }
             // Short random pad (median ~53B) for traffic-analysis resistance.
             let pad_len = rand::random::<u8>()
                 .min(rand::random::<u8>())
@@ -3000,7 +3047,7 @@ impl PhotonApp {
             let payload = FieldValue::new("message", values).flatten();
 
             let conv_token = chains.conversation_token;
-            match chains.prepare_send(&our_handle_hash, payload, eagle_time) {
+            match chains.prepare_send(&our_handle_hash, payload, eagle_time, woven_strands) {
                 Some((ct, prev, _msg_hp, _ph)) => (ct, prev, conv_token),
                 None => {
                     crate::log("CHAT: prepare_send failed (not a participant)");
@@ -4704,7 +4751,21 @@ impl PhotonApp {
         // Flag to update sync records after the loop (when borrows are released)
         let mut need_sync_update = false;
 
-        while let Some(update) = checker.try_recv() {
+        // The braid / strict-ordering replay queue: when a successful decrypt fills a hash-chain gap,
+        // the now-contiguous buffered messages are pushed here as synthetic ChatMessage updates and
+        // drained BEFORE the next channel item, so a buffered N+1 is reprocessed immediately after N
+        // (and can itself cascade to N+2). FIFO front-drain.
+        let mut replay_queue: std::collections::VecDeque<StatusUpdate> =
+            std::collections::VecDeque::new();
+
+        loop {
+            let update = match replay_queue.pop_front() {
+                Some(u) => u,
+                None => match checker.try_recv() {
+                    Some(u) => u,
+                    None => break,
+                },
+            };
             match update {
                 StatusUpdate::Online {
                     peer_pubkey,
@@ -4960,17 +5021,31 @@ impl PhotonApp {
                             continue;
                         }
 
-                        // Hash chain verification: check prev_msg_hp matches expected If mismatch: either out-of-order or missing messages
+                        // Strict in-order processing (Layer 1). The receiver decrypts at
+                        // CURRENT_KEY_INDEX, which is only correct when this message is the immediate
+                        // successor of the last one we processed. So verify_chain_link is now HARD: on a
+                        // mismatch the message is "ahead" (its predecessor hasn't arrived yet) — buffer
+                        // it on the `prev_msg_hp` it awaits and SKIP decrypt. It gets replayed when that
+                        // predecessor lands (see the gap-buffer drain after a successful advance below).
+                        // "Behind"/duplicate is already handled by is_duplicate above; an unrelated stale
+                        // prev_msg_hp simply waits in the buffer (and the retransmit path re-sends).
                         if let Err(expected) =
                             chains.verify_chain_link(&from_handle_hash, &prev_msg_hp)
                         {
                             crate::log(&format!(
-                                "CHAT: Hash chain mismatch from {} - expected {}..., got {}... (may need resync)",
+                                "CHAT: Hash chain gap from {} - expected prev {}..., got {}... — buffering (ahead of us)",
                                 handle,
                                 hex::encode(&expected[..8]),
                                 hex::encode(&prev_msg_hp[..8])
                             ));
-                            // For now, continue with decryption anyway (soft verification) TODO: Request resync if gap detected
+                            chains.buffer_for_gap(
+                                prev_msg_hp,
+                                from_handle_hash,
+                                timestamp,
+                                ciphertext.clone(),
+                                sender_addr,
+                            );
+                            continue;
                         }
 
                         crate::log(&format!(
@@ -5035,6 +5110,9 @@ impl PhotonApp {
                         let mut ptr = 0usize;
                         let mut message_text = String::new();
                         let mut incorporated_hp = [0u8; 32];
+                        // The braid: eagle_times naming the prior peer (=our outgoing) messages this
+                        // step weaves. 0, 1, or 2.
+                        let mut woven_times: Vec<i64> = Vec::new();
 
                         let field = match vsf::file_format::VsfField::parse(&plaintext, &mut ptr) {
                             Ok(f) => f,
@@ -5059,6 +5137,12 @@ impl PhotonApp {
                                 vsf::VsfType::hp(hash) if hash.len() == 32 => {
                                     incorporated_hp.copy_from_slice(hash);
                                 }
+                                vsf::VsfType::e(et) => match et {
+                                    vsf::EtType::e5(t) => woven_times.push(*t as i64),
+                                    vsf::EtType::e6(t) => woven_times.push(*t),
+                                    vsf::EtType::e7(t) => woven_times.push(*t as i64),
+                                    _ => {}
+                                },
                                 vsf::VsfType::hR(_) => {} // Random padding - ignore
                                 other => {
                                     crate::log(&format!(
@@ -5094,23 +5178,44 @@ impl PhotonApp {
                         // Update bidirectional entropy state (derive weave hash from full message context)
                         chains.update_received_for_mixing(timestamp, msg_hp, &plaintext);
 
-                        // Look up OUR plaintext that they incorporated (for bidirectional weave) If incorporated_hp is all zeros, they didn't incorporate any of our messages Clone to avoid borrow issues with advance()
-                        let our_incorporated_plaintext: Option<Vec<u8>> =
-                            if incorporated_hp != [0u8; 32] {
-                                chains
-                                    .get_pending_plaintext_by_hp(&incorporated_hp)
-                                    .map(|p| p.to_vec())
-                            } else {
-                                None
-                            };
+                        // The braid: resolve each woven eagle_time to its message content. The peer wove
+                        // messages IT received — i.e. messages WE authored — so we resolve against our
+                        // OUTGOING rows (is_outgoing == true). Both sides hold identical `content` for any
+                        // such message → identical strands → the chains advance in lockstep. Sort by
+                        // eagle_time so framing matches the sender's (which also sorted). A single device
+                        // can't emit two messages at the same 704ps tick, so eagle_time is unique within
+                        // our stream; the adversarial same-tick collision is not handled here (would need
+                        // a content_hash tiebreak carried on the wire) — left as a known guard gap.
+                        let woven_strands: Vec<Vec<u8>> = {
+                            let mut times = woven_times.clone();
+                            times.sort_unstable();
+                            let mut strands = Vec::with_capacity(times.len());
+                            for t in times {
+                                if let Some(m) = self.contacts[contact_idx]
+                                    .messages
+                                    .iter()
+                                    .find(|m| m.is_outgoing && m.timestamp == t)
+                                {
+                                    strands.push(m.content.as_bytes().to_vec());
+                                } else {
+                                    crate::log(&format!(
+                                        "CHAT: braid strand miss — no outgoing message at eagle_time {}",
+                                        t
+                                    ));
+                                }
+                            }
+                            strands
+                        };
+                        let strand_refs: Vec<&[u8]> =
+                            woven_strands.iter().map(|s| s.as_slice()).collect();
 
-                        // Advance their chain with bidirectional weave
+                        // Advance their chain with the braid strands.
                         let eagle_time_for_advance = vsf::EagleTime::from_oscillations(timestamp);
                         chains.advance(
                             &from_handle_hash,
                             &eagle_time_for_advance,
                             &plaintext,
-                            our_incorporated_plaintext.as_deref(),
+                            &strand_refs,
                         );
 
                         // Mark as received for deduplication (protects against UDP duplicates)
@@ -5123,6 +5228,29 @@ impl PhotonApp {
                             handle,
                             hex::encode(&msg_hp[..8])
                         ));
+
+                        // Layer 1 gap-buffer drain: this message's msg_hp is now our last_received_hash,
+                        // so any buffered message that was waiting on THIS as its predecessor is now
+                        // contiguous. Replay them (front of the queue) so they're processed in order
+                        // immediately — and each can cascade to fill the next gap when IT advances.
+                        let ready = chains.take_buffered_for(&msg_hp);
+                        if !ready.is_empty() {
+                            crate::log(&format!(
+                                "CHAT: gap filled — replaying {} buffered message(s) after msg_hp={}...",
+                                ready.len(),
+                                hex::encode(&msg_hp[..8])
+                            ));
+                            for buf in ready {
+                                replay_queue.push_back(StatusUpdate::ChatMessage {
+                                    conversation_token,
+                                    prev_msg_hp: buf.prev_msg_hp,
+                                    ciphertext: buf.ciphertext,
+                                    timestamp: buf.eagle_time,
+                                    sender_addr: buf.sender_addr,
+                                    // (buf.sender_addr is SocketAddr; matches the variant field)
+                                });
+                            }
+                        }
 
                         // CRASH SAFETY: Persist to disk BEFORE sending ACK If we crash after ACK but before disk, sender thinks we have it but we don't. Disk write is the commit point - ACK is just notification. If chain save fails, DO NOT send ACK. Sender will retransmit and we can try again, preventing permanent desync.
                         if let Some(storage) = self.storage.as_ref() {
