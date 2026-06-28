@@ -153,6 +153,23 @@ impl std::fmt::Display for FriendshipId {
 const DOMAIN_MSG_HP: &[u8] = b"PHOTON_MSG_HP_v1";
 const DOMAIN_ANCHOR: &[u8] = b"PHOTON_ANCHOR_v1";
 
+/// Reliability backoff for unacked outgoing messages. A message is (re)sent until an ACK arrives or
+/// we hit `MAX_SEND_ATTEMPTS`; between sends we wait `retry_delay_osc(attempts)` — exponential from
+/// ~1s, doubling, capped at ~30s. Covers both a dropped message AND a dropped ACK (the sender just
+/// keeps resending; the receiver dedupes by eagle_time and its ACK is deterministic, so a re-ACK is
+/// free). These live on `PendingMessage` and are runtime-only (not persisted).
+const RETRY_BASE_SECS: u64 = 1;
+const RETRY_CAP_SECS: u64 = 30;
+const MAX_SEND_ATTEMPTS: u8 = 8;
+
+/// Backoff delay (in eagle-time oscillations) before the `attempts`-th send's resend: 1s, 2s, 4s,
+/// 8s, 16s, then capped at 30s. `attempts` is 1-based (1 = after the first transmit).
+fn retry_delay_osc(attempts: u8) -> i64 {
+    let shift = attempts.saturating_sub(1).min(6); // cap the shift so 1<<shift can't overflow
+    let secs = (RETRY_BASE_SECS << shift).min(RETRY_CAP_SECS);
+    (secs * vsf::OSCILLATIONS_PER_SECOND) as i64
+}
+
 /// Per-participant encryption chains for a friendship.
 ///
 /// Each participant has their own chain (16KB). When sending, use sender's chain. When receiving ACK, advance sender's chain. This prevents race conditions in simultaneous sends and scales to N-party conversations.
@@ -189,6 +206,14 @@ pub struct FriendshipChains {
 
     /// Last received message time per participant (for duplicate detection). Index matches chain index. None = no message received yet from that sender. If incoming message has eagle_time <= this value, it's a duplicate (skip).
     last_received_times: Vec<Option<i64>>,
+
+    /// Runtime-only (NOT persisted): the `(eagle_time, plaintext_hash)` of the most recently received
+    /// message, so a duplicate arrival (the sender retransmitted because OUR ACK was lost) can be
+    /// re-ACKed instead of silently dropped. Without this, a lost ACK never heals: the sender keeps
+    /// resending and eventually gives up, its chain frozen. Single-slot (latest only) is enough for the
+    /// common lost-ACK case; older duplicates just wait for the sender's give-up. Set on each successful
+    /// receive, before its ACK.
+    last_acked: Option<(i64, [u8; 32])>,
 
     // ==================== HASH CHAIN STATE ====================
     /// First message anchor per participant (deterministic starting point). Derived from: BLAKE3(DOMAIN_ANCHOR || participant_handle_hash || chain_fingerprint) where chain_fingerprint = BLAKE3(chain[256..512]). Both parties compute identical anchors from CLUTCH ceremony.
@@ -262,6 +287,14 @@ pub struct PendingMessage {
     /// advance its copy (the receiver resolves them from the two eagle_times on the wire). Length
     /// 0 = anchor (wove nothing), 1 = single strand (early conversation), 2 = full braid.
     pub woven_strands: Vec<Vec<u8>>,
+    /// Reliability (runtime-only, NOT persisted): how many times we've (re)sent this message. The
+    /// first transmit counts as attempt 1. Used to drive exponential backoff and to give up after a
+    /// ceiling so an undeliverable message surfaces instead of resending forever.
+    pub attempts: u8,
+    /// Reliability (runtime-only, NOT persisted): the eagle-time oscillation at which this message is
+    /// next eligible for resend. The tick-driven retransmit sweep resends any unacked pending whose
+    /// `next_retry_osc` has passed, then pushes this out by the next backoff step. Set on first send.
+    pub next_retry_osc: i64,
 }
 
 // ============================================================================
@@ -394,6 +427,7 @@ impl FriendshipChains {
             last_plaintexts,
             pending_messages: Vec::new(),
             last_received_times,
+            last_acked: None,
             first_message_anchors,
             last_received_hashes,
             last_sent_hash: None,
@@ -461,6 +495,7 @@ impl FriendshipChains {
             last_plaintexts,
             pending_messages,
             last_received_times,
+            last_acked: None,
             first_message_anchors,
             last_received_hashes,
             last_sent_hash,
@@ -562,6 +597,7 @@ impl FriendshipChains {
             last_plaintexts,
             pending_messages,
             last_received_times,
+            last_acked: None,
             first_message_anchors,
             last_received_hashes,
             last_sent_hash,
@@ -689,6 +725,22 @@ impl FriendshipChains {
         }
     }
 
+    /// Record the `(eagle_time, plaintext_hash)` of the message we just ACKed, so a later duplicate
+    /// (sender retransmitted because our ACK was lost) can be re-ACKed deterministically. Call right
+    /// before sending the ACK. See [`last_acked_hash`](Self::last_acked_hash).
+    pub fn set_last_acked(&mut self, eagle_time: i64, plaintext_hash: [u8; 32]) {
+        self.last_acked = Some((eagle_time, plaintext_hash));
+    }
+
+    /// If `eagle_time` matches the most recently ACKed message, return its `plaintext_hash` so the
+    /// caller can re-send the ACK for a duplicate (heals the lost-ACK case). Returns None otherwise.
+    pub fn last_acked_hash(&self, eagle_time: i64) -> Option<[u8; 32]> {
+        match self.last_acked {
+            Some((t, h)) if t == eagle_time => Some(h),
+            _ => None,
+        }
+    }
+
     // ==================== HASH CHAIN METHODS ====================
 
     /// Get the first message anchor for a participant. Used as prev_msg_hp for the first message on their chain.
@@ -742,6 +794,40 @@ impl FriendshipChains {
         if let Some(idx) = self.participant_index(sender_handle_hash) {
             self.last_received_hashes[idx] = Some(msg_hp);
         }
+    }
+
+    /// Reliability sweep: collect every unacked pending message whose backoff deadline has passed,
+    /// bump its attempt count + next deadline, and return the data needed to resend it. Drives the
+    /// tick-based retransmit so a dropped message OR a dropped ACK self-heals (we keep resending until
+    /// the ACK lands; the receiver dedupes by eagle_time). Messages that have exhausted
+    /// `MAX_SEND_ATTEMPTS` are NOT returned here (the caller treats them as undelivered) but are left
+    /// in pending so a late ACK can still clear them.
+    ///
+    /// Returns `(eagle_time, prev_msg_hp, ciphertext, attempts_now, exhausted)` per due message.
+    pub fn collect_due_retransmits(
+        &mut self,
+        now_osc: i64,
+    ) -> Vec<(i64, [u8; 32], Vec<u8>, u8, bool)> {
+        let mut due = Vec::new();
+        for msg in self.pending_messages.iter_mut() {
+            if msg.attempts >= MAX_SEND_ATTEMPTS {
+                continue; // exhausted — don't resend, but keep pending for a possible late ACK
+            }
+            if now_osc < msg.next_retry_osc {
+                continue; // not due yet
+            }
+            msg.attempts += 1;
+            let exhausted = msg.attempts >= MAX_SEND_ATTEMPTS;
+            msg.next_retry_osc = now_osc + retry_delay_osc(msg.attempts);
+            due.push((
+                msg.eagle_time,
+                msg.prev_msg_hp,
+                msg.ciphertext.clone(),
+                msg.attempts,
+                exhausted,
+            ));
+        }
+        due
     }
 
     /// Get pending messages that come after a given hash pointer. Used for resync: peer says "I have hash X", we return messages after X.
@@ -843,6 +929,9 @@ impl FriendshipChains {
             // Freeze the braid's woven strands for THIS step so the matching process_ack advances
             // with the exact bytes the receiver used, regardless of later receives.
             woven_strands,
+            // First transmit counts as attempt 1; schedule the first resend one backoff step out.
+            attempts: 1,
+            next_retry_osc: eagle_time + retry_delay_osc(1),
         });
 
         // Update last_sent_hash for next message's prev_msg_hp
@@ -1305,5 +1394,85 @@ mod tests {
         assert_eq!(ready_b.len(), 1);
         assert_eq!(ready_b[0].eagle_time, 1001);
         assert_eq!(chains.gap_buffer_count(), 0);
+    }
+
+    #[test]
+    fn test_retry_backoff_schedule() {
+        // 1s, 2s, 4s, 8s, 16s, then capped at 30s, 30s…
+        let s = |secs: u64| (secs * vsf::OSCILLATIONS_PER_SECOND) as i64;
+        assert_eq!(retry_delay_osc(1), s(1));
+        assert_eq!(retry_delay_osc(2), s(2));
+        assert_eq!(retry_delay_osc(3), s(4));
+        assert_eq!(retry_delay_osc(4), s(8));
+        assert_eq!(retry_delay_osc(5), s(16));
+        assert_eq!(retry_delay_osc(6), s(30)); // 32 capped to 30
+        assert_eq!(retry_delay_osc(7), s(30));
+        assert_eq!(retry_delay_osc(200), s(30)); // no overflow at large attempts
+    }
+
+    #[test]
+    fn test_collect_due_retransmits_backoff_and_giveup() {
+        let alice = [1u8; 32];
+        let bob = [2u8; 32];
+        let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
+        let mut chains = FriendshipChains::from_clutch(&[alice, bob], &eggs);
+
+        // Record one pending message at t0 (attempts=1, next_retry = t0 + 1s).
+        let t0 = 1_000_000_000i64;
+        chains.add_pending(t0, vec![1], [0xAA; 32], [0; 32], [9; 32], vec![7, 7, 7], vec![]);
+
+        // Before the first deadline: nothing due.
+        assert!(chains.collect_due_retransmits(t0).is_empty());
+
+        // One second later: exactly one due, attempt becomes 2, ciphertext preserved.
+        let one_s = vsf::OSCILLATIONS_PER_SECOND as i64;
+        let due = chains.collect_due_retransmits(t0 + one_s);
+        assert_eq!(due.len(), 1);
+        let (et, _prev, ct, attempts, exhausted) = &due[0];
+        assert_eq!(*et, t0);
+        assert_eq!(*ct, vec![7, 7, 7]);
+        assert_eq!(*attempts, 2);
+        assert!(!exhausted);
+
+        // Immediately after, not due again (deadline pushed out by the 2s backoff step).
+        assert!(chains.collect_due_retransmits(t0 + one_s).is_empty());
+
+        // Drive it to the give-up ceiling by always asking far in the future.
+        let mut last_attempts = 2u8;
+        let mut saw_exhausted = false;
+        for k in 1..20 {
+            let due = chains.collect_due_retransmits(t0 + one_s * 60 * k);
+            if let Some((_, _, _, attempts, exhausted)) = due.first() {
+                last_attempts = *attempts;
+                if *exhausted {
+                    saw_exhausted = true;
+                }
+            } else {
+                break; // exhausted messages are no longer returned
+            }
+        }
+        assert!(saw_exhausted, "should report exhausted at the ceiling");
+        assert_eq!(last_attempts, MAX_SEND_ATTEMPTS);
+
+        // After give-up the message is still pending (a late ACK can clear it) but never resent again.
+        assert!(chains
+            .collect_due_retransmits(t0 + one_s * 1_000_000)
+            .is_empty());
+    }
+
+    #[test]
+    fn test_last_acked_reack_only_matches_latest() {
+        let alice = [1u8; 32];
+        let bob = [2u8; 32];
+        let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
+        let mut chains = FriendshipChains::from_clutch(&[alice, bob], &eggs);
+
+        assert_eq!(chains.last_acked_hash(500), None);
+        chains.set_last_acked(500, [0xBB; 32]);
+        assert_eq!(chains.last_acked_hash(500), Some([0xBB; 32]));
+        assert_eq!(chains.last_acked_hash(499), None); // only the latest is re-ACKable
+        chains.set_last_acked(600, [0xCC; 32]);
+        assert_eq!(chains.last_acked_hash(500), None);
+        assert_eq!(chains.last_acked_hash(600), Some([0xCC; 32]));
     }
 }
