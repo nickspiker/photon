@@ -889,7 +889,14 @@ impl FluorApp for PhotonApp {
                         // once: parallel McEliece keygens on launch starved the UI thread.
                         self.spawn_next_pending_keygen();
                     }
-                    Err(e) => crate::log(&format!("STORAGE: init failed on resume: {}", e)),
+                    Err(e) => {
+                        crate::log(&format!("STORAGE: init failed on resume: {}", e));
+                        // A hard vault-open failure (e.g. seal verification failed) is the WORST storage
+                        // state — no contacts load and nothing persists — yet it previously showed no
+                        // warning, while a mere recoverable mirror-divergence (`degraded()`) did. Flag it
+                        // so the red "storage degraded" banner surfaces a fully-broken vault too.
+                        self.vault_degraded = true;
+                    }
                 }
             }
             self.state = AppState::Ready;
@@ -3106,7 +3113,12 @@ impl PhotonApp {
                             device_secret,
                         ) {
                             Ok(s) => self.storage = Some(std::sync::Arc::new(s)),
-                            Err(e) => crate::log(&format!("STORAGE: init failed: {}", e)),
+                            Err(e) => {
+                                crate::log(&format!("STORAGE: init failed: {}", e));
+                                // Hard vault-open failure → surface the red banner (overrides any `false`
+                                // from `data.vault_degraded` set just above — a local open failure is worse).
+                                self.vault_degraded = true;
+                            }
                         }
                     }
                 }
