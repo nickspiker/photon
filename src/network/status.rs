@@ -1039,12 +1039,16 @@ async fn run_checker(
                         if let Some(data) = PTData::from_bytes(msg_bytes) {
                             // Handle data and collect responses (must drop lock before await)
                             let (ack_bytes, complete_bytes, received_data, inbound_stats) = {
+                                // Capture the stream BEFORE `data` is moved into handle_data: completion
+                                // + drain are stream-scoped so concurrent transfers from the same peer
+                                // (CLUTCH offer + KEM response) don't get cross-wired and silently dropped.
+                                let stream_id = data.stream_id;
                                 let mut pt_mgr = pt_recv.lock().unwrap();
                                 let ack = pt_mgr.handle_data(src_addr, data);
-                                let complete = pt_mgr.check_inbound_complete(src_addr);
+                                let complete = pt_mgr.check_inbound_complete(src_addr, stream_id);
                                 let stats = pt_mgr.inbound_stats(&src_addr);
                                 let data = if complete.is_some() {
-                                    pt_mgr.take_inbound_data(src_addr)
+                                    pt_mgr.take_inbound_data(src_addr, stream_id)
                                 } else {
                                     None
                                 };
