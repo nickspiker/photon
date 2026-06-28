@@ -70,7 +70,7 @@ pub enum FgtwMessage {
     // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete REMOVED Full 8-primitive CLUTCH uses ClutchOffer and ClutchKemResponse which are handled via build_clutch_offer_vsf() and parse_clutch_offer_vsf() See CLUTCH.md Section 4.2 for the slot-based ceremony protocol.
     /// Encrypted chat message
     ///
-    /// Format: section "msg" with encrypted payload per CHAIN.md Section 6.2
+    /// Format: section "msg" with encrypted payload per BRAID.md §9 (wire format)
     /// - conversation_token: smear_hash(sorted participant identity seeds) - privacy-preserving
     /// - prev_msg_hp: hash chain link to previous message (or first_message_anchor)
     /// - ciphertext: encrypted [x(text), hM(confirm_smear)] section
@@ -85,7 +85,7 @@ pub enum FgtwMessage {
     },
     /// Message acknowledgment
     ///
-    /// Confirms receipt of a message by eagle_time (no sequence numbers). Per CHAIN.md Section 6.1:
+    /// Confirms receipt of a message by eagle_time (no sequence numbers). Per BRAID.md §9.2 (ACK):
     /// - acked_eagle_time: which message we're ACKing (i64 oscillations from their header)
     /// - plaintext_hash: proves we decrypted correctly (BLAKE3 of decrypted content)
     MessageAck {

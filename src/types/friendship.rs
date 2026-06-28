@@ -607,7 +607,6 @@ impl FriendshipChains {
     ///
     /// Call this when we receive confirmation that a message was decrypted.
     ///
-    /// Bidirectional entropy: if `their_plaintext` is provided, it's mixed into the chain advancement. Pass the other party's most recent plaintext here.
     /// Advance a participant's chain, braiding in `their_plaintexts` (the woven peer strands —
     /// two for a full braid, or fewer early in the conversation; the caller passes them sorted
     /// by eagle_time so both peers frame identically).

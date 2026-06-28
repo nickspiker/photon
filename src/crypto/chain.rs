@@ -1,4 +1,4 @@
-//! Rolling chain encryption for messages (CHAIN protocol).
+//! The braid: rolling-chain encryption for messages (post-CLUTCH). See BRAID.md.
 //!
 //! 512-link Chain (16KB):
 //! - Links [0..256) = history (zeros initially, fills as chain advances)
@@ -46,7 +46,7 @@ pub type Result<T> = std::result::Result<T, ChainError>;
 
 // ============================================================================
 
-// // Constants from CHAIN.md Appendix A ============================================================================
+// // Constants from BRAID.md Appendix A ============================================================================
 /// Total links in a chain (512 × 32B = 16KB)
 pub const CHAIN_LINKS: usize = 512;
 
@@ -166,14 +166,14 @@ impl Chain {
 
     /// Advance the chain after ACK confirmation.
     ///
-    /// Algorithm (from CHAIN.md Section 7.1):
+    /// Algorithm (from BRAID.md §7.1):
     /// 1. Left-shift all links (oldest history at [0] drops off)
     /// 2. Old [256] (oldest active) becomes [255] (newest history)
     /// 3. Derive new link at [511] via spaghettify
     ///
-    /// Bidirectional entropy: if `their_plaintext` is provided, it's mixed into the fresh link derivation. This means the other party's message content contributes entropy to our chain advancement.
-    /// Advance the chain one step, braiding in the woven peer strands (`their_plaintexts`: the
-    /// two — or one, or none — prior peer messages this step weaves, already sorted by eagle_time).
+    /// The braid: `their_plaintexts` are the woven peer strands this step braids in — the two
+    /// (or one, or none) prior peer messages, already sorted by eagle_time. Their content contributes
+    /// the cross-entropy that makes this a braid rather than a one-way ratchet.
     pub fn advance(
         &mut self,
         eagle_time: &EagleTime,
