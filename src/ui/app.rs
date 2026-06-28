@@ -4669,7 +4669,7 @@ impl PhotonApp {
             }
         };
 
-        // Encrypt the message using new CHAIN protocol
+        // Encrypt the message using the braid
         use crate::crypto::chain::{derive_salt, encrypt_layers, generate_scratch};
 
         // Get the hp of their last message we received (for bidirectional weave)
