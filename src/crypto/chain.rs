@@ -172,18 +172,20 @@ impl Chain {
     /// 3. Derive new link at [511] via spaghettify
     ///
     /// Bidirectional entropy: if `their_plaintext` is provided, it's mixed into the fresh link derivation. This means the other party's message content contributes entropy to our chain advancement.
+    /// Advance the chain one step, braiding in the woven peer strands (`their_plaintexts`: the
+    /// two — or one, or none — prior peer messages this step weaves, already sorted by eagle_time).
     pub fn advance(
         &mut self,
         eagle_time: &EagleTime,
         our_plaintext: &[u8],
-        their_plaintext: Option<&[u8]>,
+        their_plaintexts: &[&[u8]],
     ) {
         // Left-shift: everything moves left, oldest drops off [0]
         self.links.copy_within(1..CHAIN_LINKS, 0);
 
-        // Derive fresh link via spaghettify (computationally chaotic) With bidirectional entropy mixing if their_plaintext is provided
+        // Derive fresh link via spaghettify (computationally chaotic) with the braid's peer strands
         let fresh_link =
-            derive_fresh_link(&eagle_time, our_plaintext, their_plaintext, &self.links);
+            derive_fresh_link(&eagle_time, our_plaintext, their_plaintexts, &self.links);
 
         // Append at rightmost position
         self.links[CURRENT_KEY_INDEX] = fresh_link;
@@ -312,37 +314,37 @@ pub fn verify_ack_proof(
 /// Uses spaghettify for computational chaos (data-dependent ops, IEEE754 weirdness). NOT memory-hard (~1.7KB state) - fast enough for per-message use.
 ///
 /// Bidirectional entropy: both plaintexts (ours and theirs) are fed directly to spaghettify. No pre-hashing - spaghettify gets all the raw entropy. Domain separation via clear structure: domain + lengths + data
+///
+/// THE BRAID. `their_plaintexts` are the woven peer-message strands — normally TWO distinct prior peer messages (a braid: two strands crossing into each new link), or one (single strand, early conversation), or none (anchor). The caller passes them already SORTED by eagle_time so both peers frame byte-identically regardless of which strand each labeled K1/K2 on the wire.
+///
+/// Field order is the peer strands FIRST (the peer-contributed, hardest-to-predict ingredient leads, so it avalanches the fixed/known portion — our plaintext, the chain links — rather than the reverse; same principle as salt-before-password). Injective framing: a `count(4)` prefix then each strand `len(4)+bytes`, so 0/1/2 strands and any byte contents are unambiguous (no concatenation collision). CHANGING THIS ORDER OR FRAMING BREAKS CHAIN COMPATIBILITY — both peers must run the identical layout or every advance desyncs.
 fn derive_fresh_link(
     eagle_time: &EagleTime,
     our_plaintext: &[u8],
-    their_plaintext: Option<&[u8]>,
+    their_plaintexts: &[&[u8]],
     chain: &[[u8; 32]; CHAIN_LINKS],
 ) -> [u8; 32] {
     // Active chain portion (post-shift, so [256..511] now, [255..510] after shift)
     let chain_portion = chain[HISTORY_LINKS..CURRENT_KEY_INDEX].as_flattened();
 
-    // Build input with clear domain separation: domain_tag + eagle_time + our_len + our_plaintext + chain_portion + [their_len + their_plaintext]
+    let strands_len: usize = their_plaintexts.iter().map(|p| 4 + p.len()).sum();
+    // Layout: DOMAIN + eagle_time(8) + strand_count(4) + [strand_len(4)+strand]* + chain_portion + our_len(4)+our_plaintext
     let mut input = Vec::with_capacity(
-        DOMAIN_ADVANCE.len()
-            + 8
-            + 4
-            + our_plaintext.len()
-            + chain_portion.len()
-            + 4
-            + their_plaintext.map_or(0, |p| p.len()),
+        DOMAIN_ADVANCE.len() + 8 + 4 + strands_len + chain_portion.len() + 4 + our_plaintext.len(),
     );
 
     input.extend_from_slice(DOMAIN_ADVANCE);
     input.extend_from_slice(&eagle_time.oscillations().unwrap_or(0).to_le_bytes());
+    // Peer strands FIRST: count, then each length-prefixed (handles 0/1/2 uniformly + injectively).
+    input.extend_from_slice(&(their_plaintexts.len() as u32).to_le_bytes());
+    for strand in their_plaintexts {
+        input.extend_from_slice(&(strand.len() as u32).to_le_bytes());
+        input.extend_from_slice(strand);
+    }
+    input.extend_from_slice(chain_portion);
+    // Our (locally-known) plaintext last.
     input.extend_from_slice(&(our_plaintext.len() as u32).to_le_bytes());
     input.extend_from_slice(our_plaintext);
-    input.extend_from_slice(chain_portion);
-
-    // Add their plaintext if available (bidirectional weave)
-    if let Some(their_pt) = their_plaintext {
-        input.extend_from_slice(&(their_pt.len() as u32).to_le_bytes());
-        input.extend_from_slice(their_pt);
-    }
 
     // Feed raw bytes directly to spaghettify - no pre-hash bottleneck
     spaghettify(&input)
@@ -530,7 +532,7 @@ mod tests {
         // Advance (no bidirectional entropy)
         let eagle_time = vsf::EagleTime::from_oscillations(vsf::eagle_time_oscillations());
         let plaintext_hash = [0xAA; 32];
-        chain.advance(&eagle_time, &plaintext_hash, None);
+        chain.advance(&eagle_time, &plaintext_hash, &[]);
 
         // Key should change (new derived value)
         assert_ne!(chain.current_key(), &original_key);
@@ -547,8 +549,8 @@ mod tests {
         let eagle_time = vsf::EagleTime::from_oscillations(vsf::eagle_time_oscillations());
         let plaintext_hash = [42u8; 32];
 
-        chain1.advance(&eagle_time, &plaintext_hash, None);
-        chain2.advance(&eagle_time, &plaintext_hash, None);
+        chain1.advance(&eagle_time, &plaintext_hash, &[]);
+        chain2.advance(&eagle_time, &plaintext_hash, &[]);
 
         assert_eq!(chain1.current_key(), chain2.current_key());
         assert_eq!(chain1.to_bytes(), chain2.to_bytes());
@@ -564,13 +566,13 @@ mod tests {
         let plaintext_hash = [42u8; 32];
 
         // Advance without their_plaintext
-        chain1.advance(&eagle_time, &plaintext_hash, None);
+        chain1.advance(&eagle_time, &plaintext_hash, &[]);
 
         // Advance with their_plaintext
-        chain2.advance(&eagle_time, &plaintext_hash, Some(b"their message content"));
+        chain2.advance(&eagle_time, &plaintext_hash, &[b"their message content"]);
 
         // Advance with different their_plaintext
-        chain3.advance(&eagle_time, &plaintext_hash, Some(b"different message"));
+        chain3.advance(&eagle_time, &plaintext_hash, &[b"different message"]);
 
         // All three should produce different keys
         assert_ne!(chain1.current_key(), chain2.current_key());
@@ -587,8 +589,8 @@ mod tests {
         let plaintext_hash = [42u8; 32];
         let their_plaintext = b"their message for entropy";
 
-        chain1.advance(&eagle_time, &plaintext_hash, Some(their_plaintext));
-        chain2.advance(&eagle_time, &plaintext_hash, Some(their_plaintext));
+        chain1.advance(&eagle_time, &plaintext_hash, &[their_plaintext]);
+        chain2.advance(&eagle_time, &plaintext_hash, &[their_plaintext]);
 
         // Same inputs = same output (deterministic)
         assert_eq!(chain1.current_key(), chain2.current_key());
@@ -728,11 +730,60 @@ mod tests {
             let plaintext_hash = *blake3::hash(&decrypted).as_bytes();
 
             // Both advance (no bidirectional entropy in this test)
-            sender.advance(&eagle_time, &plaintext_hash, None);
-            receiver.advance(&eagle_time, &plaintext_hash, None);
+            sender.advance(&eagle_time, &plaintext_hash, &[]);
+            receiver.advance(&eagle_time, &plaintext_hash, &[]);
 
             // Update prev_plaintext for next iteration
             prev_plaintext = decrypted;
         }
+    }
+
+    /// The braid invariant the receive-path gap_buffer must maintain: message N can only be
+    /// decrypted when the receiver's chain has advanced exactly N times (is at the same position
+    /// the sender encrypted under). Encrypt 3 messages, then prove that decrypting message #2 while
+    /// the receiver is still at position 0 yields GARBAGE (the live desync), but decrypting strictly
+    /// in order succeeds. This is why the receiver must buffer out-of-order arrivals rather than
+    /// soft-decrypt at CURRENT_KEY_INDEX.
+    #[test]
+    fn test_chain_position_must_match_for_decrypt() {
+        let mut sender = make_test_chain();
+        let receiver_fresh = make_test_chain(); // never advanced — at position 0
+
+        // Sender encrypts msg0 at position 0, advances, encrypts msg1 at position 1.
+        let et0 = vsf::EagleTime::from_oscillations(1_000);
+        let salt0 = derive_salt(&[], &sender);
+        let scratch0 = generate_scratch(&sender, &salt0);
+        let ct0 = encrypt_layers(b"first", &sender, &scratch0, &et0);
+        let h0 = *blake3::hash(b"first").as_bytes();
+        sender.advance(&et0, &h0, &[]);
+
+        let et1 = vsf::EagleTime::from_oscillations(2_000);
+        let salt1 = derive_salt(b"first", &sender);
+        let scratch1 = generate_scratch(&sender, &salt1);
+        let ct1 = encrypt_layers(b"second", &sender, &scratch1, &et1);
+
+        // A fresh receiver (position 0) decrypting msg1 (encrypted at position 1) gets GARBAGE.
+        let rx_salt_wrong = derive_salt(b"first", &receiver_fresh);
+        let rx_scratch_wrong = generate_scratch(&receiver_fresh, &rx_salt_wrong);
+        let garbage = decrypt_layers(&ct1, &receiver_fresh, CURRENT_KEY_INDEX, &rx_scratch_wrong, &et1);
+        assert_ne!(&garbage[..], b"second", "decrypting out-of-position must NOT yield the plaintext");
+
+        // In strict order it works: advance the receiver once (process msg0), then msg1 decrypts.
+        let mut receiver = make_test_chain();
+        let rx_salt0 = derive_salt(&[], &receiver);
+        let rx_scratch0 = generate_scratch(&receiver, &rx_salt0);
+        let d0 = decrypt_layers(&ct0, &receiver, CURRENT_KEY_INDEX, &rx_scratch0, &et0);
+        assert_eq!(&d0[..], b"first");
+        receiver.advance(&et0, &h0, &[]);
+
+        let rx_salt1 = derive_salt(b"first", &receiver);
+        let rx_scratch1 = generate_scratch(&receiver, &rx_salt1);
+        let d1 = decrypt_layers(&ct1, &receiver, CURRENT_KEY_INDEX, &rx_scratch1, &et1);
+        assert_eq!(&d1[..], b"second", "in-order decrypt must succeed");
+
+        // And both chains converge to the same key after the same advances.
+        receiver.advance(&et1, &blake3::hash(b"second").as_bytes().to_owned(), &[]);
+        sender.advance(&et1, &blake3::hash(b"second").as_bytes().to_owned(), &[]);
+        assert_eq!(sender.current_key(), receiver.current_key(), "chains must converge");
     }
 }

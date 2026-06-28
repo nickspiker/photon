@@ -1062,13 +1062,22 @@ pub fn save_messages(contact: &Contact, storage: &FlatStorage) -> Result<(), Sto
     let table = conversation_id(storage.vault_seed(), &their_identity_seed);
 
     let mut db = Db::open(storage).map_err(|e| StorageError::Vault(e.to_string()))?;
-    for (i, msg) in contact.messages.iter().enumerate() {
+    for msg in contact.messages.iter() {
+        // Key each row by the message's eagle_time, NOT a local enumerate index. eagle_time is
+        // monotonic (a clock) so it's stable + shared across both devices (the renumber-on-insert
+        // hazard of an index key is gone), it's the braid's weave reference, and Pk::Int encodes
+        // big-endian so key order == chronological. eagle_time is i64 but always positive
+        // (oscillations since Apollo 11), so `as u64` is safe and order-preserving.
+        // `content_hash` = blake3 of the message text, stored so the braid's eagle_time->text weave
+        // lookup has an integrity/tiebreak check (the adversarial multi-device-same-tick case).
+        let content_hash = blake3::hash(msg.content.as_bytes());
         let rec = Record::new()
             .set("content", msg.content.clone())
             .set("timestamp", Value::Time(msg.timestamp))
             .set("is_outgoing", msg.is_outgoing as u64)
-            .set("delivered", msg.delivered as u64);
-        db.put_row_in(&table, Pk::Int(i as u64), &rec)
+            .set("delivered", msg.delivered as u64)
+            .set("content_hash", content_hash.as_bytes().to_vec());
+        db.put_row_in(&table, Pk::Int(msg.timestamp as u64), &rec)
             .map_err(|e| StorageError::Vault(e.to_string()))?;
     }
 

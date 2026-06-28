@@ -361,11 +361,11 @@ pub fn load_friendship_chains(
             prev_msg_hp: prev_msg_hps[i],
             msg_hp: msg_hps[i],
             ciphertext: ciphertexts[i].clone(),
-            // Not persisted (runtime-only bidirectional-weave snapshot). A pending message reloaded after
-            // restart weaves `None`; in practice pending messages are short-lived (cleared on ACK) so this
-            // edge only matters if the app restarts mid-flight with an unacked message AND its weave was
-            // non-empty — a known minor gap, not the steady-state desync this fix addresses.
-            incorporated_plaintext: None,
+            // Not persisted (runtime-only braid-strand snapshot). A pending message reloaded after
+            // restart weaves no strands; in practice pending messages are short-lived (cleared on ACK) so
+            // this edge only matters if the app restarts mid-flight with an unacked message AND its braid
+            // strands were non-empty — a known minor gap, not the steady-state desync this fix addresses.
+            woven_strands: Vec::new(),
         })
         .collect();
 
