@@ -64,3 +64,4 @@ ios/**/.generated/
 
 # Stray dev artifacts
 /rust_out
+src/storage/settings.rs
