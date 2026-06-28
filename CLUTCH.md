@@ -1,7 +1,7 @@
 # CLUTCH Protocol Specification v3.0
 
 **Protocol:** CLUTCH (Device-Bound Parallel Key Ceremony)
-**Related:** CHAIN.md (Rolling Chain Encryption)
+**Related:** CHAIN.md (The Braid — post-CLUTCH rolling-chain encryption)
 **Author:** Nick Spiker
 **Status:** Draft
 **License:** MIT OR Apache-2.0
