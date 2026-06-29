@@ -2404,8 +2404,34 @@ impl FluorApp for PhotonApp {
             let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
             if let Some(ci) = self.active_contact {
                 if ci < self.contacts.len() {
-                    let contact = &self.contacts[ci];
                     let ru = ctx.viewport.ru;
+                    // Build/refresh the contact's scaled-avatar cache at the CONVERSATION-HEADER
+                    // diameter BEFORE the immutable borrow below. The header renders the avatar bigger
+                    // than the contact-list rows, but it has no rebuild of its own — it used to draw
+                    // whatever `avatar_scaled` happened to hold (built at the small row diameter) while
+                    // telling draw_avatar the buffer was header-sized → it sampled past the smaller
+                    // buffer → "index out of bounds: len 2028 (26²·3) but index 2307" panic on
+                    // conversation-open. Rebuilding here at the header diameter keeps the cache and the
+                    // claimed scaled_diameter in lockstep.
+                    {
+                        let (_, _, header_r) =
+                            ReadyLayout::compute(buf_w, buf_h, ru).avatar_center_radius();
+                        let header_diam = (header_r * 2.0) as usize;
+                        if self.contacts[ci].avatar_pixels.is_some()
+                            && (self.contacts[ci].avatar_scaled.is_none()
+                                || self.contacts[ci].avatar_scaled_diameter != header_diam)
+                        {
+                            let base = self.contacts[ci].avatar_pixels.as_ref().unwrap();
+                            let scaled = crate::ui::avatar_render::update_avatar_scaled(
+                                base,
+                                crate::ui::avatar::AVATAR_SIZE,
+                                header_diam,
+                            );
+                            self.contacts[ci].avatar_scaled = Some(scaled);
+                            self.contacts[ci].avatar_scaled_diameter = header_diam;
+                        }
+                    }
+                    let contact = &self.contacts[ci];
                     // Scale off the SAME span-based harmonic unit the contacts screen uses, so the conversation screen scales identically (aspect-ratio-robust, zoom-aware, no hardcoded pixels) instead of the old crude height-only `buf_h·0.04` with a magic 12px floor.
                     let conv_layout = ReadyLayout::compute(buf_w, buf_h, ru);
                     let unit = conv_layout.unit_height;
