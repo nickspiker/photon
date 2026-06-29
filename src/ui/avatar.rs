@@ -816,7 +816,7 @@ fn save_avatar_to_cache(
     save_avatar_to_cache_from_seed(ihi::handle_to_hash(handle).as_bytes(), vsf_data, storage)
 }
 
-fn save_avatar_to_cache_from_seed(
+pub fn save_avatar_to_cache_from_seed(
     identity_seed: &[u8; 32],
     vsf_data: &[u8],
     storage: &std::sync::Arc<crate::storage::FlatStorage>,

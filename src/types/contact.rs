@@ -321,6 +321,13 @@ impl Contact {
         Some((public_addr, None))
     }
 
+    /// True once the CLUTCH ceremony is Complete — which is cryptographically impossible unless BOTH
+    /// parties ran it, so it doubles as the mutual-consent signal ("we each added the other"). Used to
+    /// gate friend-only behaviour like the direct peer-to-peer avatar exchange.
+    pub fn is_mutual(&self) -> bool {
+        self.clutch_state == ClutchState::Complete
+    }
+
     pub fn can_be_custodian(&self) -> bool {
         matches!(self.trust_level, TrustLevel::Trusted | TrustLevel::Inner)
     }
