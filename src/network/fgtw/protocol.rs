@@ -101,14 +101,23 @@ pub enum FgtwMessage {
     },
 }
 
-/// Peer record - one device for a user handle
+/// Peer record - one device for a user handle.
+///
+/// Self-attesting: `signature` is the device's own Ed25519 signature over its other fields, made with
+/// the secret half of `device_pubkey` (an Ed25519 verifying key — see [`DevicePubkey`]). This is what
+/// lets a record propagate thru phonebook GOSSIP without trusting the relay: anyone can `verify()` it
+/// against the embedded `device_pubkey`, so a relaying peer can carry a device's entry but cannot
+/// forge or redirect its address without breaking the signature. FGTW-sourced records get the same
+/// treatment, so both sources of truth (the bootstrap server and peer gossip) are verifiable the same
+/// way. A record whose signature doesn't verify is dropped on merge.
 #[derive(Debug, Clone)]
 pub struct PeerRecord {
     pub handle_proof: [u8; 32], // Memory-hard PoW output (24MB, 17 rounds)
-    pub device_pubkey: DevicePubkey, // Device's X25519 public key (used as device identifier)
+    pub device_pubkey: DevicePubkey, // Device's Ed25519 identity key (also the gossip signature key)
     pub ip: SocketAddr,         // Where to reach this device (public IP)
     pub local_ip: Option<std::net::IpAddr>, // LAN IP for hairpin NAT (peers behind same public IP)
     pub last_seen: i64,         // Eagle Time oscillations
+    pub signature: [u8; 64],    // Ed25519 sig by device_pubkey over signing_bytes(); [0;64] = unsigned
 }
 
 /// Sync record for pong - tells peer our last received message timestamp per conversation Used for efficient resync: peer retransmits pending messages with eagle_time > last_received_ef6
@@ -210,6 +219,12 @@ impl FgtwMessage {
                     fields.push((
                         format!("{}_last_seen", prefix),
                         VsfType::e(vsf::types::EtType::e6(peer.last_seen)),
+                    ));
+                    // Self-signature (ge) — see PeerRecord. Carried so the receiver can verify the
+                    // record without trusting this relay. extract_peer_list reads it back at {prefix}_sig.
+                    fields.push((
+                        format!("{}_sig", prefix),
+                        VsfType::ge(peer.signature.to_vec()),
                     ));
                 }
 
@@ -656,7 +671,51 @@ impl PeerRecord {
             ip,
             local_ip: None,
             last_seen: vsf::eagle_time_oscillations(),
+            signature: [0u8; 64],
         }
+    }
+
+    /// Canonical bytes the device signs / a verifier checks: handle_proof ‖ device_pubkey ‖ ip ‖
+    /// local_ip ‖ last_seen, length-tagged so no field can bleed into the next (an injective framing,
+    /// the same discipline the braid uses). IP/local_ip serialize via their `to_string()` so a v4 and
+    /// its v4-mapped-v6 form sign distinctly — which is correct, they're different reachability facts.
+    /// EXCLUDES `signature` itself. Anything in here that an attacker changes (e.g. the address)
+    /// invalidates the signature, which is the whole point.
+    fn signing_bytes(&self) -> Vec<u8> {
+        let ip = self.ip.to_string();
+        let local = self.local_ip.map(|a| a.to_string()).unwrap_or_default();
+        let mut out = Vec::with_capacity(32 + 32 + ip.len() + local.len() + 8 + 16);
+        out.extend_from_slice(b"PHOTON_PEER_RECORD_v0");
+        out.extend_from_slice(&self.handle_proof);
+        out.extend_from_slice(self.device_pubkey.as_bytes());
+        out.extend_from_slice(&(ip.len() as u32).to_le_bytes());
+        out.extend_from_slice(ip.as_bytes());
+        out.extend_from_slice(&(local.len() as u32).to_le_bytes());
+        out.extend_from_slice(local.as_bytes());
+        out.extend_from_slice(&self.last_seen.to_le_bytes());
+        out
+    }
+
+    /// Self-sign this record with the device's Ed25519 secret key. The secret MUST be the half of
+    /// `device_pubkey`; callers pass their own device keypair (the one derived from the machine
+    /// fingerprint), so a device only ever signs its OWN entry. Fills `signature` in place.
+    pub fn sign(&mut self, signing_key: &ed25519_dalek::SigningKey) {
+        use ed25519_dalek::Signer;
+        let sig = signing_key.sign(&self.signing_bytes());
+        self.signature = sig.to_bytes();
+    }
+
+    /// Verify the self-signature against the embedded `device_pubkey`. `true` only if the signature was
+    /// made by the holder of that device's secret over THESE exact fields — so a gossiped record can be
+    /// trusted without trusting the relay that carried it. An all-zero signature (legacy / unsigned
+    /// FGTW record) verifies `false`.
+    pub fn verify(&self) -> bool {
+        use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+        let Ok(vk) = VerifyingKey::from_bytes(self.device_pubkey.as_bytes()) else {
+            return false;
+        };
+        let sig = Signature::from_bytes(&self.signature);
+        vk.verify(&self.signing_bytes(), &sig).is_ok()
     }
 }
 
@@ -803,12 +862,21 @@ fn extract_peer_list(
             _ => return Err(format!("Missing or invalid {}", last_seen_key)),
         };
 
+        let sig_key = format!("{}_sig", peer_prefix);
+        let signature = match get_field(fields, &sig_key) {
+            Some(VsfType::ge(s)) if s.len() == 64 => s.as_slice().try_into().unwrap(),
+            // Legacy / unsigned record (this DHT FoundNodes path predates self-signed records). Left
+            // as [0;64]; merge_peer's verify() will reject it, which is the safe default — only
+            // signed records propagate thru gossip.
+            _ => [0u8; 64],
+        };
         peers.push(PeerRecord {
             handle_proof,
             device_pubkey,
             ip,
             local_ip: None, // Legacy path - local_ip parsed in bootstrap.rs
             last_seen,
+            signature,
         });
     }
 
