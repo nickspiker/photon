@@ -1439,22 +1439,33 @@ pub fn upload_avatar_from_seed(
         &format!("/avatar/{}", &storage_key[..8]),
     ));
 
-    // Go through the ONE VSF conduit (POST / with a named section), same as blob_put / contacts —
-    // NOT a REST path. The server dispatches by section name in route_vsf_request: it has
-    // `avatar_put` wired (key + handle_proof + the signed avatar_vsf, whose inner ke/ge it verifies).
-    // The old `PUT /avatar/{key}` had no router arm and 405'd, so avatars never reached FGTW.
-    let put_vsf = vsf::VsfBuilder::new()
+    // Keyring authorisation: FGTW no longer trusts "first avatar pubkey wins" — it accepts the write only if
+    // the SIGNING DEVICE is in this identity's published Merkle root (so any fleet device can set the avatar,
+    // a stranger can't). So we DEVICE-sign the avatar_put envelope (the avatar VSF inside keeps its own
+    // avatar-key signature for self-contained content integrity) and attach the device-leaf inclusion proof.
+    let device_key = crate::network::fgtw::Keypair {
+        secret: device_secret.clone(),
+        public: device_secret.verifying_key(),
+    };
+    let (pidx, proof) =
+        crate::network::fgtw::keyring::ensure_keyring_and_prove(&device_key, handle_proof)?;
+
+    // Go through the ONE VSF conduit (POST / with a named section), same as blob_put / contacts. The put
+    // carries the signed avatar VSF + the keyring inclusion proof (pidx/pnode), and is itself device-signed
+    // at the header (ke/ge) so FGTW recomputes the device leaf from the signing key and verifies inclusion.
+    let mut section = vsf::VsfSection::new("avatar_put");
+    section.add_field("key", VsfType::d(storage_key.clone()));
+    section.add_field("handle_proof", VsfType::hP(handle_proof.to_vec()));
+    section.add_field("avatar_vsf", VsfType::v(b'e', signed_vsf));
+    crate::network::fgtw::keyring::add_proof_fields(&mut section, pidx, &proof);
+    let unsigned_put = vsf::VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .add_section(
-            "avatar_put",
-            vec![
-                ("key".to_string(), VsfType::d(storage_key.clone())),
-                ("handle_proof".to_string(), VsfType::hP(handle_proof.to_vec())),
-                ("avatar_vsf".to_string(), VsfType::v(b'e', signed_vsf)),
-            ],
-        )
+        .signed_only(VsfType::ke(device_key.public.to_bytes().to_vec()))
+        .add_section_direct(section)
         .build()
         .map_err(|e| format!("Build avatar_put VSF: {}", e))?;
+    let put_vsf = vsf::verification::sign_file(unsigned_put, device_secret.as_bytes())
+        .map_err(|e| format!("Sign avatar_put VSF: {}", e))?;
 
     let response = crate::network::http::blocking()
         .post(FGTW_URL)
