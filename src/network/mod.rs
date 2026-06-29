@@ -1,3 +1,4 @@
+pub mod clock_check;
 pub mod clutch_jobs;
 pub mod fgtw;
 pub mod handle_query;
@@ -10,6 +11,9 @@ pub mod status;
 pub mod tcp;
 pub mod udp;
 
+pub use clock_check::{ClockCheckResult, ClockJumpDetector, ClockWake};
+#[cfg(not(target_os = "android"))]
+pub use clock_check::spawn_clock_check;
 pub use clutch_jobs::{ClutchCeremonyResult, ClutchKemEncapResult, ClutchKeygenResult};
 pub use handle_query::{HandleQuery, QueryResult};
 #[cfg(not(target_os = "android"))]
