@@ -85,6 +85,21 @@ pub struct AckRequest {
     pub plaintext_hash: [u8; 32],
 }
 
+/// Request to send an AvatarRequest to this peer asking for their avatar.
+#[derive(Clone)]
+pub struct AvatarRequestSend {
+    pub peer_addr: SocketAddr,
+    pub recipient_pubkey: [u8; 32],
+}
+
+/// Request to send my avatar back to this peer.
+#[derive(Clone)]
+pub struct AvatarResponseSend {
+    pub peer_addr: SocketAddr,
+    pub recipient_pubkey: [u8; 32],
+    pub avatar_vsf: Vec<u8>,
+}
+
 /// Request to start a PT large transfer (e.g., full CLUTCH offer with all 8 pubkeys)
 #[derive(Clone)]
 pub struct PTSendRequest {
@@ -179,6 +194,17 @@ pub enum StatusUpdate {
         /// BLAKE3 hash of decrypted plaintext - proves they decrypted our message
         plaintext_hash: [u8; 32],
     },
+    /// Avatar request received from a peer - they want our avatar (verified signature)
+    AvatarRequestReceived {
+        sender_pubkey: DevicePubkey,
+        sender_addr: SocketAddr,
+    },
+    /// Avatar received from a peer in response to our request (verified signature)
+    AvatarReceived {
+        responder_pubkey: DevicePubkey,
+        avatar_vsf: Vec<u8>,
+        sender_addr: SocketAddr,
+    },
     /// PT large transfer completed - received data from peer
     PTReceived {
         peer_addr: SocketAddr,
@@ -233,6 +259,8 @@ pub struct StatusChecker {
     // NOTE: clutch_sender removed - legacy v1 CLUTCH no longer used
     message_sender: Sender<MessageRequest>,
     ack_sender: Sender<AckRequest>,
+    avatar_request_sender: Sender<AvatarRequestSend>,
+    avatar_response_sender: Sender<AvatarResponseSend>,
     pt_sender: Sender<PTSendRequest>,
     offer_sender: Sender<ClutchOfferRequest>,
     kem_response_sender: Sender<ClutchKemResponseRequest>,
@@ -257,6 +285,8 @@ impl StatusChecker {
         let (ping_tx, ping_rx) = channel::<PingRequest>();
         let (message_tx, message_rx) = channel::<MessageRequest>();
         let (ack_tx, ack_rx) = channel::<AckRequest>();
+        let (avatar_request_tx, avatar_request_rx) = channel::<AvatarRequestSend>();
+        let (avatar_response_tx, avatar_response_rx) = channel::<AvatarResponseSend>();
         let (pt_tx, pt_rx) = channel::<PTSendRequest>();
         let (offer_tx, offer_rx) = channel::<ClutchOfferRequest>();
         let (kem_response_tx, kem_response_rx) = channel::<ClutchKemResponseRequest>();
@@ -299,6 +329,8 @@ impl StatusChecker {
                     ping_rx,
                     message_rx,
                     ack_rx,
+                    avatar_request_rx,
+                    avatar_response_rx,
                     pt_rx,
                     offer_rx,
                     kem_response_rx,
@@ -334,6 +366,8 @@ impl StatusChecker {
             ping_sender: ping_tx,
             message_sender: message_tx,
             ack_sender: ack_tx,
+            avatar_request_sender: avatar_request_tx,
+            avatar_response_sender: avatar_response_tx,
             pt_sender: pt_tx,
             offer_sender: offer_tx,
             kem_response_sender: kem_response_tx,
@@ -355,6 +389,8 @@ impl StatusChecker {
         let (ping_tx, ping_rx) = channel::<PingRequest>();
         let (message_tx, message_rx) = channel::<MessageRequest>();
         let (ack_tx, ack_rx) = channel::<AckRequest>();
+        let (avatar_request_tx, avatar_request_rx) = channel::<AvatarRequestSend>();
+        let (avatar_response_tx, avatar_response_rx) = channel::<AvatarResponseSend>();
         let (pt_tx, pt_rx) = channel::<PTSendRequest>();
         let (offer_tx, offer_rx) = channel::<ClutchOfferRequest>();
         let (kem_response_tx, kem_response_rx) = channel::<ClutchKemResponseRequest>();
@@ -397,6 +433,8 @@ impl StatusChecker {
                     ping_rx,
                     message_rx,
                     ack_rx,
+                    avatar_request_rx,
+                    avatar_response_rx,
                     pt_rx,
                     offer_rx,
                     kem_response_rx,
@@ -432,6 +470,8 @@ impl StatusChecker {
             ping_sender: ping_tx,
             message_sender: message_tx,
             ack_sender: ack_tx,
+            avatar_request_sender: avatar_request_tx,
+            avatar_response_sender: avatar_response_tx,
             pt_sender: pt_tx,
             offer_sender: offer_tx,
             kem_response_sender: kem_response_tx,
@@ -460,6 +500,16 @@ impl StatusChecker {
     /// Send a message acknowledgment (non-blocking)
     pub fn send_ack(&self, request: AckRequest) {
         let _ = self.ack_sender.send(request);
+    }
+
+    /// Send an AvatarRequest to a peer asking for their avatar (non-blocking)
+    pub fn send_avatar_request(&self, request: AvatarRequestSend) {
+        let _ = self.avatar_request_sender.send(request);
+    }
+
+    /// Send my avatar back to a peer (non-blocking)
+    pub fn send_avatar_response(&self, request: AvatarResponseSend) {
+        let _ = self.avatar_response_sender.send(request);
     }
 
     /// Start a PT large transfer (non-blocking)
@@ -541,6 +591,8 @@ async fn run_checker(
     // NOTE: clutch_rx removed - legacy v1 CLUTCH no longer used
     message_rx: Receiver<MessageRequest>,
     ack_rx: Receiver<AckRequest>,
+    avatar_request_rx: Receiver<AvatarRequestSend>,
+    avatar_response_rx: Receiver<AvatarResponseSend>,
     pt_rx: Receiver<PTSendRequest>,
     offer_rx: Receiver<ClutchOfferRequest>,
     kem_response_rx: Receiver<ClutchKemResponseRequest>,
@@ -1541,6 +1593,84 @@ async fn run_checker(
                                     );
                                 }
 
+                                FgtwMessage::AvatarRequest {
+                                    timestamp,
+                                    sender_pubkey,
+                                    provenance_hash,
+                                    signature,
+                                } => {
+                                    crate::log(&format!(
+                                        "Status: AVATAR_REQUEST received from {}",
+                                        src_addr
+                                    ));
+
+                                    // Verify provenance binds sender_pubkey + timestamp, then the signature
+                                    let provenance: [u8; 32] = blake3::hash(
+                                        &[
+                                            sender_pubkey.as_bytes().as_slice(),
+                                            &timestamp.to_le_bytes(),
+                                        ]
+                                        .concat(),
+                                    )
+                                    .into();
+                                    if provenance != provenance_hash
+                                        || !verify_provenance_signature(
+                                            &provenance_hash,
+                                            &sender_pubkey,
+                                            &signature,
+                                        )
+                                    {
+                                        crate::log("  -> REJECTED (bad signature)");
+                                        continue;
+                                    }
+
+                                    send_status_update(
+                                        &status_tx_recv,
+                                        StatusUpdate::AvatarRequestReceived {
+                                            sender_pubkey,
+                                            sender_addr: src_addr,
+                                        },
+                                        &event_proxy_recv,
+                                    );
+                                }
+
+                                FgtwMessage::AvatarResponse {
+                                    timestamp: _,
+                                    responder_pubkey,
+                                    provenance_hash,
+                                    signature,
+                                    avatar_vsf,
+                                } => {
+                                    crate::log(&format!(
+                                        "Status: AVATAR_RESPONSE received from {} ({} bytes avatar)",
+                                        src_addr,
+                                        avatar_vsf.len()
+                                    ));
+
+                                    // Verify provenance is the avatar bytes' hash, then the signature
+                                    let provenance: [u8; 32] = blake3::hash(&avatar_vsf).into();
+                                    if provenance != provenance_hash
+                                        || !verify_provenance_signature(
+                                            &provenance_hash,
+                                            &responder_pubkey,
+                                            &signature,
+                                        )
+                                    {
+                                        crate::log("  -> REJECTED (bad signature)");
+                                        continue;
+                                    }
+
+                                    send_status_update(
+                                        &status_tx_recv,
+                                        StatusUpdate::AvatarReceived {
+                                            responder_pubkey,
+                                            avatar_vsf,
+                                            sender_addr: src_addr,
+                                        },
+                                        &event_proxy_recv,
+                                    );
+                                }
+
                                 _ => {
                                     crate::log("Status: Unknown message type received");
                                 }
@@ -1746,6 +1876,90 @@ async fn run_checker(
                 plaintext_hash: request.plaintext_hash,
                 sender_pubkey: our_pubkey.clone(),
                 signature: sig_bytes,
+            };
+
+            let msg_bytes = msg.to_vsf_bytes();
+            if !msg_bytes.is_empty() {
+                // Route thru PT - handles UDP, TCP after 1s, relay fallback
+                let pt_bytes = {
+                    let mut pt_mgr = pt.lock().unwrap();
+                    pt_mgr.send_with_pubkey(
+                        request.peer_addr,
+                        msg_bytes.clone(),
+                        Some(request.recipient_pubkey),
+                    )
+                };
+                // Empty = queued behind an in-flight packet (stop-and-wait); tick() will send it.
+                if !pt_bytes.is_empty() {
+                    udp::send(&socket, &pt_bytes, request.peer_addr).await;
+                }
+            }
+        }
+
+        // Process avatar request sends (ask a mutual contact for their avatar) Routed thru PT for unified transport (UDP → TCP after 1s → relay fallback)
+        while let Ok(request) = avatar_request_rx.try_recv() {
+            let timestamp = eagle_time_now();
+
+            // provenance = BLAKE3(sender_pubkey || timestamp) - same shape as a signed ping
+            let provenance_hash: [u8; 32] =
+                blake3::hash(&[our_pubkey.as_bytes().as_slice(), &timestamp.to_le_bytes()].concat())
+                    .into();
+            let sig = keypair.sign(&provenance_hash);
+            let mut sig_bytes = [0u8; 64];
+            sig_bytes.copy_from_slice(&sig.to_bytes());
+
+            crate::log(&format!(
+                "Status: Sending AVATAR_REQUEST to {} via PT",
+                request.peer_addr
+            ));
+
+            let msg = FgtwMessage::AvatarRequest {
+                timestamp,
+                sender_pubkey: our_pubkey.clone(),
+                provenance_hash,
+                signature: sig_bytes,
+            };
+
+            let msg_bytes = msg.to_vsf_bytes();
+            if !msg_bytes.is_empty() {
+                // Route thru PT - handles UDP, TCP after 1s, relay fallback
+                let pt_bytes = {
+                    let mut pt_mgr = pt.lock().unwrap();
+                    pt_mgr.send_with_pubkey(
+                        request.peer_addr,
+                        msg_bytes.clone(),
+                        Some(request.recipient_pubkey),
+                    )
+                };
+                // Empty = queued behind an in-flight packet (stop-and-wait); tick() will send it.
+                if !pt_bytes.is_empty() {
+                    udp::send(&socket, &pt_bytes, request.peer_addr).await;
+                }
+            }
+        }
+
+        // Process avatar response sends (return our own avatar to a requesting peer) Routed thru PT for unified transport (UDP → TCP after 1s → relay fallback)
+        while let Ok(request) = avatar_response_rx.try_recv() {
+            let timestamp = eagle_time_now();
+
+            // provenance = BLAKE3(avatar_vsf) - the signature covers the avatar bytes' hash
+            let provenance_hash: [u8; 32] = blake3::hash(&request.avatar_vsf).into();
+            let sig = keypair.sign(&provenance_hash);
+            let mut sig_bytes = [0u8; 64];
+            sig_bytes.copy_from_slice(&sig.to_bytes());
+
+            crate::log(&format!(
+                "Status: Sending AVATAR_RESPONSE to {} ({} bytes avatar) via PT",
+                request.peer_addr,
+                request.avatar_vsf.len()
+            ));
+
+            let msg = FgtwMessage::AvatarResponse {
+                timestamp,
+                responder_pubkey: our_pubkey.clone(),
+                provenance_hash,
+                signature: sig_bytes,
+                avatar_vsf: request.avatar_vsf,
             };
 
             let msg_bytes = msg.to_vsf_bytes();
