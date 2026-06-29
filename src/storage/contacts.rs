@@ -406,11 +406,9 @@ use crate::crypto::clutch::ClutchAllKeypairs;
 /// Save CLUTCH keypairs to disk (encrypted). Called after keygen completes - persists ~600KB of ephemeral keypairs.
 pub fn save_clutch_keypairs(
     keypairs: &ClutchAllKeypairs,
-    handle: &str,
+    their_identity_seed: &[u8; 32],
     storage: &FlatStorage,
 ) -> Result<(), StorageError> {
-    let their_identity_seed = derive_identity_seed(handle);
-
     // Build VSF section from keypairs (two multi-value fields)
     let mut section = VsfSection::new("clutch_keypairs");
     let (pubkeys, secrets) = keypairs.to_vsf_multi();
@@ -419,12 +417,12 @@ pub fn save_clutch_keypairs(
 
     let vsf_bytes = section.encode();
 
-    storage.write_addr(&contact_key(&their_identity_seed, "keypairs"), &vsf_bytes)?;
+    storage.write_addr(&contact_key(their_identity_seed, "keypairs"), &vsf_bytes)?;
 
     #[cfg(feature = "development")]
     crate::log(&format!(
-        "STORAGE: Saved CLUTCH keypairs for {} (~{}KB)",
-        handle,
+        "STORAGE: Saved CLUTCH keypairs for seed {} (~{}KB)",
+        hex::encode(&their_identity_seed[..4]),
         vsf_bytes.len() / 1024
     ));
 
@@ -433,12 +431,10 @@ pub fn save_clutch_keypairs(
 
 /// Load CLUTCH keypairs from disk. Returns None if no keypairs file exists or parsing fails.
 pub fn load_clutch_keypairs(
-    handle: &str,
+    their_identity_seed: &[u8; 32],
     storage: &FlatStorage,
 ) -> Result<Option<ClutchAllKeypairs>, StorageError> {
-    let their_identity_seed = derive_identity_seed(handle);
-
-    let vsf_bytes = match storage.read_addr(&contact_key(&their_identity_seed, "keypairs"))? {
+    let vsf_bytes = match storage.read_addr(&contact_key(their_identity_seed, "keypairs"))? {
         Some(b) => b,
         None => return Ok(None),
     };
@@ -455,8 +451,8 @@ pub fn load_clutch_keypairs(
 
     #[cfg(feature = "development")]
     crate::log(&format!(
-        "STORAGE: Loaded CLUTCH keypairs for {} (~{}KB)",
-        handle,
+        "STORAGE: Loaded CLUTCH keypairs for seed {} (~{}KB)",
+        hex::encode(&their_identity_seed[..4]),
         vsf_bytes.len() / 1024
     ));
 
@@ -464,11 +460,16 @@ pub fn load_clutch_keypairs(
 }
 
 /// Delete CLUTCH keypairs (called after ceremony completes or on zeroize)
-pub fn delete_clutch_keypairs(handle: &str, storage: &FlatStorage) -> Result<(), StorageError> {
-    let their_identity_seed = derive_identity_seed(handle);
-    storage.delete_addr(&contact_key(&their_identity_seed, "keypairs"))?;
+pub fn delete_clutch_keypairs(
+    their_identity_seed: &[u8; 32],
+    storage: &FlatStorage,
+) -> Result<(), StorageError> {
+    storage.delete_addr(&contact_key(their_identity_seed, "keypairs"))?;
     #[cfg(feature = "development")]
-    crate::log(&format!("STORAGE: Deleted CLUTCH keypairs for {}", handle));
+    crate::log(&format!(
+        "STORAGE: Deleted CLUTCH keypairs for seed {}",
+        hex::encode(&their_identity_seed[..4])
+    ));
     Ok(())
 }
 
@@ -488,14 +489,12 @@ pub fn save_clutch_slots(
     slots: &[PartySlot],
     offer_provenances: &[[u8; 32]],
     ceremony_id: Option<[u8; 32]>,
-    handle: &str,
+    their_identity_seed: &[u8; 32],
     storage: &FlatStorage,
 ) -> Result<(), StorageError> {
     if slots.is_empty() {
         return Ok(()); // Nothing to save
     }
-
-    let their_identity_seed = derive_identity_seed(handle);
 
     // Build VSF section with all slots
     let mut section = VsfSection::new("clutch_slots");
@@ -584,12 +583,12 @@ pub fn save_clutch_slots(
 
     let vsf_bytes = section.encode();
 
-    storage.write_addr(&contact_key(&their_identity_seed, "slots"), &vsf_bytes)?;
+    storage.write_addr(&contact_key(their_identity_seed, "slots"), &vsf_bytes)?;
 
     #[cfg(feature = "development")]
     crate::log(&format!(
-        "STORAGE: Saved CLUTCH slots for {} ({} slots, {}B)",
-        handle,
+        "STORAGE: Saved CLUTCH slots for seed {} ({} slots, {}B)",
+        hex::encode(&their_identity_seed[..4]),
         slots.len(),
         vsf_bytes.len()
     ));
@@ -611,12 +610,10 @@ pub struct ClutchCeremonyState {
 /// [clutch_slots] (provenances: hb{p0}, hb{p1}, ...) (ceremony_id: hb{...}) (slot: hb{handle}, u0{offer}, u0{from}, u0{to}, ...data...)
 /// ```
 pub fn load_clutch_slots(
-    handle: &str,
+    their_identity_seed: &[u8; 32],
     storage: &FlatStorage,
 ) -> Result<Option<ClutchCeremonyState>, StorageError> {
-    let their_identity_seed = derive_identity_seed(handle);
-
-    let vsf_bytes = match storage.read_addr(&contact_key(&their_identity_seed, "slots"))? {
+    let vsf_bytes = match storage.read_addr(&contact_key(their_identity_seed, "slots"))? {
         Some(b) => b,
         None => return Ok(None),
     };
@@ -672,8 +669,8 @@ pub fn load_clutch_slots(
     let ceremony_id = if ceremony_id.is_some() && offer_provenances.len() < 2 {
         #[cfg(feature = "development")]
         crate::log(&format!(
-            "STORAGE: Clearing stale ceremony_id for {} (only {} provenances)",
-            handle,
+            "STORAGE: Clearing stale ceremony_id for seed {} (only {} provenances)",
+            hex::encode(&their_identity_seed[..4]),
             offer_provenances.len()
         ));
         None
@@ -683,8 +680,8 @@ pub fn load_clutch_slots(
 
     #[cfg(feature = "development")]
     crate::log(&format!(
-        "STORAGE: Loaded CLUTCH slots for {} ({} slots, {} provenances, ceremony_id={})",
-        handle,
+        "STORAGE: Loaded CLUTCH slots for seed {} ({} slots, {} provenances, ceremony_id={})",
+        hex::encode(&their_identity_seed[..4]),
         slots.len(),
         offer_provenances.len(),
         ceremony_id
@@ -1031,11 +1028,16 @@ fn parse_kem_response_payload(
 }
 
 /// Delete CLUTCH slots (called after ceremony completes)
-pub fn delete_clutch_slots(handle: &str, storage: &FlatStorage) -> Result<(), StorageError> {
-    let their_identity_seed = derive_identity_seed(handle);
-    storage.delete_addr(&contact_key(&their_identity_seed, "slots"))?;
+pub fn delete_clutch_slots(
+    their_identity_seed: &[u8; 32],
+    storage: &FlatStorage,
+) -> Result<(), StorageError> {
+    storage.delete_addr(&contact_key(their_identity_seed, "slots"))?;
     #[cfg(feature = "development")]
-    crate::log(&format!("STORAGE: Deleted CLUTCH slots for {}", handle));
+    crate::log(&format!(
+        "STORAGE: Deleted CLUTCH slots for seed {}",
+        hex::encode(&their_identity_seed[..4])
+    ));
     Ok(())
 }
 
@@ -1058,8 +1060,10 @@ pub fn save_messages(contact: &Contact, storage: &FlatStorage) -> Result<(), Sto
         return Ok(()); // Nothing to save
     }
 
-    let their_identity_seed = derive_identity_seed(contact.handle.as_str());
-    let table = conversation_id(storage.vault_seed(), &their_identity_seed);
+    // Contact already carries the identity seed (handle_hash = BLAKE3(handle)); use it directly
+    // rather than re-deriving from the plaintext handle string. Identity flows as the seed, never
+    // the handle, past the contact boundary.
+    let table = conversation_id(storage.vault_seed(), &contact.handle_hash);
 
     let mut db = Db::open(storage).map_err(|e| StorageError::Vault(e.to_string()))?;
     for msg in contact.messages.iter() {
@@ -1088,9 +1092,9 @@ pub fn save_messages(contact: &Contact, storage: &FlatStorage) -> Result<(), Sto
 
     #[cfg(feature = "development")]
     crate::log(&format!(
-        "STORAGE: Saved {} messages for {}",
+        "STORAGE: Saved {} messages for seed {}",
         contact.messages.len(),
-        contact.handle.as_str()
+        hex::encode(&contact.handle_hash[..4])
     ));
 
     Ok(())
@@ -1098,8 +1102,8 @@ pub fn save_messages(contact: &Contact, storage: &FlatStorage) -> Result<(), Sto
 
 /// Load a contact's messages from the conversation table, in counter order (which is chronological).
 pub fn load_messages(contact: &mut Contact, storage: &FlatStorage) -> Result<(), StorageError> {
-    let their_identity_seed = derive_identity_seed(contact.handle.as_str());
-    let table = conversation_id(storage.vault_seed(), &their_identity_seed);
+    // Use the contact's cached identity seed (handle_hash), not a re-derivation from the handle.
+    let table = conversation_id(storage.vault_seed(), &contact.handle_hash);
 
     let db = Db::open(storage).map_err(|e| StorageError::Vault(e.to_string()))?;
     let pks = db
@@ -1132,9 +1136,9 @@ pub fn load_messages(contact: &mut Contact, storage: &FlatStorage) -> Result<(),
 
     #[cfg(feature = "development")]
     crate::log(&format!(
-        "STORAGE: Loaded {} messages for {}",
+        "STORAGE: Loaded {} messages for seed {}",
         contact.messages.len(),
-        contact.handle.as_str()
+        hex::encode(&contact.handle_hash[..4])
     ));
 
     Ok(())

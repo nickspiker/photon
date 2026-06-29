@@ -908,7 +908,7 @@ impl FluorApp for PhotonApp {
                         for contact in self.contacts.iter_mut() {
                             if contact.clutch_our_keypairs.is_none() {
                                 match crate::storage::contacts::load_clutch_keypairs(
-                                    contact.handle.as_str(),
+                                    &contact.handle_hash,
                                     &s,
                                 ) {
                                     Ok(Some(keypairs)) => {
@@ -3930,7 +3930,7 @@ impl PhotonApp {
                     {
                         if let Err(e) = crate::storage::contacts::save_clutch_keypairs(
                             keypairs,
-                            contact.handle.as_str(),
+                            &contact.handle_hash,
                             storage,
                         ) {
                             crate::log(&format!(
@@ -4003,7 +4003,7 @@ impl PhotonApp {
                                                     &contact.clutch_slots,
                                                     &contact.offer_provenances,
                                                     contact.ceremony_id,
-                                                    contact.handle.as_str(),
+                                                    &contact.handle_hash,
                                                     storage,
                                                 )
                                             {
@@ -4184,7 +4184,7 @@ impl PhotonApp {
                                     &contact.clutch_slots,
                                     &contact.offer_provenances,
                                     contact.ceremony_id,
-                                    contact.handle.as_str(),
+                                    &contact.handle_hash,
                                     storage,
                                 ) {
                                     crate::log(&format!(
@@ -4281,7 +4281,7 @@ impl PhotonApp {
                             &contact.clutch_slots,
                             &contact.offer_provenances,
                             contact.ceremony_id,
-                            contact.handle.as_str(),
+                            &contact.handle_hash,
                             storage,
                         ) {
                             crate::log(&format!(
@@ -4507,7 +4507,7 @@ impl PhotonApp {
 
                     // Delete slots file - ceremony is complete, slots no longer needed
                     if let Err(e) = crate::storage::contacts::delete_clutch_slots(
-                        contact_handle.as_str(),
+                        &contact.handle_hash,
                         storage,
                     ) {
                         crate::log(&format!("Failed to delete CLUTCH slots: {}", e));
@@ -5224,7 +5224,7 @@ impl PhotonApp {
                                                             &contact.clutch_slots,
                                                             &contact.offer_provenances,
                                                             contact.ceremony_id,
-                                                            contact.handle.as_str(),
+                                                            &contact.handle_hash,
                                                             storage,
                                                         )
                                                     {
@@ -5764,7 +5764,7 @@ impl PhotonApp {
                             // First ACK confirms both sides have working chains - safe to zeroize CLUTCH keypairs
                             if let Some(contact) = self.contacts.get_mut(contact_idx) {
                                 if contact.clutch_our_keypairs.is_some() {
-                                    let handle_str = contact.handle.as_str().to_string();
+                                    let their_identity_seed = contact.handle_hash;
                                     crate::log(&format!(
                                         "CLUTCH: First ACK from {} - zeroizing ephemeral keypairs",
                                         contact.handle
@@ -5789,13 +5789,14 @@ impl PhotonApp {
                                     if let Some(storage) = self.storage.as_ref() {
                                         if let Err(e) =
                                             crate::storage::contacts::delete_clutch_keypairs(
-                                                &handle_str,
+                                                &their_identity_seed,
                                                 storage,
                                             )
                                         {
                                             crate::log(&format!(
-                                                "CLUTCH: Failed to delete keypairs file for {}: {}",
-                                                handle_str, e
+                                                "CLUTCH: Failed to delete keypairs file for seed {}: {}",
+                                                hex::encode(&their_identity_seed[..4]),
+                                                e
                                             ));
                                         }
                                     }
@@ -6189,7 +6190,7 @@ impl PhotonApp {
                                     &contact.clutch_slots,
                                     &contact.offer_provenances,
                                     contact.ceremony_id,
-                                    contact.handle.as_str(),
+                                    &contact.handle_hash,
                                     storage,
                                 ) {
                                     crate::log(&format!(
@@ -6287,7 +6288,7 @@ impl PhotonApp {
                                                         &contact.clutch_slots,
                                                         &contact.offer_provenances,
                                                         contact.ceremony_id,
-                                                        contact.handle.as_str(),
+                                                        &contact.handle_hash,
                                                         storage,
                                                     )
                                                 {
@@ -6436,7 +6437,7 @@ impl PhotonApp {
                                                     &contact.clutch_slots,
                                                     &contact.offer_provenances,
                                                     contact.ceremony_id,
-                                                    contact.handle.as_str(),
+                                                    &contact.handle_hash,
                                                     storage,
                                                 )
                                             {
@@ -6739,7 +6740,7 @@ impl PhotonApp {
                                         &contact.clutch_slots,
                                         &contact.offer_provenances,
                                         contact.ceremony_id,
-                                        contact.handle.as_str(),
+                                        &contact.handle_hash,
                                         storage,
                                     ) {
                                         crate::log(&format!(
