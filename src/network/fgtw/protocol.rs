@@ -117,6 +117,27 @@ pub enum FgtwMessage {
         signature: [u8; 64],
         peers: Vec<PeerRecord>,
     },
+    /// Avatar exchange REQUEST — "send me your avatar (directly)".
+    /// Sent peer-to-peer to a MUTUAL contact (a completed CLUTCH ceremony = both added each other),
+    /// so a friend's avatar comes from the friend, not a public lookup. The responder authenticates
+    /// `sender_pubkey` against its own contacts and replies ONLY if that peer is a Complete contact —
+    /// otherwise it stays silent and the requester falls back to FGTW (or nothing). Signed like a ping.
+    AvatarRequest {
+        timestamp: i64,
+        sender_pubkey: DevicePubkey,
+        provenance_hash: [u8; 32], // BLAKE3(sender_pubkey || timestamp)
+        signature: [u8; 64],       // Ed25519 over provenance_hash
+    },
+    /// Avatar exchange RESPONSE — the responder's OWN avatar as raw VSF bytes (the same AVIF-in-VSF
+    /// blob stored in their vault / published to FGTW). Tens of KB, so PT fragments it transparently.
+    /// The receiver decodes it the same way as an FGTW download. Signed over the avatar bytes' hash.
+    AvatarResponse {
+        timestamp: i64,
+        responder_pubkey: DevicePubkey,
+        provenance_hash: [u8; 32], // BLAKE3(avatar_vsf) — also what the signature covers
+        signature: [u8; 64],
+        avatar_vsf: Vec<u8>,
+    },
 }
 
 /// Peer record - one device for a user handle.
@@ -491,6 +512,35 @@ impl FgtwMessage {
                     .add_section_direct(section)
                     .build()
             }
+            FgtwMessage::AvatarRequest {
+                timestamp,
+                sender_pubkey,
+                provenance_hash,
+                signature,
+            } => builder
+                .creation_time_oscillations(*timestamp)
+                .provenance_hash(*provenance_hash)
+                .signature_ed25519(*sender_pubkey.as_bytes(), *signature)
+                .add_section("av_req", vec![])
+                .build(),
+            FgtwMessage::AvatarResponse {
+                timestamp,
+                responder_pubkey,
+                provenance_hash,
+                signature,
+                avatar_vsf,
+            } => builder
+                .creation_time_oscillations(*timestamp)
+                .provenance_hash(*provenance_hash)
+                .signature_ed25519(*responder_pubkey.as_bytes(), *signature)
+                .add_section(
+                    "av_resp",
+                    vec![(
+                        "data".to_string(),
+                        VsfType::t_u3(vsf::Tensor::new(vec![avatar_vsf.len()], avatar_vsf.clone())),
+                    )],
+                )
+                .build(),
         };
 
         result.unwrap_or_else(|e| {
@@ -522,7 +572,9 @@ impl FgtwMessage {
             let section_name = header
                 .fields
                 .iter()
-                .find(|f| f.name == "ping" || f.name == "pong" || f.name == "pb_req")
+                .find(|f| {
+                    f.name == "ping" || f.name == "pong" || f.name == "pb_req" || f.name == "av_req"
+                })
                 .map(|f| f.name.as_str());
 
             if let Some(section_name) = section_name {
@@ -534,6 +586,14 @@ impl FgtwMessage {
                 if section_name == "pb_req" {
                     // Phonebook request is body-less (empty section), so it lands on this header-only fast path like ping.
                     return Ok(FgtwMessage::PhonebookRequest {
+                        timestamp,
+                        sender_pubkey: pubkey,
+                        provenance_hash,
+                        signature,
+                    });
+                } else if section_name == "av_req" {
+                    // Avatar request is body-less too — same header-only fast path.
+                    return Ok(FgtwMessage::AvatarRequest {
                         timestamp,
                         sender_pubkey: pubkey,
                         provenance_hash,
@@ -668,10 +728,27 @@ impl FgtwMessage {
             }
         }
 
+        // Avatar exchange response — carries the responder's own avatar VSF bytes in `data`.
+        if section_name == "av_resp" {
+            let timestamp = extract_header_timestamp(&header)?;
+            let pubkey = extract_header_pubkey(&header)?;
+            let provenance_hash = extract_header_provenance(&header)?;
+            let signature = extract_header_signature(&header)?;
+            let fields = section_fields_to_tuples(&section);
+            let avatar_vsf = extract_data(&fields, "data")?;
+            return Ok(FgtwMessage::AvatarResponse {
+                timestamp,
+                responder_pubkey: pubkey,
+                provenance_hash,
+                signature,
+                avatar_vsf,
+            });
+        }
+
         // Original fgtw section handling
         if section_name != "fgtw" {
             return Err(format!(
-                "Expected 'fgtw', 'ping'/'pong', 'clutch_*', 'msg', 'ack', or 'pb_*' section, got '{}'",
+                "Expected 'fgtw', 'ping'/'pong', 'clutch_*', 'msg', 'ack', 'pb_*', or 'av_*' section, got '{}'",
                 section_name
             ));
         }
@@ -2290,6 +2367,46 @@ mod phonebook_tests {
                 }
             }
             other => panic!("expected PhonebookResponse, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn avatar_request_round_trips() {
+        let sk = SigningKey::from_bytes(&[5u8; 32]);
+        let msg = FgtwMessage::AvatarRequest {
+            timestamp: 54321,
+            sender_pubkey: DevicePubkey::from_bytes(sk.verifying_key().to_bytes()),
+            provenance_hash: [0x9A; 32],
+            signature: [0xBC; 64],
+        };
+        let bytes = msg.to_vsf_bytes();
+        match FgtwMessage::from_vsf_bytes(&bytes).expect("parse av_req") {
+            FgtwMessage::AvatarRequest { timestamp, provenance_hash, .. } => {
+                assert_eq!(timestamp, 54321);
+                assert_eq!(provenance_hash, [0x9A; 32]);
+            }
+            other => panic!("expected AvatarRequest, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn avatar_response_round_trips_with_payload() {
+        // A non-trivial payload (a stand-in for the AVIF-in-VSF avatar blob) must survive the wire byte-for-byte.
+        let avatar_vsf: Vec<u8> = (0..5000u32).map(|i| (i % 256) as u8).collect();
+        let resp = FgtwMessage::AvatarResponse {
+            timestamp: 777,
+            responder_pubkey: DevicePubkey::from_bytes([4u8; 32]),
+            provenance_hash: [0x33; 32],
+            signature: [0x44; 64],
+            avatar_vsf: avatar_vsf.clone(),
+        };
+        let bytes = resp.to_vsf_bytes();
+        match FgtwMessage::from_vsf_bytes(&bytes).expect("parse av_resp") {
+            FgtwMessage::AvatarResponse { timestamp, avatar_vsf: got, .. } => {
+                assert_eq!(timestamp, 777);
+                assert_eq!(got, avatar_vsf, "avatar payload must round-trip byte-for-byte");
+            }
+            other => panic!("expected AvatarResponse, got {:?}", other),
         }
     }
 }
