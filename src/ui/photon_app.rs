@@ -348,6 +348,11 @@ pub struct PhotonApp {
     /// Handles we've already kicked an avatar download for this session, so we don't re-spawn a fetch
     /// every time a conversation is reopened or the contact list re-renders.
     avatar_dl_started: std::collections::HashSet<String>,
+    /// Mutual peers we've sent a direct P2P AvatarRequest to, mapped to the eagle-time we sent it.
+    /// The per-tick sweep asks each mutual peer once, then — if no AvatarResponse has installed an
+    /// avatar within `AVATAR_P2P_FALLBACK_OSC` — falls back to FGTW. So a friend's avatar comes from
+    /// the friend first, and FGTW only covers the case where the friend is offline or avatar-less.
+    avatar_req_pending: std::collections::HashMap<[u8; 32], i64>,
     /// Completed friendship chains, keyed by friendship id — populated when a CLUTCH ceremony completes (the per-conversation rolling key material lives here). Persisted via `save_friendship_chains`; loaded on attest/resume.
     friendship_chains: Vec<(
         crate::types::friendship::FriendshipId,
@@ -479,6 +484,7 @@ impl PhotonApp {
             },
             avatar_dl_rx: std::sync::mpsc::channel().1,
             avatar_dl_started: std::collections::HashSet::new(),
+            avatar_req_pending: std::collections::HashMap::new(),
             friendship_chains: Vec::new(),
             chord_lb_press: None,
             chord_lb_release: None,
@@ -3292,10 +3298,11 @@ impl PhotonApp {
                 if let Some(hq) = self.handle_query.as_ref() {
                     hq.set_handle_proof(data.handle_proof);
                 }
-                // Re-publish our own avatar to FGTW now that the handle_proof is set, so peers can
-                // fetch it. The picker only uploads at pick-time; without this a restart/re-attest
-                // leaves the avatar in the local vault only and peers get a 404 ("avatars don't sync").
-                self.spawn_avatar_upload();
+                // Sync our own avatar with FGTW now that the handle_proof is set — newest-wins, so a
+                // copy this identity set on another device propagates here, and ours propagates out,
+                // without either clobbering a fresher one. (Was a blind one-way upload, which could
+                // overwrite a newer server copy with a stale local one.)
+                self.spawn_avatar_sync();
                 // Pubkey emitted as voca-encoded camelCase so a user reading the log can double-click + paste the value as a single word (matches `Development:` key lines from handle_query.rs). The handle is deliberately NOT logged — Photon never surfaces the plaintext handle.
                 eprintln!(
                     "attestation success: pubkey = {}",
@@ -3622,13 +3629,15 @@ impl PhotonApp {
         }
     }
 
-    /// Re-upload this device's avatar to FGTW (off-thread) so peers can fetch it. The picker uploads
-    /// once when an avatar is chosen, but nothing re-published it afterward — so after a restart /
-    /// re-attest the avatar lived only in the local vault and peers got a 404, which is why "avatars
-    /// don't sync among friends". Call on attest success (handle_proof fresh). No-op if there's no
-    /// local avatar, or keypair / proof / storage isn't ready. `upload_avatar_from_seed` reads the
-    /// avatar from the vault by seed, so nothing to pass but the keys.
-    fn spawn_avatar_upload(&self) {
+    /// Sync this device's own avatar with FGTW, newest-wins (off-thread). Call on attest success
+    /// (handle_proof fresh). Replaces the old one-way "always upload": a blind upload would clobber a
+    /// NEWER FGTW copy (e.g. one this same identity set on another device) with our stale local one.
+    /// `sync_avatar_bidirectional_from_seed` compares the local cache's eagle-time creation stamp to
+    /// the server copy's and uploads only if we're newer, downloads + re-caches if the server is.
+    /// When the server wins, the freshly-cached avatar is delivered back over `avatar_dl_tx` with an
+    /// EMPTY handle so the drain installs it as `device_avatar_pixels`. No-op without keypair / proof
+    /// / session / storage.
+    fn spawn_avatar_sync(&self) {
         let (Some(kp), Some(session), Some(storage)) = (
             self.device_keypair.as_ref(),
             self.session.as_ref(),
@@ -3642,15 +3651,44 @@ impl PhotonApp {
         };
         let secret = kp.secret.clone();
         let identity_seed = session.identity_seed;
+        let tx = self.avatar_dl_tx.clone();
+        #[cfg(not(target_os = "android"))]
+        let proxy = self.event_proxy.clone();
         std::thread::spawn(move || {
-            match crate::ui::avatar::upload_avatar_from_seed(
+            use crate::ui::avatar::AvatarSyncResult;
+            let result = crate::ui::avatar::sync_avatar_bidirectional_from_seed(
                 &secret,
                 &identity_seed,
-                &handle_proof,
+                Some(&handle_proof),
                 &storage,
-            ) {
-                Ok(_) => crate::log("Avatar: published own avatar to FGTW (startup sync)"),
-                Err(e) => crate::log(&format!("Avatar: startup FGTW publish skipped/failed: {e}")),
+            );
+            match result {
+                AvatarSyncResult::ServerNewer => {
+                    // FGTW had a newer copy — it's now re-cached; load it and push to the UI.
+                    crate::log("Avatar: FGTW copy newer — adopted it (startup sync)");
+                    let pixels = crate::ui::avatar::load_cached_avatar_from_seed(&identity_seed, &storage)
+                        .map(|(_, p)| p);
+                    if pixels.is_some() {
+                        let _ = tx.send(crate::ui::avatar::AvatarDownloadResult {
+                            handle: String::new(), // empty = self
+                            pixels,
+                        });
+                        #[cfg(not(target_os = "android"))]
+                        if let Some(p) = proxy.as_ref() {
+                            let _ = p.send(crate::ui::PhotonEvent::NetworkUpdate);
+                        }
+                    }
+                }
+                AvatarSyncResult::LocalNewer => {
+                    crate::log("Avatar: local newer — published to FGTW (startup sync)")
+                }
+                AvatarSyncResult::InSync => crate::log("Avatar: already in sync with FGTW"),
+                AvatarSyncResult::ServerEmpty | AvatarSyncResult::NoLocalAvatar => {
+                    crate::log("Avatar: nothing to sync (startup)")
+                }
+                AvatarSyncResult::Error(e) => {
+                    crate::log(&format!("Avatar: startup FGTW sync skipped/failed: {e}"))
+                }
             }
         });
     }
@@ -3659,6 +3697,28 @@ impl PhotonApp {
     /// fetch + decode runs off the UI thread (FGTW round-trip + dav1d decode); the result is delivered
     /// over `avatar_dl_tx` and installed by the drain in `check_status_updates`. No-op if storage isn't
     /// ready yet or we've already started a download for this handle this session. This is the peer
+    /// Send a direct P2P AvatarRequest to a MUTUAL (CLUTCH Complete) peer, once per session per peer.
+    /// The peer's `AvatarResponse` arrives via the status drain and installs on the matching contact.
+    /// This is the "a friend's avatar comes from the friend" path; if no response lands within the
+    /// fallback window the sweep escalates to FGTW. `sent_at` (eagle-time) is recorded so the sweep
+    /// can time the fallback. No-op without a status checker (the pending marker is only set once the
+    /// request is actually handed off, so a checker that arrives later still triggers the request).
+    fn spawn_avatar_request_p2p(
+        &mut self,
+        peer_addr: std::net::SocketAddr,
+        recipient_pubkey: [u8; 32],
+        sent_at: i64,
+    ) {
+        let Some(checker) = self.status_checker.as_ref() else {
+            return;
+        };
+        self.avatar_req_pending.insert(recipient_pubkey, sent_at);
+        checker.send_avatar_request(crate::network::status::AvatarRequestSend {
+            peer_addr,
+            recipient_pubkey,
+        });
+    }
+
     /// half of the avatar feature — the self avatar loads from the local vault; peers fetch by handle.
     fn spawn_avatar_download(&mut self, handle: String) {
         if self.avatar_dl_started.contains(&handle) {
@@ -5137,15 +5197,71 @@ impl PhotonApp {
                 crate::network::spawn_clock_check(self.clock_check_tx.clone(), Some(proxy));
             }
         }
-        let need_avatar: Vec<String> = self
+        // Avatar acquisition policy (once/session/contact). A MUTUAL contact (CLUTCH Complete, which
+        // is impossible unless both added each other) gets a direct P2P AvatarRequest — a friend's
+        // avatar comes from the friend. We fall back to FGTW for that friend ONLY if no AvatarResponse
+        // has installed an avatar within AVATAR_P2P_FALLBACK_OSC (the friend is offline or avatar-less).
+        // A non-mutual contact never gets a direct request — it only ever pulls the public FGTW copy.
+        // Never blocks; each branch is dedup'd so the per-tick sweep is cheap.
+        /// ~3 seconds (oscillations) before a mutual peer's silent P2P request falls back to FGTW.
+        const AVATAR_P2P_FALLBACK_OSC: i64 = 3 * crate::OSC_PER_SEC;
+        enum AvatarPlan {
+            // Complete + addressable: try the peer directly; FGTW only after the timeout.
+            P2pThenFgtw {
+                peer_addr: std::net::SocketAddr,
+                recipient_pubkey: [u8; 32],
+                handle: String,
+            },
+            // Non-mutual, or Complete-but-unaddressable: public FGTW copy only.
+            FgtwOnly {
+                handle: String,
+            },
+        }
+        // Steady state: every contact already has an avatar → skip the sweep entirely (no timestamp
+        // read, no allocation) since this runs every tick. Only do the work when something's missing.
+        if self.contacts.iter().any(|c| c.avatar_pixels.is_none()) {
+        let now = vsf::eagle_time_oscillations();
+        let plans: Vec<AvatarPlan> = self
             .contacts
             .iter()
             .filter(|c| c.avatar_pixels.is_none())
-            .map(|c| c.handle.as_str().to_string())
+            .map(|c| {
+                let handle = c.handle.as_str().to_string();
+                if c.is_mutual() {
+                    if let Some((addr, _alt)) = c.race_addrs() {
+                        return AvatarPlan::P2pThenFgtw {
+                            peer_addr: addr,
+                            recipient_pubkey: *c.public_identity.as_bytes(),
+                            handle,
+                        };
+                    }
+                }
+                AvatarPlan::FgtwOnly { handle }
+            })
             .collect();
-        for handle in need_avatar {
-            self.spawn_avatar_download(handle);
+        for plan in plans {
+            match plan {
+                AvatarPlan::FgtwOnly { handle } => self.spawn_avatar_download(handle),
+                AvatarPlan::P2pThenFgtw {
+                    peer_addr,
+                    recipient_pubkey,
+                    handle,
+                } => match self.avatar_req_pending.get(&recipient_pubkey).copied() {
+                    // Never asked this peer — send the P2P request now, record when.
+                    None => {
+                        self.spawn_avatar_request_p2p(peer_addr, recipient_pubkey, now);
+                    }
+                    // Asked, but the peer hasn't answered within the window — fall back to FGTW
+                    // (dedup'd by avatar_dl_started, so this fires at most once per peer).
+                    Some(sent_at) if now.saturating_sub(sent_at) > AVATAR_P2P_FALLBACK_OSC => {
+                        self.spawn_avatar_download(handle);
+                    }
+                    // Asked recently — still waiting on the peer; do nothing this tick.
+                    Some(_) => {}
+                },
+            }
         }
+        } // end avatar sweep (skipped when every contact already has an avatar)
 
         let checker = match &self.status_checker {
             Some(c) => c,
@@ -7117,6 +7233,96 @@ impl PhotonApp {
                                 changed = true;
                             }
                             break;
+                        }
+                    }
+                }
+                // A peer asked for our avatar. Policy: reply ONLY if they are a MUTUAL contact —
+                // i.e. a completed CLUTCH ceremony, which is cryptographically impossible unless both
+                // added each other. A friend gets our avatar straight from us; anyone else is ignored
+                // (they fall back to FGTW, or get nothing). We reply with our OWN avatar VSF bytes.
+                StatusUpdate::AvatarRequestReceived {
+                    sender_pubkey,
+                    sender_addr,
+                } => {
+                    let is_mutual = self
+                        .contacts
+                        .iter()
+                        .any(|c| c.public_identity == sender_pubkey && c.is_mutual());
+                    if !is_mutual {
+                        crate::log(
+                            "Avatar: ignoring avatar request from a non-mutual peer (not Complete)",
+                        );
+                    } else if let (Some(session), Some(storage), Some(checker)) = (
+                        self.session.as_ref(),
+                        self.storage.as_ref(),
+                        self.status_checker.as_ref(),
+                    ) {
+                        // Read our own avatar VSF straight from the vault (the same blob we publish to
+                        // FGTW). No avatar stored → nothing to send; the peer falls back to FGTW.
+                        match storage
+                            .read_addr(&crate::storage::vault_key("avatar", &session.identity_seed))
+                        {
+                            Ok(Some(avatar_vsf)) => {
+                                crate::log(&format!(
+                                    "Avatar: sending our avatar to mutual peer ({} bytes)",
+                                    avatar_vsf.len()
+                                ));
+                                checker.send_avatar_response(
+                                    crate::network::status::AvatarResponseSend {
+                                        peer_addr: sender_addr,
+                                        recipient_pubkey: *sender_pubkey.as_bytes(),
+                                        avatar_vsf,
+                                    },
+                                );
+                            }
+                            _ => crate::log("Avatar: mutual peer requested avatar, but we have none"),
+                        }
+                    }
+                }
+                // A peer sent us their avatar. Policy: install ONLY if the responder is a MUTUAL
+                // (Complete) contact — otherwise anyone could push us an arbitrary avatar. The wire
+                // layer already verified the bytes are signed by responder_pubkey; here we bind that
+                // pubkey to a friendship before trusting it. Decode + cache + install on that contact.
+                StatusUpdate::AvatarReceived {
+                    responder_pubkey,
+                    avatar_vsf,
+                    sender_addr: _,
+                } => {
+                    let target = self
+                        .contacts
+                        .iter()
+                        .position(|c| c.public_identity == responder_pubkey && c.is_mutual());
+                    match target {
+                        None => crate::log(
+                            "Avatar: ignoring avatar from a non-mutual peer (not a Complete contact)",
+                        ),
+                        Some(idx) => {
+                            let their_seed = self.contacts[idx].handle_hash;
+                            // Decode the AVIF-in-VSF to display pixels (same path as an FGTW download).
+                            match crate::ui::avatar::load_avatar_from_bytes_from_seed(
+                                &avatar_vsf,
+                                &their_seed,
+                            ) {
+                                Some((_, vsf_rgb)) => {
+                                    // Cache it so a restart shows it without another round-trip.
+                                    if let Some(storage) = self.storage.as_ref() {
+                                        let _ = crate::ui::avatar::save_avatar_to_cache_from_seed(
+                                            &their_seed,
+                                            &avatar_vsf,
+                                            storage,
+                                        );
+                                    }
+                                    let display =
+                                        crate::ui::colour_convert::vsf_rgb_to_bt2020(&vsf_rgb);
+                                    let contact = &mut self.contacts[idx];
+                                    contact.avatar_pixels = Some(display);
+                                    contact.avatar_scaled = None;
+                                    contact.avatar_scaled_diameter = 0;
+                                    changed = true;
+                                    crate::log("Avatar: installed mutual peer's avatar (P2P)");
+                                }
+                                None => crate::log("Avatar: failed to decode peer avatar bytes"),
+                            }
                         }
                     }
                 }
