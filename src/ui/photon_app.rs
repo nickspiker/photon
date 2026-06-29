@@ -6014,8 +6014,27 @@ impl PhotonApp {
                                     // - Accept it (converge) if they're mid-ceremony
                                     // - Send KEM response (complete) if they're ahead
                                     //
-                                    // Only nuke if we're COMPLETE and they're sending fresh keys (meaning they lost their chains and need full re-key)
+                                    // Guard against a FALSE re-key: a peer we already completed with
+                                    // re-sends its offer (retransmit, or our slots got zeroized post-
+                                    // completion so stored_hqc_pub no longer matches). At completion we
+                                    // saved their HQC pubkey PREFIX precisely to recognize this. If the
+                                    // incoming offer matches what we completed with, it's the SAME peer —
+                                    // ignore it, do NOT nuke. Only a genuinely DIFFERENT key (they truly
+                                    // re-keyed / lost their chains) should trigger a re-key. Without this,
+                                    // a Complete↔Complete pair bounced back to Pending on a stray offer
+                                    // ("it completed, then went back to Pending after a message").
                                     if contact.clutch_state == ClutchState::Complete {
+                                        let their_prefix: [u8; 8] = their_offer.hqc256_public
+                                            [..8]
+                                            .try_into()
+                                            .unwrap_or_default();
+                                        if contact.completed_their_hqc_prefix == Some(their_prefix) {
+                                            crate::log(&format!(
+                                                "CLUTCH: Ignoring offer from {} — matches the key we already completed with (no re-key)",
+                                                contact.handle
+                                            ));
+                                            continue;
+                                        }
                                         crate::log(&format!(
                                             "CLUTCH: Re-key from {} - we're Complete, they have new keys, nuking for fresh ceremony",
                                             contact.handle
