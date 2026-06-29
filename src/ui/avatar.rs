@@ -6,6 +6,7 @@
 pub const AVATAR_SIZE: usize = 256;
 
 use ed25519_dalek::{SigningKey, VerifyingKey};
+use vsf::VsfType;
 use img_parts::jpeg::Jpeg;
 use img_parts::png::Png;
 use img_parts::ImageICC;
@@ -1396,8 +1397,6 @@ pub fn upload_avatar_from_seed(
     handle_proof: &[u8; 32],
     storage: &std::sync::Arc<crate::storage::FlatStorage>,
 ) -> Result<String, String> {
-    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-
     // Read the locally stored avatar VSF from the vault.
     let local_vsf = storage
         .read_addr(&crate::storage::vault_key("avatar", identity_seed))
@@ -1421,9 +1420,6 @@ pub fn upload_avatar_from_seed(
     let signed_vsf =
         build_signed_avatar_vsf(&av1_data, identity_seed, &avatar_signing, &avatar_verifying)?;
 
-    // storage_key already computed above when reading from cache
-    let url = format!("{}/avatar/{}", FGTW_URL, storage_key);
-
     #[cfg(feature = "development")]
     crate::log(&crate::network::inspect::vsf_inspect(
         &signed_vsf,
@@ -1432,15 +1428,28 @@ pub fn upload_avatar_from_seed(
         &format!("/avatar/{}", &storage_key[..8]),
     ));
 
-    // Encode handle_proof for header
-    let handle_proof_b64 = URL_SAFE_NO_PAD.encode(handle_proof);
+    // Go through the ONE VSF conduit (POST / with a named section), same as blob_put / contacts —
+    // NOT a REST path. The server dispatches by section name in route_vsf_request: it has
+    // `avatar_put` wired (key + handle_proof + the signed avatar_vsf, whose inner ke/ge it verifies).
+    // The old `PUT /avatar/{key}` had no router arm and 405'd, so avatars never reached FGTW.
+    let put_vsf = vsf::VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .add_section(
+            "avatar_put",
+            vec![
+                ("key".to_string(), VsfType::d(storage_key.clone())),
+                ("handle_proof".to_string(), VsfType::hP(handle_proof.to_vec())),
+                ("avatar_vsf".to_string(), VsfType::v(b'e', signed_vsf)),
+            ],
+        )
+        .build()
+        .map_err(|e| format!("Build avatar_put VSF: {}", e))?;
 
     let response = crate::network::http::blocking()
-        .put(&url)
+        .post(FGTW_URL)
         .timeout(std::time::Duration::from_secs(30))
         .header("Content-Type", "application/octet-stream")
-        .header("X-Handle-Proof", handle_proof_b64)
-        .body(signed_vsf)
+        .body(put_vsf)
         .send()
         .map_err(|e| format!("Failed to upload avatar: {}", e))?;
 
@@ -1476,16 +1485,28 @@ pub fn download_avatar(
 
     // Not cached locally, fetch from FGTW
     let storage_key = avatar_storage_key(handle);
-    let url = format!("{}/avatar/{}", FGTW_URL, storage_key);
     crate::log(&format!(
         "Avatar: Fetching {} from FGTW ({}...)",
         handle,
         &storage_key[..8]
     ));
 
+    // Same VSF conduit as everything else: POST / with an `avatar_get` section (server route at
+    // route_vsf_request -> handle_avatar_get). The old GET /avatar/{key} had no router arm → 404.
+    let get_vsf = vsf::VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .add_section(
+            "avatar_get",
+            vec![("key".to_string(), VsfType::d(storage_key.clone()))],
+        )
+        .build()
+        .ok()?;
+
     let response = crate::network::http::blocking()
-        .get(&url)
+        .post(FGTW_URL)
         .timeout(std::time::Duration::from_secs(30))
+        .header("Content-Type", "application/octet-stream")
+        .body(get_vsf)
         .send()
         .ok()?;
 
