@@ -92,6 +92,14 @@ pub fn draw_avatar(
             }
             let tex_x = tex_x_f as usize;
             let tex_idx = tex_row + tex_x * 3;
+            // Defensive: never index past the texture even if the caller's `scaled_diameter` disagrees
+            // with the actual `scaled` buffer size (a stale per-contact cache built at a different
+            // diameter — this used to panic on conversation-open). Skip the pixel rather than crash;
+            // the correct fix is the caller rebuilding the cache at the right diameter, but this makes
+            // any future mismatch a cosmetic glitch, not a crash.
+            if tex_idx + 2 >= scaled.len() {
+                continue;
+            }
             let r = scaled[tex_idx] as u32;
             let g = scaled[tex_idx + 1] as u32;
             let b = scaled[tex_idx + 2] as u32;
