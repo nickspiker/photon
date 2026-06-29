@@ -60,9 +60,8 @@ impl PeerStore {
     /// This is the convergence rule of the peers-are-FGTW mesh: every device's freshest-known address
     /// wins, so asking everyone and merging by Eagle-time pulls the whole network toward agreement.
     pub fn merge_peer(&mut self, peer: PeerRecord) -> bool {
-        // Gossip records are only trusted if they self-verify — a relay can carry a device's entry but
-        // can't forge or redirect it. An unsigned / forged record is dropped here, so nothing untrusted
-        // ever enters the store via the mesh. (The FGTW-authoritative path uses add_peer, not this.)
+        // Gossip records are only trusted if they self-verify — a relay can carry a device's entry but can't forge or redirect it.
+        // An unsigned / forged record is dropped here, so nothing untrusted ever enters the store via the mesh. (The FGTW-authoritative path uses add_peer, not this.)
         if !peer.verify() {
             return false;
         }
@@ -180,8 +179,8 @@ mod tests {
     use std::net::SocketAddr;
 
     // A properly SELF-SIGNED record: the device key is derived from `device`, its verifying key IS
-    // the device_pubkey, and we sign after setting last_seen so the signature covers it. merge_peer
-    // rejects anything that doesn't verify, so test records must be signed like the real ones.
+    // the device_pubkey, and we sign after setting last_seen so the signature covers it.
+    // merge_peer rejects anything that doesn't verify, so test records must be signed like the real ones.
     fn rec(handle: u8, device: u8, last_seen: i64) -> PeerRecord {
         use ed25519_dalek::SigningKey;
         let addr: SocketAddr = "127.0.0.1:4383".parse().unwrap();
@@ -206,8 +205,7 @@ mod tests {
         r.sign(&sk);
         assert!(r.verify(), "self-signed record verifies against its own device_pubkey");
 
-        // Tampering with any signed field breaks the signature (the whole point — a relay can't
-        // redirect the address).
+        // Tampering with any signed field breaks the signature (the whole point — a relay can't redirect the address).
         let mut tampered = r.clone();
         tampered.ip = "198.51.100.9:4383".parse().unwrap();
         assert!(!tampered.verify(), "address tamper invalidates the signature");
