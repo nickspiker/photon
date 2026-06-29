@@ -3194,6 +3194,10 @@ impl PhotonApp {
                 if let Some(hq) = self.handle_query.as_ref() {
                     hq.set_handle_proof(data.handle_proof);
                 }
+                // Re-publish our own avatar to FGTW now that the handle_proof is set, so peers can
+                // fetch it. The picker only uploads at pick-time; without this a restart/re-attest
+                // leaves the avatar in the local vault only and peers get a 404 ("avatars don't sync").
+                self.spawn_avatar_upload();
                 // Pubkey emitted as voca-encoded camelCase so a user reading the log can double-click + paste the value as a single word (matches `Development:` key lines from handle_query.rs). The handle is deliberately NOT logged — Photon never surfaces the plaintext handle.
                 eprintln!(
                     "attestation success: pubkey = {}",
@@ -3518,6 +3522,39 @@ impl PhotonApp {
         } else {
             false
         }
+    }
+
+    /// Re-upload this device's avatar to FGTW (off-thread) so peers can fetch it. The picker uploads
+    /// once when an avatar is chosen, but nothing re-published it afterward — so after a restart /
+    /// re-attest the avatar lived only in the local vault and peers got a 404, which is why "avatars
+    /// don't sync among friends". Call on attest success (handle_proof fresh). No-op if there's no
+    /// local avatar, or keypair / proof / storage isn't ready. `upload_avatar_from_seed` reads the
+    /// avatar from the vault by seed, so nothing to pass but the keys.
+    fn spawn_avatar_upload(&self) {
+        let (Some(kp), Some(session), Some(storage)) = (
+            self.device_keypair.as_ref(),
+            self.session.as_ref(),
+            self.storage.as_ref().map(Arc::clone),
+        ) else {
+            return;
+        };
+        let Some(handle_proof) = self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof())
+        else {
+            return;
+        };
+        let secret = kp.secret.clone();
+        let identity_seed = session.identity_seed;
+        std::thread::spawn(move || {
+            match crate::ui::avatar::upload_avatar_from_seed(
+                &secret,
+                &identity_seed,
+                &handle_proof,
+                &storage,
+            ) {
+                Ok(_) => crate::log("Avatar: published own avatar to FGTW (startup sync)"),
+                Err(e) => crate::log(&format!("Avatar: startup FGTW publish skipped/failed: {e}")),
+            }
+        });
     }
 
     /// Kick a background download of `handle`'s avatar from FGTW (once per session per handle). The
