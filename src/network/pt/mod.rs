@@ -886,8 +886,12 @@ mod tests {
         let mut manager = PTManager::new(keypair);
         let peer_addr: SocketAddr = "127.0.0.1:12345".parse().unwrap();
 
-        // Start two transfers to same peer
-        let data1 = vec![0xAA; 1000];
+        // Start two transfers to same peer. BOTH must exceed SINGLE_PACKET_MAX (1024) so they take
+        // the multi-packet `outbound` spec path this test asserts on — a payload ≤ 1024 takes the
+        // small-packet fast path into `outbound_packets` (a separate queue) and would never appear in
+        // `outbound`. (data1 was 1000 here, below the threshold, which silently broke this test when
+        // the small-packet path was added.)
+        let data1 = vec![0xAA; 1500];
         let data2 = vec![0xBB; 2000];
 
         manager.send(peer_addr, data1);
