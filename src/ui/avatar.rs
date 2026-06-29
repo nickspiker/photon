@@ -983,11 +983,20 @@ pub fn get_local_avatar_timestamp(
     handle: &str,
     storage: &std::sync::Arc<crate::storage::FlatStorage>,
 ) -> Option<i64> {
+    get_local_avatar_timestamp_from_seed(ihi::handle_to_hash(handle).as_bytes(), storage)
+}
+
+/// Seed-keyed twin of [`get_local_avatar_timestamp`] — the canonical body. Reads the cached avatar
+/// VSF at `vault_key("avatar", identity_seed)` and returns its embedded eagle-time creation stamp.
+pub fn get_local_avatar_timestamp_from_seed(
+    identity_seed: &[u8; 32],
+    storage: &std::sync::Arc<crate::storage::FlatStorage>,
+) -> Option<i64> {
     use vsf::file_format::VsfHeader;
     use vsf::types::EagleTime;
     use vsf::VsfType;
 
-    let addr = crate::storage::vault_key("avatar", ihi::handle_to_hash(handle).as_bytes());
+    let addr = crate::storage::vault_key("avatar", identity_seed);
 
     let vsf_data = match storage.read_addr(&addr) {
         Ok(Some(data)) => data,
@@ -1003,14 +1012,16 @@ pub fn get_local_avatar_timestamp(
         }
     };
 
-    // Parse header to extract creation timestamp
+    // Parse header to extract creation timestamp. A timestamp we can't read is NOT a timestamp —
+    // return None, never a fabricated 0 (a zero would mean "created at the dawn of time" and would
+    // always lose the newer-wins comparison, silently clobbering a fine local avatar with the server's).
     let (header, _) = VsfHeader::decode(&vsf_data).ok()?;
     match header.creation_time {
         Some(VsfType::e(et)) => {
-            let ts = EagleTime::new(et).oscillations().unwrap_or(0);
+            let ts = EagleTime::new(et).oscillations();
             #[cfg(feature = "development")]
-            crate::log(&format!("Avatar: Local timestamp = {}", ts));
-            Some(ts)
+            crate::log(&format!("Avatar: Local timestamp = {:?}", ts));
+            ts
         }
         _ => None,
     }
@@ -1577,16 +1588,7 @@ pub fn download_avatar_from_seed(
     load_avatar_from_bytes_from_seed(&vsf_data, identity_seed)
 }
 
-/// Sync avatar bidirectionally with FGTW (newest wins)
-///
-/// For the user's own avatar only - compares local and server timestamps, uploads if local is newer, downloads if server is newer.
-///
-/// # Arguments
-/// * `device_secret` - Device's Ed25519 signing key (for uploading)
-/// * `handle` - User's handle
-///
-/// # Returns
-/// Ok(SyncResult) describing what action was taken, Err on failure
+/// Outcome of a bidirectional avatar sync — which side won the newer-wins comparison.
 #[derive(Debug)]
 pub enum AvatarSyncResult {
     NoLocalAvatar, // No local avatar to sync
@@ -1597,22 +1599,78 @@ pub enum AvatarSyncResult {
     Error(String), // Something went wrong
 }
 
-pub fn sync_avatar_bidirectional(
+/// Read the eagle-time creation stamp embedded in an in-memory avatar VSF buffer (the server's
+/// `avatar_get` response). The VSF conduit returns the stripped-but-creation-time-preserving VSF,
+/// so the timestamp travels in the body itself — no `X-Avatar-Timestamp` HTTP header (that was the
+/// dead REST path). Returns `None` if the buffer has no decodable creation time.
+fn avatar_vsf_timestamp(vsf_data: &[u8]) -> Option<i64> {
+    use vsf::file_format::VsfHeader;
+    use vsf::types::EagleTime;
+    use vsf::VsfType;
+    let (header, _) = VsfHeader::decode(vsf_data).ok()?;
+    match header.creation_time {
+        Some(VsfType::e(et)) => EagleTime::new(et).oscillations(),
+        _ => None,
+    }
+}
+
+/// Sync the user's own avatar with FGTW, newest-wins, keyed by the identity seed (never the
+/// plaintext handle — identity flows only as the seed). Pulls the server copy over the VSF conduit
+/// (`avatar_get` section, POST /), reads its embedded eagle-time creation stamp, and compares to the
+/// local cache's stamp: local newer → upload (needs `handle_proof`); server newer → cache the server
+/// VSF; equal → in-sync. Server-empty with a local copy → upload.
+///
+/// # Arguments
+/// * `device_secret` — the device's Ed25519 signing key (for uploading)
+/// * `identity_seed` — the seed derived once from the handle at the input boundary
+/// * `handle_proof` — the public proof, only needed when we upload
+pub fn sync_avatar_bidirectional_from_seed(
     device_secret: &SigningKey,
-    handle: &str,
+    identity_seed: &[u8; 32],
     handle_proof: Option<&[u8; 32]>,
     storage: &std::sync::Arc<crate::storage::FlatStorage>,
 ) -> AvatarSyncResult {
-    let storage_key = avatar_storage_key(handle);
-    let url = format!("{}/avatar/{}", FGTW_URL, storage_key);
+    let storage_key = avatar_storage_key_from_seed(identity_seed);
 
-    // Get local timestamp (if we have a local avatar)
-    let local_ts = get_local_avatar_timestamp(handle, storage);
+    // Local timestamp (if we have a cached avatar).
+    let local_ts = get_local_avatar_timestamp_from_seed(identity_seed, storage);
 
-    // Query server for avatar with timestamp header
+    // Helper: upload the local avatar if we hold a handle_proof, mapping to a sync result.
+    let upload = |label: &str| -> AvatarSyncResult {
+        match handle_proof {
+            Some(hp) => {
+                crate::log(&format!("Avatar sync: {}, uploading local", label));
+                match upload_avatar_from_seed(device_secret, identity_seed, hp, storage) {
+                    Ok(_) => AvatarSyncResult::LocalNewer,
+                    Err(e) => AvatarSyncResult::Error(format!("Upload failed: {}", e)),
+                }
+            }
+            None => {
+                crate::log(&format!("Avatar sync: {}, but no handle_proof for upload", label));
+                AvatarSyncResult::Error("No handle_proof for upload".to_string())
+            }
+        }
+    };
+
+    // Pull the server copy over the VSF conduit (same avatar_get section as download_avatar_from_seed,
+    // but here we always hit the network — a sync must see the server to compare timestamps).
+    let get_vsf = match vsf::VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .add_section(
+            "avatar_get",
+            vec![("key".to_string(), VsfType::d(storage_key.clone()))],
+        )
+        .build()
+    {
+        Ok(b) => b,
+        Err(e) => return AvatarSyncResult::Error(format!("Build avatar_get: {}", e)),
+    };
+
     let response = match crate::network::http::blocking()
-        .get(&url)
+        .post(FGTW_URL)
         .timeout(std::time::Duration::from_secs(30))
+        .header("Content-Type", "application/octet-stream")
+        .body(get_vsf)
         .send()
     {
         Ok(r) => r,
@@ -1620,121 +1678,66 @@ pub fn sync_avatar_bidirectional(
     };
 
     if response.status() == reqwest::StatusCode::NOT_FOUND {
-        // Server has no avatar
-        if local_ts.is_some() {
-            // We have local, upload it (only if we have handle_proof)
-            if let Some(hp) = handle_proof {
-                crate::log("Avatar sync: Server empty, uploading local");
-                match upload_avatar(device_secret, handle, hp, storage) {
-                    Ok(_) => return AvatarSyncResult::LocalNewer,
-                    Err(e) => return AvatarSyncResult::Error(format!("Upload failed: {}", e)),
-                }
-            } else {
-                crate::log("Avatar sync: Server empty, but no handle_proof for upload");
-                return AvatarSyncResult::Error("No handle_proof for upload".to_string());
-            }
+        return if local_ts.is_some() {
+            upload("Server empty")
         } else {
-            return AvatarSyncResult::ServerEmpty;
-        }
+            AvatarSyncResult::ServerEmpty
+        };
     }
 
     if !response.status().is_success() {
         return AvatarSyncResult::Error(format!("Server returned {}", response.status()));
     }
 
-    // Extract server timestamp from header
-    let server_ts: Option<i64> = response
-        .headers()
-        .get("X-Avatar-Timestamp")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse().ok());
+    let vsf_data = match response.bytes() {
+        Ok(b) => b,
+        Err(e) => return AvatarSyncResult::Error(format!("Read body: {}", e)),
+    };
+
+    // An empty body means the server holds no avatar for this key.
+    if vsf_data.is_empty() {
+        return if local_ts.is_some() {
+            upload("Server empty")
+        } else {
+            AvatarSyncResult::ServerEmpty
+        };
+    }
+
+    #[cfg(feature = "development")]
+    crate::log(&crate::network::inspect::vsf_inspect(
+        &vsf_data,
+        "FGTW",
+        "RX",
+        &format!("avatar_get/{}", &storage_key[..8]),
+    ));
+
+    // Server timestamp comes from the downloaded VSF itself, not an HTTP header.
+    let server_ts = avatar_vsf_timestamp(&vsf_data);
 
     match (local_ts, server_ts) {
-        (None, Some(_)) => {
-            // No local, server has one - download
-            crate::log("Avatar sync: No local avatar, downloading from server");
-            let vsf_data = match response.bytes() {
-                Ok(b) => b,
-                Err(e) => return AvatarSyncResult::Error(format!("Read body: {}", e)),
-            };
-            #[cfg(feature = "development")]
-            crate::log(&crate::network::inspect::vsf_inspect(
-                &vsf_data,
-                "FGTW",
-                "RX",
-                &format!("/avatar/{}", &storage_key[..8]),
-            ));
-            let _ = save_avatar_to_cache(handle, &vsf_data, storage);
+        (None, _) => {
+            // No local copy — adopt the server's.
+            crate::log("Avatar sync: No local avatar, caching server copy");
+            let _ = save_avatar_to_cache_from_seed(identity_seed, &vsf_data, storage);
             AvatarSyncResult::ServerNewer
         }
         (Some(local), Some(server)) => {
             if local > server {
-                // Local is newer - upload (only if we have handle_proof)
-                if let Some(hp) = handle_proof {
-                    crate::log(&format!(
-                        "Avatar sync: Local newer ({:.0} > {:.0}), uploading",
-                        local, server
-                    ));
-                    match upload_avatar(device_secret, handle, hp, storage) {
-                        Ok(_) => AvatarSyncResult::LocalNewer,
-                        Err(e) => AvatarSyncResult::Error(format!("Upload failed: {}", e)),
-                    }
-                } else {
-                    crate::log("Avatar sync: Local newer, but no handle_proof for upload");
-                    AvatarSyncResult::Error("No handle_proof for upload".to_string())
-                }
+                upload(&format!("Local newer ({} > {})", local, server))
             } else if server > local {
-                // Server is newer - download
                 crate::log(&format!(
-                    "Avatar sync: Server newer ({:.0} > {:.0}), downloading",
+                    "Avatar sync: Server newer ({} > {}), caching",
                     server, local
                 ));
-                let vsf_data = match response.bytes() {
-                    Ok(b) => b,
-                    Err(e) => return AvatarSyncResult::Error(format!("Read body: {}", e)),
-                };
-                #[cfg(feature = "development")]
-                crate::log(&crate::network::inspect::vsf_inspect(
-                    &vsf_data,
-                    "FGTW",
-                    "RX",
-                    &format!("/avatar/{}", &storage_key[..8]),
-                ));
-                let _ = save_avatar_to_cache(handle, &vsf_data, storage);
+                let _ = save_avatar_to_cache_from_seed(identity_seed, &vsf_data, storage);
                 AvatarSyncResult::ServerNewer
             } else {
                 AvatarSyncResult::InSync
             }
         }
         (Some(_), None) => {
-            // Have local but server didn't send timestamp (shouldn't happen) Upload to be safe (only if we have handle_proof)
-            if let Some(hp) = handle_proof {
-                crate::log("Avatar sync: Server missing timestamp, uploading local");
-                match upload_avatar(device_secret, handle, hp, storage) {
-                    Ok(_) => AvatarSyncResult::LocalNewer,
-                    Err(e) => AvatarSyncResult::Error(format!("Upload failed: {}", e)),
-                }
-            } else {
-                crate::log("Avatar sync: Server missing timestamp, but no handle_proof for upload");
-                AvatarSyncResult::Error("No handle_proof for upload".to_string())
-            }
-        }
-        (None, None) => {
-            // Server returned 200 but no timestamp header - still download the avatar
-            crate::log("Avatar sync: Server has avatar (no timestamp), downloading");
-            let vsf_data = match response.bytes() {
-                Ok(b) => b,
-                Err(e) => return AvatarSyncResult::Error(format!("Read body: {}", e)),
-            };
-            #[cfg(feature = "development")]
-            crate::log(&crate::network::inspect::vsf_inspect(
-                &vsf_data,
-                "FGTW",
-                "RX",
-                &format!("/avatar/{}", &storage_key[..8]),
-            ));
-            let _ = save_avatar_to_cache(handle, &vsf_data, storage);
-            AvatarSyncResult::ServerNewer
+            // We have a local copy but the server's VSF has no readable timestamp — upload ours to be safe.
+            upload("Server copy has no timestamp")
         }
     }
 }
@@ -1788,14 +1791,21 @@ pub fn sync_avatar_background(
 ) {
     std::thread::spawn(move || {
         let device_secret = SigningKey::from_bytes(&device_secret_bytes);
-        let result =
-            sync_avatar_bidirectional(&device_secret, &handle, handle_proof.as_ref(), &storage);
+        // Hash the handle to a seed ONCE here at the thread boundary; the seed (never the handle)
+        // flows into the sync logic and the cache lookup below.
+        let identity_seed = *ihi::handle_to_hash(&handle).as_bytes();
+        let result = sync_avatar_bidirectional_from_seed(
+            &device_secret,
+            &identity_seed,
+            handle_proof.as_ref(),
+            &storage,
+        );
 
         // Only send pixels if we downloaded a newer version from server
         let pixels = match result {
             AvatarSyncResult::ServerNewer => {
                 // Load the newly downloaded avatar from cache
-                load_cached_avatar(&handle, &storage).map(|(_, p)| p)
+                load_cached_avatar_from_seed(&identity_seed, &storage).map(|(_, p)| p)
             }
             AvatarSyncResult::LocalNewer => {
                 crate::log("Avatar sync: Uploaded local avatar to FGTW");

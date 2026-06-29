@@ -570,7 +570,7 @@ impl HandleQuery {
                             // Load CLUTCH state if ceremony incomplete
                             if contact.clutch_state != crate::types::ClutchState::Complete {
                                 if let Ok(Some(state)) = crate::storage::contacts::load_clutch_slots(
-                                    contact.handle.as_str(),
+                                    &contact.handle_hash,
                                     &storage,
                                 ) {
                                     contact.clutch_slots = state.slots;
@@ -579,7 +579,7 @@ impl HandleQuery {
                                 }
                                 if let Ok(Some(keypairs)) =
                                     crate::storage::contacts::load_clutch_keypairs(
-                                        contact.handle.as_str(),
+                                        &contact.handle_hash,
                                         &storage,
                                     )
                                 {
@@ -640,7 +640,7 @@ impl HandleQuery {
                                     if contact.clutch_state != crate::types::ClutchState::Complete {
                                         if let Ok(Some(state)) =
                                             crate::storage::contacts::load_clutch_slots(
-                                                contact.handle.as_str(),
+                                                &contact.handle_hash,
                                                 &storage,
                                             )
                                         {
