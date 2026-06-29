@@ -371,6 +371,17 @@ pub struct PhotonApp {
     session: Option<tohu::SessionIdentity>,
     /// True when the dual-ring vault flagged a damaged ring on open this session. Drives the persistent amber banner on the Ready screen. Sticky for the session.
     vault_degraded: bool,
+    /// nunc-time clock sanity check: result channel + drain. The worker (one-shot, off-thread) posts
+    /// the consensus-vs-system offset here; `drain_clock_check` reads it and updates `clock_off`.
+    clock_check_tx: std::sync::mpsc::Sender<crate::network::ClockCheckResult>,
+    clock_check_rx: std::sync::mpsc::Receiver<crate::network::ClockCheckResult>,
+    /// `Some(offset_secs)` when the last consensus said the system clock is off by more than the
+    /// threshold (consensus − system; positive = system behind). Drives the amber "clock off" banner.
+    /// Tracks the LATEST verdict, not sticky — a corrected clock clears it on the next clean check.
+    clock_off: Option<i64>,
+    /// Watches the wall clock against the monotonic clock; a gross unexplained jump (NTP step, long
+    /// sleep, or an adversary moving the clock after boot) triggers a fresh consensus re-check.
+    clock_jump: crate::network::ClockJumpDetector,
     /// FGTW connectivity state — flipped by `HandleQuery::try_recv_online`. Drives the top-left chrome orb's colour (red offline / green online). Starts false; the background worker reports the first real status within the first second of launch.
     online: bool,
     /// Contacts-page handle search/add textbox (Ready state). Distinct from `textbox` so content doesn't bleed between Launch (handle being attested) and Ready (handle being added as a contact).
@@ -478,6 +489,15 @@ impl PhotonApp {
             last_chord_held: false,
             session: None,
             vault_degraded: false,
+            clock_check_tx: {
+                let (tx, _) = std::sync::mpsc::channel();
+                tx
+            },
+            clock_check_rx: std::sync::mpsc::channel().1,
+            clock_off: None,
+            // ~1 hour of unexplained wall-vs-monotonic skew triggers a re-check (loose enough to
+            // ignore NTP steps and short sleeps, tight enough to catch a day-scale set or long sleep).
+            clock_jump: crate::network::ClockJumpDetector::new(3600),
             online: false,
             contacts_textbox: None,
             message_textbox: None,
@@ -807,7 +827,17 @@ impl FluorApp for PhotonApp {
             let (atx, arx) = std::sync::mpsc::channel();
             self.avatar_dl_tx = atx;
             self.avatar_dl_rx = arx;
+            let (cctx, ccrx) = std::sync::mpsc::channel();
+            self.clock_check_tx = cctx;
+            self.clock_check_rx = ccrx;
         }
+
+        // One-shot wall-clock sanity check via nunc-time, a few seconds behind attest (off-thread, so
+        // the several-seconds consensus query never blocks the UI). Warns via banner if the system
+        // clock is grossly wrong — never corrects it. Mid-session re-checks fire from the jump detector
+        // in `update`.
+        #[cfg(not(target_os = "android"))]
+        crate::network::spawn_clock_check(self.clock_check_tx.clone(), Some(proxy.clone()));
 
         // Spawn the presence + CLUTCH status checker on HandleQuery's shared socket. Done BEFORE `hq` is moved into the field so we can take its socket. Without this the UDP recv/pong worker never runs — the socket is bound but nothing reads it or replies, so the device is invisible to every peer (no presence, no CLUTCH). The desktop and Android constructors differ only in the wake sender: desktop passes the winit event proxy; Android's redraws come thru the JNI/Choreographer path so its constructor takes none.
         #[cfg(not(target_os = "android"))]
@@ -2358,6 +2388,43 @@ impl FluorApp for PhotonApp {
                 );
             }
 
+            // Clock-off indicator: same amber as the degraded banner (nunc-time consensus says the
+            // system clock is grossly wrong). Warn only — Photon never corrects the clock. Stacks one
+            // band above "storage degraded" when both are showing so they don't overlap.
+            if let Some(offset_secs) = self.clock_off {
+                const CLOCK_TEXT: u32 = 0xFF_00_73_FF; // visible RGB(255, 140, 0) amber, as above
+                let band_h = ready_layout.unit_height * 1.5;
+                let cx = buf_w as f32 * 0.5;
+                // Sit at the bottom; if the degraded banner is also up, lift this one band higher.
+                let rows_below = if self.vault_degraded { 1.0 } else { 0.0 };
+                let cy = buf_h as f32 - band_h * (0.5 + rows_below);
+                let font_size = band_h * 0.6;
+                // Human-readable magnitude + direction. ahead = system clock reads later than truth.
+                let mag = offset_secs.unsigned_abs();
+                let pretty = if mag >= 3600 {
+                    format!("{}h", mag / 3600)
+                } else if mag >= 60 {
+                    format!("{}m", mag / 60)
+                } else {
+                    format!("{}s", mag)
+                };
+                let dir = if offset_secs < 0 { "ahead" } else { "behind" };
+                let label = format!("clock off — {} {}", pretty, dir);
+                ctx.text.draw_text_center_u32(
+                    &mut canvas,
+                    &label,
+                    cx,
+                    cy,
+                    font_size,
+                    600,
+                    CLOCK_TEXT,
+                    "Oxanium",
+                    None,
+                    None,
+                    None,
+                );
+            }
+
             // Security & Recovery posture meters, bottom-right of the Ready strip (the dozenal version sits bottom-left). Two orthogonal axes — see `identity_posture`. Drawn into `target` at full opacity (unlike the watermark version) so they read as a real, glanceable status affordance, aligned to the version's baseline band. Read-only for now; the tap-to-device-sheet lands with the first modal primitive.
             {
                 let (sec, rec) = identity_posture();
@@ -3643,6 +3710,44 @@ impl PhotonApp {
                 contact.avatar_scaled = None; // force rebuild at the current diameter on next render
                 contact.avatar_scaled_diameter = 0;
                 crate::log(&format!("Avatar: installed peer avatar for {}", result.handle));
+            }
+        }
+    }
+
+    /// Drain the nunc-time clock verdict. A consensus offset beyond ±`CLOCK_OFF_THRESHOLD_SECS`
+    /// raises the amber "clock off" banner (`clock_off`); within threshold clears it. An `Unavailable`
+    /// result (we couldn't reach consensus) is NOT an anomaly — we leave the banner as-is rather than
+    /// claiming the clock is fine. This is warn-only: the system clock is never corrected.
+    fn drain_clock_check(&mut self) {
+        /// How far off (seconds) the system clock must be before we warn. 30s — well past ordinary
+        /// NTP jitter and nunc's own confidence half-width, so the banner means a real problem.
+        const CLOCK_OFF_THRESHOLD_SECS: i64 = 30;
+
+        while let Ok(result) = self.clock_check_rx.try_recv() {
+            match result {
+                crate::network::ClockCheckResult::Ok {
+                    offset_secs,
+                    confidence_secs,
+                    sources_used,
+                    sources_queried,
+                } => {
+                    crate::log(&format!(
+                        "Clock: nunc consensus offset = {}s (±{}s, {}/{} sources)",
+                        offset_secs, confidence_secs, sources_used, sources_queried
+                    ));
+                    self.clock_off = if offset_secs.abs() > CLOCK_OFF_THRESHOLD_SECS {
+                        crate::log(&format!(
+                            "Clock: system clock off by {}s — raising banner (warn only, not corrected)",
+                            offset_secs
+                        ));
+                        Some(offset_secs)
+                    } else {
+                        None
+                    };
+                }
+                crate::network::ClockCheckResult::Unavailable(why) => {
+                    crate::log(&format!("Clock: consensus unavailable ({why}) — banner unchanged"));
+                }
             }
         }
     }
@@ -5020,6 +5125,18 @@ impl PhotonApp {
         // any contact still without one. Cache-first + dedup'd by avatar_dl_started, so this is cheap
         // to run every tick — it spawns at most one thread per peer per session.
         self.drain_avatar_downloads();
+
+        // Clock sanity: drain any completed nunc verdict, then (if the wall clock has grossly jumped
+        // since the last baseline) spawn a fresh re-check. Both are cheap — the jump check is two
+        // clock reads and a subtraction; a re-check only spawns on an actual jump.
+        self.drain_clock_check();
+        #[cfg(not(target_os = "android"))]
+        if self.online && self.clock_jump.check_and_reset() {
+            if let Some(proxy) = self.event_proxy.clone() {
+                crate::log("Clock: wall clock jumped — re-verifying via nunc consensus");
+                crate::network::spawn_clock_check(self.clock_check_tx.clone(), Some(proxy));
+            }
+        }
         let need_avatar: Vec<String> = self
             .contacts
             .iter()

@@ -166,6 +166,8 @@ softbuffer = "0.4"
 if-watch = { version = "3.2.1", features = ["tokio"] }
 arboard = "3.4"
 fluor = { path = "../fluor", default-features = false, features = ["host-winit"] }
+# Trustworthy wall-clock via multi-source network consensus. Desktop-only (its roughtime source pulls `ring`, which needs the NDK to cross-compile, and the check is a desktop-host affordance anyway). Used ONLY as a one-shot startup + on-jump sanity check on the system clock — never the timestamp source (eagle-time stamps stay on the local monotonic clock); a large offset raises the amber "clock off" banner, never a silent correction.
+nunc-time = { path = "../nunc" }
 
 [dev-dependencies]
 criterion = "0.7.0"
