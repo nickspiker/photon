@@ -933,6 +933,11 @@ impl FluorApp for PhotonApp {
                                 crate::ui::colour_convert::vsf_rgb_to_bt2020(&vsf_rgb)
                             });
                         }
+                        // Local vault had no avatar (e.g. this device was cleared) — recover our own
+                        // from FGTW, where it was published. Off-thread; installs via the avatar drain.
+                        if self.device_avatar_pixels.is_none() {
+                            self.spawn_self_avatar_recover(remembered.identity_seed);
+                        }
                         // Force any self-contact Complete before re-keying so it's excluded (a self-contact has no peer to key with).
                         self.settle_self_contacts();
                         // Re-key Pending contacts that still lack keypairs after the rehydrate — but
@@ -3620,6 +3625,15 @@ impl PhotonApp {
                 continue;
             };
             let display = crate::ui::colour_convert::vsf_rgb_to_bt2020(&vsf_rgb);
+            // Empty handle = our OWN avatar recovered from FGTW (the local vault was cleared). Install
+            // it as the device avatar and invalidate the scaled cache so the Ready screen repaints it.
+            if result.handle.is_empty() {
+                self.device_avatar_pixels = Some(display);
+                self.device_avatar_scaled = None;
+                self.device_avatar_scaled_diameter = 0;
+                crate::log("Avatar: recovered own avatar from FGTW after local clear");
+                continue;
+            }
             if let Some(contact) = self
                 .contacts
                 .iter_mut()
@@ -3631,6 +3645,32 @@ impl PhotonApp {
                 crate::log(&format!("Avatar: installed peer avatar for {}", result.handle));
             }
         }
+    }
+
+    /// Recover the device's OWN avatar from FGTW after a local clear (the vault load returned nothing).
+    /// Off-thread (blocking FGTW round-trip); the result comes back over avatar_dl_tx with an EMPTY
+    /// handle, which drain_avatar_downloads routes into device_avatar_pixels. No-op without storage.
+    fn spawn_self_avatar_recover(&self, identity_seed: [u8; 32]) {
+        let Some(storage) = self.storage.as_ref().map(Arc::clone) else {
+            return;
+        };
+        let tx = self.avatar_dl_tx.clone();
+        #[cfg(not(target_os = "android"))]
+        let proxy = self.event_proxy.clone();
+        std::thread::spawn(move || {
+            let pixels =
+                crate::ui::avatar::download_avatar_from_seed(&identity_seed, &storage).map(|(_, p)| p);
+            if pixels.is_some() {
+                let _ = tx.send(crate::ui::avatar::AvatarDownloadResult {
+                    handle: String::new(), // empty = self
+                    pixels,
+                });
+                #[cfg(not(target_os = "android"))]
+                if let Some(p) = proxy.as_ref() {
+                    let _ = p.send(crate::ui::PhotonEvent::NetworkUpdate);
+                }
+            }
+        });
     }
 
     pub fn spawn_clutch_keygen(
