@@ -683,12 +683,18 @@ pub fn decode_avatar(av1_data: &[u8]) -> Result<(usize, usize, Vec<u8>), String>
         std::ptr::copy_nonoverlapping(av1_data.as_ptr(), data_ptr, av1_data.len());
     }
 
+    // dav1d returns negated errno; EAGAIN means "retry". errno is PLATFORM-SPECIFIC (Linux EAGAIN=11,
+    // macOS/BSD EAGAIN=35), and rav1d propagates the host's value (`EAGAIN = libc::EAGAIN`). Hardcoding
+    // -11 worked on Linux but on Mac the decoder's EAGAIN (-35) fell through to the error branch, so
+    // every AVIF avatar failed with "dav1d_get_picture failed: -35". Compare against libc::EAGAIN.
+    let eagain = -(libc::EAGAIN as i32);
+
     // Send data to decoder - keep sending until consumed
     loop {
         let send_result = unsafe { dav1d_send_data(Some(ctx), NonNull::new(&mut data)) };
         if send_result.0 == 0 {
             break; // Data consumed
-        } else if send_result.0 == -11 {
+        } else if send_result.0 == eagain {
             // EAGAIN - decoder is busy, try to drain pictures first
             continue;
         } else if send_result.0 < 0 {
@@ -703,7 +709,7 @@ pub fn decode_avatar(av1_data: &[u8]) -> Result<(usize, usize, Vec<u8>), String>
         let get_result = unsafe { dav1d_get_picture(Some(ctx), NonNull::new(&mut pic)) };
         if get_result.0 == 0 {
             break; // Got a picture
-        } else if get_result.0 == -11 {
+        } else if get_result.0 == eagain {
             // EAGAIN - no picture ready yet, decoder needs to process For single-frame decode, this shouldn't happen after send succeeds but let's be safe
             std::thread::yield_now();
             continue;
