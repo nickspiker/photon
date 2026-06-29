@@ -1532,6 +1532,51 @@ pub fn download_avatar(
     load_avatar_from_bytes(&vsf_data, handle)
 }
 
+/// Download an avatar by IDENTITY SEED rather than handle string. Same cache-first → FGTW-fetch flow
+/// as [`download_avatar`], but keyed off the seed the caller already has (no handle string needed).
+/// Used to recover the DEVICE'S OWN avatar after a local clear: the vault is empty, but the avatar was
+/// published to FGTW under our own storage key, so we pull it back (and re-cache it locally).
+pub fn download_avatar_from_seed(
+    identity_seed: &[u8; 32],
+    storage: &std::sync::Arc<crate::storage::FlatStorage>,
+) -> Option<(usize, Vec<u8>)> {
+    if let Some(cached) = load_cached_avatar_from_seed(identity_seed, storage) {
+        return Some(cached);
+    }
+
+    let storage_key = avatar_storage_key_from_seed(identity_seed);
+    crate::log(&format!(
+        "Avatar: Fetching own avatar from FGTW ({}...)",
+        &storage_key[..8]
+    ));
+
+    let get_vsf = vsf::VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .add_section(
+            "avatar_get",
+            vec![("key".to_string(), VsfType::d(storage_key.clone()))],
+        )
+        .build()
+        .ok()?;
+
+    let response = crate::network::http::blocking()
+        .post(FGTW_URL)
+        .timeout(std::time::Duration::from_secs(30))
+        .header("Content-Type", "application/octet-stream")
+        .body(get_vsf)
+        .send()
+        .ok()?;
+
+    if !response.status().is_success() {
+        crate::log(&format!("Avatar: FGTW returned {} for own avatar", response.status()));
+        return None;
+    }
+
+    let vsf_data = response.bytes().ok()?;
+    let _ = save_avatar_to_cache_from_seed(identity_seed, &vsf_data, storage);
+    load_avatar_from_bytes_from_seed(&vsf_data, identity_seed)
+}
+
 /// Sync avatar bidirectionally with FGTW (newest wins)
 ///
 /// For the user's own avatar only - compares local and server timestamps, uploads if local is newer, downloads if server is newer.
