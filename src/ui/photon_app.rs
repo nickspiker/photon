@@ -971,6 +971,10 @@ impl FluorApp for PhotonApp {
                         }
                         // Local vault had no avatar (e.g. this device was cleared) — recover our own
                         // from FGTW, where it was published. Off-thread; installs via the avatar drain.
+                        crate::log(&format!(
+                            "Avatar: resume vault load -> {}",
+                            if self.device_avatar_pixels.is_some() { "Some (have it)" } else { "None (will recover from FGTW)" }
+                        ));
                         if self.device_avatar_pixels.is_none() {
                             self.spawn_self_avatar_recover(remembered.identity_seed);
                         }
