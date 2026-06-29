@@ -99,17 +99,32 @@ pub enum FgtwMessage {
         sender_pubkey: DevicePubkey,
         signature: [u8; 64],
     },
+    /// Phonebook gossip REQUEST — "send me your peer list".
+    /// The peers-are-FGTW mesh: when fgtw.org is unreachable (or just to stay fresh), ask known peers for their phonebook and merge by Eagle-time.
+    /// Signed like a ping so the responder can authenticate + route the reply to `sender_pubkey`.
+    PhonebookRequest {
+        timestamp: i64,
+        sender_pubkey: DevicePubkey,
+        provenance_hash: [u8; 32], // BLAKE3(sender_pubkey || timestamp)
+        signature: [u8; 64],       // Ed25519 over provenance_hash
+    },
+    /// Phonebook gossip RESPONSE — our known peer records, each SELF-SIGNED (see PeerRecord).
+    /// The receiver verifies + merge_peers each one, so trust rides the record, not this relay.
+    PhonebookResponse {
+        timestamp: i64,
+        responder_pubkey: DevicePubkey,
+        provenance_hash: [u8; 32], // echoes the request's provenance (proves we saw it)
+        signature: [u8; 64],
+        peers: Vec<PeerRecord>,
+    },
 }
 
 /// Peer record - one device for a user handle.
 ///
-/// Self-attesting: `signature` is the device's own Ed25519 signature over its other fields, made with
-/// the secret half of `device_pubkey` (an Ed25519 verifying key — see [`DevicePubkey`]). This is what
-/// lets a record propagate thru phonebook GOSSIP without trusting the relay: anyone can `verify()` it
-/// against the embedded `device_pubkey`, so a relaying peer can carry a device's entry but cannot
-/// forge or redirect its address without breaking the signature. FGTW-sourced records get the same
-/// treatment, so both sources of truth (the bootstrap server and peer gossip) are verifiable the same
-/// way. A record whose signature doesn't verify is dropped on merge.
+/// Self-attesting: `signature` is the device's own Ed25519 signature over its other fields, made with the secret half of `device_pubkey` (an Ed25519 verifying key — see [`DevicePubkey`]).
+/// This is what lets a record propagate thru phonebook GOSSIP without trusting the relay: anyone can `verify()` it against the embedded `device_pubkey`, so a relaying peer can carry a device's entry but cannot forge or redirect its address without breaking the signature.
+/// FGTW-sourced records get the same treatment, so both sources of truth (the bootstrap server and peer gossip) are verifiable the same way.
+/// A record whose signature doesn't verify is dropped on merge.
 #[derive(Debug, Clone)]
 pub struct PeerRecord {
     pub handle_proof: [u8; 32], // Memory-hard PoW output (24MB, 17 rounds)
@@ -220,8 +235,7 @@ impl FgtwMessage {
                         format!("{}_last_seen", prefix),
                         VsfType::e(vsf::types::EtType::e6(peer.last_seen)),
                     ));
-                    // Self-signature (ge) — see PeerRecord. Carried so the receiver can verify the
-                    // record without trusting this relay. extract_peer_list reads it back at {prefix}_sig.
+                    // Self-signature (ge) — see PeerRecord. Carried so the receiver can verify the record without trusting this relay. extract_peer_list reads it back at {prefix}_sig.
                     fields.push((
                         format!("{}_sig", prefix),
                         VsfType::ge(peer.signature.to_vec()),
@@ -445,6 +459,38 @@ impl FgtwMessage {
                     )
                     .build()
             }
+            FgtwMessage::PhonebookRequest {
+                timestamp,
+                sender_pubkey,
+                provenance_hash,
+                signature,
+            } => builder
+                .creation_time_oscillations(*timestamp)
+                .provenance_hash(*provenance_hash)
+                .signature_ed25519(*sender_pubkey.as_bytes(), *signature)
+                .add_section("pb_req", vec![])
+                .build(),
+            FgtwMessage::PhonebookResponse {
+                timestamp,
+                responder_pubkey,
+                provenance_hash,
+                signature,
+                peers,
+            } => {
+                // One multi-value `peer` field per record (positional, parse_peer_from_field shape).
+                // add_section only takes single-value fields, so build the section directly.
+                let mut section = vsf::VsfSection::new("pb_resp");
+                for peer in peers {
+                    let (name, values) = encode_peer_field(peer);
+                    section.add_field_multi(name, values);
+                }
+                builder
+                    .creation_time_oscillations(*timestamp)
+                    .provenance_hash(*provenance_hash)
+                    .signature_ed25519(*responder_pubkey.as_bytes(), *signature)
+                    .add_section_direct(section)
+                    .build()
+            }
         };
 
         result.unwrap_or_else(|e| {
@@ -476,7 +522,7 @@ impl FgtwMessage {
             let section_name = header
                 .fields
                 .iter()
-                .find(|f| f.name == "ping" || f.name == "pong")
+                .find(|f| f.name == "ping" || f.name == "pong" || f.name == "pb_req")
                 .map(|f| f.name.as_str());
 
             if let Some(section_name) = section_name {
@@ -485,7 +531,15 @@ impl FgtwMessage {
                 let provenance_hash = extract_header_provenance(&header)?;
                 let signature = extract_header_signature(&header)?;
 
-                if section_name == "ping" {
+                if section_name == "pb_req" {
+                    // Phonebook request is body-less (empty section), so it lands on this header-only fast path like ping.
+                    return Ok(FgtwMessage::PhonebookRequest {
+                        timestamp,
+                        sender_pubkey: pubkey,
+                        provenance_hash,
+                        signature,
+                    });
+                } else if section_name == "ping" {
                     return Ok(FgtwMessage::StatusPing {
                         timestamp,
                         sender_pubkey: pubkey,
@@ -580,10 +634,44 @@ impl FgtwMessage {
             }
         }
 
+        // Phonebook gossip request/response
+        if section_name == "pb_req" || section_name == "pb_resp" {
+            let timestamp = extract_header_timestamp(&header)?;
+            let pubkey = extract_header_pubkey(&header)?;
+            let provenance_hash = extract_header_provenance(&header)?;
+            let signature = extract_header_signature(&header)?;
+
+            if section_name == "pb_req" {
+                return Ok(FgtwMessage::PhonebookRequest {
+                    timestamp,
+                    sender_pubkey: pubkey,
+                    provenance_hash,
+                    signature,
+                });
+            } else {
+                // Each `peer` field is a positional multi-value record; decode with the production parser (the same one the FGTW peer list uses).
+                // A record that fails to decode is skipped rather than failing the whole response.
+                let peers: Vec<PeerRecord> = section
+                    .get_fields("peer")
+                    .iter()
+                    .filter_map(|f| {
+                        crate::network::fgtw::bootstrap::parse_peer_from_field(f).ok()
+                    })
+                    .collect();
+                return Ok(FgtwMessage::PhonebookResponse {
+                    timestamp,
+                    responder_pubkey: pubkey,
+                    provenance_hash,
+                    signature,
+                    peers,
+                });
+            }
+        }
+
         // Original fgtw section handling
         if section_name != "fgtw" {
             return Err(format!(
-                "Expected 'fgtw', 'ping'/'pong', 'clutch_*', 'msg', or 'ack' section, got '{}'",
+                "Expected 'fgtw', 'ping'/'pong', 'clutch_*', 'msg', 'ack', or 'pb_*' section, got '{}'",
                 section_name
             ));
         }
@@ -675,12 +763,9 @@ impl PeerRecord {
         }
     }
 
-    /// Canonical bytes the device signs / a verifier checks: handle_proof ‖ device_pubkey ‖ ip ‖
-    /// local_ip ‖ last_seen, length-tagged so no field can bleed into the next (an injective framing,
-    /// the same discipline the braid uses). IP/local_ip serialize via their `to_string()` so a v4 and
-    /// its v4-mapped-v6 form sign distinctly — which is correct, they're different reachability facts.
-    /// EXCLUDES `signature` itself. Anything in here that an attacker changes (e.g. the address)
-    /// invalidates the signature, which is the whole point.
+    /// Canonical bytes the device signs / a verifier checks: handle_proof ‖ device_pubkey ‖ ip ‖ local_ip ‖ last_seen, length-tagged so no field can bleed into the next (an injective framing, the same discipline the braid uses).
+    /// IP/local_ip serialize via their `to_string()` so a v4 and its v4-mapped-v6 form sign distinctly — which is correct, they're different reachability facts.
+    /// EXCLUDES `signature` itself. Anything in here that an attacker changes (e.g. the address) invalidates the signature, which is the whole point.
     fn signing_bytes(&self) -> Vec<u8> {
         let ip = self.ip.to_string();
         let local = self.local_ip.map(|a| a.to_string()).unwrap_or_default();
@@ -696,19 +781,16 @@ impl PeerRecord {
         out
     }
 
-    /// Self-sign this record with the device's Ed25519 secret key. The secret MUST be the half of
-    /// `device_pubkey`; callers pass their own device keypair (the one derived from the machine
-    /// fingerprint), so a device only ever signs its OWN entry. Fills `signature` in place.
+    /// Self-sign this record with the device's Ed25519 secret key. The secret MUST be the half of `device_pubkey`; callers pass their own device keypair (the one derived from the machine fingerprint), so a device only ever signs its OWN entry.
+    /// Fills `signature` in place.
     pub fn sign(&mut self, signing_key: &ed25519_dalek::SigningKey) {
         use ed25519_dalek::Signer;
         let sig = signing_key.sign(&self.signing_bytes());
         self.signature = sig.to_bytes();
     }
 
-    /// Verify the self-signature against the embedded `device_pubkey`. `true` only if the signature was
-    /// made by the holder of that device's secret over THESE exact fields — so a gossiped record can be
-    /// trusted without trusting the relay that carried it. An all-zero signature (legacy / unsigned
-    /// FGTW record) verifies `false`.
+    /// Verify the self-signature against the embedded `device_pubkey`. `true` only if the signature was made by the holder of that device's secret over THESE exact fields — so a gossiped record can be trusted without trusting the relay that carried it.
+    /// An all-zero signature (legacy / unsigned FGTW record) verifies `false`.
     pub fn verify(&self) -> bool {
         use ed25519_dalek::{Signature, Verifier, VerifyingKey};
         let Ok(vk) = VerifyingKey::from_bytes(self.device_pubkey.as_bytes()) else {
@@ -717,6 +799,33 @@ impl PeerRecord {
         let sig = Signature::from_bytes(&self.signature);
         vk.verify(&self.signing_bytes(), &sig).is_ok()
     }
+}
+
+/// Encode one PeerRecord as a single multi-value `peer` field, in the exact POSITIONAL shape [`crate::network::fgtw::bootstrap::parse_peer_from_field`] reads — the production-proven encoding (FGTW peer lists decode thru it daily):
+///   `(peer: hP{handle_proof}, ke{device_pubkey}, t_u3{ip}, u4{port}, e6{last_seen}, t_u3{local_ip}, ge{sig})`
+/// The trailing `ge` self-signature lets the receiver verify each record independently of the relay.
+/// (The flat-named `peer_N_*` / `v_u3` style of the legacy DHT `extract_peer_list` is deliberately NOT used — it has a latent IP type mismatch and isn't exercised in production.)
+fn encode_peer_field(peer: &PeerRecord) -> (String, Vec<VsfType>) {
+    let (ip_octets, port) = match peer.ip {
+        SocketAddr::V4(v4) => (v4.ip().octets().to_vec(), v4.port()),
+        SocketAddr::V6(v6) => (v6.ip().octets().to_vec(), v6.port()),
+    };
+    // local_ip at index 5 (empty tensor when absent → parses back to None); sig at index 6.
+    let local_octets: Vec<u8> = match peer.local_ip {
+        Some(IpAddr::V4(v4)) => v4.octets().to_vec(),
+        Some(IpAddr::V6(v6)) => v6.octets().to_vec(),
+        None => Vec::new(),
+    };
+    let values = vec![
+        VsfType::hP(peer.handle_proof.to_vec()),
+        peer.device_pubkey.to_vsf(),
+        VsfType::t_u3(vsf::Tensor::new(vec![ip_octets.len()], ip_octets)),
+        VsfType::u4(port), // u4 = u16 — a port needs 16 bits (u3 is u8 and would truncate)
+        VsfType::e(vsf::types::EtType::e6(peer.last_seen)),
+        VsfType::t_u3(vsf::Tensor::new(vec![local_octets.len()], local_octets)),
+        VsfType::ge(peer.signature.to_vec()),
+    ];
+    ("peer".to_string(), values)
 }
 
 /// Convert VsfSection fields to (name, value) tuples for helper functions. Fields with no values are skipped; multi-value fields use only the first value.
@@ -862,6 +971,20 @@ fn extract_peer_list(
             _ => return Err(format!("Missing or invalid {}", last_seen_key)),
         };
 
+        // local_ip (v_u3): 4 bytes = v4, 16 = v6, empty = None. Must be decoded (not hardcoded None)
+        // so the signature — which covers local_ip — verifies.
+        let local_ip = match get_field(fields, &format!("{}_local_ip", peer_prefix)) {
+            Some(VsfType::v_u3(v)) if v.data.len() == 4 => Some(IpAddr::V4(std::net::Ipv4Addr::new(
+                v.data[0], v.data[1], v.data[2], v.data[3],
+            ))),
+            Some(VsfType::v_u3(v)) if v.data.len() == 16 => {
+                let mut o = [0u8; 16];
+                o.copy_from_slice(&v.data);
+                Some(IpAddr::V6(std::net::Ipv6Addr::from(o)))
+            }
+            _ => None,
+        };
+
         let sig_key = format!("{}_sig", peer_prefix);
         let signature = match get_field(fields, &sig_key) {
             Some(VsfType::ge(s)) if s.len() == 64 => s.as_slice().try_into().unwrap(),
@@ -874,7 +997,7 @@ fn extract_peer_list(
             handle_proof,
             device_pubkey,
             ip,
-            local_ip: None, // Legacy path - local_ip parsed in bootstrap.rs
+            local_ip,
             last_seen,
             signature,
         });
@@ -2099,4 +2222,74 @@ pub fn parse_clutch_complete_vsf_without_recipient_check(
     ));
 
     Ok((payload, sender_pubkey, ceremony_id, conversation_token))
+}
+
+#[cfg(test)]
+mod phonebook_tests {
+    use super::*;
+    use crate::types::DevicePubkey;
+    use ed25519_dalek::SigningKey;
+    use std::net::SocketAddr;
+
+    fn signed_peer(handle: u8, device: u8, ip: &str, last_seen: i64) -> PeerRecord {
+        let sk = SigningKey::from_bytes(&[device; 32]);
+        let pubkey = DevicePubkey::from_bytes(sk.verifying_key().to_bytes());
+        let addr: SocketAddr = ip.parse().unwrap();
+        let mut r = PeerRecord::new([handle; 32], pubkey, addr);
+        r.last_seen = last_seen;
+        r.local_ip = Some("192.168.0.50".parse().unwrap());
+        r.sign(&sk);
+        assert!(r.verify());
+        r
+    }
+
+    #[test]
+    fn phonebook_request_round_trips() {
+        let sk = SigningKey::from_bytes(&[3u8; 32]);
+        let msg = FgtwMessage::PhonebookRequest {
+            timestamp: 12345,
+            sender_pubkey: DevicePubkey::from_bytes(sk.verifying_key().to_bytes()),
+            provenance_hash: [0xAB; 32],
+            signature: [0xCD; 64],
+        };
+        let bytes = msg.to_vsf_bytes();
+        match FgtwMessage::from_vsf_bytes(&bytes).expect("parse pb_req") {
+            FgtwMessage::PhonebookRequest { timestamp, provenance_hash, .. } => {
+                assert_eq!(timestamp, 12345);
+                assert_eq!(provenance_hash, [0xAB; 32]);
+            }
+            other => panic!("expected PhonebookRequest, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn phonebook_response_round_trips_and_peers_still_verify() {
+        let peers = vec![
+            signed_peer(1, 11, "203.0.113.1:4383", 1000),
+            signed_peer(2, 22, "[2001:db8::1]:4383", 2000),
+        ];
+        let resp = FgtwMessage::PhonebookResponse {
+            timestamp: 999,
+            responder_pubkey: DevicePubkey::from_bytes([7u8; 32]),
+            provenance_hash: [0x11; 32],
+            signature: [0x22; 64],
+            peers: peers.clone(),
+        };
+        let bytes = resp.to_vsf_bytes();
+
+        match FgtwMessage::from_vsf_bytes(&bytes).expect("parse pb_resp") {
+            FgtwMessage::PhonebookResponse { peers: got, .. } => {
+                assert_eq!(got.len(), 2);
+                for (a, b) in got.iter().zip(peers.iter()) {
+                    assert_eq!(a.handle_proof, b.handle_proof);
+                    assert_eq!(a.ip, b.ip);
+                    assert_eq!(a.local_ip, b.local_ip);
+                    assert_eq!(a.last_seen, b.last_seen);
+                    // The signature survived the wire AND still verifies against the embedded pubkey — the whole point: trust travels with the record.
+                    assert!(a.verify(), "peer record must still verify after wire round-trip");
+                }
+            }
+            other => panic!("expected PhonebookResponse, got {:?}", other),
+        }
+    }
 }
