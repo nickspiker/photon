@@ -41,6 +41,11 @@ path = "src/bin/photon-signature-signer.rs"
 name = "test-device-key"
 path = "src/bin/test-device-key.rs"
 
+# Decoder for the structured VSF log (photon.log.vsf) — prints eagle-time + level + message per record.
+[[bin]]
+name = "photonlog"
+path = "src/bin/photonlog.rs"
+
 [dependencies]
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 

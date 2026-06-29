@@ -61,52 +61,119 @@ macro_rules! debug_println {
 // - Windows: %APPDATA%\photon\photon.log
 // - Other: stdout
 
-#[cfg(all(feature = "logging", target_os = "windows"))]
-static WINDOWS_LOG_FILE: std::sync::OnceLock<std::sync::Mutex<std::fs::File>> =
-    std::sync::OnceLock::new();
-
-/// Initialize logging - must be called early in main() on Windows. Log filename is the opaque base64url BLAKE3 hash of a fixed domain string — no `photon.log` text on disk, so a directory listing of `~/.config/photon/` reveals nothing about app identity or content type. Logged bytes themselves stay plaintext (logs are for the user's own forensic use; on-disk encryption only protects against offline access and the user already has the secrets needed to read the rest of the directory).
-#[cfg(all(feature = "logging", target_os = "windows"))]
-pub fn init_logging() {
-    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-    let _ = WINDOWS_LOG_FILE.get_or_init(|| {
-        let config_dir = dirs::config_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-        let log_dir = config_dir.join("photon");
-        let _ = std::fs::create_dir_all(&log_dir);
-        // Opaque filename: BLAKE3("photon.storage.filename.v0" || "diagnostic_log") base64url-encoded. No identity_seed / device_secret inputs — logging starts before auth, so we can't key on user state. Same domain-separator prefix as `flat.rs::derive_filename` so all opaque files share one namespace.
-        let mut h = blake3::Hasher::new();
-        h.update(b"photon.storage.filename.v0");
-        h.update(b"diagnostic_log");
-        let filename = URL_SAFE_NO_PAD.encode(h.finalize().as_bytes());
-        let log_path = log_dir.join(filename);
-        let file = std::fs::File::create(&log_path).expect("Failed to create log file");
-        std::sync::Mutex::new(file)
-    });
+/// Severity of a structured log record. The discriminant IS the on-disk `lvl` value in the VSF log, so
+/// these numbers are wire-stable — append new levels at the end, never renumber.
+#[derive(Clone, Copy)]
+pub enum LogLevel {
+    Trace = 0,
+    Debug = 1,
+    Info = 2,
+    Warn = 3,
+    Error = 4,
 }
 
-#[cfg(not(all(feature = "logging", target_os = "windows")))]
+/// Retained for the desktop/Windows `main()` call site. The VSF file sink now opens LAZILY on the first log
+/// after the platform data dir is known (Android sets it partway through JNI startup), so this is a no-op —
+/// kept only so existing callers compile.
 pub fn init_logging() {}
 
-// Disabled: compiles to nothing
+// Disabled: compiles to nothing without --features logging.
 #[cfg(not(feature = "logging"))]
 #[inline(always)]
 pub fn log(_msg: &str) {}
+#[cfg(not(feature = "logging"))]
+#[inline(always)]
+pub fn log_at(_level: LogLevel, _msg: &str) {}
 
-// Enabled: platform-specific output
+// The structured VSF log sink: one COMPLETE VSF record per line — {creation_time (Eagle), section "log"
+// {lvl, msg}} — appended to `<photon_config_dir>/photon.log.vsf` on EVERY platform (Android: app filesDir,
+// pullable via `adb pull`; desktop/Windows: the config dir). The log is thus a stream of self-describing,
+// Eagle-time-stamped, vsfinfo-inspectable records; read it with the `photonlog` bin. Opens lazily and RETRIES
+// until the dir is ready — a plain Mutex<Option<File>>, NOT a OnceLock, precisely so a pre-data-dir failure
+// isn't cached forever (the first few JNI lines predate Android's data_dir and land in the console sink only).
+// Known filename (logging is a dev-build feature, so adb-pull discoverability beats filename privacy).
 #[cfg(feature = "logging")]
-pub fn log(msg: &str) {
-    #[cfg(target_os = "android")]
-    log::info!("{}", msg);
+static LOG_FILE: std::sync::Mutex<Option<std::fs::File>> = std::sync::Mutex::new(None);
 
-    #[cfg(target_os = "windows")]
-    {
-        use std::io::Write;
-        if let Some(file_mutex) = WINDOWS_LOG_FILE.get() {
-            if let Ok(mut file) = file_mutex.lock() {
-                let _ = writeln!(file, "{}", msg);
-                let _ = file.flush();
+/// Android-only override for where the VSF log goes — set from JNI to the EXTERNAL files dir (the shadow
+/// ring dir), which is adb-readable on a non-debuggable release dev APK where internal `files/` is not.
+#[cfg(all(feature = "logging", target_os = "android"))]
+static ANDROID_LOG_DIR: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+#[cfg(all(feature = "logging", target_os = "android"))]
+pub fn set_android_log_dir(dir: String) {
+    if !dir.is_empty() {
+        let _ = ANDROID_LOG_DIR.set(dir);
+    }
+}
+
+/// Directory the VSF log file lives in. Android prefers the JNI-set external dir (pullable); everything else
+/// uses `photon_config_dir`.
+#[cfg(feature = "logging")]
+fn log_dir() -> Option<std::path::PathBuf> {
+    #[cfg(target_os = "android")]
+    if let Some(d) = ANDROID_LOG_DIR.get() {
+        return Some(std::path::PathBuf::from(d));
+    }
+    crate::storage::photon_config_dir().ok()
+}
+
+#[cfg(feature = "logging")]
+fn append_log_record(level: LogLevel, msg: &str) {
+    use std::io::Write;
+    let Ok(mut guard) = LOG_FILE.lock() else {
+        return;
+    };
+    if guard.is_none() {
+        if let Some(dir) = log_dir() {
+            let _ = std::fs::create_dir_all(&dir);
+            if let Ok(f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(dir.join("photon.log.vsf"))
+            {
+                *guard = Some(f);
             }
         }
+    }
+    let Some(file) = guard.as_mut() else {
+        return;
+    };
+    let record = vsf::VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .provenance_only()
+        .add_section(
+            "log",
+            vec![
+                ("lvl".to_string(), vsf::VsfType::u(level as usize, false)),
+                ("msg".to_string(), vsf::VsfType::x(msg.to_string())),
+            ],
+        )
+        .build();
+    if let Ok(bytes) = record {
+        let _ = file.write_all(&bytes);
+        let _ = file.flush();
+    }
+}
+
+// Enabled: structured VSF file record + the platform's live console sink (logcat / stdout).
+#[cfg(feature = "logging")]
+pub fn log(msg: &str) {
+    log_at(LogLevel::Info, msg);
+}
+
+#[cfg(feature = "logging")]
+pub fn log_at(level: LogLevel, msg: &str) {
+    append_log_record(level, msg);
+
+    // Live console sink (unchanged behaviour): Android → logcat at the matching level, others → stdout.
+    // Windows had no console sink; its durable output is now the VSF file above.
+    #[cfg(target_os = "android")]
+    match level {
+        LogLevel::Trace => log::trace!("{}", msg),
+        LogLevel::Debug => log::debug!("{}", msg),
+        LogLevel::Info => log::info!("{}", msg),
+        LogLevel::Warn => log::warn!("{}", msg),
+        LogLevel::Error => log::error!("{}", msg),
     }
 
     #[cfg(not(any(target_os = "android", target_os = "windows")))]

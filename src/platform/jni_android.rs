@@ -388,6 +388,11 @@ impl NetworkContext {
         crate::avatar::set_android_data_dir(data_dir.to_string());
         // Hand the storage layer both ring dirs so the dual-ring vault can place primary on internal and shadow on external — see [storage::flat::set_android_vault_dirs].
         crate::storage::set_android_vault_dirs(data_dir.to_string(), shadow_dir.to_string());
+        // Route the structured VSF log to the EXTERNAL files dir (shadow): a release dev APK isn't
+        // `run-as`-able, so an internal-storage log can't be pulled — but the external dir IS adb-readable.
+        // Empty shadow_dir (no external storage) falls back to internal in the sink.
+        #[cfg(feature = "logging")]
+        crate::set_android_log_dir(shadow_dir.to_string());
 
         // tohu reads Settings.Secure.ANDROID_ID itself (via the JavaVM handed to it in JNI_OnLoad). Fall back to the Java-pushed `fingerprint` if tohu's fetch errors, so a wrong JNI path logs loudly instead of bricking the app. NOTE: switching the oracle to pure ANDROID_ID changes device_secret vs the old Java-pushed value — existing Android vaults must be cleared.
         let oracle = match tohu::device::machine_fingerprint() {
