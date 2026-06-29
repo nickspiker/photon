@@ -594,11 +594,24 @@ fn parse_peer_from_field(field: &vsf::VsfField) -> Result<PeerRecord, String> {
         None
     };
 
+    // Parse optional self-signature (ge{64}) at index 6. A record without it (or with a bad one) is
+    // left unsigned; merge_peer's verify() drops unsigned records, so only properly self-signed
+    // entries propagate. FGTW-sourced records carry it once the server serves the signed form.
+    let signature = if field.values.len() > 6 {
+        match &field.values[6] {
+            vsf::VsfType::ge(s) if s.len() == 64 => s.as_slice().try_into().unwrap(),
+            _ => [0u8; 64],
+        }
+    } else {
+        [0u8; 64]
+    };
+
     Ok(PeerRecord {
         handle_proof,
         device_pubkey,
         ip: SocketAddr::new(parsed_ip, port),
         local_ip,
         last_seen,
+        signature,
     })
 }
