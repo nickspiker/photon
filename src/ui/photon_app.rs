@@ -340,6 +340,14 @@ pub struct PhotonApp {
     /// Background ceremony-completion results (avalanche-expand → friendship chains + eggs proof). Drained in `tick` → sends complete, marks the contact CLUTCH-complete.
     clutch_ceremony_tx: std::sync::mpsc::Sender<crate::network::ClutchCeremonyResult>,
     clutch_ceremony_rx: std::sync::mpsc::Receiver<crate::network::ClutchCeremonyResult>,
+    /// Peer-avatar background downloads (fetched from FGTW by handle, off the UI thread). The result
+    /// carries the decoded VSF-RGB pixels (or None if the peer has no avatar / fetch failed); the
+    /// drain in `check_status_updates` colour-converts and installs them on the matching contact.
+    avatar_dl_tx: std::sync::mpsc::Sender<crate::ui::avatar::AvatarDownloadResult>,
+    avatar_dl_rx: std::sync::mpsc::Receiver<crate::ui::avatar::AvatarDownloadResult>,
+    /// Handles we've already kicked an avatar download for this session, so we don't re-spawn a fetch
+    /// every time a conversation is reopened or the contact list re-renders.
+    avatar_dl_started: std::collections::HashSet<String>,
     /// Completed friendship chains, keyed by friendship id — populated when a CLUTCH ceremony completes (the per-conversation rolling key material lives here). Persisted via `save_friendship_chains`; loaded on attest/resume.
     friendship_chains: Vec<(
         crate::types::friendship::FriendshipId,
@@ -454,6 +462,12 @@ impl PhotonApp {
                 tx
             },
             clutch_ceremony_rx: std::sync::mpsc::channel().1,
+            avatar_dl_tx: {
+                let (tx, _) = std::sync::mpsc::channel();
+                tx
+            },
+            avatar_dl_rx: std::sync::mpsc::channel().1,
+            avatar_dl_started: std::collections::HashSet::new(),
             friendship_chains: Vec::new(),
             chord_lb_press: None,
             chord_lb_release: None,
@@ -790,6 +804,9 @@ impl FluorApp for PhotonApp {
             let (ctx_, crx) = std::sync::mpsc::channel();
             self.clutch_ceremony_tx = ctx_;
             self.clutch_ceremony_rx = crx;
+            let (atx, arx) = std::sync::mpsc::channel();
+            self.avatar_dl_tx = atx;
+            self.avatar_dl_rx = arx;
         }
 
         // Spawn the presence + CLUTCH status checker on HandleQuery's shared socket. Done BEFORE `hq` is moved into the field so we can take its socket. Without this the UDP recv/pong worker never runs — the socket is bound but nothing reads it or replies, so the device is invisible to every peer (no presence, no CLUTCH). The desktop and Android constructors differ only in the wake sender: desktop passes the winit event proxy; Android's redraws come thru the JNI/Choreographer path so its constructor takes none.
@@ -1195,6 +1212,10 @@ impl FluorApp for PhotonApp {
                         self.change_focus(None);
                         // Refresh this contact's presence on conversation-enter so the header reflects reality promptly.
                         self.ping_contact(ci);
+                        // Fetch the peer's avatar (once/session) so the conversation header shows it
+                        // instead of the grey placeholder. Cache-first, network on miss; off-thread.
+                        let handle = self.contacts[ci].handle.as_str().to_string();
+                        self.spawn_avatar_download(handle);
                         ctx.window.request_redraw();
                         return EventResponse::Handled;
                     }
@@ -3499,6 +3520,56 @@ impl PhotonApp {
         }
     }
 
+    /// Kick a background download of `handle`'s avatar from FGTW (once per session per handle). The
+    /// fetch + decode runs off the UI thread (FGTW round-trip + dav1d decode); the result is delivered
+    /// over `avatar_dl_tx` and installed by the drain in `check_status_updates`. No-op if storage isn't
+    /// ready yet or we've already started a download for this handle this session. This is the peer
+    /// half of the avatar feature — the self avatar loads from the local vault; peers fetch by handle.
+    fn spawn_avatar_download(&mut self, handle: String) {
+        if self.avatar_dl_started.contains(&handle) {
+            return;
+        }
+        let Some(storage) = self.storage.as_ref().map(Arc::clone) else {
+            return;
+        };
+        self.avatar_dl_started.insert(handle.clone());
+        let tx = self.avatar_dl_tx.clone();
+        #[cfg(not(target_os = "android"))]
+        let proxy = self.event_proxy.clone();
+        std::thread::spawn(move || {
+            // download_avatar checks the local cache first, only hitting FGTW on a miss.
+            let pixels = crate::ui::avatar::download_avatar(&handle, &storage).map(|(_, p)| p);
+            let _ = tx.send(crate::ui::avatar::AvatarDownloadResult { handle, pixels });
+            #[cfg(not(target_os = "android"))]
+            if let Some(p) = proxy.as_ref() {
+                let _ = p.send(crate::ui::PhotonEvent::NetworkUpdate);
+            }
+        });
+    }
+
+    /// Drain completed peer-avatar downloads: colour-convert the VSF-RGB pixels to the display buffer
+    /// (same path as the self avatar) and install them on the matching contact, invalidating its
+    /// scaled cache so the next render rebuilds + shows it. A `None` result (no avatar / fetch failed)
+    /// just leaves the placeholder.
+    fn drain_avatar_downloads(&mut self) {
+        while let Ok(result) = self.avatar_dl_rx.try_recv() {
+            let Some(vsf_rgb) = result.pixels else {
+                continue;
+            };
+            let display = crate::ui::colour_convert::vsf_rgb_to_bt2020(&vsf_rgb);
+            if let Some(contact) = self
+                .contacts
+                .iter_mut()
+                .find(|c| c.handle.as_str() == result.handle)
+            {
+                contact.avatar_pixels = Some(display);
+                contact.avatar_scaled = None; // force rebuild at the current diameter on next render
+                contact.avatar_scaled_diameter = 0;
+                crate::log(&format!("Avatar: installed peer avatar for {}", result.handle));
+            }
+        }
+    }
+
     pub fn spawn_clutch_keygen(
         &self,
         contact_id: ContactId,
@@ -4841,6 +4912,20 @@ impl PhotonApp {
         use crate::network::status::StatusUpdate;
         // NOTE: ClutchRequest and ClutchRequestType imports removed - legacy v1 CLUTCH no longer used
         use crate::types::ClutchState;
+
+        // Peer avatars: install any completed downloads, then kick a fetch (once/session/handle) for
+        // any contact still without one. Cache-first + dedup'd by avatar_dl_started, so this is cheap
+        // to run every tick — it spawns at most one thread per peer per session.
+        self.drain_avatar_downloads();
+        let need_avatar: Vec<String> = self
+            .contacts
+            .iter()
+            .filter(|c| c.avatar_pixels.is_none())
+            .map(|c| c.handle.as_str().to_string())
+            .collect();
+        for handle in need_avatar {
+            self.spawn_avatar_download(handle);
+        }
 
         let checker = match &self.status_checker {
             Some(c) => c,
