@@ -870,7 +870,7 @@ impl FluorApp for PhotonApp {
                             if let Err(e) = crate::storage::contacts::load_messages(contact, &s) {
                                 crate::log(&format!(
                                     "UI: resume failed to load messages for {}: {}",
-                                    contact.handle.as_str(),
+                                    crate::fp(&contact.handle_proof).as_str(),
                                     e
                                 ));
                             }
@@ -912,7 +912,7 @@ impl FluorApp for PhotonApp {
                                     Ok(None) => {}
                                     Err(e) => crate::log(&format!(
                                         "CLUTCH: failed to rehydrate keypairs for {}: {}",
-                                        contact.handle, e
+                                        crate::fp(&contact.handle_proof), e
                                     )),
                                 }
                             }
@@ -2884,7 +2884,7 @@ impl PhotonApp {
             .iter()
             .any(|c| c.handle.as_str().eq_ignore_ascii_case(&handle))
         {
-            crate::log(&format!("add-friend: '{}' already in contacts", handle));
+            crate::log("add-friend: handle already in contacts");
             return;
         }
         // Self-contact: if the handle matches our own identity, create the contact directly — FGTW won't return our own record as a search result.
@@ -2920,7 +2920,7 @@ impl PhotonApp {
         }
 
         if let Some(hq) = self.handle_query.as_ref() {
-            crate::log(&format!("add-friend: searching FGTW for '{}'", handle));
+            crate::log("add-friend: searching FGTW");
             hq.search(handle);
             // Enter the search-in-flight visual state: rotating hourglass over the plus button, last result cleared. Defocus the textbox so further typing doesn't mutate the handle being searched.
             self.add_in_flight = true;
@@ -3395,7 +3395,7 @@ impl PhotonApp {
                 }
                 crate::log(&format!(
                     "search-result: added contact '{}' (total: {})",
-                    contact.handle.as_str(),
+                    crate::fp(&contact.handle_proof).as_str(),
                     self.contacts.len() + 1
                 ));
                 self.contacts.push(contact);
@@ -3644,7 +3644,7 @@ impl PhotonApp {
                 contact.avatar_pixels = Some(display);
                 contact.avatar_scaled = None; // force rebuild at the current diameter on next render
                 contact.avatar_scaled_diameter = 0;
-                crate::log(&format!("Avatar: installed peer avatar for {}", result.handle));
+                crate::log(&format!("Avatar: installed peer avatar for {}", crate::fp(&contact.handle_proof)));
             }
         }
     }
@@ -3967,7 +3967,7 @@ impl PhotonApp {
                         ) {
                             crate::log(&format!(
                                 "CLUTCH: Failed to save keypairs for {}: {}",
-                                contact.handle, e
+                                crate::fp(&contact.handle_proof), e
                             ));
                         }
                     }
@@ -3990,12 +3990,12 @@ impl PhotonApp {
                             local_slot.offer = Some(our_offer);
                             crate::log(&format!(
                                 "CLUTCH: Stored local offer in local slot for {}",
-                                contact.handle
+                                crate::fp(&contact.handle_proof)
                             ));
                         } else {
                             crate::log(&format!(
                                 "CLUTCH: Could not find local slot for {} - handle_hash mismatch?",
-                                contact.handle
+                                crate::fp(&contact.handle_proof)
                             ));
                         }
                     }
@@ -4057,7 +4057,7 @@ impl PhotonApp {
                                             contact.clutch_offer_sent = true;
                                             crate::log(&format!(
                                                 "CLUTCH: Sent offer to {} (prov={}...)",
-                                                contact.handle,
+                                                crate::fp(&contact.handle_proof),
                                                 hex::encode(&our_offer_provenance[..4])
                                             ));
                                         }
@@ -4065,7 +4065,7 @@ impl PhotonApp {
                                     Err(e) => {
                                         crate::log(&format!(
                                             "CLUTCH: Failed to build offer VSF for {}: {}",
-                                            contact.handle, e
+                                            crate::fp(&contact.handle_proof), e
                                         ));
                                     }
                                 }
@@ -4086,7 +4086,7 @@ impl PhotonApp {
                         contact.ceremony_id = Some(ceremony_id);
                         crate::log(&format!(
                             "CLUTCH: Computed ceremony_id for {} from {} offer provenances",
-                            contact.handle,
+                            crate::fp(&contact.handle_proof),
                             contact.offer_provenances.len()
                         ));
                     }
@@ -4121,14 +4121,14 @@ impl PhotonApp {
                                         ));
                                         crate::log(&format!(
                                             "CLUTCH: Will spawn KEM encapsulation for {} (post-keygen)",
-                                            contact.handle
+                                            crate::fp(&contact.handle_proof)
                                         ));
                                     }
                                 }
                             } else {
                                 crate::log(&format!(
                                     "CLUTCH: Keypairs ready for {} - need ceremony_id for KEM response (have {} offer provenances)",
-                                    contact.handle,
+                                    crate::fp(&contact.handle_proof),
                                     contact.offer_provenances.len()
                                 ));
                             }
@@ -4147,7 +4147,7 @@ impl PhotonApp {
                             contact.ceremony_id = Some(ceremony_id);
                             crate::log(&format!(
                                 "CLUTCH: Computed ceremony_id for {} while draining queued KEM",
-                                contact.handle
+                                crate::fp(&contact.handle_proof)
                             ));
                         }
                     }
@@ -4155,7 +4155,7 @@ impl PhotonApp {
                     if let Some(pending_kem) = contact.clutch_pending_kem.take() {
                         crate::log(&format!(
                             "CLUTCH: Processing queued KEM response from {}",
-                            contact.handle
+                            crate::fp(&contact.handle_proof)
                         ));
                         // Decapsulate remote KEM (remote encapsulated to local pubkeys)
                         if let Some(ref local_keys) = contact.clutch_our_keypairs {
@@ -4169,7 +4169,7 @@ impl PhotonApp {
                                 remote_slot.kem_secrets_from_them = Some(remote_secrets);
                                 crate::log(&format!(
                                     "CLUTCH: Decapsulated queued KEM from {} - stored in slot",
-                                    contact.handle
+                                    crate::fp(&contact.handle_proof)
                                 ));
                             }
 
@@ -4203,7 +4203,7 @@ impl PhotonApp {
                                             ));
                                             crate::log(&format!(
                                                 "CLUTCH: Spawning KEM encap for {} after draining queued KEM",
-                                                contact.handle
+                                                crate::fp(&contact.handle_proof)
                                             ));
                                         }
                                     }
@@ -4221,7 +4221,7 @@ impl PhotonApp {
                                 ) {
                                     crate::log(&format!(
                                         "CLUTCH: Failed to save slots for {}: {}",
-                                        contact.handle, e
+                                        crate::fp(&contact.handle_proof), e
                                     ));
                                 }
                             }
@@ -4232,7 +4232,7 @@ impl PhotonApp {
                     if contact.all_slots_complete() {
                         crate::log(&format!(
                             "CLUTCH: All slots complete for {} after keygen - triggering ceremony completion",
-                            contact.handle
+                            crate::fp(&contact.handle_proof)
                         ));
                         ceremony_completions.push(idx);
                     }
@@ -4318,7 +4318,7 @@ impl PhotonApp {
                         ) {
                             crate::log(&format!(
                                 "CLUTCH: Failed to save slots for {}: {}",
-                                contact.handle, e
+                                crate::fp(&contact.handle_proof), e
                             ));
                         }
                     }
@@ -4336,14 +4336,14 @@ impl PhotonApp {
                             device_pubkey,
                             device_secret,
                         });
-                        crate::log(&format!("CLUTCH: Sent KEM response to {}", contact.handle));
+                        crate::log(&format!("CLUTCH: Sent KEM response to {}", crate::fp(&contact.handle_proof)));
                     }
 
                     // Check if all slots are complete after storing our KEM encap secrets
                     if contact.all_slots_complete() {
                         crate::log(&format!(
                             "CLUTCH: All slots complete for {} after KEM encap - triggering ceremony",
-                            contact.handle
+                            crate::fp(&contact.handle_proof)
                         ));
                         ceremony_completions.push(idx);
                     }
@@ -4574,7 +4574,7 @@ impl PhotonApp {
         if contact.clutch_ceremony_in_progress {
             crate::log(&format!(
                 "CLUTCH: Ceremony already in progress for {}",
-                contact.handle
+                crate::fp(&contact.handle_proof)
             ));
             return;
         }
@@ -4639,7 +4639,7 @@ impl PhotonApp {
             None => {
                 #[cfg(feature = "development")]
                 #[cfg(feature = "development")]
-                crate::log(&format!("CLUTCH: No IP for {}", contact_handle));
+                crate::log(&format!("CLUTCH: No IP for {}", crate::fp(&contact.handle_proof)));
                 return;
             }
         };
@@ -4648,7 +4648,7 @@ impl PhotonApp {
             None => {
                 #[cfg(feature = "development")]
                 #[cfg(feature = "development")]
-                crate::log(&format!("CLUTCH: No ceremony_id for {}", contact_handle));
+                crate::log(&format!("CLUTCH: No ceremony_id for {}", crate::fp(&contact.handle_proof)));
                 return;
             }
         };
@@ -4745,7 +4745,7 @@ impl PhotonApp {
                         contact.local_port = Some(peer.ip.port());
                         crate::log(&format!(
                             "UI: refreshed {} addrs from FGTW — WAN {} / LAN {}:{}",
-                            contact.handle,
+                            crate::fp(&contact.handle_proof),
                             peer.ip,
                             v4,
                             peer.ip.port()
@@ -4763,7 +4763,7 @@ impl PhotonApp {
                         contact.clutch_offer_sent = false;
                         crate::log(&format!(
                             "CLUTCH: {} address changed — cancelling stale offer transfer, will re-send to fresh address",
-                            contact.handle
+                            crate::fp(&contact.handle_proof)
                         ));
                     }
                     break;
@@ -4800,7 +4800,7 @@ impl PhotonApp {
                 changed = true;
                 crate::log(&format!(
                     "CLUTCH: self-contact '{}' auto-completed (no key exchange with self)",
-                    contact.handle
+                    crate::fp(&contact.handle_proof)
                 ));
                 if let Some(storage) = self.storage.as_ref() {
                     let _ = crate::storage::contacts::save_contact(contact, storage);
@@ -4923,7 +4923,7 @@ impl PhotonApp {
             contact.clutch_proof_resends_left -= 1;
             crate::log(&format!(
                 "CLUTCH: Retransmitted proof to {} ({} resends left)",
-                contact.handle, contact.clutch_proof_resends_left
+                crate::fp(&contact.handle_proof), contact.clutch_proof_resends_left
             ));
             // Budget exhausted — stop holding the proof.
             if contact.clutch_proof_resends_left == 0
@@ -5171,7 +5171,7 @@ impl PhotonApp {
                                 } else if contact.ip != Some(addr) {
                                     crate::log(&format!(
                                         "Status: Updated {} public IP from ping/pong: {:?} -> {}",
-                                        contact.handle, contact.ip, addr
+                                        crate::fp(&contact.handle_proof), contact.ip, addr
                                     ));
                                     contact.ip = Some(addr);
                                 }
@@ -5185,7 +5185,7 @@ impl PhotonApp {
                                 changed = true;
                                 crate::log(&format!(
                                     "Status: {} is now {}",
-                                    contact.handle,
+                                    crate::fp(&contact.handle_proof),
                                     if is_online { "ONLINE" } else { "offline" }
                                 ));
                             }
@@ -5198,7 +5198,7 @@ impl PhotonApp {
                             {
                                 crate::log(&format!(
                                     "CLUTCH: still waiting for offer from {} (their KEM is queued) — re-requesting by re-sending our offer",
-                                    contact.handle
+                                    crate::fp(&contact.handle_proof)
                                 ));
                                 contact.clutch_offer_sent = false;
                             }
@@ -5239,7 +5239,7 @@ impl PhotonApp {
                                             Ok((vsf_bytes, our_offer_provenance)) => {
                                                 crate::log(&format!(
                                                     "CLUTCH: Sending full offer to {} (prov={}...)",
-                                                    contact.handle,
+                                                    crate::fp(&contact.handle_proof),
                                                     hex::encode(&our_offer_provenance[..4])
                                                 ));
 
@@ -5446,7 +5446,7 @@ impl PhotonApp {
                         let sender_chain = match chains.chain(&from_handle_hash) {
                             Some(c) => c.clone(), // Clone to avoid borrow issues
                             None => {
-                                crate::log(&format!("CHAT: Sender chain not found for {}", handle));
+                                crate::log("CHAT: Sender chain not found");
                                 continue;
                             }
                         };
@@ -5771,7 +5771,7 @@ impl PhotonApp {
                                     let their_identity_seed = contact.handle_hash;
                                     crate::log(&format!(
                                         "CLUTCH: First ACK from {} - zeroizing ephemeral keypairs",
-                                        contact.handle
+                                        crate::fp(&contact.handle_proof)
                                     ));
                                     if let Some(ref mut keys) = contact.clutch_our_keypairs {
                                         keys.zeroize();
@@ -5988,7 +5988,7 @@ impl PhotonApp {
                                 changed = true;
                                 crate::log(&format!(
                                     "Status: {} is now ONLINE (CLUTCH)",
-                                    contact.handle
+                                    crate::fp(&contact.handle_proof)
                                 ));
                             }
 
@@ -6010,14 +6010,14 @@ impl PhotonApp {
                                         // We already sent KEM response but peer resent offer They didn't receive it - trigger re-send
                                         crate::log(&format!(
                                             "CLUTCH: Re-sending KEM response to {} (peer resent same offer)",
-                                            contact.handle
+                                            crate::fp(&contact.handle_proof)
                                         ));
                                         // Don't continue - fall thru to re-send KEM below
                                     } else {
                                         // Same keys but no KEM sent yet - truly duplicate, ignore
                                         crate::log(&format!(
                                             "CLUTCH: Ignoring duplicate offer from {} (same keys, no KEM sent yet)",
-                                            contact.handle
+                                            crate::fp(&contact.handle_proof)
                                         ));
                                         continue;
                                     }
@@ -6037,13 +6037,13 @@ impl PhotonApp {
                                         if contact.completed_their_hqc_prefix == Some(their_prefix) {
                                             crate::log(&format!(
                                                 "CLUTCH: Ignoring offer from {} — matches the key we already completed with (no re-key)",
-                                                contact.handle
+                                                crate::fp(&contact.handle_proof)
                                             ));
                                             continue;
                                         }
                                         crate::log(&format!(
                                             "CLUTCH: Re-key from {} - we're Complete, they have new keys, nuking for fresh ceremony",
-                                            contact.handle
+                                            crate::fp(&contact.handle_proof)
                                         ));
                                         // Full re-key: nuke everything
                                         contact.clutch_our_keypairs = None;
@@ -6059,7 +6059,7 @@ impl PhotonApp {
                                         {
                                             crate::log(&format!(
                                                 "CLUTCH: Invalidating old chains for {}",
-                                                contact.handle
+                                                crate::fp(&contact.handle_proof)
                                             ));
                                             chains_to_remove.push(old_friendship_id);
                                         }
@@ -6069,7 +6069,7 @@ impl PhotonApp {
                                         // Not Complete - just update their offer, don't regenerate our keys
                                         crate::log(&format!(
                                             "CLUTCH: {} sent new keys but we're mid-ceremony (state={:?}) - updating their offer, keeping our keys",
-                                            contact.handle, contact.clutch_state
+                                            crate::fp(&contact.handle_proof), contact.clutch_state
                                         ));
                                         // Clear their old offer data so we use the new one
                                         if let Some(slot) = contact.get_slot_mut(&their_handle_hash)
@@ -6105,7 +6105,7 @@ impl PhotonApp {
                                 slot.offer = Some(their_offer.clone());
                                 crate::log(&format!(
                                     "CLUTCH: Stored offer from {} in slot",
-                                    contact.handle
+                                    crate::fp(&contact.handle_proof)
                                 ));
                             }
 
@@ -6133,7 +6133,7 @@ impl PhotonApp {
                                 contact.offer_provenances.push(offer_provenance);
                                 crate::log(&format!(
                                     "CLUTCH: Stored offer_provenance from {} (now have {})",
-                                    contact.handle,
+                                    crate::fp(&contact.handle_proof),
                                     contact.offer_provenances.len()
                                 ));
                             }
@@ -6160,7 +6160,7 @@ impl PhotonApp {
                                 if let Some(pending_kem) = contact.clutch_pending_kem.take() {
                                     crate::log(&format!(
                                         "CLUTCH: Processing queued KEM response from {} (ceremony_id now available)",
-                                        contact.handle
+                                        crate::fp(&contact.handle_proof)
                                     ));
                                     // Decapsulate remote KEM (remote encapsulated to local pubkeys)
                                     if let Some(ref local_keys) = contact.clutch_our_keypairs {
@@ -6177,7 +6177,7 @@ impl PhotonApp {
                                                 Some(remote_secrets);
                                             crate::log(&format!(
                                                 "CLUTCH: Decapsulated queued KEM from {} - stored in slot",
-                                                contact.handle
+                                                crate::fp(&contact.handle_proof)
                                             ));
                                         }
                                     }
@@ -6195,7 +6195,7 @@ impl PhotonApp {
                                 ) {
                                     crate::log(&format!(
                                         "CLUTCH: Failed to save slots for {}: {}",
-                                        contact.handle, e
+                                        crate::fp(&contact.handle_proof), e
                                     ));
                                 }
                             }
@@ -6259,7 +6259,7 @@ impl PhotonApp {
                                             }
                                             crate::log(&format!(
                                                 "CLUTCH: Sent full offer to {} (prov={}...)",
-                                                contact.handle,
+                                                crate::fp(&contact.handle_proof),
                                                 hex::encode(&our_offer_provenance[..4])
                                             ));
 
@@ -6349,7 +6349,7 @@ impl PhotonApp {
                                         });
                                         crate::log(&format!(
                                             "CLUTCH: Re-sent KEM response to {}",
-                                            contact.handle
+                                            crate::fp(&contact.handle_proof)
                                         ));
                                     }
                                 } else if !already_sent_kem && !contact.clutch_kem_encap_in_progress
@@ -6366,13 +6366,13 @@ impl PhotonApp {
                                         ));
                                         crate::log(&format!(
                                             "CLUTCH: Will spawn KEM encapsulation for {}",
-                                            contact.handle
+                                            crate::fp(&contact.handle_proof)
                                         ));
                                         changed = true;
                                     } else {
                                         crate::log(&format!(
                                             "CLUTCH: Deferring KEM response to {} - waiting for ceremony_id",
-                                            contact.handle
+                                            crate::fp(&contact.handle_proof)
                                         ));
                                     }
                                 }
@@ -6387,7 +6387,7 @@ impl PhotonApp {
                                     // Keygen already running - don't spawn another
                                     crate::log(&format!(
                                         "CLUTCH: Received offer from {} but keygen already in progress - waiting",
-                                        contact.handle
+                                        crate::fp(&contact.handle_proof)
                                     ));
                                 } else {
                                     // No keypairs - need to respond (whether Complete or not) If Complete: peer lost their chains, accept re-key If not Complete: restart mid-ceremony or fresh re-key
@@ -6401,7 +6401,7 @@ impl PhotonApp {
                                         // Note: If peer keeps re-sending same offer, both sides will eventually converge on a fresh ceremony (peer will regenerate keys after timeout).
                                         crate::log(&format!(
                                             "CLUTCH: Received offer from {} while Complete - peer lost chains, accepting re-key",
-                                            contact.handle
+                                            crate::fp(&contact.handle_proof)
                                         ));
                                         // Delete our old chains - they're useless now
                                         if let Some(fid) = contact.friendship_id {
@@ -6465,7 +6465,7 @@ impl PhotonApp {
                                         if is_same_keys {
                                             crate::log(&format!(
                                                 "CLUTCH: Ignoring retransmit from {} (already AwaitingProof)",
-                                                contact.handle
+                                                crate::fp(&contact.handle_proof)
                                             ));
                                             break;
                                         }
@@ -6473,7 +6473,7 @@ impl PhotonApp {
                                         // Different keys = peer reset. Clear their slot and reset to Pending.
                                         crate::log(&format!(
                                             "CLUTCH: Peer {} reset while we were AwaitingProof - resetting",
-                                            contact.handle
+                                            crate::fp(&contact.handle_proof)
                                         ));
                                         if let Some(slot) = contact.get_slot_mut(&their_handle_hash)
                                         {
@@ -6493,7 +6493,7 @@ impl PhotonApp {
                                     } else {
                                         crate::log(&format!(
                                             "CLUTCH: Received offer from {} but no keypairs (state={:?}) - triggering keygen",
-                                            contact.handle, contact.clutch_state
+                                            crate::fp(&contact.handle_proof), contact.clutch_state
                                         ));
                                         contact.clutch_keygen_in_progress = true;
                                         rekey_request =
@@ -6628,7 +6628,7 @@ impl PhotonApp {
                                 changed = true;
                                 crate::log(&format!(
                                     "Status: {} is now ONLINE (CLUTCH)",
-                                    contact.handle
+                                    crate::fp(&contact.handle_proof)
                                 ));
                             }
 
@@ -6654,7 +6654,7 @@ impl PhotonApp {
                                         // KEM targets different keys - truly stale, discard
                                         crate::log(&format!(
                                             "CLUTCH: KEM response from {} targets old keys (HQC {}) - discarding",
-                                            contact.handle,
+                                            crate::fp(&contact.handle_proof),
                                             hex::encode(&their_kem.target_hqc_pub_prefix)
                                         ));
                                         break;
@@ -6663,7 +6663,7 @@ impl PhotonApp {
                                     let _ = (our_keys_cloned, received_ceremony_id);
                                     crate::log(&format!(
                                         "CLUTCH: KEM from {} arrived before their offer/ceremony_id - queuing until offer arrives",
-                                        contact.handle
+                                        crate::fp(&contact.handle_proof)
                                     ));
                                     contact.clutch_pending_kem = Some(their_kem.clone());
                                     break;
@@ -6671,7 +6671,7 @@ impl PhotonApp {
                                     // No keypairs at all - stale KEM encrypted to unknown keys
                                     crate::log(&format!(
                                         "CLUTCH: KEM response from {} arrived before keygen - discarding (encrypted to old keys)",
-                                        contact.handle
+                                        crate::fp(&contact.handle_proof)
                                     ));
                                     break;
                                 }
@@ -6690,7 +6690,7 @@ impl PhotonApp {
                                 if !all_zeros && their_kem.target_hqc_pub_prefix != our_hqc_prefix {
                                     crate::log(&format!(
                                         "CLUTCH: Stale KEM response from {} - target HQC {} != our HQC {} (discarding)",
-                                        contact.handle,
+                                        crate::fp(&contact.handle_proof),
                                         hex::encode(&their_kem.target_hqc_pub_prefix),
                                         hex::encode(&our_hqc_prefix)
                                     ));
@@ -6709,7 +6709,7 @@ impl PhotonApp {
                                     slot.kem_secrets_from_them = Some(remote_secrets);
                                     crate::log(&format!(
                                         "CLUTCH: Decapsulated KEM from {} - stored in slot",
-                                        contact.handle
+                                        crate::fp(&contact.handle_proof)
                                     ));
                                 }
 
@@ -6741,7 +6741,7 @@ impl PhotonApp {
                                     ) {
                                         crate::log(&format!(
                                             "CLUTCH: Failed to save slots for {}: {}",
-                                            contact.handle, e
+                                            crate::fp(&contact.handle_proof), e
                                         ));
                                     }
                                 }
@@ -6755,7 +6755,7 @@ impl PhotonApp {
                                     // Debug: why isn't ceremony complete after KEM response?
                                     crate::log(&format!(
                                         "CLUTCH: Slots not complete after KEM response for {} - checking state:",
-                                        contact.handle
+                                        crate::fp(&contact.handle_proof)
                                     ));
                                     for (i, slot) in contact.clutch_slots.iter().enumerate() {
                                         crate::log(&format!(
@@ -6770,7 +6770,7 @@ impl PhotonApp {
                             } else {
                                 crate::log(&format!(
                                     "CLUTCH: Received KEM response but no keypairs for {}",
-                                    contact.handle
+                                    crate::fp(&contact.handle_proof)
                                 ));
                             }
                             break;
@@ -6854,7 +6854,7 @@ impl PhotonApp {
                                 changed = true;
                                 crate::log(&format!(
                                     "Status: {} is now ONLINE (CLUTCH)",
-                                    contact.handle
+                                    crate::fp(&contact.handle_proof)
                                 ));
                             }
                             // We just received + VSF-verified an authenticated message from them — they're reachable NOW, so reflect online immediately instead of waiting for the next pong (fixes "CLUTCH completed but still shows offline").
@@ -6863,7 +6863,7 @@ impl PhotonApp {
                                 changed = true;
                                 crate::log(&format!(
                                     "Status: {} is now ONLINE (CLUTCH complete)",
-                                    contact.handle
+                                    crate::fp(&contact.handle_proof)
                                 ));
                             }
 
@@ -6875,7 +6875,7 @@ impl PhotonApp {
                                             // SUCCESS! Both parties computed same eggs
                                             crate::log(&format!(
                                                 "CLUTCH: Proof verified with {}! ✓ proof={}...",
-                                                contact.handle,
+                                                crate::fp(&contact.handle_proof),
                                                 hex::encode(&our_proof[..8])
                                             ));
                                             contact.clutch_state = ClutchState::Complete;
@@ -6913,7 +6913,7 @@ impl PhotonApp {
                                                 } else {
                                                     crate::log(&format!(
                                                         "CLUTCH: Saved {} Complete state to disk",
-                                                        contact.handle
+                                                        crate::fp(&contact.handle_proof)
                                                     ));
                                                 }
                                             }
@@ -6943,7 +6943,7 @@ impl PhotonApp {
                                         // Race condition: proof arrived before check_clutch_ceremonies processed our ceremony result. Store theirs for when we're ready.
                                         crate::log(&format!(
                                             "CLUTCH: Storing early proof from {} (AwaitingProof but our result not processed yet)",
-                                            contact.handle
+                                            crate::fp(&contact.handle_proof)
                                         ));
                                         contact.clutch_their_eggs_proof = Some(payload.eggs_proof);
                                         changed = true;
@@ -6953,7 +6953,7 @@ impl PhotonApp {
                                     // We haven't computed our proof yet - store theirs for later
                                     crate::log(&format!(
                                         "CLUTCH: Storing early proof from {} (we're still in Pending)",
-                                        contact.handle
+                                        crate::fp(&contact.handle_proof)
                                     ));
                                     contact.clutch_their_eggs_proof = Some(payload.eggs_proof);
                                     changed = true;
@@ -6967,12 +6967,12 @@ impl PhotonApp {
                                         changed = true;
                                         crate::log(&format!(
                                             "CLUTCH: Re-arming proof resend to {} — they re-sent their proof (our ClutchComplete was likely lost)",
-                                            contact.handle
+                                            crate::fp(&contact.handle_proof)
                                         ));
                                     } else {
                                         crate::log(&format!(
                                             "CLUTCH: Duplicate proof from {} but our proof/ceremony cleared — cannot re-send",
-                                            contact.handle
+                                            crate::fp(&contact.handle_proof)
                                         ));
                                     }
                                 }
@@ -6998,7 +6998,7 @@ impl PhotonApp {
                             if old_local != Some(local_ip) || old_port != Some(port) {
                                 crate::log(&format!(
                                     "LAN: Discovered {} at local {}:{}",
-                                    contact.handle, local_ip, port
+                                    crate::fp(&contact.handle_proof), local_ip, port
                                 ));
                                 // Ping immediately so we don't wait for next scheduled cycle
                                 lan_ping_indices.push(idx);
