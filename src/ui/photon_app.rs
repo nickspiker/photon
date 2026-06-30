@@ -396,6 +396,10 @@ pub struct PhotonApp {
     pending_keyboard_request: Option<bool>,
     /// One-shot: set true when the compose box is cleared on send, so the Android host restarts IME input and a predictive keyboard doesn't re-materialise the just-sent text. Drained by `wants_input_reset`.
     pending_input_reset: bool,
+    /// AddDevice flow: the pairing secret this (existing) device minted for the new device, shown as words for the user to type in. `None` outside the flow.
+    add_device_secret: Option<[u8; crate::network::fgtw::fleet::PAIRING_SECRET_LEN]>,
+    /// AddDevice flow: status line under the secret words.
+    add_device_status: String,
     /// This device's avatar in BT.2020 γ=2.0 u8 RGB, sized `crate::avatar::AVATAR_SIZE × AVATAR_SIZE × 3`. `None` until `on_query_result` pulls one from local storage (no saved avatar = stays `None`, Ready screen falls back to the grey placeholder).
     device_avatar_pixels: Option<Vec<u8>>,
     /// Cached Mitchell resize of `device_avatar_pixels` at the current Ready-screen circle diameter. Rebuilt on diameter change (resize / zoom).
@@ -501,6 +505,8 @@ impl PhotonApp {
             device_keypair: None,
             pending_keyboard_request: None,
             pending_input_reset: false,
+            add_device_secret: None,
+            add_device_status: String::new(),
             device_avatar_pixels: None,
             device_avatar_scaled: None,
             device_avatar_scaled_diameter: 0,
@@ -1182,6 +1188,13 @@ impl FluorApp for PhotonApp {
                     return EventResponse::Handled;
                 }
 
+                // Orb tap (chrome app-icon) — a no-op widget, so intercept here. On Ready it opens the add-device flow; on AddDevice it cancels back. Routed by `on_orb_click`.
+                let orb_id = self.chrome.as_ref().map(|c| c.app_icon_btn.id());
+                if Some(hit_id) == orb_id && hit_id != HIT_NONE && self.on_orb_click() {
+                    ctx.window.request_redraw();
+                    return EventResponse::Handled;
+                }
+
                 // Contact row tap — hit IDs in [contact_hit_base, contact_hit_base + 255].
                 if matches!(self.state, AppState::Ready)
                     && self.contact_hit_base != HIT_NONE
@@ -1360,6 +1373,13 @@ impl FluorApp for PhotonApp {
                         if matches!(self.state, AppState::Conversation) {
                             self.state = AppState::Ready;
                             self.active_contact = None;
+                            ctx.window.request_redraw();
+                            return EventResponse::Handled;
+                        }
+                        if matches!(self.state, AppState::AddDevice) {
+                            self.add_device_secret = None;
+                            self.add_device_status.clear();
+                            self.state = AppState::Ready;
                             ctx.window.request_redraw();
                             return EventResponse::Handled;
                         }
@@ -2714,6 +2734,34 @@ impl FluorApp for PhotonApp {
             }
         }
 
+        // ── Add-device screen: this (existing) device shows the pairing secret words to type into the new device. ──
+        if matches!(self.state, AppState::AddDevice) {
+            let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
+            let cx = buf_w as f32 * 0.5;
+            let unit = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru).unit_height;
+            ctx.text.draw_text_center_u32(
+                &mut canvas, "Add a device", cx, buf_h as f32 * 0.30,
+                unit * 1.2, 600, STATUS_TEXT_COLOUR, "Oxanium", None, None, None,
+            );
+            if let Some(secret) = self.add_device_secret {
+                let words = crate::network::fgtw::fleet::secret_words(&secret);
+                ctx.text.draw_text_center_u32(
+                    &mut canvas, &words, cx, buf_h as f32 * 0.45,
+                    unit * 0.9, 600, STATUS_TEXT_COLOUR, "Oxanium", None, None, None,
+                );
+            }
+            if !self.add_device_status.is_empty() {
+                ctx.text.draw_text_center_u32(
+                    &mut canvas, &self.add_device_status, cx, buf_h as f32 * 0.58,
+                    unit * 0.6, 400, STATUS_TEXT_COLOUR, "Oxanium", None, None, None,
+                );
+            }
+            ctx.text.draw_text_center_u32(
+                &mut canvas, "tap the orb again to cancel", cx, buf_h as f32 * 0.70,
+                unit * 0.5, 400, STATUS_TEXT_COLOUR, "Oxanium", None, None, None,
+            );
+        }
+
         chrome.flatten_into(target, buf_w, buf_h, None);
 
         // Hit-mask overlay (`[]h`): replace every pixel with the opaque random colour for its hit_test_map ID. Drawn LAST over everything (including chrome + chord hint) — hit testing is per-final-pixel anyway, so the overlay shows exactly what `hit_at` would return. `.get` keeps the index lookup safe for any stale stamp at an unregistered high ID.
@@ -3005,6 +3053,27 @@ impl PhotonApp {
     }
 
     /// Encrypt + send the compose-box contents to the open contact, append it as an outgoing bubble, and persist. No-op unless a CLUTCH-Complete contact is open with a friendship chain and the box is non-empty. The crypto/wire/persist layers already exist (`FriendshipChains::prepare_send`, `StatusChecker::send_message`, `save_messages`); this is the UI→chain→network glue.
+    /// Orb (chrome app-icon) tap. Returns true if it acted (caller redraws). Routed by screen:
+    /// Ready → open the add-device flow (mint a pairing secret to read onto the new device); AddDevice → cancel back to the contact list. Other screens ignore it.
+    fn on_orb_click(&mut self) -> bool {
+        match self.state {
+            AppState::Ready => {
+                self.add_device_secret = Some(crate::network::fgtw::fleet::new_pairing_secret());
+                self.add_device_status = "Type these words into the new device".to_string();
+                self.change_focus(None);
+                self.state = AppState::AddDevice;
+                true
+            }
+            AppState::AddDevice => {
+                self.add_device_secret = None;
+                self.add_device_status.clear();
+                self.state = AppState::Ready;
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn submit_message(&mut self) {
         use vsf::schema::section::FieldValue;
 
