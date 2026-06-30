@@ -4812,17 +4812,19 @@ impl PhotonApp {
 
     /// Current presence-sweep interval, chosen by how long since the user last interacted.
     /// Active (5s) while engaged → idle (1min) → deep-idle (15min). `now` is the tick's clock.
+    /// Jittered to 50–100% of the tier so a roomful of devices doesn't ping their contacts in lockstep (a synchronised presence sweep is a self-inflicted DDoS). Presence timing is soft, so the fuzziness is free.
     fn presence_ping_interval(&self, now: Instant) -> std::time::Duration {
         let idle = self
             .last_interaction
             .map_or(std::time::Duration::ZERO, |last| now.duration_since(last));
-        if idle < PRESENCE_IDLE_NEAR {
+        let tier = if idle < PRESENCE_IDLE_NEAR {
             PRESENCE_PING_ACTIVE
         } else if idle < PRESENCE_IDLE_FAR {
             PRESENCE_PING_IDLE
         } else {
             PRESENCE_PING_DEEP
-        }
+        };
+        crate::jitter_dur(tier)
     }
 
     /// Ping all contacts that have IP addresses (call periodically)

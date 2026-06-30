@@ -1,6 +1,6 @@
 // PHOTON SOURCE MAP — keep updated when pub items or files change
 //
-// lib.rs ── constants, logging, debug macro, module re-exports PHOTON_PORT=4383, PHOTON_PORT_FALLBACK=3546, MULTICAST_PORT=4384 OSC_PER_SEC, PEER_EXPIRY_OSC (7 days), KBUCKET_STALE_OSC (1 hour) init_logging(), log()
+// lib.rs ── constants, logging (always-on VSF sink, 16 MiB + jittered 24–48h caps, name-scrubbed), debug macro, module re-exports PHOTON_PORT=4383, PHOTON_PORT_FALLBACK=3546, MULTICAST_PORT=4384 OSC_PER_SEC, PEER_EXPIRY_OSC (7 days), KBUCKET_STALE_OSC (1 hour) init_logging(), log(), log_at(), clear_log() (wipe the log), fp(public_id) (non-PII log label), jitter(i64)/jitter_dur(Duration) (stochastic 50–100% pad for any timer/threshold — anti-thundering-herd)
 //
 // main.rs ── winit event loop, window creation, tokio async runtime
 //
@@ -79,6 +79,17 @@ pub fn fp(public_id: &[u8]) -> String {
     hex::encode(&public_id[..public_id.len().min(4)])
 }
 
+/// Stochastic pad for ANY periodic timer or age threshold: `base` scaled by a fresh random factor in [0.5, 1.0].
+/// Re-roll on every use. A fixed interval makes every client (and every subsystem) wake on the same tick — a routine timer becomes a synchronised network cascade (the thundering herd), e.g. everyone re-announcing exactly on the hour. Jittering each period spreads the load and makes accidental alignment vanishingly unlikely; the cost is a fuzzy deadline, which time-based housekeeping never needs exact.
+pub fn jitter(base: i64) -> i64 {
+    (base as f64 * (0.5 + rand::random::<f64>() * 0.5)) as i64
+}
+
+/// [`jitter`] for `std::time::Duration` timers (sleeps, recv-timeouts, periodic loops).
+pub fn jitter_dur(base: std::time::Duration) -> std::time::Duration {
+    base.mul_f64(0.5 + rand::random::<f64>() * 0.5)
+}
+
 // Disabled: compiles to nothing without --features logging.
 #[cfg(not(feature = "logging"))]
 #[inline(always)]
@@ -104,12 +115,16 @@ const LOG_TRIM_TO_BYTES: u64 = 8 << 20;
 // Live byte count of the open log file, so the cap check is a cheap atomic load instead of a stat per line; seeded from the file's size when it's first opened.
 #[cfg(feature = "logging")]
 static LOG_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-// Age cap with hysteresis so we don't rewrite the file on every line: let the log reach 2 days, THEN cut it back to the most recent 24h.
-// That bounds PII to a 24–48h window while trimming only ~once a day, not continuously (the "persistent scrubbing" a trim-at-exactly-24h would cause for a steady low-volume log).
+// Age cap with hysteresis + jitter: let the log reach ~2 days, THEN cut it back to ~the most recent 24h.
+// Hysteresis avoids "persistent scrubbing" (a trim-at-exactly-24h rewrites the file on nearly every line of a steady low-volume log). Jitter avoids synchronised cascades: the trigger fires at a random 24–48h and the keep window is a random 12–24h, re-rolled each trim, so no two devices (and no two of our subsystems) trim on the same instant.
 #[cfg(feature = "logging")]
-const LOG_AGE_TRIGGER_OSC: i64 = 2 * 24 * 60 * 60 * vsf::OSCILLATIONS_PER_SECOND as i64; // oldest > 2 days → trim
+const LOG_AGE_TRIGGER_BASE_OSC: i64 = 2 * 24 * 60 * 60 * vsf::OSCILLATIONS_PER_SECOND as i64; // jittered → 24–48h
 #[cfg(feature = "logging")]
-const LOG_AGE_KEEP_OSC: i64 = 24 * 60 * 60 * vsf::OSCILLATIONS_PER_SECOND as i64; // keep the most recent 24h
+const LOG_AGE_KEEP_BASE_OSC: i64 = 24 * 60 * 60 * vsf::OSCILLATIONS_PER_SECOND as i64; // jittered → 12–24h
+// The currently-chosen (jittered) trigger threshold; re-rolled on open and after each trim.
+#[cfg(feature = "logging")]
+static LOG_AGE_TRIGGER_OSC: std::sync::atomic::AtomicI64 =
+    std::sync::atomic::AtomicI64::new(LOG_AGE_TRIGGER_BASE_OSC);
 // Eagle-time of the OLDEST record in the open file, cached so the age check is a compare not a head-read per line; i64::MAX = unknown/empty (seeded on open, refreshed on trim).
 #[cfg(feature = "logging")]
 static LOG_OLDEST_OSC: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(i64::MAX);
@@ -151,6 +166,10 @@ fn append_log_record(level: LogLevel, msg: &str) {
                     first_record_osc(&path).unwrap_or(i64::MAX),
                     std::sync::atomic::Ordering::Relaxed,
                 );
+                LOG_AGE_TRIGGER_OSC.store(
+                    jitter(LOG_AGE_TRIGGER_BASE_OSC),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
                 *guard = Some(f);
             }
         }
@@ -174,16 +193,22 @@ fn append_log_record(level: LogLevel, msg: &str) {
         let _ = file.flush();
         let total = LOG_BYTES.fetch_add(bytes.len() as u64, std::sync::atomic::Ordering::Relaxed)
             + bytes.len() as u64;
-        // Trim on EITHER cap: too big (16 MiB) or the oldest record older than 24h.
+        // Trim on EITHER cap: too big (16 MiB) or the oldest record past the jittered age trigger (24–48h).
         let now = vsf::eagle_time_oscillations();
         let oldest = LOG_OLDEST_OSC.load(std::sync::atomic::Ordering::Relaxed);
-        let aged = oldest != i64::MAX && now.saturating_sub(oldest) > LOG_AGE_TRIGGER_OSC;
+        let trigger = LOG_AGE_TRIGGER_OSC.load(std::sync::atomic::Ordering::Relaxed);
+        let aged = oldest != i64::MAX && now.saturating_sub(oldest) > trigger;
         if total > LOG_CAP_BYTES || aged {
             // `file`'s borrow of `guard` ends above; reopen the handle on the trimmed file.
             if let Some((trimmed, new_size, new_oldest)) = trim_log_file(now) {
                 *guard = Some(trimmed);
                 LOG_BYTES.store(new_size, std::sync::atomic::Ordering::Relaxed);
                 LOG_OLDEST_OSC.store(new_oldest, std::sync::atomic::Ordering::Relaxed);
+                // Re-roll the next age trigger so successive trims never settle into a fixed cadence.
+                LOG_AGE_TRIGGER_OSC.store(
+                    jitter(LOG_AGE_TRIGGER_BASE_OSC),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
             }
         }
     }
@@ -196,7 +221,7 @@ fn trim_log_file(now_osc: i64) -> Option<(std::fs::File, u64, i64)> {
     use std::io::Write;
     let path = log_dir()?.join("photon.log.vsf");
     let bytes = std::fs::read(&path).ok()?;
-    let age_cutoff = now_osc.saturating_sub(LOG_AGE_KEEP_OSC);
+    let age_cutoff = now_osc.saturating_sub(jitter(LOG_AGE_KEEP_BASE_OSC)); // keep a random 12–24h
     let (keep, new_oldest) = log_keep_offset(&bytes, LOG_TRIM_TO_BYTES, age_cutoff);
     let kept = &bytes[keep.min(bytes.len())..];
     let mut w = std::fs::OpenOptions::new()
