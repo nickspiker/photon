@@ -1000,6 +1000,37 @@ mod tests {
         }
     }
 
+    /// End-to-end against LIVE fgtw.org: genesis a fresh fleet, run the full device-ADD pairing handshake, and confirm the new device folds in.
+    /// Ignored by default (hits the network + leaves ephemeral random-key objects); run with `--ignored`.
+    #[test]
+    #[ignore = "hits live fgtw.org"]
+    fn live_device_add_round_trip() {
+        let handle_proof: [u8; 32] = rand::random();
+        let identity_seed: [u8; 32] = rand::random();
+        let member = Keypair::from_seed(&rand::random::<[u8; 32]>());
+        let newdev = Keypair::from_seed(&rand::random::<[u8; 32]>());
+
+        // Existing device claims the fleet (identity-signed genesis).
+        ensure_member(&member, &handle_proof, &identity_seed).expect("genesis");
+        assert_eq!(current_members(&handle_proof).unwrap(), vec![member.public.to_bytes()]);
+
+        // New device posts a pairing request; existing device validates it with the secret.
+        let secret = new_pairing_secret();
+        post_pairing_request(&newdev, &handle_proof, &secret).expect("post request");
+        let pending = poll_pairing_request(&handle_proof, &secret)
+            .expect("poll")
+            .expect("a pending request");
+        assert_eq!(pending.new_pubkey, newdev.public.to_bytes());
+        // A wrong secret (mistyped words) sees nothing.
+        assert!(poll_pairing_request(&handle_proof, &[0u8; PAIRING_SECRET_LEN]).unwrap().is_none());
+
+        // Confirm → bind → the new device is now a fleet member.
+        bind_device(&member, &handle_proof, pending.new_pubkey).expect("bind");
+        let members = current_members(&handle_proof).unwrap();
+        assert!(members.contains(&member.public.to_bytes()));
+        assert!(members.contains(&newdev.public.to_bytes()));
+    }
+
     #[test]
     fn pairing_macs_bind_secret_pubkey_and_role() {
         let secret = [3u8; PAIRING_SECRET_LEN];
