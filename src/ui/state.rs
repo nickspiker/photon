@@ -17,6 +17,9 @@ pub enum AppState {
     /// Viewing conversation with a contact (contact index stored separately)
     Conversation,
 
+    /// Existing (attested) device adding another device to the fleet: shows the pairing secret words for the user to enter on the new device, polls the pairing inbox, and confirms the bind. Entered by tapping the orb on Ready.
+    AddDevice,
+
     /// Active P2P conversation (legacy - may remove)
     Connected { peer_handle: String },
 }
