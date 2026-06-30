@@ -19,8 +19,8 @@ exclude = [
 ]
 
 [features]
-default = []
-logging = []       # Enable log_info/log_error output
+default = ["logging"]  # Structured VSF logging is always-on; it's capped at 16 MiB and read live with `photonlog -f`
+logging = []       # The VSF log sink (photon.log.vsf). Default-on; opt OUT for a truly silent build
 debug-keys = []    # Enable Ctrl+D/H/T debug shortcuts
 verbose-network = []  # Log every ping/pong/broadcast (noisy)
 development = ["logging", "debug-keys"]  # All dev features
