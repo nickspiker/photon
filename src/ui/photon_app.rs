@@ -249,7 +249,7 @@ const CHORD_HINTS: &[(&str, &str)] = &[
     ("b", "Finalize copy-pass blue tint"),
     ("n", "Nuke vault — keeps you attested (dev only)"),
     ("u", "Un-attest — clear session, keep vault (dev only)"),
-    ("x", "Nuke + un-attest + EXIT for a clean relaunch (dev only)"),
+    ("x", "Nuke vault + un-attest + wipe logs + EXIT for a clean relaunch (dev only)"),
 ];
 
 /// Bounding rect the chord hint panel covers — matches `paint::draw_chord_hint`'s positioning math so `damage_rect` can union it when both brackets are held. Pulled out of the panes example with the same math; if fluor's hint geometry changes, this needs updating in lockstep.
@@ -7410,8 +7410,9 @@ impl PhotonApp {
                 // Full clean-slate reset for the dev loop: nuke the vault ([]n), clear the session ([]u), then KILL the process so the window dies and the next launch starts truly fresh — no lingering in-memory state, no half-reset UI. The disk wipe is the part that must persist; everything else dies with the process, so we exit right after.
                 let count = Self::dev_wipe_vault_files("[]x");
                 tohu::clear_session();
+                crate::clear_log(); // wipe photon.log.vsf too — a clean relaunch leaves no trace
                 eprintln!(
-                    "[]x nuked {} vault file(s) + de-attested; exiting for a clean relaunch",
+                    "[]x nuked {} vault file(s) + de-attested + wiped logs; exiting for a clean relaunch",
                     count
                 );
                 std::process::exit(0);
