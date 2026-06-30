@@ -73,6 +73,12 @@ pub enum LogLevel {
 /// Retained for the desktop/Windows `main()` call site. The VSF file sink now opens LAZILY on the first log after the platform data dir is known (Android sets it partway through JNI startup), so this is a no-op — kept only so existing callers compile.
 pub fn init_logging() {}
 
+/// Short, non-PII label for logs: the first 4 bytes of a PUBLIC id (handle_proof / device pubkey) as hex.
+/// Log this instead of a plaintext handle — the durable log then carries pseudonymous identifiers, never names, so it stays diagnostic (you can correlate a fingerprint across a run) without leaking who anyone is.
+pub fn fp(public_id: &[u8]) -> String {
+    hex::encode(&public_id[..public_id.len().min(4)])
+}
+
 // Disabled: compiles to nothing without --features logging.
 #[cfg(not(feature = "logging"))]
 #[inline(always)]

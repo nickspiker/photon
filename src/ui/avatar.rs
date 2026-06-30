@@ -1494,8 +1494,7 @@ pub fn download_avatar(
     // Not cached locally, fetch from FGTW
     let storage_key = avatar_storage_key(handle);
     crate::log(&format!(
-        "Avatar: Fetching {} from FGTW ({}...)",
-        handle,
+        "Avatar: Fetching from FGTW ({}...)", // storage_key is the public lookup id; the handle is not logged
         &storage_key[..8]
     ));
 
