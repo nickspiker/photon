@@ -79,7 +79,8 @@ pub fn derive_device_keypair(fingerprint: &[u8]) -> Keypair {
 /// Machine fingerprint for deterministic key derivation — delegates to tohu's per-platform device oracle so the read logic lives once in the shared crate, not duplicated across every stack app. Desktop only: on Android the keypair is derived from the JNI-fetched oracle (today pushed via `NetworkContext`; `tohu::device` owns the in-Rust fetch once it's device-verified). Source per platform: Linux `/etc/machine-id` · Windows `MachineGuid` · macOS `IOPlatformUUID` · other `/etc/hostid`→`/etc/hostname`.
 #[cfg(not(target_os = "android"))]
 pub fn get_machine_fingerprint() -> io::Result<Vec<u8>> {
-    // Dev override: PHOTON_FINGERPRINT forces a distinct device identity, so a second instance (own PHOTON_DATA_DIR) is a genuinely different device for two-party / device-ADD testing on one machine.
+    // Dev-only override: PHOTON_FINGERPRINT forces a distinct device identity, so a second instance (own PHOTON_DATA_DIR) is a genuinely different device for two-party / device-ADD testing on one machine. Compiled out of release.
+    #[cfg(feature = "development")]
     if let Ok(fp) = std::env::var("PHOTON_FINGERPRINT") {
         if !fp.is_empty() {
             return Ok(fp.into_bytes());
