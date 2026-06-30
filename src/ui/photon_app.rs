@@ -400,6 +400,12 @@ pub struct PhotonApp {
     add_device_secret: Option<[u8; crate::network::fgtw::fleet::PAIRING_SECRET_LEN]>,
     /// AddDevice flow: status line under the secret words.
     add_device_status: String,
+    /// AddDevice flow: a validated pairing request awaiting the user's confirm (new pubkey + fingerprint). `Some` once the new device's request lands and its secret-MAC checks out.
+    add_device_pending: Option<crate::network::fgtw::fleet::PendingPairing>,
+    /// AddDevice flow: results from the off-thread inbox poll / bind (the fleet client blocks on HTTP, so it can't run on the UI thread). Dropping the rx stops the poll thread.
+    add_device_rx: Option<std::sync::mpsc::Receiver<AddDeviceUpdate>>,
+    /// AddDevice flow: a clone-able sender so the one-shot bind thread can report back on the same channel as the poller.
+    add_device_tx: Option<std::sync::mpsc::Sender<AddDeviceUpdate>>,
     /// This device's avatar in BT.2020 γ=2.0 u8 RGB, sized `crate::avatar::AVATAR_SIZE × AVATAR_SIZE × 3`. `None` until `on_query_result` pulls one from local storage (no saved avatar = stays `None`, Ready screen falls back to the grey placeholder).
     device_avatar_pixels: Option<Vec<u8>>,
     /// Cached Mitchell resize of `device_avatar_pixels` at the current Ready-screen circle diameter. Rebuilt on diameter change (resize / zoom).
@@ -507,6 +513,9 @@ impl PhotonApp {
             pending_input_reset: false,
             add_device_secret: None,
             add_device_status: String::new(),
+            add_device_pending: None,
+            add_device_rx: None,
+            add_device_tx: None,
             device_avatar_pixels: None,
             device_avatar_scaled: None,
             device_avatar_scaled_diameter: 0,
@@ -613,6 +622,16 @@ fn orb_tint_for(online: bool) -> fluor::host::chrome::OrbTint {
         ring: if online { ORB_ONLINE } else { ORB_OFFLINE },
         brighten: online,
     }
+}
+
+/// Off-thread results for the AddDevice flow (inbox poll + bind), drained in `tick`.
+enum AddDeviceUpdate {
+    /// A pairing request arrived and its secret-MAC checked out — show the fingerprint and await confirm.
+    Pending(crate::network::fgtw::fleet::PendingPairing),
+    /// The bind published — the new device is now a fleet member.
+    Bound,
+    /// An error to surface in the status line.
+    Failed(String),
 }
 
 impl Default for PhotonApp {
@@ -1378,7 +1397,10 @@ impl FluorApp for PhotonApp {
                         }
                         if matches!(self.state, AppState::AddDevice) {
                             self.add_device_secret = None;
+                            self.add_device_pending = None;
                             self.add_device_status.clear();
+                            self.add_device_rx = None; // drop → the poll thread exits
+                            self.add_device_tx = None;
                             self.state = AppState::Ready;
                             ctx.window.request_redraw();
                             return EventResponse::Handled;
@@ -1669,6 +1691,33 @@ impl FluorApp for PhotonApp {
         }
         for search in drained_searches {
             self.on_search_result(search);
+            needs_redraw = true;
+        }
+
+        // AddDevice flow: apply off-thread poll/bind results (drain first so the rx borrow ends before we mutate self).
+        let add_updates: Vec<AddDeviceUpdate> = self
+            .add_device_rx
+            .as_ref()
+            .map(|rx| rx.try_iter().collect())
+            .unwrap_or_default();
+        for update in add_updates {
+            match update {
+                AddDeviceUpdate::Pending(p) => {
+                    self.add_device_status =
+                        format!("{} wants to join — tap the orb to confirm", p.fingerprint);
+                    self.add_device_pending = Some(p);
+                }
+                AddDeviceUpdate::Bound => {
+                    self.add_device_status = "Device added \u{2713}".to_string();
+                    self.add_device_pending = None;
+                    self.add_device_secret = None;
+                    self.add_device_rx = None; // stop polling; the user can Esc/orb back when ready
+                    self.add_device_tx = None;
+                }
+                AddDeviceUpdate::Failed(e) => {
+                    self.add_device_status = format!("Error: {e}");
+                }
+            }
             needs_redraw = true;
         }
 
@@ -2756,8 +2805,13 @@ impl FluorApp for PhotonApp {
                     unit * 0.6, 400, STATUS_TEXT_COLOUR, "Oxanium", None, None, None,
                 );
             }
+            let hint = if self.add_device_pending.is_some() {
+                "tap the orb to confirm  ·  Esc to cancel"
+            } else {
+                "tap the orb again to cancel"
+            };
             ctx.text.draw_text_center_u32(
-                &mut canvas, "tap the orb again to cancel", cx, buf_h as f32 * 0.70,
+                &mut canvas, hint, cx, buf_h as f32 * 0.70,
                 unit * 0.5, 400, STATUS_TEXT_COLOUR, "Oxanium", None, None, None,
             );
         }
@@ -3056,18 +3110,68 @@ impl PhotonApp {
     /// Orb (chrome app-icon) tap. Returns true if it acted (caller redraws). Routed by screen:
     /// Ready → open the add-device flow (mint a pairing secret to read onto the new device); AddDevice → cancel back to the contact list. Other screens ignore it.
     fn on_orb_click(&mut self) -> bool {
+        use crate::network::fgtw::fleet;
         match self.state {
             AppState::Ready => {
-                self.add_device_secret = Some(crate::network::fgtw::fleet::new_pairing_secret());
-                self.add_device_status = "Type these words into the new device".to_string();
+                let secret = fleet::new_pairing_secret();
+                self.add_device_secret = Some(secret);
+                self.add_device_pending = None;
                 self.change_focus(None);
                 self.state = AppState::AddDevice;
+                // Spawn the inbox poller (off-thread — poll_pairing_request blocks on HTTP). It stops itself when we leave AddDevice and drop the receiver.
+                match self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()) {
+                    Some(hp) => {
+                        self.add_device_status = "Type these words into the new device".to_string();
+                        let (tx, rx) = std::sync::mpsc::channel();
+                        self.add_device_rx = Some(rx);
+                        self.add_device_tx = Some(tx.clone());
+                        std::thread::spawn(move || loop {
+                            match fleet::poll_pairing_request(&hp, &secret) {
+                                Ok(Some(p)) => {
+                                    if tx.send(AddDeviceUpdate::Pending(p)).is_err() {
+                                        break;
+                                    }
+                                }
+                                Ok(None) => {}
+                                Err(e) => {
+                                    if tx.send(AddDeviceUpdate::Failed(e)).is_err() {
+                                        break;
+                                    }
+                                }
+                            }
+                            std::thread::sleep(crate::jitter_dur(std::time::Duration::from_secs(3)));
+                        });
+                    }
+                    None => self.add_device_status = "attest first".to_string(),
+                }
                 true
             }
             AppState::AddDevice => {
-                self.add_device_secret = None;
-                self.add_device_status.clear();
-                self.state = AppState::Ready;
+                if let Some(pending) = self.add_device_pending.take() {
+                    // Confirm: the existing (member) device signs the add — off-thread, bind_device blocks.
+                    self.add_device_status = "Adding\u{2026}".to_string();
+                    if let (Some(hp), Some(kp), Some(tx)) = (
+                        self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()),
+                        self.device_keypair.clone(),
+                        self.add_device_tx.clone(),
+                    ) {
+                        let new_pubkey = pending.new_pubkey;
+                        std::thread::spawn(move || {
+                            let r = fleet::bind_device(&kp, &hp, new_pubkey);
+                            let _ = tx.send(match r {
+                                Ok(()) => AddDeviceUpdate::Bound,
+                                Err(e) => AddDeviceUpdate::Failed(e),
+                            });
+                        });
+                    }
+                } else {
+                    // No pending request → cancel back to the contact list (dropping rx stops the poller).
+                    self.add_device_secret = None;
+                    self.add_device_status.clear();
+                    self.add_device_rx = None;
+                    self.add_device_tx = None;
+                    self.state = AppState::Ready;
+                }
                 true
             }
             _ => false,
