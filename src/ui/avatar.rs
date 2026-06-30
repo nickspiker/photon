@@ -1429,20 +1429,21 @@ pub fn upload_avatar_from_seed(
         &format!("/avatar/{}", &storage_key[..8]),
     ));
 
-    // Keyring authorisation: FGTW no longer trusts "first avatar pubkey wins" — it accepts the write only if the SIGNING DEVICE is in this identity's published Merkle root (so any fleet device can set the avatar, a stranger can't). So we DEVICE-sign the avatar_put envelope (the avatar VSF inside keeps its own avatar-key signature for self-contained content integrity) and attach the device-leaf inclusion proof.
+    // Fleet authorisation: FGTW accepts the write only if the SIGNING DEVICE is a current member of this identity's fleet chain (so any fleet device can set the avatar, a stranger can't).
+    // So we ensure this device is in the fleet (a first-come genesis if none exists yet), then DEVICE-sign the avatar_put envelope; the worker folds the stored chain to authorise the signer — no inclusion proof to attach.
+    // (The avatar VSF inside keeps its own avatar-key signature for self-contained content integrity.)
     let device_key = crate::network::fgtw::Keypair {
         secret: device_secret.clone(),
         public: device_secret.verifying_key(),
     };
-    let (pidx, proof) =
-        crate::network::fgtw::keyring::ensure_keyring_and_prove(&device_key, handle_proof)?;
+    crate::network::fgtw::fleet::ensure_member(&device_key, handle_proof)?;
 
-    // Go through the ONE VSF conduit (POST / with a named section), same as blob_put / contacts. The put carries the signed avatar VSF + the keyring inclusion proof (pidx/pnode), and is itself device-signed at the header (ke/ge) so FGTW recomputes the device leaf from the signing key and verifies inclusion.
+    // Go through the ONE VSF conduit (POST / with a named section), same as blob_put / contacts.
+    // The put carries the signed avatar VSF and is itself device-signed at the header (ke/ge); FGTW checks that signing device against the folded fleet chain.
     let mut section = vsf::VsfSection::new("avatar_put");
     section.add_field("key", VsfType::d(storage_key.clone()));
     section.add_field("handle_proof", VsfType::hP(handle_proof.to_vec()));
     section.add_field("avatar_vsf", VsfType::v(b'e', signed_vsf));
-    crate::network::fgtw::keyring::add_proof_fields(&mut section, pidx, &proof);
     let unsigned_put = vsf::VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
         .signed_only(VsfType::ke(device_key.public.to_bytes().to_vec()))
