@@ -271,7 +271,8 @@ mod log_cap_tests {
     }
 }
 
-// Enabled: structured VSF file record + the platform's live console sink (logcat / stdout).
+// The structured VSF file is the ONE durable log — read it live with `photonlog -f`, off a phone with `adb pull`.
+// No console mirror: stdout/logcat was redundant noise once everything lands in photon.log.vsf.
 #[cfg(feature = "logging")]
 pub fn log(msg: &str) {
     log_at(LogLevel::Info, msg);
@@ -280,20 +281,6 @@ pub fn log(msg: &str) {
 #[cfg(feature = "logging")]
 pub fn log_at(level: LogLevel, msg: &str) {
     append_log_record(level, msg);
-
-    // Live console sink (unchanged behaviour): Android → logcat at the matching level, others → stdout.
-    // Windows had no console sink; its durable output is now the VSF file above.
-    #[cfg(target_os = "android")]
-    match level {
-        LogLevel::Trace => log::trace!("{}", msg),
-        LogLevel::Debug => log::debug!("{}", msg),
-        LogLevel::Info => log::info!("{}", msg),
-        LogLevel::Warn => log::warn!("{}", msg),
-        LogLevel::Error => log::error!("{}", msg),
-    }
-
-    #[cfg(not(any(target_os = "android", target_os = "windows")))]
-    println!("{}", msg);
 }
 
 pub mod crypto;
