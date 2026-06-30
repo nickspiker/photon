@@ -129,6 +129,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     private external fun nativeOnBackPressed(contextPtr: Long): Boolean  // Back button - returns true if handled
     private external fun nativeOnScale(contextPtr: Long, scaleFactor: Float)  // Pinch-to-zoom scale factor
     private external fun nativePollKeyboard(contextPtr: Long): Int  // Per-frame poll for show/hide soft IME — 1=show, -1=hide, 0=no change
+    private external fun nativePollInputReset(contextPtr: Long): Int  // Per-frame poll: 1=restartInput (clear the IME's stale composing buffer after a send), 0=no change
     private external fun nativePollAvatarPicker(contextPtr: Long): Int  // Per-frame poll for the avatar image-picker request — 1=launch ACTION_GET_CONTENT, 0=no change
     private external fun nativePollSessionBroadcast(contextPtr: Long): Int  // 1=send sticky broadcast, -1=clear, 0=no change
     private external fun nativeSetDisplayColorSpace(rgbToXyz: FloatArray, primaries: FloatArray)  // Display panel's RGB→XYZ_D50 (9 floats) + chromaticity primaries [Rx,Ry,Gx,Gy,Bx,By] (6 floats)
@@ -443,6 +444,12 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         imm.hideSoftInputFromWindow(surfaceView.windowToken, 0)
     }
 
+    // Reset the IME's input state on the surface — recreates the InputConnection (composingText = ""), so a predictive keyboard forgets the text we just sent and cleared.
+    private fun restartImeInput() {
+        val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+        imm.restartInput(surfaceView)
+    }
+
     override fun surfaceDestroyed(holder: SurfaceHolder) {
         surfaceReady = false
         Choreographer.getInstance().removeFrameCallback(this)
@@ -458,6 +465,10 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
                 when (nativePollKeyboard(nativePtr)) {
                     1 -> showKeyboard()
                     -1 -> hideKeyboard()
+                }
+                // After a send the app cleared its compose box; restart IME input so a predictive keyboard's stale composing buffer doesn't re-materialise the just-sent text on the next keystroke.
+                if (nativePollInputReset(nativePtr) == 1) {
+                    restartImeInput()
                 }
                 // Avatar tap (Ready screen) → launch the system image picker. App-driven, not touch-driven, so it polls alongside the keyboard signal instead of riding the nativeOnTouch return like the legacy 2-code path did.
                 if (nativePollAvatarPicker(nativePtr) == 1) {
