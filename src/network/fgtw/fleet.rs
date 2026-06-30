@@ -652,36 +652,63 @@ pub fn unbind_device(
     Err("fleet remove: lost too many extension races".into())
 }
 
-// ── Pairing code: carry a new device's pubkey over the proximity channel. ──
-// NFC carries the raw 32 bytes; the no-NFC fallback carries these voca words, read off one screen and typed into the other.
-// Either way it delivers the EXACT pubkey, so the binding device signs the right key by construction; the short fingerprint below is only a human eyeball-compare.
+// ── Pairing secret: a short random value the EXISTING device shows as words and the NEW device types in. ──
+// It never travels the network — only the new device's pubkey does (over P2P), and that pubkey is bound into the MACs below by the secret.
+// Knowing the secret authenticates the handshake; a wrong transcription just fails the MAC, so no separate checksum is needed.
 
-/// Encode a device pubkey as voca words (camelCase — the canonical typed form per the voca convention).
-pub fn pairing_words(pubkey: &[u8; 32]) -> String {
-    voca::encode(num_bigint::BigUint::from_bytes_be(pubkey))
+/// Bytes of a pairing secret — 16 (128-bit) is plenty for a one-shot human-carried code, and stays short as words.
+pub const PAIRING_SECRET_LEN: usize = 16;
+
+/// Fresh random pairing secret (existing device mints one per add attempt).
+pub fn new_pairing_secret() -> [u8; PAIRING_SECRET_LEN] {
+    rand::random()
 }
 
-/// Space-separated voca words for read-aloud / easier transcription of the pairing code.
-pub fn pairing_words_spaced(pubkey: &[u8; 32]) -> String {
-    voca::encode_spaced(num_bigint::BigUint::from_bytes_be(pubkey))
+/// The secret as voca words (camelCase — the canonical typed form), and a spaced form for reading aloud.
+pub fn secret_words(secret: &[u8; PAIRING_SECRET_LEN]) -> String {
+    voca::encode(num_bigint::BigUint::from_bytes_be(secret))
+}
+pub fn secret_words_spaced(secret: &[u8; PAIRING_SECRET_LEN]) -> String {
+    voca::encode_spaced(num_bigint::BigUint::from_bytes_be(secret))
 }
 
-/// Decode voca pairing words back to a 32-byte pubkey (left-padded, since leading zero bytes drop out of the integer).
-pub fn pubkey_from_words(words: &str) -> Result<[u8; 32], String> {
+/// Decode typed words back to the secret (left-padded; leading zero bytes drop out of the integer).
+pub fn secret_from_words(words: &str) -> Result<[u8; PAIRING_SECRET_LEN], String> {
     let n = voca::decode(words.trim()).map_err(|e| format!("unrecognised pairing words: {e:?}"))?;
     let bytes = n.to_bytes_be();
-    if bytes.len() > 32 {
-        return Err("pairing words decode too large for a key".into());
+    if bytes.len() > PAIRING_SECRET_LEN {
+        return Err("pairing words decode too large".into());
     }
-    let mut out = [0u8; 32];
-    out[32 - bytes.len()..].copy_from_slice(&bytes);
+    let mut out = [0u8; PAIRING_SECRET_LEN];
+    out[PAIRING_SECRET_LEN - bytes.len()..].copy_from_slice(&bytes);
     Ok(out)
 }
 
-/// A short, read-aloud safety code (a few words) derived from a device pubkey, shown on BOTH screens for the human to compare before confirming a bind — catches a corrupted/relayed transfer.
-pub fn device_fingerprint(pubkey: &[u8; 32]) -> String {
-    let h = blake3::hash(pubkey);
-    voca::encode_spaced(num_bigint::BigUint::from_bytes_be(&h.as_bytes()[..4]))
+fn pairing_mac(domain: &[u8], secret: &[u8], handle_proof: &[u8; 32], new_pubkey: &[u8; 32]) -> [u8; 32] {
+    let mut h = blake3::Hasher::new();
+    h.update(domain);
+    h.update(secret); // secret-prefix MAC — BLAKE3 has no length-extension weakness
+    h.update(handle_proof);
+    h.update(new_pubkey);
+    *h.finalize().as_bytes()
+}
+
+/// MAC the NEW device sends with its pairing request: proves it holds the secret AND binds the request to its exact pubkey + identity, so a relay can't swap in a different key.
+pub fn pairing_request_mac(
+    secret: &[u8; PAIRING_SECRET_LEN],
+    handle_proof: &[u8; 32],
+    new_pubkey: &[u8; 32],
+) -> [u8; 32] {
+    pairing_mac(b"PHOTON_PAIR_REQ_v0", secret, handle_proof, new_pubkey)
+}
+
+/// MAC the EXISTING device sends back: proves the genuine secret-holder (not a spoofer who raced) acknowledged THIS pubkey, so the new device's "binding…" screen only lights up for the real other device.
+pub fn pairing_ack_mac(
+    secret: &[u8; PAIRING_SECRET_LEN],
+    handle_proof: &[u8; 32],
+    new_pubkey: &[u8; 32],
+) -> [u8; 32] {
+    pairing_mac(b"PHOTON_PAIR_ACK_v0", secret, handle_proof, new_pubkey)
 }
 
 #[cfg(test)]
@@ -852,21 +879,31 @@ mod tests {
     }
 
     #[test]
-    fn pairing_words_round_trip() {
-        // A normal key, and one with a leading zero byte (the padding edge).
-        for raw in [pk(&key(1)), {
-            let mut k = pk(&key(2));
-            k[0] = 0;
-            k
+    fn pairing_secret_words_round_trip() {
+        // A normal secret, and one with a leading zero byte (the padding edge).
+        for secret in [[7u8; PAIRING_SECRET_LEN], {
+            let mut s = [9u8; PAIRING_SECRET_LEN];
+            s[0] = 0;
+            s
         }] {
-            let words = pairing_words(&raw);
-            assert_eq!(pubkey_from_words(&words).unwrap(), raw, "camelCase round-trip");
-            let spaced = pairing_words_spaced(&raw);
-            assert_eq!(pubkey_from_words(&spaced).unwrap(), raw, "spaced round-trip");
+            assert_eq!(secret_from_words(&secret_words(&secret)).unwrap(), secret, "camelCase");
+            assert_eq!(secret_from_words(&secret_words_spaced(&secret)).unwrap(), secret, "spaced");
         }
-        // The fingerprint is stable and differs across keys (a sanity floor, not a collision proof).
-        assert_eq!(device_fingerprint(&pk(&key(1))), device_fingerprint(&pk(&key(1))));
-        assert_ne!(device_fingerprint(&pk(&key(1))), device_fingerprint(&pk(&key(2))));
+    }
+
+    #[test]
+    fn pairing_macs_bind_secret_pubkey_and_role() {
+        let secret = [3u8; PAIRING_SECRET_LEN];
+        let new_pubkey = pk(&key(5));
+        let req = pairing_request_mac(&secret, &HP, &new_pubkey);
+        // Deterministic for the same inputs...
+        assert_eq!(req, pairing_request_mac(&secret, &HP, &new_pubkey));
+        // ...request and ack MACs differ (domain separation, so an ack can't be replayed as a request)...
+        assert_ne!(req, pairing_ack_mac(&secret, &HP, &new_pubkey));
+        // ...a wrong secret fails (mistyped words → bind never authorises)...
+        assert_ne!(req, pairing_request_mac(&[4u8; PAIRING_SECRET_LEN], &HP, &new_pubkey));
+        // ...and a swapped pubkey fails (a relay can't re-point the request at another key).
+        assert_ne!(req, pairing_request_mac(&secret, &HP, &pk(&key(6))));
     }
 
     #[test]
