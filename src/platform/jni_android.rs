@@ -191,6 +191,20 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativePollKeyboard(
     ctx.shell.poll_keyboard() as jint
 }
 
+/// Per-frame poll: `1` when the app just cleared its compose box (a message was sent) and the Activity should `InputMethodManager.restartInput` to drop the IME's stale composing buffer, else `0`. One-shot.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativePollInputReset(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    context_ptr: jlong,
+) -> jint {
+    let Some(ctx) = get_context(context_ptr) else {
+        return 0;
+    };
+    ctx.shell.poll_input_reset() as jint
+}
+
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeOnTextInput(

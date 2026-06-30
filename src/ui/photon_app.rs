@@ -394,6 +394,8 @@ pub struct PhotonApp {
     device_keypair: Option<crate::network::fgtw::Keypair>,
     /// One-shot Android soft-keyboard request. `change_focus` sets `Some(true)` when focus enters a textbox and `Some(false)` when it leaves; `wants_keyboard` returns and clears the value. The Activity reads the JNI signal after each touch and calls `InputMethodManager.show/hide` accordingly. Stays `None` on idle frames so the Activity doesn't churn the IME.
     pending_keyboard_request: Option<bool>,
+    /// One-shot: set true when the compose box is cleared on send, so the Android host restarts IME input and a predictive keyboard doesn't re-materialise the just-sent text. Drained by `wants_input_reset`.
+    pending_input_reset: bool,
     /// This device's avatar in BT.2020 γ=2.0 u8 RGB, sized `crate::avatar::AVATAR_SIZE × AVATAR_SIZE × 3`. `None` until `on_query_result` pulls one from local storage (no saved avatar = stays `None`, Ready screen falls back to the grey placeholder).
     device_avatar_pixels: Option<Vec<u8>>,
     /// Cached Mitchell resize of `device_avatar_pixels` at the current Ready-screen circle diameter. Rebuilt on diameter change (resize / zoom).
@@ -498,6 +500,7 @@ impl PhotonApp {
             search_status: None,
             device_keypair: None,
             pending_keyboard_request: None,
+            pending_input_reset: false,
             device_avatar_pixels: None,
             device_avatar_scaled: None,
             device_avatar_scaled_diameter: 0,
@@ -682,6 +685,11 @@ impl FluorApp for PhotonApp {
         self.pending_keyboard_request.take()
     }
 
+    fn wants_input_reset(&mut self) -> bool {
+        // One-shot: drained after a send so the Activity restarts IME input exactly once.
+        std::mem::replace(&mut self.pending_input_reset, false)
+    }
+
     fn set_event_proxy(&mut self, proxy: Arc<dyn WakeSender<Self::UserEvent>>) {
         self.event_proxy = Some(proxy);
     }
@@ -737,16 +745,8 @@ impl FluorApp for PhotonApp {
         self.contacts_plus_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., "+"));
         // Conversation compose box — placeholder geometry; positioned each frame via `update_widget_layout`.
         self.message_textbox = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
-        // Send button overlaid in the compose box; "→" glyph. Geometry set each frame in `update_widget_layout`.
-        self.message_send_btn = Some(Button::new(
-            &mut self.hit_counter,
-            0.,
-            0.,
-            1.,
-            1.,
-            12.,
-            "\u{2192}",
-        ));
+        // Send button overlaid in the compose box. ASCII ">" (not "→" U+2192 — absent from the Android font, so it rendered blank there; the contacts "+" button proves ASCII renders). Geometry set each frame in `update_widget_layout`.
+        self.message_send_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., ">"));
         // Reserve a hit-id for the Ready-screen avatar circle. Not a Widget — the avatar is just a paint primitive — so click dispatch is handled directly in `on_event`'s MouseInput::Pressed arm, not thru `widget::dispatch_click`. Incrementing the shared counter keeps the contiguous-id contract intact for the `[]h` debug overlay.
         self.hit_counter = self.hit_counter.wrapping_add(1);
         self.avatar_hit_id = self.hit_counter;
@@ -3175,6 +3175,8 @@ impl PhotonApp {
         if let Some(tb) = self.message_textbox.as_mut() {
             tb.clear();
         }
+        // Tell the Android host to restart IME input — a predictive keyboard still holds the just-sent text as a composing buffer and would re-materialise it on the next keystroke without this.
+        self.pending_input_reset = true;
     }
 
     /// Send the current textbox contents as an attestation query and transition Launch → Attesting. Called from Enter in the textbox path and from clicking the Attest button — same submit path. No-op if the textbox is empty, HandleQuery wasn't constructed (init failure path), or the launch sub-state forbids submission (`LaunchState::Attesting` — query already in flight; second submit would double-spend the ~5s memory-hard proof).
