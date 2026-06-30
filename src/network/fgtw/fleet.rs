@@ -711,6 +711,115 @@ pub fn pairing_ack_mac(
     pairing_mac(b"PHOTON_PAIR_ACK_v0", secret, handle_proof, new_pubkey)
 }
 
+/// Short read-aloud fingerprint of a device pubkey, shown on BOTH screens so the human can confirm the existing device is about to bind the device actually in their hand — not a shoulder-surfer who raced a request into the inbox with the same secret.
+pub fn device_fingerprint(pubkey: &[u8; 32]) -> String {
+    let h = blake3::hash(pubkey);
+    voca::encode_spaced(num_bigint::BigUint::from_bytes_be(&h.as_bytes()[..4]))
+}
+
+/// A pending pairing request the existing device should surface for confirmation.
+pub struct PendingPairing {
+    pub new_pubkey: [u8; 32],
+    /// The read-aloud fingerprint to display for the human cross-check.
+    pub fingerprint: String,
+}
+
+/// Pairing requests older than this are ignored (stale inbox slot).
+const PAIR_FRESH_OSC: i64 = 300 * vsf::OSCILLATIONS_PER_SECOND as i64; // 5 minutes
+
+// ── Pairing inbox transport (the secret's MAC authenticates; FGTW is a dumb relay). ──
+
+/// NEW device: drop a pairing request `{new_pubkey, request_mac}` into this identity's inbox slot.
+/// The existing device validates the MAC with the secret you typed in, so a wrong transcription is silently dropped.
+pub fn post_pairing_request(
+    new_device_key: &Keypair,
+    handle_proof: &[u8; 32],
+    secret: &[u8; PAIRING_SECRET_LEN],
+) -> Result<(), String> {
+    let new_pubkey = new_device_key.public.to_bytes();
+    let mac = pairing_request_mac(secret, handle_proof, &new_pubkey);
+    let mut section = vsf::VsfSection::new("pair_put");
+    section.add_field("hp", VsfType::hP(handle_proof.to_vec()));
+    section.add_field("pk", VsfType::ke(new_pubkey.to_vec()));
+    section.add_field("mac", VsfType::hb(mac.to_vec()));
+    section.add_field("t", VsfType::e(vsf::types::EtType::e6(vsf::eagle_time_oscillations())));
+    let req = vsf::VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .provenance_only()
+        .add_section_direct(section)
+        .build()
+        .map_err(|e| format!("pair_put build: {e}"))?;
+    let resp = crate::network::http::blocking()
+        .post(FGTW_URL)
+        .timeout(std::time::Duration::from_secs(15))
+        .header("Content-Type", "application/octet-stream")
+        .body(req)
+        .send()
+        .map_err(|e| format!("pair_put send: {e}"))?;
+    if resp.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!("pair_put http {}", resp.status()))
+    }
+}
+
+/// EXISTING device: poll the inbox for a pending request and validate it against the typed secret.
+/// Returns the device to confirm (with its fingerprint) only if the MAC checks out and the request is fresh — otherwise `None` (no request, stale, or a bad/forged MAC that we ignore).
+pub fn poll_pairing_request(
+    handle_proof: &[u8; 32],
+    secret: &[u8; PAIRING_SECRET_LEN],
+) -> Result<Option<PendingPairing>, String> {
+    let mut section = vsf::VsfSection::new("pair_get");
+    section.add_field("hp", VsfType::hP(handle_proof.to_vec()));
+    let req = vsf::VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .provenance_only()
+        .add_section_direct(section)
+        .build()
+        .map_err(|e| format!("pair_get build: {e}"))?;
+    let resp = crate::network::http::blocking()
+        .post(FGTW_URL)
+        .timeout(std::time::Duration::from_secs(15))
+        .header("Content-Type", "application/octet-stream")
+        .body(req)
+        .send()
+        .map_err(|e| format!("pair_get send: {e}"))?;
+    if resp.status().as_u16() == 404 {
+        return Ok(None);
+    }
+    if !resp.status().is_success() {
+        return Err(format!("pair_get http {}", resp.status()));
+    }
+    let bytes = resp.bytes().map_err(|e| format!("pair_get read: {e}"))?;
+    let (_, header_end) = vsf::VsfHeader::decode(&bytes).map_err(|e| format!("pair header: {e}"))?;
+    let mut ptr = header_end;
+    let stored =
+        vsf::VsfSection::parse(&bytes, &mut ptr).map_err(|e| format!("pair section: {e}"))?;
+    let new_pubkey = match stored.get_field("pk").and_then(|f| f.values.first()) {
+        Some(VsfType::ke(b)) if b.len() == 32 => {
+            let mut a = [0u8; 32];
+            a.copy_from_slice(b);
+            a
+        }
+        _ => return Ok(None),
+    };
+    let mac = match stored.get_field("mac").and_then(|f| f.values.first()) {
+        Some(VsfType::hb(b)) if b.len() == 32 => b.clone(),
+        _ => return Ok(None),
+    };
+    let t = match stored.get_field("t").and_then(|f| f.values.first()) {
+        Some(VsfType::e(et)) => et_to_osc(et),
+        _ => return Ok(None),
+    };
+    // Stale, or a MAC we can't reproduce from the secret → not ours; ignore.
+    if (vsf::eagle_time_oscillations() - t) > PAIR_FRESH_OSC
+        || mac != pairing_request_mac(secret, handle_proof, &new_pubkey)
+    {
+        return Ok(None);
+    }
+    Ok(Some(PendingPairing { new_pubkey, fingerprint: device_fingerprint(&new_pubkey) }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
