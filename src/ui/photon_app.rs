@@ -406,6 +406,16 @@ pub struct PhotonApp {
     add_device_rx: Option<std::sync::mpsc::Receiver<AddDeviceUpdate>>,
     /// AddDevice flow: a clone-able sender so the one-shot bind thread can report back on the same channel as the poller.
     add_device_tx: Option<std::sync::mpsc::Sender<AddDeviceUpdate>>,
+    /// Shared stop flag for the AddDevice/Join background pollers — set true when we leave the flow so the thread exits its loop (a poll that never returns Pending would otherwise never notice the dropped receiver).
+    add_stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Launch add-mode (new device JOINING a fleet): orb on Launch toggles it. Enter handle, then the pairing words, and this device posts a pairing request + polls membership until its other device confirms.
+    launch_add_mode: bool,
+    /// Join flow: the handle once entered (step 1); `None` while still awaiting it.
+    add_join_handle: Option<String>,
+    /// Join flow: status line on the add-mode launch screen.
+    add_join_status: String,
+    /// Join flow: progress from the off-thread post-request + membership poll.
+    add_join_rx: Option<std::sync::mpsc::Receiver<JoinUpdate>>,
     /// This device's avatar in BT.2020 γ=2.0 u8 RGB, sized `crate::avatar::AVATAR_SIZE × AVATAR_SIZE × 3`. `None` until `on_query_result` pulls one from local storage (no saved avatar = stays `None`, Ready screen falls back to the grey placeholder).
     device_avatar_pixels: Option<Vec<u8>>,
     /// Cached Mitchell resize of `device_avatar_pixels` at the current Ready-screen circle diameter. Rebuilt on diameter change (resize / zoom).
@@ -516,6 +526,11 @@ impl PhotonApp {
             add_device_pending: None,
             add_device_rx: None,
             add_device_tx: None,
+            add_stop: None,
+            launch_add_mode: false,
+            add_join_handle: None,
+            add_join_status: String::new(),
+            add_join_rx: None,
             device_avatar_pixels: None,
             device_avatar_scaled: None,
             device_avatar_scaled_diameter: 0,
@@ -630,6 +645,14 @@ enum AddDeviceUpdate {
     Pending(crate::network::fgtw::fleet::PendingPairing),
     /// The bind published — the new device is now a fleet member.
     Bound,
+    /// An error to surface in the status line.
+    Failed(String),
+}
+
+/// Off-thread results for the new-device JOIN flow (post pairing request + poll membership), drained in `tick`.
+enum JoinUpdate {
+    /// This device is now in the fleet — hand off to the normal attest.
+    Joined,
     /// An error to surface in the status line.
     Failed(String),
 }
@@ -1396,12 +1419,20 @@ impl FluorApp for PhotonApp {
                             return EventResponse::Handled;
                         }
                         if matches!(self.state, AppState::AddDevice) {
-                            self.add_device_secret = None;
-                            self.add_device_pending = None;
-                            self.add_device_status.clear();
-                            self.add_device_rx = None; // drop → the poll thread exits
-                            self.add_device_tx = None;
+                            self.end_add_device_flow();
                             self.state = AppState::Ready;
+                            ctx.window.request_redraw();
+                            return EventResponse::Handled;
+                        }
+                        // Cancel launch JOIN mode.
+                        if self.launch_add_mode {
+                            self.launch_add_mode = false;
+                            self.add_join_handle = None;
+                            self.add_join_rx = None;
+                            self.add_join_status.clear();
+                            if let Some(tb) = self.textbox.as_mut() {
+                                tb.clear();
+                            }
                             ctx.window.request_redraw();
                             return EventResponse::Handled;
                         }
@@ -1708,14 +1739,47 @@ impl FluorApp for PhotonApp {
                     self.add_device_pending = Some(p);
                 }
                 AddDeviceUpdate::Bound => {
+                    // Stop the poller, keep the screen showing success until the user backs out.
+                    if let Some(stop) = self.add_stop.take() {
+                        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
                     self.add_device_status = "Device added \u{2713}".to_string();
                     self.add_device_pending = None;
                     self.add_device_secret = None;
-                    self.add_device_rx = None; // stop polling; the user can Esc/orb back when ready
+                    self.add_device_rx = None;
                     self.add_device_tx = None;
                 }
                 AddDeviceUpdate::Failed(e) => {
                     self.add_device_status = format!("Error: {e}");
+                }
+            }
+            needs_redraw = true;
+        }
+
+        // New-device JOIN flow: post-request + membership-poll results.
+        let join_updates: Vec<JoinUpdate> = self
+            .add_join_rx
+            .as_ref()
+            .map(|rx| rx.try_iter().collect())
+            .unwrap_or_default();
+        for update in join_updates {
+            match update {
+                JoinUpdate::Joined => {
+                    // We're in the fleet now — drop add-mode and run the normal attest (it now passes the fleet gate).
+                    self.add_join_rx = None;
+                    self.launch_add_mode = false;
+                    self.add_join_status.clear();
+                    if let Some(handle) = self.add_join_handle.take() {
+                        if let Some(tb) = self.textbox.as_mut() {
+                            tb.clear();
+                            tb.insert_str(&handle, ctx.text);
+                        }
+                    }
+                    self.submit_handle();
+                }
+                JoinUpdate::Failed(e) => {
+                    self.add_join_rx = None;
+                    self.add_join_status = format!("Join failed: {e}");
                 }
             }
             needs_redraw = true;
@@ -1923,13 +1987,18 @@ impl FluorApp for PhotonApp {
             );
 
             // Status slot — `attest.error` rect above the textbox. Carries either the red error message (`LaunchState::Error`) or the white "Attesting…" indicator (`LaunchState::Attesting`); empty in Fresh. Same geometry for both so they swap in place; colour differentiates "something's wrong" from "we're working". Wave's 1-cycle/sec phase animation pairs with the "Attesting…" line as the secondary cue.
-            let status: Option<(&str, u32)> = match launch_state {
-                LaunchState::Attesting => Some(("Attesting\u{2026}", STATUS_TEXT_COLOUR)),
-                LaunchState::Error(msg) if !msg.is_empty() => {
-                    Some((msg.as_str(), ERROR_TEXT_COLOUR))
-                }
-                _ => None,
-            };
+            let status: Option<(&str, u32)> =
+                if self.launch_add_mode && !self.add_join_status.is_empty() {
+                    Some((self.add_join_status.as_str(), STATUS_TEXT_COLOUR))
+                } else {
+                    match launch_state {
+                        LaunchState::Attesting => Some(("Attesting\u{2026}", STATUS_TEXT_COLOUR)),
+                        LaunchState::Error(msg) if !msg.is_empty() => {
+                            Some((msg.as_str(), ERROR_TEXT_COLOUR))
+                        }
+                        _ => None,
+                    }
+                };
             if let Some((text, colour)) = status {
                 let error_rect = attest.error;
                 if !error_rect.is_empty() {
@@ -1959,9 +2028,19 @@ impl FluorApp for PhotonApp {
                 let region_h = (hint_rect.y1 - hint_rect.y0) as f32;
                 let cx = (hint_rect.x0 + hint_rect.x1) as f32 * 0.5;
                 let cy = (hint_rect.y0 + hint_rect.y1) as f32 * 0.5;
+                // Label reflects the join sub-step: handle first, then pairing words; plain attest just says "handle".
+                let hint_label = if self.launch_add_mode {
+                    if self.add_join_handle.is_some() {
+                        "pairing words"
+                    } else {
+                        "handle (join a fleet)"
+                    }
+                } else {
+                    "handle"
+                };
                 ctx.text.draw_text_center_u32(
                     &mut canvas,
-                    "handle",
+                    hint_label,
                     cx,
                     cy,
                     region_h * 0.7,
@@ -3125,21 +3204,21 @@ impl PhotonApp {
                         let (tx, rx) = std::sync::mpsc::channel();
                         self.add_device_rx = Some(rx);
                         self.add_device_tx = Some(tx.clone());
-                        std::thread::spawn(move || loop {
-                            match fleet::poll_pairing_request(&hp, &secret) {
-                                Ok(Some(p)) => {
-                                    if tx.send(AddDeviceUpdate::Pending(p)).is_err() {
-                                        break;
+                        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                        self.add_stop = Some(stop.clone());
+                        std::thread::spawn(move || {
+                            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                                match fleet::poll_pairing_request(&hp, &secret) {
+                                    Ok(Some(p)) => {
+                                        let _ = tx.send(AddDeviceUpdate::Pending(p));
+                                    }
+                                    Ok(None) => {}
+                                    Err(e) => {
+                                        let _ = tx.send(AddDeviceUpdate::Failed(e));
                                     }
                                 }
-                                Ok(None) => {}
-                                Err(e) => {
-                                    if tx.send(AddDeviceUpdate::Failed(e)).is_err() {
-                                        break;
-                                    }
-                                }
+                                std::thread::sleep(crate::jitter_dur(std::time::Duration::from_secs(3)));
                             }
-                            std::thread::sleep(crate::jitter_dur(std::time::Duration::from_secs(3)));
                         });
                     }
                     None => self.add_device_status = "attest first".to_string(),
@@ -3165,16 +3244,116 @@ impl PhotonApp {
                         });
                     }
                 } else {
-                    // No pending request → cancel back to the contact list (dropping rx stops the poller).
-                    self.add_device_secret = None;
-                    self.add_device_status.clear();
-                    self.add_device_rx = None;
-                    self.add_device_tx = None;
+                    // No pending request → cancel back to the contact list.
+                    self.end_add_device_flow();
                     self.state = AppState::Ready;
                 }
                 true
             }
+            // New device on the launch screen: toggle JOIN mode (enter handle + pairing words to join a fleet).
+            AppState::Launch(_) => {
+                self.launch_add_mode = !self.launch_add_mode;
+                self.add_join_handle = None;
+                self.add_join_rx = None;
+                self.add_join_status = if self.launch_add_mode {
+                    "Join a fleet — enter your handle".to_string()
+                } else {
+                    String::new()
+                };
+                if let Some(tb) = self.textbox.as_mut() {
+                    tb.clear();
+                }
+                true
+            }
             _ => false,
+        }
+    }
+
+    /// Stop the AddDevice background poller and clear its state.
+    fn end_add_device_flow(&mut self) {
+        if let Some(stop) = self.add_stop.take() {
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.add_device_secret = None;
+        self.add_device_pending = None;
+        self.add_device_status.clear();
+        self.add_device_rx = None;
+        self.add_device_tx = None;
+    }
+
+    /// New-device JOIN: advance the add-mode launch flow. Step 1 captures the handle, step 2 the pairing words → posts a pairing request and polls fleet membership off-thread.
+    fn submit_join_step(&mut self) {
+        use crate::network::fgtw::fleet;
+        if self.add_join_rx.is_some() {
+            return; // already joining
+        }
+        let text: String = match self.textbox.as_ref() {
+            Some(tb) => tb.chars.iter().collect(),
+            None => return,
+        };
+        let text = text.trim().to_string();
+        if text.is_empty() {
+            return;
+        }
+        match self.add_join_handle.take() {
+            None => {
+                // Step 1: the handle.
+                self.add_join_handle = Some(text);
+                self.add_join_status = "Enter the pairing words from your other device".to_string();
+                if let Some(tb) = self.textbox.as_mut() {
+                    tb.clear();
+                }
+            }
+            Some(handle) => {
+                // Step 2: the pairing words → spawn the join.
+                let secret = match fleet::secret_from_words(&text) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        self.add_join_status = format!("Unrecognised words: {e}");
+                        self.add_join_handle = Some(handle); // back to the words step
+                        return;
+                    }
+                };
+                let Some(device_key) = self.device_keypair.clone() else {
+                    self.add_join_status = "no device key".to_string();
+                    return;
+                };
+                self.add_join_handle = Some(handle.clone());
+                self.add_join_status = "Joining\u{2026}".to_string();
+                self.change_focus(None);
+                if let Some(tb) = self.textbox.as_mut() {
+                    tb.clear();
+                }
+                let (tx, rx) = std::sync::mpsc::channel();
+                self.add_join_rx = Some(rx);
+                std::thread::spawn(move || {
+                    let hp = *ihi::handle_to_proof(&handle).as_bytes();
+                    let me = device_key.public.to_bytes();
+                    // Post the request, then poll membership; re-post each cycle in case the inbox slot was overwritten by a racer or expired.
+                    if let Err(e) = fleet::post_pairing_request(&device_key, &hp, &secret) {
+                        let _ = tx.send(JoinUpdate::Failed(format!("request failed: {e}")));
+                        return;
+                    }
+                    for _ in 0..40 {
+                        // up to ~2 min of polling
+                        match fleet::current_members(&hp) {
+                            Ok(m) if m.contains(&me) => {
+                                let _ = tx.send(JoinUpdate::Joined);
+                                return;
+                            }
+                            Ok(_) => {
+                                let _ = fleet::post_pairing_request(&device_key, &hp, &secret);
+                            }
+                            Err(e) => {
+                                let _ = tx.send(JoinUpdate::Failed(e));
+                                return;
+                            }
+                        }
+                        std::thread::sleep(crate::jitter_dur(std::time::Duration::from_secs(3)));
+                    }
+                    let _ = tx.send(JoinUpdate::Failed("timed out — confirm on the other device".into()));
+                });
+            }
         }
     }
 
@@ -3358,6 +3537,11 @@ impl PhotonApp {
             if !s.can_edit_handle() {
                 return;
             }
+        }
+        // In JOIN mode the launch textbox feeds the pairing flow (handle then words), not a fresh attestation.
+        if self.launch_add_mode {
+            self.submit_join_step();
+            return;
         }
         let handle: String = match self.textbox.as_ref() {
             Some(tb) => tb.chars.iter().collect(),
