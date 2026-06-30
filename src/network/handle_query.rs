@@ -565,7 +565,7 @@ impl HandleQuery {
                             {
                                 crate::log(&format!(
                                     "Network: Failed to load messages for {}: {}",
-                                    contact.handle.as_str(),
+                                    crate::fp(&contact.handle_proof).as_str(),
                                     e
                                 ));
                             }
@@ -705,7 +705,7 @@ impl HandleQuery {
             crate::log("Network: Search worker initialized");
 
             while let Ok(handle) = rx.recv() {
-                crate::log(&format!("Network: Searching for handle '{}'...", handle));
+                crate::log("Network: Searching for a handle...");
 
                 let handle_proof = Handle::username_to_handle_proof(&handle);
 
