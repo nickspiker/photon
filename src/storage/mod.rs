@@ -38,7 +38,8 @@ pub fn photon_config_dir() -> Result<std::path::PathBuf, std::io::Error> {
     }
     #[cfg(not(target_os = "android"))]
     {
-        // Dev override: PHOTON_DATA_DIR points a whole instance (vault + log + lock) at a separate dir, so a second instance can run isolated for two-party testing (pair with PHOTON_FINGERPRINT for a distinct device identity).
+        // Dev-only override: PHOTON_DATA_DIR points a whole instance (vault + log + lock) at a separate dir, so a second instance can run isolated for two-party testing (pair with PHOTON_FINGERPRINT for a distinct device identity). Compiled out of release so production has no escape hatch from the single-instance lock.
+        #[cfg(feature = "development")]
         if let Ok(custom) = std::env::var("PHOTON_DATA_DIR") {
             if !custom.is_empty() {
                 return Ok(std::path::PathBuf::from(custom));
@@ -50,14 +51,41 @@ pub fn photon_config_dir() -> Result<std::path::PathBuf, std::io::Error> {
     }
 }
 
-/// Single-instance guard, keyed to the data dir: two instances on the SAME dir would race the vault and corrupt the log (the trim is read-truncate-rewrite), so the second must not start.
-/// Held by binding a localhost-only TCP port derived from the dir path — the OS releases it on exit/crash, so there are no stale locks, and a different dir (a separate `PHOTON_DATA_DIR`) hashes to a different port and coexists.
-/// Returns the listener to keep alive for the whole process, or `None` if another instance already holds this dir.
+/// Holds the single-instance lock for the whole process; dropping it (or process exit/crash) releases it.
 #[cfg(not(target_os = "android"))]
-pub fn acquire_single_instance(data_dir: &std::path::Path) -> Option<std::net::TcpListener> {
+pub struct InstanceLock {
+    _file: std::fs::File,
+}
+
+/// Single-instance guard, keyed to the data dir: two instances on the SAME dir would race the vault and corrupt the log (the trim is read-truncate-rewrite), so the second must not start.
+/// An advisory exclusive `flock` on `<data_dir>/photon.lock` — exact-keyed (no port hashing/collision, no interference from other apps), and the kernel releases it when the holding process dies, so a crash leaves no stale lock.
+/// Returns the guard to keep alive for the whole process, or `None` if another instance already holds this dir. (Non-unix desktops fall back to a localhost socket; Android is single-instance by construction so this isn't compiled there.)
+#[cfg(all(unix, not(target_os = "android")))]
+pub fn acquire_single_instance(data_dir: &std::path::Path) -> Option<InstanceLock> {
+    use std::os::unix::io::AsRawFd;
+    let _ = std::fs::create_dir_all(data_dir);
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(data_dir.join("photon.lock"))
+        .ok()?;
+    // LOCK_EX | LOCK_NB: take it now or fail immediately if another live process holds it.
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    (rc == 0).then_some(InstanceLock { _file: file })
+}
+
+/// Non-unix fallback: a localhost-only socket on a dir-derived port (advisory file locking varies on Windows).
+#[cfg(all(not(unix), not(target_os = "android")))]
+pub struct InstanceLock {
+    _socket: std::net::TcpListener,
+}
+#[cfg(all(not(unix), not(target_os = "android")))]
+pub fn acquire_single_instance(data_dir: &std::path::Path) -> Option<InstanceLock> {
     let h = blake3::hash(data_dir.to_string_lossy().as_bytes());
     let port = 20000 + (u16::from_le_bytes([h.as_bytes()[0], h.as_bytes()[1]]) % 20000);
-    std::net::TcpListener::bind(("127.0.0.1", port)).ok()
+    std::net::TcpListener::bind(("127.0.0.1", port))
+        .ok()
+        .map(|s| InstanceLock { _socket: s })
 }
 
 // ============================================================================
