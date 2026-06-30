@@ -348,6 +348,10 @@ impl HandleQuery {
                 let online = check_connectivity(&client);
 
                 if first_check || online != prev_online {
+                    crate::log(&format!(
+                        "Connectivity: FGTW {} (GET /status)",
+                        if online { "ONLINE" } else { "offline" }
+                    ));
                     let _ = online_tx.send(online);
                     if let Some(ref proxy) = event_proxy {
                         let _ = proxy.send(PhotonEvent::ConnectivityChanged(online));
