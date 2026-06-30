@@ -115,10 +115,7 @@ fn format_http_error_from_bytes(step: &str, status: reqwest::StatusCode, body: &
 /// Load bootstrap peers by announcing to FGTW This requires authenticating with our handle and device key Returns BootstrapResult which includes peers even on error (for peer discovery)
 ///
 /// # Arguments
-/// * `device_key` - Device's Ed25519 keypair
-/// * `handle_proof` - Handle proof hash
-/// * `port` - Local P2P port
-/// * `identity_seed` - The owner's `ihi::handle_to_hash` root (for avatar keypair derivation; no handle string)
+/// * `device_key` - Device's Ed25519 keypair * `handle_proof` - Handle proof hash * `port` - Local P2P port * `identity_seed` - The owner's `ihi::handle_to_hash` root (for avatar keypair derivation; no handle string)
 pub async fn load_bootstrap_peers(
     device_key: &Keypair,
     handle_proof: [u8; 32],

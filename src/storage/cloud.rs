@@ -219,10 +219,7 @@ fn u8_to_trust_level(v: u8) -> TrustLevel {
 /// Uploads current contacts to cloud. Call after any contact change.
 ///
 /// # Arguments
-/// * `contacts` - Current contacts list
-/// * `identity_seed` - Our identity seed (BLAKE3 of VSF-normalized handle)
-/// * `device_keypair` - Device Ed25519 keypair
-/// * `handle_proof` - 32-byte handle proof (proves registered user)
+/// * `contacts` - Current contacts list * `identity_seed` - Our identity seed (BLAKE3 of VSF-normalized handle) * `device_keypair` - Device Ed25519 keypair * `handle_proof` - 32-byte handle proof (proves registered user)
 pub fn sync_contacts_to_cloud(
     contacts: &[Contact],
     identity_seed: &[u8; 32],
@@ -269,9 +266,7 @@ pub fn sync_contacts_to_cloud(
 /// Downloads and decrypts contacts from cloud.
 ///
 /// # Returns
-/// * `Ok(Some(contacts))` - Contacts found and decrypted
-/// * `Ok(None)` - No contacts blob exists on cloud
-/// * `Err(...)` - Error
+/// * `Ok(Some(contacts))` - Contacts found and decrypted * `Ok(None)` - No contacts blob exists on cloud * `Err(...)` - Error
 pub fn load_contacts_from_cloud(
     identity_seed: &[u8; 32],
     device_keypair: &crate::network::fgtw::Keypair,

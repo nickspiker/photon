@@ -55,8 +55,7 @@ pub enum FgtwMessage {
     /// - Echoes same provenance_hash from ping (proves we saw it)
     /// - ke = responder's Ed25519 public key (for signature verification)
     /// - ge = signature of provenance_hash (proves we processed it)
-    /// - sync records: Per-conversation last_received_ef6 for efficient resync
-    ///   Peer can retransmit everything after that timestamp
+    /// - sync records: Per-conversation last_received_ef6 for efficient resync Peer can retransmit everything after that timestamp
     ///
     /// Note: Avatar is fetched by handle, not exchanged in ping/pong. Storage key = BLAKE3(BLAKE3(handle) || "avatar")
     StatusPong {
@@ -118,18 +117,14 @@ pub enum FgtwMessage {
         peers: Vec<PeerRecord>,
     },
     /// Avatar exchange REQUEST — "send me your avatar (directly)".
-    /// Sent peer-to-peer to a MUTUAL contact (a completed CLUTCH ceremony = both added each other),
-    /// so a friend's avatar comes from the friend, not a public lookup. The responder authenticates
-    /// `sender_pubkey` against its own contacts and replies ONLY if that peer is a Complete contact —
-    /// otherwise it stays silent and the requester falls back to FGTW (or nothing). Signed like a ping.
+    /// Sent peer-to-peer to a MUTUAL contact (a completed CLUTCH ceremony = both added each other), so a friend's avatar comes from the friend, not a public lookup. The responder authenticates `sender_pubkey` against its own contacts and replies ONLY if that peer is a Complete contact — otherwise it stays silent and the requester falls back to FGTW (or nothing). Signed like a ping.
     AvatarRequest {
         timestamp: i64,
         sender_pubkey: DevicePubkey,
         provenance_hash: [u8; 32], // BLAKE3(sender_pubkey || timestamp)
         signature: [u8; 64],       // Ed25519 over provenance_hash
     },
-    /// Avatar exchange RESPONSE — the responder's OWN avatar as raw VSF bytes (the same AVIF-in-VSF
-    /// blob stored in their vault / published to FGTW). Tens of KB, so PT fragments it transparently.
+    /// Avatar exchange RESPONSE — the responder's OWN avatar as raw VSF bytes (the same AVIF-in-VSF blob stored in their vault / published to FGTW). Tens of KB, so PT fragments it transparently.
     /// The receiver decodes it the same way as an FGTW download. Signed over the avatar bytes' hash.
     AvatarResponse {
         timestamp: i64,
@@ -878,9 +873,7 @@ impl PeerRecord {
     }
 }
 
-/// Encode one PeerRecord as a single multi-value `peer` field, in the exact POSITIONAL shape [`crate::network::fgtw::bootstrap::parse_peer_from_field`] reads — the production-proven encoding (FGTW peer lists decode thru it daily):
-///   `(peer: hP{handle_proof}, ke{device_pubkey}, t_u3{ip}, u4{port}, e6{last_seen}, t_u3{local_ip}, ge{sig})`
-/// The trailing `ge` self-signature lets the receiver verify each record independently of the relay.
+/// Encode one PeerRecord as a single multi-value `peer` field, in the exact POSITIONAL shape [`crate::network::fgtw::bootstrap::parse_peer_from_field`] reads — the production-proven encoding (FGTW peer lists decode thru it daily): `(peer: hP{handle_proof}, ke{device_pubkey}, t_u3{ip}, u4{port}, e6{last_seen}, t_u3{local_ip}, ge{sig})` The trailing `ge` self-signature lets the receiver verify each record independently of the relay.
 /// (The flat-named `peer_N_*` / `v_u3` style of the legacy DHT `extract_peer_list` is deliberately NOT used — it has a latent IP type mismatch and isn't exercised in production.)
 fn encode_peer_field(peer: &PeerRecord) -> (String, Vec<VsfType>) {
     let (ip_octets, port) = match peer.ip {
@@ -1048,8 +1041,7 @@ fn extract_peer_list(
             _ => return Err(format!("Missing or invalid {}", last_seen_key)),
         };
 
-        // local_ip (v_u3): 4 bytes = v4, 16 = v6, empty = None. Must be decoded (not hardcoded None)
-        // so the signature — which covers local_ip — verifies.
+        // local_ip (v_u3): 4 bytes = v4, 16 = v6, empty = None. Must be decoded (not hardcoded None) so the signature — which covers local_ip — verifies.
         let local_ip = match get_field(fields, &format!("{}_local_ip", peer_prefix)) {
             Some(VsfType::v_u3(v)) if v.data.len() == 4 => Some(IpAddr::V4(std::net::Ipv4Addr::new(
                 v.data[0], v.data[1], v.data[2], v.data[3],
@@ -1065,9 +1057,7 @@ fn extract_peer_list(
         let sig_key = format!("{}_sig", peer_prefix);
         let signature = match get_field(fields, &sig_key) {
             Some(VsfType::ge(s)) if s.len() == 64 => s.as_slice().try_into().unwrap(),
-            // Legacy / unsigned record (this DHT FoundNodes path predates self-signed records). Left
-            // as [0;64]; merge_peer's verify() will reject it, which is the safe default — only
-            // signed records propagate thru gossip.
+            // Legacy / unsigned record (this DHT FoundNodes path predates self-signed records). Left as [0;64]; merge_peer's verify() will reject it, which is the safe default — only signed records propagate thru gossip.
             _ => [0u8; 64],
         };
         peers.push(PeerRecord {

@@ -62,9 +62,7 @@ pub struct TickSend {
     pub peer_addr: SocketAddr,
     pub wire_bytes: Vec<u8>,
     /// When `Some`, also send this WHOLE VSF payload over a TCP connection (the reliable fallback).
-    /// UDP is preferred and carries `wire_bytes` (a PT shard); TCP is tried in parallel only after
-    /// the UDP SPEC has gone ~1s without an ACK, and carries the entire pre-sharded VSF once — no PT
-    /// stream framing, since TCP is ordered/reliable and the VSF `l` field self-frames the length.
+    /// UDP is preferred and carries `wire_bytes` (a PT shard); TCP is tried in parallel only after the UDP SPEC has gone ~1s without an ACK, and carries the entire pre-sharded VSF once — no PT stream framing, since TCP is ordered/reliable and the VSF `l` field self-frames the length.
     pub tcp_payload: Option<Vec<u8>>,
     pub relay: Option<RelayInfo>,
 }
@@ -75,11 +73,8 @@ pub struct PTManager {
     outbound: Vec<OutboundTransfer>,
     /// Inbound transfers (we're receiving) - keyed by (peer, stream_id)
     inbound: Vec<InboundTransfer>,
-    /// Reliable small (≤1KB) packets awaiting delivery ack, in FIFO order. Per peer, only the
-    /// front packet is in flight (stop-and-wait): it retransmits on 1→2→…→60s backoff until the
-    /// receiver's delivery ack arrives, then it's popped and the next packet for that peer sends.
-    /// Strict ordering per peer; head-of-line blocking is intentional (a stuck packet means the
-    /// peer isn't answering, so nothing else would get through either).
+    /// Reliable small (≤1KB) packets awaiting delivery ack, in FIFO order. Per peer, only the front packet is in flight (stop-and-wait): it retransmits on 1→2→…→60s backoff until the receiver's delivery ack arrives, then it's popped and the next packet for that peer sends.
+    /// Strict ordering per peer; head-of-line blocking is intentional (a stuck packet means the peer isn't answering, so nothing else would get through either).
     outbound_packets: Vec<OutboundPacket>,
     /// Our keypair for signing
     keypair: Keypair,
@@ -159,10 +154,7 @@ impl PTManager {
         data: Vec<u8>,
         recipient_pubkey: Option<[u8; 32]>,
     ) -> Vec<u8> {
-        // Small payload — enqueue as a reliable packet (stop-and-wait, one in flight per peer,
-        // retransmitted on backoff in tick() until the receiver's delivery ack arrives). Returns
-        // the bytes to send NOW only if no packet is already in flight to this peer; otherwise it
-        // queues behind the in-flight head and goes out when that head is acked.
+        // Small payload — enqueue as a reliable packet (stop-and-wait, one in flight per peer, retransmitted on backoff in tick() until the receiver's delivery ack arrives). Returns the bytes to send NOW only if no packet is already in flight to this peer; otherwise it queues behind the in-flight head and goes out when that head is acked.
         if data.len() <= Self::SINGLE_PACKET_MAX {
             let peer_busy = self
                 .outbound_packets
@@ -292,13 +284,10 @@ impl PTManager {
         packets
     }
 
-    /// Sentinel stream_id marking a PTAck as a small-PACKET delivery ack (not a stream ack). Real
-    /// stream ids are 'a'-'z' (0x61-0x7A); 0 is unused there, so handle_ack can route on it.
+    /// Sentinel stream_id marking a PTAck as a small-PACKET delivery ack (not a stream ack). Real stream ids are 'a'-'z' (0x61-0x7A); 0 is unused there, so handle_ack can route on it.
     pub const PACKET_ACK_STREAM_ID: u8 = 0;
 
-    /// Receiver side: a small reliable packet arrived — return the delivery-ack bytes to send back
-    /// immediately, keyed by BLAKE3(payload). Pure transport ack (bytes received); the application
-    /// still processes the payload separately and may send its own semantic ack (e.g. MessageAck).
+    /// Receiver side: a small reliable packet arrived — return the delivery-ack bytes to send back immediately, keyed by BLAKE3(payload). Pure transport ack (bytes received); the application still processes the payload separately and may send its own semantic ack (e.g. MessageAck).
     /// Idempotent: a duplicate packet (its ack was lost) just gets re-acked.
     pub fn build_packet_ack(&self, payload: &[u8]) -> Vec<u8> {
         let packet_hash = *blake3::hash(payload).as_bytes();
@@ -310,15 +299,9 @@ impl PTManager {
         ack.to_vsf_bytes(&self.keypair)
     }
 
-    /// Sender side: a packet delivery-ack arrived. Mark the matching in-flight packet delivered,
-    /// drop it, and return the next queued packet's bytes for that peer to send now (stop-and-wait
-    /// advance). Empty if no match or nothing queued.
+    /// Sender side: a packet delivery-ack arrived. Mark the matching in-flight packet delivered, drop it, and return the next queued packet's bytes for that peer to send now (stop-and-wait advance). Empty if no match or nothing queued.
     pub fn handle_packet_ack(&mut self, _ack_src: SocketAddr, packet_hash: [u8; 32]) -> Vec<u8> {
-        // Match by packet_hash ALONE — never by source address. The ack comes back from whatever
-        // address the receiver saw us on (IPv4-mapped `::ffff:` form, or the LAN vs WAN we raced),
-        // which routinely differs from the peer_addr we queued under. packet_hash = BLAKE3(payload)
-        // is globally unique, so it identifies the packet unambiguously. (Matching on peer_addr too
-        // was the bug: acks never matched, packets retransmitted forever and blocked the queue.)
+        // Match by packet_hash ALONE — never by source address. The ack comes back from whatever address the receiver saw us on (IPv4-mapped `::ffff:` form, or the LAN vs WAN we raced), which routinely differs from the peer_addr we queued under. packet_hash = BLAKE3(payload) is globally unique, so it identifies the packet unambiguously. (Matching on peer_addr too was the bug: acks never matched, packets retransmitted forever and blocked the queue.)
         let Some(pos) = self
             .outbound_packets
             .iter()
@@ -525,9 +508,7 @@ impl PTManager {
     }
 
     /// Check if a SPECIFIC inbound transfer (peer + stream) is complete, return its COMPLETE packet.
-    /// Stream-scoped: a peer can have several concurrent transfers (e.g. a CLUTCH offer AND a KEM
-    /// response in flight at once), and they must not be confused — matching by address alone grabs
-    /// whichever happens to be first in the vec, which silently drops the other.
+    /// Stream-scoped: a peer can have several concurrent transfers (e.g. a CLUTCH offer AND a KEM response in flight at once), and they must not be confused — matching by address alone grabs whichever happens to be first in the vec, which silently drops the other.
     pub fn check_inbound_complete(&mut self, peer_addr: SocketAddr, stream_id: u8) -> Option<Vec<u8>> {
         if let Some(transfer) = self.inbound.iter().find(|t| {
             same_addr(t.peer_addr, peer_addr) && t.stream_id == stream_id && t.is_complete()
@@ -546,9 +527,7 @@ impl PTManager {
             .map(|t| t.stats())
     }
 
-    /// Take a SPECIFIC completed inbound transfer's data (consumes it). Stream-scoped — see
-    /// `check_inbound_complete`: draining by peer alone confuses concurrent transfers from the same
-    /// peer (e.g. a CLUTCH offer + KEM response), dropping one and deadlocking the ceremony.
+    /// Take a SPECIFIC completed inbound transfer's data (consumes it). Stream-scoped — see `check_inbound_complete`: draining by peer alone confuses concurrent transfers from the same peer (e.g. a CLUTCH offer + KEM response), dropping one and deadlocking the ceremony.
     pub fn take_inbound_data(&mut self, peer_addr: SocketAddr, stream_id: u8) -> Option<Vec<u8>> {
         let idx = self.inbound.iter().position(|t| {
             same_addr(t.peer_addr, peer_addr)
@@ -696,9 +675,7 @@ impl PTManager {
                 }
             }
 
-            // Check for DATA packet timeouts (only during transfer phase). DATA retransmits are a
-            // UDP concern — the whole payload already went over TCP once (if eligible) during the
-            // SPEC phase, so no per-DATA TCP send here.
+            // Check for DATA packet timeouts (only during transfer phase). DATA retransmits are a UDP concern — the whole payload already went over TCP once (if eligible) during the SPEC phase, so no per-DATA TCP send here.
             if transfer.state == TransferState::Transferring {
                 for data in transfer.check_timeouts() {
                     to_send.push(TickSend {
@@ -711,10 +688,7 @@ impl PTManager {
             }
         }
 
-        // Retransmit reliable small packets whose backoff has elapsed (stop-and-wait per peer:
-        // only in-flight heads retransmit; queued packets wait for their head to be acked). Raced
-        // LAN/WAN like streams. No TCP/relay here — a 60s-capped UDP retry is the reliability for
-        // small packets; if a peer is truly unreachable, nothing flows anyway.
+        // Retransmit reliable small packets whose backoff has elapsed (stop-and-wait per peer: only in-flight heads retransmit; queued packets wait for their head to be acked). Raced LAN/WAN like streams. No TCP/relay here — a 60s-capped UDP retry is the reliability for small packets; if a peer is truly unreachable, nothing flows anyway.
         for pkt in self.outbound_packets.iter_mut() {
             if pkt.in_flight && pkt.needs_retransmit() {
                 pkt.mark_retransmit();
@@ -886,11 +860,7 @@ mod tests {
         let mut manager = PTManager::new(keypair);
         let peer_addr: SocketAddr = "127.0.0.1:12345".parse().unwrap();
 
-        // Start two transfers to same peer. BOTH must exceed SINGLE_PACKET_MAX (1024) so they take
-        // the multi-packet `outbound` spec path this test asserts on — a payload ≤ 1024 takes the
-        // small-packet fast path into `outbound_packets` (a separate queue) and would never appear in
-        // `outbound`. (data1 was 1000 here, below the threshold, which silently broke this test when
-        // the small-packet path was added.)
+        // Start two transfers to same peer. BOTH must exceed SINGLE_PACKET_MAX (1024) so they take the multi-packet `outbound` spec path this test asserts on — a payload ≤ 1024 takes the small-packet fast path into `outbound_packets` (a separate queue) and would never appear in `outbound`. (data1 was 1000 here, below the threshold, which silently broke this test when the small-packet path was added.)
         let data1 = vec![0xAA; 1500];
         let data2 = vec![0xBB; 2000];
 
@@ -920,8 +890,7 @@ mod tests {
 
     #[test]
     fn test_concurrent_inbound_drains_correct_stream() {
-        // The CLUTCH deadlock: two transfers from the SAME peer in flight at once (an offer + a KEM
-        // response). The completion check + drain must be stream-scoped, or one is silently dropped.
+        // The CLUTCH deadlock: two transfers from the SAME peer in flight at once (an offer + a KEM response). The completion check + drain must be stream-scoped, or one is silently dropped.
         let keypair = test_keypair();
         let mut mgr = PTManager::new(keypair);
         let peer: SocketAddr = "127.0.0.1:12345".parse().unwrap();

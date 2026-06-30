@@ -1060,20 +1060,13 @@ pub fn save_messages(contact: &Contact, storage: &FlatStorage) -> Result<(), Sto
         return Ok(()); // Nothing to save
     }
 
-    // Contact already carries the identity seed (handle_hash = BLAKE3(handle)); use it directly
-    // rather than re-deriving from the plaintext handle string. Identity flows as the seed, never
-    // the handle, past the contact boundary.
+    // Contact already carries the identity seed (handle_hash = BLAKE3(handle)); use it directly rather than re-deriving from the plaintext handle string. Identity flows as the seed, never the handle, past the contact boundary.
     let table = conversation_id(storage.vault_seed(), &contact.handle_hash);
 
     let mut db = Db::open(storage).map_err(|e| StorageError::Vault(e.to_string()))?;
     for msg in contact.messages.iter() {
-        // Key each row by the message's eagle_time, NOT a local enumerate index. eagle_time is
-        // monotonic (a clock) so it's stable + shared across both devices (the renumber-on-insert
-        // hazard of an index key is gone), it's the braid's weave reference, and Pk::Int encodes
-        // big-endian so key order == chronological. eagle_time is i64 but always positive
-        // (oscillations since Apollo 11), so `as u64` is safe and order-preserving.
-        // `content_hash` = blake3 of the message text, stored so the braid's eagle_time->text weave
-        // lookup has an integrity/tiebreak check (the adversarial multi-device-same-tick case).
+        // Key each row by the message's eagle_time, NOT a local enumerate index. eagle_time is monotonic (a clock) so it's stable + shared across both devices (the renumber-on-insert hazard of an index key is gone), it's the braid's weave reference, and Pk::Int encodes big-endian so key order == chronological. eagle_time is i64 but always positive (oscillations since Apollo 11), so `as u64` is safe and order-preserving.
+        // `content_hash` = blake3 of the message text, stored so the braid's eagle_time->text weave lookup has an integrity/tiebreak check (the adversarial multi-device-same-tick case).
         let content_hash = blake3::hash(msg.content.as_bytes());
         let mut rec = Record::new()
             .set("content", msg.content.clone())
@@ -1081,8 +1074,7 @@ pub fn save_messages(contact: &Contact, storage: &FlatStorage) -> Result<(), Sto
             .set("is_outgoing", msg.is_outgoing as u64)
             .set("delivered", msg.delivered as u64)
             .set("content_hash", content_hash.as_bytes().to_vec());
-        // ack_hash: the plaintext_hash we ACK a RECEIVED message with — persisted so a duplicate
-        // retransmit can be re-ACKed after restart (the sender's chain stalls without a matching ACK).
+        // ack_hash: the plaintext_hash we ACK a RECEIVED message with — persisted so a duplicate retransmit can be re-ACKed after restart (the sender's chain stalls without a matching ACK).
         if let Some(ah) = msg.ack_hash {
             rec = rec.set("ack_hash", ah.to_vec());
         }

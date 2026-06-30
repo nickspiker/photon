@@ -41,9 +41,7 @@ fn build_signed_vsf(
 /// Send a message via FGTW conduit relay
 ///
 /// # Arguments
-/// * `keypair` - Our device keypair for signing
-/// * `recipient_pubkey` - Recipient's device public key (32 bytes)
-/// * `message_bytes` - Already-encrypted message (VSF format)
+/// * `keypair` - Our device keypair for signing * `recipient_pubkey` - Recipient's device public key (32 bytes) * `message_bytes` - Already-encrypted message (VSF format)
 ///
 /// # Returns
 /// Ok(()) on success, Err with message on failure
