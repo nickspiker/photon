@@ -428,6 +428,83 @@ fn et_to_osc(et: &vsf::types::EtType) -> i64 {
     }
 }
 
+// ── Client oracle: the device is blind and stateless — it fetches the chain, signs, and posts; it holds no fleet state of its own. ──
+
+const FGTW_URL: &str = "https://fgtw.org";
+
+/// Fetch the identity's stored fleet chain from FGTW, or `None` if none exists yet (`fleet_get` returns 404).
+/// The response is the raw per-op-signed chain VSF; we parse it but do NOT trust it until [`MembershipBlob::fold`].
+pub fn fetch(handle_proof: &[u8; 32]) -> Result<Option<MembershipBlob>, String> {
+    let mut section = vsf::VsfSection::new("fleet_get");
+    section.add_field("hp", VsfType::hP(handle_proof.to_vec()));
+    let req = vsf::VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .provenance_only()
+        .add_section_direct(section)
+        .build()
+        .map_err(|e| format!("fleet_get build: {e}"))?;
+    let resp = crate::network::http::blocking()
+        .post(FGTW_URL)
+        .timeout(std::time::Duration::from_secs(15))
+        .header("Content-Type", "application/octet-stream")
+        .body(req)
+        .send()
+        .map_err(|e| format!("fleet_get send: {e}"))?;
+    if resp.status().as_u16() == 404 {
+        return Ok(None);
+    }
+    if !resp.status().is_success() {
+        return Err(format!("fleet_get http {}", resp.status()));
+    }
+    let bytes = resp.bytes().map_err(|e| format!("fleet_get read: {e}"))?;
+    Ok(Some(MembershipBlob::from_vsf_bytes(&bytes)?))
+}
+
+/// Publish a new (or extended) chain to FGTW.
+/// The worker re-folds it and accepts it only as a forward extension of what it holds, so a stale post is rejected (the caller should re-fetch and retry).
+pub fn publish(blob: &MembershipBlob) -> Result<(), String> {
+    let body = blob.to_vsf_bytes()?;
+    let resp = crate::network::http::blocking()
+        .post(FGTW_URL)
+        .timeout(std::time::Duration::from_secs(15))
+        .header("Content-Type", "application/octet-stream")
+        .body(body)
+        .send()
+        .map_err(|e| format!("fleet publish send: {e}"))?;
+    if resp.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!("fleet publish http {}: {}", resp.status(), resp.text().unwrap_or_default()))
+    }
+}
+
+/// Ensure this device is a CURRENT member of the identity's fleet before it tries an authorised write (avatar etc.).
+/// No fleet yet → claim it with a first-come genesis (the single-device fleet, the common case after a wipe).
+/// Already a member → nothing to do.
+/// A fleet exists but this device isn't in it → it must be enrolled from an existing device first (the device-ADD ceremony), so we surface that rather than silently failing the later write.
+pub fn ensure_member(device_key: &Keypair, handle_proof: &[u8; 32]) -> Result<(), String> {
+    let me = device_key.public.to_bytes();
+    if let Some(blob) = fetch(handle_proof)? {
+        return if blob.fold().map(|m| m.contains(&me)).unwrap_or(false) {
+            Ok(())
+        } else {
+            Err("this device is not in the fleet — enroll it from an existing device first".into())
+        };
+    }
+    // First-come genesis.
+    let blob = MembershipBlob::genesis(device_key, *handle_proof, vsf::eagle_time_oscillations());
+    if publish(&blob).is_ok() {
+        return Ok(());
+    }
+    // Lost a genesis race (someone else claimed it between our fetch and post): re-fetch and accept if we ended up a member.
+    if let Some(b) = fetch(handle_proof)? {
+        if b.fold().map(|m| m.contains(&me)).unwrap_or(false) {
+            return Ok(());
+        }
+    }
+    Err("failed to establish fleet membership for this device".into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

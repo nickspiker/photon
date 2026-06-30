@@ -2,7 +2,6 @@ pub mod blob;
 pub mod bootstrap;
 pub mod fingerprint;
 pub mod fleet;
-pub mod keyring;
 pub mod node;
 pub mod peer_store;
 pub mod protocol;
