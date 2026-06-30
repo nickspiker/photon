@@ -1436,7 +1436,7 @@ pub fn upload_avatar_from_seed(
         secret: device_secret.clone(),
         public: device_secret.verifying_key(),
     };
-    crate::network::fgtw::fleet::ensure_member(&device_key, handle_proof)?;
+    crate::network::fgtw::fleet::ensure_member(&device_key, handle_proof, identity_seed)?;
 
     // Go through the ONE VSF conduit (POST / with a named section), same as blob_put / contacts.
     // The put carries the signed avatar VSF and is itself device-signed at the header (ke/ge); FGTW checks that signing device against the folded fleet chain.
