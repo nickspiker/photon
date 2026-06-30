@@ -141,6 +141,19 @@ async fn load_bootstrap_peers_inner(
     // Shared async client — pools on the process-wide runtime, so the TLS session is reused across announces (challenge + announce here are two requests on one warm connection). The per-request `.timeout(10s)` below preserves the old client-level budget.
     let client = crate::network::http::async_client();
 
+    // Ensure this device's fleet membership BEFORE announcing — a fresh identity claims its fleet with a first-come, identity-signed genesis, so the membership-gated announce below (and avatar writes) are authorised.
+    // The fleet client uses the blocking HTTP path, so bridge through spawn_blocking rather than calling it from this async context.
+    {
+        let dk = device_key.clone();
+        let seed = *identity_seed;
+        tokio::task::spawn_blocking(move || {
+            crate::network::fgtw::fleet::ensure_member(&dk, &handle_proof, &seed)
+        })
+        .await
+        .map_err(|e| format!("fleet genesis task: {e}"))?
+        .map_err(|e| format!("fleet genesis: {e}"))?;
+    }
+
     // Get challenge from FGTW (POST / with VSF section "challenge")
     let challenge_vsf = {
         let unsigned = vsf::VsfBuilder::new()
