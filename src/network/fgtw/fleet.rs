@@ -587,6 +587,103 @@ pub fn ensure_member(
     Err("failed to establish fleet membership for this device".into())
 }
 
+/// The current device-pubkey member set of an identity's fleet (empty if no fleet yet).
+/// Used by the existing device to render *manage devices*, and by a freshly-paired device to poll "am I in yet?".
+pub fn current_members(handle_proof: &[u8; 32]) -> Result<Vec<[u8; 32]>, String> {
+    match fetch(handle_proof)? {
+        Some(b) => b.fold().map_err(|e| format!("stored fleet invalid: {e:?}")),
+        None => Ok(Vec::new()),
+    }
+}
+
+/// Existing-device side of device-ADD: add `new_pubkey` to the fleet, signed by this (member) device.
+/// `new_pubkey` must have arrived over the proximity channel (NFC tap, or words carried screen-to-screen) — NOT from a network request that merely claims the handle — so the signature binds to the device physically in hand, not to anyone who knows the (public) handle.
+/// Fetches the chain, appends a member-signed add, publishes; retries on a forward-extension race.
+pub fn bind_device(
+    member_key: &Keypair,
+    handle_proof: &[u8; 32],
+    new_pubkey: [u8; 32],
+) -> Result<(), String> {
+    let me = member_key.public.to_bytes();
+    for _attempt in 0..4 {
+        let mut blob = fetch(handle_proof)?
+            .ok_or("no fleet to add to — attest this identity first")?;
+        let members = blob.fold().map_err(|e| format!("stored fleet invalid: {e:?}"))?;
+        if !members.contains(&me) {
+            return Err("this device isn't a fleet member, so it can't add another".into());
+        }
+        if members.contains(&new_pubkey) {
+            return Ok(()); // already in — idempotent
+        }
+        blob.add(member_key, new_pubkey, vsf::eagle_time_oscillations());
+        match publish(&blob) {
+            Ok(()) => return Ok(()),
+            Err(e) if e.contains("409") => continue, // someone else extended; re-fetch + retry
+            Err(e) => return Err(e),
+        }
+    }
+    Err("fleet add: lost too many extension races".into())
+}
+
+/// Existing-device side of device removal: remove `target_pubkey`, signed by this (member) device.
+/// Revocation sticks because FGTW gates future writes/announces on the folded chain, which no longer contains the removed device.
+pub fn unbind_device(
+    member_key: &Keypair,
+    handle_proof: &[u8; 32],
+    target_pubkey: [u8; 32],
+) -> Result<(), String> {
+    let me = member_key.public.to_bytes();
+    for _attempt in 0..4 {
+        let mut blob = fetch(handle_proof)?.ok_or("no fleet to modify")?;
+        let members = blob.fold().map_err(|e| format!("stored fleet invalid: {e:?}"))?;
+        if !members.contains(&me) {
+            return Err("this device isn't a fleet member, so it can't remove another".into());
+        }
+        if !members.contains(&target_pubkey) {
+            return Ok(()); // already gone — idempotent
+        }
+        blob.remove(member_key, target_pubkey, vsf::eagle_time_oscillations());
+        match publish(&blob) {
+            Ok(()) => return Ok(()),
+            Err(e) if e.contains("409") => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err("fleet remove: lost too many extension races".into())
+}
+
+// ── Pairing code: carry a new device's pubkey over the proximity channel. ──
+// NFC carries the raw 32 bytes; the no-NFC fallback carries these voca words, read off one screen and typed into the other.
+// Either way it delivers the EXACT pubkey, so the binding device signs the right key by construction; the short fingerprint below is only a human eyeball-compare.
+
+/// Encode a device pubkey as voca words (camelCase — the canonical typed form per the voca convention).
+pub fn pairing_words(pubkey: &[u8; 32]) -> String {
+    voca::encode(num_bigint::BigUint::from_bytes_be(pubkey))
+}
+
+/// Space-separated voca words for read-aloud / easier transcription of the pairing code.
+pub fn pairing_words_spaced(pubkey: &[u8; 32]) -> String {
+    voca::encode_spaced(num_bigint::BigUint::from_bytes_be(pubkey))
+}
+
+/// Decode voca pairing words back to a 32-byte pubkey (left-padded, since leading zero bytes drop out of the integer).
+pub fn pubkey_from_words(words: &str) -> Result<[u8; 32], String> {
+    let n = voca::decode(words.trim()).map_err(|e| format!("unrecognised pairing words: {e:?}"))?;
+    let bytes = n.to_bytes_be();
+    if bytes.len() > 32 {
+        return Err("pairing words decode too large for a key".into());
+    }
+    let mut out = [0u8; 32];
+    out[32 - bytes.len()..].copy_from_slice(&bytes);
+    Ok(out)
+}
+
+/// A short, read-aloud safety code (a few words) derived from a device pubkey, shown on BOTH screens for the human to compare before confirming a bind — catches a corrupted/relayed transfer.
+pub fn device_fingerprint(pubkey: &[u8; 32]) -> String {
+    let h = blake3::hash(pubkey);
+    voca::encode_spaced(num_bigint::BigUint::from_bytes_be(&h.as_bytes()[..4]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -752,6 +849,24 @@ mod tests {
         blob.ops[0].identity_pubkey =
             ed25519_dalek::SigningKey::from_bytes(&[0x99; 32]).verifying_key().to_bytes();
         assert_eq!(blob.fold(), Err(FoldError::BadSignature { index: 0 }));
+    }
+
+    #[test]
+    fn pairing_words_round_trip() {
+        // A normal key, and one with a leading zero byte (the padding edge).
+        for raw in [pk(&key(1)), {
+            let mut k = pk(&key(2));
+            k[0] = 0;
+            k
+        }] {
+            let words = pairing_words(&raw);
+            assert_eq!(pubkey_from_words(&words).unwrap(), raw, "camelCase round-trip");
+            let spaced = pairing_words_spaced(&raw);
+            assert_eq!(pubkey_from_words(&spaced).unwrap(), raw, "spaced round-trip");
+        }
+        // The fingerprint is stable and differs across keys (a sanity floor, not a collision proof).
+        assert_eq!(device_fingerprint(&pk(&key(1))), device_fingerprint(&pk(&key(1))));
+        assert_ne!(device_fingerprint(&pk(&key(1))), device_fingerprint(&pk(&key(2))));
     }
 
     #[test]
