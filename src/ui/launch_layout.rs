@@ -1,7 +1,6 @@
 //! Launch-screen layout: aspect-adaptive proportional slicing. The window divides into ~23 vertical units and 8 horizontal units; named slices land at unit boundaries; widgets occupy the rectangles those boundaries cut. Proportions are the Photon design — algorithm constants, not tuning knobs.
 //!
-//! Two slices interpolate with viewport aspect ratio so the layout stays correct from portrait to ultrawide:
-//!   * **`gap0`** (top margin above the spectrum) — `0.75` units in portrait/square, shrinking to `0.25` units in extreme landscape. Tight against the top edge when the window is short.
+//! Two slices interpolate with viewport aspect ratio so the layout stays correct from portrait to ultrawide: * **`gap0`** (top margin above the spectrum) — `0.75` units in portrait/square, shrinking to `0.25` units in extreme landscape. Tight against the top edge when the window is short.
 //!   * **`gap1`** (vertical positioning of the wordmark relative to the spectrum) — `-2` units in portrait (wordmark floats UP into the bottom of the spectrum bar), `+2` units in extreme landscape (wordmark sits BELOW the spectrum with breathing room). Sign flip is intentional: in a short landscape window there's no room to overlap, the spectrum + text need to stack cleanly.
 //!
 //! Interpolation is `t = (tanh((aspect − 2) · 1.5) + 1) / 2` — a C∞ sigmoid, centred at aspect=2 with slope 1.5. Every derivative is continuous everywhere on ℝ, so the layout has no kinks as you drag the window edge thru any aspect ratio. Portrait (aspect≈0.5) gives t≈0.01, square (aspect=1) t≈0.05, 16:9 t≈0.34, 21:9 t≈0.74, ultrawide (aspect≥3) t≈0.99.

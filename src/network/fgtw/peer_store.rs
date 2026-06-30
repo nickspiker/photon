@@ -49,16 +49,10 @@ impl PeerStore {
         );
     }
 
-    /// Merge a peer record learned from GOSSIP (a phonebook exchange with another peer), keeping the
-    /// record with the newer `last_seen` (Eagle-time oscillations). Unlike [`add_peer`], which is the
-    /// FGTW-authoritative path and blindly overwrites, gossip can deliver an OLDER copy of a device
-    /// (the peer we asked hadn't heard from that device as recently as we have), and that must not
-    /// clobber our fresher record — otherwise gossiping with a stale peer would rot the phonebook.
-    /// Returns `true` if the store actually changed (newer record adopted, or a brand-new device
-    /// inserted), so the caller can persist + log only on real updates.
+    /// Merge a peer record learned from GOSSIP (a phonebook exchange with another peer), keeping the record with the newer `last_seen` (Eagle-time oscillations). Unlike [`add_peer`], which is the FGTW-authoritative path and blindly overwrites, gossip can deliver an OLDER copy of a device (the peer we asked hadn't heard from that device as recently as we have), and that must not clobber our fresher record — otherwise gossiping with a stale peer would rot the phonebook.
+    /// Returns `true` if the store actually changed (newer record adopted, or a brand-new device inserted), so the caller can persist + log only on real updates.
     ///
-    /// This is the convergence rule of the peers-are-FGTW mesh: every device's freshest-known address
-    /// wins, so asking everyone and merging by Eagle-time pulls the whole network toward agreement.
+    /// This is the convergence rule of the peers-are-FGTW mesh: every device's freshest-known address wins, so asking everyone and merging by Eagle-time pulls the whole network toward agreement.
     pub fn merge_peer(&mut self, peer: PeerRecord) -> bool {
         // Gossip records are only trusted if they self-verify — a relay can carry a device's entry but can't forge or redirect it.
         // An unsigned / forged record is dropped here, so nothing untrusted ever enters the store via the mesh. (The FGTW-authoritative path uses add_peer, not this.)
@@ -178,8 +172,7 @@ mod tests {
     use crate::types::DevicePubkey;
     use std::net::SocketAddr;
 
-    // A properly SELF-SIGNED record: the device key is derived from `device`, its verifying key IS
-    // the device_pubkey, and we sign after setting last_seen so the signature covers it.
+    // A properly SELF-SIGNED record: the device key is derived from `device`, its verifying key IS the device_pubkey, and we sign after setting last_seen so the signature covers it.
     // merge_peer rejects anything that doesn't verify, so test records must be signed like the real ones.
     fn rec(handle: u8, device: u8, last_seen: i64) -> PeerRecord {
         use ed25519_dalek::SigningKey;
