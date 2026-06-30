@@ -220,6 +220,18 @@ fn append_log_record(level: LogLevel, msg: &str) {
 fn trim_log_file(now_osc: i64) -> Option<(std::fs::File, u64, i64)> {
     use std::io::Write;
     let path = log_dir()?.join("photon.log.vsf");
+
+    // Defence in depth (unix): hold an advisory lock across the read-truncate-rewrite, so even two processes sharing one log — which the single-instance lock already forbids — can't interleave a trim and clobber each other. LOCK_NB: if another process is mid-trim, skip and retry on the next line.
+    #[cfg(unix)]
+    let _trim_lock = {
+        use std::os::unix::io::AsRawFd;
+        let lf = std::fs::OpenOptions::new().create(true).write(true).open(&path).ok()?;
+        if unsafe { libc::flock(lf.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            return None;
+        }
+        lf // held until this fn returns (drop closes the fd → releases the lock)
+    };
+
     let bytes = std::fs::read(&path).ok()?;
     let age_cutoff = now_osc.saturating_sub(jitter(LOG_AGE_KEEP_BASE_OSC)); // keep a random 12–24h
     let (keep, new_oldest) = log_keep_offset(&bytes, LOG_TRIM_TO_BYTES, age_cutoff);
