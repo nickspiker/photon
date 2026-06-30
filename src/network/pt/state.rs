@@ -131,11 +131,12 @@ impl OutboundTransfer {
         self.spec_last_sent = Instant::now();
         self.spec_retry_count += 1;
 
-        // Exponential backoff: 1s → 2s → 4s → 8s → 16s → 32s (capped)
-        self.spec_next_delay = std::cmp::min(
+        // Exponential backoff: 1s → 2s → 4s → 8s → 16s → 32s (capped), JITTERED to 50–100% so peers that
+        // retransmit after the same shared outage don't sync up into a retransmit storm (decorrelated backoff).
+        self.spec_next_delay = crate::jitter_dur(std::cmp::min(
             Duration::from_secs(1 << self.spec_retry_count.min(5)),
             Duration::from_secs(32),
-        );
+        ));
     }
 
     /// Check if TCP should be used in parallel (after 1s) Returns true when transfer is old enough that TCP should be tried alongside UDP
@@ -382,15 +383,16 @@ impl OutboundPacket {
         self.last_sent = Some(Instant::now());
     }
 
-    /// Record a retransmit and double the backoff toward the 60s cap (1 → 2 → 4 → … → 60s).
+    /// Record a retransmit and back off toward the 60s cap (2 → 4 → … → 60s), JITTERED to 50–100%.
+    /// The exponential is recomputed from `retry_count` (not the previous jittered delay) so the randomness never compounds; jitter decorrelates peers retransmitting after a shared outage.
     pub fn mark_retransmit(&mut self) {
         self.last_sent = Some(Instant::now());
         self.retry_count += 1;
-        self.next_delay = self
-            .next_delay
-            .checked_mul(2)
-            .unwrap_or(Self::MAX_BACKOFF)
-            .min(Self::MAX_BACKOFF);
+        let base = std::cmp::min(
+            Duration::from_secs(1 << self.retry_count.min(6)),
+            Self::MAX_BACKOFF,
+        );
+        self.next_delay = crate::jitter_dur(base);
     }
 
     /// True when the in-flight head's backoff has elapsed and it should be retransmitted.
