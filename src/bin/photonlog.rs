@@ -1,10 +1,16 @@
 //! photonlog — decode a `photon.log.vsf` structured log into human-readable lines.
 //!
-//! The log is a stream of complete VSF records, each `{creation_time (Eagle), section "log" {lvl, msg}}`
-//! (see `crate::log` in lib.rs). This walks the records in order and prints
-//! `<eagle-time>  [LEVEL]  <msg>`. Pull the file off a phone with:
-//!     adb pull /data/user/0/com.photon.messenger/files/photon.log.vsf
-//! then: `photonlog photon.log.vsf` (or pipe a path as the one arg; defaults to ./photon.log.vsf).
+//! The log is a stream of complete VSF records, each `{creation_time (Eagle), section "log" {lvl, msg}}` (see `crate::log` in lib.rs).
+//! This walks the records in order and prints `<eagle-time>  [LEVEL]  <msg>`.
+//!
+//! Pull the file off a phone with: `adb pull /data/user/0/com.photon.messenger/files/photon.log.vsf`
+//!
+//! Usage: `photonlog [PATH] [flags]` (PATH defaults to ./photon.log.vsf)
+//!   -l, --level LEVEL   only records at this severity or higher (TRACE|DEBUG|INFO|WARN|ERROR, or 0..4)
+//!   -g, --grep SUBSTR   only records whose message contains SUBSTR (case-insensitive)
+//!   -f, --follow        keep reading as new records are appended (tail -f); survives the 16 MiB rotation
+//!
+//! Examples: `photonlog -l warn` · `photonlog -f -g FGTW` · `photonlog phone.log.vsf -l error`.
 
 use std::io::Read;
 use vsf::file_format::{VsfHeader, VsfSection};
@@ -22,58 +28,53 @@ fn level_name(lvl: u64) -> &'static str {
     }
 }
 
-/// Eagle oscillations → a readable UTC string for display (display-only conversion is allowed).
-fn eagle_display(osc: i64) -> String {
-    let et = vsf::types::EagleTime::from_oscillations(osc);
-    match et.to_datetime() {
-        dt => dt.format("%Y-%m-%d %H:%M:%S%.3f").to_string(),
+/// Parse a `--level` argument: a name (any case) or a bare number 0..=4.
+fn level_from_arg(s: &str) -> Option<u64> {
+    match s.to_ascii_uppercase().as_str() {
+        "TRACE" => Some(0),
+        "DEBUG" => Some(1),
+        "INFO" => Some(2),
+        "WARN" | "WARNING" => Some(3),
+        "ERROR" => Some(4),
+        _ => s.parse::<u64>().ok().filter(|n| *n <= 4),
     }
 }
 
-fn main() {
-    let path = std::env::args().nth(1).unwrap_or_else(|| "photon.log.vsf".to_string());
-    let mut bytes = Vec::new();
-    match std::fs::File::open(&path).and_then(|mut f| f.read_to_end(&mut bytes)) {
-        Ok(_) => {}
-        Err(e) => {
-            eprintln!("photonlog: cannot read {path}: {e}");
-            std::process::exit(1);
-        }
-    }
+/// Eagle oscillations → a readable UTC string for display (display-only conversion is allowed).
+fn eagle_display(osc: i64) -> String {
+    vsf::types::EagleTime::from_oscillations(osc).to_datetime().format("%Y-%m-%d %H:%M:%S%.3f").to_string()
+}
 
-    let mut offset = 0usize;
-    let mut count = 0u64;
-    while offset < bytes.len() {
-        let rest = &bytes[offset..];
-        // Decode this record's header, then its single "log" section. The section parse advances a pointer
-        // to the record's end, which is where the next record begins.
+struct Filter {
+    min_level: u64,
+    grep: Option<String>,
+}
+
+/// Decode and print whole records from `buf`, applying the filter.
+/// Returns the number of bytes consumed — i.e. the offset of the last COMPLETE record boundary — so a
+/// half-written trailing record (mid-append) is left for the next pass instead of being mis-decoded.
+fn print_records(buf: &[u8], filter: &Filter) -> usize {
+    let mut off = 0usize;
+    while off < buf.len() {
+        let rest = &buf[off..];
         let (header, header_end) = match VsfHeader::decode(rest) {
             Ok(h) => h,
-            Err(e) => {
-                eprintln!("photonlog: stopped at byte {offset}: header decode: {e}");
-                break;
-            }
+            Err(_) => break, // incomplete tail — stop, retry next pass
         };
         let mut ptr = 0usize;
         let section = match VsfSection::parse(&rest[header_end..], &mut ptr) {
             Ok(s) => s,
-            Err(e) => {
-                eprintln!("photonlog: stopped at byte {offset}: section parse: {e}");
-                break;
-            }
+            Err(_) => break,
         };
-        let record_len = header_end + ptr;
+        let rec = header_end + ptr;
+        if rec == 0 {
+            break;
+        }
 
-        let ts = match &header.creation_time {
-            Some(VsfType::e(EtType::e6(o))) => eagle_display(*o),
-            Some(VsfType::e(EtType::e5(o))) => eagle_display(*o as i64),
-            Some(VsfType::e(EtType::e7(o))) => eagle_display(*o as i64),
-            _ => "(no time)".to_string(),
-        };
         let lvl = section
             .get_field("lvl")
             .and_then(|f| f.values.first())
-            .and_then(|v| u64::try_from_vsf(v))
+            .and_then(u64_of)
             .unwrap_or(u64::MAX);
         let msg = section
             .get_field("msg")
@@ -84,26 +85,100 @@ fn main() {
             })
             .unwrap_or_default();
 
-        println!("{ts}  [{}]  {msg}", level_name(lvl));
-        count += 1;
-
-        if record_len == 0 {
-            eprintln!("photonlog: zero-length record at {offset}, stopping");
-            break;
+        let pass_level = lvl >= filter.min_level;
+        let pass_grep = match &filter.grep {
+            Some(g) => msg.to_lowercase().contains(g),
+            None => true,
+        };
+        if pass_level && pass_grep {
+            let ts = match &header.creation_time {
+                Some(VsfType::e(EtType::e6(o))) => eagle_display(*o),
+                Some(VsfType::e(EtType::e5(o))) => eagle_display(*o as i64),
+                Some(VsfType::e(EtType::e7(o))) => eagle_display(*o as i64),
+                _ => "(no time)".to_string(),
+            };
+            println!("{ts}  [{}]  {msg}", level_name(lvl));
         }
-        offset += record_len;
+        off += rec;
+    }
+    off
+}
+
+fn read_all(path: &str) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+fn main() {
+    let mut path: Option<String> = None;
+    let mut min_level = 0u64;
+    let mut grep: Option<String> = None;
+    let mut follow = false;
+
+    let mut args = std::env::args().skip(1);
+    while let Some(a) = args.next() {
+        match a.as_str() {
+            "-f" | "--follow" => follow = true,
+            "-l" | "--level" => match args.next().and_then(|v| level_from_arg(&v)) {
+                Some(n) => min_level = n,
+                None => {
+                    eprintln!("photonlog: --level needs TRACE|DEBUG|INFO|WARN|ERROR or 0..4");
+                    std::process::exit(2);
+                }
+            },
+            "-g" | "--grep" => match args.next() {
+                Some(s) => grep = Some(s.to_lowercase()),
+                None => {
+                    eprintln!("photonlog: --grep needs a substring");
+                    std::process::exit(2);
+                }
+            },
+            other if other.starts_with('-') => {
+                eprintln!("photonlog: unknown flag {other}");
+                std::process::exit(2);
+            }
+            other => path = Some(other.to_string()),
+        }
+    }
+    let path = path.unwrap_or_else(|| "photon.log.vsf".to_string());
+    let filter = Filter { min_level, grep };
+
+    let bytes = match read_all(&path) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("photonlog: cannot read {path}: {e}");
+            std::process::exit(1);
+        }
+    };
+    let mut consumed = print_records(&bytes, &filter);
+
+    if !follow {
+        eprintln!("photonlog: {path} ({} bytes)", bytes.len());
+        return;
     }
 
-    eprintln!("photonlog: {count} records from {path}");
+    // Follow mode: poll for growth, decoding only the newly-appended whole records.
+    // A SHRINK means the 16 MiB rotation trimmed the file — reset to the new start and note it.
+    eprintln!("photonlog: following {path} (Ctrl-C to stop)");
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let bytes = match read_all(&path) {
+            Ok(b) => b,
+            Err(_) => continue, // momentarily gone (e.g. mid-rotation) — try again
+        };
+        if bytes.len() < consumed {
+            eprintln!("── log rotated ──");
+            consumed = 0;
+        }
+        if bytes.len() > consumed {
+            consumed += print_records(&bytes[consumed..], &filter);
+        }
+    }
 }
 
 /// Tolerant unsigned read — the encoder optimises a small `u(0)` to `u3` on round-trip, so match any width.
-trait TryFromVsf {
-    fn try_from_vsf(v: &VsfType) -> Option<u64>;
-}
-impl TryFromVsf for u64 {
-    fn try_from_vsf(v: &VsfType) -> Option<u64> {
-        use vsf::schema::FromVsfType;
-        u64::from_vsf_type(v).ok()
-    }
+fn u64_of(v: &VsfType) -> Option<u64> {
+    use vsf::schema::FromVsfType;
+    u64::from_vsf_type(v).ok()
 }
