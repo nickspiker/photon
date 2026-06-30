@@ -38,10 +38,26 @@ pub fn photon_config_dir() -> Result<std::path::PathBuf, std::io::Error> {
     }
     #[cfg(not(target_os = "android"))]
     {
+        // Dev override: PHOTON_DATA_DIR points a whole instance (vault + log + lock) at a separate dir, so a second instance can run isolated for two-party testing (pair with PHOTON_FINGERPRINT for a distinct device identity).
+        if let Ok(custom) = std::env::var("PHOTON_DATA_DIR") {
+            if !custom.is_empty() {
+                return Ok(std::path::PathBuf::from(custom));
+            }
+        }
         dirs::config_dir().map(|p| p.join("photon")).ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::NotFound, "config dir not found")
         })
     }
+}
+
+/// Single-instance guard, keyed to the data dir: two instances on the SAME dir would race the vault and corrupt the log (the trim is read-truncate-rewrite), so the second must not start.
+/// Held by binding a localhost-only TCP port derived from the dir path — the OS releases it on exit/crash, so there are no stale locks, and a different dir (a separate `PHOTON_DATA_DIR`) hashes to a different port and coexists.
+/// Returns the listener to keep alive for the whole process, or `None` if another instance already holds this dir.
+#[cfg(not(target_os = "android"))]
+pub fn acquire_single_instance(data_dir: &std::path::Path) -> Option<std::net::TcpListener> {
+    let h = blake3::hash(data_dir.to_string_lossy().as_bytes());
+    let port = 20000 + (u16::from_le_bytes([h.as_bytes()[0], h.as_bytes()[1]]) % 20000);
+    std::net::TcpListener::bind(("127.0.0.1", port)).ok()
 }
 
 // ============================================================================
