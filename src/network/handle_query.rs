@@ -361,7 +361,7 @@ impl HandleQuery {
                 }
 
                 // Wait for network change or 30 second timeout
-                match net_change_rx.recv_timeout(Duration::from_secs(30)) {
+                match net_change_rx.recv_timeout(crate::jitter_dur(Duration::from_secs(30))) {
                     Ok(()) => thread::sleep(Duration::from_millis(500)), // Stabilization delay
                     Err(_) => {}                                         // Timeout - periodic check
                 }
@@ -417,7 +417,8 @@ impl HandleQuery {
                     first_check = false;
                 }
 
-                thread::sleep(Duration::from_secs(30));
+                // Jittered (15–30s) so a fleet of devices doesn't poll FGTW /status in lockstep.
+                thread::sleep(crate::jitter_dur(Duration::from_secs(30)));
             }
         });
     }
