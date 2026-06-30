@@ -104,9 +104,12 @@ const LOG_TRIM_TO_BYTES: u64 = 8 << 20;
 // Live byte count of the open log file, so the cap check is a cheap atomic load instead of a stat per line; seeded from the file's size when it's first opened.
 #[cfg(feature = "logging")]
 static LOG_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-// Age cap: also drop records older than 24h, so even a low-volume log keeps only a recent window (bounds the PII exposure time, not just the size).
+// Age cap with hysteresis so we don't rewrite the file on every line: let the log reach 2 days, THEN cut it back to the most recent 24h.
+// That bounds PII to a 24–48h window while trimming only ~once a day, not continuously (the "persistent scrubbing" a trim-at-exactly-24h would cause for a steady low-volume log).
 #[cfg(feature = "logging")]
-const LOG_MAX_AGE_OSC: i64 = 24 * 60 * 60 * vsf::OSCILLATIONS_PER_SECOND as i64;
+const LOG_AGE_TRIGGER_OSC: i64 = 2 * 24 * 60 * 60 * vsf::OSCILLATIONS_PER_SECOND as i64; // oldest > 2 days → trim
+#[cfg(feature = "logging")]
+const LOG_AGE_KEEP_OSC: i64 = 24 * 60 * 60 * vsf::OSCILLATIONS_PER_SECOND as i64; // keep the most recent 24h
 // Eagle-time of the OLDEST record in the open file, cached so the age check is a compare not a head-read per line; i64::MAX = unknown/empty (seeded on open, refreshed on trim).
 #[cfg(feature = "logging")]
 static LOG_OLDEST_OSC: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(i64::MAX);
@@ -174,7 +177,7 @@ fn append_log_record(level: LogLevel, msg: &str) {
         // Trim on EITHER cap: too big (16 MiB) or the oldest record older than 24h.
         let now = vsf::eagle_time_oscillations();
         let oldest = LOG_OLDEST_OSC.load(std::sync::atomic::Ordering::Relaxed);
-        let aged = oldest != i64::MAX && now.saturating_sub(oldest) > LOG_MAX_AGE_OSC;
+        let aged = oldest != i64::MAX && now.saturating_sub(oldest) > LOG_AGE_TRIGGER_OSC;
         if total > LOG_CAP_BYTES || aged {
             // `file`'s borrow of `guard` ends above; reopen the handle on the trimmed file.
             if let Some((trimmed, new_size, new_oldest)) = trim_log_file(now) {
@@ -193,7 +196,7 @@ fn trim_log_file(now_osc: i64) -> Option<(std::fs::File, u64, i64)> {
     use std::io::Write;
     let path = log_dir()?.join("photon.log.vsf");
     let bytes = std::fs::read(&path).ok()?;
-    let age_cutoff = now_osc.saturating_sub(LOG_MAX_AGE_OSC);
+    let age_cutoff = now_osc.saturating_sub(LOG_AGE_KEEP_OSC);
     let (keep, new_oldest) = log_keep_offset(&bytes, LOG_TRIM_TO_BYTES, age_cutoff);
     let kept = &bytes[keep.min(bytes.len())..];
     let mut w = std::fs::OpenOptions::new()
