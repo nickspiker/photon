@@ -171,9 +171,7 @@ impl Chain {
     /// 2. Old [256] (oldest active) becomes [255] (newest history)
     /// 3. Derive new link at [511] via spaghettify
     ///
-    /// The braid: `their_plaintexts` are the woven peer strands this step braids in — the two
-    /// (or one, or none) prior peer messages, already sorted by eagle_time. Their content contributes
-    /// the cross-entropy that makes this a braid rather than a one-way ratchet.
+    /// The braid: `their_plaintexts` are the woven peer strands this step braids in — the two (or one, or none) prior peer messages, already sorted by eagle_time. Their content contributes the cross-entropy that makes this a braid rather than a one-way ratchet.
     pub fn advance(
         &mut self,
         eagle_time: &EagleTime,
@@ -738,12 +736,7 @@ mod tests {
         }
     }
 
-    /// The braid invariant the receive-path gap_buffer must maintain: message N can only be
-    /// decrypted when the receiver's chain has advanced exactly N times (is at the same position
-    /// the sender encrypted under). Encrypt 3 messages, then prove that decrypting message #2 while
-    /// the receiver is still at position 0 yields GARBAGE (the live desync), but decrypting strictly
-    /// in order succeeds. This is why the receiver must buffer out-of-order arrivals rather than
-    /// soft-decrypt at CURRENT_KEY_INDEX.
+    /// The braid invariant the receive-path gap_buffer must maintain: message N can only be decrypted when the receiver's chain has advanced exactly N times (is at the same position the sender encrypted under). Encrypt 3 messages, then prove that decrypting message #2 while the receiver is still at position 0 yields GARBAGE (the live desync), but decrypting strictly in order succeeds. This is why the receiver must buffer out-of-order arrivals rather than soft-decrypt at CURRENT_KEY_INDEX.
     #[test]
     fn test_chain_position_must_match_for_decrypt() {
         let mut sender = make_test_chain();

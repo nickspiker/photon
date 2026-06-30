@@ -153,17 +153,14 @@ impl std::fmt::Display for FriendshipId {
 const DOMAIN_MSG_HP: &[u8] = b"PHOTON_MSG_HP_v1";
 const DOMAIN_ANCHOR: &[u8] = b"PHOTON_ANCHOR_v1";
 
-/// Reliability backoff for unacked outgoing messages. A message is (re)sent until an ACK arrives or
-/// we hit `MAX_SEND_ATTEMPTS`; between sends we wait `retry_delay_osc(attempts)` — exponential from
+/// Reliability backoff for unacked outgoing messages. A message is (re)sent until an ACK arrives or we hit `MAX_SEND_ATTEMPTS`; between sends we wait `retry_delay_osc(attempts)` — exponential from
 /// ~1s, doubling, capped at ~30s. Covers both a dropped message AND a dropped ACK (the sender just
-/// keeps resending; the receiver dedupes by eagle_time and its ACK is deterministic, so a re-ACK is
-/// free). These live on `PendingMessage` and are runtime-only (not persisted).
+/// keeps resending; the receiver dedupes by eagle_time and its ACK is deterministic, so a re-ACK is free). These live on `PendingMessage` and are runtime-only (not persisted).
 const RETRY_BASE_SECS: u64 = 1;
 const RETRY_CAP_SECS: u64 = 30;
 const MAX_SEND_ATTEMPTS: u8 = 8;
 
-/// Backoff delay (in eagle-time oscillations) before the `attempts`-th send's resend: 1s, 2s, 4s,
-/// 8s, 16s, then capped at 30s. `attempts` is 1-based (1 = after the first transmit).
+/// Backoff delay (in eagle-time oscillations) before the `attempts`-th send's resend: 1s, 2s, 4s, 8s, 16s, then capped at 30s. `attempts` is 1-based (1 = after the first transmit).
 fn retry_delay_osc(attempts: u8) -> i64 {
     let shift = attempts.saturating_sub(1).min(6); // cap the shift so 1<<shift can't overflow
     let secs = (RETRY_BASE_SECS << shift).min(RETRY_CAP_SECS);
@@ -232,11 +229,7 @@ pub struct FriendshipChains {
     gap_buffer: Vec<BufferedMessage>,
 }
 
-/// A message buffered due to a gap in the hash chain (out-of-order delivery). Held until its
-/// predecessor arrives and the gap fills. Buffered BEFORE decrypt, so the message's own `msg_hp` is
-/// not yet known (it needs the plaintext hash); we key purely on the `prev_msg_hp` it awaits. When a
-/// successful decrypt advances `last_received_hash` to some `H`, every buffered entry with
-/// `prev_msg_hp == H` becomes contiguous and is reprocessed (which can cascade).
+/// A message buffered due to a gap in the hash chain (out-of-order delivery). Held until its predecessor arrives and the gap fills. Buffered BEFORE decrypt, so the message's own `msg_hp` is not yet known (it needs the plaintext hash); we key purely on the `prev_msg_hp` it awaits. When a successful decrypt advances `last_received_hash` to some `H`, every buffered entry with `prev_msg_hp == H` becomes contiguous and is reprocessed (which can cascade).
 #[derive(Clone)]
 pub struct BufferedMessage {
     /// The predecessor hash this message is waiting on (its on-wire `prev_msg_hp`).
@@ -274,19 +267,12 @@ pub struct PendingMessage {
     pub msg_hp: [u8; 32],
     /// Encrypted ciphertext (for resend without re-encryption)
     pub ciphertext: Vec<u8>,
-    /// The braid's woven peer strands frozen at send time — the EXACT plaintext bytes of the
-    /// (up to two) prior peer messages this message braided in, already sorted by eagle_time.
-    /// Frozen so `process_ack` advances our chain with the identical strands the receiver used to
-    /// advance its copy (the receiver resolves them from the two eagle_times on the wire). Length
-    /// 0 = anchor (wove nothing), 1 = single strand (early conversation), 2 = full braid.
+    /// The braid's woven peer strands frozen at send time — the EXACT plaintext bytes of the (up to two) prior peer messages this message braided in, already sorted by eagle_time.
+    /// Frozen so `process_ack` advances our chain with the identical strands the receiver used to advance its copy (the receiver resolves them from the two eagle_times on the wire). Length 0 = anchor (wove nothing), 1 = single strand (early conversation), 2 = full braid.
     pub woven_strands: Vec<Vec<u8>>,
-    /// Reliability (runtime-only, NOT persisted): how many times we've (re)sent this message. The
-    /// first transmit counts as attempt 1. Used to drive exponential backoff and to give up after a
-    /// ceiling so an undeliverable message surfaces instead of resending forever.
+    /// Reliability (runtime-only, NOT persisted): how many times we've (re)sent this message. The first transmit counts as attempt 1. Used to drive exponential backoff and to give up after a ceiling so an undeliverable message surfaces instead of resending forever.
     pub attempts: u8,
-    /// Reliability (runtime-only, NOT persisted): the eagle-time oscillation at which this message is
-    /// next eligible for resend. The tick-driven retransmit sweep resends any unacked pending whose
-    /// `next_retry_osc` has passed, then pushes this out by the next backoff step. Set on first send.
+    /// Reliability (runtime-only, NOT persisted): the eagle-time oscillation at which this message is next eligible for resend. The tick-driven retransmit sweep resends any unacked pending whose `next_retry_osc` has passed, then pushes this out by the next backoff step. Set on first send.
     pub next_retry_osc: i64,
 }
 
@@ -633,9 +619,7 @@ impl FriendshipChains {
     ///
     /// Call this when we receive confirmation that a message was decrypted.
     ///
-    /// Advance a participant's chain, braiding in `their_plaintexts` (the woven peer strands —
-    /// two for a full braid, or fewer early in the conversation; the caller passes them sorted
-    /// by eagle_time so both peers frame identically).
+    /// Advance a participant's chain, braiding in `their_plaintexts` (the woven peer strands — two for a full braid, or fewer early in the conversation; the caller passes them sorted by eagle_time so both peers frame identically).
     pub fn advance(
         &mut self,
         sender_handle_hash: &[u8; 32],
@@ -711,12 +695,7 @@ impl FriendshipChains {
     /// Mark a message as received (update last received time for deduplication).
     pub fn mark_received(&mut self, sender_handle_hash: &[u8; 32], eagle_time: i64) {
         if let Some(idx) = self.participant_index(sender_handle_hash) {
-            // Tip-consistency guard: this is the conversation's high-water mark (the contiguous tip
-            // that becomes `last_received_osc`). It must only ever move FORWARD — a buffered /
-            // out-of-order ("ahead") message must never reach here (it's gated behind verify_chain_link
-            // and only processed in order, so its eagle_time is always strictly newer than the prior
-            // tip). If this ever fires, a non-contiguous message inflated the high-water mark, which
-            // would falsely tell the peer "I have everything up to here" and suppress a needed resend.
+            // Tip-consistency guard: this is the conversation's high-water mark (the contiguous tip that becomes `last_received_osc`). It must only ever move FORWARD — a buffered / out-of-order ("ahead") message must never reach here (it's gated behind verify_chain_link and only processed in order, so its eagle_time is always strictly newer than the prior tip). If this ever fires, a non-contiguous message inflated the high-water mark, which would falsely tell the peer "I have everything up to here" and suppress a needed resend.
             #[cfg(feature = "development")]
             if let Some(prev) = self.last_received_times[idx] {
                 debug_assert!(
@@ -786,12 +765,7 @@ impl FriendshipChains {
         }
     }
 
-    /// Reliability sweep: collect every unacked pending message whose backoff deadline has passed,
-    /// bump its attempt count + next deadline, and return the data needed to resend it. Drives the
-    /// tick-based retransmit so a dropped message OR a dropped ACK self-heals (we keep resending until
-    /// the ACK lands; the receiver dedupes by eagle_time). Messages that have exhausted
-    /// `MAX_SEND_ATTEMPTS` are NOT returned here (the caller treats them as undelivered) but are left
-    /// in pending so a late ACK can still clear them.
+    /// Reliability sweep: collect every unacked pending message whose backoff deadline has passed, bump its attempt count + next deadline, and return the data needed to resend it. Drives the tick-based retransmit so a dropped message OR a dropped ACK self-heals (we keep resending until the ACK lands; the receiver dedupes by eagle_time). Messages that have exhausted `MAX_SEND_ATTEMPTS` are NOT returned here (the caller treats them as undelivered) but are left in pending so a late ACK can still clear them.
     ///
     /// Returns `(eagle_time, prev_msg_hp, ciphertext, attempts_now, exhausted)` per due message.
     pub fn collect_due_retransmits(
@@ -820,17 +794,9 @@ impl FriendshipChains {
         due
     }
 
-    /// Re-arm (reset the retransmit backoff for) pending messages NEWER than the peer's contiguous tip
-    /// `tip_osc` that have already EXHAUSTED `MAX_SEND_ATTEMPTS`. Drives stall recovery: a receiver
-    /// stalled on a gap keeps advertising its contiguous tip (its `last_received_osc`) in every ping's
-    /// sync record; if the gap-filling message was one the sender already gave up on, this revives it so
-    /// `collect_due_retransmits` will send it again. Without this, a message lost past 8 attempts is
-    /// permanently undelivered and the receiver stays stuck forever. Non-exhausted pendings are left
-    /// alone (their normal backoff already covers them). Returns how many were re-armed.
+    /// Re-arm (reset the retransmit backoff for) pending messages NEWER than the peer's contiguous tip `tip_osc` that have already EXHAUSTED `MAX_SEND_ATTEMPTS`. Drives stall recovery: a receiver stalled on a gap keeps advertising its contiguous tip (its `last_received_osc`) in every ping's sync record; if the gap-filling message was one the sender already gave up on, this revives it so `collect_due_retransmits` will send it again. Without this, a message lost past 8 attempts is permanently undelivered and the receiver stays stuck forever. Non-exhausted pendings are left alone (their normal backoff already covers them). Returns how many were re-armed.
     ///
-    /// `tip_osc` is the peer's newest CONTIGUOUS eagle_time ("I have everything up to here, in order"),
-    /// so anything with `eagle_time > tip_osc` is fair game to resend — it's either the missing message
-    /// or a successor the peer is buffering behind it.
+    /// `tip_osc` is the peer's newest CONTIGUOUS eagle_time ("I have everything up to here, in order"), so anything with `eagle_time > tip_osc` is fair game to resend — it's either the missing message or a successor the peer is buffering behind it.
     pub fn rearm_pending_after(&mut self, tip_osc: i64, now_osc: i64) -> usize {
         let mut rearmed = 0;
         for msg in self.pending_messages.iter_mut() {
@@ -939,8 +905,7 @@ impl FriendshipChains {
             prev_msg_hp,
             msg_hp,
             ciphertext,
-            // Freeze the braid's woven strands for THIS step so the matching process_ack advances
-            // with the exact bytes the receiver used, regardless of later receives.
+            // Freeze the braid's woven strands for THIS step so the matching process_ack advances with the exact bytes the receiver used, regardless of later receives.
             woven_strands,
             // First transmit counts as attempt 1; schedule the first resend one backoff step out.
             attempts: 1,
@@ -958,13 +923,7 @@ impl FriendshipChains {
     /// Does NOT advance the chain — advancement is deferred to [`process_ack`](Self::process_ack), the same invariant the receive side relies on (advancing on send would desync if the peer never decrypts).
     ///
     /// Returns `(ciphertext, prev_msg_hp, msg_hp, plaintext_hash)` for the wire send, or `None` if `our_handle_hash` isn't a participant.
-    /// `plaintext` is the FULL flattened VSF payload (`(message: x{}, hp{}, hR{pad})`) — this is what
-    /// goes on the wire (encrypted) and what both sides hash for `msg_hp`/ACK. `salt_text` is the bare
-    /// message x-text only: the salt source + the `our_plaintext` fed to the braid's `derive_fresh_link`
-    /// on ACK-advance. The two are SEPARATE on purpose — the random `hR` pad and the public `hp` are
-    /// traffic-analysis/wire concerns, never chain-key material, and keeping them out of the chain
-    /// ingredient keeps it valid UTF-8 (so it stores losslessly) and matches the receiver, which
-    /// advances + salts from the decrypted x-text only.
+    /// `plaintext` is the FULL flattened VSF payload (`(message: x{}, hp{}, hR{pad})`) — this is what goes on the wire (encrypted) and what both sides hash for `msg_hp`/ACK. `salt_text` is the bare message x-text only: the salt source + the `our_plaintext` fed to the braid's `derive_fresh_link` on ACK-advance. The two are SEPARATE on purpose — the random `hR` pad and the public `hp` are traffic-analysis/wire concerns, never chain-key material, and keeping them out of the chain ingredient keeps it valid UTF-8 (so it stores losslessly) and matches the receiver, which advances + salts from the decrypted x-text only.
     pub fn prepare_send(
         &mut self,
         our_handle_hash: &[u8; 32],
@@ -984,10 +943,7 @@ impl FriendshipChains {
         let et = vsf::EagleTime::from_oscillations(eagle_time);
         let ciphertext = encrypt_layers(&plaintext, &our_chain, &scratch, &et);
 
-        // Mirror the receiver's "CHAIN DECRYPT" line so both sides can be diffed: for a given
-        // eagle_time the encrypt key+salt here MUST equal the decrypt key+salt on the peer, or the
-        // chains have diverged. last_plaintext_len flags the lossy-storage class of bug (a non-empty
-        // prev that round-tripped through storage must be byte-identical on both ends).
+        // Mirror the receiver's "CHAIN DECRYPT" line so both sides can be diffed: for a given eagle_time the encrypt key+salt here MUST equal the decrypt key+salt on the peer, or the chains have diverged. last_plaintext_len flags the lossy-storage class of bug (a non-empty prev that round-tripped through storage must be byte-identical on both ends).
         crate::log(&format!(
             "CHAIN ENCRYPT: our_handle_hash = {}..., key = {}..., salt = {}..., eagle_time = {}, last_plaintext_len = {}, ciphertext_len = {}",
             hex::encode(&our_handle_hash[..4]),
@@ -1006,9 +962,7 @@ impl FriendshipChains {
         let plaintext_hash = *blake3::hash(&plaintext).as_bytes();
         let msg_hp = derive_msg_hp(&prev_msg_hp, &plaintext_hash, eagle_time);
 
-        // Pending stores the SALT-TEXT (not the full payload): process_ack advances the chain with it
-        // (as our_plaintext) and it becomes last_plaintext for the next salt — both must equal what the
-        // receiver uses, which is the decrypted x-text only.
+        // Pending stores the SALT-TEXT (not the full payload): process_ack advances the chain with it (as our_plaintext) and it becomes last_plaintext for the next salt — both must equal what the receiver uses, which is the decrypted x-text only.
         self.add_pending(
             eagle_time,
             salt_text,
@@ -1037,11 +991,7 @@ impl FriendshipChains {
         if let Some(idx) = pos {
             let pending = self.pending_messages.remove(idx);
 
-            // The braid: advance with the EXACT woven strands this message braided at send time
-            // (frozen on the PendingMessage), NOT whatever we hold now. The receiver advanced its
-            // copy of our chain using the strands named by the two eagle_times on the wire; these
-            // frozen bytes are those same strands. Using "latest plaintext" here was the original
-            // desync (order-dependent). Strands are already sorted by eagle_time.
+            // The braid: advance with the EXACT woven strands this message braided at send time (frozen on the PendingMessage), NOT whatever we hold now. The receiver advanced its copy of our chain using the strands named by the two eagle_times on the wire; these frozen bytes are those same strands. Using "latest plaintext" here was the original desync (order-dependent). Strands are already sorted by eagle_time.
             let eagle_time = vsf::EagleTime::from_oscillations(pending.eagle_time);
             let strand_refs: Vec<&[u8]> =
                 pending.woven_strands.iter().map(|s| s.as_slice()).collect();
@@ -1172,9 +1122,7 @@ impl FriendshipChains {
 
     // ==================== GAP BUFFER METHODS ====================
 
-    /// Buffer a message received out of order (its `prev_msg_hp` doesn't match what we've received so
-    /// far). Keyed on the awaited `prev_msg_hp`; deduped on (sender, eagle_time) since `msg_hp` is
-    /// unknown pre-decrypt.
+    /// Buffer a message received out of order (its `prev_msg_hp` doesn't match what we've received so far). Keyed on the awaited `prev_msg_hp`; deduped on (sender, eagle_time) since `msg_hp` is unknown pre-decrypt.
     pub fn buffer_for_gap(
         &mut self,
         prev_msg_hp: [u8; 32],
@@ -1396,9 +1344,7 @@ mod tests {
 
     #[test]
     fn test_gap_buffer_keys_on_prev_and_drains_on_fill() {
-        // Layer 1: an out-of-order message is buffered on the prev_msg_hp it awaits, and is released
-        // by take_buffered_for ONLY when that exact predecessor's msg_hp fills. This is the wiring the
-        // receive path relies on to replay buffered messages strictly in order.
+        // Layer 1: an out-of-order message is buffered on the prev_msg_hp it awaits, and is released by take_buffered_for ONLY when that exact predecessor's msg_hp fills. This is the wiring the receive path relies on to replay buffered messages strictly in order.
         let alice = [1u8; 32];
         let bob = [2u8; 32];
         let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();

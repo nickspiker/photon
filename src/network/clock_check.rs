@@ -1,14 +1,8 @@
 //! One-shot wall-clock sanity check via nunc-time multi-source consensus.
 //!
-//! Photon stamps every eagle-time on the LOCAL clock (the braid, message ordering, avatar
-//! newer-wins all need a monotonic, unique-per-tick local stamp — nunc's ~seconds latency and
-//! ±confidence interval would break that). nunc is used ONLY to ask, out of band, "is this device's
-//! wall clock telling the truth?" If the consensus says we're off by more than a threshold, the UI
-//! raises an amber "clock off" banner — a warning, never a silent correction. Open source relies on
-//! everyone being honest; we surface the anomaly loudly instead of trusting or overriding it.
+//! Photon stamps every eagle-time on the LOCAL clock (the braid, message ordering, avatar newer-wins all need a monotonic, unique-per-tick local stamp — nunc's ~seconds latency and ±confidence interval would break that). nunc is used ONLY to ask, out of band, "is this device's wall clock telling the truth?" If the consensus says we're off by more than a threshold, the UI raises an amber "clock off" banner — a warning, never a silent correction. Open source relies on everyone being honest; we surface the anomaly loudly instead of trusting or overriding it.
 //!
-//! It runs once a few seconds after attest, and again whenever the jump detector below notices the
-//! wall clock diverging from the monotonic clock by more than the re-check slack (an NTP step,
+//! It runs once a few seconds after attest, and again whenever the jump detector below notices the wall clock diverging from the monotonic clock by more than the re-check slack (an NTP step,
 //! a long sleep, or an adversary moving the clock after boot). The jump is only the cheap TRIGGER;
 //! nunc is the arbiter that decides whether the banner shows.
 
@@ -21,9 +15,7 @@ use crate::ui::PhotonEvent;
 #[cfg(not(target_os = "android"))]
 use fluor::host::WakeSender;
 
-/// The wake handle the worker uses to nudge the event loop after it posts a result. Matches the
-/// shape the inline avatar / clutch workers use (`self.event_proxy.clone()`): an `Arc<dyn
-/// WakeSender>` on desktop, nothing on Android (its redraws come thru the JNI/Choreographer path).
+/// The wake handle the worker uses to nudge the event loop after it posts a result. Matches the shape the inline avatar / clutch workers use (`self.event_proxy.clone()`): an `Arc<dyn WakeSender>` on desktop, nothing on Android (its redraws come thru the JNI/Choreographer path).
 #[cfg(not(target_os = "android"))]
 pub type ClockWake = Option<Arc<dyn WakeSender<PhotonEvent>>>;
 #[cfg(target_os = "android")]
@@ -32,34 +24,27 @@ pub type ClockWake = Option<()>;
 /// Outcome of one consensus query against the system clock.
 #[derive(Debug, Clone)]
 pub enum ClockCheckResult {
-    /// Consensus reached. `offset_secs` = consensus_time − system_time (positive: system clock is
-    /// BEHIND true time; negative: AHEAD). `confidence_secs` is the consensus half-width.
+    /// Consensus reached. `offset_secs` = consensus_time − system_time (positive: system clock is BEHIND true time; negative: AHEAD). `confidence_secs` is the consensus half-width.
     Ok {
         offset_secs: i64,
         confidence_secs: u64,
         sources_used: usize,
         sources_queried: usize,
     },
-    /// The consensus query failed (offline, every source unreachable, etc). Not an anomaly — we
-    /// simply couldn't verify, so the UI leaves the banner in its prior state.
+    /// The consensus query failed (offline, every source unreachable, etc). Not an anomaly — we simply couldn't verify, so the UI leaves the banner in its prior state.
     Unavailable(String),
 }
 
-/// Spawn the background clock check. Mirrors the avatar / clutch worker shape: own thread, own
-/// current-thread tokio runtime (nunc is async), result back over an `mpsc` channel, then wake the
-/// event loop so the next frame drains it. Never blocks the UI thread.
+/// Spawn the background clock check. Mirrors the avatar / clutch worker shape: own thread, own current-thread tokio runtime (nunc is async), result back over an `mpsc` channel, then wake the event loop so the next frame drains it. Never blocks the UI thread.
 ///
-/// Desktop-only: nunc-time isn't a dependency on Android (its roughtime source pulls `ring`, which
-/// needs the NDK to cross-compile), and the clock check is a desktop-host affordance. The call sites
-/// in `photon_app` are already `cfg(not(android))`-gated to match.
+/// Desktop-only: nunc-time isn't a dependency on Android (its roughtime source pulls `ring`, which needs the NDK to cross-compile), and the clock check is a desktop-host affordance. The call sites in `photon_app` are already `cfg(not(android))`-gated to match.
 #[cfg(not(target_os = "android"))]
 pub fn spawn_clock_check(
     tx: std::sync::mpsc::Sender<ClockCheckResult>,
     #[allow(unused_variables)] event_proxy: ClockWake,
 ) {
     std::thread::spawn(move || {
-        // Sample the system clock as close as possible to the consensus query so the offset reflects
-        // the same instant on both clocks.
+        // Sample the system clock as close as possible to the consensus query so the offset reflects the same instant on both clocks.
         let system_at_query = SystemTime::now();
 
         let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -106,11 +91,7 @@ pub fn spawn_clock_check(
 
 /// Detects gross, unexplained jumps in the wall clock by comparing it to the monotonic clock.
 ///
-/// `Instant` (monotonic) cannot be set or run backward; `SystemTime` (wall clock) can be stepped by
-/// NTP, by suspend/resume, or by an adversary. If the wall clock advances much more (or less) than
-/// the monotonic clock did over the same span, the wall clock jumped. We can't tell a benign jump
-/// (NTP step, laptop slept) from a malicious one HERE — that's nunc's job. This is only the cheap
-/// trigger that says "something moved, go re-verify."
+/// `Instant` (monotonic) cannot be set or run backward; `SystemTime` (wall clock) can be stepped by NTP, by suspend/resume, or by an adversary. If the wall clock advances much more (or less) than the monotonic clock did over the same span, the wall clock jumped. We can't tell a benign jump (NTP step, laptop slept) from a malicious one HERE — that's nunc's job. This is only the cheap trigger that says "something moved, go re-verify."
 pub struct ClockJumpDetector {
     mono_baseline: Instant,
     wall_baseline: SystemTime,
@@ -119,9 +100,7 @@ pub struct ClockJumpDetector {
 }
 
 impl ClockJumpDetector {
-    /// `slack_secs` is the unexplained divergence that triggers a re-check (~3600 = one hour: loose
-    /// enough to ignore ordinary NTP steps and short sleeps, tight enough to catch a day-scale set
-    /// or a long suspend).
+    /// `slack_secs` is the unexplained divergence that triggers a re-check (~3600 = one hour: loose enough to ignore ordinary NTP steps and short sleeps, tight enough to catch a day-scale set or a long suspend).
     pub fn new(slack_secs: u64) -> Self {
         Self {
             mono_baseline: Instant::now(),
@@ -130,9 +109,7 @@ impl ClockJumpDetector {
         }
     }
 
-    /// Returns true if the wall clock has diverged from the monotonic clock by more than the slack
-    /// since the last baseline. On a true return it also re-baselines, so a single jump fires once
-    /// (the caller turns that one `true` into one re-check), not every tick thereafter.
+    /// Returns true if the wall clock has diverged from the monotonic clock by more than the slack since the last baseline. On a true return it also re-baselines, so a single jump fires once (the caller turns that one `true` into one re-check), not every tick thereafter.
     pub fn check_and_reset(&mut self) -> bool {
         let mono_elapsed = self.mono_baseline.elapsed().as_secs();
         let wall_elapsed = match SystemTime::now().duration_since(self.wall_baseline) {

@@ -6,16 +6,7 @@
 use super::inspect::vsf_inspect;
 use std::net::SocketAddr;
 
-/// Centralized UDP TX - logs via vsf_inspect then sends This is THE ONLY place UDP packets should be transmitted (except LAN broadcast)
-/// Normalize a UNICAST destination for the main dual-stack (`[::]`) photon socket: a v6 socket
-/// cannot send to a plain `SocketAddr::V4` — the datagram is silently dropped — it must target the
-/// IPv4-mapped form `[::ffff:a.b.c.d]`. Some send paths construct raw V4 dests (e.g. `race_addrs`
-/// builds the LAN address from a stored `Ipv4Addr`) while others reuse a kernel-supplied `::ffff:`
-/// address (an incoming packet's src), so unicast delivery was inconsistent: ACKs (src-derived,
-/// mapped) arrived but chat messages (race_addrs, raw V4) vanished. Mapping here makes every unicast
-/// send go out in a form the dual-stack socket accepts. Only the async `send` (always the dual-stack
-/// socket) maps; `send_sync` is left raw because it serves v4 multicast/broadcast on dedicated v4
-/// sockets, which must NOT be mapped.
+/// Centralized UDP TX - logs via vsf_inspect then sends This is THE ONLY place UDP packets should be transmitted (except LAN broadcast) Normalize a UNICAST destination for the main dual-stack (`[::]`) photon socket: a v6 socket cannot send to a plain `SocketAddr::V4` — the datagram is silently dropped — it must target the IPv4-mapped form `[::ffff:a.b.c.d]`. Some send paths construct raw V4 dests (e.g. `race_addrs` builds the LAN address from a stored `Ipv4Addr`) while others reuse a kernel-supplied `::ffff:` address (an incoming packet's src), so unicast delivery was inconsistent: ACKs (src-derived, mapped) arrived but chat messages (race_addrs, raw V4) vanished. Mapping here makes every unicast send go out in a form the dual-stack socket accepts. Only the async `send` (always the dual-stack socket) maps; `send_sync` is left raw because it serves v4 multicast/broadcast on dedicated v4 sockets, which must NOT be mapped.
 fn map_v4_for_dualstack(addr: SocketAddr) -> SocketAddr {
     match addr {
         SocketAddr::V4(v4) => {
@@ -26,9 +17,7 @@ fn map_v4_for_dualstack(addr: SocketAddr) -> SocketAddr {
 }
 
 pub async fn send(socket: &tokio::net::UdpSocket, data: &[u8], addr: SocketAddr) {
-    // An empty payload is never a real datagram — it's PT's "queued, nothing to send now" signal
-    // (a small packet waiting behind an in-flight one in the stop-and-wait queue). Skip it so callers
-    // don't have to guard every send site.
+    // An empty payload is never a real datagram — it's PT's "queued, nothing to send now" signal (a small packet waiting behind an in-flight one in the stop-and-wait queue). Skip it so callers don't have to guard every send site.
     if data.is_empty() {
         return;
     }

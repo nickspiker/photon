@@ -1327,10 +1327,7 @@ async fn run_checker(
                             parse_clutch_complete_vsf_without_recipient_check(msg_bytes)
                         {
                             crate::log("UDP: Received ClutchComplete directly (VSF verified)");
-                            // Delivery ack — ClutchComplete is sent as a reliable PT packet; without
-                            // acking it the sender's stop-and-wait queue head never clears and it
-                            // blocks every later packet (chat) behind it. Pure transport "bytes got
-                            // here"; the proof's own convergence logic is layered on top.
+                            // Delivery ack — ClutchComplete is sent as a reliable PT packet; without acking it the sender's stop-and-wait queue head never clears and it blocks every later packet (chat) behind it. Pure transport "bytes got here"; the proof's own convergence logic is layered on top.
                             {
                                 let ack_bytes = {
                                     let pt_mgr = pt_recv.lock().unwrap();
@@ -1355,13 +1352,8 @@ async fn run_checker(
 
                     match FgtwMessage::from_vsf_bytes(msg_bytes) {
                         Ok(message) => {
-                            // Delivery ack for RELIABLE small messages only (chat, MessageAck, CLUTCH
-                            // proof) — those are sent through PT's stop-and-wait queue and need a
-                            // delivery ack (keyed by BLAKE3(bytes)) so the sender stops retransmitting.
-                            // Ping/pong are best-effort on their own schedule (NOT queued reliably), so
-                            // acking them would be pointless noise. Pure transport "bytes received"; the
-                            // app still sends its own semantic reply (MessageAck). Packet-acks are
-                            // pt_ack frames handled earlier, so they never reach here (no ack-of-ack).
+                            // Delivery ack for RELIABLE small messages only (chat, MessageAck, CLUTCH proof) — those are sent through PT's stop-and-wait queue and need a delivery ack (keyed by BLAKE3(bytes)) so the sender stops retransmitting.
+                            // Ping/pong are best-effort on their own schedule (NOT queued reliably), so acking them would be pointless noise. Pure transport "bytes received"; the app still sends its own semantic reply (MessageAck). Packet-acks are pt_ack frames handled earlier, so they never reach here (no ack-of-ack).
                             let reliable = matches!(
                                 message,
                                 FgtwMessage::ChatMessage { .. } | FgtwMessage::MessageAck { .. }
@@ -1521,10 +1513,7 @@ async fn run_checker(
                                         continue;
                                     }
 
-                                    // A chat IS liveness proof — stronger than a pong. Clear the
-                                    // sender's ping-failure counter and mark them online, so the
-                                    // ping-timeout can't flip a peer offline while they're actively
-                                    // messaging us (the "shows offline but receives messages" bug).
+                                    // A chat IS liveness proof — stronger than a pong. Clear the sender's ping-failure counter and mark them online, so the ping-timeout can't flip a peer offline while they're actively messaging us (the "shows offline but receives messages" bug).
                                     {
                                         let mut failures = failed_pings_recv.lock().unwrap();
                                         failures.retain(|(k, _)| k != sender_pubkey.as_bytes());
@@ -1841,9 +1830,7 @@ async fn run_checker(
                         Some(request.recipient_pubkey),
                     )
                 };
-                // PT returns the first wire bytes to send, or EMPTY if this packet queued behind an
-                // in-flight one for this peer (stop-and-wait) — in that case tick() sends it once the
-                // head is acked. Don't emit an empty datagram.
+                // PT returns the first wire bytes to send, or EMPTY if this packet queued behind an in-flight one for this peer (stop-and-wait) — in that case tick() sends it once the head is acked. Don't emit an empty datagram.
                 if !pt_bytes.is_empty() {
                     udp::send(&socket, &pt_bytes, request.peer_addr).await;
                 }
@@ -2193,10 +2180,7 @@ async fn run_checker(
                 // Always send UDP first — UDP is the preferred path (PT shards over it).
                 udp::send(&socket, &tick.wire_bytes, tick.peer_addr).await;
 
-                // TCP fallback: send the WHOLE VSF payload once (set by PT tick after the UDP SPEC
-                // went ~1s unacked). Not the PT shard — TCP is reliable + ordered and the VSF `l`
-                // field self-frames the length, so the receiver's tcp::recv reads it whole and the
-                // existing CLUTCH dispatch parses it directly.
+                // TCP fallback: send the WHOLE VSF payload once (set by PT tick after the UDP SPEC went ~1s unacked). Not the PT shard — TCP is reliable + ordered and the VSF `l` field self-frames the length, so the receiver's tcp::recv reads it whole and the existing CLUTCH dispatch parses it directly.
                 if let Some(tcp_payload) = &tick.tcp_payload {
                     if let Err(e) = crate::network::tcp::send_tcp(tcp_payload, tick.peer_addr).await
                     {

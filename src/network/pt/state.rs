@@ -331,13 +331,7 @@ impl OutboundTransfer {
 
 /// A small (≤1KB) reliable packet awaiting delivery acknowledgement.
 ///
-/// Distinct from [`OutboundTransfer`] (which carries the heavy stream machinery — windows, flight
-/// tracking, reassembly): a packet is one shot of opaque bytes. PT retransmits it on exponential
-/// backoff (1s → 2s → … → 60s, indefinitely) until the receiver returns a delivery ack keyed by
-/// `packet_hash`. Per-peer the queue runs strictly one-in-flight (stop-and-wait) — `in_flight` marks
-/// the head; the rest wait their turn. Delivery only: the receiver auto-acks on byte-receipt, BEFORE
-/// the app sees the payload. Any semantic ack (MessageAck advancing the chain) is the app's separate
-/// concern layered on top.
+/// Distinct from [`OutboundTransfer`] (which carries the heavy stream machinery — windows, flight tracking, reassembly): a packet is one shot of opaque bytes. PT retransmits it on exponential backoff (1s → 2s → … → 60s, indefinitely) until the receiver returns a delivery ack keyed by `packet_hash`. Per-peer the queue runs strictly one-in-flight (stop-and-wait) — `in_flight` marks the head; the rest wait their turn. Delivery only: the receiver auto-acks on byte-receipt, BEFORE the app sees the payload. Any semantic ack (MessageAck advancing the chain) is the app's separate concern layered on top.
 pub struct OutboundPacket {
     pub peer_addr: SocketAddr,
     /// Alternate address raced alongside (LAN vs WAN), same as streams. `None` = single path.
@@ -382,8 +376,7 @@ impl OutboundPacket {
         }
     }
 
-    /// Record the initial transmission of this packet (becomes the in-flight head). The first
-    /// retransmit then waits `next_delay` = 1s; each retransmit doubles it via `mark_retransmit`.
+    /// Record the initial transmission of this packet (becomes the in-flight head). The first retransmit then waits `next_delay` = 1s; each retransmit doubles it via `mark_retransmit`.
     pub fn mark_sent(&mut self) {
         self.in_flight = true;
         self.last_sent = Some(Instant::now());

@@ -98,8 +98,7 @@ fn posture_colour(filled: usize) -> u32 {
     }
 }
 
-/// Security and Recovery posture for the current identity — each a count of filled pips out of [`POSTURE_PIPS`]. Two orthogonal axes, surfaced on the Ready-screen bottom strip:
-///   * Security — how hard it is for an attacker to steal or forge this identity. Bounded by the device root. Today every platform derives `device_secret` from a *readable* fingerprint (Linux machine-id, Windows MachineGuid, macOS IOPlatformUUID), so same-privilege code can lift it: 1 pip everywhere. A root-gated firmware fact would be 2; a hardware enclave or PIPE, 3.
+/// Security and Recovery posture for the current identity — each a count of filled pips out of [`POSTURE_PIPS`]. Two orthogonal axes, surfaced on the Ready-screen bottom strip: * Security — how hard it is for an attacker to steal or forge this identity. Bounded by the device root. Today every platform derives `device_secret` from a *readable* fingerprint (Linux machine-id, Windows MachineGuid, macOS IOPlatformUUID), so same-privilege code can lift it: 1 pip everywhere. A root-gated firmware fact would be 2; a hardware enclave or PIPE, 3.
 ///   * Recovery — how hard it is for the *owner* to lose this identity for good. For a single device it is whether the root survives a factory reset: macOS's IOPlatformUUID is firmware and re-derives after a wipe (2); Linux machine-id, Windows MachineGuid and Android's ANDROID_ID are software / reset-volatile (1). Device redundancy (Mirrored), a durable anchor (desktop/PIPE) and social vouching raise this toward 3.
 ///
 /// This is the single seam multi-device, vouching and PIPE plug into: they change what this returns and nothing else.
@@ -188,11 +187,7 @@ fn draw_hourglass(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, angle_deg: f
 /// Status-message colour for the "Attesting…" indicator that occupies the error slot while a handle query is in flight. Pure visible white, fully opaque — same slot as `ERROR_TEXT_COLOUR` but white instead of red so the user reads it as "neutral status" rather than "something went wrong".
 const STATUS_TEXT_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_FF_FF_FF));
 
-// Tiered presence-ping cadence — frequent while the user is engaged, sparse once they've walked
-// away, so an idle/unfocused window isn't waking the radio every few seconds for rings nobody is
-// watching. The tier is chosen by time-since-last-interaction; any interaction (input or focus
-// gain) resets the clock AND fires an immediate sweep, so presence is always fresh the moment the
-// user looks, regardless of how far the cadence had backed off.
+// Tiered presence-ping cadence — frequent while the user is engaged, sparse once they've walked away, so an idle/unfocused window isn't waking the radio every few seconds for rings nobody is watching. The tier is chosen by time-since-last-interaction; any interaction (input or focus gain) resets the clock AND fires an immediate sweep, so presence is always fresh the moment the user looks, regardless of how far the cadence had backed off.
 /// Active tier: sweep every 5s while interacting (idle < `PRESENCE_IDLE_NEAR`).
 const PRESENCE_PING_ACTIVE: std::time::Duration = std::time::Duration::from_secs(5);
 /// Idle tier: sweep every 1min once idle past `PRESENCE_IDLE_NEAR`.
@@ -206,12 +201,7 @@ const PRESENCE_IDLE_FAR: std::time::Duration = std::time::Duration::from_secs(10
 
 /// Deterministic per-party text colour for the conversation view, derived from a handle hash.
 ///
-/// PLACEHOLDER (v1): hue from the hash, fixed saturation + lightness, plain HSL→sRGB. Both your
-/// colour (your handle hash) and theirs (their handle hash) come from this, so a party always reads
-/// the same colour. FOLLOW-UP: replace the body with a perceptually-uniform generator — pin perceived
-/// lightness to ~50% via the vsf spectral/LMS pipeline (`vsf/src/colour/spectral/`) so every party's
-/// colour reads at equal brightness while hue+saturation vary by handle. Keep this signature so the
-/// swap is a drop-in. Returns packed ARGB (0xAARRGGBB), run through `theme`'s `fmt` for Android.
+/// PLACEHOLDER (v1): hue from the hash, fixed saturation + lightness, plain HSL→sRGB. Both your colour (your handle hash) and theirs (their handle hash) come from this, so a party always reads the same colour. FOLLOW-UP: replace the body with a perceptually-uniform generator — pin perceived lightness to ~50% via the vsf spectral/LMS pipeline (`vsf/src/colour/spectral/`) so every party's colour reads at equal brightness while hue+saturation vary by handle. Keep this signature so the swap is a drop-in. Returns packed ARGB (0xAARRGGBB), run through `theme`'s `fmt` for Android.
 fn party_colour(handle_hash: &[u8; 32]) -> u32 {
     // Hue across the full wheel from the first two hash bytes; fixed S/L for now.
     let hue = (u16::from_le_bytes([handle_hash[0], handle_hash[1]]) as f32 / 65535.0) * 360.0;
@@ -239,8 +229,7 @@ fn party_colour(handle_hash: &[u8; 32]) -> u32 {
     fluor::theme::dark(fluor::theme::fmt(visible))
 }
 
-/// Dim a stored α+darkness colour to ~half opacity (for undelivered outgoing messages). The stored
-/// high byte is opacity (α), so scaling it down makes the glyph fainter against the background.
+/// Dim a stored α+darkness colour to ~half opacity (for undelivered outgoing messages). The stored high byte is opacity (α), so scaling it down makes the glyph fainter against the background.
 fn dim_colour(c: u32) -> u32 {
     let a = ((c >> 24) & 0xFF) / 2;
     (c & 0x00FF_FFFF) | (a << 24)
@@ -340,18 +329,13 @@ pub struct PhotonApp {
     /// Background ceremony-completion results (avalanche-expand → friendship chains + eggs proof). Drained in `tick` → sends complete, marks the contact CLUTCH-complete.
     clutch_ceremony_tx: std::sync::mpsc::Sender<crate::network::ClutchCeremonyResult>,
     clutch_ceremony_rx: std::sync::mpsc::Receiver<crate::network::ClutchCeremonyResult>,
-    /// Peer-avatar background downloads (fetched from FGTW by handle, off the UI thread). The result
-    /// carries the decoded VSF-RGB pixels (or None if the peer has no avatar / fetch failed); the
-    /// drain in `check_status_updates` colour-converts and installs them on the matching contact.
+    /// Peer-avatar background downloads (fetched from FGTW by handle, off the UI thread). The result carries the decoded VSF-RGB pixels (or None if the peer has no avatar / fetch failed); the drain in `check_status_updates` colour-converts and installs them on the matching contact.
     avatar_dl_tx: std::sync::mpsc::Sender<crate::ui::avatar::AvatarDownloadResult>,
     avatar_dl_rx: std::sync::mpsc::Receiver<crate::ui::avatar::AvatarDownloadResult>,
-    /// Handles we've already kicked an avatar download for this session, so we don't re-spawn a fetch
-    /// every time a conversation is reopened or the contact list re-renders.
+    /// Handles we've already kicked an avatar download for this session, so we don't re-spawn a fetch every time a conversation is reopened or the contact list re-renders.
     avatar_dl_started: std::collections::HashSet<String>,
     /// Mutual peers we've sent a direct P2P AvatarRequest to, mapped to the eagle-time we sent it.
-    /// The per-tick sweep asks each mutual peer once, then — if no AvatarResponse has installed an
-    /// avatar within `AVATAR_P2P_FALLBACK_OSC` — falls back to FGTW. So a friend's avatar comes from
-    /// the friend first, and FGTW only covers the case where the friend is offline or avatar-less.
+    /// The per-tick sweep asks each mutual peer once, then — if no AvatarResponse has installed an avatar within `AVATAR_P2P_FALLBACK_OSC` — falls back to FGTW. So a friend's avatar comes from the friend first, and FGTW only covers the case where the friend is offline or avatar-less.
     avatar_req_pending: std::collections::HashMap<[u8; 32], i64>,
     /// Completed friendship chains, keyed by friendship id — populated when a CLUTCH ceremony completes (the per-conversation rolling key material lives here). Persisted via `save_friendship_chains`; loaded on attest/resume.
     friendship_chains: Vec<(
@@ -376,16 +360,13 @@ pub struct PhotonApp {
     session: Option<tohu::SessionIdentity>,
     /// True when the dual-ring vault flagged a damaged ring on open this session. Drives the persistent amber banner on the Ready screen. Sticky for the session.
     vault_degraded: bool,
-    /// nunc-time clock sanity check: result channel + drain. The worker (one-shot, off-thread) posts
-    /// the consensus-vs-system offset here; `drain_clock_check` reads it and updates `clock_off`.
+    /// nunc-time clock sanity check: result channel + drain. The worker (one-shot, off-thread) posts the consensus-vs-system offset here; `drain_clock_check` reads it and updates `clock_off`.
     clock_check_tx: std::sync::mpsc::Sender<crate::network::ClockCheckResult>,
     clock_check_rx: std::sync::mpsc::Receiver<crate::network::ClockCheckResult>,
-    /// `Some(offset_secs)` when the last consensus said the system clock is off by more than the
-    /// threshold (consensus − system; positive = system behind). Drives the amber "clock off" banner.
+    /// `Some(offset_secs)` when the last consensus said the system clock is off by more than the threshold (consensus − system; positive = system behind). Drives the amber "clock off" banner.
     /// Tracks the LATEST verdict, not sticky — a corrected clock clears it on the next clean check.
     clock_off: Option<i64>,
-    /// Watches the wall clock against the monotonic clock; a gross unexplained jump (NTP step, long
-    /// sleep, or an adversary moving the clock after boot) triggers a fresh consensus re-check.
+    /// Watches the wall clock against the monotonic clock; a gross unexplained jump (NTP step, long sleep, or an adversary moving the clock after boot) triggers a fresh consensus re-check.
     clock_jump: crate::network::ClockJumpDetector,
     /// FGTW connectivity state — flipped by `HandleQuery::try_recv_online`. Drives the top-left chrome orb's colour (red offline / green online). Starts false; the background worker reports the first real status within the first second of launch.
     online: bool,
@@ -659,10 +640,7 @@ impl Container for PhotonApp {
             }
         }
         if matches!(self.state, AppState::Conversation) {
-            // The compose box is the only focusable widget in a conversation; yielding it here wires
-            // click-to-focus, Tab, and key dispatch. Only when CLUTCH is Complete — before that the
-            // box isn't rendered and sending no-ops, so it must not be focusable either (otherwise a
-            // click or Tab could land focus on an invisible dead input).
+            // The compose box is the only focusable widget in a conversation; yielding it here wires click-to-focus, Tab, and key dispatch. Only when CLUTCH is Complete — before that the box isn't rendered and sending no-ops, so it must not be focusable either (otherwise a click or Tab could land focus on an invisible dead input).
             let complete = self
                 .active_contact
                 .and_then(|ci| self.contacts.get(ci))
@@ -838,10 +816,7 @@ impl FluorApp for PhotonApp {
             self.clock_check_rx = ccrx;
         }
 
-        // One-shot wall-clock sanity check via nunc-time, a few seconds behind attest (off-thread, so
-        // the several-seconds consensus query never blocks the UI). Warns via banner if the system
-        // clock is grossly wrong — never corrects it. Mid-session re-checks fire from the jump detector
-        // in `update`.
+        // One-shot wall-clock sanity check via nunc-time, a few seconds behind attest (off-thread, so the several-seconds consensus query never blocks the UI). Warns via banner if the system clock is grossly wrong — never corrects it. Mid-session re-checks fire from the jump detector in `update`.
         #[cfg(not(target_os = "android"))]
         crate::network::spawn_clock_check(self.clock_check_tx.clone(), Some(proxy.clone()));
 
@@ -890,13 +865,7 @@ impl FluorApp for PhotonApp {
                 ) {
                     Ok(s) => {
                         self.contacts = crate::storage::contacts::load_all_contacts(&s);
-                        // Load each contact's conversation history too — load_all_contacts only loads
-                        // per-peer contact STATE from the vault, not the messages (those live in the
-                        // rārangi DB, loaded separately). Without this the resume frame paints contacts
-                        // with empty message lists, and the later query_resume result can't fix it:
-                        // on_query_result merges by handle_proof and SKIPS already-loaded contacts as
-                        // duplicates, so the message-bearing copy is discarded → history looks wiped
-                        // until the next app launch. Loading here makes resume show full history at once.
+                        // Load each contact's conversation history too — load_all_contacts only loads per-peer contact STATE from the vault, not the messages (those live in the rārangi DB, loaded separately). Without this the resume frame paints contacts with empty message lists, and the later query_resume result can't fix it: on_query_result merges by handle_proof and SKIPS already-loaded contacts as duplicates, so the message-bearing copy is discarded → history looks wiped until the next app launch. Loading here makes resume show full history at once.
                         for contact in &mut self.contacts {
                             if let Err(e) = crate::storage::contacts::load_messages(contact, &s) {
                                 crate::log(&format!(
@@ -910,13 +879,7 @@ impl FluorApp for PhotonApp {
                             "UI: loaded {} contact(s) from local vault on resume",
                             self.contacts.len()
                         ));
-                        // Load friendship chains NOW too, not just contacts. Resume paints Ready and the
-                        // status checker starts answering immediately, but chains used to arrive only
-                        // later via query_resume — so any chat that landed in that window hit "No
-                        // friendship found for conversation_token" and was DROPPED (no chain = no
-                        // decrypt, no buffer). Loading chains here closes that gap so a peer messaging
-                        // us the instant we come back online doesn't lose messages. query_resume still
-                        // merges (and won't clobber these — it only adds ids we don't already hold).
+                        // Load friendship chains NOW too, not just contacts. Resume paints Ready and the status checker starts answering immediately, but chains used to arrive only later via query_resume — so any chat that landed in that window hit "No friendship found for conversation_token" and was DROPPED (no chain = no decrypt, no buffer). Loading chains here closes that gap so a peer messaging us the instant we come back online doesn't lose messages. query_resume still merges (and won't clobber these — it only adds ids we don't already hold).
                         let friendship_ids: Vec<crate::types::FriendshipId> =
                             self.contacts.iter().filter_map(|c| c.friendship_id).collect();
                         let loaded_chains =
@@ -936,11 +899,7 @@ impl FluorApp for PhotonApp {
                             }
                         }
                         // Rehydrate each contact's saved ephemeral keypairs from disk (~588KB each).
-                        // load_contact_state deliberately doesn't pull these (they're huge and live
-                        // in a separate vault key), so without this every resume re-runs the
-                        // McEliece-heavy keygen below — which is what froze the UI on launch. Loading
-                        // the persisted keypairs makes the re-key filter a no-op for contacts that
-                        // already have them, so keygen only fires for genuinely keyless Pending ones.
+                        // load_contact_state deliberately doesn't pull these (they're huge and live in a separate vault key), so without this every resume re-runs the McEliece-heavy keygen below — which is what froze the UI on launch. Loading the persisted keypairs makes the re-key filter a no-op for contacts that already have them, so keygen only fires for genuinely keyless Pending ones.
                         for contact in self.contacts.iter_mut() {
                             if contact.clutch_our_keypairs.is_none() {
                                 match crate::storage::contacts::load_clutch_keypairs(
@@ -969,24 +928,18 @@ impl FluorApp for PhotonApp {
                                 crate::ui::colour_convert::vsf_rgb_to_bt2020(&vsf_rgb)
                             });
                         }
-                        // Local vault had no avatar (e.g. this device was cleared) — recover our own
-                        // from FGTW, where it was published. Off-thread; installs via the avatar drain.
+                        // Local vault had no avatar (e.g. this device was cleared) — recover our own from FGTW, where it was published. Off-thread; installs via the avatar drain.
                         if self.device_avatar_pixels.is_none() {
                             self.spawn_self_avatar_recover(remembered.identity_seed);
                         }
                         // Force any self-contact Complete before re-keying so it's excluded (a self-contact has no peer to key with).
                         self.settle_self_contacts();
-                        // Re-key Pending contacts that still lack keypairs after the rehydrate — but
-                        // ONE AT A TIME (spawn_next_pending_keygen, repeated each tick), never all at
-                        // once: parallel McEliece keygens on launch starved the UI thread.
+                        // Re-key Pending contacts that still lack keypairs after the rehydrate — but ONE AT A TIME (spawn_next_pending_keygen, repeated each tick), never all at once: parallel McEliece keygens on launch starved the UI thread.
                         self.spawn_next_pending_keygen();
                     }
                     Err(e) => {
                         crate::log(&format!("STORAGE: init failed on resume: {}", e));
-                        // A hard vault-open failure (e.g. seal verification failed) is the WORST storage
-                        // state — no contacts load and nothing persists — yet it previously showed no
-                        // warning, while a mere recoverable mirror-divergence (`degraded()`) did. Flag it
-                        // so the red "storage degraded" banner surfaces a fully-broken vault too.
+                        // A hard vault-open failure (e.g. seal verification failed) is the WORST storage state — no contacts load and nothing persists — yet it previously showed no warning, while a mere recoverable mirror-divergence (`degraded()`) did. Flag it so the red "storage degraded" banner surfaces a fully-broken vault too.
                         self.vault_degraded = true;
                     }
                 }
@@ -1015,9 +968,7 @@ impl FluorApp for PhotonApp {
     }
 
     fn on_event(&mut self, event: &Event, ctx: &mut Context) -> EventResponse {
-        // Any event is user engagement — reset the presence-sweep idle clock so the cadence returns
-        // to the active (5s) tier. Cheap (just a timestamp); the immediate-sweep-on-focus is handled
-        // in the Focused arm below.
+        // Any event is user engagement — reset the presence-sweep idle clock so the cadence returns to the active (5s) tier. Cheap (just a timestamp); the immediate-sweep-on-focus is handled in the Focused arm below.
         self.last_interaction = Some(Instant::now());
         match event {
             Event::CursorMoved { .. } => {
@@ -1132,10 +1083,7 @@ impl FluorApp for PhotonApp {
                 EventResponse::Pass
             }
             Event::Focused(focused) => {
-                // On focus GAIN, force an immediate presence sweep so rings are fresh the instant
-                // the user looks — clearing last_presence_ping makes the next tick treat a sweep as
-                // due regardless of how far the idle cadence had backed off. (last_interaction was
-                // already stamped at the top of on_event, resetting the cadence to the active tier.)
+                // On focus GAIN, force an immediate presence sweep so rings are fresh the instant the user looks — clearing last_presence_ping makes the next tick treat a sweep as due regardless of how far the idle cadence had backed off. (last_interaction was already stamped at the top of on_event, resetting the cadence to the active tier.)
                 if *focused {
                     self.last_presence_ping = None;
                     ctx.window.request_redraw();
@@ -1159,9 +1107,7 @@ impl FluorApp for PhotonApp {
                         // On the contacts screen the wheel scrolls the WHOLE user section + list as one block. Down-scroll (negative dy) moves the block up (reveals lower contacts), so subtract; the render pass clamps to the full-block extent and re-runs `update_widget_layout` after the clamp so the search box + plus button (whose rects are set off `contacts_scroll`) track the clamped offset.
                         self.contacts_scroll = (self.contacts_scroll - dy).max(0);
                     } else if matches!(self.state, AppState::Conversation) {
-                        // In a conversation the wheel scrolls the message history. The list lays out
-                        // bottom-up with newest at the bottom; a positive offset pushes messages down
-                        // (reveals older ones above). Scroll-up (positive dy) shows older → add.
+                        // In a conversation the wheel scrolls the message history. The list lays out bottom-up with newest at the bottom; a positive offset pushes messages down (reveals older ones above). Scroll-up (positive dy) shows older → add.
                         if let Some(ci) = self.active_contact {
                             if let Some(contact) = self.contacts.get_mut(ci) {
                                 contact.message_scroll_offset =
@@ -1253,8 +1199,7 @@ impl FluorApp for PhotonApp {
                         self.change_focus(None);
                         // Refresh this contact's presence on conversation-enter so the header reflects reality promptly.
                         self.ping_contact(ci);
-                        // Fetch the peer's avatar (once/session) so the conversation header shows it
-                        // instead of the grey placeholder. Cache-first, network on miss; off-thread.
+                        // Fetch the peer's avatar (once/session) so the conversation header shows it instead of the grey placeholder. Cache-first, network on miss; off-thread.
                         let handle = self.contacts[ci].handle.as_str().to_string();
                         self.spawn_avatar_download(handle);
                         ctx.window.request_redraw();
@@ -1572,8 +1517,7 @@ impl FluorApp for PhotonApp {
     }
 
     fn wake_at(&self) -> Option<Instant> {
-        // Schedule the next wakeup at the soonest of:
-        //   * `blink_timer.next_tick()` — drives the focused-textbox cursor pulse (random 0-300ms intervals); `None` while no textbox is focused.
+        // Schedule the next wakeup at the soonest of: * `blink_timer.next_tick()` — drives the focused-textbox cursor pulse (random 0-300ms intervals); `None` while no textbox is focused.
         //   * `now` when an attestation is in flight — `tick()` advances `attest_anim_phase` at 1 cycle/sec for the "query in flight" wave shift; we need a wakeup every frame to keep it animating smoothly. Without this, the host blocks waiting for input and the animation stalls.
         let blink = self.blink_timer.next_tick();
         // An attestation OR an in-flight add-friend search both need a wakeup every frame to animate (the spectrum wave / the hourglass wobble).
@@ -1637,11 +1581,8 @@ impl FluorApp for PhotonApp {
             }
         }
 
-        // Recurring background presence sweep — re-ping every contact so online/offline rings stay
-        // live without the user opening a conversation. The interval tapers with idle time (5s
-        // active → 1min idle → 15min deep-idle) so an untouched window isn't hammering the network.
-        // Only on the Ready screen (we have contacts + a checker). `wake_at()` schedules the next
-        // sweep so this fires even while the app is otherwise idle.
+        // Recurring background presence sweep — re-ping every contact so online/offline rings stay live without the user opening a conversation. The interval tapers with idle time (5s active → 1min idle → 15min deep-idle) so an untouched window isn't hammering the network.
+        // Only on the Ready screen (we have contacts + a checker). `wake_at()` schedules the next sweep so this fires even while the app is otherwise idle.
         if matches!(self.state, AppState::Ready) {
             let interval = self.presence_ping_interval(now);
             let due = self
@@ -1672,9 +1613,7 @@ impl FluorApp for PhotonApp {
         if timed!("check_clutch_keygens", self.check_clutch_keygens()) {
             needs_redraw = true;
         }
-        // Serialized keygen queue: once the in-flight keygen (if any) has completed and cleared its
-        // flag above, start the next Pending-keyless contact's keygen. One McEliece at a time keeps
-        // the UI responsive on a multi-contact launch instead of spawning them all at once.
+        // Serialized keygen queue: once the in-flight keygen (if any) has completed and cleared its flag above, start the next Pending-keyless contact's keygen. One McEliece at a time keeps the UI responsive on a multi-contact launch instead of spawning them all at once.
         timed!(
             "spawn_next_pending_keygen",
             self.spawn_next_pending_keygen()
@@ -1807,8 +1746,7 @@ impl FluorApp for PhotonApp {
         let scroll_offset = 0; // Launch only for now.
                                // Launch layout: faithful proportional slicing port from legacy `Layout::new` — spectrum near the top, logo wordmark overlapping its bottom, attest block (textbox + hint + button) below. Compute every frame; cheap and lets resize flow thru without a separate cache.
         let layout = LaunchLayout::compute(buf_w, buf_h, ctx.viewport.ru);
-        // Chromatic wave phase has two summands:
-        //   * Scroll-driven base (`bg_scroll * 1/128 rad/scroll-unit`) — one wheel-notch ≈ 8 units → ~1/16 rad shift; user-tunable by changing the shift exponent.
+        // Chromatic wave phase has two summands: * Scroll-driven base (`bg_scroll * 1/128 rad/scroll-unit`) — one wheel-notch ≈ 8 units → ~1/16 rad shift; user-tunable by changing the shift exponent.
         //   * `attest_anim_phase` (advanced in `tick()` while `LaunchState::Attesting`) — the "query in flight" cue, 1 cycle/sec.
         // Summing them means the wave responds to BOTH inputs simultaneously: a user scrolling during an attestation still nudges the phase on top of the animation.
         let phase = bg_scroll as f32 * (1. / ((1 << 7) as f32)) + self.attest_anim_phase;
@@ -2230,8 +2168,7 @@ impl FluorApp for PhotonApp {
                 }
             }
 
-            // ───────── Separator + scrollable contact list ─────────
-            // 1-pixel hairline centred in the separator slot (height 0 = hairline; the slot itself is just reserved breathing room around the line).
+            // ───────── Separator + scrollable contact list ───────── 1-pixel hairline centred in the separator slot (height 0 = hairline; the slot itself is just reserved breathing room around the line).
             let sep = ready_layout.separator;
             paint::fill_rect(
                 &mut canvas,
@@ -2394,9 +2331,7 @@ impl FluorApp for PhotonApp {
                 );
             }
 
-            // Clock-off indicator: same amber as the degraded banner (nunc-time consensus says the
-            // system clock is grossly wrong). Warn only — Photon never corrects the clock. Stacks one
-            // band above "storage degraded" when both are showing so they don't overlap.
+            // Clock-off indicator: same amber as the degraded banner (nunc-time consensus says the system clock is grossly wrong). Warn only — Photon never corrects the clock. Stacks one band above "storage degraded" when both are showing so they don't overlap.
             if let Some(offset_secs) = self.clock_off {
                 const CLOCK_TEXT: u32 = 0xFF_00_73_FF; // visible RGB(255, 140, 0) amber, as above
                 let band_h = ready_layout.unit_height * 1.5;
@@ -2483,14 +2418,7 @@ impl FluorApp for PhotonApp {
             if let Some(ci) = self.active_contact {
                 if ci < self.contacts.len() {
                     let ru = ctx.viewport.ru;
-                    // Build/refresh the contact's scaled-avatar cache at the CONVERSATION-HEADER
-                    // diameter BEFORE the immutable borrow below. The header renders the avatar bigger
-                    // than the contact-list rows, but it has no rebuild of its own — it used to draw
-                    // whatever `avatar_scaled` happened to hold (built at the small row diameter) while
-                    // telling draw_avatar the buffer was header-sized → it sampled past the smaller
-                    // buffer → "index out of bounds: len 2028 (26²·3) but index 2307" panic on
-                    // conversation-open. Rebuilding here at the header diameter keeps the cache and the
-                    // claimed scaled_diameter in lockstep.
+                    // Build/refresh the contact's scaled-avatar cache at the CONVERSATION-HEADER diameter BEFORE the immutable borrow below. The header renders the avatar bigger than the contact-list rows, but it has no rebuild of its own — it used to draw whatever `avatar_scaled` happened to hold (built at the small row diameter) while telling draw_avatar the buffer was header-sized → it sampled past the smaller buffer → "index out of bounds: len 2028 (26²·3) but index 2307" panic on conversation-open. Rebuilding here at the header diameter keeps the cache and the claimed scaled_diameter in lockstep.
                     {
                         let (_, _, header_r) =
                             ReadyLayout::compute(buf_w, buf_h, ru).avatar_center_radius();
@@ -2624,15 +2552,9 @@ impl FluorApp for PhotonApp {
                         None,
                     );
 
-                    // Message history + compose box only exist once CLUTCH is Complete — before that
-                    // there's no chain to encrypt on, and sending no-ops. Until then the screen shows
-                    // just the avatar + "CLUTCH: …" status (above), so the user isn't presented a dead
-                    // input box for a contact they can't message yet.
+                    // Message history + compose box only exist once CLUTCH is Complete — before that there's no chain to encrypt on, and sending no-ops. Until then the screen shows just the avatar + "CLUTCH: …" status (above), so the user isn't presented a dead input box for a contact they can't message yet.
                     if contact.clutch_state == crate::types::ClutchState::Complete {
-                        // ── Message list ───────────────────────────────────────────
-                        // Text-only, right-aligned (outgoing) / left-aligned (incoming),
-                        // one thin white divider after every message. Newest at the
-                        // bottom, just above the compose bar; older scroll up off-screen.
+                        // ── Message list ─────────────────────────────────────────── Text-only, right-aligned (outgoing) / left-aligned (incoming), one thin white divider after every message. Newest at the bottom, just above the compose bar; older scroll up off-screen.
                         let our_handle_hash = self
                             .session
                             .as_ref()
@@ -3127,14 +3049,9 @@ impl PhotonApp {
         let eagle_time = vsf::eagle_time_oscillations();
 
         // The braid: choose up to TWO distinct prior PEER messages to weave into this chain step.
-        // Eligible = incoming messages (is_outgoing == false) in the last ≤256 of this conversation —
-        // any stored incoming row is one the receive path already ACKed, so the sender knows the peer
-        // holds it (both-held → identical strands → lockstep). The weave ingredient is the message's
-        // x-text (`content`), recoverable identically on both sides from the message DB. Each chosen
-        // message's eagle_time goes on the wire so the receiver resolves the SAME content.
+        // Eligible = incoming messages (is_outgoing == false) in the last ≤256 of this conversation — any stored incoming row is one the receive path already ACKed, so the sender knows the peer holds it (both-held → identical strands → lockstep). The weave ingredient is the message's x-text (`content`), recoverable identically on both sides from the message DB. Each chosen message's eagle_time goes on the wire so the receiver resolves the SAME content.
         //   0 eligible → weave nothing (anchor). 1 → single strand. ≥2 → two distinct (a true braid).
-        // Pick with gen_range (bounded, bias-free) — NEVER modulo. Strands are sorted by eagle_time so
-        // both peers frame derive_fresh_link identically regardless of pick order.
+        // Pick with gen_range (bounded, bias-free) — NEVER modulo. Strands are sorted by eagle_time so both peers frame derive_fresh_link identically regardless of pick order.
         let (woven_strands, woven_times): (Vec<Vec<u8>>, Vec<i64>) = {
             let mut chosen: Vec<(i64, Vec<u8>)> = Vec::new();
             if let Some(contact) = self.contacts.get(ci) {
@@ -3168,10 +3085,7 @@ impl PhotonApp {
             (strands, times)
         };
 
-        // Build the message VSF the receiver parses: (message: x{text}, hp{incorporated_hp},
-        // e6{woven_time}…, hR{pad}), field order shuffled to enforce type-marker (not positional)
-        // parsing. The e6 values name the woven peer messages (0, 1, or 2). The receive path reads
-        // them back via VsfField::parse.
+        // Build the message VSF the receiver parses: (message: x{text}, hp{incorporated_hp}, e6{woven_time}…, hR{pad}), field order shuffled to enforce type-marker (not positional) parsing. The e6 values name the woven peer messages (0, 1, or 2). The receive path reads them back via VsfField::parse.
         let (ciphertext, prev_msg_hp, conversation_token) = {
             let Some((_, chains)) = self
                 .friendship_chains
@@ -3205,9 +3119,7 @@ impl PhotonApp {
             values.shuffle(&mut rand::thread_rng());
             let payload = FieldValue::new("message", values).flatten();
 
-            // Chain ingredient = the bare x-text only (the hp/hR pad are siblings of x in the field,
-            // not part of it, and are never chain-key material). The full `payload` is what's
-            // encrypted onto the wire; `text` is what salts/advances the chain.
+            // Chain ingredient = the bare x-text only (the hp/hR pad are siblings of x in the field, not part of it, and are never chain-key material). The full `payload` is what's encrypted onto the wire; `text` is what salts/advances the chain.
             let salt_text = text.clone().into_bytes();
 
             let conv_token = chains.conversation_token;
@@ -3220,8 +3132,7 @@ impl PhotonApp {
             }
         };
 
-        // CRASH SAFETY: persist chains (pending message + last_sent_hash) BEFORE the network send —
-        // disk is the commit point, the network is just notification.
+        // CRASH SAFETY: persist chains (pending message + last_sent_hash) BEFORE the network send — disk is the commit point, the network is just notification.
         if let Some(storage) = self.storage.as_ref() {
             if let Some((_, chains)) = self
                 .friendship_chains
@@ -3298,10 +3209,7 @@ impl PhotonApp {
                 if let Some(hq) = self.handle_query.as_ref() {
                     hq.set_handle_proof(data.handle_proof);
                 }
-                // Sync our own avatar with FGTW now that the handle_proof is set — newest-wins, so a
-                // copy this identity set on another device propagates here, and ours propagates out,
-                // without either clobbering a fresher one. (Was a blind one-way upload, which could
-                // overwrite a newer server copy with a stale local one.)
+                // Sync our own avatar with FGTW now that the handle_proof is set — newest-wins, so a copy this identity set on another device propagates here, and ours propagates out, without either clobbering a fresher one. (Was a blind one-way upload, which could overwrite a newer server copy with a stale local one.)
                 self.spawn_avatar_sync();
                 // Pubkey emitted as voca-encoded camelCase so a user reading the log can double-click + paste the value as a single word (matches `Development:` key lines from handle_query.rs). The handle is deliberately NOT logged — Photon never surfaces the plaintext handle.
                 eprintln!(
@@ -3331,8 +3239,7 @@ impl PhotonApp {
                             Ok(s) => self.storage = Some(std::sync::Arc::new(s)),
                             Err(e) => {
                                 crate::log(&format!("STORAGE: init failed: {}", e));
-                                // Hard vault-open failure → surface the red banner (overrides any `false`
-                                // from `data.vault_degraded` set just above — a local open failure is worse).
+                                // Hard vault-open failure → surface the red banner (overrides any `false` from `data.vault_degraded` set just above — a local open failure is worse).
                                 self.vault_degraded = true;
                             }
                         }
@@ -3358,12 +3265,7 @@ impl PhotonApp {
                         added,
                         self.contacts.len()
                     ));
-                    // Register the merged contacts' pubkeys so the checker answers their pings, and
-                    // kick CLUTCH keygen for any that arrived Pending without keypairs. The resume
-                    // path (load_all_contacts) already does this for locally-stored contacts, but
-                    // cloud/FGTW-merged contacts land here AFTER that ran — without this they sit
-                    // Pending forever with no keypairs, no offer, no connection (exactly what broke
-                    // after a []n nuke wiped the local vault and contacts came back only via cloud).
+                    // Register the merged contacts' pubkeys so the checker answers their pings, and kick CLUTCH keygen for any that arrived Pending without keypairs. The resume path (load_all_contacts) already does this for locally-stored contacts, but cloud/FGTW-merged contacts land here AFTER that ran — without this they sit Pending forever with no keypairs, no offer, no connection (exactly what broke after a []n nuke wiped the local vault and contacts came back only via cloud).
                     if let Ok(mut pks) = self.contact_pubkeys.lock() {
                         for c in &self.contacts {
                             if !pks.contains(&c.public_identity) {
@@ -3373,17 +3275,10 @@ impl PhotonApp {
                     }
                     // A merged self-contact (notes-to-self) needs no key exchange — force it Complete so it's skipped by the keygen filter below.
                     self.settle_self_contacts();
-                    // Kick at most ONE keygen now; the rest are serialized by spawn_next_pending_keygen
-                    // (called each tick) so we never run two McEliece keygens at once — two in parallel
-                    // on launch starved the UI thread (the "first launch hangs" symptom). The Pending +
-                    // keyless contacts are picked up one at a time as each keygen completes.
+                    // Kick at most ONE keygen now; the rest are serialized by spawn_next_pending_keygen (called each tick) so we never run two McEliece keygens at once — two in parallel on launch starved the UI thread (the "first launch hangs" symptom). The Pending + keyless contacts are picked up one at a time as each keygen completes.
                     self.spawn_next_pending_keygen();
                 }
-                // Merge the friendship chains the worker loaded from disk into the live map. Without
-                // this, resumed contacts have no chains in self.friendship_chains and sending fails
-                // with "friendship chains missing" — even though storage loaded them fine. Only add
-                // ids we don't already hold; an in-session chain (built at ceremony completion) is
-                // fresher than a disk copy, so never clobber it.
+                // Merge the friendship chains the worker loaded from disk into the live map. Without this, resumed contacts have no chains in self.friendship_chains and sending fails with "friendship chains missing" — even though storage loaded them fine. Only add ids we don't already hold; an in-session chain (built at ceremony completion) is fresher than a disk copy, so never clobber it.
                 let mut merged_chains = 0usize;
                 for (fid, chains) in data.friendships {
                     if !self.friendship_chains.iter().any(|(id, _)| *id == fid) {
@@ -3405,9 +3300,7 @@ impl PhotonApp {
                 self.refresh_contact_addrs_from_peers(&data.peers);
                 self.hints_dismissed = false;
                 // Only flip to Ready on the INITIAL attest (we were still on the Launch screen).
-                // This Success branch also fires on every recurring background resume refresh — if
-                // the user has already navigated in-app (Ready, or inside a Conversation), forcing
-                // Ready here would yank them out of an open chat back to the contact list each sweep.
+                // This Success branch also fires on every recurring background resume refresh — if the user has already navigated in-app (Ready, or inside a Conversation), forcing Ready here would yank them out of an open chat back to the contact list each sweep.
                 if !in_app {
                     self.state = AppState::Ready;
                 }
@@ -3601,9 +3494,7 @@ impl PhotonApp {
 
     /// Spawn at most ONE CLUTCH keygen, for the first Pending contact that needs keypairs, but only
     /// if no keygen is already running. McEliece keygen is heavy; running several in parallel (e.g.
-    /// after a multi-contact cloud merge on launch) starves the UI thread. Serializing to one-at-a-time
-    /// keeps the app responsive — each completion frees the slot and `tick()` calls this again to start
-    /// the next. Returns true if a keygen was spawned.
+    /// after a multi-contact cloud merge on launch) starves the UI thread. Serializing to one-at-a-time keeps the app responsive — each completion frees the slot and `tick()` calls this again to start the next. Returns true if a keygen was spawned.
     fn spawn_next_pending_keygen(&mut self) -> bool {
         let Some(our_handle_hash) = self.session.as_ref().map(|s| s.identity_seed) else {
             return false;
@@ -3629,14 +3520,9 @@ impl PhotonApp {
         }
     }
 
-    /// Sync this device's own avatar with FGTW, newest-wins (off-thread). Call on attest success
-    /// (handle_proof fresh). Replaces the old one-way "always upload": a blind upload would clobber a
-    /// NEWER FGTW copy (e.g. one this same identity set on another device) with our stale local one.
-    /// `sync_avatar_bidirectional_from_seed` compares the local cache's eagle-time creation stamp to
-    /// the server copy's and uploads only if we're newer, downloads + re-caches if the server is.
-    /// When the server wins, the freshly-cached avatar is delivered back over `avatar_dl_tx` with an
-    /// EMPTY handle so the drain installs it as `device_avatar_pixels`. No-op without keypair / proof
-    /// / session / storage.
+    /// Sync this device's own avatar with FGTW, newest-wins (off-thread). Call on attest success (handle_proof fresh). Replaces the old one-way "always upload": a blind upload would clobber a NEWER FGTW copy (e.g. one this same identity set on another device) with our stale local one.
+    /// `sync_avatar_bidirectional_from_seed` compares the local cache's eagle-time creation stamp to the server copy's and uploads only if we're newer, downloads + re-caches if the server is.
+    /// When the server wins, the freshly-cached avatar is delivered back over `avatar_dl_tx` with an EMPTY handle so the drain installs it as `device_avatar_pixels`. No-op without keypair / proof / session / storage.
     fn spawn_avatar_sync(&self) {
         let (Some(kp), Some(session), Some(storage)) = (
             self.device_keypair.as_ref(),
@@ -3693,16 +3579,9 @@ impl PhotonApp {
         });
     }
 
-    /// Kick a background download of `handle`'s avatar from FGTW (once per session per handle). The
-    /// fetch + decode runs off the UI thread (FGTW round-trip + dav1d decode); the result is delivered
-    /// over `avatar_dl_tx` and installed by the drain in `check_status_updates`. No-op if storage isn't
-    /// ready yet or we've already started a download for this handle this session. This is the peer
-    /// Send a direct P2P AvatarRequest to a MUTUAL (CLUTCH Complete) peer, once per session per peer.
+    /// Kick a background download of `handle`'s avatar from FGTW (once per session per handle). The fetch + decode runs off the UI thread (FGTW round-trip + dav1d decode); the result is delivered over `avatar_dl_tx` and installed by the drain in `check_status_updates`. No-op if storage isn't ready yet or we've already started a download for this handle this session. This is the peer Send a direct P2P AvatarRequest to a MUTUAL (CLUTCH Complete) peer, once per session per peer.
     /// The peer's `AvatarResponse` arrives via the status drain and installs on the matching contact.
-    /// This is the "a friend's avatar comes from the friend" path; if no response lands within the
-    /// fallback window the sweep escalates to FGTW. `sent_at` (eagle-time) is recorded so the sweep
-    /// can time the fallback. No-op without a status checker (the pending marker is only set once the
-    /// request is actually handed off, so a checker that arrives later still triggers the request).
+    /// This is the "a friend's avatar comes from the friend" path; if no response lands within the fallback window the sweep escalates to FGTW. `sent_at` (eagle-time) is recorded so the sweep can time the fallback. No-op without a status checker (the pending marker is only set once the request is actually handed off, so a checker that arrives later still triggers the request).
     fn spawn_avatar_request_p2p(
         &mut self,
         peer_addr: std::net::SocketAddr,
@@ -3742,18 +3621,14 @@ impl PhotonApp {
         });
     }
 
-    /// Drain completed peer-avatar downloads: colour-convert the VSF-RGB pixels to the display buffer
-    /// (same path as the self avatar) and install them on the matching contact, invalidating its
-    /// scaled cache so the next render rebuilds + shows it. A `None` result (no avatar / fetch failed)
-    /// just leaves the placeholder.
+    /// Drain completed peer-avatar downloads: colour-convert the VSF-RGB pixels to the display buffer (same path as the self avatar) and install them on the matching contact, invalidating its scaled cache so the next render rebuilds + shows it. A `None` result (no avatar / fetch failed) just leaves the placeholder.
     fn drain_avatar_downloads(&mut self) {
         while let Ok(result) = self.avatar_dl_rx.try_recv() {
             let Some(vsf_rgb) = result.pixels else {
                 continue;
             };
             let display = crate::ui::colour_convert::vsf_rgb_to_bt2020(&vsf_rgb);
-            // Empty handle = our OWN avatar recovered from FGTW (the local vault was cleared). Install
-            // it as the device avatar and invalidate the scaled cache so the Ready screen repaints it.
+            // Empty handle = our OWN avatar recovered from FGTW (the local vault was cleared). Install it as the device avatar and invalidate the scaled cache so the Ready screen repaints it.
             if result.handle.is_empty() {
                 self.device_avatar_pixels = Some(display);
                 self.device_avatar_scaled = None;
@@ -3774,13 +3649,9 @@ impl PhotonApp {
         }
     }
 
-    /// Drain the nunc-time clock verdict. A consensus offset beyond ±`CLOCK_OFF_THRESHOLD_SECS`
-    /// raises the amber "clock off" banner (`clock_off`); within threshold clears it. An `Unavailable`
-    /// result (we couldn't reach consensus) is NOT an anomaly — we leave the banner as-is rather than
-    /// claiming the clock is fine. This is warn-only: the system clock is never corrected.
+    /// Drain the nunc-time clock verdict. A consensus offset beyond ±`CLOCK_OFF_THRESHOLD_SECS` raises the amber "clock off" banner (`clock_off`); within threshold clears it. An `Unavailable` result (we couldn't reach consensus) is NOT an anomaly — we leave the banner as-is rather than claiming the clock is fine. This is warn-only: the system clock is never corrected.
     fn drain_clock_check(&mut self) {
-        /// How far off (seconds) the system clock must be before we warn. 30s — well past ordinary
-        /// NTP jitter and nunc's own confidence half-width, so the banner means a real problem.
+        /// How far off (seconds) the system clock must be before we warn. 30s — well past ordinary NTP jitter and nunc's own confidence half-width, so the banner means a real problem.
         const CLOCK_OFF_THRESHOLD_SECS: i64 = 30;
 
         while let Ok(result) = self.clock_check_rx.try_recv() {
@@ -3813,8 +3684,7 @@ impl PhotonApp {
     }
 
     /// Recover the device's OWN avatar from FGTW after a local clear (the vault load returned nothing).
-    /// Off-thread (blocking FGTW round-trip); the result comes back over avatar_dl_tx with an EMPTY
-    /// handle, which drain_avatar_downloads routes into device_avatar_pixels. No-op without storage.
+    /// Off-thread (blocking FGTW round-trip); the result comes back over avatar_dl_tx with an EMPTY handle, which drain_avatar_downloads routes into device_avatar_pixels. No-op without storage.
     fn spawn_self_avatar_recover(&self, identity_seed: [u8; 32]) {
         let Some(storage) = self.storage.as_ref().map(Arc::clone) else {
             return;
@@ -3851,10 +3721,7 @@ impl PhotonApp {
         let proxy = self.event_proxy.clone();
 
         // Keypair generation includes McEliece460896 — very CPU-heavy (large matrix build).
-        // On resume every Pending contact re-keys at once (two contacts = two McEliece keygens in
-        // parallel), so this MUST run at Min priority or it starves the UI render thread and the
-        // window freezes until keygen finishes — the "GUI loads but you can't do anything until it
-        // syncs" symptom. Matches the Min-priority KEM-encap and ceremony-expand threads.
+        // On resume every Pending contact re-keys at once (two contacts = two McEliece keygens in parallel), so this MUST run at Min priority or it starves the UI render thread and the window freezes until keygen finishes — the "GUI loads but you can't do anything until it syncs" symptom. Matches the Min-priority KEM-encap and ceremony-expand threads.
         let thread_body = move || {
             #[cfg(feature = "development")]
             crate::log("CLUTCH: Background keypair generation started...");
@@ -4588,9 +4455,7 @@ impl PhotonApp {
 
                 // Store our proof for later verification
                 contact.clutch_our_eggs_proof = Some(result.eggs_proof);
-                // Budget a handful of proof retransmits — the proof is a single unreliable UDP
-                // packet, so ping_contacts re-sends it until this drains, guaranteeing the peer
-                // gets it even on a lossy or freshly-changed path.
+                // Budget a handful of proof retransmits — the proof is a single unreliable UDP packet, so ping_contacts re-sends it until this drains, guaranteeing the peer gets it even on a lossy or freshly-changed path.
                 contact.clutch_proof_resends_left = 5;
 
                 // Check if we already received their proof (fast party case)
@@ -4631,10 +4496,7 @@ impl PhotonApp {
                         contact.clutch_state = ClutchState::Complete;
                         // Store their HQC pub prefix to detect stale offers after restart
                         contact.completed_their_hqc_prefix = Some(result.their_hqc_prefix);
-                        // We're Complete, but the peer may not have our proof yet — we got theirs
-                        // first, and our single send (just above) might have dropped. Keep the proof
-                        // and the resend budget so ping_contacts keeps delivering it for a few more
-                        // cycles; that's exactly what stops the peer from hanging in AwaitingProof.
+                        // We're Complete, but the peer may not have our proof yet — we got theirs first, and our single send (just above) might have dropped. Keep the proof and the resend budget so ping_contacts keeps delivering it for a few more cycles; that's exactly what stops the peer from hanging in AwaitingProof.
                         contact.clutch_their_eggs_proof = None;
                     } else {
                         // CRYPTOGRAPHIC FAILURE!
@@ -4868,8 +4730,7 @@ impl PhotonApp {
     /// Cross-reference the FGTW peer list into existing contacts, updating each matched contact's public address (`ip`) and same-LAN address (`local_ip`/`local_port`).
     /// Matched by handle_proof + device_pubkey so the right device's record updates the right contact. Only IPv4 LAN addresses are stored (the hairpin case the `local_ip` field is typed for); a v6-only peer just refreshes the WAN address. The send path races both (see [`crate::types::Contact::race_addrs`]).
     fn refresh_contact_addrs_from_peers(&mut self, peers: &[crate::network::fgtw::PeerRecord]) {
-        // Addresses whose transfers must be cancelled because they went stale (collected here so
-        // the checker borrow stays out of the contact-iter loop).
+        // Addresses whose transfers must be cancelled because they went stale (collected here so the checker borrow stays out of the contact-iter loop).
         let mut stale_addrs: Vec<std::net::SocketAddr> = Vec::new();
         for peer in peers {
             for contact in self.contacts.iter_mut() {
@@ -4890,12 +4751,7 @@ impl PhotonApp {
                             peer.ip.port()
                         ));
                     }
-                    // If the address actually moved while a CLUTCH offer was already sent, that
-                    // offer is in flight to a now-dead address (the "No route to host" retries we
-                    // kept hammering). Cancel the stale transfer and reset clutch_offer_sent so the
-                    // contact's next online pong re-sends the offer to the fresh address, with the
-                    // LAN path now raced alongside. Without this the one-shot flag blocks re-send
-                    // and the ceremony stalls forever on the dead path.
+                    // If the address actually moved while a CLUTCH offer was already sent, that offer is in flight to a now-dead address (the "No route to host" retries we kept hammering). Cancel the stale transfer and reset clutch_offer_sent so the contact's next online pong re-sends the offer to the fresh address, with the LAN path now raced alongside. Without this the one-shot flag blocks re-send and the ceremony stalls forever on the dead path.
                     let addr_changed = old_ip != contact.ip || old_local != contact.local_ip;
                     if addr_changed
                         && contact.clutch_offer_sent
@@ -4921,11 +4777,7 @@ impl PhotonApp {
         }
     }
 
-    /// True if `handle_hash` is our own identity — i.e. this contact is the user's self-contact
-    /// (notes to self / future multi-device sync). A self-contact shares our single seed, so there
-    /// is no peer to exchange keys with: CLUTCH must be forced Complete and keygen/offer/ceremony
-    /// skipped entirely. Without this a self-contact runs a pointless CLUTCH loop against its own
-    /// device and never settles.
+    /// True if `handle_hash` is our own identity — i.e. this contact is the user's self-contact (notes to self / future multi-device sync). A self-contact shares our single seed, so there is no peer to exchange keys with: CLUTCH must be forced Complete and keygen/offer/ceremony skipped entirely. Without this a self-contact runs a pointless CLUTCH loop against its own device and never settles.
     fn is_self_contact(&self, handle_hash: &[u8; 32]) -> bool {
         self.session
             .as_ref()
@@ -4933,8 +4785,7 @@ impl PhotonApp {
     }
 
     /// Force every self-contact in the list to CLUTCH-Complete and clear any in-flight CLUTCH work.
-    /// Applied after contacts load on resume and after cloud/FGTW merges, since those paths build
-    /// contacts as Pending by default. Returns true if any contact changed.
+    /// Applied after contacts load on resume and after cloud/FGTW merges, since those paths build contacts as Pending by default. Returns true if any contact changed.
     fn settle_self_contacts(&mut self) -> bool {
         let Some(our_seed) = self.session.as_ref().map(|s| s.identity_seed) else {
             return false;
@@ -5012,14 +4863,7 @@ impl PhotonApp {
             checker.send_lan_broadcast(session.handle_proof, hq.port());
         }
 
-        // Recovery for a side stranded in AwaitingProof: while the peer is ONLINE and we still hold
-        // our computed proof, keep the resend budget topped up so we keep re-sending our proof every
-        // few cycles. The peer — already Complete — now treats our repeated proof as an implicit
-        // re-request and re-sends its ClutchComplete (see the Complete-state duplicate handler). So a
-        // ClutchComplete dropped during the original ceremony (e.g. before the v4-mapped-v6 send fix,
-        // or any single UDP loss) self-heals once both sides are online, instead of leaving us
-        // AwaitingProof forever with the peer already Complete. Bounded per-cycle so an offline peer
-        // doesn't spin; it only tops up when we actually have the peer online with a proof to send.
+        // Recovery for a side stranded in AwaitingProof: while the peer is ONLINE and we still hold our computed proof, keep the resend budget topped up so we keep re-sending our proof every few cycles. The peer — already Complete — now treats our repeated proof as an implicit re-request and re-sends its ClutchComplete (see the Complete-state duplicate handler). So a ClutchComplete dropped during the original ceremony (e.g. before the v4-mapped-v6 send fix, or any single UDP loss) self-heals once both sides are online, instead of leaving us AwaitingProof forever with the peer already Complete. Bounded per-cycle so an offline peer doesn't spin; it only tops up when we actually have the peer online with a proof to send.
         for contact in self.contacts.iter_mut() {
             if contact.is_online
                 && contact.clutch_state == crate::types::ClutchState::AwaitingProof
@@ -5031,11 +4875,7 @@ impl PhotonApp {
             }
         }
 
-        // Retransmit the ClutchComplete proof for any contact with budget left. The proof is a lone
-        // unreliable UDP packet, so a single drop (or a send to a since-refreshed address) would
-        // strand the peer in AwaitingProof. Re-sending it for a few ping cycles converges both
-        // sides regardless of which completed first or which packet was lost. Self-terminates as the
-        // budget drains; a peer already Complete re-arms its own resend on the duplicate.
+        // Retransmit the ClutchComplete proof for any contact with budget left. The proof is a lone unreliable UDP packet, so a single drop (or a send to a since-refreshed address) would strand the peer in AwaitingProof. Re-sending it for a few ping cycles converges both sides regardless of which completed first or which packet was lost. Self-terminates as the budget drains; a peer already Complete re-arms its own resend on the duplicate.
         self.retransmit_pending_clutch_proofs();
     }
 
@@ -5094,18 +4934,12 @@ impl PhotonApp {
         }
     }
 
-    /// Reliability sweep (every tick): resend any unacked outgoing message whose backoff deadline has
-    /// passed, with exponential backoff, until an ACK clears it or it exhausts its attempts. This is
-    /// the per-message retry the protocol was missing — without it, a single dropped message OR a
-    /// single dropped ACK desyncs the chain permanently (the sender advances on ACK, so a lost ACK
-    /// freezes its chain while the receiver's has moved on → every later message decrypts as garbage).
-    /// Resending is safe: the receiver dedupes by eagle_time and its ACK is deterministic, so a redelivered
-    /// message just yields a free re-ACK. Uses the same LAN-preferring `race_addrs()` as the live send.
+    /// Reliability sweep (every tick): resend any unacked outgoing message whose backoff deadline has passed, with exponential backoff, until an ACK clears it or it exhausts its attempts. This is the per-message retry the protocol was missing — without it, a single dropped message OR a single dropped ACK desyncs the chain permanently (the sender advances on ACK, so a lost ACK freezes its chain while the receiver's has moved on → every later message decrypts as garbage).
+    /// Resending is safe: the receiver dedupes by eagle_time and its ACK is deterministic, so a redelivered message just yields a free re-ACK. Uses the same LAN-preferring `race_addrs()` as the live send.
     fn retransmit_due_messages(&mut self) {
         let now_osc = vsf::eagle_time_oscillations();
 
-        // Snapshot (friendship_id → primary addr + recipient pubkey) from contacts so we don't hold a
-        // contacts borrow across the mutable chains sweep. Only Complete contacts with a known address.
+        // Snapshot (friendship_id → primary addr + recipient pubkey) from contacts so we don't hold a contacts borrow across the mutable chains sweep. Only Complete contacts with a known address.
         let routes: Vec<(crate::types::FriendshipId, std::net::SocketAddr, [u8; 32])> = self
             .contacts
             .iter()
@@ -5181,14 +5015,10 @@ impl PhotonApp {
         // NOTE: ClutchRequest and ClutchRequestType imports removed - legacy v1 CLUTCH no longer used
         use crate::types::ClutchState;
 
-        // Peer avatars: install any completed downloads, then kick a fetch (once/session/handle) for
-        // any contact still without one. Cache-first + dedup'd by avatar_dl_started, so this is cheap
-        // to run every tick — it spawns at most one thread per peer per session.
+        // Peer avatars: install any completed downloads, then kick a fetch (once/session/handle) for any contact still without one. Cache-first + dedup'd by avatar_dl_started, so this is cheap to run every tick — it spawns at most one thread per peer per session.
         self.drain_avatar_downloads();
 
-        // Clock sanity: drain any completed nunc verdict, then (if the wall clock has grossly jumped
-        // since the last baseline) spawn a fresh re-check. Both are cheap — the jump check is two
-        // clock reads and a subtraction; a re-check only spawns on an actual jump.
+        // Clock sanity: drain any completed nunc verdict, then (if the wall clock has grossly jumped since the last baseline) spawn a fresh re-check. Both are cheap — the jump check is two clock reads and a subtraction; a re-check only spawns on an actual jump.
         self.drain_clock_check();
         #[cfg(not(target_os = "android"))]
         if self.online && self.clock_jump.check_and_reset() {
@@ -5197,10 +5027,7 @@ impl PhotonApp {
                 crate::network::spawn_clock_check(self.clock_check_tx.clone(), Some(proxy));
             }
         }
-        // Avatar acquisition policy (once/session/contact). A MUTUAL contact (CLUTCH Complete, which
-        // is impossible unless both added each other) gets a direct P2P AvatarRequest — a friend's
-        // avatar comes from the friend. We fall back to FGTW for that friend ONLY if no AvatarResponse
-        // has installed an avatar within AVATAR_P2P_FALLBACK_OSC (the friend is offline or avatar-less).
+        // Avatar acquisition policy (once/session/contact). A MUTUAL contact (CLUTCH Complete, which is impossible unless both added each other) gets a direct P2P AvatarRequest — a friend's avatar comes from the friend. We fall back to FGTW for that friend ONLY if no AvatarResponse has installed an avatar within AVATAR_P2P_FALLBACK_OSC (the friend is offline or avatar-less).
         // A non-mutual contact never gets a direct request — it only ever pulls the public FGTW copy.
         // Never blocks; each branch is dedup'd so the per-tick sweep is cheap.
         /// ~3 seconds (oscillations) before a mutual peer's silent P2P request falls back to FGTW.
@@ -5217,8 +5044,7 @@ impl PhotonApp {
                 handle: String,
             },
         }
-        // Steady state: every contact already has an avatar → skip the sweep entirely (no timestamp
-        // read, no allocation) since this runs every tick. Only do the work when something's missing.
+        // Steady state: every contact already has an avatar → skip the sweep entirely (no timestamp read, no allocation) since this runs every tick. Only do the work when something's missing.
         if self.contacts.iter().any(|c| c.avatar_pixels.is_none()) {
         let now = vsf::eagle_time_oscillations();
         let plans: Vec<AvatarPlan> = self
@@ -5251,8 +5077,7 @@ impl PhotonApp {
                     None => {
                         self.spawn_avatar_request_p2p(peer_addr, recipient_pubkey, now);
                     }
-                    // Asked, but the peer hasn't answered within the window — fall back to FGTW
-                    // (dedup'd by avatar_dl_started, so this fires at most once per peer).
+                    // Asked, but the peer hasn't answered within the window — fall back to FGTW (dedup'd by avatar_dl_started, so this fires at most once per peer).
                     Some(sent_at) if now.saturating_sub(sent_at) > AVATAR_P2P_FALLBACK_OSC => {
                         self.spawn_avatar_download(handle);
                     }
@@ -5291,10 +5116,7 @@ impl PhotonApp {
         // Flag to update sync records after the loop (when borrows are released)
         let mut need_sync_update = false;
 
-        // The braid / strict-ordering replay queue: when a successful decrypt fills a hash-chain gap,
-        // the now-contiguous buffered messages are pushed here as synthetic ChatMessage updates and
-        // drained BEFORE the next channel item, so a buffered N+1 is reprocessed immediately after N
-        // (and can itself cascade to N+2). FIFO front-drain.
+        // The braid / strict-ordering replay queue: when a successful decrypt fills a hash-chain gap, the now-contiguous buffered messages are pushed here as synthetic ChatMessage updates and drained BEFORE the next channel item, so a buffered N+1 is reprocessed immediately after N (and can itself cascade to N+2). FIFO front-drain.
         let mut replay_queue: std::collections::VecDeque<StatusUpdate> =
             std::collections::VecDeque::new();
 
@@ -5313,13 +5135,7 @@ impl PhotonApp {
                     peer_addr,
                     sync_records,
                 } => {
-                    // Stall recovery (runs EVERY ping that carries sync records, not just the
-                    // offline→online edge): each record is the peer's contiguous tip
-                    // (last_received_osc = "I have everything in order up to here"). Re-arm any pending
-                    // message of ours that's newer than that tip AND has exhausted its retransmit
-                    // attempts — so a gap-filler the sender already gave up on gets resent, and a
-                    // receiver stuck behind a permanently-lost message un-sticks. collect_due_retransmits
-                    // (the tick path) then actually sends the revived messages.
+                    // Stall recovery (runs EVERY ping that carries sync records, not just the offline→online edge): each record is the peer's contiguous tip (last_received_osc = "I have everything in order up to here"). Re-arm any pending message of ours that's newer than that tip AND has exhausted its retransmit attempts — so a gap-filler the sender already gave up on gets resent, and a receiver stuck behind a permanently-lost message un-sticks. collect_due_retransmits (the tick path) then actually sends the revived messages.
                     let now_osc = vsf::eagle_time_oscillations();
                     for record in &sync_records {
                         if let Some((_, chains)) = self
@@ -5362,9 +5178,7 @@ impl PhotonApp {
                             }
 
                             // True only on the offline→online EDGE, not every online ping/chat.
-                            // Retransmit-of-pending (below) keys off this — without the edge gate it
-                            // re-fired on every received chat (now that a chat marks the sender
-                            // online), resending all pending messages in a storm.
+                            // Retransmit-of-pending (below) keys off this — without the edge gate it re-fired on every received chat (now that a chat marks the sender online), resending all pending messages in a storm.
                             let came_online = is_online && !contact.is_online;
                             if contact.is_online != is_online {
                                 contact.is_online = is_online;
@@ -5376,18 +5190,7 @@ impl PhotonApp {
                                 ));
                             }
 
-                            // Deadlock recovery: a queued KEM with no offer means their offer never
-                            // arrived (lost in transit — their KEM landed but the larger offer transfer
-                            // didn't). We can't derive ceremony_id or complete our slot without it, and
-                            // there's no timeout on the queue, so this hangs Pending forever (only a
-                            // restart, which forces a fresh offer exchange, recovers it). Self-heal:
-                            // when we see a still-queued KEM on a pong AND we've already sent our offer
-                            // (so we're genuinely stuck, not mid-initial-exchange), reset
-                            // clutch_offer_sent so the offer-send block below re-fires this pong — our
-                            // re-sent offer prompts them to re-send theirs (the same path a restart
-                            // takes). Pong cadence rate-limits the re-request to one per pong. Only the
-                            // "their offer was lost" case is recoverable here; if a peer genuinely never
-                            // sends an offer, nothing we do fixes it.
+                            // Deadlock recovery: a queued KEM with no offer means their offer never arrived (lost in transit — their KEM landed but the larger offer transfer didn't). We can't derive ceremony_id or complete our slot without it, and there's no timeout on the queue, so this hangs Pending forever (only a restart, which forces a fresh offer exchange, recovers it). Self-heal: when we see a still-queued KEM on a pong AND we've already sent our offer (so we're genuinely stuck, not mid-initial-exchange), reset clutch_offer_sent so the offer-send block below re-fires this pong — our re-sent offer prompts them to re-send theirs (the same path a restart takes). Pong cadence rate-limits the re-request to one per pong. Only the "their offer was lost" case is recoverable here; if a peer genuinely never sends an offer, nothing we do fixes it.
                             if is_online
                                 && contact.clutch_state == ClutchState::Pending
                                 && contact.clutch_pending_kem.is_some()
@@ -5489,9 +5292,7 @@ impl PhotonApp {
                                 }
                             }
 
-                            // Queue retransmit of pending messages only on the offline→online EDGE
-                            // (not every online update) — otherwise every received chat would
-                            // re-trigger a full pending resend.
+                            // Queue retransmit of pending messages only on the offline→online EDGE (not every online update) — otherwise every received chat would re-trigger a full pending resend.
                             if came_online {
                                 if let (Some(fid), Some(ip)) = (contact.friendship_id, contact.ip) {
                                     // Look up sync record for this friendship's conversation_token
@@ -5575,16 +5376,9 @@ impl PhotonApp {
                             }
                         };
 
-                        // Deduplication: we've already processed this exact message (UDP duplicate, or —
-                        // the important case — the sender RETRANSMITTED because our ACK was lost). Don't
-                        // re-process (that would double-advance), but DO re-send the ACK if this is the
-                        // most recently acked message, so the lost-ACK case heals instead of the sender
-                        // retrying until it gives up and its chain stays frozen.
+                        // Deduplication: we've already processed this exact message (UDP duplicate, or — the important case — the sender RETRANSMITTED because our ACK was lost). Don't re-process (that would double-advance), but DO re-send the ACK if this is the most recently acked message, so the lost-ACK case heals instead of the sender retrying until it gives up and its chain stays frozen.
                         if chains.is_duplicate(&from_handle_hash, timestamp) {
-                            // Re-ACK from the stored message, looked up by its eagle_time. Unlike the old
-                            // single-slot last_acked (which only remembered the MOST RECENT ack and so
-                            // dropped any earlier duplicate → permanent sender stall), every received
-                            // message persists its own ack_hash, so ANY duplicate self-heals a lost ACK.
+                            // Re-ACK from the stored message, looked up by its eagle_time. Unlike the old single-slot last_acked (which only remembered the MOST RECENT ack and so dropped any earlier duplicate → permanent sender stall), every received message persists its own ack_hash, so ANY duplicate self-heals a lost ACK.
                             let stored = self.contacts.get(contact_idx).and_then(|c| {
                                 let ack = c
                                     .messages
@@ -5616,14 +5410,8 @@ impl PhotonApp {
                             continue;
                         }
 
-                        // Strict in-order processing (Layer 1). The receiver decrypts at
-                        // CURRENT_KEY_INDEX, which is only correct when this message is the immediate
-                        // successor of the last one we processed. So verify_chain_link is now HARD: on a
-                        // mismatch the message is "ahead" (its predecessor hasn't arrived yet) — buffer
-                        // it on the `prev_msg_hp` it awaits and SKIP decrypt. It gets replayed when that
-                        // predecessor lands (see the gap-buffer drain after a successful advance below).
-                        // "Behind"/duplicate is already handled by is_duplicate above; an unrelated stale
-                        // prev_msg_hp simply waits in the buffer (and the retransmit path re-sends).
+                        // Strict in-order processing (Layer 1). The receiver decrypts at CURRENT_KEY_INDEX, which is only correct when this message is the immediate successor of the last one we processed. So verify_chain_link is now HARD: on a mismatch the message is "ahead" (its predecessor hasn't arrived yet) — buffer it on the `prev_msg_hp` it awaits and SKIP decrypt. It gets replayed when that predecessor lands (see the gap-buffer drain after a successful advance below).
+                        // "Behind"/duplicate is already handled by is_duplicate above; an unrelated stale prev_msg_hp simply waits in the buffer (and the retransmit path re-sends).
                         if let Err(expected) =
                             chains.verify_chain_link(&from_handle_hash, &prev_msg_hp)
                         {
@@ -5705,8 +5493,7 @@ impl PhotonApp {
                         let mut ptr = 0usize;
                         let mut message_text = String::new();
                         let mut incorporated_hp = [0u8; 32];
-                        // The braid: eagle_times naming the prior peer (=our outgoing) messages this
-                        // step weaves. 0, 1, or 2.
+                        // The braid: eagle_times naming the prior peer (=our outgoing) messages this step weaves. 0, 1, or 2.
                         let mut woven_times: Vec<i64> = Vec::new();
 
                         let field = match vsf::file_format::VsfField::parse(&plaintext, &mut ptr) {
@@ -5774,14 +5561,7 @@ impl PhotonApp {
                         // Update bidirectional entropy state (derive weave hash from full message context)
                         chains.update_received_for_mixing(timestamp, msg_hp, &plaintext);
 
-                        // The braid: resolve each woven eagle_time to its message content. The peer wove
-                        // messages IT received — i.e. messages WE authored — so we resolve against our
-                        // OUTGOING rows (is_outgoing == true). Both sides hold identical `content` for any
-                        // such message → identical strands → the chains advance in lockstep. Sort by
-                        // eagle_time so framing matches the sender's (which also sorted). A single device
-                        // can't emit two messages at the same 704ps tick, so eagle_time is unique within
-                        // our stream; the adversarial same-tick collision is not handled here (would need
-                        // a content_hash tiebreak carried on the wire) — left as a known guard gap.
+                        // The braid: resolve each woven eagle_time to its message content. The peer wove messages IT received — i.e. messages WE authored — so we resolve against our OUTGOING rows (is_outgoing == true). Both sides hold identical `content` for any such message → identical strands → the chains advance in lockstep. Sort by eagle_time so framing matches the sender's (which also sorted). A single device can't emit two messages at the same 704ps tick, so eagle_time is unique within our stream; the adversarial same-tick collision is not handled here (would need a content_hash tiebreak carried on the wire) — left as a known guard gap.
                         let woven_strands: Vec<Vec<u8>> = {
                             let mut times = woven_times.clone();
                             times.sort_unstable();
@@ -5805,9 +5585,7 @@ impl PhotonApp {
                         let strand_refs: Vec<&[u8]> =
                             woven_strands.iter().map(|s| s.as_slice()).collect();
 
-                        // Advance their chain with the braid strands. our_plaintext = the decrypted
-                        // x-text ONLY (must match the sender's process_ack, which advances with the
-                        // stored salt-text — never the full payload/pad).
+                        // Advance their chain with the braid strands. our_plaintext = the decrypted x-text ONLY (must match the sender's process_ack, which advances with the stored salt-text — never the full payload/pad).
                         let message_text_bytes = message_text.clone().into_bytes();
                         let eagle_time_for_advance = vsf::EagleTime::from_oscillations(timestamp);
                         chains.advance(
@@ -5828,10 +5606,7 @@ impl PhotonApp {
                             hex::encode(&msg_hp[..8])
                         ));
 
-                        // Layer 1 gap-buffer drain: this message's msg_hp is now our last_received_hash,
-                        // so any buffered message that was waiting on THIS as its predecessor is now
-                        // contiguous. Replay them (front of the queue) so they're processed in order
-                        // immediately — and each can cascade to fill the next gap when IT advances.
+                        // Layer 1 gap-buffer drain: this message's msg_hp is now our last_received_hash, so any buffered message that was waiting on THIS as its predecessor is now contiguous. Replay them (front of the queue) so they're processed in order immediately — and each can cascade to fill the next gap when IT advances.
                         let ready = chains.take_buffered_for(&msg_hp);
                         if !ready.is_empty() {
                             crate::log(&format!(
@@ -5875,8 +5650,7 @@ impl PhotonApp {
                                     false,     // is_outgoing = false (received)
                                     timestamp, // Use message's actual eagle_time, not current time
                                 )
-                                // Persist the ACK hash so a later duplicate (our ACK was lost) can be
-                                // re-ACKed from storage — keeps the sender's chain from stalling.
+                                // Persist the ACK hash so a later duplicate (our ACK was lost) can be re-ACKed from storage — keeps the sender's chain from stalling.
                                 .with_ack_hash(plaintext_hash),
                             );
                             contact.message_scroll_offset = 0.0; // Scroll to show new message
@@ -5898,10 +5672,7 @@ impl PhotonApp {
                             .get(contact_idx)
                             .map(|c| *c.public_identity.as_bytes())
                             .unwrap_or([0u8; 32]);
-                        // The re-ACK source is now the per-message ack_hash persisted on the stored
-                        // ChatMessage (see the duplicate handler above + with_ack_hash below), which
-                        // heals a lost ACK for ANY message — not just the most recent. The old
-                        // single-slot last_acked is retired.
+                        // The re-ACK source is now the per-message ack_hash persisted on the stored ChatMessage (see the duplicate handler above + with_ack_hash below), which heals a lost ACK for ANY message — not just the most recent. The old single-slot last_acked is retired.
                         if let Some(ref checker) = self.status_checker {
                             checker.send_ack(AckRequest {
                                 peer_addr: sender_addr,
@@ -6248,15 +6019,7 @@ impl PhotonApp {
                                     // - Accept it (converge) if they're mid-ceremony
                                     // - Send KEM response (complete) if they're ahead
                                     //
-                                    // Guard against a FALSE re-key: a peer we already completed with
-                                    // re-sends its offer (retransmit, or our slots got zeroized post-
-                                    // completion so stored_hqc_pub no longer matches). At completion we
-                                    // saved their HQC pubkey PREFIX precisely to recognize this. If the
-                                    // incoming offer matches what we completed with, it's the SAME peer —
-                                    // ignore it, do NOT nuke. Only a genuinely DIFFERENT key (they truly
-                                    // re-keyed / lost their chains) should trigger a re-key. Without this,
-                                    // a Complete↔Complete pair bounced back to Pending on a stray offer
-                                    // ("it completed, then went back to Pending after a message").
+                                    // Guard against a FALSE re-key: a peer we already completed with re-sends its offer (retransmit, or our slots got zeroized post- completion so stored_hqc_pub no longer matches). At completion we saved their HQC pubkey PREFIX precisely to recognize this. If the incoming offer matches what we completed with, it's the SAME peer — ignore it, do NOT nuke. Only a genuinely DIFFERENT key (they truly re-keyed / lost their chains) should trigger a re-key. Without this, a Complete↔Complete pair bounced back to Pending on a stray offer ("it completed, then went back to Pending after a message").
                                     if contact.clutch_state == ClutchState::Complete {
                                         let their_prefix: [u8; 8] = their_offer.hqc256_public
                                             [..8]
@@ -6337,12 +6100,7 @@ impl PhotonApp {
                                 ));
                             }
 
-                            // Store OUR offer in OUR slot too — every slot needs offer + a KEM
-                            // contribution to be complete (PartySlot::is_complete). When their offer
-                            // arrives first and we go straight to the KEM-response path, our own slot
-                            // would otherwise keep offer=None forever, so all_slots_complete never
-                            // fires and the ceremony never runs (the one-sided-nuke re-key stall:
-                            // we have keys + sent a KEM, but our local offer was never recorded).
+                            // Store OUR offer in OUR slot too — every slot needs offer + a KEM contribution to be complete (PartySlot::is_complete). When their offer arrives first and we go straight to the KEM-response path, our own slot would otherwise keep offer=None forever, so all_slots_complete never fires and the ceremony never runs (the one-sided-nuke re-key stall: we have keys + sent a KEM, but our local offer was never recorded).
                             if contact
                                 .get_slot(&our_handle_hash)
                                 .map(|s| s.offer.is_none())
@@ -6883,16 +6641,7 @@ impl PhotonApp {
                                         ));
                                         break;
                                     }
-                                    // KEM targets our current keys but we don't have ceremony_id yet
-                                    // — which means we haven't processed THEIR offer yet (ceremony_id
-                                    // derives from both offers). We can't complete without their
-                                    // offer (no offer → can't encapsulate our KEM → our slot never
-                                    // completes). QUEUE the KEM and wait for their offer to arrive; the
-                                    // ClutchOfferReceived path drains clutch_pending_kem once both
-                                    // offers are in and ceremony_id is derived. Their offer is a
-                                    // reliable PT stream now, so it WILL arrive — no deadlock. (The
-                                    // old "adopt ceremony_id + decapsulate + break" shortcut left our
-                                    // own slot incomplete and hung CLUTCH Pending forever.)
+                                    // KEM targets our current keys but we don't have ceremony_id yet — which means we haven't processed THEIR offer yet (ceremony_id derives from both offers). We can't complete without their offer (no offer → can't encapsulate our KEM → our slot never completes). QUEUE the KEM and wait for their offer to arrive; the ClutchOfferReceived path drains clutch_pending_kem once both offers are in and ceremony_id is derived. Their offer is a reliable PT stream now, so it WILL arrive — no deadlock. (The old "adopt ceremony_id + decapsulate + break" shortcut left our own slot incomplete and hung CLUTCH Pending forever.)
                                     let _ = (our_keys_cloned, received_ceremony_id);
                                     crate::log(&format!(
                                         "CLUTCH: KEM from {} arrived before their offer/ceremony_id - queuing until offer arrives",
@@ -6946,11 +6695,7 @@ impl PhotonApp {
                                     ));
                                 }
 
-                                // Backfill OUR offer in OUR slot if missing — guarantees
-                                // all_slots_complete can fire here. Covers the stall where our own
-                                // offer was never recorded (offer arrived before our keygen, or the
-                                // offer-received path didn't store it), leaving our slot offer=None
-                                // forever even though we have keys + KEM secrets.
+                                // Backfill OUR offer in OUR slot if missing — guarantees all_slots_complete can fire here. Covers the stall where our own offer was never recorded (offer arrived before our keygen, or the offer-received path didn't store it), leaving our slot offer=None forever even though we have keys + KEM secrets.
                                 if contact
                                     .get_slot(&our_handle_hash)
                                     .map(|s| s.offer.is_none())
@@ -7111,10 +6856,8 @@ impl PhotonApp {
                                                         Some(prefix);
                                                 }
                                             }
-                                            // Keep our proof + resend budget: we just verified
-                                            // theirs, but ours may still be in flight or dropped.
-                                            // ping_contacts drains the budget over the next few
-                                            // cycles, then clears it — so neither side strands.
+                                            // Keep our proof + resend budget: we just verified theirs, but ours may still be in flight or dropped.
+                                            // ping_contacts drains the budget over the next few cycles, then clears it — so neither side strands.
                                             contact.clutch_their_eggs_proof = None;
                                             changed = true;
 
@@ -7180,14 +6923,7 @@ impl PhotonApp {
                                     changed = true;
                                 }
                                 ClutchState::Complete => {
-                                    // We're Complete but the peer is STILL sending its proof — that
-                                    // means our ClutchComplete never reached them (a dropped proof
-                                    // strands them in AwaitingProof forever, since we'd otherwise
-                                    // ignore the duplicate). Treat the duplicate as an implicit
-                                    // re-request: re-arm our proof-resend budget so the next ping
-                                    // cycle re-sends our ClutchComplete. This is the recovery half of
-                                    // the asymmetric-completion bug (the other half is the AwaitingProof
-                                    // side re-sending its proof while the peer is online).
+                                    // We're Complete but the peer is STILL sending its proof — that means our ClutchComplete never reached them (a dropped proof strands them in AwaitingProof forever, since we'd otherwise ignore the duplicate). Treat the duplicate as an implicit re-request: re-arm our proof-resend budget so the next ping cycle re-sends our ClutchComplete. This is the recovery half of the asymmetric-completion bug (the other half is the AwaitingProof side re-sending its proof while the peer is online).
                                     if contact.clutch_our_eggs_proof.is_some()
                                         && contact.ceremony_id.is_some()
                                     {
@@ -7236,10 +6972,7 @@ impl PhotonApp {
                         }
                     }
                 }
-                // A peer asked for our avatar. Policy: reply ONLY if they are a MUTUAL contact —
-                // i.e. a completed CLUTCH ceremony, which is cryptographically impossible unless both
-                // added each other. A friend gets our avatar straight from us; anyone else is ignored
-                // (they fall back to FGTW, or get nothing). We reply with our OWN avatar VSF bytes.
+                // A peer asked for our avatar. Policy: reply ONLY if they are a MUTUAL contact — i.e. a completed CLUTCH ceremony, which is cryptographically impossible unless both added each other. A friend gets our avatar straight from us; anyone else is ignored (they fall back to FGTW, or get nothing). We reply with our OWN avatar VSF bytes.
                 StatusUpdate::AvatarRequestReceived {
                     sender_pubkey,
                     sender_addr,
@@ -7257,8 +6990,7 @@ impl PhotonApp {
                         self.storage.as_ref(),
                         self.status_checker.as_ref(),
                     ) {
-                        // Read our own avatar VSF straight from the vault (the same blob we publish to
-                        // FGTW). No avatar stored → nothing to send; the peer falls back to FGTW.
+                        // Read our own avatar VSF straight from the vault (the same blob we publish to FGTW). No avatar stored → nothing to send; the peer falls back to FGTW.
                         match storage
                             .read_addr(&crate::storage::vault_key("avatar", &session.identity_seed))
                         {
@@ -7279,10 +7011,7 @@ impl PhotonApp {
                         }
                     }
                 }
-                // A peer sent us their avatar. Policy: install ONLY if the responder is a MUTUAL
-                // (Complete) contact — otherwise anyone could push us an arbitrary avatar. The wire
-                // layer already verified the bytes are signed by responder_pubkey; here we bind that
-                // pubkey to a friendship before trusting it. Decode + cache + install on that contact.
+                // A peer sent us their avatar. Policy: install ONLY if the responder is a MUTUAL (Complete) contact — otherwise anyone could push us an arbitrary avatar. The wire layer already verified the bytes are signed by responder_pubkey; here we bind that pubkey to a friendship before trusting it. Decode + cache + install on that contact.
                 StatusUpdate::AvatarReceived {
                     responder_pubkey,
                     avatar_vsf,
@@ -7393,12 +7122,7 @@ impl PhotonApp {
             }
         }
 
-        // Reliability: per-message retransmit with exponential backoff. The came-online loop above only
-        // fires on the offline→online EDGE, so a message (or its ACK) dropped while the peer was already
-        // online would otherwise never be resent — the exact desync seen live (msg 1 ACKed, msg 2
-        // garbage because the sender's chain never advanced on a lost ACK). This sweep runs every tick
-        // and resends any unacked pending whose backoff deadline has passed, until an ACK clears it or
-        // it exhausts its attempts.
+        // Reliability: per-message retransmit with exponential backoff. The came-online loop above only fires on the offline→online EDGE, so a message (or its ACK) dropped while the peer was already online would otherwise never be resent — the exact desync seen live (msg 1 ACKed, msg 2 garbage because the sender's chain never advanced on a lost ACK). This sweep runs every tick and resends any unacked pending whose backoff deadline has passed, until an ACK clears it or it exhausts its attempts.
         self.retransmit_due_messages();
 
         // NOTE: Proactive CLUTCH initiation is now handled via background keygen:
@@ -7492,11 +7216,8 @@ impl PhotonApp {
             && key_held(self.chord_rb_press, self.chord_rb_release, now)
     }
 
-    /// Delete every `.vsf` in the Photon app dirs (the on-disk vault: contacts, CLUTCH slots,
-    /// ephemeral keypairs, friendship chains, plus old-path strays and derivation-change orphans).
-    /// Returns the count deleted. Shared by the `[]n` (nuke, keep running) and `[]x` (nuke + exit)
-    /// chords; `tag` prefixes the log lines so you can tell which fired. Does NOT touch the tohu
-    /// session or any in-memory state — callers handle that.
+    /// Delete every `.vsf` in the Photon app dirs (the on-disk vault: contacts, CLUTCH slots, ephemeral keypairs, friendship chains, plus old-path strays and derivation-change orphans).
+    /// Returns the count deleted. Shared by the `[]n` (nuke, keep running) and `[]x` (nuke + exit) chords; `tag` prefixes the log lines so you can tell which fired. Does NOT touch the tohu session or any in-memory state — callers handle that.
     fn dev_wipe_vault_files(tag: &str) -> usize {
         let mut count = 0usize;
         let wipe_dir = |dir: Option<std::path::PathBuf>, count: &mut usize| {
@@ -7629,9 +7350,7 @@ impl PhotonApp {
             'n' => {
                 // Nuke the local VAULT only — wipes every .vsf in the Photon app dirs (contacts, CLUTCH slots, ephemeral keypairs, friendship chains; also catches old-path strays and derivation-change orphans). Deliberately does NOT touch the tohu session: the identity_seed/vault_seed/handle_proof stay in memory + cache, so you remain attested on Ready with a freshly-empty vault. To clear the identity itself, use []u (de-attest). Only fires in development builds.
                 let count = Self::dev_wipe_vault_files("[]n");
-                // Drop the in-memory vault state so the UI reflects the wipe immediately. Keep the
-                // session + a live FlatStorage handle: it points at the now-empty dir and recreates
-                // files lazily on the next write, so the app stays usable without a relaunch.
+                // Drop the in-memory vault state so the UI reflects the wipe immediately. Keep the session + a live FlatStorage handle: it points at the now-empty dir and recreates files lazily on the next write, so the app stays usable without a relaunch.
                 self.contacts.clear();
                 self.friendship_chains.clear();
                 if let Ok(mut pks) = self.contact_pubkeys.lock() {
@@ -7652,10 +7371,7 @@ impl PhotonApp {
                 eprintln!("[]u de-attested; session cleared — re-type handle to re-attest");
             }
             'x' => {
-                // Full clean-slate reset for the dev loop: nuke the vault ([]n), clear the session
-                // ([]u), then KILL the process so the window dies and the next launch starts truly
-                // fresh — no lingering in-memory state, no half-reset UI. The disk wipe is the part
-                // that must persist; everything else dies with the process, so we exit right after.
+                // Full clean-slate reset for the dev loop: nuke the vault ([]n), clear the session ([]u), then KILL the process so the window dies and the next launch starts truly fresh — no lingering in-memory state, no half-reset UI. The disk wipe is the part that must persist; everything else dies with the process, so we exit right after.
                 let count = Self::dev_wipe_vault_files("[]x");
                 tohu::clear_session();
                 eprintln!(

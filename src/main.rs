@@ -68,8 +68,7 @@ fn main() {
     photon_messenger::log(&format!("Ed25519 signature: {}", signature_hex));
     photon_messenger::log("");
 
-    // Load user settings (creates settings.vsf with defaults on first run) and apply the log-display
-    // knobs to vsf's inspector BEFORE any VSF gets dumped, so the very first packet logged is elided.
+    // Load user settings (creates settings.vsf with defaults on first run) and apply the log-display knobs to vsf's inspector BEFORE any VSF gets dumped, so the very first packet logged is elided.
     let settings = photon_messenger::storage::settings::Settings::load_or_create();
     settings.apply();
     photon_messenger::log(&format!(

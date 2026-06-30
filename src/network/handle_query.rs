@@ -125,8 +125,7 @@ impl HandleQuery {
     /// Create a new handle query system
     ///
     /// # Arguments
-    /// * `device_keypair` - The device's Ed25519 keypair for FGTW authentication
-    /// * `event_proxy` - Desktop only: EventLoopProxy for waking the UI on connectivity changes
+    /// * `device_keypair` - The device's Ed25519 keypair for FGTW authentication * `event_proxy` - Desktop only: EventLoopProxy for waking the UI on connectivity changes
     #[cfg(not(target_os = "android"))]
     pub fn new(device_keypair: Keypair, event_proxy: Arc<dyn WakeSender<PhotonEvent>>) -> Self {
         Self::new_internal(device_keypair, Some(event_proxy))
@@ -746,10 +745,7 @@ impl HandleQuery {
             return result;
         }
 
-        // Not found locally — re-announce with our own credentials to pull a fresh peer list, then
-        // retry. This is the critical path for "both attested, THEN added each other": the target
-        // registered on FGTW after our last fetch, so it's absent from the local store until we
-        // re-query. Only possible once we've attested (identity_seed + handle_proof are set).
+        // Not found locally — re-announce with our own credentials to pull a fresh peer list, then retry. This is the critical path for "both attested, THEN added each other": the target registered on FGTW after our last fetch, so it's absent from the local store until we re-query. Only possible once we've attested (identity_seed + handle_proof are set).
         let (seed, our_port) = {
             let s = identity_seed.lock().unwrap();
             let p = port.lock().unwrap();
@@ -760,10 +756,7 @@ impl HandleQuery {
         };
 
         // Use our cached attested handle_proof directly (set by the query worker at attest success).
-        // Earlier this scanned the peer store for our own device record and bailed to NotFound if
-        // absent — which is EXACTLY the fresh-attest case (store not yet populated with ourselves),
-        // so the refresh never ran and the peer stayed unfindable until a restart. The arc always
-        // has it post-attest.
+        // Earlier this scanned the peer store for our own device record and bailed to NotFound if absent — which is EXACTLY the fresh-attest case (store not yet populated with ourselves), so the refresh never ran and the peer stayed unfindable until a restart. The arc always has it post-attest.
         let our_handle_proof = match *our_handle_proof.lock().unwrap() {
             Some(hp) => hp,
             None => return SearchResult::NotFound,

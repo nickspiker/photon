@@ -3,8 +3,7 @@
 //! Two consumer surfaces hit these symbols:
 //! - `PhotonActivity` (the foreground UI) → `Java_com_photon_messenger_PhotonActivity_native*`.
 //!   These are thin shims into `fluor::host::android::AndroidShell<PhotonApp>` — the shell owns the surface + render pipeline + event translation, photon owns only the FluorApp impl and the app-specific bits (avatar picker, FCM peer-update flag).
-//! - `PhotonConnectionService` (the background network stack) →
-//!   `Java_com_photon_messenger_PhotonConnectionService_nativeNetwork*` + FCM peer-update notification. These survive the UI Activity's lifecycle so the persistent peer store + device keypair don't churn on each rotation / background trip.
+//! - `PhotonConnectionService` (the background network stack) → `Java_com_photon_messenger_PhotonConnectionService_nativeNetwork*` + FCM peer-update notification. These survive the UI Activity's lifecycle so the persistent peer store + device keypair don't churn on each rotation / background trip.
 
 use crate::network::fgtw::PeerStore;
 use std::sync::{Arc, Mutex};
@@ -388,8 +387,7 @@ impl NetworkContext {
         crate::avatar::set_android_data_dir(data_dir.to_string());
         // Hand the storage layer both ring dirs so the dual-ring vault can place primary on internal and shadow on external — see [storage::flat::set_android_vault_dirs].
         crate::storage::set_android_vault_dirs(data_dir.to_string(), shadow_dir.to_string());
-        // Route the structured VSF log to the EXTERNAL files dir (shadow): a release dev APK isn't
-        // `run-as`-able, so an internal-storage log can't be pulled — but the external dir IS adb-readable.
+        // Route the structured VSF log to the EXTERNAL files dir (shadow): a release dev APK isn't `run-as`-able, so an internal-storage log can't be pulled — but the external dir IS adb-readable.
         // Empty shadow_dir (no external storage) falls back to internal in the sink.
         #[cfg(feature = "logging")]
         crate::set_android_log_dir(shadow_dir.to_string());
@@ -636,8 +634,7 @@ pub fn unpack_session_vsf(bytes: &[u8]) -> Option<tohu::SessionIdentity> {
     })
 }
 
-/// Send (or replace) the sticky session broadcast. Reads the current session from
-/// `tohu::session()` — seeds never leave Rust. Called from Kotlin after attest succeeds.
+/// Send (or replace) the sticky session broadcast. Reads the current session from `tohu::session()` — seeds never leave Rust. Called from Kotlin after attest succeeds.
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeSendSessionBroadcast(
