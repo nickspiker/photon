@@ -86,6 +86,9 @@ pub fn log(_msg: &str) {}
 #[cfg(not(feature = "logging"))]
 #[inline(always)]
 pub fn log_at(_level: LogLevel, _msg: &str) {}
+#[cfg(not(feature = "logging"))]
+#[inline(always)]
+pub fn clear_log() {}
 
 // The structured VSF log sink: one COMPLETE VSF record per line — {creation_time (Eagle), section "log" {lvl, msg}} — appended to `<photon_config_dir>/photon.log.vsf` on EVERY platform (Android: app filesDir, pullable via `adb pull`; desktop/Windows: the config dir). The log is thus a stream of self-describing, Eagle-time-stamped, vsfinfo-inspectable records; read it with the `photonlog` bin. Opens lazily and RETRIES until the dir is ready — a plain Mutex<Option<File>>, NOT a OnceLock, precisely so a pre-data-dir failure isn't cached forever (the first few JNI lines predate Android's data_dir and land in the console sink only).
 // Known filename (logging is a dev-build feature, so adb-pull discoverability beats filename privacy).
@@ -101,6 +104,12 @@ const LOG_TRIM_TO_BYTES: u64 = 8 << 20;
 // Live byte count of the open log file, so the cap check is a cheap atomic load instead of a stat per line; seeded from the file's size when it's first opened.
 #[cfg(feature = "logging")]
 static LOG_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+// Age cap: also drop records older than 24h, so even a low-volume log keeps only a recent window (bounds the PII exposure time, not just the size).
+#[cfg(feature = "logging")]
+const LOG_MAX_AGE_OSC: i64 = 24 * 60 * 60 * vsf::OSCILLATIONS_PER_SECOND as i64;
+// Eagle-time of the OLDEST record in the open file, cached so the age check is a compare not a head-read per line; i64::MAX = unknown/empty (seeded on open, refreshed on trim).
+#[cfg(feature = "logging")]
+static LOG_OLDEST_OSC: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(i64::MAX);
 
 /// Android-only override for where the VSF log goes — set from JNI to the EXTERNAL files dir (the shadow ring dir), which is adb-readable on a non-debuggable release dev APK where internal `files/` is not.
 #[cfg(all(feature = "logging", target_os = "android"))]
@@ -131,13 +140,14 @@ fn append_log_record(level: LogLevel, msg: &str) {
     if guard.is_none() {
         if let Some(dir) = log_dir() {
             let _ = std::fs::create_dir_all(&dir);
-            if let Ok(f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(dir.join("photon.log.vsf"))
-            {
+            let path = dir.join("photon.log.vsf");
+            if let Ok(f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
                 let sz = f.metadata().map(|m| m.len()).unwrap_or(0);
                 LOG_BYTES.store(sz, std::sync::atomic::Ordering::Relaxed);
+                LOG_OLDEST_OSC.store(
+                    first_record_osc(&path).unwrap_or(i64::MAX),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
                 *guard = Some(f);
             }
         }
@@ -161,25 +171,31 @@ fn append_log_record(level: LogLevel, msg: &str) {
         let _ = file.flush();
         let total = LOG_BYTES.fetch_add(bytes.len() as u64, std::sync::atomic::Ordering::Relaxed)
             + bytes.len() as u64;
-        if total > LOG_CAP_BYTES {
+        // Trim on EITHER cap: too big (16 MiB) or the oldest record older than 24h.
+        let now = vsf::eagle_time_oscillations();
+        let oldest = LOG_OLDEST_OSC.load(std::sync::atomic::Ordering::Relaxed);
+        let aged = oldest != i64::MAX && now.saturating_sub(oldest) > LOG_MAX_AGE_OSC;
+        if total > LOG_CAP_BYTES || aged {
             // `file`'s borrow of `guard` ends above; reopen the handle on the trimmed file.
-            if let Some((trimmed, new_size)) = trim_log_file() {
+            if let Some((trimmed, new_size, new_oldest)) = trim_log_file(now) {
                 *guard = Some(trimmed);
                 LOG_BYTES.store(new_size, std::sync::atomic::Ordering::Relaxed);
+                LOG_OLDEST_OSC.store(new_oldest, std::sync::atomic::Ordering::Relaxed);
             }
         }
     }
 }
 
-// Trim the log to ~`LOG_TRIM_TO_BYTES` by dropping the oldest whole records, then reopen it for appending.
-// The file is a stream of complete VSF records, so we walk record boundaries (header length + section length, exactly as photonlog does) and keep everything from the first boundary at/after the drop point — never cutting a record in half.
-// Returns the reopened append handle and the kept byte count, or None if the file couldn't be read/rewritten (the cap check simply retries on the next line).
+// Trim the log by dropping the oldest whole records — enough to get under `LOG_TRIM_TO_BYTES` AND to drop anything older than 24h — then reopen it for appending.
+// The file is a stream of complete VSF records, so we cut only on record boundaries (never mid-record). Returns the reopened append handle, the kept byte count, and the new oldest-record time; None if the file couldn't be read/rewritten (the cap check just retries next line).
 #[cfg(feature = "logging")]
-fn trim_log_file() -> Option<(std::fs::File, u64)> {
+fn trim_log_file(now_osc: i64) -> Option<(std::fs::File, u64, i64)> {
     use std::io::Write;
     let path = log_dir()?.join("photon.log.vsf");
     let bytes = std::fs::read(&path).ok()?;
-    let kept = &bytes[log_keep_offset(&bytes, LOG_TRIM_TO_BYTES)..];
+    let age_cutoff = now_osc.saturating_sub(LOG_MAX_AGE_OSC);
+    let (keep, new_oldest) = log_keep_offset(&bytes, LOG_TRIM_TO_BYTES, age_cutoff);
+    let kept = &bytes[keep.min(bytes.len())..];
     let mut w = std::fs::OpenOptions::new()
         .create(true)
         .write(true)
@@ -190,33 +206,84 @@ fn trim_log_file() -> Option<(std::fs::File, u64)> {
     w.flush().ok()?;
     drop(w);
     let appender = std::fs::OpenOptions::new().create(true).append(true).open(&path).ok()?;
-    Some((appender, kept.len() as u64))
+    Some((appender, kept.len() as u64, new_oldest))
 }
 
-// Pure boundary finder: the first whole-record boundary at/after the point that drops the file to `trim_to` bytes, so `bytes[result..]` is the newest run of complete records (~`trim_to` or a touch more).
-// Walks records by their declared length (header + section), exactly as photonlog reads them; stops early on any decode error so a corrupt tail never causes a mid-record cut.
+// Pure boundary finder: the first whole-record boundary to keep so that `bytes[offset..]` is both within `trim_to_size` bytes AND free of records older than `age_cutoff_osc`.
+// Records are appended in time order, so we drop from the front while a record is EITHER before the size-drop point OR older than the cutoff, stopping at the first record that satisfies both.
+// Returns (keep_offset, oldest_kept_time) — the second value re-seeds LOG_OLDEST_OSC. Stops early on any decode error so a corrupt tail never causes a mid-record cut.
 #[cfg(feature = "logging")]
-fn log_keep_offset(bytes: &[u8], trim_to: u64) -> usize {
+fn log_keep_offset(bytes: &[u8], trim_to_size: u64, age_cutoff_osc: i64) -> (usize, i64) {
     let total = bytes.len();
-    let target_drop = (total as u64).saturating_sub(trim_to) as usize;
+    let size_drop = (total as u64).saturating_sub(trim_to_size) as usize;
     let mut offset = 0usize;
-    while offset < total && offset < target_drop {
+    while offset < total {
         let rest = &bytes[offset..];
-        let header_end = match vsf::file_format::VsfHeader::decode(rest) {
-            Ok((_, end)) => end,
-            Err(_) => break,
+        let (header, header_end) = match vsf::file_format::VsfHeader::decode(rest) {
+            Ok(h) => h,
+            Err(_) => return (offset, i64::MAX),
         };
         let mut ptr = 0usize;
         if vsf::file_format::VsfSection::parse(&rest[header_end..], &mut ptr).is_err() {
-            break;
+            return (offset, i64::MAX);
         }
         let rec = header_end + ptr;
         if rec == 0 {
-            break;
+            return (offset, i64::MAX);
+        }
+        let t = match &header.creation_time {
+            Some(vsf::VsfType::e(et)) => et_to_osc_log(et),
+            _ => i64::MIN, // no/odd timestamp → treat as ancient so it's eligible to drop
+        };
+        // Keep from the first record that is past the size-drop point AND fresh enough.
+        if offset >= size_drop && t >= age_cutoff_osc {
+            return (offset, t);
         }
         offset += rec;
     }
-    offset.min(total)
+    (total, i64::MAX) // everything dropped → empty
+}
+
+// Eagle oscillations from a log record's creation-time field.
+#[cfg(feature = "logging")]
+fn et_to_osc_log(et: &vsf::types::EtType) -> i64 {
+    use vsf::types::EtType;
+    match et {
+        EtType::e5(o) => *o as i64,
+        EtType::e6(o) => *o,
+        EtType::e7(o) => *o as i64,
+        _ => i64::MIN,
+    }
+}
+
+// The oldest (first) record's eagle-time in a log file, by decoding just its header. None if empty/unreadable.
+#[cfg(feature = "logging")]
+fn first_record_osc(path: &std::path::Path) -> Option<i64> {
+    use std::io::Read;
+    let mut buf = vec![0u8; 4096];
+    let n = std::fs::File::open(path).ok()?.read(&mut buf).ok()?;
+    if n == 0 {
+        return None;
+    }
+    let (header, _) = vsf::file_format::VsfHeader::decode(&buf[..n]).ok()?;
+    match &header.creation_time {
+        Some(vsf::VsfType::e(et)) => Some(et_to_osc_log(et)),
+        _ => None,
+    }
+}
+
+/// Wipe the durable log (the `[]x` clean-relaunch chord, and any future privacy "clear logs" action).
+/// Removes `photon.log.vsf` and drops the open handle so the next write reopens a fresh, empty file.
+#[cfg(feature = "logging")]
+pub fn clear_log() {
+    if let Ok(mut guard) = LOG_FILE.lock() {
+        if let Some(dir) = log_dir() {
+            let _ = std::fs::remove_file(dir.join("photon.log.vsf"));
+        }
+        *guard = None;
+        LOG_BYTES.store(0, std::sync::atomic::Ordering::Relaxed);
+        LOG_OLDEST_OSC.store(i64::MAX, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 #[cfg(all(test, feature = "logging"))]
@@ -224,8 +291,12 @@ mod log_cap_tests {
     use super::*;
 
     fn record(msg: &str) -> Vec<u8> {
+        record_at(msg, vsf::eagle_time_oscillations())
+    }
+
+    fn record_at(msg: &str, osc: i64) -> Vec<u8> {
         vsf::VsfBuilder::new()
-            .creation_time_oscillations(vsf::eagle_time_oscillations())
+            .creation_time_oscillations(osc)
             .provenance_only()
             .add_section(
                 "log",
@@ -248,7 +319,7 @@ mod log_cap_tests {
             starts.push(bytes.len());
         }
         let trim_to = (bytes.len() / 3) as u64; // keep roughly the newest third
-        let keep = log_keep_offset(&bytes, trim_to);
+        let (keep, _oldest) = log_keep_offset(&bytes, trim_to, i64::MIN); // age disabled → size-only
 
         // The cut lands exactly on a record boundary...
         assert!(starts.contains(&keep), "cut at {keep} is not a record boundary");
@@ -272,8 +343,36 @@ mod log_cap_tests {
 
     #[test]
     fn no_trim_when_under_target() {
-        let bytes = record("solo");
-        assert_eq!(log_keep_offset(&bytes, 16 << 20), 0); // nothing dropped
+        let bytes = record("solo"); // one record, well under the size cap
+        let (keep, _oldest) = log_keep_offset(&bytes, 16 << 20, i64::MIN); // age disabled
+        assert_eq!(keep, 0, "nothing dropped");
+    }
+
+    #[test]
+    fn age_cap_drops_records_older_than_cutoff() {
+        // Ten "old" records at t=1000, then ten "new" at t=9000. Size is generous; only age should trim.
+        let mut bytes = Vec::new();
+        for i in 0..10 {
+            bytes.extend_from_slice(&record_at(&format!("old {i}"), 1000));
+        }
+        let new_start = bytes.len();
+        for i in 0..10 {
+            bytes.extend_from_slice(&record_at(&format!("new {i}"), 9000));
+        }
+        // Cutoff between the two cohorts: drop everything older than 5000.
+        let (keep, oldest) = log_keep_offset(&bytes, 64 << 20, 5000);
+        assert_eq!(keep, new_start, "should drop exactly the old cohort");
+        assert_eq!(oldest, 9000, "oldest kept record is the first new one");
+        // The kept tail is all the new records, decodes clean to EOF.
+        let kept = &bytes[keep..];
+        let mut off = 0;
+        while off < kept.len() {
+            let (_, he) = vsf::file_format::VsfHeader::decode(&kept[off..]).unwrap();
+            let mut p = 0;
+            vsf::file_format::VsfSection::parse(&kept[off + he..], &mut p).unwrap();
+            off += he + p;
+        }
+        assert_eq!(off, kept.len());
     }
 }
 
