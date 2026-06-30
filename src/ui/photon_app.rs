@@ -5982,6 +5982,15 @@ impl PhotonApp {
                     for (idx, contact) in self.contacts.iter_mut().enumerate() {
                         if contact.handle_hash == their_handle_hash {
                             contact.ip = Some(sender_addr);
+                            // Authenticated CLUTCH traffic from them ⇒ reachable right now ⇒ show online immediately, don't wait for the next pong.
+                            if !contact.is_online {
+                                contact.is_online = true;
+                                changed = true;
+                                crate::log(&format!(
+                                    "Status: {} is now ONLINE (CLUTCH)",
+                                    contact.handle
+                                ));
+                            }
 
                             // Simple re-key logic: if stored keys don't match received keys, re-key. Same keys = duplicate/stale (ignore). Different/no keys = accept.
                             let stored_hqc_pub = contact
@@ -6613,6 +6622,15 @@ impl PhotonApp {
                     for (idx, contact) in self.contacts.iter_mut().enumerate() {
                         if contact.handle_hash == their_handle_hash {
                             contact.ip = Some(sender_addr);
+                            // Authenticated CLUTCH traffic from them ⇒ reachable right now ⇒ show online immediately, don't wait for the next pong.
+                            if !contact.is_online {
+                                contact.is_online = true;
+                                changed = true;
+                                crate::log(&format!(
+                                    "Status: {} is now ONLINE (CLUTCH)",
+                                    contact.handle
+                                ));
+                            }
 
                             // Verify ceremony_id matches (if we have one)
                             if let Some(our_ceremony_id) = contact.ceremony_id {
@@ -6830,6 +6848,24 @@ impl PhotonApp {
                     for contact in &mut self.contacts {
                         if contact.handle_hash == their_handle_hash {
                             contact.ip = Some(sender_addr);
+                            // Authenticated CLUTCH traffic from them ⇒ reachable right now ⇒ show online immediately, don't wait for the next pong.
+                            if !contact.is_online {
+                                contact.is_online = true;
+                                changed = true;
+                                crate::log(&format!(
+                                    "Status: {} is now ONLINE (CLUTCH)",
+                                    contact.handle
+                                ));
+                            }
+                            // We just received + VSF-verified an authenticated message from them — they're reachable NOW, so reflect online immediately instead of waiting for the next pong (fixes "CLUTCH completed but still shows offline").
+                            if !contact.is_online {
+                                contact.is_online = true;
+                                changed = true;
+                                crate::log(&format!(
+                                    "Status: {} is now ONLINE (CLUTCH complete)",
+                                    contact.handle
+                                ));
+                            }
 
                             match contact.clutch_state {
                                 ClutchState::AwaitingProof => {
