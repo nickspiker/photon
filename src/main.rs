@@ -64,6 +64,23 @@ fn main() {
         std::process::exit(0);
     }
 
+    // Single-instance guard: a second instance on the SAME data dir would race the vault and corrupt the log.
+    // Held for the whole process (OS frees it on exit). A second instance with its own PHOTON_DATA_DIR (+ PHOTON_FINGERPRINT for a distinct identity) hashes to a different lock port and is allowed — that's the supported way to run two parties on one machine.
+    let _instance_lock = {
+        let dir = photon_messenger::storage::photon_config_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."));
+        match photon_messenger::storage::acquire_single_instance(&dir) {
+            Some(listener) => listener,
+            None => {
+                eprintln!(
+                    "photon: another instance is already running for this data dir:\n  {}\nFor a second instance (two-party testing) set a separate PHOTON_DATA_DIR (and PHOTON_FINGERPRINT for a distinct identity).",
+                    dir.display()
+                );
+                std::process::exit(1);
+            }
+        }
+    };
+
     photon_messenger::log(&format!("SIGNATURE CHECK PASSED"));
     photon_messenger::log(&format!("Ed25519 signature: {}", signature_hex));
     photon_messenger::log("");
