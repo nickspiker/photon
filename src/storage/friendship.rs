@@ -108,10 +108,7 @@ pub fn save_friendship_chains(
 
     // === Pending messages (v2) ===
     for pending in chains.pending_messages() {
-        // pending.plaintext is the message x-text only (the salt/weave ingredient), NOT the full
-        // flattened payload — so it's valid UTF-8 and stores losslessly as x. (It used to be the
-        // whole binary payload incl. the random pad, which forced a lossy conversion that mangled
-        // non-UTF-8 bytes to U+FFFD and desynced the chain.)
+        // pending.plaintext is the message x-text only (the salt/weave ingredient), NOT the full flattened payload — so it's valid UTF-8 and stores losslessly as x. (It used to be the whole binary payload incl. the random pad, which forced a lossy conversion that mangled non-UTF-8 bytes to U+FFFD and desynced the chain.)
         let plaintext_str = String::from_utf8_lossy(&pending.plaintext).into_owned();
         builder = builder
             .append_multi(
@@ -363,13 +360,9 @@ pub fn load_friendship_chains(
             prev_msg_hp: prev_msg_hps[i],
             msg_hp: msg_hps[i],
             ciphertext: ciphertexts[i].clone(),
-            // Not persisted (runtime-only braid-strand snapshot). A pending message reloaded after
-            // restart weaves no strands; in practice pending messages are short-lived (cleared on ACK) so
-            // this edge only matters if the app restarts mid-flight with an unacked message AND its braid
-            // strands were non-empty — a known minor gap, not the steady-state desync this fix addresses.
+            // Not persisted (runtime-only braid-strand snapshot). A pending message reloaded after restart weaves no strands; in practice pending messages are short-lived (cleared on ACK) so this edge only matters if the app restarts mid-flight with an unacked message AND its braid strands were non-empty — a known minor gap, not the steady-state desync this fix addresses.
             woven_strands: Vec::new(),
-            // Reliability state is runtime-only. A pending message reloaded after restart is eligible
-            // to resend immediately (attempts reset to 1, deadline = its eagle_time so it's already due).
+            // Reliability state is runtime-only. A pending message reloaded after restart is eligible to resend immediately (attempts reset to 1, deadline = its eagle_time so it's already due).
             attempts: 1,
             next_retry_osc: eagle_times[i],
         })

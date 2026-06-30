@@ -684,8 +684,7 @@ pub fn decode_avatar(av1_data: &[u8]) -> Result<(usize, usize, Vec<u8>), String>
         std::ptr::copy_nonoverlapping(av1_data.as_ptr(), data_ptr, av1_data.len());
     }
 
-    // dav1d returns negated errno; EAGAIN means "retry". errno is PLATFORM-SPECIFIC (Linux EAGAIN=11,
-    // macOS/BSD EAGAIN=35), and rav1d propagates the host's value (`EAGAIN = libc::EAGAIN`). Hardcoding
+    // dav1d returns negated errno; EAGAIN means "retry". errno is PLATFORM-SPECIFIC (Linux EAGAIN=11, macOS/BSD EAGAIN=35), and rav1d propagates the host's value (`EAGAIN = libc::EAGAIN`). Hardcoding
     // -11 worked on Linux but on Mac the decoder's EAGAIN (-35) fell through to the error branch, so
     // every AVIF avatar failed with "dav1d_get_picture failed: -35". Compare against libc::EAGAIN.
     let eagain = -(libc::EAGAIN as i32);
@@ -986,8 +985,7 @@ pub fn get_local_avatar_timestamp(
     get_local_avatar_timestamp_from_seed(ihi::handle_to_hash(handle).as_bytes(), storage)
 }
 
-/// Seed-keyed twin of [`get_local_avatar_timestamp`] — the canonical body. Reads the cached avatar
-/// VSF at `vault_key("avatar", identity_seed)` and returns its embedded eagle-time creation stamp.
+/// Seed-keyed twin of [`get_local_avatar_timestamp`] — the canonical body. Reads the cached avatar VSF at `vault_key("avatar", identity_seed)` and returns its embedded eagle-time creation stamp.
 pub fn get_local_avatar_timestamp_from_seed(
     identity_seed: &[u8; 32],
     storage: &std::sync::Arc<crate::storage::FlatStorage>,
@@ -1034,8 +1032,7 @@ pub fn get_local_avatar_timestamp_from_seed(
 /// Formula: avatar_priv_seed = BLAKE3(device_private_key || handle_hash || "handle-avatar") Then derive Ed25519 keypair from that 32-byte seed.
 ///
 /// # Arguments
-/// * `device_secret` - The device's Ed25519 signing key (32 bytes)
-/// * `handle` - The user's handle string
+/// * `device_secret` - The device's Ed25519 signing key (32 bytes) * `handle` - The user's handle string
 ///
 /// # Returns (SigningKey, VerifyingKey) - The avatar's Ed25519 keypair
 pub fn derive_avatar_keypair(
@@ -1111,8 +1108,7 @@ pub fn derive_avatar_encryption_key_from_seed(identity_seed: &[u8; 32]) -> [u8; 
 /// Wraps AV1 data in v'a', then encrypts with AES-256-GCM. Format: [nonce:12][ciphertext][tag:16]
 ///
 /// # Arguments
-/// * `av1_data` - Raw AV1 OBU bitstream
-/// * `handle` - User's handle (for key derivation)
+/// * `av1_data` - Raw AV1 OBU bitstream * `handle` - User's handle (for key derivation)
 ///
 /// # Returns
 /// Encrypted blob ready to be wrapped in v'e'
@@ -1158,8 +1154,7 @@ pub fn encrypt_av1_data_from_seed(
 /// Decrypts v'e' payload and unwraps the inner v'a' to get raw AV1 data. Format: [nonce:12][ciphertext][tag:16]
 ///
 /// # Arguments
-/// * `encrypted` - Encrypted blob (from v'e' wrapper)
-/// * `handle` - User's handle (for key derivation)
+/// * `encrypted` - Encrypted blob (from v'e' wrapper) * `handle` - User's handle (for key derivation)
 ///
 /// # Returns
 /// Raw AV1 OBU bitstream
@@ -1307,10 +1302,7 @@ fn decode_vsf_length(buf: &[u8]) -> Result<(usize, usize), String> {
 /// - Creation timestamp for replay protection
 ///
 /// # Arguments
-/// * `av1_data` - Raw AV1 OBU bitstream (from encode_avatar_from_image)
-/// * `handle` - User's handle (for encryption key derivation)
-/// * `avatar_signing_key` - Avatar's Ed25519 signing key
-/// * `avatar_verifying_key` - Avatar's Ed25519 verifying key
+/// * `av1_data` - Raw AV1 OBU bitstream (from encode_avatar_from_image) * `handle` - User's handle (for encryption key derivation) * `avatar_signing_key` - Avatar's Ed25519 signing key * `avatar_verifying_key` - Avatar's Ed25519 verifying key
 ///
 /// # Returns
 /// Complete signed VSF bytes ready for upload
@@ -1381,9 +1373,7 @@ fn write_signature_to_vsf(mut vsf_bytes: Vec<u8>, signature: &[u8; 64]) -> Resul
 /// Upload avatar to FGTW with signature authentication
 ///
 /// # Arguments
-/// * `device_secret` - Device's Ed25519 signing key
-/// * `handle` - User's handle
-/// * `handle_proof` - 32-byte handle proof (proves registered peer)
+/// * `device_secret` - Device's Ed25519 signing key * `handle` - User's handle * `handle_proof` - 32-byte handle proof (proves registered peer)
 ///
 /// # Returns
 /// The avatar storage key on success (for sharing with peers)
@@ -1439,10 +1429,7 @@ pub fn upload_avatar_from_seed(
         &format!("/avatar/{}", &storage_key[..8]),
     ));
 
-    // Keyring authorisation: FGTW no longer trusts "first avatar pubkey wins" — it accepts the write only if
-    // the SIGNING DEVICE is in this identity's published Merkle root (so any fleet device can set the avatar,
-    // a stranger can't). So we DEVICE-sign the avatar_put envelope (the avatar VSF inside keeps its own
-    // avatar-key signature for self-contained content integrity) and attach the device-leaf inclusion proof.
+    // Keyring authorisation: FGTW no longer trusts "first avatar pubkey wins" — it accepts the write only if the SIGNING DEVICE is in this identity's published Merkle root (so any fleet device can set the avatar, a stranger can't). So we DEVICE-sign the avatar_put envelope (the avatar VSF inside keeps its own avatar-key signature for self-contained content integrity) and attach the device-leaf inclusion proof.
     let device_key = crate::network::fgtw::Keypair {
         secret: device_secret.clone(),
         public: device_secret.verifying_key(),
@@ -1450,9 +1437,7 @@ pub fn upload_avatar_from_seed(
     let (pidx, proof) =
         crate::network::fgtw::keyring::ensure_keyring_and_prove(&device_key, handle_proof)?;
 
-    // Go through the ONE VSF conduit (POST / with a named section), same as blob_put / contacts. The put
-    // carries the signed avatar VSF + the keyring inclusion proof (pidx/pnode), and is itself device-signed
-    // at the header (ke/ge) so FGTW recomputes the device leaf from the signing key and verifies inclusion.
+    // Go through the ONE VSF conduit (POST / with a named section), same as blob_put / contacts. The put carries the signed avatar VSF + the keyring inclusion proof (pidx/pnode), and is itself device-signed at the header (ke/ge) so FGTW recomputes the device leaf from the signing key and verifies inclusion.
     let mut section = vsf::VsfSection::new("avatar_put");
     section.add_field("key", VsfType::d(storage_key.clone()));
     section.add_field("handle_proof", VsfType::hP(handle_proof.to_vec()));
@@ -1513,8 +1498,7 @@ pub fn download_avatar(
         &storage_key[..8]
     ));
 
-    // Same VSF conduit as everything else: POST / with an `avatar_get` section (server route at
-    // route_vsf_request -> handle_avatar_get). The old GET /avatar/{key} had no router arm → 404.
+    // Same VSF conduit as everything else: POST / with an `avatar_get` section (server route at route_vsf_request -> handle_avatar_get). The old GET /avatar/{key} had no router arm → 404.
     let get_vsf = vsf::VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
         .add_section(
@@ -1554,10 +1538,8 @@ pub fn download_avatar(
     load_avatar_from_bytes(&vsf_data, handle)
 }
 
-/// Download an avatar by IDENTITY SEED rather than handle string. Same cache-first → FGTW-fetch flow
-/// as [`download_avatar`], but keyed off the seed the caller already has (no handle string needed).
-/// Used to recover the DEVICE'S OWN avatar after a local clear: the vault is empty, but the avatar was
-/// published to FGTW under our own storage key, so we pull it back (and re-cache it locally).
+/// Download an avatar by IDENTITY SEED rather than handle string. Same cache-first → FGTW-fetch flow as [`download_avatar`], but keyed off the seed the caller already has (no handle string needed).
+/// Used to recover the DEVICE'S OWN avatar after a local clear: the vault is empty, but the avatar was published to FGTW under our own storage key, so we pull it back (and re-cache it locally).
 pub fn download_avatar_from_seed(
     identity_seed: &[u8; 32],
     storage: &std::sync::Arc<crate::storage::FlatStorage>,
@@ -1610,10 +1592,7 @@ pub enum AvatarSyncResult {
     Error(String), // Something went wrong
 }
 
-/// Read the eagle-time creation stamp embedded in an in-memory avatar VSF buffer (the server's
-/// `avatar_get` response). The VSF conduit returns the stripped-but-creation-time-preserving VSF,
-/// so the timestamp travels in the body itself — no `X-Avatar-Timestamp` HTTP header (that was the
-/// dead REST path). Returns `None` if the buffer has no decodable creation time.
+/// Read the eagle-time creation stamp embedded in an in-memory avatar VSF buffer (the server's `avatar_get` response). The VSF conduit returns the stripped-but-creation-time-preserving VSF, so the timestamp travels in the body itself — no `X-Avatar-Timestamp` HTTP header (that was the dead REST path). Returns `None` if the buffer has no decodable creation time.
 fn avatar_vsf_timestamp(vsf_data: &[u8]) -> Option<i64> {
     use vsf::file_format::VsfHeader;
     use vsf::types::EagleTime;
@@ -1625,16 +1604,10 @@ fn avatar_vsf_timestamp(vsf_data: &[u8]) -> Option<i64> {
     }
 }
 
-/// Sync the user's own avatar with FGTW, newest-wins, keyed by the identity seed (never the
-/// plaintext handle — identity flows only as the seed). Pulls the server copy over the VSF conduit
-/// (`avatar_get` section, POST /), reads its embedded eagle-time creation stamp, and compares to the
-/// local cache's stamp: local newer → upload (needs `handle_proof`); server newer → cache the server
-/// VSF; equal → in-sync. Server-empty with a local copy → upload.
+/// Sync the user's own avatar with FGTW, newest-wins, keyed by the identity seed (never the plaintext handle — identity flows only as the seed). Pulls the server copy over the VSF conduit (`avatar_get` section, POST /), reads its embedded eagle-time creation stamp, and compares to the local cache's stamp: local newer → upload (needs `handle_proof`); server newer → cache the server VSF; equal → in-sync. Server-empty with a local copy → upload.
 ///
 /// # Arguments
-/// * `device_secret` — the device's Ed25519 signing key (for uploading)
-/// * `identity_seed` — the seed derived once from the handle at the input boundary
-/// * `handle_proof` — the public proof, only needed when we upload
+/// * `device_secret` — the device's Ed25519 signing key (for uploading) * `identity_seed` — the seed derived once from the handle at the input boundary * `handle_proof` — the public proof, only needed when we upload
 pub fn sync_avatar_bidirectional_from_seed(
     device_secret: &SigningKey,
     identity_seed: &[u8; 32],
@@ -1663,8 +1636,7 @@ pub fn sync_avatar_bidirectional_from_seed(
         }
     };
 
-    // Pull the server copy over the VSF conduit (same avatar_get section as download_avatar_from_seed,
-    // but here we always hit the network — a sync must see the server to compare timestamps).
+    // Pull the server copy over the VSF conduit (same avatar_get section as download_avatar_from_seed, but here we always hit the network — a sync must see the server to compare timestamps).
     let get_vsf = match vsf::VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
         .add_section(
@@ -1762,9 +1734,7 @@ pub struct AvatarDownloadResult {
 /// Spawn background thread to download avatar from FGTW by handle Results are sent to the provided channel
 ///
 /// # Arguments
-/// * `handle` - Peer's handle (storage key is derived from this)
-/// * `tx` - Channel to send result
-/// * `event_proxy` - Optional EventLoopProxy to wake the event loop when done
+/// * `handle` - Peer's handle (storage key is derived from this) * `tx` - Channel to send result * `event_proxy` - Optional EventLoopProxy to wake the event loop when done
 pub fn download_avatar_background(
     handle: String,
     storage: std::sync::Arc<crate::storage::FlatStorage>,
@@ -1787,11 +1757,7 @@ pub fn download_avatar_background(
 /// Spawn background thread to sync avatar bidirectionally with FGTW For user's own avatar - compares timestamps and syncs newest version
 ///
 /// # Arguments
-/// * `device_secret` - Device's Ed25519 signing key bytes (cloned for thread)
-/// * `handle` - User's handle
-/// * `handle_proof` - Optional handle proof (for uploads)
-/// * `tx` - Channel to send result (pixels if server was newer)
-/// * `event_proxy` - Optional EventLoopProxy to wake the event loop when done
+/// * `device_secret` - Device's Ed25519 signing key bytes (cloned for thread) * `handle` - User's handle * `handle_proof` - Optional handle proof (for uploads) * `tx` - Channel to send result (pixels if server was newer) * `event_proxy` - Optional EventLoopProxy to wake the event loop when done
 pub fn sync_avatar_background(
     device_secret_bytes: [u8; 32],
     handle: String,
@@ -1802,8 +1768,7 @@ pub fn sync_avatar_background(
 ) {
     std::thread::spawn(move || {
         let device_secret = SigningKey::from_bytes(&device_secret_bytes);
-        // Hash the handle to a seed ONCE here at the thread boundary; the seed (never the handle)
-        // flows into the sync logic and the cache lookup below.
+        // Hash the handle to a seed ONCE here at the thread boundary; the seed (never the handle) flows into the sync logic and the cache lookup below.
         let identity_seed = *ihi::handle_to_hash(&handle).as_bytes();
         let result = sync_avatar_bidirectional_from_seed(
             &device_secret,

@@ -1,26 +1,20 @@
-//! User-adjustable app settings, persisted as a plain (unencrypted) VSF file at
-//! `photon_config_dir()/settings.vsf`. Settings are non-secret operational knobs (not identity or
-//! conversation data), so they live in the config dir, NOT the encrypted vault.
+//! User-adjustable app settings, persisted as a plain (unencrypted) VSF file at `photon_config_dir()/settings.vsf`. Settings are non-secret operational knobs (not identity or conversation data), so they live in the config dir, NOT the encrypted vault.
 //!
-//! Today the only knobs are the diagnostic-log hex elision lengths (`hex_head` / `hex_tail`): how
-//! many head/tail bytes of a large binary VSF field the inspector prints before eliding the middle.
+//! Today the only knobs are the diagnostic-log hex elision lengths (`hex_head` / `hex_tail`): how many head/tail bytes of a large binary VSF field the inspector prints before eliding the middle.
 //! The defaults keep whole-session logs readable instead of dumping kilobytes of hex per packet.
 //!
 //! Resolution order (highest priority first):
 //!   1. `VSF_HEX_HEAD` / `VSF_HEX_TAIL` environment variables (quick per-run override; read by vsf)
 //!   2. `settings.vsf` on disk (persisted, adjustable)
-//!   3. Built-in defaults (and the file is created with them on first run, so there's always
-//!      something to edit)
+//!   3. Built-in defaults (and the file is created with them on first run, so there's always something to edit)
 //!
-//! The env override is handled inside vsf's `hex_elision()`; here we only push the file/default
-//! values via `set_hex_elision`, and vsf's OnceLock means the env var still wins if set.
+//! The env override is handled inside vsf's `hex_elision()`; here we only push the file/default values via `set_hex_elision`, and vsf's OnceLock means the env var still wins if set.
 
 use vsf::schema::{SectionBuilder, SectionSchema, TypeConstraint};
 use vsf::VsfType;
 
 /// Default head/tail bytes shown before eliding a large binary field in diagnostic logs.
-/// 32 is enough that two distinct payloads never look alike (head+tail fingerprint) while staying
-/// roughly one line each. Mirrors vsf's own built-in default.
+/// 32 is enough that two distinct payloads never look alike (head+tail fingerprint) while staying roughly one line each. Mirrors vsf's own built-in default.
 const HEX_HEAD_DEFAULT: usize = 32;
 const HEX_TAIL_DEFAULT: usize = 32;
 
@@ -55,8 +49,7 @@ fn settings_path() -> Option<std::path::PathBuf> {
 
 impl Settings {
     /// Serialize to a VSF document (one `settings` section with the knobs as inline fields).
-    /// Lengths are stored as u3 (a single byte), so they're clamped to 255 — far beyond any useful
-    /// head/tail for log readability, and it keeps the file one byte per knob.
+    /// Lengths are stored as u3 (a single byte), so they're clamped to 255 — far beyond any useful head/tail for log readability, and it keeps the file one byte per knob.
     fn encode(&self) -> Result<Vec<u8>, String> {
         let head = self.hex_head.min(255) as u8;
         let tail = self.hex_tail.min(255) as u8;
@@ -92,16 +85,13 @@ impl Settings {
         s
     }
 
-    /// Load settings from disk, creating `settings.vsf` with defaults if it doesn't exist yet (so
-    /// there's always a file to hand-edit). Any I/O or parse failure falls back to defaults — a bad
-    /// settings file must never stop the app from launching.
+    /// Load settings from disk, creating `settings.vsf` with defaults if it doesn't exist yet (so there's always a file to hand-edit). Any I/O or parse failure falls back to defaults — a bad settings file must never stop the app from launching.
     pub fn load_or_create() -> Self {
         let Some(path) = settings_path() else {
             return Settings::default();
         };
 
-        // Read quietly (std::fs, not the error-logging read_file) — a missing file on first run is
-        // expected, not an error worth a log line.
+        // Read quietly (std::fs, not the error-logging read_file) — a missing file on first run is expected, not an error worth a log line.
         match std::fs::read(&path) {
             Ok(bytes) => Settings::decode(&bytes),
             Err(_) => {

@@ -9,11 +9,7 @@ use super::theme;
 /// Creates a symmetric procedural texture with organic noise patterns. The `fullscreen` parameter controls whether edge pixels are drawn (false = leave 1px border for window edges on desktop).
 ///
 /// # Arguments
-/// * `pixels` - ARGB pixel buffer (0xAARRGGBB format)
-/// * `width` - Buffer width in pixels
-/// * `height` - Buffer height in pixels
-/// * `speckle` - Animation counter for speckle effect (0 for static)
-/// * `fullscreen` - If true, draw all pixels including edges
+/// * `pixels` - ARGB pixel buffer (0xAARRGGBB format) * `width` - Buffer width in pixels * `height` - Buffer height in pixels * `speckle` - Animation counter for speckle effect (0 for static) * `fullscreen` - If true, draw all pixels including edges
 #[cfg(not(target_os = "android"))]
 pub fn draw_background_texture(
     pixels: &mut [u32],
