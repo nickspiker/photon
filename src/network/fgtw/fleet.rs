@@ -1192,6 +1192,26 @@ pub fn recover_fleet_key(
     }
 }
 
+/// Recover the current fleet key, or ESTABLISH epoch 1 if no fan-out exists yet (the genesis founder). Handles the establish race: if another device published epoch 1 first, recover theirs instead. Returns None on network failure or if this device can't recover (not a current member / no fleet yet).
+pub fn recover_or_establish_fleet_key(
+    handle_proof: &[u8; 32],
+    device_key: &Keypair,
+) -> Result<Option<[u8; 32]>, String> {
+    if let Some(k) = recover_fleet_key(handle_proof, device_key)? {
+        return Ok(Some(k));
+    }
+    // No fan-out yet — establish it, sealed to the CURRENT member set (just the founder at genesis).
+    let members = current_members(handle_proof)?;
+    if members.is_empty() {
+        return Ok(None);
+    }
+    match rotate_fleet_key(handle_proof, device_key, &members) {
+        Ok((_, k)) => Ok(Some(k)),
+        // Lost the establish race → recover the key the winner published.
+        Err(_) => recover_fleet_key(handle_proof, device_key),
+    }
+}
+
 // ── Fleet shared state: the contact roster ──
 // The roster is the "who are my friends" half of a fleet's private state. It rides the fleet key: encrypted with it, pushed to a membership-gated FGTW slot, pulled + CRDT-merged by every device. A new device that joins pulls the roster and re-CLUTCHes each friend on its own device key (conversation HISTORY + per-device ratchets are a later phase — this phase is the roster only).
 
