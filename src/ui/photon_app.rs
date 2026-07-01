@@ -3517,6 +3517,8 @@ impl PhotonApp {
                                 for _ in 0..10 {
                                     if let Ok(Some(sealed)) = fleet::fetch_fleet_key(&hp) {
                                         if let Ok(k) = fleet::unwrap_fleet_key(&secret, &sealed) {
+                                            // Got it — tell FGTW to drop the hand-off slot so the sealed key doesn't linger.
+                                            let _ = fleet::ack_fleet_key(&hp);
                                             fleet_key = Some(k);
                                             break;
                                         }
