@@ -820,6 +820,101 @@ pub fn poll_pairing_request(
     Ok(Some(PendingPairing { new_pubkey, fingerprint: device_fingerprint(&new_pubkey) }))
 }
 
+// ── Fleet key hand-off ──
+// The fleet key is a single high-entropy symmetric secret shared by every device in a fleet — it's what lets a second device decrypt the fleet's PRIVATE state (contacts, chains, preferences) that per-device vault keys can't share. The genesis device mints it; each added device receives THIS one over the pairing channel, sealed under the human-carried pairing secret. That gate is exactly the trust surface the pairing MAC already assumes, so no new key exchange is introduced — knowledge of the typed words is what authorises the hand-off.
+
+/// Domain-separated wrap key derived from the pairing secret. BLAKE3 keyed by a fixed domain so this can never collide with the request/ack MAC derivations that hash the same secret.
+fn fleet_key_wrap_key(secret: &[u8; PAIRING_SECRET_LEN]) -> [u8; 32] {
+    let mut h = blake3::Hasher::new();
+    h.update(b"PHOTON_FLEET_KEY_WRAP_v0");
+    h.update(secret);
+    *h.finalize().as_bytes()
+}
+
+/// A fresh random fleet key — minted once, by the genesis device, and thereafter only ever RECEIVED (never re-minted) so the whole fleet converges on the same key.
+pub fn new_fleet_key() -> [u8; 32] {
+    rand::random()
+}
+
+/// Seal the fleet key under the pairing secret (ChaCha20-Poly1305 via kete). AEAD auth means a wrong secret fails the unwrap rather than yielding a plausible-looking wrong key.
+pub fn wrap_fleet_key(
+    secret: &[u8; PAIRING_SECRET_LEN],
+    fleet_key: &[u8; 32],
+) -> Result<Vec<u8>, String> {
+    kete::encrypt_bytes(fleet_key, &fleet_key_wrap_key(secret))
+}
+
+/// Open a fleet key delivered over the pairing channel. Fails loud (not garbage) on a wrong secret or a tampered blob.
+pub fn unwrap_fleet_key(
+    secret: &[u8; PAIRING_SECRET_LEN],
+    wrapped: &[u8],
+) -> Result<[u8; 32], String> {
+    let pt = kete::decrypt_bytes(wrapped, &fleet_key_wrap_key(secret))?;
+    pt.as_slice().try_into().map_err(|_| "fleet key wrong length".to_string())
+}
+
+// ── Fleet key inbox transport (one slot per identity, the sealed key relayed thru FGTW; the AEAD authenticates, FGTW is a dumb relay). ──
+
+/// EXISTING device: after binding the new device, drop the sealed fleet key into the hand-off slot. FGTW (and anyone lacking the pairing secret) sees only ciphertext.
+pub fn post_fleet_key(handle_proof: &[u8; 32], wrapped: &[u8]) -> Result<(), String> {
+    let mut section = vsf::VsfSection::new("fkey_put");
+    section.add_field("hp", VsfType::hP(handle_proof.to_vec()));
+    section.add_field("bl", VsfType::ge(wrapped.to_vec()));
+    section.add_field("t", VsfType::e(vsf::types::EtType::e6(vsf::eagle_time_oscillations())));
+    let req = vsf::VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .provenance_only()
+        .add_section_direct(section)
+        .build()
+        .map_err(|e| format!("fkey_put build: {e}"))?;
+    let resp = crate::network::http::blocking()
+        .post(FGTW_URL)
+        .timeout(std::time::Duration::from_secs(15))
+        .header("Content-Type", "application/octet-stream")
+        .body(req)
+        .send()
+        .map_err(|e| format!("fkey_put send: {e}"))?;
+    if resp.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!("fkey_put http {}", resp.status()))
+    }
+}
+
+/// NEW device: fetch the sealed fleet key (None until the existing device posts it), to unwrap with the pairing secret.
+pub fn fetch_fleet_key(handle_proof: &[u8; 32]) -> Result<Option<Vec<u8>>, String> {
+    let mut section = vsf::VsfSection::new("fkey_get");
+    section.add_field("hp", VsfType::hP(handle_proof.to_vec()));
+    let req = vsf::VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .provenance_only()
+        .add_section_direct(section)
+        .build()
+        .map_err(|e| format!("fkey_get build: {e}"))?;
+    let resp = crate::network::http::blocking()
+        .post(FGTW_URL)
+        .timeout(std::time::Duration::from_secs(15))
+        .header("Content-Type", "application/octet-stream")
+        .body(req)
+        .send()
+        .map_err(|e| format!("fkey_get send: {e}"))?;
+    if resp.status().as_u16() == 404 {
+        return Ok(None);
+    }
+    if !resp.status().is_success() {
+        return Err(format!("fkey_get http {}", resp.status()));
+    }
+    let bytes = resp.bytes().map_err(|e| format!("fkey_get read: {e}"))?;
+    let (_, header_end) = vsf::VsfHeader::decode(&bytes).map_err(|e| format!("fkey header: {e}"))?;
+    let mut ptr = header_end;
+    let stored =
+        vsf::VsfSection::parse(&bytes, &mut ptr).map_err(|e| format!("fkey section: {e}"))?;
+    match stored.get_field("bl").and_then(|f| f.values.first()) {
+        Some(VsfType::ge(b)) => Ok(Some(b.clone())),
+        _ => Ok(None),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1029,6 +1124,32 @@ mod tests {
         let members = current_members(&handle_proof).unwrap();
         assert!(members.contains(&member.public.to_bytes()));
         assert!(members.contains(&newdev.public.to_bytes()));
+
+        // Fleet key hand-off: existing device seals its key under the secret and posts it; the new device fetches and opens it to the identical bytes.
+        let fleet_key = new_fleet_key();
+        let sealed = wrap_fleet_key(&secret, &fleet_key).expect("wrap");
+        post_fleet_key(&handle_proof, &sealed).expect("post fleet key");
+        let fetched = fetch_fleet_key(&handle_proof).expect("fetch").expect("a sealed key");
+        assert_eq!(unwrap_fleet_key(&secret, &fetched).expect("unwrap"), fleet_key);
+        // A wrong secret can't open it (AEAD auth fails, not garbage).
+        assert!(unwrap_fleet_key(&[0u8; PAIRING_SECRET_LEN], &fetched).is_err());
+    }
+
+    #[test]
+    fn fleet_key_wrap_round_trips_and_rejects_wrong_secret() {
+        let secret = new_pairing_secret();
+        let fleet_key = new_fleet_key();
+        let sealed = wrap_fleet_key(&secret, &fleet_key).unwrap();
+        // Right secret opens it to the same bytes...
+        assert_eq!(unwrap_fleet_key(&secret, &sealed).unwrap(), fleet_key);
+        // ...any other secret fails the AEAD tag (never yields a plausible wrong key)...
+        let mut other = secret;
+        other[0] ^= 1;
+        assert!(unwrap_fleet_key(&other, &sealed).is_err());
+        // ...and a flipped ciphertext bit is rejected, not silently decrypted.
+        let mut tampered = sealed.clone();
+        *tampered.last_mut().unwrap() ^= 1;
+        assert!(unwrap_fleet_key(&secret, &tampered).is_err());
     }
 
     #[test]
