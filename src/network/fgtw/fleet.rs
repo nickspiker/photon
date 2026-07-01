@@ -945,10 +945,11 @@ pub fn ack_fleet_key(handle_proof: &[u8; 32]) -> Result<(), String> {
 const FANOUT_DOMAIN: &[u8] = b"PHOTON_FLEET_FANOUT_v0";
 const FANOUT_TAG: &[u8; 4] = b"PFO0";
 
-/// One sealed copy of the fleet key for one (unlabelled) member. `epk` is a per-wrap ephemeral X25519 public; `ct` is ChaCha20-Poly1305(fleet_key) under the ECDH-derived key. There is NO recipient label — a device trial-decrypts to find its own — so the slot carries only a count of members, never their pubkeys.
+/// One sealed copy of the fleet key for one (unlabelled) member. `epk` is a per-wrap ephemeral X25519 public; `commit` binds the ciphertext to the exact derived key (KEY-COMMITTING — so a malicious member can't craft one `ct` that opens to different keys for two devices, the invisible-salamander split); `ct` is ChaCha20-Poly1305(fleet_key) under the ECDH-derived key. No recipient label — a device recomputes `commit` to find its own — so the slot carries only a count, never pubkeys.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct FanoutWrap {
     pub epk: [u8; 32],
+    pub commit: [u8; 32],
     pub ct: Vec<u8>,
 }
 
@@ -957,17 +958,41 @@ fn ed_to_x25519_public(ed_pubkey: &[u8; 32]) -> Option<[u8; 32]> {
     Some(VerifyingKey::from_bytes(ed_pubkey).ok()?.to_montgomery().to_bytes())
 }
 
-fn fanout_key(shared: &[u8; 32], epk: &[u8; 32], recipient_xpk: &[u8; 32]) -> [u8; 32] {
+/// Derive the per-wrap AEAD key AND its key-commitment from the ECDH shared secret.
+/// Binds the FLEET (`handle_proof`) and `epoch`, so a wrap is valid only for (this fleet, this epoch, this recipient) — no cross-fleet or cross-epoch splicing (a device key is the same across fleets, so without this a wrap lifts between them). `epk` MUST stay in this hash: it is what makes each wrap's key unique, which is what makes the fixed AEAD nonce safe — never derive the key from `shared` alone. The 64-byte XOF splits into `(aead_key, commit)`; `commit` binds `ct` to this exact key (defeats the partitioning-oracle / invisible-salamander attack that Poly1305 alone allows) and doubles as the recipient selector.
+fn fanout_keys(
+    handle_proof: &[u8; 32],
+    epoch: u64,
+    recipient_ed: &[u8; 32],
+    shared: &[u8; 32],
+    epk: &[u8; 32],
+    recipient_xpk: &[u8; 32],
+) -> ([u8; 32], [u8; 32]) {
     let mut h = blake3::Hasher::new();
     h.update(FANOUT_DOMAIN);
+    h.update(handle_proof);
+    h.update(&epoch.to_le_bytes());
+    // Bind the canonical Ed25519 device pubkey too: to_montgomery drops the sign bit, so two distinct Ed25519 keys can share a Montgomery u — this disambiguates them.
+    h.update(recipient_ed);
     h.update(epk);
     h.update(recipient_xpk);
     h.update(shared);
-    *h.finalize().as_bytes()
+    let mut out = [0u8; 64];
+    h.finalize_xof().fill(&mut out);
+    let mut ak = [0u8; 32];
+    let mut cm = [0u8; 32];
+    ak.copy_from_slice(&out[..32]);
+    cm.copy_from_slice(&out[32..]);
+    (ak, cm)
 }
 
-/// Seal `fleet_key` separately to each current member (Ed25519 device pubkeys, e.g. from a folded `MembershipBlob`). A device not in `members` gets no wrap and cannot recover the key.
-pub fn fanout_seal(fleet_key: &[u8; 32], members: &[[u8; 32]]) -> Result<Vec<FanoutWrap>, String> {
+/// Seal `fleet_key` separately to each current member (Ed25519 device pubkeys, e.g. from a folded `MembershipBlob`) for a given `(handle_proof, epoch)`. A device not in `members` gets no wrap and cannot recover the key.
+pub fn fanout_seal(
+    handle_proof: &[u8; 32],
+    epoch: u64,
+    fleet_key: &[u8; 32],
+    members: &[[u8; 32]],
+) -> Result<Vec<FanoutWrap>, String> {
     use chacha20poly1305::{aead::Aead, ChaCha20Poly1305, KeyInit, Nonce};
     use x25519_dalek::{PublicKey as XPublic, StaticSecret};
     let mut wraps = Vec::with_capacity(members.len());
@@ -977,26 +1002,46 @@ pub fn fanout_seal(fleet_key: &[u8; 32], members: &[[u8; 32]]) -> Result<Vec<Fan
         // Fresh ephemeral per wrap → the key is unique per wrap → a zero nonce is safe (no reuse).
         let esk = StaticSecret::from(rand::random::<[u8; 32]>());
         let epk = XPublic::from(&esk).to_bytes();
-        let shared = esk.diffie_hellman(&XPublic::from(recipient_xpk)).to_bytes();
-        let key = fanout_key(&shared, &epk, &recipient_xpk);
-        let ct = ChaCha20Poly1305::new((&key).into())
+        let ss = esk.diffie_hellman(&XPublic::from(recipient_xpk));
+        // Reject a low-order member pubkey (a zero/small-order shared secret would be attacker-predictable).
+        if !ss.was_contributory() {
+            return Err("fanout: member pubkey is low-order".into());
+        }
+        let shared = ss.to_bytes();
+        let (ak, commit) = fanout_keys(handle_proof, epoch, member_ed, &shared, &epk, &recipient_xpk);
+        let ct = ChaCha20Poly1305::new((&ak).into())
             .encrypt(Nonce::from_slice(&[0u8; 12]), fleet_key.as_slice())
             .map_err(|_| "fanout: seal failed".to_string())?;
-        wraps.push(FanoutWrap { epk, ct });
+        wraps.push(FanoutWrap { epk, commit, ct });
     }
     Ok(wraps)
 }
 
-/// Recover the fleet key by trial-decrypting each wrap with this device's key. `None` if this device is not a recipient (removed, or a stale epoch it was never in).
-pub fn fanout_open(wraps: &[FanoutWrap], device_key: &Keypair) -> Option<[u8; 32]> {
+/// Recover the fleet key for `(handle_proof, epoch)` by finding this device's wrap (via the key-commitment) and decrypting. `None` if this device is not a recipient (removed, or a stale epoch it was never in) — and, because the key is bound to `(handle_proof, epoch)`, a wrap from a different fleet or epoch simply won't match.
+pub fn fanout_open(
+    handle_proof: &[u8; 32],
+    epoch: u64,
+    wraps: &[FanoutWrap],
+    device_key: &Keypair,
+) -> Option<[u8; 32]> {
     use chacha20poly1305::{aead::Aead, ChaCha20Poly1305, KeyInit, Nonce};
     use x25519_dalek::{PublicKey as XPublic, StaticSecret};
     let my_xsk = StaticSecret::from(device_key.secret.to_scalar_bytes());
     let my_xpk = device_key.public.to_montgomery().to_bytes();
+    let my_ed = device_key.public.to_bytes();
     for w in wraps {
-        let shared = my_xsk.diffie_hellman(&XPublic::from(w.epk)).to_bytes();
-        let key = fanout_key(&shared, &w.epk, &my_xpk);
-        if let Ok(pt) = ChaCha20Poly1305::new((&key).into())
+        let ss = my_xsk.diffie_hellman(&XPublic::from(w.epk));
+        // Reject a low-order/attacker-chosen epk (a zero shared secret would let a malicious member install a chosen key).
+        if !ss.was_contributory() {
+            continue;
+        }
+        let shared = ss.to_bytes();
+        let (ak, commit) = fanout_keys(handle_proof, epoch, &my_ed, &shared, &w.epk, &my_xpk);
+        // Key-commitment gate: accept only a wrap bound to THIS exact derived key (defeats a crafted ct that opens under two keys), which doubles as the recipient selector.
+        if commit != w.commit {
+            continue;
+        }
+        if let Ok(pt) = ChaCha20Poly1305::new((&ak).into())
             .decrypt(Nonce::from_slice(&[0u8; 12]), w.ct.as_slice())
         {
             if let Ok(k) = <[u8; 32]>::try_from(pt.as_slice()) {
@@ -1015,6 +1060,7 @@ pub fn fanout_to_bytes(epoch: u64, wraps: &[FanoutWrap]) -> Vec<u8> {
     out.extend_from_slice(&(wraps.len() as u32).to_be_bytes());
     for w in wraps {
         out.extend_from_slice(&w.epk);
+        out.extend_from_slice(&w.commit);
         out.extend_from_slice(&(w.ct.len() as u32).to_be_bytes());
         out.extend_from_slice(&w.ct);
     }
@@ -1037,12 +1083,17 @@ pub fn fanout_from_bytes(bytes: &[u8]) -> Result<(u64, Vec<FanoutWrap>), String>
     }
     let epoch = u64::from_be_bytes(take(&mut p, 8)?.try_into().unwrap());
     let count = u32::from_be_bytes(take(&mut p, 4)?.try_into().unwrap()) as usize;
-    let mut wraps = Vec::with_capacity(count.min(4096));
+    // A fleet is a person's devices — a four-figure count is adversarial. Reject before allocating/looping.
+    if count > 1024 {
+        return Err("fanout: implausible wrap count".into());
+    }
+    let mut wraps = Vec::with_capacity(count);
     for _ in 0..count {
         let epk: [u8; 32] = take(&mut p, 32)?.try_into().unwrap();
+        let commit: [u8; 32] = take(&mut p, 32)?.try_into().unwrap();
         let ct_len = u32::from_be_bytes(take(&mut p, 4)?.try_into().unwrap()) as usize;
         let ct = take(&mut p, ct_len)?.to_vec();
-        wraps.push(FanoutWrap { epk, ct });
+        wraps.push(FanoutWrap { epk, commit, ct });
     }
     Ok((epoch, wraps))
 }
@@ -1125,7 +1176,7 @@ pub fn rotate_fleet_key(
     let current = fetch_fanout(handle_proof)?.map(|(e, _)| e).unwrap_or(0);
     let epoch = current + 1;
     let key = new_fleet_key();
-    let wraps = fanout_seal(&key, members)?;
+    let wraps = fanout_seal(handle_proof, epoch, &key, members)?;
     post_fanout(handle_proof, device_key, epoch, &wraps)?;
     Ok((epoch, key))
 }
@@ -1136,7 +1187,7 @@ pub fn recover_fleet_key(
     device_key: &Keypair,
 ) -> Result<Option<[u8; 32]>, String> {
     match fetch_fanout(handle_proof)? {
-        Some((_, wraps)) => Ok(fanout_open(&wraps, device_key)),
+        Some((epoch, wraps)) => Ok(fanout_open(handle_proof, epoch, &wraps, device_key)),
         None => Ok(None),
     }
 }
@@ -1544,26 +1595,39 @@ mod tests {
         let c = key(3);
         let removed = key(9);
         let members = vec![pk(&a), pk(&b), pk(&c)];
+        let hp = [0x11u8; 32];
+        let epoch = 5u64;
         let fleet_key = new_fleet_key();
-        let wraps = fanout_seal(&fleet_key, &members).unwrap();
+        let wraps = fanout_seal(&hp, epoch, &fleet_key, &members).unwrap();
         assert_eq!(wraps.len(), 3);
         // Every current member recovers the exact key with its own device key (no live sibling).
         for kp in [&a, &b, &c] {
-            assert_eq!(fanout_open(&wraps, kp).expect("member opens"), fleet_key);
+            assert_eq!(fanout_open(&hp, epoch, &wraps, kp).expect("member opens"), fleet_key);
         }
         // A device not in the member set (removed, or never joined) cannot — removal removes.
-        assert!(fanout_open(&wraps, &removed).is_none());
+        assert!(fanout_open(&hp, epoch, &wraps, &removed).is_none());
+        // Bound to (fleet, epoch): a wrap won't open under a different handle_proof or epoch (no cross-fleet / cross-epoch splicing).
+        assert!(fanout_open(&[0x22u8; 32], epoch, &wraps, &a).is_none());
+        assert!(fanout_open(&hp, epoch + 1, &wraps, &a).is_none());
         // Serialize round-trips and the recovered blob still opens.
-        let bytes = fanout_to_bytes(7, &wraps);
-        let (epoch, back) = fanout_from_bytes(&bytes).unwrap();
-        assert_eq!(epoch, 7);
+        let bytes = fanout_to_bytes(epoch, &wraps);
+        let (got_epoch, back) = fanout_from_bytes(&bytes).unwrap();
+        assert_eq!(got_epoch, epoch);
         assert_eq!(back, wraps);
-        assert_eq!(fanout_open(&back, &a).unwrap(), fleet_key);
+        assert_eq!(fanout_open(&hp, epoch, &back, &a).unwrap(), fleet_key);
         assert!(fanout_from_bytes(&bytes[..bytes.len() - 5]).is_err());
         // A tampered wrap fails its AEAD tag (no silent wrong key).
         let mut tampered = wraps.clone();
         *tampered[0].ct.last_mut().unwrap() ^= 1;
-        assert!(fanout_open(&tampered[..1], &a).is_none());
+        assert!(fanout_open(&hp, epoch, &tampered[..1], &a).is_none());
+        // A low-order (all-zero) epk is rejected by the contributory-DH check, not opened.
+        let mut loword = wraps.clone();
+        loword[0].epk = [0u8; 32];
+        assert!(fanout_open(&hp, epoch, &loword[..1], &a).is_none());
+        // Wrap-count sanity: an implausible count is rejected before allocation.
+        let mut huge = fanout_to_bytes(epoch, &wraps);
+        huge[12..16].copy_from_slice(&2000u32.to_be_bytes());
+        assert!(fanout_from_bytes(&huge).is_err());
     }
 
     #[test]
@@ -1659,7 +1723,7 @@ mod tests {
         assert!(recover_fleet_key(&handle_proof, &b).unwrap().is_none());
 
         // A stale rotation (epoch ≤ stored) is rejected by the worker's monotonic guard.
-        let stale = fanout_seal(&new_fleet_key(), &members3).unwrap();
+        let stale = fanout_seal(&handle_proof, 3, &new_fleet_key(), &members3).unwrap();
         assert!(post_fanout(&handle_proof, &a, 3, &stale).is_err());
     }
 
