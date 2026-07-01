@@ -915,6 +915,30 @@ pub fn fetch_fleet_key(handle_proof: &[u8; 32]) -> Result<Option<Vec<u8>>, Strin
     }
 }
 
+/// NEW device: confirm the sealed fleet key was fetched + unwrapped, so FGTW drops the hand-off slot immediately instead of letting the pairing-secret-wrapped key sit in R2. Best-effort — the worker's GET-time freshness expiry is the backstop if this never arrives.
+pub fn ack_fleet_key(handle_proof: &[u8; 32]) -> Result<(), String> {
+    let mut section = vsf::VsfSection::new("fkey_ack");
+    section.add_field("hp", VsfType::hP(handle_proof.to_vec()));
+    let req = vsf::VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .provenance_only()
+        .add_section_direct(section)
+        .build()
+        .map_err(|e| format!("fkey_ack build: {e}"))?;
+    let resp = crate::network::http::blocking()
+        .post(FGTW_URL)
+        .timeout(std::time::Duration::from_secs(15))
+        .header("Content-Type", "application/octet-stream")
+        .body(req)
+        .send()
+        .map_err(|e| format!("fkey_ack send: {e}"))?;
+    if resp.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!("fkey_ack http {}", resp.status()))
+    }
+}
+
 // ── Fleet shared state: the contact roster ──
 // The roster is the "who are my friends" half of a fleet's private state. It rides the fleet key: encrypted with it, pushed to a membership-gated FGTW slot, pulled + CRDT-merged by every device. A new device that joins pulls the roster and re-CLUTCHes each friend on its own device key (conversation HISTORY + per-device ratchets are a later phase — this phase is the roster only).
 
@@ -1306,6 +1330,9 @@ mod tests {
         assert_eq!(unwrap_fleet_key(&secret, &fetched).expect("unwrap"), fleet_key);
         // A wrong secret can't open it (AEAD auth fails, not garbage).
         assert!(unwrap_fleet_key(&[0u8; PAIRING_SECRET_LEN], &fetched).is_err());
+        // Single-use: after the joining device acks, FGTW drops the slot so the wrap doesn't linger.
+        ack_fleet_key(&handle_proof).expect("ack");
+        assert!(fetch_fleet_key(&handle_proof).unwrap().is_none());
     }
 
     #[test]
