@@ -416,6 +416,8 @@ pub struct PhotonApp {
     add_join_status: String,
     /// Join flow: progress from the off-thread post-request + membership poll.
     add_join_rx: Option<std::sync::mpsc::Receiver<JoinUpdate>>,
+    /// Fleet key received during a JOIN, held until attest sets the vault up so it can be persisted (the new device has no storage during the join thread).
+    pending_fleet_key: Option<[u8; 32]>,
     /// This device's avatar in BT.2020 γ=2.0 u8 RGB, sized `crate::avatar::AVATAR_SIZE × AVATAR_SIZE × 3`. `None` until `on_query_result` pulls one from local storage (no saved avatar = stays `None`, Ready screen falls back to the grey placeholder).
     device_avatar_pixels: Option<Vec<u8>>,
     /// Cached Mitchell resize of `device_avatar_pixels` at the current Ready-screen circle diameter. Rebuilt on diameter change (resize / zoom).
@@ -531,6 +533,7 @@ impl PhotonApp {
             add_join_handle: None,
             add_join_status: String::new(),
             add_join_rx: None,
+            pending_fleet_key: None,
             device_avatar_pixels: None,
             device_avatar_scaled: None,
             device_avatar_scaled_diameter: 0,
@@ -651,8 +654,8 @@ enum AddDeviceUpdate {
 
 /// Off-thread results for the new-device JOIN flow (post pairing request + poll membership), drained in `tick`.
 enum JoinUpdate {
-    /// This device is now in the fleet — hand off to the normal attest.
-    Joined,
+    /// This device is now in the fleet — hand off to the normal attest. Carries the sealed-then-opened fleet key if the existing device delivered it in time (None = joined but no shared key yet; a later re-pair or fleet-state pull recovers it).
+    Joined(Option<[u8; 32]>),
     /// An error to surface in the status line.
     Failed(String),
 }
@@ -1764,11 +1767,12 @@ impl FluorApp for PhotonApp {
             .unwrap_or_default();
         for update in join_updates {
             match update {
-                JoinUpdate::Joined => {
-                    // We're in the fleet now — drop add-mode and run the normal attest (it now passes the fleet gate).
+                JoinUpdate::Joined(fleet_key) => {
+                    // We're in the fleet now — drop add-mode and run the normal attest (it now passes the fleet gate). Stash any received fleet key to persist once attest sets the vault up.
                     self.add_join_rx = None;
                     self.launch_add_mode = false;
                     self.add_join_status.clear();
+                    self.pending_fleet_key = fleet_key;
                     if let Some(handle) = self.add_join_handle.take() {
                         if let Some(tb) = self.textbox.as_mut() {
                             tb.clear();
@@ -3235,8 +3239,24 @@ impl PhotonApp {
                         self.add_device_tx.clone(),
                     ) {
                         let new_pubkey = pending.new_pubkey;
+                        // Hand-off inputs, read on the UI thread (vault access): our shared fleet key + the pairing secret it's sealed under.
+                        let fleet_key = self.fleet_key_load_or_mint();
+                        let secret = self.add_device_secret;
                         std::thread::spawn(move || {
                             let r = fleet::bind_device(&kp, &hp, new_pubkey);
+                            if r.is_ok() {
+                                // Seal the fleet key under the pairing secret and drop it in the hand-off inbox for the new device to fetch. Best-effort: a join still succeeds without it (the new device just lacks shared state until a re-pair).
+                                if let (Some(k), Some(s)) = (fleet_key, secret) {
+                                    match fleet::wrap_fleet_key(&s, &k) {
+                                        Ok(sealed) => {
+                                            if let Err(e) = fleet::post_fleet_key(&hp, &sealed) {
+                                                crate::log(&format!("FLEET: post fleet key failed: {e}"));
+                                            }
+                                        }
+                                        Err(e) => crate::log(&format!("FLEET: wrap fleet key failed: {e}")),
+                                    }
+                                }
+                            }
                             let _ = tx.send(match r {
                                 Ok(()) => AddDeviceUpdate::Bound,
                                 Err(e) => AddDeviceUpdate::Failed(e),
@@ -3266,6 +3286,34 @@ impl PhotonApp {
                 true
             }
             _ => false,
+        }
+    }
+
+    /// Load this fleet's shared key from the vault, or mint + persist a fresh one. The mint path is the genesis founder handing its key to the first device it adds; every later device RECEIVES this key (over pairing) rather than minting, so the whole fleet converges on one key. Returns None only if there's no vault/session yet.
+    fn fleet_key_load_or_mint(&self) -> Option<[u8; 32]> {
+        use crate::network::fgtw::fleet;
+        let storage = self.storage.as_ref()?;
+        let session = self.session.as_ref()?;
+        let addr = crate::storage::vault_key("fleet_key", &session.vault_seed);
+        if let Ok(Some(bytes)) = storage.read_addr(&addr) {
+            if let Ok(k) = <[u8; 32]>::try_from(bytes.as_slice()) {
+                return Some(k);
+            }
+        }
+        let k = fleet::new_fleet_key();
+        if let Err(e) = storage.write_addr(&addr, &k) {
+            crate::log(&format!("FLEET: fleet key mint-persist failed: {e}"));
+        }
+        Some(k)
+    }
+
+    /// Persist a fleet key received over pairing (new device), overwriting any local placeholder so this device converges on the founder's key.
+    fn fleet_key_store(&self, key: &[u8; 32]) {
+        if let (Some(storage), Some(session)) = (self.storage.as_ref(), self.session.as_ref()) {
+            let addr = crate::storage::vault_key("fleet_key", &session.vault_seed);
+            if let Err(e) = storage.write_addr(&addr, key) {
+                crate::log(&format!("FLEET: fleet key store failed: {e}"));
+            }
         }
     }
 
@@ -3338,7 +3386,18 @@ impl PhotonApp {
                         // up to ~2 min of polling
                         match fleet::current_members(&hp) {
                             Ok(m) if m.contains(&me) => {
-                                let _ = tx.send(JoinUpdate::Joined);
+                                // In the fleet. Grab the sealed fleet key the existing device posted right after bind — retry a few times for the bind→post race; open it with the secret we already hold.
+                                let mut fleet_key = None;
+                                for _ in 0..10 {
+                                    if let Ok(Some(sealed)) = fleet::fetch_fleet_key(&hp) {
+                                        if let Ok(k) = fleet::unwrap_fleet_key(&secret, &sealed) {
+                                            fleet_key = Some(k);
+                                            break;
+                                        }
+                                    }
+                                    std::thread::sleep(crate::jitter_dur(std::time::Duration::from_secs(2)));
+                                }
+                                let _ = tx.send(JoinUpdate::Joined(fleet_key));
                                 return;
                             }
                             Ok(_) => {
@@ -3603,6 +3662,11 @@ impl PhotonApp {
                             }
                         }
                     }
+                }
+                // If we just joined a fleet, the vault is now open — persist the fleet key we received during pairing so this device shares the fleet's private state.
+                if let Some(k) = self.pending_fleet_key.take() {
+                    self.fleet_key_store(&k);
+                    crate::log("FLEET: stored fleet key received during pairing");
                 }
                 // Merge incoming contacts with any already loaded locally — union by handle_proof so contacts added on another device (via FGTW/cloud) appear without losing locally-added ones.
                 let mut added = 0usize;
