@@ -1754,6 +1754,8 @@ impl FluorApp for PhotonApp {
                     self.add_device_secret = None;
                     self.add_device_rx = None;
                     self.add_device_tx = None;
+                    // The add rotated the fleet key — pull the new epoch into our cache now; the next presence/attest cycle re-seals the roster under it (pushing here would race the async cache update and seal under the stale key).
+                    self.spawn_fleet_key_sync();
                 }
                 AddDeviceUpdate::Failed(e) => {
                     self.add_device_status = format!("Error: {e}");
@@ -3255,22 +3257,17 @@ impl PhotonApp {
                         self.add_device_tx.clone(),
                     ) {
                         let new_pubkey = pending.new_pubkey;
-                        // Hand-off inputs, read on the UI thread (vault access): our shared fleet key + the pairing secret it's sealed under.
-                        let fleet_key = self.fleet_key_load_or_mint();
-                        let secret = self.add_device_secret;
                         std::thread::spawn(move || {
                             let r = fleet::bind_device(&kp, &hp, new_pubkey);
                             if r.is_ok() {
-                                // Seal the fleet key under the pairing secret and drop it in the hand-off inbox for the new device to fetch. Best-effort: a join still succeeds without it (the new device just lacks shared state until a re-pair).
-                                if let (Some(k), Some(s)) = (fleet_key, secret) {
-                                    match fleet::wrap_fleet_key(&s, &k) {
-                                        Ok(sealed) => {
-                                            if let Err(e) = fleet::post_fleet_key(&hp, &sealed) {
-                                                crate::log(&format!("FLEET: post fleet key failed: {e}"));
-                                            }
+                                // Re-key the fleet so the newly-added device — and every current member — can recover the fleet key from the fan-out with its own ihi (no pairing-secret hand-off). Best-effort: a failed rotation just means the new device re-syncs on its next attest. This is what makes the new device a full fleet member; removal will rotate the same way to lock a device out.
+                                match fleet::current_members(&hp) {
+                                    Ok(members) => {
+                                        if let Err(e) = fleet::rotate_fleet_key(&hp, &kp, &members) {
+                                            crate::log(&format!("FLEET: rotate on add failed: {e}"));
                                         }
-                                        Err(e) => crate::log(&format!("FLEET: wrap fleet key failed: {e}")),
                                     }
+                                    Err(e) => crate::log(&format!("FLEET: members-on-add failed: {e}")),
                                 }
                             }
                             let _ = tx.send(match r {
@@ -3305,9 +3302,8 @@ impl PhotonApp {
         }
     }
 
-    /// Load this fleet's shared key from the vault, or mint + persist a fresh one. The mint path is the genesis founder handing its key to the first device it adds; every later device RECEIVES this key (over pairing) rather than minting, so the whole fleet converges on one key. Returns None only if there's no vault/session yet.
-    fn fleet_key_load_or_mint(&self) -> Option<[u8; 32]> {
-        use crate::network::fgtw::fleet;
+    /// The fleet key from the local vault cache (fast, no network, no mint). `None` until a fan-out recover/establish has populated it (`spawn_fleet_key_sync`). Callers that seal/open fleet state read this; the background sync keeps it fresh so a rotation propagates.
+    fn fleet_key_cached(&self) -> Option<[u8; 32]> {
         let storage = self.storage.as_ref()?;
         let session = self.session.as_ref()?;
         let addr = crate::storage::vault_key("fleet_key", &session.vault_seed);
@@ -3316,11 +3312,34 @@ impl PhotonApp {
                 return Some(k);
             }
         }
-        let k = fleet::new_fleet_key();
-        if let Err(e) = storage.write_addr(&addr, &k) {
-            crate::log(&format!("FLEET: fleet key mint-persist failed: {e}"));
-        }
-        Some(k)
+        None
+    }
+
+    /// Recover the current fleet key from the fan-out (or establish it at genesis), off-thread, and cache it in the vault. This is how a device gets the fleet key now — sealed to its own device key, recoverable with just its `ihi` — superseding the pairing-secret hand-off. Triggered on attest and after a membership change, so a rotation propagates to every device.
+    fn spawn_fleet_key_sync(&self) {
+        use crate::network::fgtw::fleet;
+        let (Some(hp), Some(device_key), Some(storage), Some(session)) = (
+            self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()),
+            self.device_keypair.clone(),
+            self.storage.as_ref().cloned(),
+            self.session.as_ref(),
+        ) else {
+            return;
+        };
+        let addr = crate::storage::vault_key("fleet_key", &session.vault_seed);
+        std::thread::spawn(
+            move || match fleet::recover_or_establish_fleet_key(&hp, &device_key) {
+                Ok(Some(k)) => {
+                    if let Err(e) = storage.write_addr(&addr, &k) {
+                        crate::log(&format!("FLEET: fleet key cache failed: {e}"));
+                    } else {
+                        crate::log("FLEET: fleet key synced from fan-out");
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => crate::log(&format!("FLEET: fleet key sync failed: {e}")),
+            },
+        );
     }
 
     /// Persist a fleet key received over pairing (new device), overwriting any local placeholder so this device converges on the founder's key.
@@ -3403,7 +3422,7 @@ impl PhotonApp {
         }
         let (Some(hp), Some(fleet_key)) = (
             self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()),
-            self.fleet_key_load_or_mint(),
+            self.fleet_key_cached(),
         ) else {
             return;
         };
@@ -3432,7 +3451,7 @@ impl PhotonApp {
         let (Some(hp), Some(kp), Some(fleet_key)) = (
             self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()),
             self.device_keypair.clone(),
-            self.fleet_key_load_or_mint(),
+            self.fleet_key_cached(),
         ) else {
             return;
         };
@@ -3512,16 +3531,12 @@ impl PhotonApp {
                         // up to ~2 min of polling
                         match fleet::current_members(&hp) {
                             Ok(m) if m.contains(&me) => {
-                                // In the fleet. Grab the sealed fleet key the existing device posted right after bind — retry a few times for the bind→post race; open it with the secret we already hold.
+                                // In the fleet. Recover the shared fleet key from the fan-out with our OWN device key — the existing device re-keyed to include us on bind, so our wrap is now in the slot. Retry a few times for the bind→rotate race. (No pairing-secret hand-off: the key is sealed to our device key, not to the typed words.)
                                 let mut fleet_key = None;
                                 for _ in 0..10 {
-                                    if let Ok(Some(sealed)) = fleet::fetch_fleet_key(&hp) {
-                                        if let Ok(k) = fleet::unwrap_fleet_key(&secret, &sealed) {
-                                            // Got it — tell FGTW to drop the hand-off slot so the sealed key doesn't linger.
-                                            let _ = fleet::ack_fleet_key(&hp);
-                                            fleet_key = Some(k);
-                                            break;
-                                        }
+                                    if let Ok(Some(k)) = fleet::recover_fleet_key(&hp, &device_key) {
+                                        fleet_key = Some(k);
+                                        break;
                                     }
                                     std::thread::sleep(crate::jitter_dur(std::time::Duration::from_secs(2)));
                                 }
@@ -3791,11 +3806,13 @@ impl PhotonApp {
                         }
                     }
                 }
-                // If we just joined a fleet, the vault is now open — persist the fleet key we received during pairing so this device shares the fleet's private state.
+                // If we just joined a fleet, the vault is now open — persist the fleet key we recovered from the fan-out during pairing so this device shares the fleet's private state.
                 if let Some(k) = self.pending_fleet_key.take() {
                     self.fleet_key_store(&k);
-                    crate::log("FLEET: stored fleet key received during pairing");
+                    crate::log("FLEET: stored fleet key recovered during pairing");
                 }
+                // Establish (genesis founder) or refresh (existing device, picks up a rotation) the fleet key from the fan-out and cache it, so the roster/state seal uses the current key.
+                self.spawn_fleet_key_sync();
                 // Sync the fleet's shared contact roster: pull every attest/refresh (picks up contacts added on sibling devices), and on the INITIAL attest also push our existing set so a fleet formed before roster-sync existed seeds FGTW for newly-joined devices. Pulled contacts merge in as Pending stubs and re-CLUTCH on this device's own key (drained in tick).
                 self.spawn_roster_pull();
                 if !in_app {
