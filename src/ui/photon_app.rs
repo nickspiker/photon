@@ -418,6 +418,8 @@ pub struct PhotonApp {
     add_join_rx: Option<std::sync::mpsc::Receiver<JoinUpdate>>,
     /// Fleet key received during a JOIN, held until attest sets the vault up so it can be persisted (the new device has no storage during the join thread).
     pending_fleet_key: Option<[u8; 32]>,
+    /// In-flight fleet-roster pull; its result (merged into contacts) is drained in `tick`. `Some` = a pull is running, which also debounces re-spawns.
+    roster_pull_rx: Option<std::sync::mpsc::Receiver<Vec<crate::network::fgtw::fleet::RosterEntry>>>,
     /// This device's avatar in BT.2020 γ=2.0 u8 RGB, sized `crate::avatar::AVATAR_SIZE × AVATAR_SIZE × 3`. `None` until `on_query_result` pulls one from local storage (no saved avatar = stays `None`, Ready screen falls back to the grey placeholder).
     device_avatar_pixels: Option<Vec<u8>>,
     /// Cached Mitchell resize of `device_avatar_pixels` at the current Ready-screen circle diameter. Rebuilt on diameter change (resize / zoom).
@@ -534,6 +536,7 @@ impl PhotonApp {
             add_join_status: String::new(),
             add_join_rx: None,
             pending_fleet_key: None,
+            roster_pull_rx: None,
             device_avatar_pixels: None,
             device_avatar_scaled: None,
             device_avatar_scaled_diameter: 0,
@@ -1787,6 +1790,19 @@ impl FluorApp for PhotonApp {
                 }
             }
             needs_redraw = true;
+        }
+
+        // Fleet roster pull result: merge into the contact list (re-CLUTCH happens via the serialized keygen kick inside merge_roster_entries).
+        match self.roster_pull_rx.as_ref().map(|rx| rx.try_recv()) {
+            Some(Ok(entries)) => {
+                self.roster_pull_rx = None;
+                self.merge_roster_entries(entries);
+                needs_redraw = true;
+            }
+            Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
+                self.roster_pull_rx = None; // thread died without sending; drop the dead channel
+            }
+            _ => {} // still pending, or no pull in flight
         }
 
         if needs_redraw {
@@ -3317,6 +3333,116 @@ impl PhotonApp {
         }
     }
 
+    /// Build the fleet roster from the live contact list — the syncable subset, minus self-contacts (notes-to-self are device-local, not a friend to share). v0 uses `added` as the update clock and emits no tombstones (removal-propagation is a follow-up).
+    fn current_roster(&self) -> Vec<crate::network::fgtw::fleet::RosterEntry> {
+        use crate::network::fgtw::fleet::RosterEntry;
+        let our_seed = self.session.as_ref().map(|s| s.identity_seed);
+        self.contacts
+            .iter()
+            .filter(|c| our_seed != Some(c.handle_hash))
+            .map(|c| RosterEntry {
+                handle_proof: c.handle_proof,
+                handle_hash: c.handle_hash,
+                public_identity: *c.public_identity.as_bytes(),
+                handle: c.handle.as_str().to_string(),
+                added: c.added,
+                updated: c.added,
+                tombstone: false,
+            })
+            .collect()
+    }
+
+    /// Merge pulled roster entries into the live contact list — same path as a cloud-merge: add the ones we don't have as Pending stubs, register their pubkeys, then kick ONE serialized keygen (the tick loop re-CLUTCHes the rest one McEliece at a time so a multi-contact join doesn't starve the UI). v0 ignores tombstones (removal-propagation deferred).
+    fn merge_roster_entries(&mut self, entries: Vec<crate::network::fgtw::fleet::RosterEntry>) {
+        let mut added = 0usize;
+        for e in entries {
+            if e.tombstone {
+                continue;
+            }
+            if self.contacts.iter().any(|c| c.handle_proof == e.handle_proof) {
+                continue;
+            }
+            let handle_text = crate::types::HandleText::new(&e.handle);
+            let device_pubkey = crate::types::DevicePubkey::from_bytes(e.public_identity);
+            let contact = crate::types::Contact::new(handle_text, e.handle_proof, device_pubkey);
+            self.contacts.push(contact);
+            added += 1;
+        }
+        if added == 0 {
+            return;
+        }
+        crate::log(&format!(
+            "FLEET: merged {added} contact(s) from fleet roster (total: {})",
+            self.contacts.len()
+        ));
+        if let Ok(mut pks) = self.contact_pubkeys.lock() {
+            for c in &self.contacts {
+                if !pks.contains(&c.public_identity) {
+                    pks.push(c.public_identity.clone());
+                }
+            }
+        }
+        // Force any merged self-contact Complete so it's skipped by the keygen filter, then persist the newly-added tail (post-settle so a self→Complete flip is saved).
+        self.settle_self_contacts();
+        let start = self.contacts.len() - added;
+        if let Some(storage) = self.storage.as_ref().cloned() {
+            for c in &self.contacts[start..] {
+                if let Err(e) = crate::storage::contacts::save_contact(c, &storage) {
+                    crate::log(&format!("FLEET: save merged contact failed: {e}"));
+                }
+            }
+        }
+        self.spawn_next_pending_keygen();
+    }
+
+    /// Spawn a background pull of the fleet roster (debounced: one in flight at a time). The result is drained in `tick` and merged. No-op without a handle_proof + fleet key.
+    fn spawn_roster_pull(&mut self) {
+        use crate::network::fgtw::fleet;
+        if self.roster_pull_rx.is_some() {
+            return;
+        }
+        let (Some(hp), Some(fleet_key)) = (
+            self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()),
+            self.fleet_key_load_or_mint(),
+        ) else {
+            return;
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.roster_pull_rx = Some(rx);
+        std::thread::spawn(move || {
+            let entries = match fleet::pull_roster(&hp, &fleet_key) {
+                Ok(Some(e)) => e,
+                Ok(None) => Vec::new(),
+                Err(e) => {
+                    crate::log(&format!("FLEET: roster pull failed: {e}"));
+                    Vec::new()
+                }
+            };
+            let _ = tx.send(entries);
+        });
+    }
+
+    /// Publish this device's contact roster to the fleet slot (off-thread, best-effort). No-op if we have no contacts to share or lack the key/membership.
+    fn spawn_roster_push(&self) {
+        use crate::network::fgtw::fleet;
+        let entries = self.current_roster();
+        if entries.is_empty() {
+            return;
+        }
+        let (Some(hp), Some(kp), Some(fleet_key)) = (
+            self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()),
+            self.device_keypair.clone(),
+            self.fleet_key_load_or_mint(),
+        ) else {
+            return;
+        };
+        std::thread::spawn(move || {
+            if let Err(e) = fleet::push_roster(&hp, &kp, &fleet_key, &entries) {
+                crate::log(&format!("FLEET: roster push failed: {e}"));
+            }
+        });
+    }
+
     /// Stop the AddDevice background poller and clear its state.
     fn end_add_device_flow(&mut self) {
         if let Some(stop) = self.add_stop.take() {
@@ -3668,6 +3794,11 @@ impl PhotonApp {
                     self.fleet_key_store(&k);
                     crate::log("FLEET: stored fleet key received during pairing");
                 }
+                // Sync the fleet's shared contact roster: pull every attest/refresh (picks up contacts added on sibling devices), and on the INITIAL attest also push our existing set so a fleet formed before roster-sync existed seeds FGTW for newly-joined devices. Pulled contacts merge in as Pending stubs and re-CLUTCH on this device's own key (drained in tick).
+                self.spawn_roster_pull();
+                if !in_app {
+                    self.spawn_roster_push();
+                }
                 // Merge incoming contacts with any already loaded locally — union by handle_proof so contacts added on another device (via FGTW/cloud) appear without losing locally-added ones.
                 let mut added = 0usize;
                 let mut merged_ids: Vec<(ContactId, [u8; 32])> = Vec::new();
@@ -3847,6 +3978,8 @@ impl PhotonApp {
                 if let Some(tb) = self.contacts_textbox.as_mut() {
                     tb.clear();
                 }
+                // Propagate the new friend to the rest of the fleet's devices.
+                self.spawn_roster_push();
             }
             SearchResult::NotFound => {
                 crate::log("search-result: handle not found on FGTW");
