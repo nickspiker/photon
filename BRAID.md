@@ -29,6 +29,16 @@ Two strands crossing into each new link is a braid; one strand would be a weave;
 The name is just "the braid". The window size (currently the last 256 messages) is a tunable PARAMETER, not part of the name — don't bake a number in.
 "Confluent" describes a PROPERTY (the explicit eagle_time references make any delivery order converge to the same braid state), not part of the name.
 
+### 0.2 Two planes: the friend-facing braid and the fleet-internal DAG (v0.2)
+
+v0.1 (§1–§13) specifies the **friend-facing plane**: one linear braid strand per party, forward-secret, self-authenticating. That plane is **unchanged** in v0.2 — a friend's client runs exactly §1–§13, sees a single ordered strand, and learns nothing about how many devices you have.
+
+v0.2 adds the **fleet-internal plane** (§14): your own devices — one identity, many devices, "the fleet" — replicate the conversation *among themselves* as a multi-writer set, sealed under the fleet key, so any device holds the full history and can continue the conversation. The fleet **linearizes** that set into the single strand the friend sees.
+
+**Why two planes.** Making the friend fold a multi-writer structure would (a) destroy forward secrecy — a content-addressed key over a static root is recomputable by anyone holding that root, forever; (b) leak your device count via multi-writer merges; (c) force a bilateral wire flag-day on every friend's client. Confining the multi-writer machinery to the fleet keeps the friend on the forward-secret linear wire and puts all the complexity where the fleet key already gates it.
+
+**Statelessness — the invariant §14 is built around.** A device stores **no durable unique secret but its `ihi`** (the born-in-silicon device key; today a software stand-in, see `fingerprint.rs`). Every other piece of state — reservoir, epoch keys, message log, roster — is fleet-key-sealed and re-fetchable, so a wiped device re-derives its `ihi`, recovers the current fleet key from the always-online slot (§14.2), re-fetches the sealed log, and recomputes. The vault is a disposable cache, never the source of truth.
+
 ---
 
 ## 1. Design Philosophy
@@ -411,7 +421,7 @@ fn derive_fresh_link(
 
 **Why length prefixes?** Injective/canonical framing prevents concatenation collisions (so `"AB"+"C"` and `"A"+"BC"` can't hash identically) and lets 0/1/2 strands be unambiguous. Order is a free choice; unambiguous framing is not.
 
-**Why spaghettify?** Computationally chaotic (data-dependent ops, IEEE754 weirdness, path explosion), multi-algorithm (uses smear_hash internally), NOT memory-hard (~1.7KB state) — fast enough for per-message use. Domain-separated: `PHOTON_ADVANCE_v0` ≠ `PHOTON_ACK_v0`.
+**Why spaghettify?** Computationally chaotic (data-dependent branching over a 32-op integer ALU, path explosion), multi-algorithm (uses smear_hash internally), NOT memory-hard (~1.7KB state) — fast enough for per-message use. Domain-separated: `PHOTON_ADVANCE_v0` ≠ `PHOTON_ACK_v0`. **Pure integer math, zero floating point** — bit-identical on every architecture (ARM phone, x86 desktop, PIPE silicon), which is exactly what the braid's cross-device determinism demands. (`ihi`'s `F16E8` lane naming evokes a float's fraction/exponent but is two *integer* lanes, not IEEE — the whole reason ihi exists is that floating point is not bit-portable and would desync two peers.)
 
 > ⚠️ **Compatibility:** changing this layout — order, framing, domain, or which links are included — changes every fresh link and totally desyncs the two chains. Both peers must ship the identical derivation. The braid landing already changed it, so chains predating it are incompatible (dev: nuke + re-key; release: version bump).
 
@@ -557,6 +567,8 @@ Strict in-order with the gap buffer and replay queue (§6.3). After a successful
 
 The braid's reach-back adds bidirectional cross-entropy: an attacker who recovers partial state still cannot predict which prior peer secrets mix into the next link, because selection is CSPRNG-random over the window and named only on the (encrypted) wire.
 
+This table is the **friend-facing plane** and is unchanged in v0.2. The fleet-internal plane has its own, deliberately different FS/PCS semantics — reservoir-burn key-FS, a per-conversation content-FS dial, and a weaker (membership-rotation-bounded) post-compromise story — all stated out loud in §14.10.
+
 ### 11.1 Authentication
 
 | Property | Mechanism |
@@ -623,6 +635,153 @@ Memory-hard operations (Layers 1, 3) happen at setup; the fast path keeps tx/rx 
 - **Same-tick eagle_time collision on the wire.** Two fleet devices (same identity) emitting at the same 704ps tick would produce duplicate woven references; the receiver currently resolves to the first match. The `content_hash` is stored (§8.1) but not yet carried on the wire as a tiebreak. Adversarial/contrived only — not a routine path.
 - **Restart mid-flight with a non-empty braid.** A `PendingMessage` reloaded after restart weaves no strands (the frozen `woven_strands` are runtime-only, not persisted). Pending messages are short-lived (cleared on ACK), so this only bites if the app restarts with an unacked, non-empty-braid message in flight.
 - **Legacy weave machinery still present.** `incorporated_hp` / `last_incorporated_hp` / `update_received_for_mixing` remain as the implicit-ACK signal but are no longer the weave reference; they can be retired once the implicit-ACK role is folded elsewhere.
+- **Same-tick collision blocks fleet-plane ordering.** The `content_hash` tiebreak (stored, not yet on the wire) is *mandatory* for the fleet plane's strict total order — see §14.11 G6. The v2 gaps live in §14.11, not here.
+
+---
+
+## 14. The Fleet Plane — Multi-Writer Replication (v2)
+
+> **Status:** design, pre-implementation. Today's code has a single static fleet key (`fleet.rs`), the roster CRDT (§`fstate`), and the pairing hand-off — none of §14 is built yet. Two items below are also *live* gaps to fix, flagged inline. This section was written after three adversarial red-team passes; the fixes those passes forced are folded in, not bolted on.
+
+### 14.0 What the fleet is, and what a device keeps
+
+A **fleet** is one identity's many devices, enumerated by the signed membership chain (`fleet.rs` `MembershipBlob` — the v1 keyring). The fleet plane replicates a friend-conversation *across those devices* so any one of them holds the whole thing and can carry it.
+
+A device keeps exactly one durable secret: its **`ihi`** (device key). Everything else lives **fleet-key-sealed in an always-online network slot** (per-conversation, on FGTW) and is re-fetchable. This is the statelessness invariant (§0.2): a wiped device resurrects from `ihi` alone by recovering the fleet key (§14.2) and re-fetching.
+
+The friend-facing braid (§1–§13) is untouched. The fleet plane is a *replication + forward-secrecy* layer beneath it, plus a *linearizer* (§14.6) that emits the single strand the friend consumes.
+
+### 14.1 Message identity — self-recognition without attribution
+
+Every message carries a **tag**:
+
+```
+T = blake3(DOMAIN_MSG_TAG ‖ device_private ‖ eagle_time)
+```
+
+- **Self-recognition, stored nowhere.** A device recomputes `T` from its own `device_private` and a message's `eagle_time` and checks equality — so it recognizes *its own* messages without storing any "sent-by" column (statelessness). It also learns "not mine" for everyone else's, and *nothing more*.
+- **Unlinkable.** Any other party — sibling **or** friend — sees an opaque per-message value and cannot attribute it to a device or even count devices. Device identity and count leak to *no one*. (Caveat → §14.11 G-tag.)
+- **Nonce + uniqueness.** `T` folds into the message key seed (§14.3) as the per-message uniquifier, so two identical plaintexts can never reuse a keystream. It is unique even in the same-704ps-tick fleet case (distinct `device_private` → distinct `T`).
+
+The **node id** used for the DAG (parent refs, dedup, content-addressing) is:
+
+```
+id = blake3(DOMAIN_NODE_ID ‖ T ‖ content_hash)
+```
+
+- Content-bound (a fabricated ref whose preimage never arrives is dropped after a bounded buffer, not chased forever), device-hiding (`T` carries no recoverable pubkey), and — because fleet nodes are all *your own* devices sealed under the fleet key — **not per-device signed** (a signature would re-attribute). A misbehaving device is a *compromised* device, handled by removal + rotation (§14.2), not by per-message fingerprinting.
+
+**Total order.** Any deterministic derivation across the fleet (linearization, checkpoint sealing) orders nodes by the strict triple **`(eagle_time, content_hash, device_tag)`** — never `eagle_time` alone. This closes the §13 same-tick collision *for the fleet plane* and requires `content_hash` on the wire (v0.1 stored it but didn't carry it — §14.11 G6).
+
+### 14.2 Fleet keys — per-member re-encryption fan-out
+
+The fleet key is **not** a chain of keys each sealed under the previous — that was a skeleton key (any one historical key unrolls all future ones, so a *removed* device could read everything forever). Instead:
+
+- Each epoch mints a **fresh CSPRNG fleet key**, wrapped **separately to each current member device's public key** (X25519 derived from the same `ihi`; the pubkeys are already in the folded `MembershipBlob`). The wraps sit in the always-online slot.
+- **Recovery needs no live sibling.** A returning/wiped device unwraps *its own* copy with its `ihi` — so "always-online" finally means "always-**recoverable** for current members." This is the single fix that dissolves the stranding cases in §14.7.
+- **Removal removes.** On a device Remove, the fleet rotates (new fresh key, re-fanned-out to the *remaining* members, and the current slot content re-sealed under it). The removed device is simply not a wrap target. **⚠ Live gap:** today `unbind_device` only drops write-membership and the key never rotates — a removed device keeps reading. Fixing this *is* the fan-out (v2 build item).
+- **The pairing hand-off (`fkey`) is the *first-join* case only, and is single-use + expiring** (shipped: `fkey_ack` + 5-minute GET expiry) so the pairing-secret-wrapped key never lingers as an escrow. Steady-state key delivery is the fan-out, not the pairing wrap.
+
+This is the MLS / sender-keys shape: fan-out to current members, rotate on membership change.
+
+### 14.3 The reservoir burn — forward secrecy, by checkpoint
+
+FS comes from **burning the avalanche reservoir forward** (the 2MB pad, `clutch.rs` `avalanche_expand_eggs`), not from destroying per-message links (that's the friend-facing plane's mechanism). Rules:
+
+- **The eggs are dropped after the initial seed.** Keeping them would make the reservoir re-derivable = no FS. The reservoir (burning) is what's distributed, never the eggs.
+- **Epoch index advances per *sealed checkpoint*, never per message.** "Per message with no total order" is self-contradictory — two devices sending concurrently would fork the reservoir irrecoverably (nothing folded to reconcile from). So:
+
+  ```
+  epoch_k = KDF^k(seed)            // k = the sealed checkpoint number (§14.4), a scalar
+  ```
+
+  A returner derives `epoch_k` in one shot from `(seed, k)` — zero dependence on how many messages it replayed or in what order.
+- **The burn folds NO message content** — it's a pure reservoir ratchet, so resync needs only reservoir state, not a complete/ordered message log.
+- **Re-expansion, when the reservoir runs low, is deterministic *and* mixes the current fleet key:**
+
+  ```
+  seed_{next} = KDF(reservoir_tail_consumed ‖ DOMAIN_REEXPAND ‖ k ‖ fleet_key_epoch)
+  ```
+
+  Folding the rotating fleet key means every **membership change forces a post-compromise recovery boundary** (a leaked reservoir stops predicting future epochs once the fleet re-keys) — the G4 decision. No fresh entropy otherwise, so all devices re-expand identically (fork-free).
+- **Granularity rule for the lag.** The reservoir may lag (one KDF step per checkpoint) *because* it is coarse epoch key material — no two messages ever encrypt under raw reservoir output; each derives its own key with its per-message tag `T` (§14.1) folded in. The per-message L1 scratch (§4) may **not** lag: it *is* the per-message keystream, so reusing it across a settled position is straight keystream reuse (`C1⊕C2 = P1⊕P2`). The rule of thumb: lag the coarse secret, never lag the fine keystream.
+
+### 14.4 Checkpoints — the totally-ordered spine
+
+Messages are an unordered union set (§14.5). **Checkpoints are not** — a checkpoint advances the burn horizon and *zeroizes keys*, so it MUST be totally ordered:
+
+- A checkpoint `C_k` is a signed record over the merged prefix, carrying `k` (a monotonic sequence number *inside* the signed body — never worker-receipt time) and the merkle root of the settled nodes at/below it.
+- Committed to the slot via **compare-and-set** (R2 `onlyIf`/If-Match): exactly one `C_k` wins; a loser gets 412 and re-derives against the winner. Sealing is an **idempotent pure function of the merged prefix**, so concurrent sealers *converge* rather than race.
+- The checkpoint sequence is the one place the fleet plane keeps a signed chain; it rides the same `extends()` discipline as the membership chain.
+
+### 14.5 The message set + the fleet-sync channel
+
+- **Substrate:** a **grow-only, content-addressed, fleet-key-sealed set** of nodes, one slot per `friendship_id` on FGTW, **union-merge** (never last-writer-wins-on-blob — that would clobber a concurrent sibling append; note the roster `fstate` slot *is* LWW and is deliberately a different, single-writer-per-value thing).
+- **Lockstep = anti-entropy.** Two devices exchange a compact have-set digest (id list / bloom of the frontier), diff, fetch missing ids. Concurrency can't fork it (union). No message-level chain.
+- **Retrieval of a specific message:** check local set → gossip "who has `id`?" → a source serves it sealed under the current epoch key → verify by content-id + AEAD. Below the horizon (burned) → §14.9 recovery ladder.
+- **Nodes carry the friend-facing braid metadata** (woven strand refs, slot) so any device can reconstruct and emit the external strand (§14.6). Carrying it is not securing the channel with it — the fleet key + reservoir do that.
+- **The fleet seal has no scratch.** A fleet node is a plain AEAD under the high-entropy epoch key (reservoir + fleet key) — brute-force isn't on the table, so the memory-hard L1 scratch (§4) earns nothing here. That scratch exists on the *friend-facing* plane to harden a lower-entropy evolving chain key against offline attack; the fleet key is already strong. The only memory-hard work on the fleet plane is the per-checkpoint reservoir re-expand (§14.3) — the one operation that legitimately lags.
+
+### 14.6 The linearizer — one strand to the friend
+
+The friend must see a single v0.1 strand, so **exactly one device advances the friend-facing chain per position**, for both send and receive. Because it's one human, concurrent external emission is rare, so:
+
+- **Soft speaker-token that follows the active device.** Whichever device you're using holds the token and emits externally; it hands off on device switch. The token is a claim in the fleet log on the *next external sequence position*.
+- **Rare-case rebase.** If two devices do race the position, the fleet-internal total order (§14.1) picks the winner; the loser re-bases its external send onto the winner's new head *before* it reaches the friend. A device must not emit to the friend until it has won the position internally — otherwise the friend forks (the v0.1 desync, now on their side).
+- Receiving is the mirror: one device processes-and-advances the friend-facing chain for a given inbound message; siblings learn the advanced state via the sealed log.
+
+### 14.7 Resync — the CAN guarantee, cursors, and the return window
+
+We never confirm devices *have* synced (they may be offline); we guarantee they *can*, as a property of **data availability**, not device liveness:
+
+- **The current epoch key is always recoverable** from the always-online slot by any current member using its `ihi` alone (§14.2 fan-out). This is what makes "can resync" true without a live sibling.
+- **The prune/burn horizon advances to `min(per-member signed sync-cursor)`** — each device publishes a signed "last-synced checkpoint" cursor to the slot — **except** past a hard **wall-clock grace `W`**, after which advancing past a silent member is a deliberate, **logged, UI-surfaced** "this device will need to re-pair" decision. Never silent, never ACK-gated on an indefinitely-offline device (a lost device can't hold FS hostage).
+- **Convergence gate:** before any key-zeroize, a read-back confirms the slot actually holds every node referenced at/below `C_k` — this waits only on the always-online slot containing the bytes, not on offline ACKs.
+- **One window to rule them all.** Rotation records, epoch keys, content, and checkpoints share a single user-facing **return window `W`** (wall-clock, months — never a *count*, since churn could burn N rotations in minutes). So "can open but nothing to read" and "can read but can't open" are impossible by construction. Membership-change rotations are rate-limited/coalesced so churn can't outrun `W`.
+
+**Guarantee, stated precisely:** any current-member device offline **≤ W** resyncs deterministically from the slot. Offline **> W** → it re-pairs (a sibling), losing only unreadable pre-horizon history — never live participation.
+
+### 14.8 Crypto-shredding — why "delete the slot" is not destruction
+
+R2 delete/overwrite is best-effort; a provider can retain overwritten bytes, and an attacker can cheaply record the (unauthenticated-GET) ciphertext. So **below-horizon FS never rests on the object being gone.** Instead:
+
+- Slot content is encrypted under **per-checkpoint content keys that live only on-device** and are **zeroized on-device** at the horizon. The standing fleet key alone must *not* open pre-horizon content.
+- The R2 delete is defence-in-depth. Document (and mean) that FS = on-device key destruction, full stop.
+
+### 14.9 The recovery ladder
+
+1. **Within `W`, some devices alive** → anti-entropy from a sibling or the slot.
+2. **Returner past its cursor but ≤ `W`** → recover current epoch key from the fan-out slot with `ihi`; catch up.
+3. **Returner > `W`** → re-pair (needs one live sibling); lose pre-horizon history only.
+4. **Whole fleet lost** → mint fresh eggs, re-CLUTCH friends, friends re-serve *their* retained history. The synced contact list says whom to ask. Re-CLUTCH (needs the friend online) is the whole-fleet-loss backstop **only**, never a single-returning-device path.
+
+### 14.10 Security semantics, stated out loud
+
+- **Key-FS (friend-facing):** unchanged from v0.1 — links are destroyed on advance.
+- **Key-FS (fleet-internal):** the reservoir burns forward and per-checkpoint content keys are crypto-shredded → past epochs unrecoverable after the horizon, even by a fleet-key holder.
+- **Content-FS:** a **per-conversation dial** — keep-forever (max history sync, no content-FS) vs a retention horizon (content-FS past it; a new device backfills only *to* the horizon). Because history sync retains plaintext *by design*, "FS against a compromised device" is retention-bounded — same as every synced messenger. Key-FS and content-FS are a single dial over the {key + content} pair; a retained node whose key is gone is a *bug to surface*, never silently shown as unopenable history.
+- **Post-compromise security (fleet-internal):** weaker than the friend-facing braid — a reservoir leaked while a device is online predicts future epochs *until the next membership rotation re-keys the re-expand* (§14.3). That rotation is the PCS boundary; a long-lived fleet with no membership change has a correspondingly long PCS exposure. Stated, not hidden.
+- **Operator visibility:** FGTW sees ciphertext + the coarse retention schedule (which epochs still exist). Acceptable *because* crypto-shredding makes "the slot still holds epoch e" convey no decryptability.
+
+### 14.11 Known gaps (v2)
+
+- **G-tag — post-compromise deanonymization.** `T = blake3(device_private ‖ eagle_time)` is unlinkable until `device_private` leaks, after which an attacker recomputes past `T`s and re-attributes messages to that device. Acceptable (device-secret compromise breaks more), stated.
+- **G1 — no fleet-only backstop.** Below-horizon *friend-facing* content is friend-recoverable; fleet-internal-only state (own notes, prefs, or a conversation the friend also pruned) has no backstop past `W`.
+- **G2 — bounded, not unconditional.** The slot is FS-preserving durability with an explicit window, not infinite availability. Long-return stranding is first-class: a device detects it is below-horizon and *triggers re-pair*, never silently missing history.
+- **G4 — decided:** the rotating fleet key is folded into re-expand (§14.3) so membership change is a PCS boundary. Chosen over silently accepting the downgrade.
+- **G5 — trailing-K exposure.** The since-checkpoint tail (≤ one checkpoint of messages) is decryptable-if-key-obtained by construction; keep the checkpoint cadence tight; resync is fetch-then-shred.
+- **G6 — same-tick on the wire.** The strict total order `(eagle_time, content_hash, device_tag)` requires `content_hash` carried on the wire (§13 stored it but didn't carry it). Mandatory for the fleet plane; the friend-facing sort may stay `eagle_time`-only.
+
+### 14.12 Implementation status
+
+Live today: single static fleet key, roster CRDT, pairing hand-off (now single-use + expiring). Everything else in §14 is unbuilt. Ordered build:
+
+1. **Removal rotates** (§14.2 fan-out) — closes the live "removed device still reads" gap; foundation for everything.
+2. Per-member fan-out key slot + `ihi`-recovery.
+3. Union-merge per-conversation sync channel (§14.5) with anti-entropy.
+4. Checkpoint spine (§14.4, CAS) + the reservoir burn (§14.3).
+5. Cursor-based horizon + crypto-shred (§14.7–14.8).
+6. The linearizer (§14.6) — last, since it assumes the log exists.
 
 ---
 
@@ -647,7 +806,14 @@ const DOMAIN_ADVANCE:   &[u8] = b"PHOTON_ADVANCE_v0";   // chain advancement (sp
 const DOMAIN_ACK:       &[u8] = b"PHOTON_ACK_v0";       // ACK proof (fast smear)
 const DOMAIN_SALT:      &[u8] = b"PHOTON_SALT_v0";      // salt derivation
 const DOMAIN_FIRST_MSG: &[u8] = b"PHOTON_FIRST_MSG_v0"; // first-message anchor
+
+// Domain separation — v2 fleet plane (§14)
+const DOMAIN_MSG_TAG:  &[u8] = b"PHOTON_MSG_TAG_v2";  // self-recognition tag  T  = blake3(· ‖ device_private ‖ eagle_time)
+const DOMAIN_NODE_ID:  &[u8] = b"PHOTON_NODE_ID_v2";  // content-addressed id  id = blake3(· ‖ T ‖ content_hash)
+const DOMAIN_REEXPAND: &[u8] = b"PHOTON_REEXPAND_v2"; // reservoir re-expansion (folds fleet_key_epoch → PCS boundary)
 ```
+
+**v2 parameters (tunable, unset pending real numbers):** the return window `W` (wall-clock, target months — §14.7), the checkpoint cadence (messages per `C_k`, bounds the trailing-K exposure G5 — §14.4/§14.11), and `T_grace` for a silent member before the horizon steps past it (§14.7). Sized against real bandwidth-delay and usage once the plane is built; deliberately not baked in here.
 
 ## Appendix B: VSF Type Reference (Photon extensions)
 
