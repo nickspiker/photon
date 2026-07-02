@@ -2121,10 +2121,11 @@ impl FluorApp for PhotonApp {
                     };
                     let colour = if self.add_join_ready { SEARCH_FOUND_COLOUR } else { STATUS_TEXT_COLOUR };
                     let cx = buf_w as f32 * 0.5;
-                    let line_h = (buf_h as f32 * 0.035).max(14.0);
+                    // Size + anchor from the attest-block layout so the words scale with ru/zoom like every other widget and sit BELOW the status slot instead of floating into the wordmark. Width-capped so 4-word lines fit a narrow window.
+                    let tb_h = (attest.textbox.y1 - attest.textbox.y0) as f32;
+                    let line_h = (tb_h * 0.45).min(buf_w as f32 / 18.0).max(10.0);
                     let lines: Vec<String> = tokens.chunks(4).map(|c| c.join(" ")).collect();
-                    let total_h = lines.len() as f32 * line_h * 1.35;
-                    let mut y = buf_h as f32 * 0.5 - total_h * 0.5;
+                    let mut y = attest.error.y1 as f32 + line_h * 1.2;
                     for line in &lines {
                         ctx.text.draw_text_center_u32(
                             &mut canvas, line, cx, y, line_h, 600, colour, "Oxanium", None, None, None,
@@ -2973,16 +2974,22 @@ impl FluorApp for PhotonApp {
         if matches!(self.state, AppState::AddDevice) {
             let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
             let cx = buf_w as f32 * 0.5;
-            let unit = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru).unit_height;
+            // All geometry hangs off the textbox rect (laid out by update_widget_layout from the ru-scaled attest slot), so the whole screen scales with zoom and nothing collides with the pill.
+            let (tb_cy, tb_h) = self
+                .textbox
+                .as_ref()
+                .map(|tb| (tb.center_y, tb.font_size / 0.75))
+                .unwrap_or((buf_h as f32 * 0.45, 40.0));
+            let step = tb_h * 1.1;
             ctx.text.draw_text_center_u32(
-                &mut canvas, "Add a device", cx, buf_h as f32 * 0.22,
-                unit * 1.2, 600, STATUS_TEXT_COLOUR, "Oxanium", None, None, None,
+                &mut canvas, "Add a device", cx, tb_cy - step * 2.4,
+                tb_h * 0.9, 600, STATUS_TEXT_COLOUR, "Oxanium", None, None, None,
             );
             ctx.text.draw_text_center_u32(
-                &mut canvas, "Type the words shown on the new device", cx, buf_h as f32 * 0.30,
-                unit * 0.6, 400, STATUS_TEXT_COLOUR, "Oxanium", None, None, None,
+                &mut canvas, "Type the words shown on the new device", cx, tb_cy - step * 1.3,
+                tb_h * 0.45, 400, STATUS_TEXT_COLOUR, "Oxanium", None, None, None,
             );
-            // Words-entry field: the launch textbox instance does double duty (same rect as the attest slot, already laid out by update_widget_layout); it stamps its hit id so click-to-focus works.
+            // Words-entry field: the launch textbox instance does double duty (same rect as the attest slot); it stamps its hit id so click-to-focus works.
             if let Some(tb) = self.textbox.as_mut() {
                 let id = tb.hit_id();
                 tb.render_content_into(
@@ -3003,8 +3010,8 @@ impl FluorApp for PhotonApp {
             let counter = format!("{count} / {}", crate::network::fgtw::fleet::PAIR_WORD_COUNT);
             let counter_colour = if full { SEARCH_FOUND_COLOUR } else { fluor::theme::HINT_COLOUR };
             ctx.text.draw_text_center_u32(
-                &mut canvas, &counter, cx, buf_h as f32 * 0.60,
-                unit * 0.6, 500, counter_colour, "Oxanium", None, None, None,
+                &mut canvas, &counter, cx, tb_cy + step * 1.2,
+                tb_h * 0.5, 500, counter_colour, "Oxanium", None, None, None,
             );
             if !self.add_device_status.is_empty() {
                 let status_colour = if self.add_device_match.is_some() || self.add_device_status.starts_with("Device added") {
@@ -3013,8 +3020,8 @@ impl FluorApp for PhotonApp {
                     STATUS_TEXT_COLOUR
                 };
                 ctx.text.draw_text_center_u32(
-                    &mut canvas, &self.add_device_status, cx, buf_h as f32 * 0.68,
-                    unit * 0.6, 400, status_colour, "Oxanium", None, None, None,
+                    &mut canvas, &self.add_device_status, cx, tb_cy + step * 2.2,
+                    tb_h * 0.5, 400, status_colour, "Oxanium", None, None, None,
                 );
             }
             let hint = if self.add_device_match.is_some() {
@@ -3023,8 +3030,8 @@ impl FluorApp for PhotonApp {
                 "tap the orb again to cancel"
             };
             ctx.text.draw_text_center_u32(
-                &mut canvas, hint, cx, buf_h as f32 * 0.78,
-                unit * 0.5, 400, STATUS_TEXT_COLOUR, "Oxanium", None, None, None,
+                &mut canvas, hint, cx, tb_cy + step * 3.2,
+                tb_h * 0.4, 400, STATUS_TEXT_COLOUR, "Oxanium", None, None, None,
             );
         }
 
