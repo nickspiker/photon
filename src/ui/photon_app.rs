@@ -396,25 +396,31 @@ pub struct PhotonApp {
     pending_keyboard_request: Option<bool>,
     /// One-shot: set true when the compose box is cleared on send, so the Android host restarts IME input and a predictive keyboard doesn't re-materialise the just-sent text. Drained by `wants_input_reset`.
     pending_input_reset: bool,
-    /// AddDevice flow: the pairing secret this (existing) device minted for the new device, shown as words for the user to type in. `None` outside the flow.
-    add_device_secret: Option<[u8; crate::network::fgtw::fleet::PAIRING_SECRET_LEN]>,
-    /// AddDevice flow: status line under the secret words.
+    /// AddDevice flow (EXISTING device): status line on the words-entry screen.
     add_device_status: String,
-    /// AddDevice flow: a validated pairing request awaiting the user's confirm (new pubkey + fingerprint). `Some` once the new device's request lands and its secret-MAC checks out.
-    add_device_pending: Option<crate::network::fgtw::fleet::PendingPairing>,
-    /// AddDevice flow: results from the off-thread inbox poll / bind (the fleet client blocks on HTTP, so it can't run on the UI thread). Dropping the rx stops the poll thread.
+    /// AddDevice flow: the pairing request the typed words matched, awaiting the bind tap. `Some` = the Bind affordance is live.
+    add_device_match: Option<crate::network::fgtw::fleet::PairRequest>,
+    /// AddDevice flow: the last full word entry we checked against the network, so an unchanged entry isn't re-fetched every tick.
+    add_device_last_checked: String,
+    /// AddDevice flow: a check or bind is in flight (debounces spawns; cleared when its result drains).
+    add_device_checking: bool,
+    /// AddDevice flow: results from the off-thread match-check / bind (the fleet client blocks on HTTP, so it can't run on the UI thread).
     add_device_rx: Option<std::sync::mpsc::Receiver<AddDeviceUpdate>>,
-    /// AddDevice flow: a clone-able sender so the one-shot bind thread can report back on the same channel as the poller.
+    /// AddDevice flow: a clone-able sender so the check and bind threads report on the same channel.
     add_device_tx: Option<std::sync::mpsc::Sender<AddDeviceUpdate>>,
-    /// Shared stop flag for the AddDevice/Join background pollers — set true when we leave the flow so the thread exits its loop (a poll that never returns Pending would otherwise never notice the dropped receiver).
+    /// Stop flag for the NEW device's join thread — set true when the user cancels join mode so the thread quits re-posting its request (a zombie re-poster would race a later attempt for the inbox slot).
     add_stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
-    /// Launch add-mode (new device JOINING a fleet): orb on Launch toggles it. Enter handle, then the pairing words, and this device posts a pairing request + polls membership until its other device confirms.
+    /// Launch add-mode (NEW device joining a fleet): orb on Launch toggles it, and a failed attest against an existing fleet auto-enters it. Enter the handle; this device then generates + displays its pairing words and waits for the other device to match and bind.
     launch_add_mode: bool,
-    /// Join flow: the handle once entered (step 1); `None` while still awaiting it.
+    /// Join flow: the handle once entered; `None` while still awaiting it.
     add_join_handle: Option<String>,
     /// Join flow: status line on the add-mode launch screen.
     add_join_status: String,
-    /// Join flow: progress from the off-thread post-request + membership poll.
+    /// Join flow: the fixed-width pairing words this device generated and displays for the user to type on an existing device. `Some` = the words screen is up.
+    add_join_words: Option<String>,
+    /// Join flow: flips true when an existing device posts the signed matched flag — the words display changes colour so the device in your hand visibly says "ready to be bound".
+    add_join_ready: bool,
+    /// Join flow: progress from the off-thread request-post + matched/membership poll.
     add_join_rx: Option<std::sync::mpsc::Receiver<JoinUpdate>>,
     /// Fleet key received during a JOIN, held until attest sets the vault up so it can be persisted (the new device has no storage during the join thread).
     pending_fleet_key: Option<[u8; 32]>,
@@ -525,15 +531,18 @@ impl PhotonApp {
             device_keypair: None,
             pending_keyboard_request: None,
             pending_input_reset: false,
-            add_device_secret: None,
             add_device_status: String::new(),
-            add_device_pending: None,
+            add_device_match: None,
+            add_device_last_checked: String::new(),
+            add_device_checking: false,
             add_device_rx: None,
             add_device_tx: None,
             add_stop: None,
             launch_add_mode: false,
             add_join_handle: None,
             add_join_status: String::new(),
+            add_join_words: None,
+            add_join_ready: false,
             add_join_rx: None,
             pending_fleet_key: None,
             roster_pull_rx: None,
@@ -645,19 +654,25 @@ fn orb_tint_for(online: bool) -> fluor::host::chrome::OrbTint {
     }
 }
 
-/// Off-thread results for the AddDevice flow (inbox poll + bind), drained in `tick`.
+/// Off-thread results for the AddDevice flow (typed-words match check + bind), drained in `tick`.
 enum AddDeviceUpdate {
-    /// A pairing request arrived and its secret-MAC checked out — show the fingerprint and await confirm.
-    Pending(crate::network::fgtw::fleet::PendingPairing),
-    /// The bind published — the new device is now a fleet member.
+    /// The typed words matched the posted request and its ownership signature verified — the Bind affordance goes live.
+    Match(crate::network::fgtw::fleet::PairRequest),
+    /// The entry was complete but didn't match (typo, no request, or a stale one) — surface why.
+    NoMatch(String),
+    /// The bind + rotation published — the new device is now a fleet member with the fresh epoch key.
     Bound,
     /// An error to surface in the status line.
     Failed(String),
 }
 
-/// Off-thread results for the new-device JOIN flow (post pairing request + poll membership), drained in `tick`.
+/// Off-thread results for the new-device JOIN flow (request post + matched/membership poll), drained in `tick`.
 enum JoinUpdate {
-    /// This device is now in the fleet — hand off to the normal attest. Carries the sealed-then-opened fleet key if the existing device delivered it in time (None = joined but no shared key yet; a later re-pair or fleet-state pull recovers it).
+    /// The pairing words this device generated — display them for the user to type on an existing device.
+    ShowWords(String),
+    /// An existing device matched our words (signed flag verified) — flip the display to the ready colour.
+    Matched,
+    /// This device is now in the fleet — hand off to the normal attest. Carries the fleet key recovered from the fan-out (None = bound but the rotation hasn't landed yet; the post-attest sync retries).
     Joined(Option<[u8; 32]>),
     /// An error to surface in the status line.
     Failed(String),
@@ -674,18 +689,28 @@ impl Container for PhotonApp {
     fn visit(&mut self, f: &mut dyn FnMut(&mut dyn Widget)) {
         if matches!(self.state, AppState::Launch(_)) {
             // The attest button is only part of the tree when there's a handle to attest — same reveal as the render gate. An empty field yields just the textbox, so Tab can't land focus on a button that isn't drawn and a hit-test can't dispatch to it.
+            // Join words phase (new device displaying its pairing words): no input widgets at all — the screen is display-only until bound or cancelled.
+            let join_words_up = self.launch_add_mode && self.add_join_words.is_some();
             let handle_entered = self
                 .textbox
                 .as_ref()
                 .map(|tb| !tb.chars.is_empty())
                 .unwrap_or(false);
+            if !join_words_up {
+                if let Some(tb) = self.textbox.as_mut() {
+                    f(tb);
+                }
+                if handle_entered {
+                    if let Some(btn) = self.attest_btn.as_mut() {
+                        f(btn);
+                    }
+                }
+            }
+        }
+        if matches!(self.state, AppState::AddDevice) {
+            // Words-entry screen (existing device): the launch textbox instance does double duty as the entry field.
             if let Some(tb) = self.textbox.as_mut() {
                 f(tb);
-            }
-            if handle_entered {
-                if let Some(btn) = self.attest_btn.as_mut() {
-                    f(btn);
-                }
             }
         }
         if matches!(self.state, AppState::Ready) {
@@ -1430,11 +1455,10 @@ impl FluorApp for PhotonApp {
                             ctx.window.request_redraw();
                             return EventResponse::Handled;
                         }
-                        // Cancel launch JOIN mode.
+                        // Cancel launch JOIN mode (stops the join thread so it quits re-posting its request).
                         if self.launch_add_mode {
                             self.launch_add_mode = false;
-                            self.add_join_handle = None;
-                            self.add_join_rx = None;
+                            self.end_join_flow();
                             self.add_join_status.clear();
                             if let Some(tb) = self.textbox.as_mut() {
                                 tb.clear();
@@ -1460,7 +1484,12 @@ impl FluorApp for PhotonApp {
                             .map(|t| Some(t.hit_id()) == self.focused)
                             .unwrap_or(false);
                         if focused_is_launch_textbox {
-                            self.submit_handle();
+                            if matches!(self.state, AppState::AddDevice) {
+                                // Words-entry screen: Enter forces a re-check of the current entry (the completeness gate in tick skips an unchanged one).
+                                self.add_device_last_checked.clear();
+                            } else {
+                                self.submit_handle();
+                            }
                             ctx.window.request_redraw();
                             return EventResponse::Handled;
                         }
@@ -1731,7 +1760,7 @@ impl FluorApp for PhotonApp {
             needs_redraw = true;
         }
 
-        // AddDevice flow: apply off-thread poll/bind results (drain first so the rx borrow ends before we mutate self).
+        // AddDevice flow: apply off-thread match-check/bind results (drain first so the rx borrow ends before we mutate self).
         let add_updates: Vec<AddDeviceUpdate> = self
             .add_device_rx
             .as_ref()
@@ -1739,32 +1768,47 @@ impl FluorApp for PhotonApp {
             .unwrap_or_default();
         for update in add_updates {
             match update {
-                AddDeviceUpdate::Pending(p) => {
-                    self.add_device_status =
-                        format!("{} wants to join — tap the orb to confirm", p.fingerprint);
-                    self.add_device_pending = Some(p);
+                AddDeviceUpdate::Match(req) => {
+                    self.add_device_checking = false;
+                    self.add_device_status = "Words match — tap the orb to bind".to_string();
+                    self.add_device_match = Some(req);
+                }
+                AddDeviceUpdate::NoMatch(why) => {
+                    self.add_device_checking = false;
+                    self.add_device_status = why;
                 }
                 AddDeviceUpdate::Bound => {
-                    // Stop the poller, keep the screen showing success until the user backs out.
-                    if let Some(stop) = self.add_stop.take() {
-                        stop.store(true, std::sync::atomic::Ordering::Relaxed);
-                    }
+                    self.add_device_checking = false;
                     self.add_device_status = "Device added \u{2713}".to_string();
-                    self.add_device_pending = None;
-                    self.add_device_secret = None;
+                    self.add_device_match = None;
                     self.add_device_rx = None;
                     self.add_device_tx = None;
                     // The add rotated the fleet key — pull the new epoch into our cache now; the next presence/attest cycle re-seals the roster under it (pushing here would race the async cache update and seal under the stale key).
                     self.spawn_fleet_key_sync();
                 }
                 AddDeviceUpdate::Failed(e) => {
+                    self.add_device_checking = false;
                     self.add_device_status = format!("Error: {e}");
                 }
             }
             needs_redraw = true;
         }
 
-        // New-device JOIN flow: post-request + membership-poll results.
+        // AddDevice flow: the completeness gate — the moment the typed entry reaches the fixed word count (and differs from the last checked entry), check it against the posted request off-thread.
+        if matches!(self.state, AppState::AddDevice) && !self.add_device_checking {
+            let text: String = self.textbox.as_ref().map(|tb| tb.chars.iter().collect()).unwrap_or_default();
+            if crate::network::fgtw::fleet::pair_word_tokens(&text)
+                == crate::network::fgtw::fleet::PAIR_WORD_COUNT
+                && text != self.add_device_last_checked
+                && self.add_device_match.is_none()
+            {
+                self.add_device_last_checked = text.clone();
+                self.spawn_add_device_check(text);
+                needs_redraw = true;
+            }
+        }
+
+        // New-device JOIN flow: words display + matched flag + membership results.
         let join_updates: Vec<JoinUpdate> = self
             .add_join_rx
             .as_ref()
@@ -1772,10 +1816,23 @@ impl FluorApp for PhotonApp {
             .unwrap_or_default();
         for update in join_updates {
             match update {
+                JoinUpdate::ShowWords(words) => {
+                    self.add_join_words = Some(words);
+                    self.add_join_ready = false;
+                    self.add_join_status =
+                        "Type these words into Add-a-device on your other device".to_string();
+                }
+                JoinUpdate::Matched => {
+                    // The device in your hand visibly flips: an existing device verified our words — bind is imminent.
+                    self.add_join_ready = true;
+                    self.add_join_status = "Matched \u{2713} — binding\u{2026}".to_string();
+                }
                 JoinUpdate::Joined(fleet_key) => {
                     // We're in the fleet now — drop add-mode and run the normal attest (it now passes the fleet gate). Stash any received fleet key to persist once attest sets the vault up.
                     self.add_join_rx = None;
                     self.launch_add_mode = false;
+                    self.add_join_words = None;
+                    self.add_join_ready = false;
                     self.add_join_status.clear();
                     self.pending_fleet_key = fleet_key;
                     if let Some(handle) = self.add_join_handle.take() {
@@ -2044,64 +2101,56 @@ impl FluorApp for PhotonApp {
                 }
             }
 
-            // Hint slot — static "handle" label below the textbox, always shown on the Launch screen. Tells the user what to type; doesn't change with sub-state.
-            let hint_rect = attest.hint;
-            if !hint_rect.is_empty() {
-                let region_h = (hint_rect.y1 - hint_rect.y0) as f32;
-                let cx = (hint_rect.x0 + hint_rect.x1) as f32 * 0.5;
-                let cy = (hint_rect.y0 + hint_rect.y1) as f32 * 0.5;
-                // Label reflects the join sub-step: handle first, then pairing words; plain attest just says "handle".
-                let hint_label = if self.launch_add_mode {
-                    if self.add_join_handle.is_some() {
-                        "pairing words"
-                    } else {
-                        "handle (join a fleet)"
+            // Join words phase (new device): the screen becomes display-only — this device's pairing words, drawn in rows for reading onto the other device, flipping to the found-colour when a member matches them. No textbox, no attest button.
+            let join_words_up = self.launch_add_mode && self.add_join_words.is_some();
+            if join_words_up {
+                if let Some(words) = self.add_join_words.as_ref() {
+                    let tokens: Vec<String> = {
+                        let mut v = Vec::new();
+                        let mut cur = String::new();
+                        for c in words.chars() {
+                            if c.is_ascii_uppercase() && !cur.is_empty() {
+                                v.push(std::mem::take(&mut cur));
+                            }
+                            cur.push(c);
+                        }
+                        if !cur.is_empty() {
+                            v.push(cur);
+                        }
+                        v
+                    };
+                    let colour = if self.add_join_ready { SEARCH_FOUND_COLOUR } else { STATUS_TEXT_COLOUR };
+                    let cx = buf_w as f32 * 0.5;
+                    let line_h = (buf_h as f32 * 0.035).max(14.0);
+                    let lines: Vec<String> = tokens.chunks(4).map(|c| c.join(" ")).collect();
+                    let total_h = lines.len() as f32 * line_h * 1.35;
+                    let mut y = buf_h as f32 * 0.5 - total_h * 0.5;
+                    for line in &lines {
+                        ctx.text.draw_text_center_u32(
+                            &mut canvas, line, cx, y, line_h, 600, colour, "Oxanium", None, None, None,
+                        );
+                        y += line_h * 1.35;
                     }
-                } else {
-                    "handle"
-                };
-                ctx.text.draw_text_center_u32(
-                    &mut canvas,
-                    hint_label,
-                    cx,
-                    cy,
-                    region_h * 0.7,
-                    500,
-                    fluor::theme::HINT_COLOUR,
-                    "Oxanium",
-                    None,
-                    None,
-                    None,
-                );
-            }
-
-            // Resting-state gates for the attest slot. The handle textbox owns the empty/focused truth; the attest button and the infinity glyph are the two mutually-exclusive things that can occupy the slot below it.
-            // - handle_entered: any typed character → show the Attest button (mirrors the contacts plus-button's `!chars.is_empty()` reveal).
-            // - textbox_active: the textbox is focused (cursor in it) → the user is mid-entry even with no character yet, so the resting infinity steps aside.
-            let handle_entered = self
-                .textbox
-                .as_ref()
-                .map(|tb| !tb.chars.is_empty())
-                .unwrap_or(false);
-            let textbox_active = self
-                .textbox
-                .as_ref()
-                .map(|tb| Some(tb.hit_id()) == self.focused)
-                .unwrap_or(false);
-
-            // Dormant infinity centred IN the handle textbox — it sits where the typed handle will appear, a half-brightness grey placeholder for the resting field, shown only while the field is empty AND unfocused. Painted BEFORE the textbox: fluor's under-blend is "topmost paints first; later opaque dst wins", so the glyph must precede the textbox's empty-pill fill to survive (same ordering the contacts plus-button uses). The instant the user focuses (cursor in) or a character lands, the gate goes false and the textbox owns the slot alone.
-            // Anchor and size come straight off the textbox (`center_x/center_y/font_size`), so the glyph lands pixel-identical to where a typed character would — the textbox draws its own glyphs via `draw_text_center_u32` at the same anchor, so matching it here keeps the ∞ from sitting high or scaling differently.
-            if !handle_entered && !textbox_active {
-                if let Some(tb) = self.textbox.as_ref() {
-                    // ∞ ink sits ~1-2px high because `draw_text_center_u32` centres on the line box (ascent+descent), and a math symbol's ink rides the math axis, slightly above where baseline-seated text reads as centred. Nudge the y anchor down by font_size/32 (≈1-2px here, scales with zoom) to seat the glyph at the pill's visual centre.
-                    let baseline_nudge = tb.font_size * (1.0 / (1 << 5) as f32);
+                }
+            } else {
+                // Hint slot — static "handle" label below the textbox. Tells the user what to type.
+                let hint_rect = attest.hint;
+                if !hint_rect.is_empty() {
+                    let region_h = (hint_rect.y1 - hint_rect.y0) as f32;
+                    let cx = (hint_rect.x0 + hint_rect.x1) as f32 * 0.5;
+                    let cy = (hint_rect.y0 + hint_rect.y1) as f32 * 0.5;
+                    let hint_label = if self.launch_add_mode {
+                        "handle (join a fleet)"
+                    } else {
+                        "handle"
+                    };
                     ctx.text.draw_text_center_u32(
                         &mut canvas,
-                        "\u{221E}",
-                        tb.center_x,
-                        tb.center_y + baseline_nudge,
-                        tb.font_size,
-                        400, // Same weight the textbox renders its own glyphs at (see textbox `measure_text_widths_per_char` / draw calls).
+                        hint_label,
+                        cx,
+                        cy,
+                        region_h * 0.7,
+                        500,
                         fluor::theme::HINT_COLOUR,
                         "Oxanium",
                         None,
@@ -2109,34 +2158,70 @@ impl FluorApp for PhotonApp {
                         None,
                     );
                 }
-            }
 
-            if let Some(tb) = self.textbox.as_mut() {
-                let id = tb.hit_id();
-                tb.render_content_into(
-                    &mut canvas,
-                    0.,
-                    0.,
-                    ctx.text,
-                    None,
-                    None,
-                    Some(&mut chrome.hit_test_map),
-                    id,
-                );
-            }
-            // The Attest button only exists once there's a handle to attest. An empty, untouched field shows the dormant infinity in its place instead; a focused-but-empty field shows neither (the user is typing). Hiding the button also keeps its hit-rect out of `hit_test_map`, so an empty field can't dispatch a no-op attest click.
-            if handle_entered {
-                if let Some(btn) = self.attest_btn.as_mut() {
-                    let id = btn.hit_id();
-                    btn.render_content_into(
+                // Resting-state gates for the attest slot. The handle textbox owns the empty/focused truth; the attest button and the infinity glyph are the two mutually-exclusive things that can occupy the slot below it.
+                // - handle_entered: any typed character → show the Attest button (mirrors the contacts plus-button's `!chars.is_empty()` reveal).
+                // - textbox_active: the textbox is focused (cursor in it) → the user is mid-entry even with no character yet, so the resting infinity steps aside.
+                let handle_entered = self
+                    .textbox
+                    .as_ref()
+                    .map(|tb| !tb.chars.is_empty())
+                    .unwrap_or(false);
+                let textbox_active = self
+                    .textbox
+                    .as_ref()
+                    .map(|tb| Some(tb.hit_id()) == self.focused)
+                    .unwrap_or(false);
+
+                // Dormant infinity centred IN the handle textbox — it sits where the typed handle will appear, a half-brightness grey placeholder for the resting field, shown only while the field is empty AND unfocused. Painted BEFORE the textbox: fluor's under-blend is "topmost paints first; later opaque dst wins", so the glyph must precede the textbox's empty-pill fill to survive (same ordering the contacts plus-button uses). The instant the user focuses (cursor in) or a character lands, the gate goes false and the textbox owns the slot alone.
+                // Anchor and size come straight off the textbox (`center_x/center_y/font_size`), so the glyph lands pixel-identical to where a typed character would — the textbox draws its own glyphs via `draw_text_center_u32` at the same anchor, so matching it here keeps the ∞ from sitting high or scaling differently.
+                if !handle_entered && !textbox_active {
+                    if let Some(tb) = self.textbox.as_ref() {
+                        // ∞ ink sits ~1-2px high because `draw_text_center_u32` centres on the line box (ascent+descent), and a math symbol's ink rides the math axis, slightly above where baseline-seated text reads as centred. Nudge the y anchor down by font_size/32 (≈1-2px here, scales with zoom) to seat the glyph at the pill's visual centre.
+                        let baseline_nudge = tb.font_size * (1.0 / (1 << 5) as f32);
+                        ctx.text.draw_text_center_u32(
+                            &mut canvas,
+                            "\u{221E}",
+                            tb.center_x,
+                            tb.center_y + baseline_nudge,
+                            tb.font_size,
+                            400, // Same weight the textbox renders its own glyphs at (see textbox `measure_text_widths_per_char` / draw calls).
+                            fluor::theme::HINT_COLOUR,
+                            "Oxanium",
+                            None,
+                            None,
+                            None,
+                        );
+                    }
+                }
+
+                if let Some(tb) = self.textbox.as_mut() {
+                    let id = tb.hit_id();
+                    tb.render_content_into(
                         &mut canvas,
                         0.,
                         0.,
                         ctx.text,
                         None,
+                        None,
                         Some(&mut chrome.hit_test_map),
                         id,
                     );
+                }
+                // The Attest button only exists once there's a handle to attest. An empty, untouched field shows the dormant infinity in its place instead; a focused-but-empty field shows neither (the user is typing). Hiding the button also keeps its hit-rect out of `hit_test_map`, so an empty field can't dispatch a no-op attest click.
+                if handle_entered {
+                    if let Some(btn) = self.attest_btn.as_mut() {
+                        let id = btn.hit_id();
+                        btn.render_content_into(
+                            &mut canvas,
+                            0.,
+                            0.,
+                            ctx.text,
+                            None,
+                            Some(&mut chrome.hit_test_map),
+                            id,
+                        );
+                    }
                 }
             }
         }
@@ -2890,29 +2975,55 @@ impl FluorApp for PhotonApp {
             let cx = buf_w as f32 * 0.5;
             let unit = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru).unit_height;
             ctx.text.draw_text_center_u32(
-                &mut canvas, "Add a device", cx, buf_h as f32 * 0.30,
+                &mut canvas, "Add a device", cx, buf_h as f32 * 0.22,
                 unit * 1.2, 600, STATUS_TEXT_COLOUR, "Oxanium", None, None, None,
             );
-            if let Some(secret) = self.add_device_secret {
-                let words = crate::network::fgtw::fleet::secret_words(&secret);
-                ctx.text.draw_text_center_u32(
-                    &mut canvas, &words, cx, buf_h as f32 * 0.45,
-                    unit * 0.9, 600, STATUS_TEXT_COLOUR, "Oxanium", None, None, None,
+            ctx.text.draw_text_center_u32(
+                &mut canvas, "Type the words shown on the new device", cx, buf_h as f32 * 0.30,
+                unit * 0.6, 400, STATUS_TEXT_COLOUR, "Oxanium", None, None, None,
+            );
+            // Words-entry field: the launch textbox instance does double duty (same rect as the attest slot, already laid out by update_widget_layout); it stamps its hit id so click-to-focus works.
+            if let Some(tb) = self.textbox.as_mut() {
+                let id = tb.hit_id();
+                tb.render_content_into(
+                    &mut canvas,
+                    0.,
+                    0.,
+                    ctx.text,
+                    None,
+                    None,
+                    Some(&mut chrome.hit_test_map),
+                    id,
                 );
             }
+            // Live word counter under the field — fixed-width entry means completeness is knowable, so show progress and flip emphasis when full.
+            let typed: String = self.textbox.as_ref().map(|tb| tb.chars.iter().collect()).unwrap_or_default();
+            let count = crate::network::fgtw::fleet::pair_word_tokens(&typed);
+            let full = count == crate::network::fgtw::fleet::PAIR_WORD_COUNT;
+            let counter = format!("{count} / {}", crate::network::fgtw::fleet::PAIR_WORD_COUNT);
+            let counter_colour = if full { SEARCH_FOUND_COLOUR } else { fluor::theme::HINT_COLOUR };
+            ctx.text.draw_text_center_u32(
+                &mut canvas, &counter, cx, buf_h as f32 * 0.60,
+                unit * 0.6, 500, counter_colour, "Oxanium", None, None, None,
+            );
             if !self.add_device_status.is_empty() {
+                let status_colour = if self.add_device_match.is_some() || self.add_device_status.starts_with("Device added") {
+                    SEARCH_FOUND_COLOUR
+                } else {
+                    STATUS_TEXT_COLOUR
+                };
                 ctx.text.draw_text_center_u32(
-                    &mut canvas, &self.add_device_status, cx, buf_h as f32 * 0.58,
-                    unit * 0.6, 400, STATUS_TEXT_COLOUR, "Oxanium", None, None, None,
+                    &mut canvas, &self.add_device_status, cx, buf_h as f32 * 0.68,
+                    unit * 0.6, 400, status_colour, "Oxanium", None, None, None,
                 );
             }
-            let hint = if self.add_device_pending.is_some() {
-                "tap the orb to confirm  ·  Esc to cancel"
+            let hint = if self.add_device_match.is_some() {
+                "tap the orb to bind  \u{b7}  Esc to cancel"
             } else {
                 "tap the orb again to cancel"
             };
             ctx.text.draw_text_center_u32(
-                &mut canvas, hint, cx, buf_h as f32 * 0.70,
+                &mut canvas, hint, cx, buf_h as f32 * 0.78,
                 unit * 0.5, 400, STATUS_TEXT_COLOUR, "Oxanium", None, None, None,
             );
         }
@@ -3209,58 +3320,42 @@ impl PhotonApp {
 
     /// Encrypt + send the compose-box contents to the open contact, append it as an outgoing bubble, and persist. No-op unless a CLUTCH-Complete contact is open with a friendship chain and the box is non-empty. The crypto/wire/persist layers already exist (`FriendshipChains::prepare_send`, `StatusChecker::send_message`, `save_messages`); this is the UI→chain→network glue.
     /// Orb (chrome app-icon) tap. Returns true if it acted (caller redraws). Routed by screen:
-    /// Ready → open the add-device flow (mint a pairing secret to read onto the new device); AddDevice → cancel back to the contact list. Other screens ignore it.
+    /// Ready → open the add-device flow (a words-entry screen — the NEW device shows the words, this device types them); AddDevice → bind if the words matched, else cancel; Launch → toggle join mode. Other screens ignore it.
     fn on_orb_click(&mut self) -> bool {
         use crate::network::fgtw::fleet;
         match self.state {
             AppState::Ready => {
-                let secret = fleet::new_pairing_secret();
-                self.add_device_secret = Some(secret);
-                self.add_device_pending = None;
-                self.change_focus(None);
+                self.add_device_match = None;
+                self.add_device_last_checked.clear();
+                self.add_device_checking = false;
+                self.add_device_status =
+                    "Type the words shown on the new device".to_string();
+                let (tx, rx) = std::sync::mpsc::channel();
+                self.add_device_rx = Some(rx);
+                self.add_device_tx = Some(tx);
                 self.state = AppState::AddDevice;
-                // Spawn the inbox poller (off-thread — poll_pairing_request blocks on HTTP). It stops itself when we leave AddDevice and drop the receiver.
-                match self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()) {
-                    Some(hp) => {
-                        self.add_device_status = "Type these words into the new device".to_string();
-                        let (tx, rx) = std::sync::mpsc::channel();
-                        self.add_device_rx = Some(rx);
-                        self.add_device_tx = Some(tx.clone());
-                        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                        self.add_stop = Some(stop.clone());
-                        std::thread::spawn(move || {
-                            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                                match fleet::poll_pairing_request(&hp, &secret) {
-                                    Ok(Some(p)) => {
-                                        let _ = tx.send(AddDeviceUpdate::Pending(p));
-                                    }
-                                    Ok(None) => {}
-                                    Err(e) => {
-                                        let _ = tx.send(AddDeviceUpdate::Failed(e));
-                                    }
-                                }
-                                std::thread::sleep(crate::jitter_dur(std::time::Duration::from_secs(3)));
-                            }
-                        });
-                    }
-                    None => self.add_device_status = "attest first".to_string(),
+                // Focus the words-entry box (the launch textbox instance does double duty here) so typing — and the Android soft keyboard — start immediately.
+                if let Some(tb) = self.textbox.as_mut() {
+                    tb.clear();
                 }
+                let tb_id = self.textbox.as_ref().map(|t| t.hit_id());
+                self.change_focus(tb_id);
                 true
             }
             AppState::AddDevice => {
-                if let Some(pending) = self.add_device_pending.take() {
-                    // Confirm: the existing (member) device signs the add — off-thread, bind_device blocks.
+                if let Some(req) = self.add_device_match.take() {
+                    // Bind: the words matched, the user tapped — sign the add + rotate the fan-out, off-thread (both block on HTTP).
                     self.add_device_status = "Adding\u{2026}".to_string();
+                    self.add_device_checking = true;
                     if let (Some(hp), Some(kp), Some(tx)) = (
                         self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()),
                         self.device_keypair.clone(),
                         self.add_device_tx.clone(),
                     ) {
-                        let new_pubkey = pending.new_pubkey;
                         std::thread::spawn(move || {
-                            let r = fleet::bind_device(&kp, &hp, new_pubkey);
+                            let r = fleet::bind_device(&kp, &hp, req.device_pubkey);
                             if r.is_ok() {
-                                // Re-key the fleet so the newly-added device — and every current member — can recover the fleet key from the fan-out with its own ihi (no pairing-secret hand-off). Best-effort: a failed rotation just means the new device re-syncs on its next attest. This is what makes the new device a full fleet member; removal will rotate the same way to lock a device out.
+                                // Re-key the fleet so the newly-added device — and every current member — can recover the fleet key from the fan-out with its own ihi. Best-effort: a failed rotation just means the new device re-syncs on its next attest.
                                 match fleet::current_members(&hp) {
                                     Ok(members) => {
                                         if let Err(e) = fleet::rotate_fleet_key(&hp, &kp, &members) {
@@ -3277,17 +3372,16 @@ impl PhotonApp {
                         });
                     }
                 } else {
-                    // No pending request → cancel back to the contact list.
+                    // No matched request → cancel back to the contact list.
                     self.end_add_device_flow();
                     self.state = AppState::Ready;
                 }
                 true
             }
-            // New device on the launch screen: toggle JOIN mode (enter handle + pairing words to join a fleet).
+            // New device on the launch screen: toggle JOIN mode (enter the handle; this device then shows its pairing words).
             AppState::Launch(_) => {
                 self.launch_add_mode = !self.launch_add_mode;
-                self.add_join_handle = None;
-                self.add_join_rx = None;
+                self.end_join_flow();
                 self.add_join_status = if self.launch_add_mode {
                     "Join a fleet — enter your handle".to_string()
                 } else {
@@ -3300,6 +3394,55 @@ impl PhotonApp {
             }
             _ => false,
         }
+    }
+
+    /// Off-thread check of a complete words entry against the posted pairing request: decode → fetch → compare → (on match) post the signed matched flag so the new device's screen flips to ready.
+    fn spawn_add_device_check(&mut self, typed: String) {
+        use crate::network::fgtw::fleet;
+        let (Some(hp), Some(kp), Some(tx)) = (
+            self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()),
+            self.device_keypair.clone(),
+            self.add_device_tx.clone(),
+        ) else {
+            return;
+        };
+        self.add_device_checking = true;
+        self.add_device_status = "Checking\u{2026}".to_string();
+        std::thread::spawn(move || {
+            let typed_pubkey = match fleet::words_to_pair_pubkey(&typed) {
+                Ok(pk) => pk,
+                Err(e) => {
+                    let _ = tx.send(AddDeviceUpdate::NoMatch(e));
+                    return;
+                }
+            };
+            let update = match fleet::fetch_pairing_request(&hp) {
+                Ok(Some(req)) if req.pairing_pubkey == typed_pubkey => {
+                    // Flip the new device's ready light — best-effort and cosmetic; the bind tap is what commits.
+                    if let Err(e) = fleet::post_pair_matched(&kp, &hp, &req.pairing_pubkey) {
+                        crate::log(&format!("FLEET: post matched failed: {e}"));
+                    }
+                    AddDeviceUpdate::Match(req)
+                }
+                Ok(Some(_)) => AddDeviceUpdate::NoMatch("Words don't match".to_string()),
+                Ok(None) => AddDeviceUpdate::NoMatch(
+                    "No request found — is the new device showing its words?".to_string(),
+                ),
+                Err(e) => AddDeviceUpdate::Failed(e),
+            };
+            let _ = tx.send(update);
+        });
+    }
+
+    /// Stop the NEW-device join thread and clear its display state (words, ready light, handle step).
+    fn end_join_flow(&mut self) {
+        if let Some(stop) = self.add_stop.take() {
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.add_join_handle = None;
+        self.add_join_rx = None;
+        self.add_join_words = None;
+        self.add_join_ready = false;
     }
 
     /// The fleet key from the local vault cache (fast, no network, no mint). `None` until a fan-out recover/establish has populated it (`spawn_fleet_key_sync`). Callers that seal/open fleet state read this; the background sync keeps it fresh so a rotation propagates.
@@ -3462,101 +3605,102 @@ impl PhotonApp {
         });
     }
 
-    /// Stop the AddDevice background poller and clear its state.
+    /// Clear the AddDevice (existing-device) words-entry state.
     fn end_add_device_flow(&mut self) {
-        if let Some(stop) = self.add_stop.take() {
-            stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        }
-        self.add_device_secret = None;
-        self.add_device_pending = None;
+        self.add_device_match = None;
+        self.add_device_last_checked.clear();
+        self.add_device_checking = false;
         self.add_device_status.clear();
         self.add_device_rx = None;
         self.add_device_tx = None;
+        if let Some(tb) = self.textbox.as_mut() {
+            tb.clear();
+        }
     }
 
-    /// New-device JOIN: advance the add-mode launch flow. Step 1 captures the handle, step 2 the pairing words → posts a pairing request and polls fleet membership off-thread.
+    /// New-device JOIN: the handle was entered — generate this device's pairing identity, display its words, post the signed request, and poll for the matched flag + membership off-thread.
     fn submit_join_step(&mut self) {
         use crate::network::fgtw::fleet;
+        use std::sync::atomic::{AtomicBool, Ordering};
         if self.add_join_rx.is_some() {
             return; // already joining
         }
-        let text: String = match self.textbox.as_ref() {
+        let handle: String = match self.textbox.as_ref() {
             Some(tb) => tb.chars.iter().collect(),
             None => return,
         };
-        let text = text.trim().to_string();
-        if text.is_empty() {
+        let handle = handle.trim().to_string();
+        if handle.is_empty() {
             return;
         }
-        match self.add_join_handle.take() {
-            None => {
-                // Step 1: the handle.
-                self.add_join_handle = Some(text);
-                self.add_join_status = "Enter the pairing words from your other device".to_string();
-                if let Some(tb) = self.textbox.as_mut() {
-                    tb.clear();
-                }
+        let Some(device_key) = self.device_keypair.clone() else {
+            self.add_join_status = "no device key".to_string();
+            return;
+        };
+        self.add_join_handle = Some(handle.clone());
+        self.add_join_status = "Preparing\u{2026}".to_string();
+        self.change_focus(None);
+        if let Some(tb) = self.textbox.as_mut() {
+            tb.clear();
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.add_join_rx = Some(rx);
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        self.add_stop = Some(stop.clone());
+        std::thread::spawn(move || {
+            let hp = *ihi::handle_to_proof(&handle).as_bytes();
+            let me = device_key.public.to_bytes();
+            // Fresh pairing identity per attempt: the words are its PUBLIC half; the request is signed by the private half, so a shoulder-surfer who reads the words can't hijack them for a different device.
+            let pairing = fleet::new_pairing_id();
+            let pairing_pubkey = pairing.public.to_bytes();
+            let _ = tx.send(JoinUpdate::ShowWords(fleet::pair_words(&pairing_pubkey)));
+            if let Err(e) = fleet::post_pairing_request(&pairing, &me, &hp) {
+                let _ = tx.send(JoinUpdate::Failed(format!("request failed: {e}")));
+                return;
             }
-            Some(handle) => {
-                // Step 2: the pairing words → spawn the join.
-                let secret = match fleet::secret_from_words(&text) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        self.add_join_status = format!("Unrecognised words: {e}");
-                        self.add_join_handle = Some(handle); // back to the words step
-                        return;
-                    }
-                };
-                let Some(device_key) = self.device_keypair.clone() else {
-                    self.add_join_status = "no device key".to_string();
+            // Poll until bound (the user has to walk to the other device and type 23 words — allow ~10 minutes). Re-post the request periodically so the inbox slot stays fresh (5-minute freshness) and survives being overwritten.
+            let mut matched_sent = false;
+            for cycle in 0..200 {
+                if stop.load(Ordering::Relaxed) {
                     return;
-                };
-                self.add_join_handle = Some(handle.clone());
-                self.add_join_status = "Joining\u{2026}".to_string();
-                self.change_focus(None);
-                if let Some(tb) = self.textbox.as_mut() {
-                    tb.clear();
                 }
-                let (tx, rx) = std::sync::mpsc::channel();
-                self.add_join_rx = Some(rx);
-                std::thread::spawn(move || {
-                    let hp = *ihi::handle_to_proof(&handle).as_bytes();
-                    let me = device_key.public.to_bytes();
-                    // Post the request, then poll membership; re-post each cycle in case the inbox slot was overwritten by a racer or expired.
-                    if let Err(e) = fleet::post_pairing_request(&device_key, &hp, &secret) {
-                        let _ = tx.send(JoinUpdate::Failed(format!("request failed: {e}")));
+                match fleet::current_members(&hp) {
+                    Ok(m) if m.contains(&me) => {
+                        // In the fleet. Recover the shared fleet key from the fan-out with our OWN device key — the bind rotated the epoch to include us. Retry a few times for the bind→rotate race.
+                        let mut fleet_key = None;
+                        for _ in 0..10 {
+                            if let Ok(Some(k)) = fleet::recover_fleet_key(&hp, &device_key) {
+                                fleet_key = Some(k);
+                                break;
+                            }
+                            std::thread::sleep(crate::jitter_dur(std::time::Duration::from_secs(2)));
+                        }
+                        let _ = tx.send(JoinUpdate::Joined(fleet_key));
                         return;
                     }
-                    for _ in 0..40 {
-                        // up to ~2 min of polling
-                        match fleet::current_members(&hp) {
-                            Ok(m) if m.contains(&me) => {
-                                // In the fleet. Recover the shared fleet key from the fan-out with our OWN device key — the existing device re-keyed to include us on bind, so our wrap is now in the slot. Retry a few times for the bind→rotate race. (No pairing-secret hand-off: the key is sealed to our device key, not to the typed words.)
-                                let mut fleet_key = None;
-                                for _ in 0..10 {
-                                    if let Ok(Some(k)) = fleet::recover_fleet_key(&hp, &device_key) {
-                                        fleet_key = Some(k);
-                                        break;
-                                    }
-                                    std::thread::sleep(crate::jitter_dur(std::time::Duration::from_secs(2)));
-                                }
-                                let _ = tx.send(JoinUpdate::Joined(fleet_key));
-                                return;
-                            }
-                            Ok(_) => {
-                                let _ = fleet::post_pairing_request(&device_key, &hp, &secret);
-                            }
-                            Err(e) => {
-                                let _ = tx.send(JoinUpdate::Failed(e));
-                                return;
+                    Ok(m) => {
+                        // Not bound yet: flip the ready light the moment a member signs off on our words, and keep the request slot fresh.
+                        if !matched_sent {
+                            if let Ok(true) = fleet::poll_pair_matched(&hp, &pairing_pubkey, &m) {
+                                matched_sent = true;
+                                let _ = tx.send(JoinUpdate::Matched);
                             }
                         }
-                        std::thread::sleep(crate::jitter_dur(std::time::Duration::from_secs(3)));
+                        if cycle % 8 == 7 {
+                            let _ = fleet::post_pairing_request(&pairing, &me, &hp);
+                        }
                     }
-                    let _ = tx.send(JoinUpdate::Failed("timed out — confirm on the other device".into()));
-                });
+                    Err(e) => {
+                        let _ = tx.send(JoinUpdate::Failed(e));
+                        return;
+                    }
+                }
+                std::thread::sleep(crate::jitter_dur(std::time::Duration::from_secs(3)));
             }
-        }
+            let _ = tx.send(JoinUpdate::Failed(
+                "expired — tap the orb and start again".into(),
+            ));
+        });
     }
 
     fn submit_message(&mut self) {
@@ -3895,6 +4039,12 @@ impl PhotonApp {
                 if in_app {
                     // Transient network failure on a resume refresh — the local session is still valid. Stay on Ready; the next presence cycle retries. Do NOT drop the user back to the attest screen.
                     crate::log("UI: background refresh failed (network); staying on local session");
+                } else if e.contains("not in the fleet") && !self.launch_add_mode {
+                    // Smart routing: the handle already has a fleet and this device isn't in it — that's not an error, it's the JOIN case. Flow straight into add-mode (the handle is still in the textbox; submit_join_step reads it, generates the pairing words, and puts them on screen).
+                    self.launch_add_mode = true;
+                    self.state = AppState::Launch(LaunchState::Fresh);
+                    self.add_join_handle = None;
+                    self.submit_join_step();
                 } else {
                     self.state = AppState::Launch(LaunchState::Error(e));
                     self.refocus_handle_select_all();
