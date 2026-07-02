@@ -575,16 +575,15 @@ pub fn ensure_member(
     // First-come genesis, identity-key co-signed so the fleet is provably founded by this handle's owner.
     let blob =
         MembershipBlob::genesis(device_key, *handle_proof, identity_seed, vsf::eagle_time_oscillations());
-    if publish(&blob).is_ok() {
-        return Ok(());
-    }
-    // Lost a genesis race (someone else claimed it between our fetch and post): re-fetch and accept if we ended up a member.
-    if let Some(b) = fetch(handle_proof)? {
-        if b.fold().map(|m| m.contains(&me)).unwrap_or(false) {
-            return Ok(());
+    let _ = publish(&blob);
+    // Trust the network, not ourselves: re-fetch the canonical chain and accept ONLY if it actually names this device. The fleet slot has no compare-and-set, so if two devices attest the same fresh handle inside the fetch→publish window they both "publish" but the slot settles on ONE genesis — the loser re-reads it here, finds it isn't a member, and fails cleanly instead of announcing as a phantom founder (which is what leaves a zombie peer row).
+    match fetch(handle_proof)? {
+        Some(b) if b.fold().map(|m| m.contains(&me)).unwrap_or(false) => Ok(()),
+        Some(_) => {
+            Err("this device is not in the fleet — enroll it from an existing device first".into())
         }
+        None => Err("failed to establish fleet membership for this device".into()),
     }
-    Err("failed to establish fleet membership for this device".into())
 }
 
 /// The current device-pubkey member set of an identity's fleet (empty if no fleet yet).
