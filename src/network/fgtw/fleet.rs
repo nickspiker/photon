@@ -652,99 +652,122 @@ pub fn unbind_device(
     Err("fleet remove: lost too many extension races".into())
 }
 
-// ── Pairing secret: a short random value the EXISTING device shows as words and the NEW device types in. ──
-// It never travels the network — only the new device's pubkey does (over P2P), and that pubkey is bound into the MACs below by the secret.
-// Knowing the secret authenticates the handshake; a wrong transcription just fails the MAC, so no separate checksum is needed.
+// ── Pairing v1: the NEW device generates a fresh 256-bit pairing keypair and DISPLAYS its public half as words; the user types them into an EXISTING device, which matches them against the posted request and binds. ──
+// The words are a public key, not a bearer secret: the request is SIGNED by the pairing private key, so a shoulder-surfer who reads the words can find the request but can never forge a rival one for their own device — stealing the invite requires stealing the new device itself.
+// 256-bit because the value is matched on the network: birthday-bounded to 128-bit security, per the count that matters.
 
-/// Bytes of a pairing secret — 16 (128-bit) is plenty for a one-shot human-carried code, and stays short as words.
-pub const PAIRING_SECRET_LEN: usize = 16;
+/// Fixed word count for a 256-bit pairing key: voca's FULL base is 3177 (~11.63 bits/word), and 22 words is 255.94 bits — just short — so 23 covers every key. Fixed-width (leading-zero-padded) so the typing side always knows when the entry is complete.
+pub const PAIR_WORD_COUNT: usize = 23;
 
-/// Fresh random pairing secret (existing device mints one per add attempt).
-pub fn new_pairing_secret() -> [u8; PAIRING_SECRET_LEN] {
-    rand::random()
+/// Fresh pairing identity for one add attempt (the seed IS the 256-bit value the words carry — the keypair is derived from it).
+pub fn new_pairing_id() -> Keypair {
+    Keypair::from_seed(&rand::random::<[u8; 32]>())
 }
 
-/// The secret as voca words (camelCase — the canonical typed form), and a spaced form for reading aloud.
-pub fn secret_words(secret: &[u8; PAIRING_SECRET_LEN]) -> String {
-    voca::encode(num_bigint::BigUint::from_bytes_be(secret))
-}
-pub fn secret_words_spaced(secret: &[u8; PAIRING_SECRET_LEN]) -> String {
-    voca::encode_spaced(num_bigint::BigUint::from_bytes_be(secret))
-}
-
-/// Decode typed words back to the secret (left-padded; leading zero bytes drop out of the integer).
-pub fn secret_from_words(words: &str) -> Result<[u8; PAIRING_SECRET_LEN], String> {
-    let n = voca::decode(words.trim()).map_err(|e| format!("unrecognised pairing words: {e:?}"))?;
-    let bytes = n.to_bytes_be();
-    if bytes.len() > PAIRING_SECRET_LEN {
-        return Err("pairing words decode too large".into());
+/// The zero word (digit 0), capitalised to match voca's camelCase encode — the left-pad for keys with leading zeros, so the word count never shrinks and the completeness check stays exact.
+fn zero_word() -> String {
+    let w = std::str::from_utf8(voca::FULL.alphabet[0]).expect("voca words are ASCII");
+    let mut s = String::with_capacity(w.len());
+    let mut chars = w.chars();
+    if let Some(c) = chars.next() {
+        s.push(c.to_ascii_uppercase());
+        s.extend(chars);
     }
-    let mut out = [0u8; PAIRING_SECRET_LEN];
-    out[PAIRING_SECRET_LEN - bytes.len()..].copy_from_slice(&bytes);
+    s
+}
+
+/// The pairing pubkey as EXACTLY `PAIR_WORD_COUNT` camelCase words, left-padded with the zero word. Positional base-3177: leading zero-digits don't change the decoded value, so padding is free.
+pub fn pair_words(pairing_pubkey: &[u8; 32]) -> String {
+    let encoded = voca::encode(num_bigint::BigUint::from_bytes_be(pairing_pubkey));
+    let have = pair_word_tokens(&encoded);
+    let mut s = String::new();
+    for _ in have..PAIR_WORD_COUNT {
+        s.push_str(&zero_word());
+    }
+    s.push_str(&encoded);
+    s
+}
+
+/// Count the words in a typed string, mirroring voca's tokenizer: whitespace-separated if any whitespace, else camelCase boundaries. Drives the live n/23 counter and the completeness gate.
+pub fn pair_word_tokens(s: &str) -> usize {
+    let t = s.trim();
+    if t.is_empty() {
+        return 0;
+    }
+    if t.bytes().any(|b| b.is_ascii_whitespace()) {
+        return t.split_ascii_whitespace().count();
+    }
+    let mut count = 1;
+    for c in t.chars().skip(1) {
+        if c.is_ascii_uppercase() {
+            count += 1;
+        }
+    }
+    count
+}
+
+/// Decode a complete word entry back to the pairing pubkey. Strict: exactly `PAIR_WORD_COUNT` words, value < 2^256. A wrong word fails the decode; the right words of the wrong device fail the match downstream.
+pub fn words_to_pair_pubkey(words: &str) -> Result<[u8; 32], String> {
+    if pair_word_tokens(words) != PAIR_WORD_COUNT {
+        return Err(format!("expected {PAIR_WORD_COUNT} words"));
+    }
+    let n = voca::decode(words.trim()).map_err(|e| format!("unrecognised word: {e:?}"))?;
+    let bytes = n.to_bytes_be();
+    if bytes.len() > 32 {
+        return Err("words don't decode to a key".into());
+    }
+    let mut out = [0u8; 32];
+    out[32 - bytes.len()..].copy_from_slice(&bytes);
     Ok(out)
 }
 
-fn pairing_mac(domain: &[u8], secret: &[u8], handle_proof: &[u8; 32], new_pubkey: &[u8; 32]) -> [u8; 32] {
-    let mut h = blake3::Hasher::new();
-    h.update(domain);
-    h.update(secret); // secret-prefix MAC — BLAKE3 has no length-extension weakness
-    h.update(handle_proof);
-    h.update(new_pubkey);
-    *h.finalize().as_bytes()
+/// A pairing request the existing device matched against the typed words: the device to bind, proven owned by the pairing key the words name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PairRequest {
+    pub pairing_pubkey: [u8; 32],
+    pub device_pubkey: [u8; 32],
 }
 
-/// MAC the NEW device sends with its pairing request: proves it holds the secret AND binds the request to its exact pubkey + identity, so a relay can't swap in a different key.
-pub fn pairing_request_mac(
-    secret: &[u8; PAIRING_SECRET_LEN],
-    handle_proof: &[u8; 32],
-    new_pubkey: &[u8; 32],
-) -> [u8; 32] {
-    pairing_mac(b"PHOTON_PAIR_REQ_v0", secret, handle_proof, new_pubkey)
-}
-
-/// MAC the EXISTING device sends back: proves the genuine secret-holder (not a spoofer who raced) acknowledged THIS pubkey, so the new device's "binding…" screen only lights up for the real other device.
-pub fn pairing_ack_mac(
-    secret: &[u8; PAIRING_SECRET_LEN],
-    handle_proof: &[u8; 32],
-    new_pubkey: &[u8; 32],
-) -> [u8; 32] {
-    pairing_mac(b"PHOTON_PAIR_ACK_v0", secret, handle_proof, new_pubkey)
-}
-
-/// Short read-aloud fingerprint of a device pubkey, shown on BOTH screens so the human can confirm the existing device is about to bind the device actually in their hand — not a shoulder-surfer who raced a request into the inbox with the same secret.
-pub fn device_fingerprint(pubkey: &[u8; 32]) -> String {
-    let h = blake3::hash(pubkey);
-    voca::encode_spaced(num_bigint::BigUint::from_bytes_be(&h.as_bytes()[..4]))
-}
-
-/// A pending pairing request the existing device should surface for confirmation.
-pub struct PendingPairing {
-    pub new_pubkey: [u8; 32],
-    /// The read-aloud fingerprint to display for the human cross-check.
-    pub fingerprint: String,
-}
-
-/// Pairing requests older than this are ignored (stale inbox slot).
+/// Pairing slots older than this are ignored (stale inbox).
 const PAIR_FRESH_OSC: i64 = 300 * vsf::OSCILLATIONS_PER_SECOND as i64; // 5 minutes
 
-// ── Pairing inbox transport (the secret's MAC authenticates; FGTW is a dumb relay). ──
+fn pair_request_signing_bytes(handle_proof: &[u8; 32], device_pubkey: &[u8; 32], t: i64) -> Vec<u8> {
+    let mut v = Vec::with_capacity(24 + 64 + 8);
+    v.extend_from_slice(b"PHOTON_PAIR_REQ_v1");
+    v.extend_from_slice(handle_proof);
+    v.extend_from_slice(device_pubkey);
+    v.extend_from_slice(&t.to_le_bytes());
+    v
+}
 
-/// NEW device: drop a pairing request `{new_pubkey, request_mac}` into this identity's inbox slot.
-/// The existing device validates the MAC with the secret you typed in, so a wrong transcription is silently dropped.
+fn pair_matched_signing_bytes(handle_proof: &[u8; 32], pairing_pubkey: &[u8; 32], t: i64) -> Vec<u8> {
+    let mut v = Vec::with_capacity(28 + 64 + 8);
+    v.extend_from_slice(b"PHOTON_PAIR_MATCHED_v1");
+    v.extend_from_slice(handle_proof);
+    v.extend_from_slice(pairing_pubkey);
+    v.extend_from_slice(&t.to_le_bytes());
+    v
+}
+
+// ── Pairing transport (FGTW is a dumb relay; the pairing key's signature authenticates ownership, the member's signature authenticates the match). ──
+
+/// NEW device: post its pairing request — `{device_pubkey, pairing_pubkey, t, sig}` where `sig` is the PAIRING key signing the (identity, device, time) tuple.
+/// The signature is the ownership proof: only the holder of the displayed words' private half can produce a valid request, so the words on the screen can't be hijacked for a different device.
 pub fn post_pairing_request(
-    new_device_key: &Keypair,
+    pairing: &Keypair,
+    new_device_pubkey: &[u8; 32],
     handle_proof: &[u8; 32],
-    secret: &[u8; PAIRING_SECRET_LEN],
 ) -> Result<(), String> {
-    let new_pubkey = new_device_key.public.to_bytes();
-    let mac = pairing_request_mac(secret, handle_proof, &new_pubkey);
+    let t = vsf::eagle_time_oscillations();
+    let sig = pairing.sign(&pair_request_signing_bytes(handle_proof, new_device_pubkey, t));
     let mut section = vsf::VsfSection::new("pair_put");
     section.add_field("hp", VsfType::hP(handle_proof.to_vec()));
-    section.add_field("pk", VsfType::ke(new_pubkey.to_vec()));
-    section.add_field("mac", VsfType::hb(mac.to_vec()));
-    section.add_field("t", VsfType::e(vsf::types::EtType::e6(vsf::eagle_time_oscillations())));
+    section.add_field("dk", VsfType::ke(new_device_pubkey.to_vec()));
+    section.add_field("pp", VsfType::ke(pairing.public.to_bytes().to_vec()));
+    section.add_field("t", VsfType::e(vsf::types::EtType::e6(t)));
+    section.add_field("sig", VsfType::ge(sig.to_bytes().to_vec()));
     let req = vsf::VsfBuilder::new()
-        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .creation_time_oscillations(t)
         .provenance_only()
         .add_section_direct(section)
         .build()
@@ -763,12 +786,9 @@ pub fn post_pairing_request(
     }
 }
 
-/// EXISTING device: poll the inbox for a pending request and validate it against the typed secret.
-/// Returns the device to confirm (with its fingerprint) only if the MAC checks out and the request is fresh — otherwise `None` (no request, stale, or a bad/forged MAC that we ignore).
-pub fn poll_pairing_request(
-    handle_proof: &[u8; 32],
-    secret: &[u8; PAIRING_SECRET_LEN],
-) -> Result<Option<PendingPairing>, String> {
+/// EXISTING device: fetch the pending pairing request for this identity, validating freshness and the pairing key's ownership signature.
+/// Returns `None` when there's no fresh valid request; the caller compares `pairing_pubkey` against the typed words to decide "match" vs "words don't match".
+pub fn fetch_pairing_request(handle_proof: &[u8; 32]) -> Result<Option<PairRequest>, String> {
     let mut section = vsf::VsfSection::new("pair_get");
     section.add_field("hp", VsfType::hP(handle_proof.to_vec()));
     let req = vsf::VsfBuilder::new()
@@ -795,148 +815,145 @@ pub fn poll_pairing_request(
     let mut ptr = header_end;
     let stored =
         vsf::VsfSection::parse(&bytes, &mut ptr).map_err(|e| format!("pair section: {e}"))?;
-    let new_pubkey = match stored.get_field("pk").and_then(|f| f.values.first()) {
-        Some(VsfType::ke(b)) if b.len() == 32 => {
-            let mut a = [0u8; 32];
-            a.copy_from_slice(b);
-            a
+    let field32 = |name: &str| -> Option<[u8; 32]> {
+        match stored.get_field(name).and_then(|f| f.values.first()) {
+            Some(VsfType::ke(b)) if b.len() == 32 => {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(b);
+                Some(a)
+            }
+            _ => None,
         }
-        _ => return Ok(None),
     };
-    let mac = match stored.get_field("mac").and_then(|f| f.values.first()) {
-        Some(VsfType::hb(b)) if b.len() == 32 => b.clone(),
-        _ => return Ok(None),
+    let (Some(device_pubkey), Some(pairing_pubkey)) = (field32("dk"), field32("pp")) else {
+        return Ok(None);
     };
     let t = match stored.get_field("t").and_then(|f| f.values.first()) {
         Some(VsfType::e(et)) => et_to_osc(et),
         _ => return Ok(None),
     };
-    // Stale, or a MAC we can't reproduce from the secret → not ours; ignore.
-    if (vsf::eagle_time_oscillations() - t) > PAIR_FRESH_OSC
-        || mac != pairing_request_mac(secret, handle_proof, &new_pubkey)
-    {
+    let sig = match stored.get_field("sig").and_then(|f| f.values.first()) {
+        Some(VsfType::ge(s)) if s.len() == 64 => Signature::from_bytes(s.as_slice().try_into().unwrap()),
+        _ => return Ok(None),
+    };
+    // Stale, or an ownership signature that doesn't verify under the request's own pairing key → not a usable request; ignore.
+    if (vsf::eagle_time_oscillations() - t) > PAIR_FRESH_OSC {
         return Ok(None);
     }
-    Ok(Some(PendingPairing { new_pubkey, fingerprint: device_fingerprint(&new_pubkey) }))
+    let Ok(vk) = VerifyingKey::from_bytes(&pairing_pubkey) else {
+        return Ok(None);
+    };
+    if vk.verify(&pair_request_signing_bytes(handle_proof, &device_pubkey, t), &sig).is_err() {
+        return Ok(None);
+    }
+    Ok(Some(PairRequest { pairing_pubkey, device_pubkey }))
 }
 
-// ── Fleet key hand-off ──
-// The fleet key is a single high-entropy symmetric secret shared by every device in a fleet — it's what lets a second device decrypt the fleet's PRIVATE state (contacts, chains, preferences) that per-device vault keys can't share. The genesis device mints it; each added device receives THIS one over the pairing channel, sealed under the human-carried pairing secret. That gate is exactly the trust surface the pairing MAC already assumes, so no new key exchange is introduced — knowledge of the typed words is what authorises the hand-off.
-
-/// Domain-separated wrap key derived from the pairing secret. BLAKE3 keyed by a fixed domain so this can never collide with the request/ack MAC derivations that hash the same secret.
-fn fleet_key_wrap_key(secret: &[u8; PAIRING_SECRET_LEN]) -> [u8; 32] {
-    let mut h = blake3::Hasher::new();
-    h.update(b"PHOTON_FLEET_KEY_WRAP_v0");
-    h.update(secret);
-    *h.finalize().as_bytes()
-}
-
-/// A fresh random fleet key — minted once, by the genesis device, and thereafter only ever RECEIVED (never re-minted) so the whole fleet converges on the same key.
-pub fn new_fleet_key() -> [u8; 32] {
-    rand::random()
-}
-
-/// Seal the fleet key under the pairing secret (ChaCha20-Poly1305 via kete). AEAD auth means a wrong secret fails the unwrap rather than yielding a plausible-looking wrong key.
-pub fn wrap_fleet_key(
-    secret: &[u8; PAIRING_SECRET_LEN],
-    fleet_key: &[u8; 32],
-) -> Result<Vec<u8>, String> {
-    kete::encrypt_bytes(fleet_key, &fleet_key_wrap_key(secret))
-}
-
-/// Open a fleet key delivered over the pairing channel. Fails loud (not garbage) on a wrong secret or a tampered blob.
-pub fn unwrap_fleet_key(
-    secret: &[u8; PAIRING_SECRET_LEN],
-    wrapped: &[u8],
-) -> Result<[u8; 32], String> {
-    let pt = kete::decrypt_bytes(wrapped, &fleet_key_wrap_key(secret))?;
-    pt.as_slice().try_into().map_err(|_| "fleet key wrong length".to_string())
-}
-
-// ── Fleet key inbox transport (one slot per identity, the sealed key relayed thru FGTW; the AEAD authenticates, FGTW is a dumb relay). ──
-
-/// EXISTING device: after binding the new device, drop the sealed fleet key into the hand-off slot. FGTW (and anyone lacking the pairing secret) sees only ciphertext.
-pub fn post_fleet_key(handle_proof: &[u8; 32], wrapped: &[u8]) -> Result<(), String> {
-    let mut section = vsf::VsfSection::new("fkey_put");
+/// EXISTING device: after the typed words matched the request, post the signed "matched" flag so the new device's screen flips to ready. Cosmetic but authenticated: signed by this (member) device, verified by the new device against the current member set.
+pub fn post_pair_matched(
+    member_key: &Keypair,
+    handle_proof: &[u8; 32],
+    pairing_pubkey: &[u8; 32],
+) -> Result<(), String> {
+    let t = vsf::eagle_time_oscillations();
+    let sig = member_key.sign(&pair_matched_signing_bytes(handle_proof, pairing_pubkey, t));
+    let mut section = vsf::VsfSection::new("pack_put");
     section.add_field("hp", VsfType::hP(handle_proof.to_vec()));
-    section.add_field("bl", VsfType::ge(wrapped.to_vec()));
-    section.add_field("t", VsfType::e(vsf::types::EtType::e6(vsf::eagle_time_oscillations())));
+    section.add_field("pp", VsfType::ke(pairing_pubkey.to_vec()));
+    section.add_field("dk", VsfType::ke(member_key.public.to_bytes().to_vec()));
+    section.add_field("t", VsfType::e(vsf::types::EtType::e6(t)));
+    section.add_field("sig", VsfType::ge(sig.to_bytes().to_vec()));
     let req = vsf::VsfBuilder::new()
-        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .creation_time_oscillations(t)
         .provenance_only()
         .add_section_direct(section)
         .build()
-        .map_err(|e| format!("fkey_put build: {e}"))?;
+        .map_err(|e| format!("pack_put build: {e}"))?;
     let resp = crate::network::http::blocking()
         .post(FGTW_URL)
         .timeout(std::time::Duration::from_secs(15))
         .header("Content-Type", "application/octet-stream")
         .body(req)
         .send()
-        .map_err(|e| format!("fkey_put send: {e}"))?;
+        .map_err(|e| format!("pack_put send: {e}"))?;
     if resp.status().is_success() {
         Ok(())
     } else {
-        Err(format!("fkey_put http {}", resp.status()))
+        Err(format!("pack_put http {}", resp.status()))
     }
 }
 
-/// NEW device: fetch the sealed fleet key (None until the existing device posts it), to unwrap with the pairing secret.
-pub fn fetch_fleet_key(handle_proof: &[u8; 32]) -> Result<Option<Vec<u8>>, String> {
-    let mut section = vsf::VsfSection::new("fkey_get");
+/// NEW device: has an existing member matched OUR words? True only for a fresh flag naming OUR pairing pubkey, signed by a device in `members` — so a stranger can't flip the ready light.
+pub fn poll_pair_matched(
+    handle_proof: &[u8; 32],
+    pairing_pubkey: &[u8; 32],
+    members: &[[u8; 32]],
+) -> Result<bool, String> {
+    let mut section = vsf::VsfSection::new("pack_get");
     section.add_field("hp", VsfType::hP(handle_proof.to_vec()));
     let req = vsf::VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
         .provenance_only()
         .add_section_direct(section)
         .build()
-        .map_err(|e| format!("fkey_get build: {e}"))?;
+        .map_err(|e| format!("pack_get build: {e}"))?;
     let resp = crate::network::http::blocking()
         .post(FGTW_URL)
         .timeout(std::time::Duration::from_secs(15))
         .header("Content-Type", "application/octet-stream")
         .body(req)
         .send()
-        .map_err(|e| format!("fkey_get send: {e}"))?;
+        .map_err(|e| format!("pack_get send: {e}"))?;
     if resp.status().as_u16() == 404 {
-        return Ok(None);
+        return Ok(false);
     }
     if !resp.status().is_success() {
-        return Err(format!("fkey_get http {}", resp.status()));
+        return Err(format!("pack_get http {}", resp.status()));
     }
-    let bytes = resp.bytes().map_err(|e| format!("fkey_get read: {e}"))?;
-    let (_, header_end) = vsf::VsfHeader::decode(&bytes).map_err(|e| format!("fkey header: {e}"))?;
+    let bytes = resp.bytes().map_err(|e| format!("pack_get read: {e}"))?;
+    let (_, header_end) = vsf::VsfHeader::decode(&bytes).map_err(|e| format!("pack header: {e}"))?;
     let mut ptr = header_end;
     let stored =
-        vsf::VsfSection::parse(&bytes, &mut ptr).map_err(|e| format!("fkey section: {e}"))?;
-    match stored.get_field("bl").and_then(|f| f.values.first()) {
-        Some(VsfType::ge(b)) => Ok(Some(b.clone())),
-        _ => Ok(None),
+        vsf::VsfSection::parse(&bytes, &mut ptr).map_err(|e| format!("pack section: {e}"))?;
+    let field32 = |name: &str| -> Option<[u8; 32]> {
+        match stored.get_field(name).and_then(|f| f.values.first()) {
+            Some(VsfType::ke(b)) if b.len() == 32 => {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(b);
+                Some(a)
+            }
+            _ => None,
+        }
+    };
+    let (Some(pp), Some(dk)) = (field32("pp"), field32("dk")) else {
+        return Ok(false);
+    };
+    let t = match stored.get_field("t").and_then(|f| f.values.first()) {
+        Some(VsfType::e(et)) => et_to_osc(et),
+        _ => return Ok(false),
+    };
+    let sig = match stored.get_field("sig").and_then(|f| f.values.first()) {
+        Some(VsfType::ge(s)) if s.len() == 64 => Signature::from_bytes(s.as_slice().try_into().unwrap()),
+        _ => return Ok(false),
+    };
+    if pp != *pairing_pubkey
+        || (vsf::eagle_time_oscillations() - t) > PAIR_FRESH_OSC
+        || !members.contains(&dk)
+    {
+        return Ok(false);
     }
+    let Ok(vk) = VerifyingKey::from_bytes(&dk) else {
+        return Ok(false);
+    };
+    Ok(vk.verify(&pair_matched_signing_bytes(handle_proof, &pp, t), &sig).is_ok())
 }
 
-/// NEW device: confirm the sealed fleet key was fetched + unwrapped, so FGTW drops the hand-off slot immediately instead of letting the pairing-secret-wrapped key sit in R2. Best-effort — the worker's GET-time freshness expiry is the backstop if this never arrives.
-pub fn ack_fleet_key(handle_proof: &[u8; 32]) -> Result<(), String> {
-    let mut section = vsf::VsfSection::new("fkey_ack");
-    section.add_field("hp", VsfType::hP(handle_proof.to_vec()));
-    let req = vsf::VsfBuilder::new()
-        .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .provenance_only()
-        .add_section_direct(section)
-        .build()
-        .map_err(|e| format!("fkey_ack build: {e}"))?;
-    let resp = crate::network::http::blocking()
-        .post(FGTW_URL)
-        .timeout(std::time::Duration::from_secs(15))
-        .header("Content-Type", "application/octet-stream")
-        .body(req)
-        .send()
-        .map_err(|e| format!("fkey_ack send: {e}"))?;
-    if resp.status().is_success() {
-        Ok(())
-    } else {
-        Err(format!("fkey_ack http {}", resp.status()))
-    }
+// ── The fleet key ──
+// A single high-entropy symmetric secret shared by every device in a fleet — what lets a second device decrypt the fleet's PRIVATE state (contacts, chains, preferences) that per-device vault keys can't share. Delivered per-member via the fan-out below (sealed to each device's own key, epoch-rotated on membership change); the old pairing-secret-wrapped hand-off is gone.
+
+/// A fresh random fleet key — minted per epoch by `rotate_fleet_key`; devices RECEIVE the current one from the fan-out.
+pub fn new_fleet_key() -> [u8; 32] {
+    rand::random()
 }
 
 // ── Fleet key fan-out: per-member sealed delivery of the current fleet key (BRAID.md §14.2) ──
@@ -1553,19 +1570,70 @@ mod tests {
     }
 
     #[test]
-    fn pairing_secret_words_round_trip() {
-        // A normal secret, and one with a leading zero byte (the padding edge).
-        for secret in [[7u8; PAIRING_SECRET_LEN], {
-            let mut s = [9u8; PAIRING_SECRET_LEN];
-            s[0] = 0;
-            s
-        }] {
-            assert_eq!(secret_from_words(&secret_words(&secret)).unwrap(), secret, "camelCase");
-            assert_eq!(secret_from_words(&secret_words_spaced(&secret)).unwrap(), secret, "spaced");
+    fn pair_words_fixed_width_round_trip() {
+        // A normal key, an all-zero key (maximum padding), and a leading-zero key (partial padding) all render EXACTLY PAIR_WORD_COUNT words and decode back byte-identical.
+        let mut leading_zero = [0x42u8; 32];
+        leading_zero[0] = 0;
+        leading_zero[1] = 0;
+        for key in [[0x9au8; 32], [0u8; 32], leading_zero, rand::random()] {
+            let words = pair_words(&key);
+            assert_eq!(pair_word_tokens(&words), PAIR_WORD_COUNT, "fixed width");
+            assert_eq!(words_to_pair_pubkey(&words).unwrap(), key, "round trip");
         }
+        // The counter mirrors voca's tokenizer for both entry styles.
+        let words = pair_words(&[7u8; 32]);
+        let spaced: Vec<String> = {
+            let mut v = Vec::new();
+            let mut cur = String::new();
+            for c in words.chars() {
+                if c.is_ascii_uppercase() && !cur.is_empty() {
+                    v.push(std::mem::take(&mut cur));
+                }
+                cur.push(c);
+            }
+            v.push(cur);
+            v
+        };
+        assert_eq!(spaced.len(), PAIR_WORD_COUNT);
+        assert_eq!(pair_word_tokens(&spaced.join(" ")), PAIR_WORD_COUNT);
+        assert_eq!(words_to_pair_pubkey(&spaced.join(" ")).unwrap(), [7u8; 32]);
     }
 
-    /// End-to-end against LIVE fgtw.org: genesis a fresh fleet, run the full device-ADD pairing handshake, and confirm the new device folds in.
+    #[test]
+    fn words_to_pair_pubkey_rejects_bad_entries() {
+        // Wrong word count (incomplete entry) is rejected before any decode.
+        assert!(words_to_pair_pubkey("justOneWord").is_err());
+        // 23 copies of the LAST alphabet word decode above 2^256 — a valid-looking entry that isn't a key.
+        let last = std::str::from_utf8(voca::FULL.alphabet[voca::FULL.base() - 1]).unwrap();
+        let too_big = vec![last; PAIR_WORD_COUNT].join(" ");
+        assert!(words_to_pair_pubkey(&too_big).is_err());
+        // A garbage token fails the decode loudly.
+        let mut words = pair_words(&[1u8; 32]);
+        words.push_str("Zzzqx");
+        assert!(words_to_pair_pubkey(&words).is_err());
+    }
+
+    #[test]
+    fn pair_request_and_matched_signatures_verify_and_bind() {
+        let pairing = new_pairing_id();
+        let member = key(4);
+        let dk = pk(&key(5));
+        let t = 12345i64;
+        // Ownership proof: verifies under the pairing pubkey, breaks under a different device or identity.
+        let sig = pairing.sign(&pair_request_signing_bytes(&HP, &dk, t));
+        let vk = VerifyingKey::from_bytes(&pairing.public.to_bytes()).unwrap();
+        assert!(vk.verify(&pair_request_signing_bytes(&HP, &dk, t), &sig).is_ok());
+        assert!(vk.verify(&pair_request_signing_bytes(&HP, &pk(&key(6)), t), &sig).is_err());
+        assert!(vk.verify(&pair_request_signing_bytes(&[9u8; 32], &dk, t), &sig).is_err());
+        // Matched flag: verifies under the member's device key, breaks for a different pairing pubkey.
+        let pp = pairing.public.to_bytes();
+        let msig = member.sign(&pair_matched_signing_bytes(&HP, &pp, t));
+        let mvk = VerifyingKey::from_bytes(&pk(&member)).unwrap();
+        assert!(mvk.verify(&pair_matched_signing_bytes(&HP, &pp, t), &msig).is_ok());
+        assert!(mvk.verify(&pair_matched_signing_bytes(&HP, &[8u8; 32], t), &msig).is_err());
+    }
+
+    /// End-to-end against LIVE fgtw.org: genesis a fresh fleet, run the full v1 device-ADD handshake (words → request → match → matched flag → bind → rotate → recover), and confirm the new device folds in with the fleet key.
     /// Ignored by default (hits the network + leaves ephemeral random-key objects); run with `--ignored`.
     #[test]
     #[ignore = "hits live fgtw.org"]
@@ -1575,37 +1643,37 @@ mod tests {
         let member = Keypair::from_seed(&rand::random::<[u8; 32]>());
         let newdev = Keypair::from_seed(&rand::random::<[u8; 32]>());
 
-        // Existing device claims the fleet (identity-signed genesis).
+        // Existing device claims the fleet (identity-signed genesis) and establishes the fan-out.
         ensure_member(&member, &handle_proof, &identity_seed).expect("genesis");
         assert_eq!(current_members(&handle_proof).unwrap(), vec![member.public.to_bytes()]);
+        let (_, k1) = rotate_fleet_key(&handle_proof, &member, &[member.public.to_bytes()]).expect("establish");
 
-        // New device posts a pairing request; existing device validates it with the secret.
-        let secret = new_pairing_secret();
-        post_pairing_request(&newdev, &handle_proof, &secret).expect("post request");
-        let pending = poll_pairing_request(&handle_proof, &secret)
-            .expect("poll")
-            .expect("a pending request");
-        assert_eq!(pending.new_pubkey, newdev.public.to_bytes());
-        // A wrong secret (mistyped words) sees nothing.
-        assert!(poll_pairing_request(&handle_proof, &[0u8; PAIRING_SECRET_LEN]).unwrap().is_none());
+        // New device: mint a pairing identity, display its words, post the signed request.
+        let pairing = new_pairing_id();
+        let words = pair_words(&pairing.public.to_bytes());
+        post_pairing_request(&pairing, &newdev.public.to_bytes(), &handle_proof).expect("post request");
 
-        // Confirm → bind → the new device is now a fleet member.
-        bind_device(&member, &handle_proof, pending.new_pubkey).expect("bind");
+        // Existing device: the user types the words; decode → fetch → the request matches and its ownership signature verifies.
+        let typed = words_to_pair_pubkey(&words).expect("decode typed words");
+        let req = fetch_pairing_request(&handle_proof).expect("fetch").expect("a pending request");
+        assert_eq!(req.pairing_pubkey, typed);
+        assert_eq!(req.device_pubkey, newdev.public.to_bytes());
+
+        // Existing device posts the matched flag; the new device's ready light verifies it against the member set.
+        post_pair_matched(&member, &handle_proof, &req.pairing_pubkey).expect("post matched");
         let members = current_members(&handle_proof).unwrap();
-        assert!(members.contains(&member.public.to_bytes()));
-        assert!(members.contains(&newdev.public.to_bytes()));
+        assert!(poll_pair_matched(&handle_proof, &pairing.public.to_bytes(), &members).unwrap());
+        // A different pairing key sees no match (a stranger can't flip the light).
+        let other = new_pairing_id();
+        assert!(!poll_pair_matched(&handle_proof, &other.public.to_bytes(), &members).unwrap());
 
-        // Fleet key hand-off: existing device seals its key under the secret and posts it; the new device fetches and opens it to the identical bytes.
-        let fleet_key = new_fleet_key();
-        let sealed = wrap_fleet_key(&secret, &fleet_key).expect("wrap");
-        post_fleet_key(&handle_proof, &sealed).expect("post fleet key");
-        let fetched = fetch_fleet_key(&handle_proof).expect("fetch").expect("a sealed key");
-        assert_eq!(unwrap_fleet_key(&secret, &fetched).expect("unwrap"), fleet_key);
-        // A wrong secret can't open it (AEAD auth fails, not garbage).
-        assert!(unwrap_fleet_key(&[0u8; PAIRING_SECRET_LEN], &fetched).is_err());
-        // Single-use: after the joining device acks, FGTW drops the slot so the wrap doesn't linger.
-        ack_fleet_key(&handle_proof).expect("ack");
-        assert!(fetch_fleet_key(&handle_proof).unwrap().is_none());
+        // Bind + rotate: the new device is a member and recovers the NEW epoch key with its own device key.
+        bind_device(&member, &handle_proof, req.device_pubkey).expect("bind");
+        let members2 = current_members(&handle_proof).unwrap();
+        assert!(members2.contains(&newdev.public.to_bytes()));
+        let (_, k2) = rotate_fleet_key(&handle_proof, &member, &members2).expect("rotate");
+        assert_ne!(k2, k1);
+        assert_eq!(recover_fleet_key(&handle_proof, &newdev).unwrap().unwrap(), k2);
     }
 
     #[test]
@@ -1648,23 +1716,6 @@ mod tests {
         let mut huge = fanout_to_bytes(epoch, &wraps);
         huge[12..16].copy_from_slice(&2000u32.to_be_bytes());
         assert!(fanout_from_bytes(&huge).is_err());
-    }
-
-    #[test]
-    fn fleet_key_wrap_round_trips_and_rejects_wrong_secret() {
-        let secret = new_pairing_secret();
-        let fleet_key = new_fleet_key();
-        let sealed = wrap_fleet_key(&secret, &fleet_key).unwrap();
-        // Right secret opens it to the same bytes...
-        assert_eq!(unwrap_fleet_key(&secret, &sealed).unwrap(), fleet_key);
-        // ...any other secret fails the AEAD tag (never yields a plausible wrong key)...
-        let mut other = secret;
-        other[0] ^= 1;
-        assert!(unwrap_fleet_key(&other, &sealed).is_err());
-        // ...and a flipped ciphertext bit is rejected, not silently decrypted.
-        let mut tampered = sealed.clone();
-        *tampered.last_mut().unwrap() ^= 1;
-        assert!(unwrap_fleet_key(&secret, &tampered).is_err());
     }
 
     fn roster_entry(hp: u8, updated: i64, tombstone: bool) -> RosterEntry {
@@ -1765,21 +1816,6 @@ mod tests {
         // A non-member can't publish (fold gate rejects the write).
         let stranger = Keypair::from_seed(&rand::random::<[u8; 32]>());
         assert!(push_roster(&handle_proof, &stranger, &fleet_key, &entries).is_err());
-    }
-
-    #[test]
-    fn pairing_macs_bind_secret_pubkey_and_role() {
-        let secret = [3u8; PAIRING_SECRET_LEN];
-        let new_pubkey = pk(&key(5));
-        let req = pairing_request_mac(&secret, &HP, &new_pubkey);
-        // Deterministic for the same inputs...
-        assert_eq!(req, pairing_request_mac(&secret, &HP, &new_pubkey));
-        // ...request and ack MACs differ (domain separation, so an ack can't be replayed as a request)...
-        assert_ne!(req, pairing_ack_mac(&secret, &HP, &new_pubkey));
-        // ...a wrong secret fails (mistyped words → bind never authorises)...
-        assert_ne!(req, pairing_request_mac(&[4u8; PAIRING_SECRET_LEN], &HP, &new_pubkey));
-        // ...and a swapped pubkey fails (a relay can't re-point the request at another key).
-        assert_ne!(req, pairing_request_mac(&secret, &HP, &pk(&key(6))));
     }
 
     #[test]
