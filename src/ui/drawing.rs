@@ -78,11 +78,14 @@ fn draw_background_row(
     speckle: usize,
 ) {
     // WHY: logical_row can be negative when scrolled, use wrapping for RNG seed PROOF: wrapping_sub produces consistent hash for any scroll position PREVENTS: Different behavior for negative vs positive row indices
-    let mut rng: usize = (0xDEADBEEF01234567)
-        ^ ((logical_row as usize)
-            .wrapping_sub(height / 2)
+    // RNG chain is explicitly u64 (not usize) so the pattern is bit-identical on 32-bit targets
+    // (armv7 Android, wasm) and 64-bit desktops — same seed, same wrap points. Matches fluor's
+    // `background_row` port, which made the same change for the toka wasm renderer.
+    let mut rng: u64 = (0xDEADBEEF01234567u64)
+        ^ ((logical_row as i64 as u64)
+            .wrapping_sub(height as u64 / 2)
             .wrapping_mul(0x9E3779B94517B397))
-        .wrapping_add(speckle);
+        .wrapping_add(speckle as u64);
     let mask = theme::BG_MASK;
     let alpha = theme::BG_ALPHA;
     let ones = 0x00010101;
@@ -94,7 +97,7 @@ fn draw_background_row(
     for x in width / 2..x_end {
         rng ^= rng.rotate_left(13).wrapping_add(12345678942);
         let adder = rng as u32 & ones;
-        if rng.wrapping_add(speckle) < usize::MAX / 256 {
+        if rng.wrapping_add(speckle as u64) < u64::MAX / 256 {
             colour = rng as u32 >> 8 & speckle_colour | alpha;
         } else {
             colour = colour.wrapping_add(adder) & mask;
@@ -105,16 +108,16 @@ fn draw_background_row(
     }
 
     // Left half: right-to-left (mirror)
-    rng = 0xDEADBEEF01234567
-        ^ ((logical_row as usize)
-            .wrapping_sub(height / 2)
+    rng = 0xDEADBEEF01234567u64
+        ^ ((logical_row as i64 as u64)
+            .wrapping_sub(height as u64 / 2)
             .wrapping_mul(0x9E3779B94517B397));
     colour = rng as u32 & mask | alpha;
 
     for x in (x_start..width / 2).rev() {
         rng ^= rng.rotate_left(13).wrapping_sub(12345678942);
         let adder = rng as u32 & ones;
-        if rng.wrapping_add(speckle) < usize::MAX / 256 {
+        if rng.wrapping_add(speckle as u64) < u64::MAX / 256 {
             colour = rng as u32 >> 8 & speckle_colour | alpha;
         } else {
             colour = colour.wrapping_add(adder) & mask;

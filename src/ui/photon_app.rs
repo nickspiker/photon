@@ -6398,6 +6398,17 @@ impl PhotonApp {
                                     crate::log(&format!("STORAGE: Failed to save messages: {}", e));
                                 }
                             }
+
+                            // Per-contact notification chime: spaghettify(their_handle_hash ‖ our_identity_seed) → deterministic modal bell (chirp crate). The handle TEXT never touches the session store by design, so the pre-PoW handle hashes are the canonical identity material — same determinism, one hash earlier. Asymmetric on purpose: each side hears its own bell for the other. Synthesis (~a second of f64 modal math) + playback run on a detached thread so the receive loop never blocks; desktop-only (Android gets platform notifications).
+                            #[cfg(not(any(target_os = "redox", target_os = "android")))]
+                            {
+                                let mut ding = [0u8; 64];
+                                ding[..32].copy_from_slice(&from_handle_hash);
+                                ding[32..].copy_from_slice(&our_handle_hash);
+                                std::thread::spawn(move || {
+                                    chirp::Chirp::from_hash(ihi::spaghettify(&ding)).play_blocking().unwrap_or_else(|e| crate::log(&format!("CHIME: {e}")));
+                                });
+                            }
                         }
 
                         // *** THEN send ACK - if we crash here, sender will resend, we can dedup *** Get recipient pubkey for relay fallback
