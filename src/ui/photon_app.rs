@@ -199,32 +199,93 @@ const PRESENCE_IDLE_NEAR: std::time::Duration = std::time::Duration::from_secs(3
 /// Idle past this → drop from idle (1min) to deep-idle (15min).
 const PRESENCE_IDLE_FAR: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
-/// Deterministic per-party text colour for the conversation view, derived from a handle hash.
-///
-/// PLACEHOLDER (v1): hue from the hash, fixed saturation + lightness, plain HSL→sRGB. Both your colour (your handle hash) and theirs (their handle hash) come from this, so a party always reads the same colour. FOLLOW-UP: replace the body with a perceptually-uniform generator — pin perceived lightness to ~50% via the vsf spectral/LMS pipeline (`vsf/src/colour/spectral/`) so every party's colour reads at equal brightness while hue+saturation vary by handle. Keep this signature so the swap is a drop-in. Returns packed ARGB (0xAARRGGBB), run through `theme`'s `fmt` for Android.
-fn party_colour(handle_hash: &[u8; 32]) -> u32 {
-    // Hue across the full wheel from the first two hash bytes; fixed S/L for now.
-    let hue = (u16::from_le_bytes([handle_hash[0], handle_hash[1]]) as f32 / 65535.0) * 360.0;
-    let s = 0.55_f32;
-    let l = 0.62_f32; // sRGB lightness placeholder; perceptual-50% lands in the follow-up.
+/// One deterministic aesthetic channel in `[0, 1]` from a relationship digest: `blake3(name ‖ digest)`, first 8 bytes as u64, divided by `u64::MAX`.
+/// Same convention as chirp's `channel_unit` (the chime derivation) — duplicated here rather than imported because chirp is desktop-gated and colour must build on every target. Keep the two in lockstep.
+fn aesthetic_channel_unit(name: &str, digest: &[u8; 32]) -> f32 {
+    let mut h = blake3::Hasher::new();
+    h.update(name.as_bytes());
+    h.update(digest);
+    let mut out = [0u8; 8];
+    out.copy_from_slice(&h.finalize().as_bytes()[..8]);
+    (u64::from_le_bytes(out) as f64 / u64::MAX as f64) as f32
+}
 
-    // Standard HSL→RGB.
-    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
-    let hp = hue / 60.0;
-    let x = c * (1.0 - (hp % 2.0 - 1.0).abs());
-    let (r1, g1, b1) = match hp as u32 {
-        0 => (c, x, 0.0),
-        1 => (x, c, 0.0),
-        2 => (0.0, c, x),
-        3 => (0.0, x, c),
-        4 => (x, 0.0, c),
-        _ => (c, 0.0, x),
+/// Deterministic per-party text colour: an iso-luminance hue ray in linear VSF RGB, fed by the relationship digest (`spaghettify(party ‖ other)` — the same digest family as the chime, so ears and eyes derive from one relationship identity).
+///
+/// Brightness is locked at photopic Y = 0.5 LINEAR via the spectral pipeline (Stockman & Sharpe 2000 10° cone fundamentals, LMS2PHOTOPIC): photopic Y is linear in linear RGB, so the legal colours form a plane slicing the gamut cube thru grey (0.5, 0.5, 0.5).
+/// "colour hue" picks a direction in that plane (⊥ the luminance gradient), "colour chroma" (√-biased toward saturated) walks from grey toward the wall.
+/// The walk is clipped against BOTH the VSF RGB cube and the preimage of the linear sRGB cube, so the displayed colour is never gamut-clipped — the 50% promise holds on the actual screen. Returns fluor stored α+darkness.
+fn party_colour(digest: &[u8; 32]) -> u32 {
+    use vsf::colour::convert::vsf_rgb_to_photopic_f32;
+    use vsf::colour::{srgb_oetf, VSF_RGB2SRGB};
+
+    // Luminance gradient w: photopic Y is linear in rgb, so evaluating the canonical pipeline on the three axes yields the plane normal. Tracks any future vsf observer changes automatically.
+    let w = [
+        vsf_rgb_to_photopic_f32(1.0, 0.0, 0.0),
+        vsf_rgb_to_photopic_f32(0.0, 1.0, 0.0),
+        vsf_rgb_to_photopic_f32(0.0, 0.0, 1.0),
+    ];
+    // Orthonormal basis (u, v) spanning the iso-luminance plane: u ⊥ w chosen with zero blue component, v = w × u.
+    let norm = |a: [f32; 3]| {
+        let n = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
+        [a[0] / n, a[1] / n, a[2] / n]
     };
-    let m = l - c / 2.0;
-    let r = ((r1 + m) * 255.0).round() as u32;
-    let g = ((g1 + m) * 255.0).round() as u32;
-    let b = ((b1 + m) * 255.0).round() as u32;
-    // visible-RGB (0x00RRGGBB) → stored α+darkness, matching the file's other colour consts.
+    let u = norm([w[1], -w[0], 0.0]);
+    let v = norm([
+        w[1] * u[2] - w[2] * u[1],
+        w[2] * u[0] - w[0] * u[2],
+        w[0] * u[1] - w[1] * u[0],
+    ]);
+
+    let theta = aesthetic_channel_unit("colour hue", digest) * core::f32::consts::TAU;
+    let (sin_t, cos_t) = theta.sin_cos();
+    let dir = [
+        u[0] * cos_t + v[0] * sin_t,
+        u[1] * cos_t + v[1] * sin_t,
+        u[2] * cos_t + v[2] * sin_t,
+    ];
+    let grey = [0.5f32; 3];
+
+    // Largest t with origin + t·dir inside [0,1]³ (per-axis wall clip; dir ⊥ w keeps Y at 0.5 for every t).
+    let ray_box_t = |origin: [f32; 3], d: [f32; 3]| -> f32 {
+        let mut t = f32::MAX;
+        for i in 0..3 {
+            if d[i].abs() > 1e-9 {
+                let wall = if d[i] > 0.0 { 1.0 } else { 0.0 };
+                t = t.min((wall - origin[i]) / d[i]);
+            }
+        }
+        t.max(0.0)
+    };
+    // Column-major 3x3 apply (matches vsf's matrix layout).
+    let apply = |m: &[f32; 9], p: [f32; 3]| -> [f32; 3] {
+        [
+            m[0] * p[0] + m[3] * p[1] + m[6] * p[2],
+            m[1] * p[0] + m[4] * p[1] + m[7] * p[2],
+            m[2] * p[0] + m[5] * p[1] + m[8] * p[2],
+        ]
+    };
+
+    let t_vsf = ray_box_t(grey, dir);
+    // The same ray expressed in linear sRGB (linear map ⇒ still a ray): clip against the display cube too.
+    let grey_s = apply(&VSF_RGB2SRGB, grey);
+    let dir_s = apply(&VSF_RGB2SRGB, dir);
+    let t_srgb = ray_box_t(grey_s, dir_s);
+    let t_max = t_vsf.min(t_srgb);
+
+    // √ bias: uniform chroma draws cluster greyish; sqrt pushes the population toward saturated.
+    let chroma = aesthetic_channel_unit("colour chroma", digest).sqrt() * t_max;
+    let rgb_vsf = [
+        grey[0] + chroma * dir[0],
+        grey[1] + chroma * dir[1],
+        grey[2] + chroma * dir[2],
+    ];
+
+    // Display: linear sRGB (already in-cube by the dual clip; clamp only mops up f32 dust) → OETF → bytes → fluor darkness.
+    let lin = apply(&VSF_RGB2SRGB, rgb_vsf);
+    let r = (srgb_oetf(lin[0].clamp(0.0, 1.0)) * 255.0).round() as u32;
+    let g = (srgb_oetf(lin[1].clamp(0.0, 1.0)) * 255.0).round() as u32;
+    let b = (srgb_oetf(lin[2].clamp(0.0, 1.0)) * 255.0).round() as u32;
     let visible = (r << 16) | (g << 8) | b;
     fluor::theme::dark(fluor::theme::fmt(visible))
 }
@@ -2816,8 +2877,14 @@ impl FluorApp for PhotonApp {
                             .as_ref()
                             .map(|s| s.identity_seed)
                             .unwrap_or([0u8; 32]);
-                        let our_colour = party_colour(&our_handle_hash);
-                        let their_colour = party_colour(&contact.handle_hash);
+                        // Relationship-scoped colours: participant P renders as party_colour(spaghettify(P ‖ other)) — the chime's derivation (sender ‖ receiver), so both devices agree on both colours WITHIN a conversation while a party's colour stays unlinkable ACROSS conversations (no global per-identity colour to correlate).
+                        let mut ding = [0u8; 64];
+                        ding[..32].copy_from_slice(&our_handle_hash);
+                        ding[32..].copy_from_slice(&contact.handle_hash);
+                        let our_colour = party_colour(&ihi::spaghettify(&ding));
+                        ding[..32].copy_from_slice(&contact.handle_hash);
+                        ding[32..].copy_from_slice(&our_handle_hash);
+                        let their_colour = party_colour(&ihi::spaghettify(&ding));
 
                         let msg_size = unit * 0.62;
                         let line_h = msg_size * 1.6; // text + breathing room per message
