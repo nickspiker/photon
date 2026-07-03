@@ -85,7 +85,6 @@ tokio-tungstenite = { version = "0.28.0", default-features = false, features = [
 thiserror = "2.0.17"
 anyhow = "1.0"
 log = "0.4"
-env_logger = "0.11"
 hex = "0.4.3"
 bincode = "2.0.1"
 # winit specified per-platform below
@@ -154,7 +153,6 @@ windows = { version = "0.58", features = [
 jni = "0.21"
 ndk = { version = "0.9.0", features = ["api-level-26"] }
 ndk-sys = "0.6.0"
-android_logger = "0.15.0"
 # fluor's Android backend — ANativeWindow surface + JNI shims + Choreographer-driven render scheduling. Same `PhotonApp` FluorApp impl runs on Android (via AndroidShell) and desktop (via host-winit's DesktopShell). winit no longer appears in the Android dep graph — fluor's `WakeSender` trait abstracts cross-thread wake-up (which previously needed `winit::event_loop::EventLoopProxy<UserEvent>` in the trait signature), so the platform-data-types-only `winit` dep + the `android-activity` compile-glue dep + the `android_main` linker shim all retire.
 fluor = { path = "../fluor", default-features = false, features = ["host-android"] }
 

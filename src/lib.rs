@@ -1,6 +1,6 @@
 // PHOTON SOURCE MAP — keep updated when pub items or files change
 //
-// lib.rs ── constants, logging (always-on VSF sink, 16 MiB + jittered 24–48h caps, name-scrubbed), debug macro, module re-exports PHOTON_PORT=4383, PHOTON_PORT_FALLBACK=3546, MULTICAST_PORT=4384 OSC_PER_SEC, PEER_EXPIRY_OSC (7 days), KBUCKET_STALE_OSC (1 hour) init_logging(), log(), log_at(), clear_log() (wipe the log), fp(public_id) (non-PII log label), jitter(i64)/jitter_dur(Duration) (stochastic 50–100% pad for any timer/threshold — anti-thundering-herd)
+// lib.rs ── constants, logging (always-on VSF sink, 16 MiB + jittered 24–48h caps, name-scrubbed), debug macro, module re-exports PHOTON_PORT=4383, PHOTON_PORT_FALLBACK=3546, MULTICAST_PORT=4384 OSC_PER_SEC, PEER_EXPIRY_OSC (7 days), KBUCKET_STALE_OSC (1 hour) init_logging(), log(), log_at(), clear_log() (wipe the log), install_log_bridge() (`log` crate → VSF sink; logcat/env_logger retired), fp(public_id) (non-PII log label), jitter(i64)/jitter_dur(Duration) (stochastic 50–100% pad for any timer/threshold — anti-thundering-herd)
 //
 // main.rs ── winit event loop, window creation, tokio async runtime
 //
@@ -428,6 +428,44 @@ pub fn log_at(level: LogLevel, msg: &str) {
     append_log_record(level, msg);
 }
 
+// Bridge the `log` crate into the VSF sink, so records from every dependency that uses log macros (fluor, tohu, the JNI platform layer, reqwest, ...) land in photon.log.vsf alongside `crate::log` lines — ONE durable, pullable, user-submittable log, no logcat/stdout fork.
+// Mirrors the retired android_logger/env_logger setup: Debug and up globally, the known-noisy crates only at Warn+.
+#[cfg(feature = "logging")]
+struct VsfLogBridge;
+#[cfg(feature = "logging")]
+impl log::Log for VsfLogBridge {
+    fn enabled(&self, meta: &log::Metadata) -> bool {
+        let noisy = meta.target().starts_with("cosmic_text") || meta.target().starts_with("reqwest");
+        !noisy || meta.level() <= log::Level::Warn
+    }
+    fn log(&self, record: &log::Record) {
+        if !self.enabled(record.metadata()) {
+            return;
+        }
+        let lvl = match record.level() {
+            log::Level::Error => LogLevel::Error,
+            log::Level::Warn => LogLevel::Warn,
+            log::Level::Info => LogLevel::Info,
+            log::Level::Debug => LogLevel::Debug,
+            log::Level::Trace => LogLevel::Trace,
+        };
+        append_log_record(lvl, &format!("{}: {}", record.target(), record.args()));
+    }
+    fn flush(&self) {}
+}
+
+/// Route the `log` crate into the VSF sink. Call once at startup (desktop `main`, Android `JNI_OnLoad`); a repeat call is a harmless no-op (`set_logger` fails closed).
+#[cfg(feature = "logging")]
+pub fn install_log_bridge() {
+    if log::set_logger(&VsfLogBridge).is_ok() {
+        log::set_max_level(log::LevelFilter::Debug);
+    }
+}
+
+/// A silent (`--no-default-features`) build installs no logger at all: `log` crate records are dropped, exactly like `crate::log` lines.
+#[cfg(not(feature = "logging"))]
+pub fn install_log_bridge() {}
+
 pub mod crypto;
 pub mod network;
 pub mod platform;
@@ -445,17 +483,8 @@ pub use types::*;
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "system" fn JNI_OnLoad(vm: jni::JavaVM, _: *mut std::os::raw::c_void) -> jni::sys::jint {
-    // Initialize Android logger with module filtering Filter out noisy cosmic_text and reqwest debug logs
-    android_logger::init_once(
-        android_logger::Config::default()
-            .with_tag("photon")
-            .with_max_level(log::LevelFilter::Debug)
-            .with_filter(
-                android_logger::FilterBuilder::new()
-                    .parse("debug,cosmic_text=warn,reqwest=warn")
-                    .build(),
-            ),
-    );
+    // Route the `log` crate into the VSF sink — logcat is retired; photon.log.vsf (external files dir, adb-pullable) is the ONE log.
+    install_log_bridge();
 
     // Set panic hook for better crash diagnostics
     std::panic::set_hook(Box::new(|panic_info| {
