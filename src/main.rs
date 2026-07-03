@@ -106,7 +106,8 @@ fn main() {
     photon_messenger::log("(Photon messenger coming soon—for now there's only ~3 of us!)");
     photon_messenger::log("");
 
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    // Route the `log` crate (fluor and friends) into the VSF sink — no stdout fork; read it live with `photonlog -f`.
+    photon_messenger::install_log_bridge();
 
     // Set cursor size for Linux/X11 to match system cursor settings. Winit doesn't read the DE cursor size, so we set it manually before fluor's host opens its window.
     #[cfg(target_os = "linux")]
