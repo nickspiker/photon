@@ -2249,10 +2249,12 @@ impl FluorApp for PhotonApp {
                 let line_h = (tb_h * 0.45).min(buf_w as f32 / 22.0).max(10.0);
                 let cx = buf_w as f32 * 0.5;
                 let mut y = attest.attest.y1 as f32 + line_h * 1.6;
-                let lines: [(&str, u32); 4] = [
+                // Ownership binds to the HUMAN, not the hardware: the first person to attest owns the handle forever, while devices stay replaceable thru the fleet chain (remove the first device whenever, as long as another is added first). The warning must not mis-teach "this phone owns it".
+                let lines: [(&str, u32); 5] = [
                     ("A handle is a permanent claim.", ERROR_TEXT_COLOUR),
                     ("No password. No reset. No recovery.", STATUS_TEXT_COLOUR),
-                    ("The first device to attest owns it, forever.", STATUS_TEXT_COLOUR),
+                    ("The first human to attest owns it.", STATUS_TEXT_COLOUR),
+                    ("Devices can be replaced. The claim can't.", STATUS_TEXT_COLOUR),
                     ("Press again if you mean it.", STATUS_TEXT_COLOUR),
                 ];
                 for (line, colour) in lines {
