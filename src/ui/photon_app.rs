@@ -210,6 +210,35 @@ fn aesthetic_channel_unit(name: &str, digest: &[u8; 32]) -> f32 {
     (u64::from_le_bytes(out) as f64 / u64::MAX as f64) as f32
 }
 
+/// The relationship digest for party `p` as seen alongside `other`: `spaghettify(p ‖ other)`.
+/// One derivation feeds ears and eyes: the chime uses (sender ‖ receiver), colours use (party ‖ other) — both devices agree on a party's colour within a conversation, and nothing links a party across conversations.
+fn relationship_digest(p: &[u8; 32], other: &[u8; 32]) -> [u8; 32] {
+    let mut input = [0u8; 64];
+    input[..32].copy_from_slice(p);
+    input[32..].copy_from_slice(other);
+    ihi::spaghettify(&input)
+}
+
+/// Encode a linear VSF RGB triple for the framebuffer: linear sRGB (caller guarantees in-gamut; clamp mops up f32 dust) → OETF → stored α+darkness.
+fn vsf_rgb_to_stored(rgb_vsf: [f32; 3]) -> u32 {
+    use vsf::colour::{srgb_oetf, VSF_RGB2SRGB};
+    let m = &VSF_RGB2SRGB;
+    let lin = [
+        m[0] * rgb_vsf[0] + m[3] * rgb_vsf[1] + m[6] * rgb_vsf[2],
+        m[1] * rgb_vsf[0] + m[4] * rgb_vsf[1] + m[7] * rgb_vsf[2],
+        m[2] * rgb_vsf[0] + m[5] * rgb_vsf[1] + m[8] * rgb_vsf[2],
+    ];
+    let r = (srgb_oetf(lin[0].clamp(0.0, 1.0)) * 255.0).round() as u32;
+    let g = (srgb_oetf(lin[1].clamp(0.0, 1.0)) * 255.0).round() as u32;
+    let b = (srgb_oetf(lin[2].clamp(0.0, 1.0)) * 255.0).round() as u32;
+    fluor::theme::dark(fluor::theme::fmt((r << 16) | (g << 8) | b))
+}
+
+/// Self renders in the system's achromatic anchor: VSF grey (0.5, 0.5, 0.5) — photopic Y = 0.5 like every contact colour, zero chroma. It is literally the chroma-0 point of every party's colour ray (Illuminant-E neutral, so a hair warm on a D65 display — that's equal-energy white, the pipeline's honest neutral).
+fn self_colour() -> u32 {
+    vsf_rgb_to_stored([0.5; 3])
+}
+
 /// Deterministic per-party text colour: an iso-luminance hue ray in linear VSF RGB, fed by the relationship digest (`spaghettify(party ‖ other)` — the same digest family as the chime, so ears and eyes derive from one relationship identity).
 ///
 /// Brightness is locked at photopic Y = 0.5 LINEAR via the spectral pipeline (Stockman & Sharpe 2000 10° cone fundamentals, LMS2PHOTOPIC): photopic Y is linear in linear RGB, so the legal colours form a plane slicing the gamut cube thru grey (0.5, 0.5, 0.5).
@@ -217,7 +246,7 @@ fn aesthetic_channel_unit(name: &str, digest: &[u8; 32]) -> f32 {
 /// The walk is clipped against BOTH the VSF RGB cube and the preimage of the linear sRGB cube, so the displayed colour is never gamut-clipped — the 50% promise holds on the actual screen. Returns fluor stored α+darkness.
 fn party_colour(digest: &[u8; 32]) -> u32 {
     use vsf::colour::convert::vsf_rgb_to_photopic_f32;
-    use vsf::colour::{srgb_oetf, VSF_RGB2SRGB};
+    use vsf::colour::VSF_RGB2SRGB;
 
     // Luminance gradient w: photopic Y is linear in rgb, so evaluating the canonical pipeline on the three axes yields the plane normal. Tracks any future vsf observer changes automatically.
     let w = [
@@ -281,13 +310,8 @@ fn party_colour(digest: &[u8; 32]) -> u32 {
         grey[2] + chroma * dir[2],
     ];
 
-    // Display: linear sRGB (already in-cube by the dual clip; clamp only mops up f32 dust) → OETF → bytes → fluor darkness.
-    let lin = apply(&VSF_RGB2SRGB, rgb_vsf);
-    let r = (srgb_oetf(lin[0].clamp(0.0, 1.0)) * 255.0).round() as u32;
-    let g = (srgb_oetf(lin[1].clamp(0.0, 1.0)) * 255.0).round() as u32;
-    let b = (srgb_oetf(lin[2].clamp(0.0, 1.0)) * 255.0).round() as u32;
-    let visible = (r << 16) | (g << 8) | b;
-    fluor::theme::dark(fluor::theme::fmt(visible))
+    // Display: in-cube by the dual clip; shared encoder does sRGB conversion + OETF + darkness packing.
+    vsf_rgb_to_stored(rgb_vsf)
 }
 
 /// Dim a stored α+darkness colour to ~half opacity (for undelivered outgoing messages). The stored high byte is opacity (α), so scaling it down makes the glyph fainter against the background.
@@ -2534,6 +2558,12 @@ impl FluorApp for PhotonApp {
             let text_x = avatar_cx + avatar_r * 1.5;
             let text_size = row_h as f32 * 0.5;
             let ring_thickness = (avatar_r * 0.0375).max(1.0);
+            // Handle names render in each contact's relationship colour (spaghettify per visible row is microseconds; revisit with a cache if contact lists ever get huge).
+            let our_handle_hash = self
+                .session
+                .as_ref()
+                .map(|s| s.identity_seed)
+                .unwrap_or([0u8; 32]);
             for (vis, &ci) in matching.iter().enumerate() {
                 let row_top = rows.y0 as isize + vis as isize * row_h - self.contacts_scroll;
                 if row_top + row_h <= 0 || row_top >= buf_h as isize {
@@ -2593,7 +2623,11 @@ impl FluorApp for PhotonApp {
                     Some(rows_clip),
                 );
 
-                // Handle name, vertically centred in the row, clipped to the list region.
+                // Handle name, vertically centred in the row, clipped to the list region — in this contact's relationship colour.
+                let row_colour = party_colour(&relationship_digest(
+                    &self.contacts[ci].handle_hash,
+                    &our_handle_hash,
+                ));
                 ctx.text.draw_text_left_u32(
                     &mut canvas,
                     self.contacts[ci].handle.as_str(),
@@ -2601,7 +2635,7 @@ impl FluorApp for PhotonApp {
                     cy,
                     text_size,
                     500,
-                    CONTACT_NAME_COLOUR,
+                    row_colour,
                     "Oxanium",
                     Some(rows_clip),
                     None,
@@ -2831,7 +2865,16 @@ impl FluorApp for PhotonApp {
                         None,
                     );
 
-                    // Contact name, centred BELOW the avatar.
+                    // Relationship colour for this contact: everything handle-specific on this screen (name, their message text) renders in it. Self is the neutral-grey anchor.
+                    let our_handle_hash = self
+                        .session
+                        .as_ref()
+                        .map(|s| s.identity_seed)
+                        .unwrap_or([0u8; 32]);
+                    let their_colour =
+                        party_colour(&relationship_digest(&contact.handle_hash, &our_handle_hash));
+
+                    // Contact name, centred BELOW the avatar, in their relationship colour.
                     let name_size = unit * 1.2;
                     let name_y = avatar_y + avatar_r + unit * 1.2;
                     ctx.text.draw_text_center_u32(
@@ -2841,7 +2884,7 @@ impl FluorApp for PhotonApp {
                         name_y,
                         name_size,
                         600,
-                        CONTACT_NAME_COLOUR,
+                        their_colour,
                         "Oxanium",
                         None,
                         None,
@@ -2872,19 +2915,8 @@ impl FluorApp for PhotonApp {
                     // Message history + compose box only exist once CLUTCH is Complete — before that there's no chain to encrypt on, and sending no-ops. Until then the screen shows just the avatar + "CLUTCH: …" status (above), so the user isn't presented a dead input box for a contact they can't message yet.
                     if contact.clutch_state == crate::types::ClutchState::Complete {
                         // ── Message list ─────────────────────────────────────────── Text-only, right-aligned (outgoing) / left-aligned (incoming), one thin white divider after every message. Newest at the bottom, just above the compose bar; older scroll up off-screen.
-                        let our_handle_hash = self
-                            .session
-                            .as_ref()
-                            .map(|s| s.identity_seed)
-                            .unwrap_or([0u8; 32]);
-                        // Relationship-scoped colours: participant P renders as party_colour(spaghettify(P ‖ other)) — the chime's derivation (sender ‖ receiver), so both devices agree on both colours WITHIN a conversation while a party's colour stays unlinkable ACROSS conversations (no global per-identity colour to correlate).
-                        let mut ding = [0u8; 64];
-                        ding[..32].copy_from_slice(&our_handle_hash);
-                        ding[32..].copy_from_slice(&contact.handle_hash);
-                        let our_colour = party_colour(&ihi::spaghettify(&ding));
-                        ding[..32].copy_from_slice(&contact.handle_hash);
-                        ding[32..].copy_from_slice(&our_handle_hash);
-                        let their_colour = party_colour(&ihi::spaghettify(&ding));
+                        // Our text is the neutral-grey anchor (same Y = 0.5, zero chroma); theirs is the relationship colour computed above.
+                        let our_colour = self_colour();
 
                         let msg_size = unit * 0.62;
                         let line_h = msg_size * 1.6; // text + breathing room per message
@@ -6466,14 +6498,12 @@ impl PhotonApp {
                                 }
                             }
 
-                            // Per-contact notification chime: spaghettify(their_handle_hash ‖ our_identity_seed) → deterministic modal bell (chirp crate). The handle TEXT never touches the session store by design, so the pre-PoW handle hashes are the canonical identity material — same determinism, one hash earlier. Asymmetric on purpose: each side hears its own bell for the other. Synthesis (~a second of f64 modal math) + playback run on a detached thread so the receive loop never blocks; desktop-only (Android gets platform notifications).
+                            // Per-contact notification chime: the sender's relationship digest → deterministic modal bell (chirp crate) — the SAME digest that colours their handle and messages, so ears and eyes agree. The handle TEXT never touches the session store by design; the pre-PoW hashes are the canonical identity material. Synthesis (~a second of f64 modal math) + playback run on a detached thread so the receive loop never blocks; desktop-only (Android gets platform notifications).
                             #[cfg(not(any(target_os = "redox", target_os = "android")))]
                             {
-                                let mut ding = [0u8; 64];
-                                ding[..32].copy_from_slice(&from_handle_hash);
-                                ding[32..].copy_from_slice(&our_handle_hash);
+                                let digest = relationship_digest(&from_handle_hash, &our_handle_hash);
                                 std::thread::spawn(move || {
-                                    chirp::Chirp::from_hash(ihi::spaghettify(&ding)).play_blocking().unwrap_or_else(|e| crate::log(&format!("CHIME: {e}")));
+                                    chirp::Chirp::from_hash(digest).play_blocking().unwrap_or_else(|e| crate::log(&format!("CHIME: {e}")));
                                 });
                             }
                         }
