@@ -11,6 +11,8 @@ impl TextRenderer {
 
         let db = font_system.db_mut();
 
+        // GLYPH COVERAGE WARNING: on Android these bundled fonts are ALL there is — no system-font fallback — so every character drawn as UI text must exist in Oxanium / Open Sans / Josefin Slab or it renders as a tofu box on the phone (while desktop silently falls back to DejaVu and hides the bug). None of the three carry ← → ⚠ ✓ ⊥; use ‹ (U+2039) for back affordances and √ (U+221A) for check marks, or verify new glyphs with fontTools before drawing them.
+
         // Load Oxanium (for logo)
         db.load_font_data(include_bytes!("../../assets/Oxanium/Oxanium-ExtraLight.ttf").to_vec());
         db.load_font_data(include_bytes!("../../assets/Oxanium/Oxanium-Light.ttf").to_vec());

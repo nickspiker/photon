@@ -1875,7 +1875,7 @@ impl FluorApp for PhotonApp {
                 }
                 AddDeviceUpdate::Bound => {
                     self.add_device_checking = false;
-                    self.add_device_status = "Device added \u{2713}".to_string();
+                    self.add_device_status = "Device added \u{221a}".to_string();
                     self.add_device_match = None;
                     self.add_device_rx = None;
                     self.add_device_tx = None;
@@ -1921,7 +1921,7 @@ impl FluorApp for PhotonApp {
                 JoinUpdate::Matched => {
                     // The device in your hand visibly flips: an existing device verified our words — bind is imminent.
                     self.add_join_ready = true;
-                    self.add_join_status = "Matched \u{2713} — binding\u{2026}".to_string();
+                    self.add_join_status = "Matched \u{221a} — binding\u{2026}".to_string();
                 }
                 JoinUpdate::Joined(fleet_key) => {
                     // We're in the fleet now — drop add-mode and run the normal attest (it now passes the fleet gate). Stash any received fleet key to persist once attest sets the vault up.
@@ -2059,7 +2059,7 @@ impl FluorApp for PhotonApp {
             let n = store_peers + if self.online { 1 } else { 0 };
             format!("{n} peers")
         } else {
-            "\u{2190} Network".to_string()
+            "\u{2039} Network".to_string()
         };
 
         // Clamp the contacts block scroll and refresh the contacts widget layout BEFORE taking the long-lived `chrome` borrow. The whole user section (avatar, hint, search box, separator) now scrolls with the contact rows as one block, and the search box / plus button rects are positioned in `update_widget_layout` off `contacts_scroll`; doing this here (rather than inside the borrowed render block, which can't call `&mut self`) keeps the box, the avatar, and the rows all reading the SAME clamped offset within a frame — no one-frame mismatch at the over-scroll boundary. The formula matches the in-block geometry exactly: `max_scroll = (rows.y0 + matching·row_h) − buf_h`, hard-stopped at 0.
@@ -2897,7 +2897,7 @@ impl FluorApp for PhotonApp {
                     // Back arrow (top-left) — below the chrome title bar area.
                     let back_y = buf_h as f32 * 0.06 + unit;
                     let back_size = unit * 1.15;
-                    let back_text = "\u{2190} Contacts";
+                    let back_text = "\u{2039} Contacts";
                     ctx.text.draw_text_left_u32(
                         &mut canvas,
                         back_text,
