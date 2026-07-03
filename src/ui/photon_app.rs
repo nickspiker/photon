@@ -2623,11 +2623,15 @@ impl FluorApp for PhotonApp {
                     Some(rows_clip),
                 );
 
-                // Handle name, vertically centred in the row, clipped to the list region — in this contact's relationship colour.
-                let row_colour = party_colour(&relationship_digest(
-                    &self.contacts[ci].handle_hash,
-                    &our_handle_hash,
-                ));
+                // Handle name, vertically centred in the row, clipped to the list region — in this contact's relationship colour. Self-as-contact rows get the neutral anchor (no other party, no relationship).
+                let row_colour = if self.contacts[ci].handle_hash == our_handle_hash {
+                    self_colour()
+                } else {
+                    party_colour(&relationship_digest(
+                        &self.contacts[ci].handle_hash,
+                        &our_handle_hash,
+                    ))
+                };
                 ctx.text.draw_text_left_u32(
                     &mut canvas,
                     self.contacts[ci].handle.as_str(),
@@ -2871,8 +2875,13 @@ impl FluorApp for PhotonApp {
                         .as_ref()
                         .map(|s| s.identity_seed)
                         .unwrap_or([0u8; 32]);
-                    let their_colour =
-                        party_colour(&relationship_digest(&contact.handle_hash, &our_handle_hash));
+                    // Self-as-contact (notes-to-self): there is no other party, so no relationship colour — everything is the neutral anchor.
+                    let is_self_contact = contact.handle_hash == our_handle_hash;
+                    let their_colour = if is_self_contact {
+                        self_colour()
+                    } else {
+                        party_colour(&relationship_digest(&contact.handle_hash, &our_handle_hash))
+                    };
 
                     // Contact name, centred BELOW the avatar, in their relationship colour.
                     let name_size = unit * 1.2;
@@ -2958,6 +2967,7 @@ impl FluorApp for PhotonApp {
                                 None,
                             );
                             // Dim outgoing until delivered; incoming always full.
+                            // Self-as-contact: every message is ours (there is no other party), so everything sits on the right in the neutral grey — their_colour is already the anchor in that case, and the loopback "incoming" copy renders like a delivered outgoing.
                             let colour = if msg.is_outgoing {
                                 if msg.delivered {
                                     our_colour
@@ -2967,7 +2977,7 @@ impl FluorApp for PhotonApp {
                             } else {
                                 their_colour
                             };
-                            if msg.is_outgoing {
+                            if msg.is_outgoing || is_self_contact {
                                 ctx.text.draw_text_right_u32(
                                     &mut canvas,
                                     &msg.content,
