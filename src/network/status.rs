@@ -606,6 +606,9 @@ async fn run_checker(
 ) {
     use tokio::net::UdpSocket as TokioUdpSocket;
 
+    // Raw device pubkey for the LAN-discovery paths: stamped into our outgoing beacon and compared against incoming ones, so a device never learns its own looped-back beacon as a peer address ([u8; 32] is Copy — each spawned listener grabs its own).
+    let our_device_pk: [u8; 32] = keypair.public.to_bytes();
+
     let cloned = match std_socket.try_clone() {
         Ok(s) => s,
         Err(e) => {
@@ -741,7 +744,7 @@ async fn run_checker(
                         ));
                         let packet = &buf[..len];
                         // Only process pt_disc packets (LAN discovery)
-                        if let Some(lan_update) = parse_lan_discovery(packet, src_addr) {
+                        if let Some(lan_update) = parse_lan_discovery(packet, src_addr, &our_device_pk) {
                             crate::log(&format!(
                                 "LAN: Discovered peer via multicast: {}",
                                 src_addr
@@ -892,7 +895,7 @@ async fn run_checker(
                             len, src_addr
                         ));
                         let packet = &buf[..len];
-                        if let Some(lan_update) = parse_lan_discovery(packet, src_addr) {
+                        if let Some(lan_update) = parse_lan_discovery(packet, src_addr, &our_device_pk) {
                             crate::log(&format!(
                                 "LAN: Discovered peer via IPv6 multicast: {}",
                                 src_addr
@@ -1294,7 +1297,7 @@ async fn run_checker(
                     udp::log_received(msg_bytes, &src_addr);
 
                     // Handle LAN discovery packets (same port as main socket now)
-                    if let Some(lan_update) = parse_lan_discovery(msg_bytes, src_addr) {
+                    if let Some(lan_update) = parse_lan_discovery(msg_bytes, src_addr, &our_device_pk) {
                         send_status_update(&status_tx_recv, lan_update, &event_proxy_recv);
                         continue;
                     }
@@ -2109,7 +2112,7 @@ async fn run_checker(
 
         // Process LAN discovery requests via multicast (more reliable than broadcast)
         while let Ok(request) = lan_broadcast_rx.try_recv() {
-            let packet = udp::build_lan_discovery(request.our_handle_proof, request.our_port);
+            let packet = udp::build_lan_discovery(request.our_handle_proof, request.our_port, our_device_pk);
 
             // IPv4 multicast: 239.104.199.144 (from random entropy 0x68C790)
             let mcast_v4 = SocketAddr::new(
@@ -2380,8 +2383,18 @@ async fn handle_pt_vsf_packet(
 }
 
 /// Parse LAN discovery packet from main UDP socket Returns StatusUpdate::LanPeerDiscovered if valid, None otherwise
-fn parse_lan_discovery(packet: &[u8], src_addr: SocketAddr) -> Option<StatusUpdate> {
-    let (handle_proof, local_ip, port) = udp::parse_lan_discovery(packet, src_addr)?;
+fn parse_lan_discovery(
+    packet: &[u8],
+    src_addr: SocketAddr,
+    our_device_pubkey: &[u8; 32],
+) -> Option<StatusUpdate> {
+    let (handle_proof, local_ip, port, beacon_device) = udp::parse_lan_discovery(packet, src_addr)?;
+    // Our own beacon loops back to us (multicast loopback + broadcast self-delivery). Pre-fleet that was harmless — our own handle_proof was never a contact — but the self-conversation makes our handle a contact, so accepting our own beacon overwrites that contact's LAN address with OUR OWN IP and every send boomerangs back to ourselves (observed: phone retransmitting to itself for 20+ minutes). The fleet shares one handle_proof, so self is detected by the beacon's device key; the source-IP test is only the fallback for pre-ke beacons, and it misses on multi-homed devices (Android wifi + cellular CLAT have different IPs and get_local_ip sees the cellular one).
+    match beacon_device {
+        Some(ke) if ke == *our_device_pubkey => return None,
+        None if udp::get_local_ip() == Some(local_ip) => return None,
+        _ => {}
+    }
     crate::log(&format!(
         "LAN: Received discovery from {} (handle_proof: {}..., port: {})",
         src_addr,
