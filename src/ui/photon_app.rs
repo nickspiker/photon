@@ -441,6 +441,8 @@ pub struct PhotonApp {
     debug_hit_colours: Vec<u32>,
     /// "Were both brackets held last frame?" — read in `damage_rect` so the frame following a release still includes the chord-hint bbox (one extra paint to clear stale hint pixels), and the toggle is debounced thru a full frame.
     last_chord_held: bool,
+    /// True when anything OTHER than self-damage-tracking widget state changed since the last render — screen content is immediate-mode (contact rows, bubbles, banners, toasts all re-rasterize as a function of app state), so any state change that could move content claims the full viewport in `damage_rect`. What stays narrow: pure widget frames (blinkey flips, drag-select growth) where the widgets' own `damage_rect`s are the whole story. Set by every event except `CursorMoved` (hover lives in the host overlay pass; drag-select is textbox-tracked), by every content-flavoured `needs_redraw` in `tick`, and cleared at the end of `render`. Starts true so the first frame paints everything.
+    scene_dirty: bool,
     /// The device's session identity (register-shaped roots), set on `QueryResult::Success`. `None` while the user is still on Launch. Replaces the handle string — Photon never holds the plaintext handle past first attest; an optional "show my handle" label would re-prompt rather than store it.
     session: Option<tohu::SessionIdentity>,
     /// True when the dual-ring vault flagged a damaged ring on open this session. Drives the persistent amber banner on the Ready screen. Sticky for the session.
@@ -591,6 +593,7 @@ impl PhotonApp {
             show_hitmask: false,
             debug_hit_colours: Vec::new(),
             last_chord_held: false,
+            scene_dirty: true,
             session: None,
             vault_degraded: false,
             clock_check_tx: {
@@ -1134,6 +1137,10 @@ impl FluorApp for PhotonApp {
     fn on_event(&mut self, event: &Event, ctx: &mut Context) -> EventResponse {
         // Any event is user engagement — reset the presence-sweep idle clock so the cadence returns to the active (5s) tier. Cheap (just a timestamp); the immediate-sweep-on-focus is handled in the Focused arm below.
         self.last_interaction = Some(Instant::now());
+        // Every event except cursor movement may move immediate-mode content, so it claims a full-viewport frame. CursorMoved's effects are all narrow-tracked: hover tints live in the host overlay pass, drag-select is the textbox's own damage, and the one content-flavoured hover (the Ready avatar hint) sets `scene_dirty` at its flip site.
+        if !matches!(event, Event::CursorMoved { .. }) {
+            self.scene_dirty = true;
+        }
         match event {
             Event::CursorMoved { .. } => {
                 // Drag-select extension takes precedence over hover updates. Active iff we're inside a left-press-then-move sequence over the focused textbox; on first move during the drag we set the anchor to the cursor's pre-drag position (the click landed there via Textbox::on_click), then update `cursor` to the character nearest the live cursor X. `cursor_index_from_x` saturates internally — X past text bounds returns the first/last character index — so no clamp here.
@@ -1192,6 +1199,8 @@ impl FluorApp for PhotonApp {
                     let want = self.avatar_hit_id != HIT_NONE && new_hit == self.avatar_hit_id;
                     if self.avatar_hovered != want {
                         self.avatar_hovered = want;
+                        // The avatar hover hint is CONTENT (drawn text, not an overlay tint), so its flip needs the full-viewport frame CursorMoved otherwise avoids.
+                        self.scene_dirty = true;
                         changed = true;
                     }
                 }
@@ -1766,10 +1775,12 @@ impl FluorApp for PhotonApp {
         }
 
         // Drive the blinkey on the focused textbox. `BlinkTimer::poll(now)` returns `true` ONLY on the rising edge of each fire (then schedules the next random 0-300ms interval and returns false the rest of the time). On each fire, toggle the focused textbox's blinkey via `flip_blinkey` — which is a no-op on an unfocused textbox, so we can call it on every textbox without gating.
+        // Tracked SEPARATELY from `needs_redraw`: a blinkey flip is fully covered by the textbox's own `damage_rect`, so a pure-blink frame must not raise `scene_dirty` — that's what keeps the idle repaint a teeny cursor-sized rect instead of the whole window.
+        let mut blink_redraw = false;
         if self.blink_timer.poll(now) {
             for (_, tb) in self.textboxes_mut() {
                 if tb.flip_blinkey() {
-                    needs_redraw = true;
+                    blink_redraw = true;
                 }
             }
         }
@@ -1949,21 +1960,67 @@ impl FluorApp for PhotonApp {
             _ => {} // still pending, or no pull in flight
         }
 
-        if needs_redraw {
+        // Content-flavoured redraws dirty the scene (full-viewport frame); a pure blinkey flip stays out so its frame narrows to the textbox's own damage rect.
+        self.scene_dirty |= needs_redraw;
+        let redraw = needs_redraw || blink_redraw;
+        if redraw {
             ctx.window.request_redraw();
         }
-        needs_redraw
+        redraw
     }
 
     fn damage_rect(&self, viewport: Viewport) -> Option<PixelRect> {
-        // Default = full viewport. Override here ONLY to ensure the chord hint bbox is included in the frame following a bracket release — without that, stale hint pixels survive one frame because the host's damage rect wouldn't otherwise cover it. (Full-viewport default already covers the chord hint, so this is mostly future-proofing for when we narrow damage.)
         let vw = viewport.width_px as usize;
         let vh = viewport.height_px as usize;
-        let mut combined = PixelRect::new(0, 0, vw, vh);
-        if self.last_chord_held || self.brackets_held(Instant::now()) {
-            combined = combined.union(chord_hint_bbox(viewport, vw, vh));
+        // Full viewport whenever immediate-mode content may have moved (`scene_dirty`), and whenever the chord hint is up or just released (stale hint pixels need one covering frame to clear).
+        let chord = self.last_chord_held || self.brackets_held(Instant::now());
+        if self.scene_dirty || chord {
+            let mut combined = PixelRect::new(0, 0, vw, vh);
+            if chord {
+                combined = combined.union(chord_hint_bbox(viewport, vw, vh));
+            }
+            return Some(combined);
         }
-        Some(combined)
+        // Pure widget frame (blinkey flip, drag-select growth): union each widget's self-reported damage. Gates MUST mirror `visit`'s render gates — claiming a rect for a widget that won't be rendered would clear its pixels to bare background. `None` = nothing changed, host skips the render entirely.
+        let mut combined: Option<PixelRect> = None;
+        let mut union_in = |r: Option<PixelRect>| {
+            if let Some(r) = r {
+                combined = Some(combined.map_or(r, |c| c.union(r)));
+            }
+        };
+        if let Some(chrome) = self.chrome.as_ref() {
+            union_in(chrome.damage_rect());
+        }
+        if matches!(self.state, AppState::Launch(_)) {
+            let join_words_up = self.launch_add_mode && self.add_join_words.is_some();
+            if !join_words_up {
+                union_in(self.textbox.as_ref().and_then(|t| t.damage_rect(vw, vh)));
+                let handle_entered =
+                    self.textbox.as_ref().map(|tb| !tb.chars.is_empty()).unwrap_or(false);
+                if handle_entered {
+                    union_in(self.attest_btn.as_ref().and_then(|b| b.damage_rect(vw, vh)));
+                }
+            }
+        }
+        if matches!(self.state, AppState::AddDevice) {
+            union_in(self.textbox.as_ref().and_then(|t| t.damage_rect(vw, vh)));
+        }
+        if matches!(self.state, AppState::Ready) {
+            union_in(self.contacts_textbox.as_ref().and_then(|t| t.damage_rect(vw, vh)));
+            union_in(self.contacts_plus_btn.as_ref().and_then(|b| b.damage_rect(vw, vh)));
+        }
+        if matches!(self.state, AppState::Conversation) {
+            let complete = self
+                .active_contact
+                .and_then(|ci| self.contacts.get(ci))
+                .map(|c| c.clutch_state == crate::types::ClutchState::Complete)
+                .unwrap_or(false);
+            if complete {
+                union_in(self.message_textbox.as_ref().and_then(|t| t.damage_rect(vw, vh)));
+                union_in(self.message_send_btn.as_ref().and_then(|b| b.damage_rect(vw, vh)));
+            }
+        }
+        combined
     }
 
     fn render(&mut self, target: &mut [u32], ctx: &mut Context) {
@@ -2186,6 +2243,26 @@ impl FluorApp for PhotonApp {
                 }
             }
 
+            // Permanence warning block (`LaunchState::Confirm`) — drawn in the empty 6-unit band BELOW the attest button, sized with the same ru-scaled math as the join-words rows. The headline takes the error colour for gravity; the detail lines stay in status grey. The button above now reads "Yes — forever"; editing the handle cancels back to Fresh.
+            if matches!(launch_state, LaunchState::Confirm) && !self.launch_add_mode {
+                let tb_h = (attest.textbox.y1 - attest.textbox.y0) as f32;
+                let line_h = (tb_h * 0.45).min(buf_w as f32 / 22.0).max(10.0);
+                let cx = buf_w as f32 * 0.5;
+                let mut y = attest.attest.y1 as f32 + line_h * 1.6;
+                let lines: [(&str, u32); 4] = [
+                    ("A handle is a permanent claim.", ERROR_TEXT_COLOUR),
+                    ("No password. No reset. No recovery.", STATUS_TEXT_COLOUR),
+                    ("The first device to attest owns it, forever.", STATUS_TEXT_COLOUR),
+                    ("Press again if you mean it.", STATUS_TEXT_COLOUR),
+                ];
+                for (line, colour) in lines {
+                    ctx.text.draw_text_center_u32(
+                        &mut canvas, line, cx, y, line_h, 600, colour, "Oxanium", None, None, None,
+                    );
+                    y += line_h * 1.35;
+                }
+            }
+
             // Join words phase (new device): the screen becomes display-only — this device's pairing words, drawn in rows for reading onto the other device, flipping to the found-colour when a member matches them. No textbox, no attest button.
             let join_words_up = self.launch_add_mode && self.add_join_words.is_some();
             if join_words_up {
@@ -2216,6 +2293,24 @@ impl FluorApp for PhotonApp {
                             &mut canvas, line, cx, y, line_h, 600, colour, "Oxanium", None, None, None,
                         );
                         y += line_h * 1.35;
+                    }
+                    // Name the device being enrolled, so a user pairing several devices can tell on both screens which one these words belong to. Deterministic two-word default from the device secret; the owner-edited override arrives with the devices page.
+                    if let Some(kp) = self.device_keypair.as_ref() {
+                        let name = crate::network::fgtw::fleet::device_name_default(kp.secret.as_bytes());
+                        y += line_h * 0.4;
+                        ctx.text.draw_text_center_u32(
+                            &mut canvas,
+                            &format!("this device: {name}"),
+                            cx,
+                            y,
+                            line_h * 0.8,
+                            500,
+                            fluor::theme::HINT_COLOUR,
+                            "Oxanium",
+                            None,
+                            None,
+                            None,
+                        );
                     }
                 }
             } else {
@@ -3158,6 +3253,9 @@ impl FluorApp for PhotonApp {
                     .unwrap_or(0);
             }
         }
+
+        // Everything content-flavoured is now freshly painted — the next frame can narrow to pure widget damage unless something re-dirties the scene.
+        self.scene_dirty = false;
     }
 
     fn hit_test_map(&self) -> Option<(&[HitId], usize, usize)> {
@@ -3179,8 +3277,8 @@ impl FluorApp for PhotonApp {
             .map(|c| c.hit_at(x, y))
             .unwrap_or(HIT_NONE);
         if let Some(chrome) = self.chrome.as_ref() {
-            // App-icon orb has no click action yet; everything else (close / min / max) is pressable so the pointer cursor is the visual cue.
-            if chrome.owns_hit(hit) && hit != chrome.app_icon_btn.id() {
+            // Every chrome button is pressable — including the orb (settings/about/help panel; interim add-device wiring) — so all get the pointer cue, matching the orb's hover brighten.
+            if chrome.owns_hit(hit) {
                 return CursorIcon::Pointer;
             }
         }
@@ -3427,10 +3525,16 @@ impl PhotonApp {
         EventResponse::Handled
     }
 
-    /// A launch-handle edit invalidates any prior attestation error — drop `Error` back to `Fresh` so the red message clears and the user can resubmit. No-op off the launch screen or when not in an error state.
+    /// A launch-handle edit invalidates any prior attestation error OR an armed permanence confirmation — drop `Error`/`Confirm` back to `Fresh` so the message clears and the user can resubmit. Editing the handle IS the cancel gesture for the Confirm interstitial. No-op off the launch screen or in other states.
     fn clear_launch_error(&mut self) {
-        if matches!(self.state, AppState::Launch(LaunchState::Error(_))) {
+        if matches!(
+            self.state,
+            AppState::Launch(LaunchState::Error(_)) | AppState::Launch(LaunchState::Confirm)
+        ) {
             self.state = AppState::Launch(LaunchState::Fresh);
+            if let Some(btn) = self.attest_btn.as_mut() {
+                btn.set_label("Attest");
+            }
         }
     }
 
@@ -4011,6 +4115,17 @@ impl PhotonApp {
         };
         if handle.is_empty() {
             return;
+        }
+        // Permanence interstitial: the first submit arms the Confirm warning instead of firing the query — a claimed handle has no password and no recovery, so the claim must be a two-press decision. Only a submit FROM Confirm proceeds; any handle edit meanwhile drops back to Fresh via `clear_launch_error`.
+        if !matches!(self.state, AppState::Launch(LaunchState::Confirm)) {
+            self.state = AppState::Launch(LaunchState::Confirm);
+            if let Some(btn) = self.attest_btn.as_mut() {
+                btn.set_label("Yes — forever");
+            }
+            return;
+        }
+        if let Some(btn) = self.attest_btn.as_mut() {
+            btn.set_label("Attest");
         }
         if let Some(hq) = self.handle_query.as_ref() {
             hq.query(handle);

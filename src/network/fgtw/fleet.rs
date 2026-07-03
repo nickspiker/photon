@@ -720,6 +720,26 @@ pub fn words_to_pair_pubkey(words: &str) -> Result<[u8; 32], String> {
     Ok(out)
 }
 
+/// Deterministic default device label: exactly TWO voca words derived one-way from the device secret. blake3 keeps the secret unrecoverable from the label; the fingerprint-deterministic secret makes the label survive a wipe-and-reinstall (the "same device, same name" resume story). Label space is 3177² ≈ 10.1 M, so even a 12-device fleet collides with p ≈ 7×10⁻⁶. camelCase per the voca display convention. The owner-edited override (devices page) supersedes this — it is only the shipped default.
+pub fn device_name_default(device_secret: &[u8; 32]) -> String {
+    let mut input = Vec::with_capacity(24 + 32);
+    input.extend_from_slice(b"PHOTON_DEVICE_NAME_v1");
+    input.extend_from_slice(device_secret);
+    let digest = blake3::hash(&input);
+    let mut n8 = [0u8; 8];
+    n8.copy_from_slice(&digest.as_bytes()[..8]);
+    let base = voca::FULL.alphabet.len() as u64;
+    let n = u64::from_le_bytes(n8) % (base * base);
+    let encoded = voca::encode(num_bigint::BigUint::from(n));
+    // Left-pad to exactly two words (a value < base encodes as one) — fixed width like pair_words, so the label always reads as a two-word name.
+    let mut s = String::new();
+    for _ in pair_word_tokens(&encoded)..2 {
+        s.push_str(&zero_word());
+    }
+    s.push_str(&encoded);
+    s
+}
+
 /// A pairing request the existing device matched against the typed words: the device to bind, proven owned by the pairing key the words name.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PairRequest {
@@ -1410,6 +1430,14 @@ mod tests {
 
     fn key(seed: u8) -> Keypair {
         Keypair::from_seed(&[seed; 32])
+    }
+
+    #[test]
+    fn device_name_default_is_two_stable_words() {
+        let a = device_name_default(&[7u8; 32]);
+        assert_eq!(a, device_name_default(&[7u8; 32]), "deterministic");
+        assert_eq!(pair_word_tokens(&a), 2, "always exactly two words: {a}");
+        assert_ne!(a, device_name_default(&[8u8; 32]), "distinct secrets, distinct names");
     }
     fn pk(k: &Keypair) -> [u8; 32] {
         k.public.to_bytes()

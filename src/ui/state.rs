@@ -36,6 +36,9 @@ pub enum LaunchState {
     /// Ready to attest - show handle input + "Attest" button
     Fresh,
 
+    /// Permanence interstitial after the first Attest press. A claimed handle has no password, no reset, and no recovery — more permanent than any account — so the first press arms this warning and only a second deliberate press fires the query. Any edit to the handle drops back to `Fresh` (same cancel path as `Error`).
+    Confirm,
+
     /// Computing handle_proof + announcing to FGTW Show loading spinner, no button
     Attesting,
 
