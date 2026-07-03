@@ -483,8 +483,6 @@ pub struct PhotonApp {
     pending_input_reset: bool,
     /// AddDevice flow (EXISTING device): status line on the words-entry screen.
     add_device_status: String,
-    /// AddDevice flow: the pairing request the typed words matched, awaiting the bind tap. `Some` = the Bind affordance is live.
-    add_device_match: Option<crate::network::fgtw::fleet::PairRequest>,
     /// AddDevice flow: the last full word entry we checked against the network, so an unchanged entry isn't re-fetched every tick.
     add_device_last_checked: String,
     /// AddDevice flow: a check or bind is in flight (debounces spawns; cleared when its result drains).
@@ -511,6 +509,8 @@ pub struct PhotonApp {
     pending_fleet_key: Option<[u8; 32]>,
     /// In-flight fleet-roster pull; its result (merged into contacts) is drained in `tick`. `Some` = a pull is running, which also debounces re-spawns.
     roster_pull_rx: Option<std::sync::mpsc::Receiver<Vec<crate::network::fgtw::fleet::RosterEntry>>>,
+    /// Transient confirmation on the Ready screen ("Device added ✓"): message + when it appeared. Cleared after ~4 s by `tick`.
+    ready_toast: Option<(String, std::time::Instant)>,
     /// This device's avatar in BT.2020 γ=2.0 u8 RGB, sized `crate::avatar::AVATAR_SIZE × AVATAR_SIZE × 3`. `None` until `on_query_result` pulls one from local storage (no saved avatar = stays `None`, Ready screen falls back to the grey placeholder).
     device_avatar_pixels: Option<Vec<u8>>,
     /// Cached Mitchell resize of `device_avatar_pixels` at the current Ready-screen circle diameter. Rebuilt on diameter change (resize / zoom).
@@ -617,7 +617,6 @@ impl PhotonApp {
             pending_keyboard_request: None,
             pending_input_reset: false,
             add_device_status: String::new(),
-            add_device_match: None,
             add_device_last_checked: String::new(),
             add_device_checking: false,
             add_device_rx: None,
@@ -631,6 +630,7 @@ impl PhotonApp {
             add_join_rx: None,
             pending_fleet_key: None,
             roster_pull_rx: None,
+            ready_toast: None,
             device_avatar_pixels: None,
             device_avatar_scaled: None,
             device_avatar_scaled_diameter: 0,
@@ -1855,21 +1855,21 @@ impl FluorApp for PhotonApp {
             match update {
                 AddDeviceUpdate::Match(req) => {
                     self.add_device_checking = false;
-                    self.add_device_status = "Words match — tap the orb to bind".to_string();
-                    self.add_device_match = Some(req);
+                    // Correct words ARE the confirmation — bind immediately, no orb tap.
+                    self.spawn_bind(req);
                 }
                 AddDeviceUpdate::NoMatch(why) => {
                     self.add_device_checking = false;
                     self.add_device_status = why;
                 }
                 AddDeviceUpdate::Bound => {
-                    self.add_device_checking = false;
-                    self.add_device_status = "Device added \u{2713}".to_string();
-                    self.add_device_match = None;
-                    self.add_device_rx = None;
-                    self.add_device_tx = None;
                     // The add rotated the fleet key — pull the new epoch into our cache now; the next presence/attest cycle re-seals the roster under it (pushing here would race the async cache update and seal under the stale key).
                     self.spawn_fleet_key_sync();
+                    // Done: back to the contact list automatically, with a transient confirmation.
+                    self.end_add_device_flow();
+                    self.state = AppState::Ready;
+                    self.ready_toast =
+                        Some(("Device added \u{2713}".to_string(), std::time::Instant::now()));
                 }
                 AddDeviceUpdate::Failed(e) => {
                     self.add_device_checking = false;
@@ -1879,13 +1879,20 @@ impl FluorApp for PhotonApp {
             needs_redraw = true;
         }
 
+        // Expire the Ready-screen toast ("Device added ✓") after ~4 s.
+        if let Some((_, shown_at)) = &self.ready_toast {
+            if shown_at.elapsed() > std::time::Duration::from_secs(4) {
+                self.ready_toast = None;
+                needs_redraw = true;
+            }
+        }
+
         // AddDevice flow: the completeness gate — the moment the typed entry reaches the fixed word count (and differs from the last checked entry), check it against the posted request off-thread.
         if matches!(self.state, AppState::AddDevice) && !self.add_device_checking {
             let text: String = self.textbox.as_ref().map(|tb| tb.chars.iter().collect()).unwrap_or_default();
             if crate::network::fgtw::fleet::pair_word_tokens(&text)
                 == crate::network::fgtw::fleet::PAIR_WORD_COUNT
                 && text != self.add_device_last_checked
-                && self.add_device_match.is_none()
             {
                 self.add_device_last_checked = text.clone();
                 self.spawn_add_device_check(text);
@@ -2721,6 +2728,27 @@ impl FluorApp for PhotonApp {
                 );
             }
 
+            // Transient toast ("Device added ✓") — green, bottom band, stacked above whichever warning banners are showing; expires in tick.
+            if let Some((msg, _)) = &self.ready_toast {
+                let band_h = ready_layout.unit_height * 1.5;
+                let rows_below =
+                    (self.vault_degraded as u8 + self.clock_off.is_some() as u8) as f32;
+                let cy = buf_h as f32 - band_h * (0.5 + rows_below);
+                ctx.text.draw_text_center_u32(
+                    &mut canvas,
+                    msg,
+                    buf_w as f32 * 0.5,
+                    cy,
+                    band_h * 0.6,
+                    600,
+                    SEARCH_FOUND_COLOUR,
+                    "Oxanium",
+                    None,
+                    None,
+                    None,
+                );
+            }
+
             // Security & Recovery posture meters, bottom-right of the Ready strip (the dozenal version sits bottom-left). Two orthogonal axes — see `identity_posture`. Drawn into `target` at full opacity (unlike the watermark version) so they read as a real, glanceable status affordance, aligned to the version's baseline band. Read-only for now; the tap-to-device-sheet lands with the first modal primitive.
             {
                 let (sec, rec) = identity_posture();
@@ -3123,7 +3151,7 @@ impl FluorApp for PhotonApp {
                 tb_h * 0.5, 500, counter_colour, "Oxanium", None, None, None,
             );
             if !self.add_device_status.is_empty() {
-                let status_colour = if self.add_device_match.is_some() || self.add_device_status.starts_with("Device added") {
+                let status_colour = if self.add_device_status.starts_with("Words match") {
                     SEARCH_FOUND_COLOUR
                 } else {
                     STATUS_TEXT_COLOUR
@@ -3133,13 +3161,9 @@ impl FluorApp for PhotonApp {
                     tb_h * 0.5, 400, status_colour, "Oxanium", None, None, None,
                 );
             }
-            let hint = if self.add_device_match.is_some() {
-                "tap the orb to bind  \u{b7}  Esc to cancel"
-            } else {
-                "tap the orb again to cancel"
-            };
+            // The bind fires automatically on a word match; the only affordance left is cancel.
             ctx.text.draw_text_center_u32(
-                &mut canvas, hint, cx, tb_cy + step * 3.2,
+                &mut canvas, "tap the orb again to cancel", cx, tb_cy + step * 3.2,
                 tb_h * 0.4, 400, STATUS_TEXT_COLOUR, "Oxanium", None, None, None,
             );
         }
@@ -3441,7 +3465,6 @@ impl PhotonApp {
         use crate::network::fgtw::fleet;
         match self.state {
             AppState::Ready => {
-                self.add_device_match = None;
                 self.add_device_last_checked.clear();
                 self.add_device_checking = false;
                 self.add_device_status =
@@ -3459,39 +3482,9 @@ impl PhotonApp {
                 true
             }
             AppState::AddDevice => {
-                if let Some(req) = self.add_device_match.take() {
-                    // Bind: the words matched, the user tapped — sign the add + rotate the fan-out, off-thread (both block on HTTP).
-                    self.add_device_status = "Adding\u{2026}".to_string();
-                    self.add_device_checking = true;
-                    if let (Some(hp), Some(kp), Some(tx)) = (
-                        self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()),
-                        self.device_keypair.clone(),
-                        self.add_device_tx.clone(),
-                    ) {
-                        std::thread::spawn(move || {
-                            let r = fleet::bind_device(&kp, &hp, req.device_pubkey);
-                            if r.is_ok() {
-                                // Re-key the fleet so the newly-added device — and every current member — can recover the fleet key from the fan-out with its own ihi. Best-effort: a failed rotation just means the new device re-syncs on its next attest.
-                                match fleet::current_members(&hp) {
-                                    Ok(members) => {
-                                        if let Err(e) = fleet::rotate_fleet_key(&hp, &kp, &members) {
-                                            crate::log(&format!("FLEET: rotate on add failed: {e}"));
-                                        }
-                                    }
-                                    Err(e) => crate::log(&format!("FLEET: members-on-add failed: {e}")),
-                                }
-                            }
-                            let _ = tx.send(match r {
-                                Ok(()) => AddDeviceUpdate::Bound,
-                                Err(e) => AddDeviceUpdate::Failed(e),
-                            });
-                        });
-                    }
-                } else {
-                    // No matched request → cancel back to the contact list.
-                    self.end_add_device_flow();
-                    self.state = AppState::Ready;
-                }
+                // The bind fires automatically the moment the words match (see AddDeviceUpdate::Match in tick); the orb here is purely CANCEL back to the contact list.
+                self.end_add_device_flow();
+                self.state = AppState::Ready;
                 true
             }
             // New device on the launch screen: toggle JOIN mode (enter the handle; this device then shows its pairing words).
@@ -3674,26 +3667,56 @@ impl PhotonApp {
     }
 
     /// Spawn a background pull of the fleet roster (debounced: one in flight at a time). The result is drained in `tick` and merged. No-op without a handle_proof + fleet key.
+    ///
+    /// Self-healing on decrypt failure: device-ADD rotates the fleet key, so the cached key can be one epoch stale (pairing delivers the pre-rotation key, and the async key sync races this pull — both observed on real hardware as `roster pull failed: aead::Error`). On failure, re-recover the CURRENT epoch key from the fan-out with our device key, refresh the cache, and retry once.
     fn spawn_roster_pull(&mut self) {
         use crate::network::fgtw::fleet;
         if self.roster_pull_rx.is_some() {
             return;
         }
-        let (Some(hp), Some(fleet_key)) = (
+        let (Some(hp), Some(fleet_key), Some(device_key), Some(storage), Some(session)) = (
             self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()),
             self.fleet_key_cached(),
+            self.device_keypair.clone(),
+            self.storage.as_ref().cloned(),
+            self.session.as_ref(),
         ) else {
             return;
         };
+        let key_addr = crate::storage::vault_key("fleet_key", &session.vault_seed);
         let (tx, rx) = std::sync::mpsc::channel();
         self.roster_pull_rx = Some(rx);
         std::thread::spawn(move || {
             let entries = match fleet::pull_roster(&hp, &fleet_key) {
                 Ok(Some(e)) => e,
                 Ok(None) => Vec::new(),
-                Err(e) => {
-                    crate::log(&format!("FLEET: roster pull failed: {e}"));
-                    Vec::new()
+                Err(first) => {
+                    crate::log(&format!(
+                        "FLEET: roster pull failed ({first}) — re-recovering the epoch key and retrying"
+                    ));
+                    match fleet::recover_or_establish_fleet_key(&hp, &device_key) {
+                        Ok(Some(fresh)) if fresh != fleet_key => {
+                            if let Err(e) = storage.write_addr(&key_addr, &fresh) {
+                                crate::log(&format!("FLEET: fleet key cache failed: {e}"));
+                            }
+                            match fleet::pull_roster(&hp, &fresh) {
+                                Ok(Some(e)) => e,
+                                Ok(None) => Vec::new(),
+                                Err(e) => {
+                                    crate::log(&format!("FLEET: roster pull retry failed: {e}"));
+                                    Vec::new()
+                                }
+                            }
+                        }
+                        Ok(_) => {
+                            crate::log("FLEET: roster pull failed and the fan-out key matches — roster sealed under an unknown key");
+                            Vec::new()
+                        }
+                        Err(e) => {
+                            crate::log(&format!("FLEET: key re-recovery failed: {e}"));
+                            Vec::new()
+                        }
+                    }
                 }
             };
             let _ = tx.send(entries);
@@ -3715,15 +3738,50 @@ impl PhotonApp {
             return;
         };
         std::thread::spawn(move || {
-            if let Err(e) = fleet::push_roster(&hp, &kp, &fleet_key, &entries) {
+            // Seal under the LIVE epoch key from the fan-out, not the cache: a push under a stale epoch (device-add rotates the key) writes a roster no current member can decrypt, and unlike a pull there is no retry that can fix it after the fact. Cache is the fallback when the fan-out is unreachable.
+            let key = match fleet::recover_or_establish_fleet_key(&hp, &kp) {
+                Ok(Some(k)) => k,
+                _ => fleet_key,
+            };
+            if let Err(e) = fleet::push_roster(&hp, &kp, &key, &entries) {
                 crate::log(&format!("FLEET: roster push failed: {e}"));
             }
         });
     }
 
+    /// Bind the matched pairing request: sign the add + rotate the fan-out, off-thread (both block on HTTP). Fires automatically when the typed words match — no confirmation tap; the words ARE the confirmation (they prove possession of the new device's screen).
+    fn spawn_bind(&mut self, req: crate::network::fgtw::fleet::PairRequest) {
+        use crate::network::fgtw::fleet;
+        self.add_device_status = "Words match — adding\u{2026}".to_string();
+        self.add_device_checking = true;
+        if let (Some(hp), Some(kp), Some(tx)) = (
+            self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()),
+            self.device_keypair.clone(),
+            self.add_device_tx.clone(),
+        ) {
+            std::thread::spawn(move || {
+                let r = fleet::bind_device(&kp, &hp, req.device_pubkey);
+                if r.is_ok() {
+                    // Re-key the fleet so the newly-added device — and every current member — can recover the fleet key from the fan-out with its own ihi. Best-effort: a failed rotation just means the new device re-syncs on its next attest.
+                    match fleet::current_members(&hp) {
+                        Ok(members) => {
+                            if let Err(e) = fleet::rotate_fleet_key(&hp, &kp, &members) {
+                                crate::log(&format!("FLEET: rotate on add failed: {e}"));
+                            }
+                        }
+                        Err(e) => crate::log(&format!("FLEET: members-on-add failed: {e}")),
+                    }
+                }
+                let _ = tx.send(match r {
+                    Ok(()) => AddDeviceUpdate::Bound,
+                    Err(e) => AddDeviceUpdate::Failed(e),
+                });
+            });
+        }
+    }
+
     /// Clear the AddDevice (existing-device) words-entry state.
     fn end_add_device_flow(&mut self) {
-        self.add_device_match = None;
         self.add_device_last_checked.clear();
         self.add_device_checking = false;
         self.add_device_status.clear();
