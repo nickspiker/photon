@@ -403,73 +403,28 @@ fn u8_to_trust_level(v: u8) -> TrustLevel {
 
 use crate::crypto::clutch::ClutchAllKeypairs;
 
-/// Save CLUTCH keypairs to disk (encrypted). Called after keygen completes - persists ~600KB of ephemeral keypairs.
+/// Memory-only no-op. CLUTCH keypairs are ephemeral ceremony scratch (~600KB, McEliece-heavy); persisting them grew the durable dual-mirror vault and the fallocate/zero grow froze the UI mid-ceremony. `contact.clutch_our_keypairs` is the sole source of truth; a mid-ceremony restart re-runs the off-thread (Min-priority) keygen. Retained as a no-op so call sites stay uniform.
 pub fn save_clutch_keypairs(
-    keypairs: &ClutchAllKeypairs,
-    their_identity_seed: &[u8; 32],
-    storage: &FlatStorage,
+    _keypairs: &ClutchAllKeypairs,
+    _their_identity_seed: &[u8; 32],
+    _storage: &FlatStorage,
 ) -> Result<(), StorageError> {
-    // Build VSF section from keypairs (two multi-value fields)
-    let mut section = VsfSection::new("clutch_keypairs");
-    let (pubkeys, secrets) = keypairs.to_vsf_multi();
-    section.add_field_multi("pubkeys", pubkeys);
-    section.add_field_multi("secrets", secrets);
-
-    let vsf_bytes = section.encode();
-
-    storage.write_addr(&contact_key(their_identity_seed, "keypairs"), &vsf_bytes)?;
-
-    #[cfg(feature = "development")]
-    crate::log(&format!(
-        "STORAGE: Saved CLUTCH keypairs for seed {} (~{}KB)",
-        hex::encode(&their_identity_seed[..4]),
-        vsf_bytes.len() / 1024
-    ));
-
     Ok(())
 }
 
-/// Load CLUTCH keypairs from disk. Returns None if no keypairs file exists or parsing fails.
+/// Memory-only no-op (see [`save_clutch_keypairs`]): nothing is persisted, so this always reports "no keypairs" and the caller re-runs the off-thread keygen.
 pub fn load_clutch_keypairs(
-    their_identity_seed: &[u8; 32],
-    storage: &FlatStorage,
+    _their_identity_seed: &[u8; 32],
+    _storage: &FlatStorage,
 ) -> Result<Option<ClutchAllKeypairs>, StorageError> {
-    let vsf_bytes = match storage.read_addr(&contact_key(their_identity_seed, "keypairs"))? {
-        Some(b) => b,
-        None => return Ok(None),
-    };
-
-    #[cfg(feature = "development")]
-    crate::network::inspect::vsf_read_decrypted(&vsf_bytes, "contact/keypairs");
-
-    let mut ptr = 0;
-    let section = VsfSection::parse(&vsf_bytes, &mut ptr)
-        .map_err(|e| StorageError::Parse(format!("Keypairs parse: {}", e)))?;
-
-    let keypairs = ClutchAllKeypairs::from_vsf_section(&section)
-        .ok_or_else(|| StorageError::Parse("Invalid keypairs format".into()))?;
-
-    #[cfg(feature = "development")]
-    crate::log(&format!(
-        "STORAGE: Loaded CLUTCH keypairs for seed {} (~{}KB)",
-        hex::encode(&their_identity_seed[..4]),
-        vsf_bytes.len() / 1024
-    ));
-
-    Ok(Some(keypairs))
+    Ok(None)
 }
 
-/// Delete CLUTCH keypairs (called after ceremony completes or on zeroize)
+/// Memory-only no-op (see [`save_clutch_keypairs`]): nothing was persisted, so there is nothing to delete — and no vault grow to freeze the UI.
 pub fn delete_clutch_keypairs(
-    their_identity_seed: &[u8; 32],
-    storage: &FlatStorage,
+    _their_identity_seed: &[u8; 32],
+    _storage: &FlatStorage,
 ) -> Result<(), StorageError> {
-    storage.delete_addr(&contact_key(their_identity_seed, "keypairs"))?;
-    #[cfg(feature = "development")]
-    crate::log(&format!(
-        "STORAGE: Deleted CLUTCH keypairs for seed {}",
-        hex::encode(&their_identity_seed[..4])
-    ));
     Ok(())
 }
 
@@ -479,120 +434,14 @@ pub fn delete_clutch_keypairs(
 use crate::crypto::clutch::{ClutchKemSharedSecrets, ClutchOfferPayload};
 use crate::types::PartySlot;
 
-/// Save CLUTCH slots to disk (encrypted). Persists ceremony progress: offers received, KEM secrets computed.
-///
-/// VSF structure (proper multi-value fields):
-/// ```text
-/// [clutch_slots] (ceremony_id: hb{...})                  // if computed (provenances: hb{p0}, hb{p1}, ...)     // only if ceremony_id not yet computed (slot: hb{handle}, u0{offer}, u0{from}, u0{to}, ...data...)  // repeated
-/// ```
+/// Memory-only no-op. CLUTCH slots are ephemeral ceremony scratch (McEliece/Frodo KEM material, hundreds of KB); persisting them grew the durable dual-mirror vault, and that grow — fallocate + zero + fsync on both mirrors — was the multi-second UI freeze mid-ceremony. `contact.clutch_slots` is the sole source of truth; a mid-ceremony restart re-inits and re-runs CLUTCH. Retained as a no-op so call sites stay uniform.
 pub fn save_clutch_slots(
-    slots: &[PartySlot],
-    offer_provenances: &[[u8; 32]],
-    ceremony_id: Option<[u8; 32]>,
-    their_identity_seed: &[u8; 32],
-    storage: &FlatStorage,
+    _slots: &[PartySlot],
+    _offer_provenances: &[[u8; 32]],
+    _ceremony_id: Option<[u8; 32]>,
+    _their_identity_seed: &[u8; 32],
+    _storage: &FlatStorage,
 ) -> Result<(), StorageError> {
-    if slots.is_empty() {
-        return Ok(()); // Nothing to save
-    }
-
-    // Build VSF section with all slots
-    let mut section = VsfSection::new("clutch_slots");
-
-    // Ceremony ID takes priority - if we have it, no need for provenances
-    if let Some(cid) = ceremony_id {
-        section.add_field("ceremony_id", VsfType::hb(cid.to_vec()));
-    } else if !offer_provenances.is_empty() {
-        // Only store provenances if ceremony_id not yet computed (needed to derive it later)
-        section.add_field_multi(
-            "provenances",
-            offer_provenances
-                .iter()
-                .map(|p| VsfType::hb(p.to_vec()))
-                .collect(),
-        );
-    }
-
-    // Each slot as a repeated "slot" field with multi-value Format: (slot: hb{handle_hash}, u0{has_offer}, u0{has_from}, u0{has_to}, u0{has_resend}, ...offer_keys..., ...from_secrets..., ...to_secrets..., ...resend_payload...)
-    for slot in slots {
-        let mut values: Vec<VsfType> = Vec::new();
-
-        // Handle hash identifies this slot's party
-        values.push(VsfType::hb(slot.handle_hash.to_vec()));
-
-        // Flags for what's present
-        values.push(VsfType::u0(slot.offer.is_some()));
-        values.push(VsfType::u0(slot.kem_secrets_from_them.is_some()));
-        values.push(VsfType::u0(slot.kem_secrets_to_them.is_some()));
-        values.push(VsfType::u0(slot.kem_response_for_resend.is_some()));
-
-        // Offer data (if present) - 8 public keys in fixed order
-        if let Some(ref offer) = slot.offer {
-            values.push(VsfType::kx(offer.x25519_public.to_vec()));
-            values.push(VsfType::kp(offer.p384_public.clone()));
-            values.push(VsfType::kk(offer.secp256k1_public.clone()));
-            values.push(VsfType::kp(offer.p256_public.clone()));
-            values.push(VsfType::kf(offer.frodo976_public.clone()));
-            values.push(VsfType::kn(offer.ntru701_public.clone()));
-            values.push(VsfType::kl(offer.mceliece_public.clone()));
-            values.push(VsfType::kh(offer.hqc256_public.clone()));
-        }
-
-        // KEM secrets from them (if present) - 8 typed shared secrets
-        if let Some(ref secrets) = slot.kem_secrets_from_them {
-            values.push(VsfType::ksx(secrets.x25519.to_vec()));
-            values.push(VsfType::ksp(secrets.p384.clone()));
-            values.push(VsfType::ksk(secrets.secp256k1.clone()));
-            values.push(VsfType::ksp(secrets.p256.clone()));
-            values.push(VsfType::ksf(secrets.frodo.clone()));
-            values.push(VsfType::ksn(secrets.ntru.clone()));
-            values.push(VsfType::ksl(secrets.mceliece.clone()));
-            values.push(VsfType::ksh(secrets.hqc.clone()));
-        }
-
-        // KEM secrets to them (if present) - 8 typed shared secrets
-        if let Some(ref secrets) = slot.kem_secrets_to_them {
-            values.push(VsfType::ksx(secrets.x25519.to_vec()));
-            values.push(VsfType::ksp(secrets.p384.clone()));
-            values.push(VsfType::ksk(secrets.secp256k1.clone()));
-            values.push(VsfType::ksp(secrets.p256.clone()));
-            values.push(VsfType::ksf(secrets.frodo.clone()));
-            values.push(VsfType::ksn(secrets.ntru.clone()));
-            values.push(VsfType::ksl(secrets.mceliece.clone()));
-            values.push(VsfType::ksh(secrets.hqc.clone()));
-        }
-
-        // KEM response for resend (if present) - 4 PQC ciphertexts + 4 EC ephemeral + target prefix
-        if let Some(ref resend) = slot.kem_response_for_resend {
-            // PQC ciphertexts (using v() wrapped type with algorithm marker)
-            values.push(VsfType::v(b'f', resend.frodo976_ciphertext.clone()));
-            values.push(VsfType::v(b'n', resend.ntru701_ciphertext.clone()));
-            values.push(VsfType::v(b'l', resend.mceliece_ciphertext.clone()));
-            values.push(VsfType::v(b'h', resend.hqc256_ciphertext.clone()));
-            // Target HQC prefix (8 bytes) - use v('t', ...) to distinguish from handle hb
-            values.push(VsfType::v(b't', resend.target_hqc_pub_prefix.to_vec()));
-            // EC ephemeral pubkeys - use v('e', ...) to distinguish from offer keys
-            values.push(VsfType::v(b'x', resend.x25519_ephemeral.to_vec()));
-            values.push(VsfType::v(b'3', resend.p384_ephemeral.clone()));
-            values.push(VsfType::v(b'k', resend.secp256k1_ephemeral.clone()));
-            values.push(VsfType::v(b'2', resend.p256_ephemeral.clone()));
-        }
-
-        section.add_field_multi("slot", values);
-    }
-
-    let vsf_bytes = section.encode();
-
-    storage.write_addr(&contact_key(their_identity_seed, "slots"), &vsf_bytes)?;
-
-    #[cfg(feature = "development")]
-    crate::log(&format!(
-        "STORAGE: Saved CLUTCH slots for seed {} ({} slots, {}B)",
-        hex::encode(&their_identity_seed[..4]),
-        slots.len(),
-        vsf_bytes.len()
-    ));
-
     Ok(())
 }
 
@@ -603,97 +452,12 @@ pub struct ClutchCeremonyState {
     pub ceremony_id: Option<[u8; 32]>,
 }
 
-/// Load CLUTCH slots from disk. Returns None if no slots file exists.
-///
-/// Parses VSF structure with multi-value fields (no decimal string prefixes):
-/// ```text
-/// [clutch_slots] (provenances: hb{p0}, hb{p1}, ...) (ceremony_id: hb{...}) (slot: hb{handle}, u0{offer}, u0{from}, u0{to}, ...data...)
-/// ```
+/// Memory-only no-op (see [`save_clutch_slots`]): nothing is persisted, so this always reports "no slots" and the caller re-inits the ceremony.
 pub fn load_clutch_slots(
-    their_identity_seed: &[u8; 32],
-    storage: &FlatStorage,
+    _their_identity_seed: &[u8; 32],
+    _storage: &FlatStorage,
 ) -> Result<Option<ClutchCeremonyState>, StorageError> {
-    let vsf_bytes = match storage.read_addr(&contact_key(their_identity_seed, "slots"))? {
-        Some(b) => b,
-        None => return Ok(None),
-    };
-
-    #[cfg(feature = "development")]
-    crate::network::inspect::vsf_read_decrypted(&vsf_bytes, "contact/slots");
-
-    let mut ptr = 0;
-    let section = VsfSection::parse(&vsf_bytes, &mut ptr)
-        .map_err(|e| StorageError::Parse(format!("Slots parse: {}", e)))?;
-
-    // Parse provenances from multi-value field
-    let offer_provenances: Vec<[u8; 32]> = section
-        .get_field("provenances")
-        .map(|f| {
-            f.values
-                .iter()
-                .filter_map(|v| match v {
-                    VsfType::hb(b) if b.len() == 32 => {
-                        let mut arr = [0u8; 32];
-                        arr.copy_from_slice(b);
-                        Some(arr)
-                    }
-                    _ => None,
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-
-    // Parse ceremony_id (optional single value)
-    let ceremony_id = section
-        .get_field("ceremony_id")
-        .and_then(|f| f.values.first())
-        .and_then(|v| match v {
-            VsfType::hb(b) if b.len() == 32 => {
-                let mut arr = [0u8; 32];
-                arr.copy_from_slice(b);
-                Some(arr)
-            }
-            _ => None,
-        });
-
-    // Parse slots from repeated "slot" fields
-    let slot_fields = section.get_fields("slot");
-    let mut slots = Vec::with_capacity(slot_fields.len());
-
-    for field in slot_fields {
-        let slot = parse_slot_from_values(&field.values)?;
-        slots.push(slot);
-    }
-
-    // Sanity check: ceremony_id requires both parties' provenances to compute If we have a ceremony_id but fewer than 2 provenances, it's stale (peer reset)
-    let ceremony_id = if ceremony_id.is_some() && offer_provenances.len() < 2 {
-        #[cfg(feature = "development")]
-        crate::log(&format!(
-            "STORAGE: Clearing stale ceremony_id for seed {} (only {} provenances)",
-            hex::encode(&their_identity_seed[..4]),
-            offer_provenances.len()
-        ));
-        None
-    } else {
-        ceremony_id
-    };
-
-    #[cfg(feature = "development")]
-    crate::log(&format!(
-        "STORAGE: Loaded CLUTCH slots for seed {} ({} slots, {} provenances, ceremony_id={})",
-        hex::encode(&their_identity_seed[..4]),
-        slots.len(),
-        offer_provenances.len(),
-        ceremony_id
-            .map(|c| hex::encode(&c[..4]))
-            .unwrap_or_else(|| "none".into())
-    ));
-
-    Ok(Some(ClutchCeremonyState {
-        slots,
-        offer_provenances,
-        ceremony_id,
-    }))
+    Ok(None)
 }
 
 /// Parse a PartySlot from multi-value field values. Type markers are self-describing - we match on kx/kf/kn/kl/kh/kk/kp, NOT position. Format: hb{handle}, u0{has_offer}, u0{has_from}, u0{has_to}, u0{has_resend}, ...keys by type...
@@ -1027,17 +791,11 @@ fn parse_kem_response_payload(
     }
 }
 
-/// Delete CLUTCH slots (called after ceremony completes)
+/// Memory-only no-op (see [`save_clutch_slots`]): nothing was persisted, so there is nothing to delete — this was the observed 3.67s UI freeze (the delete tripped a vault grow), now gone.
 pub fn delete_clutch_slots(
-    their_identity_seed: &[u8; 32],
-    storage: &FlatStorage,
+    _their_identity_seed: &[u8; 32],
+    _storage: &FlatStorage,
 ) -> Result<(), StorageError> {
-    storage.delete_addr(&contact_key(their_identity_seed, "slots"))?;
-    #[cfg(feature = "development")]
-    crate::log(&format!(
-        "STORAGE: Deleted CLUTCH slots for seed {}",
-        hex::encode(&their_identity_seed[..4])
-    ));
     Ok(())
 }
 
