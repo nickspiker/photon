@@ -28,13 +28,16 @@ section pair_evt {
 
 Kinds:
 
-| kind | meaning | shipped |
-|---|---|---|
-| `matched` | a member verified the pairing words | ✅ |
-| `fleet` | the membership chain extended | ✅ |
-| `fstate` | the fleet-sealed shared state changed (roster today) | ✅ |
-| `friendship` | a sibling completed a CLUTCH / friendship state changed | ⏳ |
-| `stream` | new conversation rows exist for some friendship | ⏳ |
+| kind | meaning | scope | shipped |
+|---|---|---|---|
+| `matched` | a member verified the pairing words | fleet | ✅ |
+| `fleet` | the membership chain extended | **photon-wide** (registry) | ✅ |
+| `fstate` | the fleet-sealed shared state changed (roster today) | fleet | ✅ |
+| `friendship` | a sibling completed a CLUTCH / friendship state changed | fleet | ⏳ |
+| `stream` | new conversation rows exist for some friendship | fleet | ⏳ |
+| `card` | the public card changed (avatar, device set, addresses) | **photon-wide** (registry) | ⏳ |
+
+**Two scopes.** A FLEET-scoped bump concerns state only our own devices can open (fleet-key-sealed) — siblings fetch, everyone else ignores it. A PHOTON-WIDE bump is a REGISTRY update: it changes what every node's phonebook mirror holds (a peer record / IP, a membership chain, an avatar — the public card), so the ding-dong goes to the whole network, not just our fleet. Until the network is big enough to shard, "the whole network" is literal: every node mirrors everything, every registry ding reaches everyone. Kademlia routing + registry splitting (kamadilla) is DEFERRED until ~100k peers — below that, a flat full mirror with global gossip is simpler, faster, and more robust than any DHT. Right now? yeahnah.
 
 Properties:
 - **Best-effort.** A lost bump costs latency, never correctness — the durable slots + the on-launch catch-up query are the guarantee.
@@ -167,3 +170,4 @@ None of the above helps until a friend's device recognises ALL current members o
 
 This shape survives the peers-are-FGTW transition untouched: the bump stops being a Cloudflare hub frame and becomes peer gossip; the slots stop being R2 objects and become peer-held replicas; every fetch is already P2P-first.
 Nothing above assumes fgtw.org exists beyond "somewhere a doorbell rings and a fallback blob sits" — both roles any peer can serve.
+The scale threshold is explicit: the flat everyone-mirrors-everything registry holds to ~100k peers (tiny records, cheap gossip); only past that does kamadilla routing + registry splitting earn its complexity.
