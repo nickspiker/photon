@@ -4309,7 +4309,7 @@ impl PhotonApp {
             };
             (fid, contact.public_identity.key, contact.race_addrs())
         };
-        let Some((peer_addr, _alt)) = addr_pair else {
+        let Some((peer_addr, alt_addr)) = addr_pair else {
             crate::log("CHAT: cannot send — no known address for contact");
             return;
         };
@@ -4418,6 +4418,7 @@ impl PhotonApp {
         if let Some(ref checker) = self.status_checker {
             checker.send_message(crate::network::status::MessageRequest {
                 peer_addr,
+                alt_addr,
                 recipient_pubkey,
                 conversation_token,
                 prev_msg_hp,
@@ -6297,14 +6298,14 @@ impl PhotonApp {
     fn retransmit_due_messages(&mut self) {
         let now_osc = vsf::eagle_time_oscillations();
 
-        // Snapshot (friendship_id → primary addr + recipient pubkey) from contacts so we don't hold a contacts borrow across the mutable chains sweep. Only Complete contacts with a known address.
-        let routes: Vec<(crate::types::FriendshipId, std::net::SocketAddr, [u8; 32])> = self
+        // Snapshot (friendship_id → primary + alt addr + recipient pubkey) from contacts so we don't hold a contacts borrow across the mutable chains sweep. Only Complete contacts with a known address. Carry BOTH addresses — a retransmit that only re-hit the primary would keep blackholing an off-LAN peer for the whole retry budget (observed: 8 attempts all to a dead LAN IPv4).
+        let routes: Vec<(crate::types::FriendshipId, std::net::SocketAddr, Option<std::net::SocketAddr>, [u8; 32])> = self
             .contacts
             .iter()
             .filter_map(|c| {
                 let fid = c.friendship_id?;
-                let (primary, _alt) = c.race_addrs()?;
-                Some((fid, primary, *c.public_identity.as_bytes()))
+                let (primary, alt) = c.race_addrs()?;
+                Some((fid, primary, alt, *c.public_identity.as_bytes()))
             })
             .collect();
         if routes.is_empty() {
@@ -6315,7 +6316,7 @@ impl PhotonApp {
             return;
         };
 
-        for (fid, peer_addr, recipient_pubkey) in routes {
+        for (fid, peer_addr, alt_addr, recipient_pubkey) in routes {
             let Some((_, chains)) = self.friendship_chains.iter_mut().find(|(id, _)| *id == fid)
             else {
                 continue;
@@ -6326,6 +6327,7 @@ impl PhotonApp {
             {
                 checker.send_message(crate::network::status::MessageRequest {
                     peer_addr,
+                    alt_addr,
                     recipient_pubkey,
                     conversation_token,
                     prev_msg_hp,
@@ -6467,6 +6469,7 @@ impl PhotonApp {
         let mut retransmit_requests: Vec<(
             crate::types::FriendshipId,
             std::net::SocketAddr,
+            Option<std::net::SocketAddr>, // alt address to race (public/LAN counterpart)
             String,
             [u8; 32], // Recipient device pubkey for relay fallback
             Option<i64>,
@@ -6652,7 +6655,9 @@ impl PhotonApp {
 
                             // Queue retransmit of pending messages only on the offline→online EDGE (not every online update) — otherwise every received chat would re-trigger a full pending resend.
                             if came_online {
-                                if let (Some(fid), Some(ip)) = (contact.friendship_id, contact.ip) {
+                                if let (Some(fid), Some((primary, alt))) =
+                                    (contact.friendship_id, contact.race_addrs())
+                                {
                                     // Look up sync record for this friendship's conversation_token
                                     let last_received = if let Some((_, chains)) =
                                         self.friendship_chains.iter().find(|(id, _)| *id == fid)
@@ -6668,7 +6673,8 @@ impl PhotonApp {
                                     };
                                     retransmit_requests.push((
                                         fid,
-                                        ip,
+                                        primary,
+                                        alt,
                                         contact.handle.as_str().to_string(),
                                         *contact.public_identity.as_bytes(),
                                         last_received,
@@ -8473,7 +8479,7 @@ impl PhotonApp {
         }
 
         // Retransmit pending messages to contacts that just came online Use last_received_ef6 from pong to only retransmit messages they don't have
-        for (fid, peer_addr, handle, recipient_pubkey, last_received_ef6) in retransmit_requests {
+        for (fid, peer_addr, alt_addr, handle, recipient_pubkey, last_received_ef6) in retransmit_requests {
             if let Some((_, chains)) = self.friendship_chains.iter().find(|(id, _)| *id == fid) {
                 let pending = chains.pending_messages();
                 if !pending.is_empty() {
@@ -8503,6 +8509,7 @@ impl PhotonApp {
                             if let Some(ref checker) = self.status_checker {
                                 checker.send_message(crate::network::status::MessageRequest {
                                     peer_addr,
+                                    alt_addr,
                                     recipient_pubkey,
                                     conversation_token,
                                     prev_msg_hp: msg.prev_msg_hp,
