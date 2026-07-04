@@ -1872,8 +1872,9 @@ impl FluorApp for PhotonApp {
             match update {
                 AddDeviceUpdate::Match(req) => {
                     self.add_device_checking = false;
-                    self.add_device_status = "Words match — tap the orb to bind".to_string();
-                    self.add_device_match = Some(req);
+                    // Auto-bind: correct words ARE the confirmation, and the matched flag is already posted (the new device's ready light is flipping) — waiting for a tap here only lets the two screens drift apart.
+                    self.add_device_match = Some(req.clone());
+                    self.spawn_bind_device(req);
                 }
                 AddDeviceUpdate::NoMatch(why) => {
                     self.add_device_checking = false;
@@ -3254,11 +3255,8 @@ impl FluorApp for PhotonApp {
                     tb_h * 0.5, 400, status_colour, "Oxanium", None, None, None,
                 );
             }
-            let hint = if self.add_device_match.is_some() {
-                "tap the orb to bind  \u{b7}  Esc to cancel"
-            } else {
-                "tap the orb again to cancel"
-            };
+            // Matching words bind automatically, so the orb's only job here is cancel.
+            let hint = "tap the orb to cancel";
             ctx.text.draw_text_center_u32(
                 &mut canvas, hint, cx, tb_cy + step * 3.2,
                 tb_h * 0.4, 400, STATUS_TEXT_COLOUR, "Oxanium", None, None, None,
@@ -3589,39 +3587,9 @@ impl PhotonApp {
                 true
             }
             AppState::AddDevice => {
-                if let Some(req) = self.add_device_match.take() {
-                    // Bind: the words matched, the user tapped — sign the add + rotate the fan-out, off-thread (both block on HTTP).
-                    self.add_device_status = "Adding\u{2026}".to_string();
-                    self.add_device_checking = true;
-                    if let (Some(hp), Some(kp), Some(tx)) = (
-                        self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()),
-                        self.device_keypair.clone(),
-                        self.add_device_tx.clone(),
-                    ) {
-                        std::thread::spawn(move || {
-                            let r = fleet::bind_device(&kp, &hp, req.device_pubkey);
-                            if r.is_ok() {
-                                // Re-key the fleet so the newly-added device — and every current member — can recover the fleet key from the fan-out with its own ihi. Best-effort: a failed rotation just means the new device re-syncs on its next attest.
-                                match fleet::current_members(&hp) {
-                                    Ok(members) => {
-                                        if let Err(e) = fleet::rotate_fleet_key(&hp, &kp, &members) {
-                                            crate::log(&format!("FLEET: rotate on add failed: {e}"));
-                                        }
-                                    }
-                                    Err(e) => crate::log(&format!("FLEET: members-on-add failed: {e}")),
-                                }
-                            }
-                            let _ = tx.send(match r {
-                                Ok(()) => AddDeviceUpdate::Bound,
-                                Err(e) => AddDeviceUpdate::Failed(e),
-                            });
-                        });
-                    }
-                } else {
-                    // No matched request → cancel back to the contact list.
-                    self.end_add_device_flow();
-                    self.state = AppState::Ready;
-                }
+                // The orb is purely CANCEL here — the bind fires automatically the moment the typed words match (typing 23 words on the trusted device IS the consent; see `spawn_bind_device`), so there's no "tap to bind" arm left.
+                self.end_add_device_flow();
+                self.state = AppState::Ready;
                 true
             }
             // New device on the launch screen: toggle JOIN mode (enter the handle; this device then shows its pairing words).
@@ -3852,6 +3820,37 @@ impl PhotonApp {
     }
 
     /// Clear the AddDevice (existing-device) words-entry state.
+    /// Sign the matched device into the fleet + rotate the fan-out, off-thread (both block on HTTP). Fires automatically when the typed words match the posted request — the deliberate act of typing 23 words on the already-trusted device IS the consent, and the new device's ready light has already flipped on the matched flag, so waiting for another tap only leaves the two screens out of step.
+    fn spawn_bind_device(&mut self, req: crate::network::fgtw::fleet::PairRequest) {
+        use crate::network::fgtw::fleet;
+        self.add_device_status = "Words match \u{2014} adding\u{2026}".to_string();
+        self.add_device_checking = true;
+        if let (Some(hp), Some(kp), Some(tx)) = (
+            self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()),
+            self.device_keypair.clone(),
+            self.add_device_tx.clone(),
+        ) {
+            std::thread::spawn(move || {
+                let r = fleet::bind_device(&kp, &hp, req.device_pubkey);
+                if r.is_ok() {
+                    // Re-key the fleet so the newly-added device — and every current member — can recover the fleet key from the fan-out with its own ihi. Best-effort: a failed rotation just means the new device re-syncs on its next attest.
+                    match fleet::current_members(&hp) {
+                        Ok(members) => {
+                            if let Err(e) = fleet::rotate_fleet_key(&hp, &kp, &members) {
+                                crate::log(&format!("FLEET: rotate on add failed: {e}"));
+                            }
+                        }
+                        Err(e) => crate::log(&format!("FLEET: members-on-add failed: {e}")),
+                    }
+                }
+                let _ = tx.send(match r {
+                    Ok(()) => AddDeviceUpdate::Bound,
+                    Err(e) => AddDeviceUpdate::Failed(e),
+                });
+            });
+        }
+    }
+
     fn end_add_device_flow(&mut self) {
         self.add_device_match = None;
         self.add_device_last_checked.clear();
