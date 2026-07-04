@@ -527,6 +527,8 @@ pub struct PhotonApp {
     pending_fleet_key: Option<[u8; 32]>,
     /// In-flight fleet-roster pull; its result (merged into contacts) is drained in `tick`. `Some` = a pull is running, which also debounces re-spawns.
     roster_pull_rx: Option<std::sync::mpsc::Receiver<Vec<crate::network::fgtw::fleet::RosterEntry>>>,
+    /// Set on each attest/resume: "do one roster pull as soon as the fleet key is available." The key is written by an ASYNC fan-out sync, so an immediate pull races it and loses (reads an empty key, early-returns, never retries) — this flag makes tick fire the pull the moment `fleet_key_cached()` goes Some, which is the wake-up catch-up that brings a friend added on a sibling device onto this one.
+    needs_initial_roster_pull: bool,
     /// This device's avatar in BT.2020 γ=2.0 u8 RGB, sized `crate::avatar::AVATAR_SIZE × AVATAR_SIZE × 3`. `None` until `on_query_result` pulls one from local storage (no saved avatar = stays `None`, Ready screen falls back to the grey placeholder).
     device_avatar_pixels: Option<Vec<u8>>,
     /// Cached Mitchell resize of `device_avatar_pixels` at the current Ready-screen circle diameter. Rebuilt on diameter change (resize / zoom).
@@ -655,6 +657,7 @@ impl PhotonApp {
             add_join_rx: None,
             pending_fleet_key: None,
             roster_pull_rx: None,
+            needs_initial_roster_pull: false,
             device_avatar_pixels: None,
             device_avatar_scaled: None,
             device_avatar_scaled_diameter: 0,
@@ -1982,6 +1985,16 @@ impl FluorApp for PhotonApp {
                 }
             }
             needs_redraw = true;
+        }
+
+        // Deferred initial roster pull: fire the moment the (async-synced) fleet key lands, so wake-up catch-up brings sibling-added friends onto this device. One-shot per attest/resume.
+        if self.needs_initial_roster_pull
+            && self.roster_pull_rx.is_none()
+            && self.fleet_key_cached().is_some()
+        {
+            self.needs_initial_roster_pull = false;
+            crate::log("FLEET: initial roster pull (wake-up catch-up)");
+            self.spawn_roster_pull();
         }
 
         // Fleet roster pull result: merge into the contact list (re-CLUTCH happens via the serialized keygen kick inside merge_roster_entries).
@@ -3972,8 +3985,14 @@ impl PhotonApp {
         self.roster_pull_rx = Some(rx);
         std::thread::spawn(move || {
             let entries = match fleet::pull_roster(&hp, &fleet_key) {
-                Ok(Some(e)) => e,
-                Ok(None) => Vec::new(),
+                Ok(Some(e)) => {
+                    crate::log(&format!("FLEET: roster pulled — {} entr(ies)", e.len()));
+                    e
+                }
+                Ok(None) => {
+                    crate::log("FLEET: roster pull — slot empty");
+                    Vec::new()
+                }
                 Err(e) => {
                     crate::log(&format!("FLEET: roster pull failed: {e}"));
                     Vec::new()
@@ -4476,8 +4495,8 @@ impl PhotonApp {
                 }
                 // Establish (genesis founder) or refresh (existing device, picks up a rotation) the fleet key from the fan-out and cache it, so the roster/state seal uses the current key.
                 self.spawn_fleet_key_sync();
-                // Sync the fleet's shared contact roster: pull every attest/refresh (picks up contacts added on sibling devices), and on the INITIAL attest also push our existing set so a fleet formed before roster-sync existed seeds FGTW for newly-joined devices. Pulled contacts merge in as Pending stubs and re-CLUTCH on this device's own key (drained in tick).
-                self.spawn_roster_pull();
+                // Sync the fleet's shared contact roster. The pull is DEFERRED to tick (via the flag) because the fleet key is written by the async sync above — pulling here would race it and read an empty key. On the INITIAL attest also push our existing set so a fleet formed before roster-sync existed seeds FGTW for newly-joined devices. Pulled contacts merge in as Pending stubs and re-CLUTCH on this device's own key (drained in tick).
+                self.needs_initial_roster_pull = true;
                 if !in_app {
                     self.spawn_roster_push();
                 }
