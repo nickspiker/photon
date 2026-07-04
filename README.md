@@ -15,7 +15,7 @@ Photon is a peer-to-peer messaging application that replaces traditional authent
 **Key Properties:**
 - **A = 1**: Authentication happens once when you create your identity. All subsequent access uses cryptographic proofs from that single event.
 - **True P2P**: No message servers. Peers connect directly after DHT-based discovery.
-- **Hardware-bound identity**: Device keys derived deterministically from hardware fingerprints, never stored on disk. On commodity hardware this inherits the vendor's device-ID uniqueness guarantee—see [the uniqueness dependency](#the-uniqueness-dependency-read-this-before-you-ship-on-commodity-hardware); PIPE silicon is the endgame that removes the dependency.
+- **Device-bound identity**: Device keys derived deterministically from a platform identifier, never stored on disk. On commodity hardware the identifier is written by the OS vendor and, on desktop, is readable by any local code—so this is device-binding against *remote* attackers, not a hardware secret. See [what this actually protects](#what-this-actually-protects-and-what-it-does-not-read-before-shipping-on-commodity-hardware); PIPE silicon is the endgame that makes it a real hardware lock.
 - **Social recovery**: Lose your devices? Trusted contacts hold encrypted key shards for threshold reconstruction.
 - **Message immutability**: Editing or deleting messages breaks cryptographic chain—tampering is detectable.
 
@@ -180,18 +180,31 @@ const APP_CONTEXT: &[u8] = b"photon_device_identity_v0";
 let device_secret = blake3::derive_key(APP_CONTEXT, &machine_id);
 ```
 
-This provides: device-specific keys, resistance to remote attacks (requires both identifier exfiltration and app reverse-engineering), and security comparable to SSH keys or cryptocurrency wallets. Physical device theft remains the primary threat vector.
+This provides device-*binding*: the key is tied to *this* install's identifier, so a purely **remote** attacker—one who never runs code on the box and never gets a copy of the identifier—cannot derive it. That is the entire security benefit, and it is worth stating precisely because it is narrow.
 
-The hardware exists and is capable. Platform vendors use it internally for device attestation, DRM, and payment processing. Third-party access would enable applications that bypass platform identity systems—a business model conflict, not a technical limitation.
+#### What this actually protects, and what it does not (read before shipping on commodity hardware)
 
-#### The uniqueness dependency (read this before you ship on commodity hardware)
+Be honest about the primitive: `derive_key(context, machine_id)` has **nothing secret on the right-hand side.** `context` is a constant in this open-source code; `machine_id` is a value the OS vendor writes and, on every desktop platform, exposes to unprivileged local code:
 
-Because the device key is `derive_key(context, machine_id)`, **Photon's device-identity security is only as good as your OS/hardware vendor's guarantee that `machine_id` is unique.** The CDD requires `ANDROID_ID` to be unique, and `/etc/machine-id` / `IOPlatformUUID` are unique per install by construction—but that is a *promise from the manufacturer*, not a property Photon can enforce. If a vendor ever ships an image or an OTA that duplicates that identifier across devices (a real class of bug: golden-image cloning, a botched provisioning step, a bad update), then two physically different devices derive the **same** device key. To Photon's fleet chain they become the *same device*: each could silently attest into the other's fleet, and neither the network nor either user could tell them apart.
+| Platform | Identifier | Who can read it |
+|----------|-----------|-----------------|
+| Linux | `/etc/machine-id` | **World-readable (`0444`)**—any local process, no root |
+| Windows | `HKLM\...\Cryptography\MachineGuid` | Any user—`HKLM` read is not privileged |
+| macOS | `IOPlatformUUID` | Any user via `ioreg`—no root |
+| Android | `ANDROID_ID` | **Needs root** (or your signing key)—app-scoped, so another app can't read it without privilege; but only 64-bit |
 
-Note the asymmetry: the **fault** is the vendor's, but the **loss** is the user's (and reputationally the app's). Photon's derivation converts a duplicated ID—normally a privacy nuisance—into an identity collision. So:
+Android is the outlier, and debatably the only one that clears the bar: its identifier is app-scoped, so lifting it takes root or your app-signing key—a real OS boundary, not just obscurity (its weakness is the 64-bit width, not the access model). The desktop three have **no** such boundary. So on a desktop the honest threat model is: **any code that runs on the machine—no root required—can read the identifier, recompute the device key, and clone the device's identity.** "Keys are never stored on disk" is true and beside the point; not storing the key buys nothing when its only input is a world-readable file and the derivation is public. This is device-binding by *derivation*, not a secret held in hardware. It is **not** comparable to an SSH key or a wallet seed (those are `0600` secrets the owner controls); the primary threat is not physical theft but ordinary local code.
 
-- **If you fork/ship Photon on commodity hardware:** treat device-ID uniqueness as an assumption you must *verify with your device manufacturer*, in writing, as a security requirement—not a given. Ask specifically whether `ANDROID_ID` (or your platform's equivalent) can ever collide across a production run or survive-and-duplicate through their update pipeline.
-- **The real fix is PIPE.** A per-die physically-unclonable identity has no software-visible value to duplicate, so common-mode ID bugs become physically impossible rather than merely unlikely—and device-identity collision moves from "any vendor's OTA hygiene, forever" to "a fab defect the manufacturer both causes and bears." That is the difference between a risk you inherit from the entire supply chain and one you can actually insure against. PIPE is silicon that doesn't exist yet; until it's taped out, the derivation above is the software lock, shipped with this label on it.
+Two consequences fall out, and neither is Photon's to fix in software:
+
+- **Secrecy is the OS vendor's, not Photon's.** Google/Apple/Microsoft/your distro decide who can read that identifier. Photon does not ship a lock here—it reads an identifier someone else defined and hopes it is both unique *and* confined. On today's desktops it is neither. The realistic protection is "remote attackers only," which is real but far short of "the device is the identity."
+- **Uniqueness is also the vendor's.** Even where the identifier *is* access-confined, Photon still depends on the vendor's promise that it is **unique**. A duplicated identifier—golden-image cloning, a botched provisioning step, a bad OTA—makes two physical devices derive the **same** key; to the fleet chain they are one device, each able to silently attest into the other's fleet. The **fault** is the vendor's; the **loss** is the user's. Photon's derivation converts a duplicated ID from a privacy nuisance into an identity collision.
+
+**If you fork or ship Photon on commodity hardware,** treat both properties as assumptions to *verify with your device manufacturer in writing*, as security requirements: can the identifier be read by other local code, and can it ever collide or survive-and-duplicate through the update pipeline? On stock desktop Linux/Windows/macOS the first answer is already "yes, any local code can read it," so size your threat model accordingly.
+
+**The only actual fix is PIPE.** A per-die physically-unclonable identity has no software-visible value to read *or* duplicate: the secret is silicon manufacturing variance, never in a file, never in a register the OS can hand out. That collapses both failures at once—local-read and cross-device-collision become physically impossible rather than merely against-policy, and the residual trust shrinks to one auditable fab provisioning step instead of "every OS vendor's ID hygiene, forever." Photon does not write your device ID today—Google, Apple, Microsoft, and your distro do, and on desktop they hand it to anyone who asks. PIPE is the lock Photon would actually ship; it is silicon that isn't taped out yet. Until it is, everything above is device-binding-by-derivation wearing this label, honestly.
+
+The hardware to do better already exists (StrongBox, Secure Enclave, TPM 2.0) and platform vendors use it internally for attestation, DRM, and payments. Third-party access is a business-model conflict, not a technical limit—which is exactly why the durable answer is silicon Photon's stack controls rather than an API a vendor rations.
 
 ---
 
