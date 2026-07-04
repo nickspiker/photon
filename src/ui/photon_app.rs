@@ -769,8 +769,8 @@ enum JoinUpdate {
     ShowWords(String),
     /// An existing device matched our words (signed flag verified) — flip the display to the ready colour.
     Matched,
-    /// This device is now in the fleet — hand off to the normal attest. Carries the fleet key recovered from the fan-out (None = bound but the rotation hasn't landed yet; the post-attest sync retries).
-    Joined(Option<[u8; 32]>),
+    /// This device is now in the fleet — hand off to the normal attest. Carries the fleet key recovered from the fan-out (None = bound but the rotation hasn't landed yet; the post-attest sync retries) plus the session roots derived ONCE at join start, so the attest skips the second ~1s memory-hard proof.
+    Joined(Option<[u8; 32]>, tohu::SessionIdentity),
     /// An error to surface in the status line.
     Failed(String),
 }
@@ -1948,7 +1948,7 @@ impl FluorApp for PhotonApp {
                     self.add_join_ready = true;
                     self.add_join_status = "Matched \u{221a} — binding\u{2026}".to_string();
                 }
-                JoinUpdate::Joined(fleet_key) => {
+                JoinUpdate::Joined(fleet_key, session) => {
                     // We're in the fleet now — drop add-mode and run the normal attest (it now passes the fleet gate). Stash any received fleet key to persist once attest sets the vault up.
                     self.add_join_rx = None;
                     self.launch_add_mode = false;
@@ -1956,14 +1956,13 @@ impl FluorApp for PhotonApp {
                     self.add_join_ready = false;
                     self.add_join_status.clear();
                     self.pending_fleet_key = fleet_key;
-                    if let Some(handle) = self.add_join_handle.take() {
-                        if let Some(tb) = self.textbox.as_mut() {
-                            tb.clear();
-                            tb.insert_str(&handle, ctx.text);
-                        }
+                    self.add_join_handle = None;
+                    // Attest with the roots the join thread already derived — no handle re-entry, no second ~1s proof, and no route thru submit_handle's permanence interstitial (this claims nothing new; the fleet exists and we were just bound into it).
+                    if let Some(hq) = self.handle_query.as_ref() {
+                        hq.query_first_attest_with_roots(session);
+                        self.state = AppState::Launch(LaunchState::Attesting);
+                        self.change_focus(None);
                     }
-                    // Bypass the permanence interstitial: this attest claims nothing new — the fleet exists and we were just bound into it. Routing thru submit_handle would strand the fresh device on the "Yes — forever" warning.
-                    self.fire_attest_query();
                 }
                 JoinUpdate::Failed(e) => {
                     self.add_join_rx = None;
@@ -3921,7 +3920,14 @@ impl PhotonApp {
         let stop = std::sync::Arc::new(AtomicBool::new(false));
         self.add_stop = Some(stop.clone());
         std::thread::spawn(move || {
-            let hp = *ihi::handle_to_proof(&handle).as_bytes();
+            // Derive the COMPLETE session roots here, once — the ~1s memory-hard proof was already paid at this exact spot, and identity_seed is microseconds on top. Joined hands them to the attest worker, which previously re-derived everything from the string (a second full proof delay on the fresh device).
+            let identity_seed = crate::storage::contacts::derive_identity_seed(&handle);
+            let session = tohu::SessionIdentity {
+                identity_seed,
+                vault_seed: identity_seed,
+                handle_proof: *ihi::handle_to_proof(&handle).as_bytes(),
+            };
+            let hp = session.handle_proof;
             let me = device_key.public.to_bytes();
             // Fresh pairing identity per attempt: the words are its PUBLIC half; the request is signed by the private half, so a shoulder-surfer who reads the words can't hijack them for a different device.
             let pairing = fleet::new_pairing_id();
@@ -3985,7 +3991,7 @@ impl PhotonApp {
                             }
                             std::thread::sleep(crate::jitter_dur(std::time::Duration::from_secs(2)));
                         }
-                        let _ = tx.send(JoinUpdate::Joined(fleet_key));
+                        let _ = tx.send(JoinUpdate::Joined(fleet_key, session));
                         return;
                     }
                     Ok(m) => {
