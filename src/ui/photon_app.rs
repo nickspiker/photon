@@ -1986,7 +1986,10 @@ impl FluorApp for PhotonApp {
                     }
                 }
                 JoinUpdate::Failed(e) => {
+                    // The ceremony is dead — take the words DOWN with it. Leaving them up strands the screen on a corpse: the user keeps waiting on words no thread is polling for. Back to handle entry with the error visible; re-submitting starts a fresh ceremony.
                     self.add_join_rx = None;
+                    self.add_join_words = None;
+                    self.add_join_ready = false;
                     self.add_join_status = format!("Join failed: {e}");
                 }
             }
@@ -4089,6 +4092,8 @@ impl PhotonApp {
         if let Some(tb) = self.textbox.as_mut() {
             tb.clear();
         }
+        // Drop focus off the words textbox — clearing chars doesn't unfocus it, so without this the (now hidden) widget keeps its blinkey firing, keystrokes still route to it, and Android's soft keyboard stays up over the contact list.
+        self.change_focus(None);
     }
 
     /// New-device JOIN: the handle was entered — generate this device's pairing identity, display its words, post the signed request, and poll for the matched flag + membership off-thread.
@@ -4184,6 +4189,7 @@ impl PhotonApp {
                 match fleet::current_members(&hp) {
                     Ok(m) if m.contains(&me) => {
                         // In the fleet. Recover the shared fleet key from the fan-out with our OWN device key — the bind rotated the epoch to include us. Retry a few times for the bind→rotate race.
+                        crate::log("JOIN: bound — this device is in the fleet chain");
                         let mut fleet_key = None;
                         for _ in 0..10 {
                             if let Ok(Some(k)) = fleet::recover_fleet_key(&hp, &device_key) {
@@ -4192,6 +4198,10 @@ impl PhotonApp {
                             }
                             std::thread::sleep(crate::jitter_dur(std::time::Duration::from_secs(2)));
                         }
+                        crate::log(&format!(
+                            "JOIN: fleet key {} — attesting",
+                            if fleet_key.is_some() { "recovered from fan-out" } else { "NOT recovered (re-sync on next attest)" }
+                        ));
                         let _ = tx.send(JoinUpdate::Joined(fleet_key, session));
                         return;
                     }
@@ -4200,13 +4210,16 @@ impl PhotonApp {
                         if !matched_sent {
                             if let Ok(true) = fleet::poll_pair_matched(&hp, &pairing_pubkey, &m) {
                                 matched_sent = true;
+                                crate::log("JOIN: a member matched our words — waiting for the bind");
                                 let _ = tx.send(JoinUpdate::Matched);
                             }
                         }
                     }
                     Err(e) => {
-                        let _ = tx.send(JoinUpdate::Failed(e));
-                        return;
+                        // A transient fetch failure (laptop sleep/wake, dropped wifi, a server blip) must NOT kill the ceremony — the user is still standing at the words screen, and a dead thread strands it there forever (observed: macbook stuck on its words after one failed fetch). Log, back off, retry; the stop flag (orb cancel) is the only exit.
+                        crate::log(&format!("JOIN: membership fetch failed ({e}) — retrying"));
+                        std::thread::sleep(crate::jitter_dur(std::time::Duration::from_secs(15)));
+                        continue;
                     }
                 }
                 // Wait for a push. A hub event for our identity checks immediately; the timeout exists ONLY for the slot-freshness re-post (protocol-required: the pair/req inbox expires at 5 minutes). If the socket died (channel disconnected), fall back to a slow transport-degraded cadence — the one timing the unreliable transport forces on us.
