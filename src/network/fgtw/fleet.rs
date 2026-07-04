@@ -776,7 +776,8 @@ pub fn parse_pair_event(bytes: &[u8]) -> Option<(String, [u8; 32])> {
         return None;
     }
     let kind = match section.get_field("k").and_then(|f| f.values.first()) {
-        Some(VsfType::x(s)) => s.clone(),
+        // `a` is what the worker sends (its vsf build has no `text` feature, so `x` would panic there); accept `x` too for forward-compat.
+        Some(VsfType::a(s)) | Some(VsfType::x(s)) => s.clone(),
         _ => return None,
     };
     let hp = match section.get_field("hp").and_then(|f| f.values.first()) {
@@ -1957,5 +1958,18 @@ mod tests {
         // Stuff an identity binding onto the add op — only genesis may carry one.
         blob.ops[1].identity_pubkey = [0x77; 32];
         assert_eq!(blob.fold(), Err(FoldError::StrayIdentityBinding { index: 1 }));
+    }
+}
+
+#[cfg(test)]
+mod live_smoke {
+    use super::*;
+    #[test]
+    #[ignore = "hits live fgtw.org — run explicitly"]
+    fn pack_put_smoke() {
+        let member = Keypair::from_seed(&[0xEE; 32]);
+        let r = post_pair_matched(&member, &[0xDD; 32], &[0xCC; 32]);
+        eprintln!("pack_put smoke: {r:?}");
+        assert!(r.is_ok(), "{r:?}");
     }
 }
