@@ -42,6 +42,21 @@ pub enum QueryRequest {
     /// First-attest SEMANTICS (persist the roots on FGTW confirmation) with roots derived by the caller — the JOIN flow already paid the ~1s proof when it keyed the pairing slots, so re-deriving from the string here would be a second full proof delay on the fresh device.
     FirstAttestWithRoots(tohu::SessionIdentity),
     Resume(tohu::SessionIdentity),
+    /// Classify a typed handle WITHOUT announcing: derive the roots (the ~1s proof, paid once), fetch + fold the fleet chain, and report which of the three attest branches applies. The UI gates the permanence warning on the [`ProbeOutcome::Fresh`] result, so "forever" is only ever shown for a genuinely unclaimed handle.
+    Probe(String),
+}
+
+/// How a typed handle classifies against the network, for the attest three-way branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbeOutcome {
+    /// No chain exists — a genuine fresh claim. Show the permanence interstitial.
+    Fresh,
+    /// A chain exists and THIS device folds as a current member — just resume (announce passes the gate).
+    Member,
+    /// A chain exists, its genesis is identity-bound to THIS handle (so it's ours), but this device isn't enrolled — route to add-this-device (JOIN).
+    JoinOurs,
+    /// A chain exists whose genesis is NOT bound to this handle's identity — someone else founded it (squatter / different person). Can't claim.
+    Taken,
 }
 
 /// Result of a handle query
@@ -50,6 +65,8 @@ pub enum QueryResult {
     /// Successfully attested/registered, with all data pre-loaded in background This includes contacts, friendships, avatar - everything needed to flip to Ready state
     Success(Box<AttestationData>),
     AlreadyAttested(PeerRecord), // Handle is claimed by another device
+    /// Result of a [`QueryRequest::Probe`]: the branch decision plus the derived roots (so the follow-up attest/join reuses the proof instead of recomputing it).
+    Probe { outcome: ProbeOutcome, session: tohu::SessionIdentity },
     Error(String),               // Error during attestation
 }
 
@@ -440,6 +457,39 @@ impl HandleQuery {
             crate::log("Network: Query worker initialized");
 
             while let Ok(req) = rx.recv() {
+                // Probe: classify the handle against the network and report the branch — no announce. Computes the roots (the ~1s proof) once; the UI hands them back on the chosen follow-up so the proof is never paid twice.
+                if let QueryRequest::Probe(handle) = &req {
+                    let identity_seed = crate::storage::contacts::derive_identity_seed(handle);
+                    let handle_proof = Handle::username_to_handle_proof(handle); // ~1s
+                    let session = tohu::SessionIdentity {
+                        identity_seed,
+                        vault_seed: identity_seed,
+                        handle_proof,
+                    };
+                    let outcome = match crate::network::fgtw::fleet::fetch(&handle_proof) {
+                        Ok(None) => ProbeOutcome::Fresh,
+                        Ok(Some(blob)) => {
+                            let me = keypair.public.to_bytes();
+                            if blob.fold().map(|m| m.contains(&me)).unwrap_or(false) {
+                                ProbeOutcome::Member
+                            } else if blob.genesis_identity_matches(&identity_seed) {
+                                ProbeOutcome::JoinOurs
+                            } else {
+                                ProbeOutcome::Taken
+                            }
+                        }
+                        Err(e) => {
+                            // Network unreachable — can't classify. Surface as an error; claiming needs the network anyway.
+                            crate::log(&format!("Network: probe fetch failed: {e}"));
+                            let _ = tx.send(QueryResult::Error(format!("can't reach the network to check: {e}")));
+                            continue;
+                        }
+                    };
+                    crate::log(&format!("Network: probe → {outcome:?}"));
+                    let _ = tx.send(QueryResult::Probe { outcome, session });
+                    continue;
+                }
+
                 // Resolve the session roots.
                 // First attest is the one moment the handle string exists: derive the three roots (the ~1s spaghettify happens here, once), persist them so a later resume skips both the string and the recompute, then let the string drop.
                 // Resume hands the cached roots straight in — no string, no proof recompute.
@@ -458,6 +508,8 @@ impl HandleQuery {
                     QueryRequest::Resume(s) => {
                         (s.identity_seed, s.vault_seed, s.handle_proof, false)
                     }
+                    // Handled above with an early `continue` — never reaches here.
+                    QueryRequest::Probe(_) => unreachable!("Probe is intercepted before roots resolution"),
                 };
                 crate::log("Network: Querying handle...");
 
@@ -831,6 +883,11 @@ impl HandleQuery {
     /// The worker derives + persists the session roots, so subsequent launches use [`query_resume`](Self::query_resume) instead.
     pub fn query(&self, handle: String) {
         let _ = self.query_sender.send(QueryRequest::FirstAttest(handle));
+    }
+
+    /// Classify a typed handle without announcing (non-blocking) — drives the attest three-way branch. Returns [`QueryResult::Probe`].
+    pub fn probe(&self, handle: String) {
+        let _ = self.query_sender.send(QueryRequest::Probe(handle));
     }
 
     /// First attest with caller-derived roots (non-blocking) — the JOIN flow derives them once up front; this skips the string and the second ~1s proof while keeping first-attest persistence (roots remembered on FGTW confirmation).
