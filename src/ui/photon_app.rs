@@ -1918,8 +1918,8 @@ impl FluorApp for PhotonApp {
                     needs_redraw = true;
                 }
             }
-            if crate::network::fgtw::fleet::pair_word_tokens(&text)
-                == crate::network::fgtw::fleet::PAIR_WORD_COUNT
+            // Completeness = every word an exact list member, not just 23 tokens — the 23rd token exists from its first typed character, and firing the decode on it surfaced "unrecognised word" about a word still being typed.
+            if crate::network::fgtw::fleet::pair_entry_complete(&text)
                 && text != self.add_device_last_checked
                 && self.add_device_match.is_none()
             {
