@@ -515,6 +515,8 @@ pub struct PhotonApp {
     launch_add_mode: bool,
     /// Join flow: the handle once entered; `None` while still awaiting it.
     add_join_handle: Option<String>,
+    /// Roots from the pre-attest probe, stashed so the permanence-confirm press claims WITHOUT re-deriving the ~1s proof. Set on a `Fresh` probe outcome; cleared on any handle edit (via clear_launch_error) or when the claim fires.
+    probed_session: Option<tohu::SessionIdentity>,
     /// Join flow: status line on the add-mode launch screen.
     add_join_status: String,
     /// Join flow: the fixed-width pairing words this device generated and displays for the user to type on an existing device. `Some` = the words screen is up.
@@ -651,6 +653,7 @@ impl PhotonApp {
             contact_members_tx: None,
             launch_add_mode: false,
             add_join_handle: None,
+            probed_session: None,
             add_join_status: String::new(),
             add_join_words: None,
             add_join_ready: false,
@@ -3684,6 +3687,7 @@ impl PhotonApp {
             AppState::Launch(LaunchState::Error(_)) | AppState::Launch(LaunchState::Confirm)
         ) {
             self.state = AppState::Launch(LaunchState::Fresh);
+            self.probed_session = None;
             if let Some(btn) = self.attest_btn.as_mut() {
                 btn.set_label("Attest");
             }
@@ -4088,7 +4092,7 @@ impl PhotonApp {
     }
 
     /// New-device JOIN: the handle was entered — generate this device's pairing identity, display its words, post the signed request, and poll for the matched flag + membership off-thread.
-    fn submit_join_step(&mut self) {
+    fn submit_join_step(&mut self, precomputed_proof: Option<[u8; 32]>) {
         use crate::network::fgtw::fleet;
         use std::sync::atomic::{AtomicBool, Ordering};
         if self.add_join_rx.is_some() {
@@ -4117,12 +4121,13 @@ impl PhotonApp {
         let stop = std::sync::Arc::new(AtomicBool::new(false));
         self.add_stop = Some(stop.clone());
         std::thread::spawn(move || {
-            // Derive the COMPLETE session roots here, once — the ~1s memory-hard proof was already paid at this exact spot, and identity_seed is microseconds on top. Joined hands them to the attest worker, which previously re-derived everything from the string (a second full proof delay on the fresh device).
+            // Derive the COMPLETE session roots once. identity_seed is microseconds; the ~1s memory-hard proof is reused from the probe when the caller passed it (the add-this-device branch already paid it), else computed here. Joined hands them to the attest worker so it never re-derives.
             let identity_seed = crate::storage::contacts::derive_identity_seed(&handle);
+            let handle_proof = precomputed_proof.unwrap_or_else(|| *ihi::handle_to_proof(&handle).as_bytes());
             let session = tohu::SessionIdentity {
                 identity_seed,
                 vault_seed: identity_seed,
-                handle_proof: *ihi::handle_to_proof(&handle).as_bytes(),
+                handle_proof,
             };
             let hp = session.handle_proof;
             let me = device_key.public.to_bytes();
@@ -4402,7 +4407,7 @@ impl PhotonApp {
         }
         // In JOIN mode the launch textbox feeds the pairing flow (handle then words), not a fresh attestation.
         if self.launch_add_mode {
-            self.submit_join_step();
+            self.submit_join_step(None);
             return;
         }
         let handle: String = match self.textbox.as_ref() {
@@ -4412,15 +4417,33 @@ impl PhotonApp {
         if handle.is_empty() {
             return;
         }
-        // Permanence interstitial: the first submit arms the Confirm warning instead of firing the query — a claimed handle has no password and no recovery, so the claim must be a two-press decision. Only a submit FROM Confirm proceeds; any handle edit meanwhile drops back to Fresh via `clear_launch_error`.
-        if !matches!(self.state, AppState::Launch(LaunchState::Confirm)) {
-            self.state = AppState::Launch(LaunchState::Confirm);
+        // A press FROM the Confirm interstitial is the deliberate second act: claim the (probed-Fresh) handle with the roots the probe already derived — no second proof, no permanence warning re-shown.
+        if matches!(self.state, AppState::Launch(LaunchState::Confirm)) {
             if let Some(btn) = self.attest_btn.as_mut() {
-                btn.set_label("Yes — forever");
+                btn.set_label("Attest");
+            }
+            if let Some(session) = self.probed_session.take() {
+                self.fire_attest_query_with_roots(session);
+            } else {
+                self.fire_attest_query();
             }
             return;
         }
-        self.fire_attest_query();
+        // First press: PROBE the handle against the network before deciding anything. The ~1s proof runs here (once); the branch (permanence warning / add-this-device / resume / taken) is chosen in `on_query_result` from the probe outcome, so "forever" is never shown for a handle that already has a fleet.
+        if let Some(hq) = self.handle_query.as_ref() {
+            hq.probe(handle);
+            self.state = AppState::Launch(LaunchState::Attesting);
+            self.change_focus(None);
+        }
+    }
+
+    /// Fire an attest with caller-supplied roots (the probe already derived them), skipping the permanence interstitial and the second proof. First-attest persistence semantics.
+    fn fire_attest_query_with_roots(&mut self, session: tohu::SessionIdentity) {
+        if let Some(hq) = self.handle_query.as_ref() {
+            hq.query_first_attest_with_roots(session);
+            self.state = AppState::Launch(LaunchState::Attesting);
+            self.change_focus(None);
+        }
     }
 
     /// Fire the attestation query for the textbox's handle, BYPASSING the permanence interstitial. For attests where the claim decision was already made or isn't being made at all — the post-JOIN re-attest (the fleet already exists and this device was just bound into it; nothing new is claimed) — and as the tail of a human-confirmed `submit_handle`.
@@ -4449,6 +4472,41 @@ impl PhotonApp {
         // Resume painted Ready optimistically from local state, so a result arriving while we're already past Launch is a background refresh (presence / contacts / cloud-merge), NOT a first attest. This gates the bailouts below: a transient network error must not knock a valid local session off Ready.
         let in_app = !matches!(self.state, AppState::Launch(_));
         match result {
+            QueryResult::Probe { outcome, session } => {
+                use crate::network::handle_query::ProbeOutcome;
+                // The attest three-way branch, chosen from the network probe (see submit_handle). A probe result arriving while already in-app is stale (we navigated on) — ignore it.
+                if in_app {
+                    return;
+                }
+                match outcome {
+                    ProbeOutcome::Fresh => {
+                        // Genuine fresh claim — NOW show the permanence warning, stashing the probed roots so the confirm press claims without re-deriving the proof.
+                        self.probed_session = Some(session);
+                        self.state = AppState::Launch(LaunchState::Confirm);
+                        if let Some(btn) = self.attest_btn.as_mut() {
+                            btn.set_label("Yes — forever");
+                        }
+                    }
+                    ProbeOutcome::Member => {
+                        // Already in the fleet — just attest (resume). No warning; the announce passes the membership gate.
+                        self.fire_attest_query_with_roots(session);
+                    }
+                    ProbeOutcome::JoinOurs => {
+                        // Our identity, this device unenrolled — route straight to add-this-device (JOIN). The handle is still in the textbox; submit_join_step reads it and shows the pairing words.
+                        crate::log("attest: handle has our fleet, this device unenrolled → add-this-device");
+                        self.launch_add_mode = true;
+                        self.state = AppState::Launch(LaunchState::Fresh);
+                        self.add_join_handle = None;
+                        self.submit_join_step(Some(session.handle_proof));
+                    }
+                    ProbeOutcome::Taken => {
+                        self.state = AppState::Launch(LaunchState::Error(
+                            "this handle is taken".to_string(),
+                        ));
+                        self.refocus_handle_select_all();
+                    }
+                }
+            }
             QueryResult::Success(data) => {
                 if let Some(hq) = self.handle_query.as_ref() {
                     hq.set_handle_proof(data.handle_proof);
@@ -4575,11 +4633,11 @@ impl PhotonApp {
                     // Transient network failure on a resume refresh — the local session is still valid. Stay on Ready; the next presence cycle retries. Do NOT drop the user back to the attest screen.
                     crate::log("UI: background refresh failed (network); staying on local session");
                 } else if e.contains("not in the fleet") && !self.launch_add_mode {
-                    // Smart routing: the handle already has a fleet and this device isn't in it — that's not an error, it's the JOIN case. Flow straight into add-mode (the handle is still in the textbox; submit_join_step reads it, generates the pairing words, and puts them on screen).
+                    // Safety net for a probe→announce race (device removed from the fleet in the gap): the announce says "not in the fleet". The probe normally routes this to add-this-device UP FRONT, but if it slips through, catch it here too.
                     self.launch_add_mode = true;
                     self.state = AppState::Launch(LaunchState::Fresh);
                     self.add_join_handle = None;
-                    self.submit_join_step();
+                    self.submit_join_step(None);
                 } else {
                     self.state = AppState::Launch(LaunchState::Error(e));
                     self.refocus_handle_select_all();
