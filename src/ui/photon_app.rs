@@ -4057,9 +4057,8 @@ impl PhotonApp {
                     }
                 });
             }
-            // Poll until bound or cancelled — NO deadline. The user standing at the screen is the timeout: they walk to the other device, type 23 words, and come back whenever; the ceremony ends when the bind lands, when they tap the orb (the stop flag), or on a hard network error. The re-post keeps the 5-minute inbox slot fresh indefinitely, and the poll cadence relaxes after the first few minutes so an abandoned screen idles gently instead of hammering FGTW.
+            // PUSH-DRIVEN, no deadline, no poll cadence. The hub events (matched / fleet) wake each check instantly; the ONLY timers are the ones the protocol/transport demand — the pairing slot's 5-minute freshness (re-post at ~3.5min when no event arrives sooner) and a degraded-transport fallback cadence when the socket is dead. The user standing at the screen is the timeout: the ceremony ends when the bind lands, when they tap the orb (the stop flag), or on a hard network error.
             let mut matched_sent = false;
-            let mut cycle = 0usize;
             loop {
                 if stop.load(Ordering::Relaxed) {
                     return;
@@ -4086,19 +4085,23 @@ impl PhotonApp {
                                 let _ = tx.send(JoinUpdate::Matched);
                             }
                         }
-                        if cycle % 8 == 7 {
-                            let _ = fleet::post_pairing_request(&pairing, &me, &hp);
-                        }
                     }
                     Err(e) => {
                         let _ = tx.send(JoinUpdate::Failed(e));
                         return;
                     }
                 }
-                cycle += 1;
-                // ~3s polls for the first ~5 minutes (the active-ceremony window), ~10s after — still well inside the 5-minute slot freshness at the every-8th-cycle re-post, just kinder to FGTW and the battery on a screen someone walked away from. A hub push for our identity short-circuits the wait entirely (recv_timeout returns on the wake), so with the socket up the next poll fires the instant the other device acts.
-                let base = if cycle < 100 { 3 } else { 10 };
-                let _ = wake_rx.recv_timeout(crate::jitter_dur(std::time::Duration::from_secs(base)));
+                // Wait for a push. A hub event for our identity checks immediately; the timeout exists ONLY for the slot-freshness re-post (protocol-required: the pair/req inbox expires at 5 minutes). If the socket died (channel disconnected), fall back to a slow transport-degraded cadence — the one timing the unreliable transport forces on us.
+                match wake_rx.recv_timeout(crate::jitter_dur(std::time::Duration::from_secs(210))) {
+                    Ok(()) => {}
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        let _ = fleet::post_pairing_request(&pairing, &me, &hp);
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                        std::thread::sleep(crate::jitter_dur(std::time::Duration::from_secs(15)));
+                        let _ = fleet::post_pairing_request(&pairing, &me, &hp);
+                    }
+                }
             }
         });
     }
