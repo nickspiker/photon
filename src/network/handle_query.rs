@@ -481,7 +481,8 @@ impl HandleQuery {
                         Err(e) => {
                             // Network unreachable — can't classify. Surface as an error; claiming needs the network anyway.
                             crate::log(&format!("Network: probe fetch failed: {e}"));
-                            let _ = tx.send(QueryResult::Error(format!("can't reach the network to check: {e}")));
+                            // `e` is already a short, plain message from the fleet client (e.g. "No connection to FGTW"). Surface it verbatim — no "can't reach the network to check:" prefix stacking web-stack context the user can't use.
+                            let _ = tx.send(QueryResult::Error(e));
                             continue;
                         }
                     };
