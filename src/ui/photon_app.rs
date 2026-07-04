@@ -517,6 +517,8 @@ pub struct PhotonApp {
     add_join_handle: Option<String>,
     /// Roots from the pre-attest probe, stashed so the permanence-confirm press claims WITHOUT re-deriving the ~1s proof. Set on a `Fresh` probe outcome; cleared on any handle edit (via clear_launch_error) or when the claim fires.
     probed_session: Option<tohu::SessionIdentity>,
+    /// Canonical spelling of the handle `probed_session` was derived from — the confirm press fires the stashed roots ONLY when the box still canonicalizes to this, so stale roots can never attest a different identity than the one on screen.
+    probed_handle: Option<String>,
     /// Join flow: status line on the add-mode launch screen.
     add_join_status: String,
     /// Join flow: the fixed-width pairing words this device generated and displays for the user to type on an existing device. `Some` = the words screen is up.
@@ -654,6 +656,7 @@ impl PhotonApp {
             launch_add_mode: false,
             add_join_handle: None,
             probed_session: None,
+            probed_handle: None,
             add_join_status: String::new(),
             add_join_words: None,
             add_join_ready: false,
@@ -1694,9 +1697,29 @@ impl FluorApp for PhotonApp {
                     }
                     // All other keys → focused widget via dispatch_key. The Textbox's on_key handles character insertion, backspace, arrows, selection, clipboard (Ctrl+A); Button's on_key handles Space activation. Unfocused → Pass so the host can ignore. Request redraw on Handled so character insertion paints immediately instead of waiting for the next tick.
                     _ => {
+                        // Words-entry screen accepts ONLY letters and space — the 23 pairing words are ASCII-alphabetic voca words, so digits/punctuation/emoji are always typos. Named keys (backspace, arrows, Tab) aren't Character events and pass thru untouched.
+                        if matches!(self.state, AppState::AddDevice) {
+                            if let Key::Character(c) = &kev.logical_key {
+                                if !c.chars().all(|ch| ch.is_ascii_alphabetic() || ch == ' ') {
+                                    return EventResponse::Handled;
+                                }
+                            }
+                        }
                         if let Some(focus_id) = self.focused {
+                            // Snapshot the handle text so an EDIT (typing, backspace, delete-selection — any content change) tears down the Error/Confirm interstitial. The clipboard chords do this explicitly; this covers the plain-keystroke path, which previously didn't — so a user could arm Confirm on handle A, retype it to handle B, and the press fired A's probed roots (observed: attested as the fresh handle while the box showed the taken one).
+                            let launch_text_before: Option<Vec<char>> =
+                                if matches!(self.state, AppState::Launch(_)) {
+                                    self.textbox.as_ref().map(|tb| tb.chars.clone())
+                                } else {
+                                    None
+                                };
                             let resp =
                                 widget::dispatch_key(self, focus_id, kev, ctx.modifiers, ctx.text);
+                            if let Some(before) = launch_text_before {
+                                if self.textbox.as_ref().map(|tb| &tb.chars) != Some(&before) {
+                                    self.clear_launch_error();
+                                }
+                            }
                             if matches!(resp, EventResponse::Handled) {
                                 ctx.window.request_redraw();
                                 // Reset blink so the cursor stays solid thru fast typing instead of blinking mid-keystroke.
@@ -1713,17 +1736,23 @@ impl FluorApp for PhotonApp {
                 self.clear_hints();
                 // Android: soft IME committed `s` (typing, swipe, autocomplete). Route it to whichever textbox holds focus — the attest handle field OR the contacts search box. (This used to be hardcoded to the attest box, so typing on the contacts screen was silently dropped on Android even though focus + the soft keyboard were correct; desktop never hit this because physical keys go thru the focus-generic `widget::dispatch_key`.) Backspace arrives as the literal "\b" character from PhotonSurfaceView's deleteSurroundingText / composing-text replacement path, so peel those off and route to `backspace`; everything else inserts verbatim. No-op when no textbox is focused (focus might sit on the attest button via Tab).
                 let mut handled = false;
+                let words_screen = matches!(self.state, AppState::AddDevice);
                 if let Some(tb) = self.focused_textbox_mut() {
                     for c in s.chars() {
                         if c == '\u{0008}' {
                             tb.backspace(ctx.text);
-                        } else {
+                        } else if !words_screen || c.is_ascii_alphabetic() || c == ' ' {
+                            // Words entry accepts only letters and space — swipe/autocomplete punctuation is silently dropped.
                             tb.insert_char(c, ctx.text);
                         }
                     }
                     handled = true;
                 }
                 if handled {
+                    // Soft-IME edits are edits: tear down the Error/Confirm interstitial exactly like physical keystrokes, so Android can't re-arm stale probed roots either.
+                    if matches!(self.state, AppState::Launch(_)) {
+                        self.clear_launch_error();
+                    }
                     self.blink_timer.start(Instant::now());
                     ctx.window.request_redraw();
                     return EventResponse::Handled;
@@ -3669,6 +3698,12 @@ impl PhotonApp {
             "v" => {
                 if let Ok(mut clip) = arboard::Clipboard::new() {
                     if let Ok(s) = clip.get_text() {
+                        // Words entry accepts only letters and space — strip everything else from the paste (newlines/tabs become nothing; the camelCase/space tokenizer handles the rest).
+                        let s = if matches!(self.state, AppState::AddDevice) {
+                            s.chars().filter(|c| c.is_ascii_alphabetic() || *c == ' ').collect()
+                        } else {
+                            s
+                        };
                         if !s.is_empty() {
                             tb.insert_str(&s, text);
                             if on_launch {
@@ -3691,6 +3726,7 @@ impl PhotonApp {
         ) {
             self.state = AppState::Launch(LaunchState::Fresh);
             self.probed_session = None;
+            self.probed_handle = None;
             if let Some(btn) = self.attest_btn.as_mut() {
                 btn.set_label("Attest");
             }
@@ -4128,7 +4164,7 @@ impl PhotonApp {
         std::thread::spawn(move || {
             // Derive the COMPLETE session roots once. identity_seed is microseconds; the ~1s memory-hard proof is reused from the probe when the caller passed it (the add-this-device branch already paid it), else computed here. Joined hands them to the attest worker so it never re-derives.
             let identity_seed = crate::storage::contacts::derive_identity_seed(&handle);
-            let handle_proof = precomputed_proof.unwrap_or_else(|| *ihi::handle_to_proof(&handle).as_bytes());
+            let handle_proof = precomputed_proof.unwrap_or_else(|| crate::types::Handle::username_to_handle_proof(&handle));
             let session = tohu::SessionIdentity {
                 identity_seed,
                 vault_seed: identity_seed,
@@ -4431,16 +4467,20 @@ impl PhotonApp {
             return;
         }
         // A press FROM the Confirm interstitial is the deliberate second act: claim the (probed-Fresh) handle with the roots the probe already derived — no second proof, no permanence warning re-shown.
+        // GUARD: fire the stashed roots ONLY if the box still holds the handle they were derived from. Every edit path tears Confirm down, but this is the invariant that survives a missed one — firing stale roots attests a DIFFERENT identity than the box shows (observed: probe handle A, retype to taken handle B, press → attested as A, user believes they claimed B). On mismatch the press falls thru to a fresh probe of the current text.
         if matches!(self.state, AppState::Launch(LaunchState::Confirm)) {
             if let Some(btn) = self.attest_btn.as_mut() {
                 btn.set_label("Attest");
             }
-            if let Some(session) = self.probed_session.take() {
+            let matches_probe = self.probed_handle.as_deref()
+                == Some(crate::types::Handle::canonical(&handle).as_str());
+            let session = self.probed_session.take();
+            self.probed_handle = None;
+            if let (Some(session), true) = (session, matches_probe) {
                 self.fire_attest_query_with_roots(session);
-            } else {
-                self.fire_attest_query();
+                return;
             }
-            return;
+            crate::log("attest: confirm-press text no longer matches the probed handle — re-probing");
         }
         // First press: PROBE the handle against the network before deciding anything. The ~1s proof runs here (once); the branch (permanence warning / add-this-device / resume / taken) is chosen in `on_query_result` from the probe outcome, so "forever" is never shown for a handle that already has a fleet.
         if let Some(hq) = self.handle_query.as_ref() {
@@ -4459,25 +4499,7 @@ impl PhotonApp {
         }
     }
 
-    /// Fire the attestation query for the textbox's handle, BYPASSING the permanence interstitial. For attests where the claim decision was already made or isn't being made at all — the post-JOIN re-attest (the fleet already exists and this device was just bound into it; nothing new is claimed) — and as the tail of a human-confirmed `submit_handle`.
-    fn fire_attest_query(&mut self) {
-        if let Some(btn) = self.attest_btn.as_mut() {
-            btn.set_label("Attest");
-        }
-        let handle: String = match self.textbox.as_ref() {
-            Some(tb) => tb.chars.iter().collect(),
-            None => return,
-        };
-        if handle.is_empty() {
-            return;
-        }
-        if let Some(hq) = self.handle_query.as_ref() {
-            hq.query(handle);
-            self.state = AppState::Launch(LaunchState::Attesting);
-            // Drop focus off the textbox during the attesting wait so further IME / key input doesn't mutate the handle being attested. `change_focus(None)` also flips the Android soft-IME signal to "hide" via `pending_keyboard_request`, which the next touch dispatch picks up — keeps the keyboard from hovering over a frozen textbox.
-            self.change_focus(None);
-        }
-    }
+    // (fire_attest_query — the string-based attest that BYPASSED the permanence interstitial — is deliberately gone: every launch-screen claim now flows probe → Confirm → roots-verified fire, so no path can attest a string the user didn't just confirm.)
 
     /// Handle a [`QueryResult`] arriving from HandleQuery's background worker. On success, stashes the proof, loads the device avatar + contacts, and transitions to the Ready screen; on rejection/error, drops to `LaunchState::Error` and refocuses the handle field.
     fn on_query_result(&mut self, result: QueryResult) {
@@ -4493,8 +4515,12 @@ impl PhotonApp {
                 }
                 match outcome {
                     ProbeOutcome::Fresh => {
-                        // Genuine fresh claim — NOW show the permanence warning, stashing the probed roots so the confirm press claims without re-deriving the proof.
+                        // Genuine fresh claim — NOW show the permanence warning, stashing the probed roots (and the canonical handle they belong to) so the confirm press claims without re-deriving the proof.
                         self.probed_session = Some(session);
+                        self.probed_handle = self
+                            .textbox
+                            .as_ref()
+                            .map(|tb| crate::types::Handle::canonical(&tb.chars.iter().collect::<String>()));
                         self.state = AppState::Launch(LaunchState::Confirm);
                         if let Some(btn) = self.attest_btn.as_mut() {
                             btn.set_label("Yes — forever");

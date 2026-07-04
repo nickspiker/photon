@@ -46,7 +46,7 @@ impl ContactIdentity {
 
 /// Derive identity_seed from a handle string. Delegates to `ihi::handle_to_hash` — the canonical "handle string → 32 bytes" intermediate (VsfType::x pre-hash + BLAKE3) that `handle_to_proof` uses internally. Matches `Contact::new`'s `handle_hash` field and the avatar key seeds.
 pub fn derive_identity_seed(handle: &str) -> [u8; 32] {
-    *ihi::handle_to_hash(handle).as_bytes()
+    crate::types::Handle::to_identity_seed(handle)
 }
 
 /// Vault address for one of a contact's per-peer entries — `vault_key(domain, their_identity_seed)`. `domain` is the plain entry name ("state", "keypairs", "slots"); the peer's seed is the scope. No paths, no hex.
