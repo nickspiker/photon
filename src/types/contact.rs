@@ -293,9 +293,9 @@ impl Contact {
     ) -> Option<std::net::SocketAddr> {
         let public_addr = self.ip?;
 
-        // If peer has a local_ip and we share the same public IP, use local_ip
+        // If peer has a USABLE local_ip and we share the same public IP, use local_ip (skip CLAT/service-continuity noise).
         if let (Some(local_v4), Some(our_ip)) = (self.local_ip, our_public_ip) {
-            if public_addr.ip() == our_ip {
+            if crate::network::udp::is_usable_lan_ipv4(local_v4) && public_addr.ip() == our_ip {
                 // Same public IP = same NAT, use local_ip to bypass AP isolation
                 return Some(std::net::SocketAddr::new(
                     std::net::IpAddr::V4(local_v4),
@@ -311,9 +311,12 @@ impl Contact {
     pub fn race_addrs(&self) -> Option<(SocketAddr, Option<SocketAddr>)> {
         let public_addr = self.ip?;
         if let (Some(local_v4), Some(local_port)) = (self.local_ip, self.local_port) {
-            let lan = SocketAddr::new(std::net::IpAddr::V4(local_v4), local_port);
-            if lan != public_addr {
-                return Some((lan, Some(public_addr)));
+            // Skip an unreachable LAN candidate (464XLAT CLAT `192.0.0.4` and friends) — racing it just burns the retry budget before the WAN path wins. A peer on cellular has no real LAN address; the public path is the only one.
+            if crate::network::udp::is_usable_lan_ipv4(local_v4) {
+                let lan = SocketAddr::new(std::net::IpAddr::V4(local_v4), local_port);
+                if lan != public_addr {
+                    return Some((lan, Some(public_addr)));
+                }
             }
         }
         Some((public_addr, None))
