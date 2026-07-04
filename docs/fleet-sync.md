@@ -37,7 +37,12 @@ Kinds:
 | `stream` | new conversation rows exist for some friendship | fleet | ⏳ |
 | `card` | the public card changed (avatar, device set, addresses) | **photon-wide** (registry) | ⏳ |
 
-**Two scopes.** A FLEET-scoped bump concerns state only our own devices can open (fleet-key-sealed) — siblings fetch, everyone else ignores it. A PHOTON-WIDE bump is a REGISTRY update: it changes what every node's phonebook mirror holds (a peer record / IP, a membership chain, an avatar — the public card), so the ding-dong goes to the whole network, not just our fleet. Until the network is big enough to shard, "the whole network" is literal: every node mirrors everything, every registry ding reaches everyone. Kademlia routing + registry splitting (kamadilla) is DEFERRED until ~100k peers — below that, a flat full mirror with global gossip is simpler, faster, and more robust than any DHT. Right now? yeahnah.
+**Two scopes.** A FLEET-scoped bump concerns state only our own devices can open (fleet-key-sealed) — siblings fetch, everyone else ignores it.
+A PHOTON-WIDE bump is a REGISTRY update: it changes what every node's phonebook mirror holds (a peer record / IP, a membership chain, an avatar — the public card), so the ding-dong goes to the whole network, not just our fleet.
+Until the network is big enough to shard, "the whole network" is literal: every node mirrors everything, every registry ding reaches everyone.
+Kademlia routing + registry splitting (kamadilla) is DEFERRED until ~100k peers — below that, a flat full mirror with global gossip is simpler, faster, and more robust than any DHT.
+Right now?
+yeahnah.
 
 Properties:
 - **Best-effort.** A lost bump costs latency, never correctness — the durable slots + the on-launch catch-up query are the guarantee.
