@@ -435,7 +435,12 @@ struct VsfLogBridge;
 #[cfg(feature = "logging")]
 impl log::Log for VsfLogBridge {
     fn enabled(&self, meta: &log::Metadata) -> bool {
-        let noisy = meta.target().starts_with("cosmic_text") || meta.target().starts_with("reqwest");
+        // naga/wgpu emit per-shader-variable DEBUG floods on every pipeline build — they drowned the VSF log within hours of the bridge landing.
+        let t = meta.target();
+        let noisy = t.starts_with("cosmic_text")
+            || t.starts_with("reqwest")
+            || t.starts_with("naga")
+            || t.starts_with("wgpu");
         !noisy || meta.level() <= log::Level::Warn
     }
     fn log(&self, record: &log::Record) {
