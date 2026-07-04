@@ -526,14 +526,14 @@ pub fn fetch(handle_proof: &[u8; 32]) -> Result<Option<MembershipBlob>, String> 
         .header("Content-Type", "application/octet-stream")
         .body(req)
         .send()
-        .map_err(|e| format!("fleet_get send: {e}"))?;
+        .map_err(|e| crate::network::http::short_send_error("reach FGTW", &e))?;
     if resp.status().as_u16() == 404 {
         return Ok(None);
     }
     if !resp.status().is_success() {
-        return Err(format!("fleet_get http {}", resp.status()));
+        return Err("FGTW rejected the lookup".to_string());
     }
-    let bytes = resp.bytes().map_err(|e| format!("fleet_get read: {e}"))?;
+    let bytes = resp.bytes().map_err(|e| crate::network::http::short_send_error("reach FGTW", &e))?;
     Ok(Some(MembershipBlob::from_vsf_bytes(&bytes)?))
 }
 
@@ -547,11 +547,14 @@ pub fn publish(blob: &MembershipBlob) -> Result<(), String> {
         .header("Content-Type", "application/octet-stream")
         .body(body)
         .send()
-        .map_err(|e| format!("fleet publish send: {e}"))?;
+        .map_err(|e| crate::network::http::short_send_error("reach FGTW", &e))?;
     if resp.status().is_success() {
         Ok(())
+    } else if resp.status().as_u16() == 409 {
+        // Forward-extension conflict — a real, actionable state (someone extended the chain first), kept distinct so the retry loop can match on it.
+        Err("fleet: 409".to_string())
     } else {
-        Err(format!("fleet publish http {}: {}", resp.status(), resp.text().unwrap_or_default()))
+        Err("FGTW rejected the fleet update".to_string())
     }
 }
 
@@ -892,7 +895,7 @@ pub fn post_pairing_request(
         .header("Content-Type", "application/octet-stream")
         .body(req)
         .send()
-        .map_err(|e| format!("pair_put send: {e}"))?;
+        .map_err(|e| crate::network::http::short_send_error("reach FGTW", &e))?;
     if resp.status().is_success() {
         Ok(())
     } else {
@@ -917,7 +920,7 @@ pub fn fetch_pairing_request(handle_proof: &[u8; 32]) -> Result<Option<PairReque
         .header("Content-Type", "application/octet-stream")
         .body(req)
         .send()
-        .map_err(|e| format!("pair_get send: {e}"))?;
+        .map_err(|e| crate::network::http::short_send_error("reach FGTW", &e))?;
     if resp.status().as_u16() == 404 {
         return Ok(None);
     }
@@ -989,7 +992,7 @@ pub fn post_pair_matched(
         .header("Content-Type", "application/octet-stream")
         .body(req)
         .send()
-        .map_err(|e| format!("pack_put send: {e}"))?;
+        .map_err(|e| crate::network::http::short_send_error("reach FGTW", &e))?;
     if resp.status().is_success() {
         Ok(())
     } else {
@@ -1017,7 +1020,7 @@ pub fn poll_pair_matched(
         .header("Content-Type", "application/octet-stream")
         .body(req)
         .send()
-        .map_err(|e| format!("pack_get send: {e}"))?;
+        .map_err(|e| crate::network::http::short_send_error("reach FGTW", &e))?;
     if resp.status().as_u16() == 404 {
         return Ok(false);
     }
@@ -1255,7 +1258,7 @@ pub fn post_fanout(
         .header("Content-Type", "application/octet-stream")
         .body(signed)
         .send()
-        .map_err(|e| format!("fanout_put send: {e}"))?;
+        .map_err(|e| crate::network::http::short_send_error("reach FGTW", &e))?;
     if resp.status().is_success() {
         Ok(())
     } else {
@@ -1279,7 +1282,7 @@ pub fn fetch_fanout(handle_proof: &[u8; 32]) -> Result<Option<(u64, Vec<FanoutWr
         .header("Content-Type", "application/octet-stream")
         .body(req)
         .send()
-        .map_err(|e| format!("fanout_get send: {e}"))?;
+        .map_err(|e| crate::network::http::short_send_error("reach FGTW", &e))?;
     if resp.status().as_u16() == 404 {
         return Ok(None);
     }
@@ -1468,7 +1471,7 @@ pub fn push_roster(
         .header("Content-Type", "application/octet-stream")
         .body(signed)
         .send()
-        .map_err(|e| format!("fstate_put send: {e}"))?;
+        .map_err(|e| crate::network::http::short_send_error("reach FGTW", &e))?;
     if resp.status().is_success() {
         Ok(())
     } else {
@@ -1495,7 +1498,7 @@ pub fn pull_roster(
         .header("Content-Type", "application/octet-stream")
         .body(req)
         .send()
-        .map_err(|e| format!("fstate_get send: {e}"))?;
+        .map_err(|e| crate::network::http::short_send_error("reach FGTW", &e))?;
     if resp.status().as_u16() == 404 {
         return Ok(None);
     }

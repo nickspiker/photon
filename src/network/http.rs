@@ -41,3 +41,12 @@ pub fn blocking() -> &'static reqwest::blocking::Client {
             .expect("build shared blocking reqwest client")
     })
 }
+
+/// Short, plain message for a failed FGTW request — NO web-stack jargon (no "error sending request for url", no reqwest internals, no TCP/DNS strings the user can't act on). A connect/timeout failure is the "server unreachable" case → "No connection to FGTW"; anything else is a plain per-action failure. `action` is a short verb phrase like "reach FGTW" or "check the handle".
+pub fn short_send_error(action: &str, e: &reqwest::Error) -> String {
+    if e.is_connect() || e.is_timeout() {
+        "No connection to FGTW".to_string()
+    } else {
+        format!("Couldn't {action}")
+    }
+}
