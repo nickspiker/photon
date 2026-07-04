@@ -15,7 +15,7 @@ Photon is a peer-to-peer messaging application that replaces traditional authent
 **Key Properties:**
 - **A = 1**: Authentication happens once when you create your identity. All subsequent access uses cryptographic proofs from that single event.
 - **True P2P**: No message servers. Peers connect directly after DHT-based discovery.
-- **Hardware-bound identity**: Device keys derived deterministically from hardware fingerprints, never stored on disk.
+- **Hardware-bound identity**: Device keys derived deterministically from hardware fingerprints, never stored on disk. On commodity hardware this inherits the vendor's device-ID uniqueness guarantee—see [the uniqueness dependency](#the-uniqueness-dependency-read-this-before-you-ship-on-commodity-hardware); PIPE silicon is the endgame that removes the dependency.
 - **Social recovery**: Lose your devices? Trusted contacts hold encrypted key shards for threshold reconstruction.
 - **Message immutability**: Editing or deleting messages breaks cryptographic chain—tampering is detectable.
 
@@ -183,6 +183,15 @@ let device_secret = blake3::derive_key(APP_CONTEXT, &machine_id);
 This provides: device-specific keys, resistance to remote attacks (requires both identifier exfiltration and app reverse-engineering), and security comparable to SSH keys or cryptocurrency wallets. Physical device theft remains the primary threat vector.
 
 The hardware exists and is capable. Platform vendors use it internally for device attestation, DRM, and payment processing. Third-party access would enable applications that bypass platform identity systems—a business model conflict, not a technical limitation.
+
+#### The uniqueness dependency (read this before you ship on commodity hardware)
+
+Because the device key is `derive_key(context, machine_id)`, **Photon's device-identity security is only as good as your OS/hardware vendor's guarantee that `machine_id` is unique.** The CDD requires `ANDROID_ID` to be unique, and `/etc/machine-id` / `IOPlatformUUID` are unique per install by construction—but that is a *promise from the manufacturer*, not a property Photon can enforce. If a vendor ever ships an image or an OTA that duplicates that identifier across devices (a real class of bug: golden-image cloning, a botched provisioning step, a bad update), then two physically different devices derive the **same** device key. To Photon's fleet chain they become the *same device*: each could silently attest into the other's fleet, and neither the network nor either user could tell them apart.
+
+Note the asymmetry: the **fault** is the vendor's, but the **loss** is the user's (and reputationally the app's). Photon's derivation converts a duplicated ID—normally a privacy nuisance—into an identity collision. So:
+
+- **If you fork/ship Photon on commodity hardware:** treat device-ID uniqueness as an assumption you must *verify with your device manufacturer*, in writing, as a security requirement—not a given. Ask specifically whether `ANDROID_ID` (or your platform's equivalent) can ever collide across a production run or survive-and-duplicate through their update pipeline.
+- **The real fix is PIPE.** A per-die physically-unclonable identity has no software-visible value to duplicate, so common-mode ID bugs become physically impossible rather than merely unlikely—and device-identity collision moves from "any vendor's OTA hygiene, forever" to "a fab defect the manufacturer both causes and bears." That is the difference between a risk you inherit from the entire supply chain and one you can actually insure against. PIPE is silicon that doesn't exist yet; until it's taped out, the derivation above is the software lock, shipped with this label on it.
 
 ---
 
