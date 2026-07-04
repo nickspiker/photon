@@ -86,29 +86,19 @@ fn try_parse_vsf_error(bytes: &[u8]) -> Option<String> {
 async fn format_http_error(step: &str, response: reqwest::Response) -> String {
     let status = response.status();
     let body_bytes = response.bytes().await.unwrap_or_default();
-    if let Some(msg) = try_parse_vsf_error(&body_bytes) {
-        return format!("FGTW {step} {}: {msg}", status.as_u16());
-    }
     format_http_error_from_bytes(step, status, &body_bytes)
 }
 
-/// Body-from-bytes variant — used by the announce path where the body was already buffered for VSF-error parsing before falling thru to the generic formatter.
+/// Turn an FGTW error response into a SHORT, plain message with no web-stack jargon (no status numbers, no "Bad Request"/"Internal Server Error" reason phrases, no URLs). FGTW signs its own error reasons; if one is present we surface that (it's ours and it's meaningful); otherwise the message is a plain "FGTW couldn't <step>" split only by whether the fault is on their side (5xx) or ours (4xx). The raw HTTP terminology is a transport detail the user can't act on.
+/// Body-from-bytes variant — used by the announce path where the body was already buffered for VSF-error parsing before falling thru here.
 fn format_http_error_from_bytes(step: &str, status: reqwest::StatusCode, body: &[u8]) -> String {
-    let body_preview = match std::str::from_utf8(body) {
-        Ok(s) => s.trim().to_string(),
-        Err(_) => format!("<{} bytes, non-UTF8>", body.len()),
-    };
-    // "INTERNAL SERVER ERROR" body for a 500, "BAD GATEWAY" for 502, etc. — the body repeats the reason phrase, so print the phrase once and name the server so the failure reads as FGTW-side, not local.
-    let canonical = status.canonical_reason().unwrap_or("");
-    let body_is_just_reason =
-        body_preview.eq_ignore_ascii_case(canonical) || body_preview.is_empty();
-    if body_is_just_reason {
-        format!(
-            "FGTW {step}: server answered {} {canonical} with no detail",
-            status.as_u16()
-        )
+    if let Some(msg) = try_parse_vsf_error(body) {
+        return format!("FGTW: {msg}");
+    }
+    if status.is_server_error() {
+        format!("FGTW is having trouble — couldn't {step}")
     } else {
-        format!("FGTW {step} {}: {body_preview}", status.as_u16())
+        format!("FGTW rejected {step}")
     }
 }
 
@@ -150,8 +140,9 @@ async fn load_bootstrap_peers_inner(
             crate::network::fgtw::fleet::ensure_member(&dk, &handle_proof, &seed)
         })
         .await
-        .map_err(|e| format!("fleet genesis task: {e}"))?
-        .map_err(|e| format!("fleet genesis: {e}"))?;
+        .map_err(|_| "fleet setup interrupted".to_string())?
+        // ensure_member already returns short, plain messages ("No connection to FGTW", "this device is not in the fleet — …") — surface them as-is, no prefix.
+        ?;
     }
 
     // Get challenge from FGTW (POST / with VSF section "challenge")
@@ -171,7 +162,7 @@ async fn load_bootstrap_peers_inner(
         .body(challenge_vsf)
         .send()
         .await
-        .map_err(|e| format!("Failed to fetch challenge: {}", e))?;
+        .map_err(|e| crate::network::http::short_send_error("reach FGTW", &e))?;
 
     if !challenge_response.status().is_success() {
         return Err(format_http_error("challenge", challenge_response).await);
@@ -180,7 +171,7 @@ async fn load_bootstrap_peers_inner(
     let challenge_bytes = challenge_response
         .bytes()
         .await
-        .map_err(|e| format!("Failed to read challenge: {}", e))?;
+        .map_err(|e| crate::network::http::short_send_error("reach FGTW", &e))?;
 
     #[cfg(feature = "development")]
     crate::log(&crate::network::inspect::vsf_inspect(
@@ -215,7 +206,7 @@ async fn load_bootstrap_peers_inner(
         .body(announce_bytes)
         .send()
         .await
-        .map_err(|e| format!("Failed to send announce: {}", e))?;
+        .map_err(|e| crate::network::http::short_send_error("reach FGTW", &e))?;
 
     let status = announce_response.status();
     let is_success = status.is_success();
@@ -223,7 +214,7 @@ async fn load_bootstrap_peers_inner(
     let response_bytes = announce_response
         .bytes()
         .await
-        .map_err(|e| format!("Failed to read response: {}", e))?;
+        .map_err(|e| crate::network::http::short_send_error("reach FGTW", &e))?;
 
     #[cfg(feature = "development")]
     crate::log(&crate::network::inspect::vsf_inspect(
