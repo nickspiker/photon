@@ -489,6 +489,10 @@ pub struct PhotonApp {
     add_device_match: Option<crate::network::fgtw::fleet::PairRequest>,
     /// AddDevice flow: the last full word entry we checked against the network, so an unchanged entry isn't re-fetched every tick.
     add_device_last_checked: String,
+    /// AddDevice flow: the entry text the live spell-check last ran against (debounce — the check itself is cheap, but no point re-running it on ticks where nothing was typed).
+    add_device_wordcheck_text: String,
+    /// AddDevice flow: the first typed word that can't be (or become) a voca list word — "contraversy", "spontanious", and friends. Drives the red status line the moment the typo is committed, instead of a silent no-match after all 23 words.
+    add_device_typo: Option<String>,
     /// AddDevice flow: a check or bind is in flight (debounces spawns; cleared when its result drains).
     add_device_checking: bool,
     /// AddDevice flow: results from the off-thread match-check / bind (the fleet client blocks on HTTP, so it can't run on the UI thread).
@@ -622,6 +626,8 @@ impl PhotonApp {
             add_device_status: String::new(),
             add_device_match: None,
             add_device_last_checked: String::new(),
+            add_device_wordcheck_text: String::new(),
+            add_device_typo: None,
             add_device_checking: false,
             add_device_rx: None,
             add_device_tx: None,
@@ -1893,6 +1899,21 @@ impl FluorApp for PhotonApp {
         // AddDevice flow: the completeness gate — the moment the typed entry reaches the fixed word count (and differs from the last checked entry), check it against the posted request off-thread.
         if matches!(self.state, AppState::AddDevice) && !self.add_device_checking {
             let text: String = self.textbox.as_ref().map(|tb| tb.chars.iter().collect()).unwrap_or_default();
+            // Live spell-check on every edit: flag the first typed word that can't be (or become) a voca list word, the moment the typo is committed — "contraversy" reads fine to a human and would otherwise sit silent until all 23 words no-match. The message owns the status line only in the neutral phase (no match awaiting bind, no check in flight); the completeness gate below still runs regardless, since a flagged entry can't decode anyway.
+            if text != self.add_device_wordcheck_text {
+                self.add_device_wordcheck_text = text.clone();
+                let typo = crate::network::fgtw::fleet::first_bad_pair_word(&text);
+                if typo != self.add_device_typo {
+                    self.add_device_typo = typo;
+                    if self.add_device_match.is_none() {
+                        self.add_device_status = match &self.add_device_typo {
+                            Some(w) => format!("'{w}' isn't one of the words"),
+                            None => "Type the words shown on the new device".to_string(),
+                        };
+                    }
+                    needs_redraw = true;
+                }
+            }
             if crate::network::fgtw::fleet::pair_word_tokens(&text)
                 == crate::network::fgtw::fleet::PAIR_WORD_COUNT
                 && text != self.add_device_last_checked
@@ -3222,6 +3243,9 @@ impl FluorApp for PhotonApp {
             if !self.add_device_status.is_empty() {
                 let status_colour = if self.add_device_match.is_some() || self.add_device_status.starts_with("Device added") {
                     SEARCH_FOUND_COLOUR
+                } else if self.add_device_typo.is_some() && self.add_device_match.is_none() {
+                    // Live spell-check hit: the status line names the offending word in red.
+                    ERROR_TEXT_COLOUR
                 } else {
                     STATUS_TEXT_COLOUR
                 };
@@ -3831,6 +3855,8 @@ impl PhotonApp {
     fn end_add_device_flow(&mut self) {
         self.add_device_match = None;
         self.add_device_last_checked.clear();
+        self.add_device_wordcheck_text.clear();
+        self.add_device_typo = None;
         self.add_device_checking = false;
         self.add_device_status.clear();
         self.add_device_rx = None;
