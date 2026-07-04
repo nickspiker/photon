@@ -1362,18 +1362,23 @@ impl FluorApp for PhotonApp {
                     return EventResponse::Handled;
                 }
 
-                // Back button on conversation screen.
-                if hit_id == self.back_btn_hit_id
-                    && matches!(self.state, AppState::Conversation)
-                    && self.back_btn_hit_id != HIT_NONE
-                {
-                    self.state = AppState::Ready;
-                    self.active_contact = None;
-                    ctx.window.request_redraw();
-                    return EventResponse::Handled;
+                // Back button — Conversation and Add-device both return to the contact list. Navigation is a dedicated control; the orb is settings-only.
+                if hit_id == self.back_btn_hit_id && self.back_btn_hit_id != HIT_NONE {
+                    if matches!(self.state, AppState::Conversation) {
+                        self.state = AppState::Ready;
+                        self.active_contact = None;
+                        ctx.window.request_redraw();
+                        return EventResponse::Handled;
+                    }
+                    if matches!(self.state, AppState::AddDevice) {
+                        self.end_add_device_flow();
+                        self.state = AppState::Ready;
+                        ctx.window.request_redraw();
+                        return EventResponse::Handled;
+                    }
                 }
 
-                // Orb tap (chrome app-icon) — a no-op widget, so intercept here. On Ready it opens the add-device flow; on AddDevice it cancels back. Routed by `on_orb_click`.
+                // Orb tap (chrome app-icon) — a no-op widget, so intercept here. Destined for the settings/about/help panel; until that exists it carries the INTERIM add-device entry on Ready (AddDevice cancel is now the dedicated back button, not the orb). Routed by `on_orb_click`.
                 let orb_id = self.chrome.as_ref().map(|c| c.app_icon_btn.id());
                 if Some(hit_id) == orb_id && hit_id != HIT_NONE && self.on_orb_click() {
                     ctx.window.request_redraw();
@@ -1915,17 +1920,15 @@ impl FluorApp for PhotonApp {
             // Live spell-check on every edit: flag the first typed word that can't be (or become) a voca list word, the moment the typo is committed — "contraversy" reads fine to a human and would otherwise sit silent until all 23 words no-match. The message owns the status line only in the neutral phase (no match awaiting bind, no check in flight); the completeness gate below still runs regardless, since a flagged entry can't decode anyway.
             if text != self.add_device_wordcheck_text {
                 self.add_device_wordcheck_text = text.clone();
-                let typo = crate::network::fgtw::fleet::first_bad_pair_word(&text);
-                if typo != self.add_device_typo {
-                    self.add_device_typo = typo;
-                    if self.add_device_match.is_none() {
-                        self.add_device_status = match &self.add_device_typo {
-                            Some(w) => format!("'{w}' isn't one of the words"),
-                            None => "Type the words shown on the new device".to_string(),
-                        };
-                    }
-                    needs_redraw = true;
+                self.add_device_typo = crate::network::fgtw::fleet::first_bad_pair_word(&text);
+                // Derive the status from CURRENT text on every edit, not just on a typo-state transition — otherwise a network "Words don't match" (or an old typo message) sticks on the line as the user keeps typing a now-fine entry. Skipped only while a check is in flight ("Checking...") or a match is awaiting bind, which own the line themselves.
+                if self.add_device_match.is_none() && !self.add_device_checking {
+                    self.add_device_status = match &self.add_device_typo {
+                        Some(w) => format!("'{w}' isn't one of the words"),
+                        None => "Type the words shown on the new device".to_string(),
+                    };
                 }
+                needs_redraw = true;
             }
             // Completeness = every word an exact list member, not just 23 tokens — the 23rd token exists from its first typed character, and firing the decode on it surfaced "unrecognised word" about a word still being typed.
             if crate::network::fgtw::fleet::pair_entry_complete(&text)
@@ -2693,6 +2696,30 @@ impl FluorApp for PhotonApp {
                 }
             }
 
+            // "Device added √" confirmation — in the hint slot ABOVE the search box (not the bottom band). Green; sits until the next click/keystroke clears it via clear_hints (never time-based). Lifts one line when the add-friend result already occupies the hint slot so the two don't overlap.
+            if let Some(msg) = &self.ready_toast {
+                let hint = ready_layout.hint;
+                if !hint.is_empty() {
+                    let region_h = (hint.y1 - hint.y0) as f32;
+                    let tcx = (hint.x0 + hint.x1) as f32 * 0.5;
+                    let lift = if self.search_status.is_some() { region_h * 1.15 } else { 0.0 };
+                    let tcy = (hint.y0 + hint.y1) as f32 * 0.5 - scroll - lift;
+                    ctx.text.draw_text_center_u32(
+                        &mut canvas,
+                        msg,
+                        tcx,
+                        tcy,
+                        region_h * 0.6,
+                        600,
+                        SEARCH_FOUND_COLOUR,
+                        "Oxanium",
+                        None,
+                        None,
+                        None,
+                    );
+                }
+            }
+
             // ───────── Separator + scrollable contact list ───────── 1-pixel hairline centred in the separator slot (height 0 = hairline; the slot itself is just reserved breathing room around the line).
             let sep = ready_layout.separator;
             paint::fill_rect(
@@ -2898,28 +2925,6 @@ impl FluorApp for PhotonApp {
                     font_size,
                     600,
                     CLOCK_TEXT,
-                    "Oxanium",
-                    None,
-                    None,
-                    None,
-                );
-            }
-
-            // Confirmation band ("Device added √") — green, same bottom-band family as the warnings, stacked above whichever amber bands are showing. Sits until the next click or keystroke clears it via clear_hints — never time-based.
-            if let Some(msg) = &self.ready_toast {
-                let band_h = ready_layout.unit_height * 1.5;
-                let cx = buf_w as f32 * 0.5;
-                let rows_below =
-                    (self.vault_degraded as u8 + self.clock_off.is_some() as u8) as f32;
-                let cy = buf_h as f32 - band_h * (0.5 + rows_below);
-                ctx.text.draw_text_center_u32(
-                    &mut canvas,
-                    msg,
-                    cx,
-                    cy,
-                    band_h * 0.6,
-                    600,
-                    SEARCH_FOUND_COLOUR,
                     "Oxanium",
                     None,
                     None,
@@ -3289,6 +3294,26 @@ impl FluorApp for PhotonApp {
         if matches!(self.state, AppState::AddDevice) {
             let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
             let cx = buf_w as f32 * 0.5;
+
+            // Back affordance (top-left) — same "‹ Contacts" idiom + hit-id as the Conversation screen. Navigation is a dedicated control; the orb is reserved for settings and never carries context actions.
+            {
+                let unit = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru).unit_height;
+                let back_y = buf_h as f32 * 0.06 + unit;
+                let back_size = unit * 1.15;
+                let back_text = "‹ Contacts";
+                ctx.text.draw_text_left_u32(
+                    &mut canvas, back_text, unit, back_y, back_size, 500,
+                    CONTACT_NAME_COLOUR, "Oxanium", None, None, None,
+                );
+                let back_w = ctx.text.measure_text_width(back_text, back_size, 500, "Oxanium");
+                restamp_hit_rect(
+                    &mut chrome.hit_test_map, buf_w, buf_h,
+                    0, (back_y - back_size) as isize,
+                    (unit + back_w + unit) as isize, (back_y + back_size) as isize,
+                    self.back_btn_hit_id,
+                );
+            }
+
             // All geometry hangs off the textbox rect (laid out by update_widget_layout from the ru-scaled attest slot), so the whole screen scales with zoom and nothing collides with the pill.
             let (tb_cy, tb_h) = self
                 .textbox
@@ -3673,26 +3698,7 @@ impl PhotonApp {
                 self.change_focus(tb_id);
                 true
             }
-            AppState::AddDevice => {
-                // The orb is purely CANCEL here — the bind fires automatically the moment the typed words match (typing 23 words on the trusted device IS the consent; see `spawn_bind_device`), so there's no "tap to bind" arm left.
-                self.end_add_device_flow();
-                self.state = AppState::Ready;
-                true
-            }
-            // New device on the launch screen: toggle JOIN mode (enter the handle; this device then shows its pairing words).
-            AppState::Launch(_) => {
-                self.launch_add_mode = !self.launch_add_mode;
-                self.end_join_flow();
-                self.add_join_status = if self.launch_add_mode {
-                    "Join a fleet — enter your handle".to_string()
-                } else {
-                    String::new()
-                };
-                if let Some(tb) = self.textbox.as_mut() {
-                    tb.clear();
-                }
-                true
-            }
+            // AddDevice: the orb no longer cancels — the dedicated back button does. AddDevice and Launch fall through to the no-op below (the orb is settings-only; the Launch JOIN entry moves to the attest probe-then-branch flow).
             _ => false,
         }
     }
