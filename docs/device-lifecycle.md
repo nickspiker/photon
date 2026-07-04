@@ -87,6 +87,22 @@ sequenceDiagram
 
 ⏳ Still open after enrollment: **braid-in**. The new device has routing + the fleet key but zero braid history; each existing friendship needs a per-sibling strand establishment (fresh CLUTCH per friendship from the new device), N-wide by design — never "re-CLUTCH with the one other device".
 
+### 2.1 NFC variant (designed 2026-07-04; unbuilt ⏳)
+
+The same ceremony with ONE leg swapped: the tap carries the pairing pubkey old←new instead of the human typing 23 words. Everything else — the pairing-key-signed request, the member-signed matched flag, the bind, the rotate, the fan-out recovery — is the machinery above, unchanged.
+
+**The verification model: an end-to-end authenticated ack, not channel authentication.** The old device acks whatever pubkey it received (matched flag, member-signed, naming that key). The new device's ready light flips green ONLY on a verified flag naming ITS OWN pairing pubkey (`poll_pair_matched` — a stranger can't flip it). So the human never compares fingerprints across screens; they check the one bit humans check reflexively: *did MY device light up after MY tap*. Attacker taps first → the old device acked the attacker's key → YOUR device stays red "unenrolled" → you don't confirm. Red means the old device is holding someone else's key.
+
+**Corollary — the channel needs ZERO trust.** The tap delivers a public value; the confirmation arrives over the authenticated network path. A fully hostile NFC relay changes nothing: relaying the real key enrolls the real device, substituting a key turns the real device's light red. Nothing secret crosses the tap, so there is nothing for proximity to steal and nothing for it to forge.
+
+**And the waiting device isn't naked.** In JOIN mode it is pre-aimed: it holds its pairing PRIVATE key, it is bound to ONE handle's fleet, and it proceeds only on a member-signed flag naming its own pubkey followed by actual folded-chain membership. An attacker's tap leaves it inert and un-redirectable — everything it has exposed (its request) is public and self-signed; everything it will accept is membership-gated. It just keeps waiting for you to let it in.
+
+Two implementation disciplines (the entire remaining attack surface):
+1. **Ack ≠ authorize, one candidate at a time.** The tap gets a key acked; only a human press on the old device signs the ADD — and the press is BOUND to the acked candidate. A second tap landing between green light and press (the TOCTOU squeeze) REPLACES the pending candidate, re-acks, and invalidates the armed confirm, so the signed key is always the one whose ack is currently live — and the displaced device's light flipping red is the alarm.
+2. **Pending ≠ enrolled.** Green = acked; enrolled = this device folds from the chain (the existing membership poll). The user waits for *enrolled*; a rogue signing while your device sits at red/pending is loud, and removal + rotate-on-remove is the built backstop.
+
+Scope: NFC is a phone↔phone accelerator (laptops rarely have the radio); the 23 words remain the universal path. Same fleet ADD underneath either way.
+
 ## 3. Device REMOVE
 
 The chain primitive is built and server-verified (member-signed `Remove` op, same fold rules); the management UI is unbuilt. ⏳
