@@ -121,6 +121,8 @@ impl PTManager {
 
     /// Max VSF size for single UDP packet (no sharding needed) 1KB threshold - VSF this size or smaller sent directly Larger VSF gets sharded into [lowercase letter][packet number][1KB DATA] packets
     pub const SINGLE_PACKET_MAX: usize = 1024;
+    /// Retry cap for a reliable small packet before the stop-and-wait head is dropped and the per-peer FIFO advances. With 1→2→…→60s backoff, ~5 retries ≈ 30-60s of trying — long enough to ride out a brief blip, short enough that an undeliverable head (dead avatar request) can't blackhole the chat queued behind it. The higher layer re-queues (chat retransmit / avatar→FGTW), so a drop is a deferral, not a loss.
+    pub const MAX_PACKET_RETRIES: u32 = 5;
 
     /// Queue data for reliable delivery to peer
     ///
@@ -684,6 +686,43 @@ impl PTManager {
                         tcp_payload: None,
                         relay: None, // DATA packets don't use relay
                     });
+                }
+            }
+        }
+
+        // Give-up-and-advance: an in-flight head that has retried past the cap is undeliverable (dead address, peer gone) and must NOT hold the per-peer FIFO forever — otherwise one stuck packet (e.g. an AVATAR_REQUEST to a peer that won't ack) head-of-line-blocks every chat message queued behind it, which is exactly the "messages stick after CLUTCH" bug. Dropping is safe: small packets carry their own higher-layer retransmit (chat re-queues via the CHAT retransmit sweep; avatar falls back to FGTW), so a dropped PT packet just re-enters later — but the queue keeps flowing meanwhile.
+        let mut advanced_peers: Vec<SocketAddr> = Vec::new();
+        self.outbound_packets.retain(|pkt| {
+            if pkt.in_flight && pkt.retry_count >= Self::MAX_PACKET_RETRIES {
+                crate::log(&format!(
+                    "PT: giving up on undeliverable packet to {} after {} retries — advancing the queue",
+                    pkt.peer_addr, pkt.retry_count
+                ));
+                advanced_peers.push(pkt.peer_addr);
+                false
+            } else {
+                true
+            }
+        });
+        // Promote the next queued packet for each peer whose stuck head we just dropped (mirrors handle_packet_ack's stop-and-wait advance).
+        for peer in advanced_peers {
+            let peer_busy = self
+                .outbound_packets
+                .iter()
+                .any(|p| same_addr(p.peer_addr, peer) && p.in_flight);
+            if peer_busy {
+                continue;
+            }
+            if let Some(next) = self
+                .outbound_packets
+                .iter_mut()
+                .find(|p| same_addr(p.peer_addr, peer) && !p.in_flight)
+            {
+                next.mark_sent();
+                let (paddr, payload, alt) = (next.peer_addr, next.payload.clone(), next.alt_addr);
+                to_send.push(TickSend { peer_addr: paddr, wire_bytes: payload.clone(), tcp_payload: None, relay: None });
+                if let Some(alt) = alt {
+                    to_send.push(TickSend { peer_addr: alt, wire_bytes: payload, tcp_payload: None, relay: None });
                 }
             }
         }
