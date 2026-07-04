@@ -1659,6 +1659,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fgtw"
+version = "0.0.0"
+dependencies = [
+ "blake3",
+ "ed25519-dalek",
+ "vsf 0.9.1",
+]
+
+[[package]]
 name = "fiat-crypto"
 version = "0.2.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1710,7 +1719,7 @@ dependencies = [
  "softbuffer",
  "spirix",
  "swash",
- "vsf 0.8.0",
+ "vsf 0.9.1",
  "wgpu",
  "wide",
  "windows 0.58.0",
@@ -2736,7 +2745,7 @@ version = "0.0.1"
 dependencies = [
  "blake3",
  "libc",
- "vsf 0.8.0",
+ "vsf 0.9.1",
 ]
 
 [[package]]
@@ -3683,6 +3692,7 @@ dependencies = [
  "dirs",
  "ed25519-dalek",
  "falcon-rust",
+ "fgtw",
  "fluor",
  "frodo-kem-rs",
  "futures",
@@ -3731,7 +3741,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "voca",
- "vsf 0.8.2",
+ "vsf 0.9.1",
  "wgpu",
  "windows 0.58.0",
  "winit",
@@ -4271,7 +4281,7 @@ version = "0.0.0"
 dependencies = [
  "blake3",
  "kete",
- "vsf 0.8.2",
+ "vsf 0.9.1",
 ]
 
 [[package]]
@@ -5090,7 +5100,7 @@ checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
 
 [[package]]
 name = "spirix"
-version = "0.0.12"
+version = "0.1.1"
 dependencies = [
  "i256",
  "num-complex",
@@ -5863,24 +5873,7 @@ dependencies = [
 
 [[package]]
 name = "vsf"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2c7481e6809ad0226db749bfb75818588fe205852f582fb8b84868aebd89170"
-dependencies = [
- "bitvec",
- "blake3",
- "chrono",
- "hex",
- "i256",
- "libm",
- "num-complex",
- "num-traits",
- "spin",
-]
-
-[[package]]
-name = "vsf"
-version = "0.8.2"
+version = "0.9.1"
 dependencies = [
  "aes-gcm 0.10.3",
  "bitvec",

@@ -94,6 +94,8 @@ rayon = "1.11.0"
 # softbuffer specified per-platform below
 # arboard specified per-platform below (pulls x11rb on Linux)
 vsf = { path = "../vsf", features = ["crypto", "inspect", "text-encode"] }
+# FGTW client substrate — device keypair + fleet membership chain, shared with the calendar and the FGTW worker. Path dep during the migration; the client HTTP oracle / fan-out / fstate lift into it in later steps (see docs plan + fgtw/MIGRATION.md).
+fgtw = { path = "../fgtw" }
 # fluor: CPU softbuffer compositor. Hosts the desktop event loop, owns chrome / paint primitives / text rendering / widget dispatch.
 # Path dep during the migration so Photon picks up local fluor changes without a republish cycle; flip to `version = "0.0.3+"` once the migration stabilizes (note: 0.0.2 was yanked).
 # Global = algorithm/geometry core only (no windowing backend). The desktop target block below adds `host-winit` so Cargo unions to {std, text, simd, rayon, host-winit} for desktop builds; the Android target stays at the default set so its dep graph excludes softbuffer/arboard/winit. This is the first step of the `host-android` plan — Android stays on the legacy compositor for now, but the fluor algorithm code is shared by both targets going forward.
