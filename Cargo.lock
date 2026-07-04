@@ -1663,8 +1663,13 @@ name = "fgtw"
 version = "0.0.0"
 dependencies = [
  "blake3",
+ "chacha20poly1305 0.11.0-rc.3",
  "ed25519-dalek",
+ "num-bigint",
+ "rand 0.8.5",
+ "voca",
  "vsf 0.9.1",
+ "x25519-dalek",
 ]
 
 [[package]]
