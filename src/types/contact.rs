@@ -211,7 +211,7 @@ impl ContactId {
 impl Contact {
     pub fn new(handle: HandleText, handle_proof: [u8; 32], public_identity: DevicePubkey) -> Self {
         // Private handle_hash for local seed derivation (NOT the public handle_proof). Delegates to `ihi::handle_to_hash` — VsfType::x pre-hash + BLAKE3, same canonical answer as handle_to_proof's first stage.
-        let handle_hash = *ihi::handle_to_hash(handle.as_str()).as_bytes();
+        let handle_hash = crate::types::Handle::to_identity_seed(handle.as_str());
 
         Self {
             id: ContactId::from_pubkey(&public_identity),

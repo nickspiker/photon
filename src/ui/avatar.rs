@@ -785,7 +785,7 @@ pub fn load_cached_avatar(
     handle: &str,
     storage: &std::sync::Arc<crate::storage::FlatStorage>,
 ) -> Option<(usize, Vec<u8>)> {
-    load_cached_avatar_from_seed(ihi::handle_to_hash(handle).as_bytes(), storage)
+    load_cached_avatar_from_seed(&crate::types::Handle::to_identity_seed(handle), storage)
 }
 
 /// `load_cached_avatar` from the already-derived `identity_seed`. String-free owner path. The avatar VSF lives in the vault at `vault_key("avatar", identity_seed)` — no filesystem file, no base64 filename, the 32-byte address goes straight to the vault.
@@ -812,7 +812,7 @@ fn save_avatar_to_cache(
     vsf_data: &[u8],
     storage: &std::sync::Arc<crate::storage::FlatStorage>,
 ) -> Result<(), crate::storage::StorageError> {
-    save_avatar_to_cache_from_seed(ihi::handle_to_hash(handle).as_bytes(), vsf_data, storage)
+    save_avatar_to_cache_from_seed(&crate::types::Handle::to_identity_seed(handle), vsf_data, storage)
 }
 
 pub fn save_avatar_to_cache_from_seed(
@@ -844,7 +844,7 @@ pub fn load_avatar_from_seed(
 
 /// Load avatar from raw VSF bytes (used for both local and network avatars). Avatar data is encrypted with the identity-seed-derived key. Format: v'e'(encrypted v'a'(AV1 data))
 pub fn load_avatar_from_bytes(vsf_data: &[u8], handle: &str) -> Option<(usize, Vec<u8>)> {
-    load_avatar_from_bytes_from_seed(vsf_data, ihi::handle_to_hash(handle).as_bytes())
+    load_avatar_from_bytes_from_seed(vsf_data, &crate::types::Handle::to_identity_seed(handle))
 }
 
 /// `load_avatar_from_bytes` from the already-derived `identity_seed`.
@@ -905,7 +905,7 @@ pub fn save_avatar(
     handle: &str,
     storage: &std::sync::Arc<crate::storage::FlatStorage>,
 ) -> Result<(), crate::storage::StorageError> {
-    save_avatar_from_seed(av1_data, ihi::handle_to_hash(handle).as_bytes(), storage)
+    save_avatar_from_seed(av1_data, &crate::types::Handle::to_identity_seed(handle), storage)
 }
 
 /// `save_avatar` from the already-derived `identity_seed`. String-free owner path.
@@ -962,7 +962,7 @@ pub fn get_avatar_provenance_hash(
     use vsf::file_format::VsfHeader;
     use vsf::VsfType;
 
-    let addr = crate::storage::vault_key("avatar", ihi::handle_to_hash(handle).as_bytes());
+    let addr = crate::storage::vault_key("avatar", &crate::types::Handle::to_identity_seed(handle));
     let vsf_data = storage.read_addr(&addr).ok()??;
 
     // Parse header to extract provenance hash
@@ -982,7 +982,7 @@ pub fn get_local_avatar_timestamp(
     handle: &str,
     storage: &std::sync::Arc<crate::storage::FlatStorage>,
 ) -> Option<i64> {
-    get_local_avatar_timestamp_from_seed(ihi::handle_to_hash(handle).as_bytes(), storage)
+    get_local_avatar_timestamp_from_seed(&crate::types::Handle::to_identity_seed(handle), storage)
 }
 
 /// Seed-keyed twin of [`get_local_avatar_timestamp`] — the canonical body. Reads the cached avatar VSF at `vault_key("avatar", identity_seed)` and returns its embedded eagle-time creation stamp.
@@ -1039,7 +1039,7 @@ pub fn derive_avatar_keypair(
     device_secret: &SigningKey,
     handle: &str,
 ) -> (SigningKey, VerifyingKey) {
-    derive_avatar_keypair_from_seed(device_secret, ihi::handle_to_hash(handle).as_bytes())
+    derive_avatar_keypair_from_seed(device_secret, &crate::types::Handle::to_identity_seed(handle))
 }
 
 /// `derive_avatar_keypair` from the already-derived `identity_seed` (= `ihi::handle_to_hash` bytes), so the owner never needs the handle string post-attest. Byte-identical to the handle path.
@@ -1071,7 +1071,7 @@ pub fn derive_avatar_keypair_from_seed(
 /// # Returns
 /// Base64url-encoded 32-byte hash (no padding)
 pub fn avatar_storage_key(handle: &str) -> String {
-    avatar_storage_key_from_seed(ihi::handle_to_hash(handle).as_bytes())
+    avatar_storage_key_from_seed(&crate::types::Handle::to_identity_seed(handle))
 }
 
 /// `avatar_storage_key` from the already-derived `identity_seed`. Byte-identical to the handle path.
@@ -1093,7 +1093,7 @@ pub fn avatar_storage_key_from_seed(identity_seed: &[u8; 32]) -> String {
 ///
 /// # Returns 32-byte AES-256-GCM key
 pub fn derive_avatar_encryption_key(handle: &str) -> [u8; 32] {
-    derive_avatar_encryption_key_from_seed(ihi::handle_to_hash(handle).as_bytes())
+    derive_avatar_encryption_key_from_seed(&crate::types::Handle::to_identity_seed(handle))
 }
 
 /// `derive_avatar_encryption_key` from the already-derived `identity_seed`. Byte-identical to the handle path.
@@ -1113,7 +1113,7 @@ pub fn derive_avatar_encryption_key_from_seed(identity_seed: &[u8; 32]) -> [u8; 
 /// # Returns
 /// Encrypted blob ready to be wrapped in v'e'
 pub fn encrypt_av1_data(av1_data: &[u8], handle: &str) -> Result<Vec<u8>, String> {
-    encrypt_av1_data_from_seed(av1_data, ihi::handle_to_hash(handle).as_bytes())
+    encrypt_av1_data_from_seed(av1_data, &crate::types::Handle::to_identity_seed(handle))
 }
 
 /// `encrypt_av1_data` from the already-derived `identity_seed`. Byte-compatible with the handle path.
@@ -1159,7 +1159,7 @@ pub fn encrypt_av1_data_from_seed(
 /// # Returns
 /// Raw AV1 OBU bitstream
 pub fn decrypt_av1_data(encrypted: &[u8], handle: &str) -> Result<Vec<u8>, String> {
-    decrypt_av1_data_from_seed(encrypted, ihi::handle_to_hash(handle).as_bytes())
+    decrypt_av1_data_from_seed(encrypted, &crate::types::Handle::to_identity_seed(handle))
 }
 
 /// `decrypt_av1_data` from the already-derived `identity_seed`. Byte-compatible with the handle path.
@@ -1385,7 +1385,7 @@ pub fn upload_avatar(
 ) -> Result<String, String> {
     upload_avatar_from_seed(
         device_secret,
-        ihi::handle_to_hash(handle).as_bytes(),
+        &crate::types::Handle::to_identity_seed(handle),
         handle_proof,
         storage,
     )
