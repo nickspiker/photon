@@ -39,6 +39,8 @@ pub struct AttestationData {
 /// First attest carries the typed handle (the one moment the string exists — the worker derives the roots, persists them, and drops it); resume carries the cached session roots, so it touches neither the string nor the ~1s proof recompute.
 pub enum QueryRequest {
     FirstAttest(String),
+    /// First-attest SEMANTICS (persist the roots on FGTW confirmation) with roots derived by the caller — the JOIN flow already paid the ~1s proof when it keyed the pairing slots, so re-deriving from the string here would be a second full proof delay on the fresh device.
+    FirstAttestWithRoots(tohu::SessionIdentity),
     Resume(tohu::SessionIdentity),
 }
 
@@ -449,6 +451,10 @@ impl HandleQuery {
                                                                                       // Defer persistence until FGTW confirms ownership (below) — a rejected attest must NOT leave session roots that would auto-resume into the same rejection next launch.
                         (identity_seed, vault_seed, handle_proof, true)
                     }
+                    QueryRequest::FirstAttestWithRoots(s) => {
+                        // Caller-derived roots (the JOIN flow), first-attest persistence semantics.
+                        (s.identity_seed, s.vault_seed, s.handle_proof, true)
+                    }
                     QueryRequest::Resume(s) => {
                         (s.identity_seed, s.vault_seed, s.handle_proof, false)
                     }
@@ -825,6 +831,11 @@ impl HandleQuery {
     /// The worker derives + persists the session roots, so subsequent launches use [`query_resume`](Self::query_resume) instead.
     pub fn query(&self, handle: String) {
         let _ = self.query_sender.send(QueryRequest::FirstAttest(handle));
+    }
+
+    /// First attest with caller-derived roots (non-blocking) — the JOIN flow derives them once up front; this skips the string and the second ~1s proof while keeping first-attest persistence (roots remembered on FGTW confirmation).
+    pub fn query_first_attest_with_roots(&self, session: tohu::SessionIdentity) {
+        let _ = self.query_sender.send(QueryRequest::FirstAttestWithRoots(session));
     }
 
     /// Resume attestation from the cached session roots (non-blocking) — no handle string, no ~1s proof recompute.
