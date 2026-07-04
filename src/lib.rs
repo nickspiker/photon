@@ -435,12 +435,13 @@ struct VsfLogBridge;
 #[cfg(feature = "logging")]
 impl log::Log for VsfLogBridge {
     fn enabled(&self, meta: &log::Metadata) -> bool {
-        // naga/wgpu emit per-shader-variable DEBUG floods on every pipeline build — they drowned the VSF log within hours of the bridge landing.
+        // Known-chatty dependencies held to Warn+ so their DEBUG streams don't drown the log: naga/wgpu flood per-shader-variable on every pipeline build; rustls/tungstenite/hyper/h2 flood per-connection handshake detail (observed burying the JOIN ceremony trace within a session).
+        const NOISY: &[&str] = &[
+            "cosmic_text", "reqwest", "naga", "wgpu",
+            "rustls", "tungstenite", "tokio_tungstenite", "hyper", "h2",
+        ];
         let t = meta.target();
-        let noisy = t.starts_with("cosmic_text")
-            || t.starts_with("reqwest")
-            || t.starts_with("naga")
-            || t.starts_with("wgpu");
+        let noisy = NOISY.iter().any(|p| t.starts_with(p));
         !noisy || meta.level() <= log::Level::Warn
     }
     fn log(&self, record: &log::Record) {
