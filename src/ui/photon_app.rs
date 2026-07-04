@@ -1843,9 +1843,9 @@ impl FluorApp for PhotonApp {
             }
         }
 
-        // Recurring background presence sweep — re-ping every contact so online/offline rings stay live without the user opening a conversation. The interval tapers with idle time (5s active → 1min idle → 15min deep-idle) so an untouched window isn't hammering the network.
-        // Only on the Ready screen (we have contacts + a checker). `wake_at()` schedules the next sweep so this fires even while the app is otherwise idle.
-        if matches!(self.state, AppState::Ready) {
+        // Recurring background presence sweep — re-ping every contact so online/offline rings stay live. The interval tapers with idle time (5s active → 1min idle → 15min deep-idle) so an untouched window isn't hammering the network.
+        // Runs on Ready AND in a Conversation — CRITICAL: presence is symmetric only if both sides keep pinging, and the person you most need a live status for is the one you're actively chatting with. Gating this to Ready meant opening a conversation stopped your pings, so your view of that contact went stale — and if both people opened the chat with each other, NEITHER pinged and both showed offline (observed: peer-B on Ready saw a peer online, a peer in the conversation saw peer-B offline). `wake_at()` schedules the next sweep so this fires even while otherwise idle.
+        if matches!(self.state, AppState::Ready | AppState::Conversation) {
             let interval = self.presence_ping_interval(now);
             let due = self
                 .last_presence_ping
