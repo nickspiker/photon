@@ -59,6 +59,8 @@ pub struct PingRequest {
 #[derive(Clone)]
 pub struct MessageRequest {
     pub peer_addr: SocketAddr,
+    /// Second candidate address to race, from `race_addrs()` — the public/WAN path when `peer_addr` is the peer's LAN IPv4 (or vice versa). The wire bytes go to BOTH so the reachable one wins: a cellular peer can't reach the other's `192.168.x` LAN, and two peers on different LANs can only meet on the public path. Chat used to drop this (send LAN-only), which silently blackholed every message to an off-LAN peer even though CLUTCH — which already races both — completed fine.
+    pub alt_addr: Option<SocketAddr>,
     /// Recipient's device pubkey (for relay fallback)
     pub recipient_pubkey: [u8; 32],
     /// Privacy-preserving conversation token (smear_hash of sorted participant seeds). Replaces cleartext handle_hash and friendship_id - only participants can compute.
@@ -1836,6 +1838,10 @@ async fn run_checker(
                 // PT returns the first wire bytes to send, or EMPTY if this packet queued behind an in-flight one for this peer (stop-and-wait) — in that case tick() sends it once the head is acked. Don't emit an empty datagram.
                 if !pt_bytes.is_empty() {
                     udp::send(&socket, &pt_bytes, request.peer_addr).await;
+                    // Race the alt path with the SAME wire bytes (best-effort duplicate, not a second PT transfer). The reachable address delivers; the receiver dedupes by eagle_time and its ACK is deterministic, so a redelivery just yields a free re-ACK. This is why chat now reaches an off-LAN peer: PT/reliability tracks the primary, but the message rides both addresses on every attempt, and the message-layer retransmit keeps re-spraying both until the ACK clears it.
+                    if let Some(alt) = request.alt_addr {
+                        udp::send(&socket, &pt_bytes, alt).await;
+                    }
                 }
             }
         }
