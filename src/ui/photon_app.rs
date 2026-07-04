@@ -3905,9 +3905,10 @@ impl PhotonApp {
                 let _ = tx.send(JoinUpdate::Failed(format!("request failed: {e}")));
                 return;
             }
-            // Poll until bound (the user has to walk to the other device and type 23 words — allow ~10 minutes). Re-post the request periodically so the inbox slot stays fresh (5-minute freshness) and survives being overwritten.
+            // Poll until bound or cancelled — NO deadline. The user standing at the screen is the timeout: they walk to the other device, type 23 words, and come back whenever; the ceremony ends when the bind lands, when they tap the orb (the stop flag), or on a hard network error. The re-post keeps the 5-minute inbox slot fresh indefinitely, and the poll cadence relaxes after the first few minutes so an abandoned screen idles gently instead of hammering FGTW.
             let mut matched_sent = false;
-            for cycle in 0..200 {
+            let mut cycle = 0usize;
+            loop {
                 if stop.load(Ordering::Relaxed) {
                     return;
                 }
@@ -3942,11 +3943,11 @@ impl PhotonApp {
                         return;
                     }
                 }
-                std::thread::sleep(crate::jitter_dur(std::time::Duration::from_secs(3)));
+                cycle += 1;
+                // ~3s polls for the first ~5 minutes (the active-ceremony window), ~10s after — still well inside the 5-minute slot freshness at the every-8th-cycle re-post, just kinder to FGTW and the battery on a screen someone walked away from.
+                let base = if cycle < 100 { 3 } else { 10 };
+                std::thread::sleep(crate::jitter_dur(std::time::Duration::from_secs(base)));
             }
-            let _ = tx.send(JoinUpdate::Failed(
-                "expired — tap the orb and start again".into(),
-            ));
         });
     }
 
