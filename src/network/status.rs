@@ -1357,11 +1357,15 @@ async fn run_checker(
 
                     match FgtwMessage::from_vsf_bytes(msg_bytes) {
                         Ok(message) => {
-                            // Delivery ack for RELIABLE small messages only (chat, MessageAck, CLUTCH proof) — those are sent through PT's stop-and-wait queue and need a delivery ack (keyed by BLAKE3(bytes)) so the sender stops retransmitting.
-                            // Ping/pong are best-effort on their own schedule (NOT queued reliably), so acking them would be pointless noise. Pure transport "bytes received"; the app still sends its own semantic reply (MessageAck). Packet-acks are pt_ack frames handled earlier, so they never reach here (no ack-of-ack).
+                            // Delivery ack for EVERY message sent through PT's reliable stop-and-wait queue (send_with_pubkey), keyed by BLAKE3(bytes), so the sender stops retransmitting and its per-peer FIFO advances.
+                            // This MUST list every reliably-queued type or that type retransmits FOREVER and head-of-line-blocks chat behind it. AvatarRequest/AvatarResponse were the missing entries: both go out via send_with_pubkey but were never acked, so a post-CLUTCH avatar request retransmitted until it blocked every chat message — the "messages stick" bug, hit hardest against an avatar-less peer that also sends no app-level response.
+                            // Ping/pong are excluded on purpose: best-effort on their own schedule, NOT queued reliably, so acking them would be pointless noise. CLUTCH proof (ClutchComplete) is acked earlier in its own branch. Packet-acks are pt_ack frames handled earlier (no ack-of-ack). The delivery ack is pure transport "bytes received"; the app still sends its own semantic reply (MessageAck / avatar response).
                             let reliable = matches!(
                                 message,
-                                FgtwMessage::ChatMessage { .. } | FgtwMessage::MessageAck { .. }
+                                FgtwMessage::ChatMessage { .. }
+                                    | FgtwMessage::MessageAck { .. }
+                                    | FgtwMessage::AvatarRequest { .. }
+                                    | FgtwMessage::AvatarResponse { .. }
                             );
                             if reliable {
                                 let ack_bytes = {
