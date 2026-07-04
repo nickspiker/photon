@@ -1898,7 +1898,10 @@ impl FluorApp for PhotonApp {
                 }
                 AddDeviceUpdate::NoMatch(why) => {
                     self.add_device_checking = false;
-                    self.add_device_status = why;
+                    // Only show the result if the entry we checked is still on screen — if the user has edited past it, the status was already cleared and a stale "Words don't match" must not pop back.
+                    if self.add_device_wordcheck_text == self.add_device_last_checked {
+                        self.add_device_status = why;
+                    }
                 }
                 AddDeviceUpdate::Bound => {
                     self.add_device_checking = false;
@@ -1917,29 +1920,29 @@ impl FluorApp for PhotonApp {
             needs_redraw = true;
         }
 
-        // AddDevice flow: the completeness gate — the moment the typed entry reaches the fixed word count (and differs from the last checked entry), check it against the posted request off-thread.
-        if matches!(self.state, AppState::AddDevice) && !self.add_device_checking {
+        // AddDevice flow: the status line is EVENT-driven, derived from the current text on every edit. No good/bad while a word is still a valid in-progress prefix (blank) — a signal appears only when a word is definitively misspelled (an impossible prefix) or the whole entry is complete (then the network match-check runs). Every keypress re-derives, so a red flag clears the moment the offending word is fixed, and never lingers while typing a now-fine entry.
+        if matches!(self.state, AppState::AddDevice) {
             let text: String = self.textbox.as_ref().map(|tb| tb.chars.iter().collect()).unwrap_or_default();
-            // Live spell-check on every edit: flag the first typed word that can't be (or become) a voca list word, the moment the typo is committed — "contraversy" reads fine to a human and would otherwise sit silent until all 23 words no-match. The message owns the status line only in the neutral phase (no match awaiting bind, no check in flight); the completeness gate below still runs regardless, since a flagged entry can't decode anyway.
             if text != self.add_device_wordcheck_text {
                 self.add_device_wordcheck_text = text.clone();
                 self.add_device_typo = crate::network::fgtw::fleet::first_bad_pair_word(&text);
-                // Derive the status from CURRENT text on every edit, not just on a typo-state transition — otherwise a network "Words don't match" (or an old typo message) sticks on the line as the user keeps typing a now-fine entry. Skipped only while a check is in flight ("Checking...") or a match is awaiting bind, which own the line themselves.
-                if self.add_device_match.is_none() && !self.add_device_checking {
-                    self.add_device_status = match &self.add_device_typo {
-                        Some(w) => format!("'{w}' isn't one of the words"),
-                        None => "Type the words shown on the new device".to_string(),
-                    };
+                if self.add_device_match.is_none() {
+                    if let Some(w) = &self.add_device_typo {
+                        // Misspell: a word that can't become any list word ("contraversy"). Flag it, and keep it flagged across keypresses only while it stays misspelled.
+                        self.add_device_status = format!("'{w}' isn't one of the words");
+                    } else if crate::network::fgtw::fleet::pair_entry_complete(&text) {
+                        // Every word is an exact list member and there are 23 of them — check against the posted request (once per distinct complete entry). spawn sets "Checking…"; the result owns the line until the next edit.
+                        if !self.add_device_checking && text != self.add_device_last_checked {
+                            self.add_device_last_checked = text.clone();
+                            self.spawn_add_device_check(text.clone());
+                        }
+                    } else if text.trim().is_empty() {
+                        self.add_device_status = "Type the words shown on the new device".to_string();
+                    } else {
+                        // Valid partial mid-word: no good/bad — blank the line (this is what clears a prior red or a stale "Words don't match" on the next keypress).
+                        self.add_device_status.clear();
+                    }
                 }
-                needs_redraw = true;
-            }
-            // Completeness = every word an exact list member, not just 23 tokens — the 23rd token exists from its first typed character, and firing the decode on it surfaced "unrecognised word" about a word still being typed.
-            if crate::network::fgtw::fleet::pair_entry_complete(&text)
-                && text != self.add_device_last_checked
-                && self.add_device_match.is_none()
-            {
-                self.add_device_last_checked = text.clone();
-                self.spawn_add_device_check(text);
                 needs_redraw = true;
             }
         }
