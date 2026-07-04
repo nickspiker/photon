@@ -11,6 +11,7 @@ Status markers: ✅ shipped · 🔶 partial · ⏳ unbuilt.
 - Vaults byte-identical across the fleet except the device crypt key; the fleet is ONE logical identity.
 - Every message reaches every sibling as fast as routable — which requires every sibling to be able to DECRYPT every message.
 - FGTW is a dumb rendezvous: it never sees plaintext and never carries bulk. Content flows device-to-device wherever both ends are alive.
+- Every node mirrors the ENTIRE phonebook (open-phonebook doctrine), so peers are notified FIRST — directly, at their mirrored addresses — and FGTW is told LAST: the durable straggler-catcher, not the primary channel.
 
 ## 1. The bump
 
@@ -134,7 +135,19 @@ A classic Signal-style ratchet cannot do fleet-shared state safely; the braid ar
 Interim rule until the merge semantics are specified: concurrent TX is unlikely (a human types on one device at a time), detectable (strand references), and recoverable (re-braid from the last common strand).
 This section needs the crypto review pass promised in the braid novelty notes.
 
-## 6. Prerequisite on the FRIEND's side — fold the fleet
+## 6. Notification order — peers first, FGTW last
+
+Every node holds a full mirror of the phonebook: the latest signed address of every attested device, including all of its own fleet's.
+So when state changes — the canonical example being MY IP CHANGED — the propagation order is:
+
+1. **Build the signed record.** `PeerRecord` is already self-signed by the device key (relay-independent by design — a receiver verifies the signature, not the messenger), so anyone can carry it without being trusted.
+2. **Ding-dong the peers DIRECTLY.** Fleet siblings and live-session friends get the new record P2P at their mirrored addresses — their mirrors update instantly, conversations re-route without a round trip thru anyone.
+3. **FGTW last.** The announce updates the durable row (and the hub bump fans to whoever subscribes) for the devices that were unreachable — stragglers converge from the slot when they wake.
+
+The same order applies to every bump kind as the P2P layer matures: the hub frame is the fallback edition of a ding-dong that should have gone peer-to-peer.
+🔶 Today's shipped flows (§4.1) run FGTW-first — training wheels; the mirror + direct ding-dong inverts them without changing any payload format.
+
+## 7. Prerequisite on the FRIEND's side — fold the fleet
 
 None of the above helps until a friend's device recognises ALL current members of our chain:
 - A contact is an IDENTITY, not a device: resolve the contact's membership chain (`fleet_get` by handle_proof — public), fold it, and honour pings/offers/messages from ANY current member pubkey. ⏳
@@ -142,15 +155,15 @@ None of the above helps until a friend's device recognises ALL current members o
 - Their contact row grows a per-device address table (the pt_disc beacon already carries `ke` for exactly this) with the last-RX device marked active — the reply-to-active-device rule's state.
 - Observed live 2026-07-03: friend ponged the desktop (known pubkey) and silently dropped the macbook (unknown sibling) — the parked-offer stall this section fixes.
 
-## 7. Implementation order
+## 8. Implementation order
 
 1. **Bump carries `src` (dk + ip)** — extend `broadcast_pair_event` + `parse_pair_event`; callers pass the posting device. Small.
-2. **Friend-side fold-and-honour (§6)** — self-contained, unsticks second-device friendships immediately once friends update.
+2. **Friend-side fold-and-honour (§7)** — self-contained, unsticks second-device friendships immediately once friends update.
 3. **`friendship` kind (§4.2)** — seal friendship state into the fleet slot on Complete; siblings adopt + discard parked ceremonies.
 4. **`stream` kind + P2P row fetch (§4.3)** — rides PT; the vault-roadmap device-sync phase begins here.
 5. **Snapshot slot for long-offline catch-up** — last, once streams flow.
 
-## 8. The decentralization endgame
+## 9. The decentralization endgame
 
 This shape survives the peers-are-FGTW transition untouched: the bump stops being a Cloudflare hub frame and becomes peer gossip; the slots stop being R2 objects and become peer-held replicas; every fetch is already P2P-first.
 Nothing above assumes fgtw.org exists beyond "somewhere a doorbell rings and a fallback blob sits" — both roles any peer can serve.
