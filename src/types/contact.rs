@@ -124,6 +124,8 @@ pub struct Contact {
     pub handle_proof: [u8; 32], // Cached handle_proof (expensive to compute - ~1 second) - PUBLIC
     pub handle_hash: [u8; 32], // BLAKE3(handle) - PRIVATE, used for seed derivation
     pub public_identity: DevicePubkey,
+    /// The friend's CURRENT fleet device set, folded from their public membership chain (`fleet::current_members` by `handle_proof`). A contact is an IDENTITY, not a device: pings/pongs/offers/messages are honoured from ANY member here, not just `public_identity` (which is only the device we happened to meet first). Empty until the first refresh; refreshed on load and on a `fleet` bump for this contact. Runtime cache — re-fetched from the network, never authoritative on disk.
+    pub fleet_members: Vec<[u8; 32]>,
     pub ip: Option<SocketAddr>, // Last known IP:port from FGTW or direct (public IP)
     pub local_ip: Option<Ipv4Addr>, // LAN IP discovered via broadcast (for hairpin NAT workaround)
     pub local_port: Option<u16>, // LAN port discovered via broadcast
@@ -217,6 +219,7 @@ impl Contact {
             handle_proof,
             handle_hash,
             public_identity,
+            fleet_members: Vec::new(), // Folded from the friend's chain on the first refresh
             ip: None,
             local_ip: None,   // Discovered via LAN broadcast
             local_port: None, // Discovered via LAN broadcast
@@ -321,6 +324,23 @@ impl Contact {
         self.clutch_state == ClutchState::Complete
     }
 
+    /// Does `device_pubkey` belong to this contact's identity? True for the first-met device (`public_identity`) OR any current member of the friend's folded fleet. This is the fold-and-honour gate: a friend's second phone is a different device key we've never seen, but it's a valid member of their chain, so its pings/offers/messages must be honoured. `public_identity` stays in the check so a not-yet-refreshed contact still answers its known device.
+    pub fn knows_device(&self, device_pubkey: &[u8; 32]) -> bool {
+        self.public_identity.key == *device_pubkey || self.fleet_members.contains(device_pubkey)
+    }
+
+    /// Every device pubkey we'll answer for this contact — `public_identity` unioned with the folded fleet. Feeds the status checker's answerable-pubkey set so pongs from any of the friend's devices are honoured.
+    pub fn answerable_pubkeys(&self) -> Vec<[u8; 32]> {
+        let mut v = Vec::with_capacity(self.fleet_members.len() + 1);
+        v.push(self.public_identity.key);
+        for m in &self.fleet_members {
+            if *m != self.public_identity.key {
+                v.push(*m);
+            }
+        }
+        v
+    }
+
     pub fn can_be_custodian(&self) -> bool {
         matches!(self.trust_level, TrustLevel::Trusted | TrustLevel::Inner)
     }
@@ -414,5 +434,38 @@ impl Contact {
             .binary_search_by(|m| m.timestamp.cmp(&msg.timestamp))
             .unwrap_or_else(|pos| pos);
         self.messages.insert(pos, msg);
+    }
+}
+
+#[cfg(test)]
+mod fold_honour_tests {
+    use super::*;
+
+    fn contact_with(pk: [u8; 32]) -> Contact {
+        Contact::new(
+            HandleText::new("friend"),
+            [0x11; 32],
+            DevicePubkey::from_bytes(pk),
+        )
+    }
+
+    #[test]
+    fn knows_first_met_device_before_any_refresh() {
+        let c = contact_with([1u8; 32]);
+        assert!(c.knows_device(&[1u8; 32]), "the device we met is always known");
+        assert!(!c.knows_device(&[2u8; 32]), "a stranger device is not");
+    }
+
+    #[test]
+    fn knows_any_folded_member_and_answerable_dedups() {
+        let mut c = contact_with([1u8; 32]);
+        c.fleet_members = vec![[1u8; 32], [2u8; 32], [3u8; 32]];
+        assert!(c.knows_device(&[2u8; 32]), "a sibling device folds in");
+        assert!(c.knows_device(&[3u8; 32]));
+        assert!(!c.knows_device(&[9u8; 32]), "still rejects a non-member");
+        // public_identity (1) appears once, siblings 2 and 3 follow — no duplicate of 1.
+        let ans = c.answerable_pubkeys();
+        assert_eq!(ans.len(), 3, "first-met + 2 distinct siblings, deduped: {ans:?}");
+        assert_eq!(ans[0], [1u8; 32], "first-met device leads");
     }
 }

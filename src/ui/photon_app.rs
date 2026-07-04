@@ -504,9 +504,13 @@ pub struct PhotonApp {
     /// Stop flag for the NEW device's join thread — set true when the user cancels join mode so the thread quits re-posting its request (a zombie re-poster would race a later attempt for the inbox slot).
     add_stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Session-long fleet-event subscription (hub WebSocket): receiver of event kinds ("fstate" / "fleet") filtered to OUR identity. Drained in tick — fstate triggers a roster pull (a friend added on a sibling device appears here in ~a second), fleet triggers a key/membership sync. `None` until the first attest/resume succeeds.
-    fleet_evt_rx: Option<std::sync::mpsc::Receiver<&'static str>>,
+    fleet_evt_rx: Option<std::sync::mpsc::Receiver<(&'static str, [u8; 32])>>,
     /// Stop flag for the fleet-event subscription task (dropped app / de-attest).
     fleet_evt_stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Off-thread contact-fleet refresh results: (contact handle_proof, current member pubkeys folded from their chain). Drained in tick into the matching contact's `fleet_members`, then `reseed_contact_pubkeys`. Lets a friend's NEW device be honoured without waiting for our next launch.
+    contact_members_rx: Option<std::sync::mpsc::Receiver<([u8; 32], Vec<[u8; 32]>)>>,
+    /// Sender half of the contact-fleet-refresh channel, kept alive so successive refreshes reuse one channel (the receiver is drained in tick).
+    contact_members_tx: Option<std::sync::mpsc::Sender<([u8; 32], Vec<[u8; 32]>)>>,
     /// Launch add-mode (NEW device joining a fleet): orb on Launch toggles it, and a failed attest against an existing fleet auto-enters it. Enter the handle; this device then generates + displays its pairing words and waits for the other device to match and bind.
     launch_add_mode: bool,
     /// Join flow: the handle once entered; `None` while still awaiting it.
@@ -641,6 +645,8 @@ impl PhotonApp {
             add_stop: None,
             fleet_evt_rx: None,
             fleet_evt_stop: None,
+            contact_members_rx: None,
+            contact_members_tx: None,
             launch_add_mode: false,
             add_join_handle: None,
             add_join_status: String::new(),
@@ -1072,14 +1078,11 @@ impl FluorApp for PhotonApp {
                             }
                         }
                         self.update_sync_records();
-                        // Seed the checker's answerable-pubkey set with every loaded contact so pongs from them are honoured.
-                        if let Ok(mut pks) = self.contact_pubkeys.lock() {
-                            for c in &self.contacts {
-                                if !pks.contains(&c.public_identity) {
-                                    pks.push(c.public_identity.clone());
-                                }
-                            }
-                        }
+                        // Seed the checker's answerable-pubkey set with every loaded contact's FULL fleet so pongs/offers from any of their devices are honoured.
+                        self.reseed_contact_pubkeys();
+                        // Wake-up catch-up: re-fold each contact's fleet so a friend's device added while we were off is honoured now, not next launch.
+                        let hps: Vec<[u8; 32]> = self.contacts.iter().map(|c| c.handle_proof).collect();
+                        self.spawn_contact_fleet_refresh(hps);
                         // Rehydrate each contact's saved ephemeral keypairs from disk (~588KB each).
                         // load_contact_state deliberately doesn't pull these (they're huge and live in a separate vault key), so without this every resume re-runs the McEliece-heavy keygen below — which is what froze the UI on launch. Loading the persisted keypairs makes the re-key filter a no-op for contacts that already have them, so keygen only fires for genuinely keyless Pending ones.
                         for contact in self.contacts.iter_mut() {
@@ -1980,19 +1983,56 @@ impl FluorApp for PhotonApp {
 
         // Fleet roster pull result: merge into the contact list (re-CLUTCH happens via the serialized keygen kick inside merge_roster_entries).
         // Fleet-event push: a sibling device changed the shared roster (fstate) or the membership chain (fleet) — pull the change NOW instead of at our next attest. This is what makes a friend added on one device appear on the rest of the fleet in about a second.
-        let fleet_evts: Vec<&'static str> = self
+        let fleet_evts: Vec<(&'static str, [u8; 32])> = self
             .fleet_evt_rx
             .as_ref()
             .map(|rx| rx.try_iter().collect())
             .unwrap_or_default();
         if !fleet_evts.is_empty() {
-            if fleet_evts.contains(&"fstate") && self.roster_pull_rx.is_none() {
-                self.spawn_roster_pull();
+            let our_hp = self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof());
+            let mut refresh_contacts: Vec<[u8; 32]> = Vec::new();
+            for (kind, evt_hp) in &fleet_evts {
+                if Some(*evt_hp) == our_hp {
+                    // OUR fleet: shared-state or membership change — pull it now.
+                    match *kind {
+                        "fstate" | "friendship" if self.roster_pull_rx.is_none() => self.spawn_roster_pull(),
+                        "fleet" => self.spawn_fleet_key_sync(),
+                        _ => {}
+                    }
+                } else if *kind == "fleet"
+                    && self.contacts.iter().any(|c| c.handle_proof == *evt_hp)
+                    && !refresh_contacts.contains(evt_hp)
+                {
+                    // A CONTACT's fleet chain extended (they added/removed a device) — re-fold so we honour their current device set.
+                    refresh_contacts.push(*evt_hp);
+                }
             }
-            if fleet_evts.contains(&"fleet") {
-                self.spawn_fleet_key_sync();
+            if !refresh_contacts.is_empty() {
+                self.spawn_contact_fleet_refresh(refresh_contacts);
             }
             needs_redraw = true;
+        }
+
+        // Contact-fleet refresh results: fold-and-honour a friend's current device set.
+        let member_updates: Vec<([u8; 32], Vec<[u8; 32]>)> = self
+            .contact_members_rx
+            .as_ref()
+            .map(|rx| rx.try_iter().collect())
+            .unwrap_or_default();
+        if !member_updates.is_empty() {
+            let mut changed = false;
+            for (hp, members) in member_updates {
+                if let Some(c) = self.contacts.iter_mut().find(|c| c.handle_proof == hp) {
+                    if c.fleet_members != members {
+                        c.fleet_members = members;
+                        changed = true;
+                    }
+                }
+            }
+            if changed {
+                self.reseed_contact_pubkeys();
+                needs_redraw = true;
+            }
         }
 
         match self.roster_pull_rx.as_ref().map(|rx| rx.try_recv()) {
@@ -3729,11 +3769,12 @@ impl PhotonApp {
         let Some(hp) = self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()) else {
             return;
         };
-        let (tx, rx) = std::sync::mpsc::channel::<&'static str>();
+        let (tx, rx) = std::sync::mpsc::channel::<(&'static str, [u8; 32])>();
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         self.fleet_evt_rx = Some(rx);
         self.fleet_evt_stop = Some(stop.clone());
         let wake = self.event_proxy.clone();
+        let _ = hp; // attest-gate only; we no longer filter by our own hp — tick routes by hp (ours vs a contact's)
         crate::network::http::runtime().spawn(async move {
             use futures::StreamExt;
             loop {
@@ -3749,19 +3790,19 @@ impl PhotonApp {
                                         if stop.load(Ordering::Relaxed) {
                                             return;
                                         }
+                                        // Forward EVERY recognized event with its hp — no our-hp filter. Registry dings (fleet) go photon-wide, so a contact's chain change reaches us here too; tick decides whether an hp is ours (roster/key sync) or a contact's (member refresh). Bumps are tiny and the hub is low-traffic, so receive-all + filter-app-side is cheaper than re-subscribing every time contacts change.
                                         if let Some((kind, evt_hp)) = crate::network::fgtw::fleet::parse_pair_event(&m.into_data()) {
-                                            if evt_hp == hp {
-                                                let k: &'static str = match kind.as_str() {
-                                                    "fstate" => "fstate",
-                                                    "fleet" => "fleet",
-                                                    _ => continue,
-                                                };
-                                                if tx.send(k).is_err() {
-                                                    return; // app side dropped the receiver — subscription retired
-                                                }
-                                                if let Some(w) = wake.as_ref() {
-                                                    let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
-                                                }
+                                            let k: &'static str = match kind.as_str() {
+                                                "fstate" => "fstate",
+                                                "fleet" => "fleet",
+                                                "friendship" => "friendship",
+                                                _ => continue,
+                                            };
+                                            if tx.send((k, evt_hp)).is_err() {
+                                                return; // app side dropped the receiver — subscription retired
+                                            }
+                                            if let Some(w) = wake.as_ref() {
+                                                let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
                                             }
                                         }
                                     }
@@ -3779,7 +3820,39 @@ impl PhotonApp {
                 tokio::time::sleep(crate::jitter_dur(std::time::Duration::from_secs(20))).await;
             }
         });
-        crate::log("FLEET: event subscription started (fstate/fleet push)");
+        crate::log("FLEET: event subscription started (fstate/fleet/friendship push)");
+    }
+
+    /// Off-thread: fold each given contact's public membership chain (`fleet::current_members` by handle_proof, blocking HTTP) and post the current device set back for tick to store into `fleet_members`. Idempotent and best-effort — a fetch failure just leaves the last-known set (or empty, honouring only `public_identity`). Results land via `contact_members_rx`. Started on contact load/merge (wake-up catch-up) and on a `fleet` bump for a contact's identity (live).
+    fn spawn_contact_fleet_refresh(&mut self, handle_proofs: Vec<[u8; 32]>) {
+        if handle_proofs.is_empty() {
+            return;
+        }
+        if self.contact_members_tx.is_none() {
+            let (tx, rx) = std::sync::mpsc::channel::<([u8; 32], Vec<[u8; 32]>)>();
+            self.contact_members_rx = Some(rx);
+            self.contact_members_tx = Some(tx);
+        }
+        let tx = self.contact_members_tx.as_ref().unwrap().clone();
+        let wake = self.event_proxy.clone();
+        std::thread::spawn(move || {
+            for hp in handle_proofs {
+                match crate::network::fgtw::fleet::current_members(&hp) {
+                    Ok(members) => {
+                        if tx.send((hp, members)).is_err() {
+                            return; // app dropped the receiver
+                        }
+                    }
+                    Err(e) => crate::log(&format!(
+                        "FLEET: contact fleet refresh failed for {}: {e}",
+                        crate::fp(&hp)
+                    )),
+                }
+            }
+            if let Some(w) = wake.as_ref() {
+                let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+            }
+        });
     }
 
     fn spawn_fleet_key_sync(&self) {
@@ -3860,13 +3933,10 @@ impl PhotonApp {
             "FLEET: merged {added} contact(s) from fleet roster (total: {})",
             self.contacts.len()
         ));
-        if let Ok(mut pks) = self.contact_pubkeys.lock() {
-            for c in &self.contacts {
-                if !pks.contains(&c.public_identity) {
-                    pks.push(c.public_identity.clone());
-                }
-            }
-        }
+        self.reseed_contact_pubkeys();
+        // Re-fold every contact's fleet after a roster merge (newly-merged contacts have no members yet).
+        let hps: Vec<[u8; 32]> = self.contacts.iter().map(|c| c.handle_proof).collect();
+        self.spawn_contact_fleet_refresh(hps);
         // Force any merged self-contact Complete so it's skipped by the keygen filter, then persist the newly-added tail (post-settle so a self→Complete flip is saved).
         self.settle_self_contacts();
         let start = self.contacts.len() - added;
@@ -3957,6 +4027,21 @@ impl PhotonApp {
                     Err(e) => AddDeviceUpdate::Failed(e),
                 });
             });
+        }
+    }
+
+    /// Rebuild the status checker's answerable-pubkey set from every contact's FULL fleet (`answerable_pubkeys` = first-met device union folded members). Idempotent — clears and refills, so it's safe after any change to contacts or their fleet_members. This is the single seam that makes presence + CLUTCH honour a friend's every device: seed here, and the offer/KEM/complete/SPEC gates (all of which read this one set) open for the whole fleet at once.
+    fn reseed_contact_pubkeys(&self) {
+        if let Ok(mut pks) = self.contact_pubkeys.lock() {
+            pks.clear();
+            for c in &self.contacts {
+                for k in c.answerable_pubkeys() {
+                    let dk = crate::types::DevicePubkey::from_bytes(k);
+                    if !pks.contains(&dk) {
+                        pks.push(dk);
+                    }
+                }
+            }
         }
     }
 
@@ -4411,13 +4496,7 @@ impl PhotonApp {
                         self.contacts.len()
                     ));
                     // Register the merged contacts' pubkeys so the checker answers their pings, and kick CLUTCH keygen for any that arrived Pending without keypairs. The resume path (load_all_contacts) already does this for locally-stored contacts, but cloud/FGTW-merged contacts land here AFTER that ran — without this they sit Pending forever with no keypairs, no offer, no connection (exactly what broke after a []n nuke wiped the local vault and contacts came back only via cloud).
-                    if let Ok(mut pks) = self.contact_pubkeys.lock() {
-                        for c in &self.contacts {
-                            if !pks.contains(&c.public_identity) {
-                                pks.push(c.public_identity.clone());
-                            }
-                        }
-                    }
+                    self.reseed_contact_pubkeys();
                     // A merged self-contact (notes-to-self) needs no key exchange — force it Complete so it's skipped by the keygen filter below.
                     self.settle_self_contacts();
                     // Kick at most ONE keygen now; the rest are serialized by spawn_next_pending_keygen (called each tick) so we never run two McEliece keygens at once — two in parallel on launch starved the UI thread (the "first launch hangs" symptom). The Pending + keyless contacts are picked up one at a time as each keygen completes.
@@ -4539,7 +4618,7 @@ impl PhotonApp {
                 }
                 let contact_id = contact.id.clone();
                 let their_handle_hash = contact.handle_hash;
-                let their_pubkey = contact.public_identity.clone();
+                let their_handle_proof = contact.handle_proof;
                 // Mark keygen in flight BEFORE spawning (race guard) for non-self contacts.
                 if !is_self {
                     contact.clutch_keygen_in_progress = true;
@@ -4550,12 +4629,9 @@ impl PhotonApp {
                     self.contacts.len() + 1
                 ));
                 self.contacts.push(contact);
-                // Register the contact's pubkey so the checker answers its pings, and kick CLUTCH keypair generation so the contact becomes offer-ready when it comes online.
-                if let Ok(mut pks) = self.contact_pubkeys.lock() {
-                    if !pks.contains(&their_pubkey) {
-                        pks.push(their_pubkey);
-                    }
-                }
+                // Register the new contact (and its fleet, once refreshed) so the checker answers pings/offers from any of its devices, and kick CLUTCH keypair generation so the contact becomes offer-ready when it comes online.
+                self.reseed_contact_pubkeys();
+                self.spawn_contact_fleet_refresh(vec![their_handle_proof]);
                 if !is_self {
                     let our_handle_hash = self
                         .session
@@ -6311,7 +6387,7 @@ impl PhotonApp {
                     }
                     // Find matching contact and update status
                     for contact in &mut self.contacts {
-                        if contact.public_identity == peer_pubkey {
+                        if contact.knows_device(&peer_pubkey.key) {
                             // Note: ceremony_id is now computed from offer_provenances, not ping provenances. Offer provenances are collected when ClutchOfferReceived messages arrive.
 
                             // Update the address from the ping/pong source — but keep PUBLIC and LAN addresses in their own fields. We now ping both the LAN (`local_ip`) and the public (`ip`) address every cycle, so pongs arrive from BOTH; blindly writing every `src_addr` into `contact.ip` made it flap between the public IPv6 and the `192.168.x` LAN address each cycle, corrupting `race_addrs` (which reads `ip` as the public path). So: a pong from a PUBLIC source refreshes `contact.ip` (the peer's WAN address may have changed); a pong from a PRIVATE/LAN source refreshes `contact.local_ip`/`local_port` instead, never clobbering the public address.
@@ -8182,7 +8258,7 @@ impl PhotonApp {
                     let is_mutual = self
                         .contacts
                         .iter()
-                        .any(|c| c.public_identity == sender_pubkey && c.is_mutual());
+                        .any(|c| c.knows_device(&sender_pubkey.key) && c.is_mutual());
                     if !is_mutual {
                         crate::log(
                             "Avatar: ignoring avatar request from a non-mutual peer (not Complete)",
@@ -8222,7 +8298,7 @@ impl PhotonApp {
                     let target = self
                         .contacts
                         .iter()
-                        .position(|c| c.public_identity == responder_pubkey && c.is_mutual());
+                        .position(|c| c.knows_device(&responder_pubkey.key) && c.is_mutual());
                     match target {
                         None => crate::log(
                             "Avatar: ignoring avatar from a non-mutual peer (not a Complete contact)",
