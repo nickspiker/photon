@@ -6,32 +6,11 @@
 //! - macOS: IOPlatformUUID (hardware-burned, survives reinstalls)
 //! - Android: Device fingerprint (passed via JNI - ANDROID_ID is an oracle)
 
-use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use std::io;
 use std::path::PathBuf;
 
-/// Ed25519 keypair for FGTW device/handle identity
-///
-/// NEVER persisted to disk - derived deterministically from device fingerprint. On Android: BLAKE3(device_fingerprint) → Ed25519 seed On Desktop: BLAKE3(machine-id) → Ed25519 seed
-#[derive(Clone)]
-pub struct Keypair {
-    pub secret: SigningKey,
-    pub public: VerifyingKey,
-}
-
-impl Keypair {
-    /// Create keypair from a 32-byte seed (deterministic)
-    pub fn from_seed(seed: &[u8; 32]) -> Self {
-        let secret = SigningKey::from_bytes(seed);
-        let public = secret.verifying_key();
-        Self { secret, public }
-    }
-
-    /// Sign a message
-    pub fn sign(&self, message: &[u8]) -> Signature {
-        self.secret.sign(message)
-    }
-}
+// The device keypair now lives in the `fgtw` crate (`fgtw::keys::Keypair`) so every TOKEN app + the FGTW worker share one identity primitive. Re-exported here so photon's `crate::network::fgtw::Keypair` call sites are unchanged.
+pub use fgtw::keys::Keypair;
 
 /// FGTW storage paths (peer cache only - NO KEY STORAGE)
 pub struct FgtwPaths {
