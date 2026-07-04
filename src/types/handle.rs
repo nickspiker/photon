@@ -19,9 +19,35 @@ impl Handle {
         Self::username_to_handle_proof(&self.text)
     }
 
-    /// Generate handle proof from a username string via [`ihi::handle_to_proof`]. Memory-hard PoW (24MB scratch, 17 rounds, ~1s on 2025 hardware) — anti-squatting + ASIC-resistant. Returns the 32-byte proof.
+    /// Generate handle proof from a username string via [`ihi::handle_to_proof`], after [`Self::canonical`] normalization. Memory-hard PoW (24MB scratch, 17 rounds, ~1s on 2025 hardware) — anti-squatting + ASIC-resistant. Returns the 32-byte proof.
     pub fn username_to_handle_proof(username: &str) -> [u8; 32] {
-        *ihi::handle_to_proof(username).as_bytes()
+        *ihi::handle_to_proof(&Self::canonical(username)).as_bytes()
+    }
+
+    /// Identity seed from a handle string, [`Self::canonical`]-normalized — the ONE "handle string → identity_seed" entry point. Every call site (attest, contacts, avatars) must come thru here; a raw `ihi::handle_to_hash(typed_string)` derives a different identity for every typo-variant of the same handle.
+    pub fn to_identity_seed(handle: &str) -> [u8; 32] {
+        *ihi::handle_to_hash(&Self::canonical(handle)).as_bytes()
+    }
+
+    /// The ONE canonical spelling of a handle, applied before EVERY derivation (proof + identity seed). ihi only does Unicode NFC, so without this the same handle typed with different case, spacing, or camelCase concatenation derives a DIFFERENT identity — the observed "double handle proof": one device attests `FractalDecoder`, another types `fractal decoder`, the probe finds no chain, and a second genesis forks the identity.
+    /// Rules: split on whitespace AND lower→Upper camelCase boundaries, lowercase every word, join with single spaces. `"FractalDecoder"`, `" Fractal  Decoder "`, and `"fractal decoder"` all canonicalize to `"fractal decoder"`.
+    pub fn canonical(handle: &str) -> String {
+        let mut words: Vec<String> = Vec::new();
+        for token in handle.split_whitespace() {
+            let mut cur = String::new();
+            let mut prev_lower = false;
+            for c in token.chars() {
+                if c.is_uppercase() && prev_lower && !cur.is_empty() {
+                    words.push(std::mem::take(&mut cur));
+                }
+                prev_lower = c.is_lowercase();
+                cur.extend(c.to_lowercase());
+            }
+            if !cur.is_empty() {
+                words.push(cur);
+            }
+        }
+        words.join(" ")
     }
 }
 
@@ -47,6 +73,21 @@ mod tests {
         let _h2 = Handle::new("🚀".to_string(), identity.clone());
         let _h3 = Handle::new("".to_string(), identity.clone());
         let _h4 = Handle::new("∫∂x".to_string(), identity.clone());
+    }
+
+    #[test]
+    fn canonical_folds_case_spacing_and_camel() {
+        assert_eq!(Handle::canonical("FractalDecoder"), "fractal decoder");
+        assert_eq!(Handle::canonical(" Fractal  Decoder "), "fractal decoder");
+        assert_eq!(Handle::canonical("fractal decoder"), "fractal decoder");
+        assert_eq!(Handle::canonical("nem"), "nem");
+        // ALL-CAPS is a single word (no lower→Upper boundary), not per-letter splits.
+        assert_eq!(Handle::canonical("NASA"), "nasa");
+        // Same canonical string → same proof, whatever the typist did.
+        assert_eq!(
+            Handle::username_to_handle_proof("FractalDecoder"),
+            Handle::username_to_handle_proof("  fractal   Decoder ")
+        );
     }
 
     #[test]
