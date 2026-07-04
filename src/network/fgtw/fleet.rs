@@ -767,6 +767,29 @@ pub fn first_bad_pair_word(s: &str) -> Option<String> {
     None
 }
 
+/// Parse a hub-pushed pairing event — section `pair_evt` {k: kind, hp} — into (kind, handle_proof). Returns `None` for every other frame: the hub also carries dashboard-capsule broadcasts, which subscribers skip cheaply on the header/section decode. Kinds today: "matched" (a member posted the matched flag) and "fleet" (the membership chain extended).
+pub fn parse_pair_event(bytes: &[u8]) -> Option<(String, [u8; 32])> {
+    let (_, header_end) = vsf::VsfHeader::decode(bytes).ok()?;
+    let mut ptr = header_end;
+    let section = vsf::VsfSection::parse(bytes, &mut ptr).ok()?;
+    if section.name != "pair_evt" {
+        return None;
+    }
+    let kind = match section.get_field("k").and_then(|f| f.values.first()) {
+        Some(VsfType::x(s)) => s.clone(),
+        _ => return None,
+    };
+    let hp = match section.get_field("hp").and_then(|f| f.values.first()) {
+        Some(VsfType::hP(b)) if b.len() == 32 => {
+            let mut a = [0u8; 32];
+            a.copy_from_slice(b);
+            a
+        }
+        _ => return None,
+    };
+    Some((kind, hp))
+}
+
 /// Decode a complete word entry back to the pairing pubkey. Strict: exactly `PAIR_WORD_COUNT` words, value < 2^256. A wrong word fails the decode; the right words of the wrong device fail the match downstream.
 pub fn words_to_pair_pubkey(words: &str) -> Result<[u8; 32], String> {
     if pair_word_tokens(words) != PAIR_WORD_COUNT {

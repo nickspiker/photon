@@ -3905,6 +3905,42 @@ impl PhotonApp {
                 let _ = tx.send(JoinUpdate::Failed(format!("request failed: {e}")));
                 return;
             }
+
+            // Push subscription: the FGTW hub broadcasts `pair_evt` frames when a member posts our matched flag and when the chain extends. Each one for OUR identity pokes `wake_tx`, and the poll loop's sleep below is a `recv_timeout` — so the ceremony reacts the moment the other device acts, with the poll cadence as the guarantee when the socket drops (best-effort accelerator, never load-bearing). The task dies with the socket or the stop flag; no reconnect — the poll still covers everything.
+            let (wake_tx, wake_rx) = std::sync::mpsc::channel::<()>();
+            {
+                let stop = stop.clone();
+                crate::network::http::runtime().spawn(async move {
+                    use futures::StreamExt;
+                    let Ok((mut ws, _)) = tokio_tungstenite::connect_async("wss://fgtw.org/ws").await else {
+                        return;
+                    };
+                    loop {
+                        tokio::select! {
+                            frame = ws.next() => {
+                                match frame {
+                                    Some(Ok(m)) => {
+                                        if stop.load(Ordering::Relaxed) {
+                                            return;
+                                        }
+                                        if let Some((_kind, evt_hp)) = fleet::parse_pair_event(&m.into_data()) {
+                                            if evt_hp == hp {
+                                                let _ = wake_tx.send(());
+                                            }
+                                        }
+                                    }
+                                    _ => return, // closed or errored — poll cadence takes over
+                                }
+                            }
+                            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
+                                if stop.load(Ordering::Relaxed) {
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                });
+            }
             // Poll until bound or cancelled — NO deadline. The user standing at the screen is the timeout: they walk to the other device, type 23 words, and come back whenever; the ceremony ends when the bind lands, when they tap the orb (the stop flag), or on a hard network error. The re-post keeps the 5-minute inbox slot fresh indefinitely, and the poll cadence relaxes after the first few minutes so an abandoned screen idles gently instead of hammering FGTW.
             let mut matched_sent = false;
             let mut cycle = 0usize;
@@ -3944,9 +3980,9 @@ impl PhotonApp {
                     }
                 }
                 cycle += 1;
-                // ~3s polls for the first ~5 minutes (the active-ceremony window), ~10s after — still well inside the 5-minute slot freshness at the every-8th-cycle re-post, just kinder to FGTW and the battery on a screen someone walked away from.
+                // ~3s polls for the first ~5 minutes (the active-ceremony window), ~10s after — still well inside the 5-minute slot freshness at the every-8th-cycle re-post, just kinder to FGTW and the battery on a screen someone walked away from. A hub push for our identity short-circuits the wait entirely (recv_timeout returns on the wake), so with the socket up the next poll fires the instant the other device acts.
                 let base = if cycle < 100 { 3 } else { 10 };
-                std::thread::sleep(crate::jitter_dur(std::time::Duration::from_secs(base)));
+                let _ = wake_rx.recv_timeout(crate::jitter_dur(std::time::Duration::from_secs(base)));
             }
         });
     }
