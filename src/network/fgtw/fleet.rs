@@ -791,6 +791,15 @@ pub fn parse_pair_event(bytes: &[u8]) -> Option<(String, [u8; 32])> {
     Some((kind, hp))
 }
 
+/// True when the entry is fully typed: exactly `PAIR_WORD_COUNT` tokens and EVERY token an exact list member. This is the completeness gate for the network match-check: a bare token count trips on the 23rd word's first character (the token exists from its first letter), firing a decode that then complains "unrecognised word" about a word the user simply hasn't finished typing.
+pub fn pair_entry_complete(s: &str) -> bool {
+    let words = pair_word_list(s);
+    words.len() == PAIR_WORD_COUNT && {
+        let (set, _) = word_index();
+        words.iter().all(|w| set.contains(w.as_bytes()))
+    }
+}
+
 /// Decode a complete word entry back to the pairing pubkey. Strict: exactly `PAIR_WORD_COUNT` words, value < 2^256. A wrong word fails the decode; the right words of the wrong device fail the match downstream.
 pub fn words_to_pair_pubkey(words: &str) -> Result<[u8; 32], String> {
     if pair_word_tokens(words) != PAIR_WORD_COUNT {
@@ -1534,6 +1543,11 @@ mod tests {
         // An in-progress word that is still a valid prefix stays green.
         let first = std::str::from_utf8(voca::FULL.alphabet[100]).unwrap();
         assert_eq!(first_bad_pair_word(&first[..2]), None);
+        // Completeness gate: a full generated entry is complete; the same entry cut mid-last-word is NOT, even tho the token count already reads 23.
+        assert!(pair_entry_complete(&words));
+        let cut = words.len() - 2;
+        assert!(!pair_entry_complete(&words[..cut]));
+        assert_eq!(pair_word_tokens(&words[..cut]), PAIR_WORD_COUNT);
     }
 
     #[test]
