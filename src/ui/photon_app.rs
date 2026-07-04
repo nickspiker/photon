@@ -7385,6 +7385,10 @@ impl PhotonApp {
                                             "CLUTCH: Re-sending KEM response to {} (peer resent same offer)",
                                             crate::fp(&contact.handle_proof)
                                         ));
+                                        // The missing half of the deadlock recovery. The peer re-sending their offer means they're stuck, and the usual cause is that OUR offer never reached them — its one send may have gone to an address not yet confirmed reachable (e.g. their LAN IPv4 before their public/IPv6 was known) and been lost. Re-sending only our KEM can't help: they can't answer an offer they never received, so they keep re-sending theirs and queuing our KEMs forever. Re-arm our offer so the online/pong handler re-transmits it via race_addrs — now to the address their packets are actually arriving from. (Their side re-sends THEIR offer via the pending-KEM branch above; this is the symmetric OUR-offer resend.)
+                                        if contact.clutch_state == ClutchState::Pending {
+                                            contact.clutch_offer_sent = false;
+                                        }
                                         // Don't continue - fall thru to re-send KEM below
                                     } else {
                                         // Same keys but no KEM sent yet - truly duplicate, ignore
