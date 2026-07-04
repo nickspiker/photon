@@ -447,8 +447,8 @@ pub struct PhotonApp {
     session: Option<tohu::SessionIdentity>,
     /// True when the dual-ring vault flagged a damaged ring on open this session. Drives the persistent amber banner on the Ready screen. Sticky for the session.
     vault_degraded: bool,
-    /// Transient green confirmation band on the Ready screen ("Device added \u{221a}") — message + birth instant; cleared ~4s later by tick. Stacks above the amber warning bands.
-    ready_toast: Option<(String, Instant)>,
+    /// Green confirmation band on the Ready screen ("Device added \u{221a}"). Event-shown, interaction-cleared (clear_hints), NEVER time-based. Stacks above the amber warning bands.
+    ready_toast: Option<String>,
     /// nunc-time clock sanity check: result channel + drain. The worker (one-shot, off-thread) posts the consensus-vs-system offset here; `drain_clock_check` reads it and updates `clock_off`.
     clock_check_tx: std::sync::mpsc::Sender<crate::network::ClockCheckResult>,
     clock_check_rx: std::sync::mpsc::Receiver<crate::network::ClockCheckResult>,
@@ -1783,14 +1783,6 @@ impl FluorApp for PhotonApp {
             needs_redraw = true;
         }
 
-        // Expire the Ready-screen toast ~4s after birth; keep frames flowing while it's up so the expiry actually paints.
-        if let Some((_, born)) = &self.ready_toast {
-            if born.elapsed() > std::time::Duration::from_secs(4) {
-                self.ready_toast = None;
-            }
-            needs_redraw = true;
-        }
-
         // Drive the blinkey on the focused textbox. `BlinkTimer::poll(now)` returns `true` ONLY on the rising edge of each fire (then schedules the next random 0-300ms interval and returns false the rest of the time). On each fire, toggle the focused textbox's blinkey via `flip_blinkey` — which is a no-op on an unfocused textbox, so we can call it on every textbox without gating.
         // Tracked SEPARATELY from `needs_redraw`: a blinkey flip is fully covered by the textbox's own `damage_rect`, so a pure-blink frame must not raise `scene_dirty` — that's what keeps the idle repaint a teeny cursor-sized rect instead of the whole window.
         let mut blink_redraw = false;
@@ -1896,7 +1888,7 @@ impl FluorApp for PhotonApp {
                     // Ceremony complete — back to the contact list with a transient confirmation, instead of stranding the user on a finished words screen.
                     self.end_add_device_flow();
                     self.state = AppState::Ready;
-                    self.ready_toast = Some(("Device added \u{221a}".to_string(), Instant::now()));
+                    self.ready_toast = Some("Device added \u{221a}".to_string());
                     // The add rotated the fleet key — pull the new epoch into our cache now; the next presence/attest cycle re-seals the roster under it (pushing here would race the async cache update and seal under the stale key).
                     self.spawn_fleet_key_sync();
                 }
@@ -2852,8 +2844,8 @@ impl FluorApp for PhotonApp {
                 );
             }
 
-            // Transient confirmation toast ("Device added √") — green, same bottom-band family as the warnings, stacked above whichever amber bands are showing. Expires ~4s after birth via tick.
-            if let Some((msg, _)) = &self.ready_toast {
+            // Confirmation band ("Device added √") — green, same bottom-band family as the warnings, stacked above whichever amber bands are showing. Sits until the next click or keystroke clears it via clear_hints — never time-based.
+            if let Some(msg) = &self.ready_toast {
                 let band_h = ready_layout.unit_height * 1.5;
                 let cx = buf_w as f32 * 0.5;
                 let rows_below =
@@ -4509,6 +4501,8 @@ impl PhotonApp {
     fn clear_hints(&mut self) {
         self.hints_dismissed = true;
         self.search_status = None;
+        // The "Device added" confirmation follows the house rule for every transient banner: event-shown, INTERACTION-cleared — never time-based. It sits until the user's next click or keystroke acknowledges it.
+        self.ready_toast = None;
     }
 
     fn change_focus(&mut self, new: Option<HitId>) -> bool {
