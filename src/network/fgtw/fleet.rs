@@ -705,6 +705,68 @@ pub fn pair_word_tokens(s: &str) -> usize {
     count
 }
 
+/// Lazy index over the voca FULL alphabet for live spell-checking: a hash set for exact membership plus a sorted copy for prefix tests. Built once, ~3177 entries.
+static WORD_INDEX: std::sync::OnceLock<(
+    std::collections::HashSet<&'static [u8]>,
+    Vec<&'static [u8]>,
+)> = std::sync::OnceLock::new();
+fn word_index() -> &'static (std::collections::HashSet<&'static [u8]>, Vec<&'static [u8]>) {
+    WORD_INDEX.get_or_init(|| {
+        let set: std::collections::HashSet<_> = voca::FULL.alphabet.iter().copied().collect();
+        let mut sorted: Vec<_> = voca::FULL.alphabet.to_vec();
+        sorted.sort_unstable();
+        (set, sorted)
+    })
+}
+
+/// The typed entry's tokens, lowercased, split exactly the way [`pair_word_tokens`] counts them: whitespace-separated if the entry contains any whitespace, else camelCase boundaries.
+pub fn pair_word_list(s: &str) -> Vec<String> {
+    let t = s.trim();
+    if t.is_empty() {
+        return Vec::new();
+    }
+    if t.bytes().any(|b| b.is_ascii_whitespace()) {
+        return t.split_ascii_whitespace().map(|w| w.to_ascii_lowercase()).collect();
+    }
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    for c in t.chars() {
+        if c.is_ascii_uppercase() && !cur.is_empty() {
+            out.push(std::mem::take(&mut cur));
+        }
+        cur.push(c.to_ascii_lowercase());
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// Live spell-check of a (possibly partial) pairing entry against the voca FULL list. Every completed word must be an exact list member; the final, still-being-typed word passes while it's still a PREFIX of some list word, so nothing flashes red mid-word — but the instant it can't become any list word ("contrav…", "spontani…") it's flagged, and a full 23-word entry (or a trailing space) demands exactness from every token. Case-insensitive. Returns the first offender for the status line.
+pub fn first_bad_pair_word(s: &str) -> Option<String> {
+    let words = pair_word_list(s);
+    if words.is_empty() {
+        return None;
+    }
+    let (set, sorted) = word_index();
+    // The last token is "complete" (must match exactly) only once a separator follows it — a full-width count is NOT completion, because the 23rd token exists from its first typed character (an "at 23 words check everything" rule would flag the last word mid-type). A valid full word passes the prefix test anyway (exact match is its own prefix), so the lenient last-token rule never rejects a correct entry.
+    let last_complete = s != s.trim_end();
+    let n = words.len();
+    for (i, w) in words.iter().enumerate() {
+        let wb = w.as_bytes();
+        let ok = if i + 1 < n || last_complete {
+            set.contains(wb)
+        } else {
+            let idx = sorted.partition_point(|&cand| cand < wb);
+            idx < sorted.len() && sorted[idx].starts_with(wb)
+        };
+        if !ok {
+            return Some(w.clone());
+        }
+    }
+    None
+}
+
 /// Decode a complete word entry back to the pairing pubkey. Strict: exactly `PAIR_WORD_COUNT` words, value < 2^256. A wrong word fails the decode; the right words of the wrong device fail the match downstream.
 pub fn words_to_pair_pubkey(words: &str) -> Result<[u8; 32], String> {
     if pair_word_tokens(words) != PAIR_WORD_COUNT {
@@ -1430,6 +1492,24 @@ mod tests {
 
     fn key(seed: u8) -> Keypair {
         Keypair::from_seed(&[seed; 32])
+    }
+
+    #[test]
+    fn live_word_check_flags_typos_but_tolerates_prefixes() {
+        // A real entry (generated words) passes at every truncation point.
+        let words = pair_words(&[0xA5; 32]);
+        assert_eq!(first_bad_pair_word(&words), None);
+        for cut in 1..words.len() {
+            if words.is_char_boundary(cut) {
+                assert_eq!(first_bad_pair_word(&words[..cut]), None, "prefix at {cut} flagged");
+            }
+        }
+        // Classic misspellings flag as soon as they're impossible prefixes, in either entry mode.
+        assert_eq!(first_bad_pair_word("contraversy "), Some("contraversy".into()));
+        assert_eq!(first_bad_pair_word("SpontaniousAble"), Some("spontanious".into()));
+        // An in-progress word that is still a valid prefix stays green.
+        let first = std::str::from_utf8(voca::FULL.alphabet[100]).unwrap();
+        assert_eq!(first_bad_pair_word(&first[..2]), None);
     }
 
     #[test]
