@@ -63,9 +63,17 @@ pub fn get_local_ip() -> Option<std::net::Ipv4Addr> {
     // Connect to Cloudflare DNS - doesn't actually send packets, just sets up routing
     socket.connect("1.1.1.1:80").ok()?;
     match socket.local_addr().ok()?.ip() {
-        std::net::IpAddr::V4(ip) => Some(ip),
+        std::net::IpAddr::V4(ip) if is_usable_lan_ipv4(ip) => Some(ip),
         _ => None,
     }
+}
+
+/// Is `ip` an address another host on our LAN could actually reach us at?
+/// Rejects `192.0.0.0/24` — the IETF Protocol Assignments block (RFC 6890), whose `192.0.0.0/29` service-continuity prefix (RFC 7335) is what Android's 464XLAT CLAT hands a cellular device (`192.0.0.4`). That address is meaningful ONLY on the device's own stack; published as a peer's `local_ip` it is pure noise that makes every other device burn its PT/TCP retry budget (~17s observed) racing an unreachable candidate before the WAN path wins. Also rejects loopback and link-local, which are never useful peer LAN addresses. A cellular device thus advertises NO LAN address (correct — it has none), and its reachable WAN IPv6 carries the traffic.
+pub fn is_usable_lan_ipv4(ip: std::net::Ipv4Addr) -> bool {
+    let o = ip.octets();
+    let is_service_continuity = o[0] == 192 && o[1] == 0 && o[2] == 0; // 192.0.0.0/24
+    !ip.is_loopback() && !ip.is_link_local() && !ip.is_unspecified() && !is_service_continuity
 }
 
 /// Get LAN broadcast address for the interface that routes to internet Returns (broadcast_addr, local_ip) or None if unable to determine
@@ -191,4 +199,24 @@ pub fn build_lan_discovery(handle_proof: [u8; 32], port: u16, device_pubkey: [u8
         )
         .build()
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod lan_addr_tests {
+    use super::is_usable_lan_ipv4;
+    use std::net::Ipv4Addr;
+
+    #[test]
+    fn rejects_clat_and_specials_keeps_real_lan() {
+        // 464XLAT CLAT + the whole service-continuity /24 → unusable.
+        assert!(!is_usable_lan_ipv4(Ipv4Addr::new(192, 0, 0, 4)));
+        assert!(!is_usable_lan_ipv4(Ipv4Addr::new(192, 0, 0, 1)));
+        assert!(!is_usable_lan_ipv4(Ipv4Addr::new(127, 0, 0, 1)));
+        assert!(!is_usable_lan_ipv4(Ipv4Addr::new(169, 254, 1, 1)));
+        assert!(!is_usable_lan_ipv4(Ipv4Addr::new(0, 0, 0, 0)));
+        // Real private LANs → usable. Note 192.0.1.x and 192.168.x are NOT in 192.0.0.0/24.
+        assert!(is_usable_lan_ipv4(Ipv4Addr::new(192, 168, 0, 197)));
+        assert!(is_usable_lan_ipv4(Ipv4Addr::new(10, 0, 0, 5)));
+        assert!(is_usable_lan_ipv4(Ipv4Addr::new(192, 0, 1, 4)));
+    }
 }
