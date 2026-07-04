@@ -503,6 +503,10 @@ pub struct PhotonApp {
     add_device_tx: Option<std::sync::mpsc::Sender<AddDeviceUpdate>>,
     /// Stop flag for the NEW device's join thread — set true when the user cancels join mode so the thread quits re-posting its request (a zombie re-poster would race a later attempt for the inbox slot).
     add_stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Session-long fleet-event subscription (hub WebSocket): receiver of event kinds ("fstate" / "fleet") filtered to OUR identity. Drained in tick — fstate triggers a roster pull (a friend added on a sibling device appears here in ~a second), fleet triggers a key/membership sync. `None` until the first attest/resume succeeds.
+    fleet_evt_rx: Option<std::sync::mpsc::Receiver<&'static str>>,
+    /// Stop flag for the fleet-event subscription task (dropped app / de-attest).
+    fleet_evt_stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Launch add-mode (NEW device joining a fleet): orb on Launch toggles it, and a failed attest against an existing fleet auto-enters it. Enter the handle; this device then generates + displays its pairing words and waits for the other device to match and bind.
     launch_add_mode: bool,
     /// Join flow: the handle once entered; `None` while still awaiting it.
@@ -635,6 +639,8 @@ impl PhotonApp {
             add_device_rx: None,
             add_device_tx: None,
             add_stop: None,
+            fleet_evt_rx: None,
+            fleet_evt_stop: None,
             launch_add_mode: false,
             add_join_handle: None,
             add_join_status: String::new(),
@@ -1973,6 +1979,22 @@ impl FluorApp for PhotonApp {
         }
 
         // Fleet roster pull result: merge into the contact list (re-CLUTCH happens via the serialized keygen kick inside merge_roster_entries).
+        // Fleet-event push: a sibling device changed the shared roster (fstate) or the membership chain (fleet) — pull the change NOW instead of at our next attest. This is what makes a friend added on one device appear on the rest of the fleet in about a second.
+        let fleet_evts: Vec<&'static str> = self
+            .fleet_evt_rx
+            .as_ref()
+            .map(|rx| rx.try_iter().collect())
+            .unwrap_or_default();
+        if !fleet_evts.is_empty() {
+            if fleet_evts.contains(&"fstate") && self.roster_pull_rx.is_none() {
+                self.spawn_roster_pull();
+            }
+            if fleet_evts.contains(&"fleet") {
+                self.spawn_fleet_key_sync();
+            }
+            needs_redraw = true;
+        }
+
         match self.roster_pull_rx.as_ref().map(|rx| rx.try_recv()) {
             Some(Ok(entries)) => {
                 self.roster_pull_rx = None;
@@ -3698,6 +3720,68 @@ impl PhotonApp {
     }
 
     /// Recover the current fleet key from the fan-out (or establish it at genesis), off-thread, and cache it in the vault. This is how a device gets the fleet key now — sealed to its own device key, recoverable with just its `ihi` — superseding the pairing-secret hand-off. Triggered on attest and after a membership change, so a rotation propagates to every device.
+    /// Session-long subscription to the FGTW hub's typed events for OUR identity. "fstate" (roster changed by a sibling device) and "fleet" (membership chain extended) land in `fleet_evt_rx`; tick drains them into a roster pull / key sync, and the wake proxy pokes the loop so it reacts immediately. Reconnects with jittered backoff — unlike the join ceremony's throwaway socket, this one is the LIVE propagation path (friend added on one device appears on the others), so it survives network blips. Idempotent: repeat calls while a subscription is live are no-ops.
+    fn spawn_fleet_event_sub(&mut self) {
+        use std::sync::atomic::Ordering;
+        if self.fleet_evt_rx.is_some() {
+            return;
+        }
+        let Some(hp) = self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()) else {
+            return;
+        };
+        let (tx, rx) = std::sync::mpsc::channel::<&'static str>();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.fleet_evt_rx = Some(rx);
+        self.fleet_evt_stop = Some(stop.clone());
+        let wake = self.event_proxy.clone();
+        crate::network::http::runtime().spawn(async move {
+            use futures::StreamExt;
+            loop {
+                if stop.load(Ordering::Relaxed) {
+                    return;
+                }
+                if let Ok((mut ws, _)) = tokio_tungstenite::connect_async("wss://fgtw.org/ws").await {
+                    loop {
+                        tokio::select! {
+                            frame = ws.next() => {
+                                match frame {
+                                    Some(Ok(m)) => {
+                                        if stop.load(Ordering::Relaxed) {
+                                            return;
+                                        }
+                                        if let Some((kind, evt_hp)) = crate::network::fgtw::fleet::parse_pair_event(&m.into_data()) {
+                                            if evt_hp == hp {
+                                                let k: &'static str = match kind.as_str() {
+                                                    "fstate" => "fstate",
+                                                    "fleet" => "fleet",
+                                                    _ => continue,
+                                                };
+                                                if tx.send(k).is_err() {
+                                                    return; // app side dropped the receiver — subscription retired
+                                                }
+                                                if let Some(w) = wake.as_ref() {
+                                                    let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    _ => break, // closed / errored — fall out to the reconnect sleep
+                                }
+                            }
+                            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
+                                if stop.load(Ordering::Relaxed) {
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+                tokio::time::sleep(crate::jitter_dur(std::time::Duration::from_secs(20))).await;
+            }
+        });
+        crate::log("FLEET: event subscription started (fstate/fleet push)");
+    }
+
     fn spawn_fleet_key_sync(&self) {
         use crate::network::fgtw::fleet;
         let (Some(hp), Some(device_key), Some(storage), Some(session)) = (
@@ -4255,6 +4339,8 @@ impl PhotonApp {
                 }
                 // Sync our own avatar with FGTW now that the handle_proof is set — newest-wins, so a copy this identity set on another device propagates here, and ours propagates out, without either clobbering a fresher one. (Was a blind one-way upload, which could overwrite a newer server copy with a stale local one.)
                 self.spawn_avatar_sync();
+                // Live fleet propagation: subscribe to hub events for this identity (idempotent across resumes/re-attests in one run).
+                self.spawn_fleet_event_sub();
                 // Pubkey emitted as voca-encoded camelCase so a user reading the log can double-click + paste the value as a single word (matches `Development:` key lines from handle_query.rs). The handle is deliberately NOT logged — Photon never surfaces the plaintext handle.
                 eprintln!(
                     "attestation success: pubkey = {}",
