@@ -101,9 +101,13 @@ Two implementation disciplines (the entire remaining attack surface):
 1. **Ack ≠ authorize, one candidate at a time.** The tap gets a key acked; only a human press on the old device signs the ADD — and the press is BOUND to the acked candidate. A second tap landing between green light and press (the TOCTOU squeeze) REPLACES the pending candidate, re-acks, and invalidates the armed confirm, so the signed key is always the one whose ack is currently live — and the displaced device's light flipping red is the alarm.
 2. **Pending ≠ enrolled.** Green = acked; enrolled = this device folds from the chain (the existing membership poll). The user waits for *enrolled*; a rogue signing while your device sits at red/pending is loud, and removal + rotate-on-remove is the built backstop.
 
-**Required screen copy — the human step IS protocol, so the screens must teach it:**
-- New device, NFC join mode: red **"Unenrolled — tap your other device"** → green **"Pending — confirm on your other device"** → **"Enrolled"**. The colour flip is the verification; the words say what to do at each state.
-- Old device, confirm screen: **"Confirm only when your new device shows green 'Pending'."** This line is load-bearing — it is the instruction that turns the end-to-end ack into a human decision rule. Without it a user taps, sees a confirm button, and presses; with it, a red far screen stops the press cold.
+**Required screen copy — the human step IS protocol, so the screens must teach it.** One word family end to end (*unenrolled → pending → enroll → enrolled*), so nothing on one screen needs translating to the other:
+
+The canonical walk: **virgin** (fresh install) → **enter handle** (device aims itself at the fleet, posts its signed request) → red **"Unenrolled — tap your other device"** → tap → green **"Pending — confirm on your other device"** → old device's **Enroll** button (the signing press) → **"Enrolled"** (device folds from the chain, recovers the fleet key, attests, lands on contacts).
+
+- The colour flip is the verification; the words say what to do at each state.
+- Old device, confirm screen: the button is **Enroll**, and the line above it is load-bearing: **"Confirm only when your new device shows green 'Pending'."** Without it a user taps, sees a button, and presses; with it, a red far screen stops the press cold.
+- Enroll-press → Enrolled is not instant (chain publish, membership poll, fan-out recovery — a second or two of green after the press). That gap is the pending ≠ enrolled discipline made visible; the screen should show progress, not freeze.
 
 Scope: NFC is a phone↔phone accelerator (laptops rarely have the radio); the 23 words remain the universal path. Same fleet ADD underneath either way.
 
