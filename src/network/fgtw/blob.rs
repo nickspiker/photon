@@ -111,16 +111,19 @@ pub async fn put_blob(
         .map_err(|e| BlobError::Network(format!("PUT request failed: {}", e)))?;
 
     let status = response.status();
-    if status.is_success() {
-        crate::log(&format!("FGTW: Uploaded blob ({} bytes)", data.len()));
-        Ok(())
-    } else if status == reqwest::StatusCode::FORBIDDEN {
-        let body = response.text().await.unwrap_or_default();
-        Err(BlobError::Unauthorized(body))
-    } else {
-        let body = response.text().await.unwrap_or_default();
-        Err(BlobError::ServerError(format!("{}: {}", status, body)))
+    let body = response.bytes().await.unwrap_or_default();
+    if let Some((reason, detail)) = fgtw::client::error_frame(&body) {
+        // slot_owned / replay are the ownership rejections the worker sends for blob_put; surface them as Unauthorized, the rest as ServerError.
+        return Err(match reason.as_str() {
+            "slot_owned" | "replay" => BlobError::Unauthorized(format!("{reason}: {detail}")),
+            _ => BlobError::ServerError(format!("{reason}: {detail}")),
+        });
     }
+    if !status.is_success() {
+        return Err(BlobError::ServerError(format!("transport {}", status)));
+    }
+    crate::log(&format!("FGTW: Uploaded blob ({} bytes)", data.len()));
+    Ok(())
 }
 
 /// Download a blob from FGTW storage
@@ -152,41 +155,44 @@ pub async fn get_blob(storage_key: &str) -> Result<Option<Vec<u8>>, BlobError> {
         .map_err(|e| BlobError::Network(format!("GET request failed: {}", e)))?;
 
     let status = response.status();
-    if status.is_success() {
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|e| BlobError::Network(format!("Failed to read blob: {}", e)))?;
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| BlobError::Network(format!("Failed to read blob: {}", e)))?;
 
-        // Parse VSF response to extract blob data from "blob_data" section
-        use vsf::file_format::{VsfHeader, VsfSection};
-        let (_, header_end) = VsfHeader::decode(&bytes)
-            .map_err(|e| BlobError::Network(format!("Parse response header: {}", e)))?;
+    if fgtw::client::is_error(&bytes, "not_found") {
+        return Ok(None);
+    }
+    if let Some((reason, detail)) = fgtw::client::error_frame(&bytes) {
+        return Err(BlobError::ServerError(format!("{reason}: {detail}")));
+    }
+    if !status.is_success() {
+        return Err(BlobError::ServerError(format!("transport {}", status)));
+    }
 
-        let mut ptr = header_end;
-        let section = VsfSection::parse(&bytes, &mut ptr)
-            .map_err(|e| BlobError::Network(format!("Parse blob_data section: {}", e)))?;
+    // Parse VSF response to extract blob data from "blob_data" section
+    use vsf::file_format::{VsfHeader, VsfSection};
+    let (_, header_end) = VsfHeader::decode(&bytes)
+        .map_err(|e| BlobError::Network(format!("Parse response header: {}", e)))?;
 
-        let blob_data = section
-            .get_field("data")
-            .and_then(|f| f.values.first())
-            .and_then(|v| match v {
-                VsfType::v(_, data) => Some(data.clone()),
-                _ => None,
-            });
+    let mut ptr = header_end;
+    let section = VsfSection::parse(&bytes, &mut ptr)
+        .map_err(|e| BlobError::Network(format!("Parse blob_data section: {}", e)))?;
 
-        match blob_data {
-            Some(data) => {
-                crate::log(&format!("FGTW: Downloaded blob ({} bytes)", data.len()));
-                Ok(Some(data))
-            }
-            None => Ok(None),
+    let blob_data = section
+        .get_field("data")
+        .and_then(|f| f.values.first())
+        .and_then(|v| match v {
+            VsfType::v(_, data) => Some(data.clone()),
+            _ => None,
+        });
+
+    match blob_data {
+        Some(data) => {
+            crate::log(&format!("FGTW: Downloaded blob ({} bytes)", data.len()));
+            Ok(Some(data))
         }
-    } else if status == reqwest::StatusCode::NOT_FOUND {
-        Ok(None)
-    } else {
-        let body = response.text().await.unwrap_or_default();
-        Err(BlobError::ServerError(format!("{}: {}", status, body)))
+        None => Ok(None),
     }
 }
 
@@ -255,16 +261,18 @@ pub fn put_blob_blocking(
     ));
 
     let status = response.status();
-    if status.is_success() {
-        crate::log(&format!("FGTW: Uploaded blob ({} bytes)", data.len()));
-        Ok(())
-    } else if status == reqwest::StatusCode::FORBIDDEN {
-        let body = response.text().unwrap_or_default();
-        Err(BlobError::Unauthorized(body))
-    } else {
-        let body = response.text().unwrap_or_default();
-        Err(BlobError::ServerError(format!("{}: {}", status, body)))
+    let body = response.bytes().unwrap_or_default();
+    if let Some((reason, detail)) = fgtw::client::error_frame(&body) {
+        return Err(match reason.as_str() {
+            "slot_owned" | "replay" => BlobError::Unauthorized(format!("{reason}: {detail}")),
+            _ => BlobError::ServerError(format!("{reason}: {detail}")),
+        });
     }
+    if !status.is_success() {
+        return Err(BlobError::ServerError(format!("transport {}", status)));
+    }
+    crate::log(&format!("FGTW: Uploaded blob ({} bytes)", data.len()));
+    Ok(())
 }
 
 /// Download a blob from FGTW storage (blocking version)
@@ -291,39 +299,42 @@ pub fn get_blob_blocking(storage_key: &str) -> Result<Option<Vec<u8>>, BlobError
         .map_err(|e| BlobError::Network(format!("GET request failed: {}", e)))?;
 
     let status = response.status();
-    if status.is_success() {
-        let bytes = response
-            .bytes()
-            .map_err(|e| BlobError::Network(format!("Failed to read blob: {}", e)))?;
+    let bytes = response
+        .bytes()
+        .map_err(|e| BlobError::Network(format!("Failed to read blob: {}", e)))?;
 
-        use vsf::file_format::{VsfHeader, VsfSection};
-        let (_, header_end) = VsfHeader::decode(&bytes)
-            .map_err(|e| BlobError::Network(format!("Parse response header: {}", e)))?;
+    if fgtw::client::is_error(&bytes, "not_found") {
+        return Ok(None);
+    }
+    if let Some((reason, detail)) = fgtw::client::error_frame(&bytes) {
+        return Err(BlobError::ServerError(format!("{reason}: {detail}")));
+    }
+    if !status.is_success() {
+        return Err(BlobError::ServerError(format!("transport {}", status)));
+    }
 
-        let mut ptr = header_end;
-        let section = VsfSection::parse(&bytes, &mut ptr)
-            .map_err(|e| BlobError::Network(format!("Parse blob_data section: {}", e)))?;
+    use vsf::file_format::{VsfHeader, VsfSection};
+    let (_, header_end) = VsfHeader::decode(&bytes)
+        .map_err(|e| BlobError::Network(format!("Parse response header: {}", e)))?;
 
-        let blob_data = section
-            .get_field("data")
-            .and_then(|f| f.values.first())
-            .and_then(|v| match v {
-                VsfType::v(_, data) => Some(data.clone()),
-                _ => None,
-            });
+    let mut ptr = header_end;
+    let section = VsfSection::parse(&bytes, &mut ptr)
+        .map_err(|e| BlobError::Network(format!("Parse blob_data section: {}", e)))?;
 
-        match blob_data {
-            Some(data) => {
-                crate::log(&format!("FGTW: Downloaded blob ({} bytes)", data.len()));
-                Ok(Some(data))
-            }
-            None => Ok(None),
+    let blob_data = section
+        .get_field("data")
+        .and_then(|f| f.values.first())
+        .and_then(|v| match v {
+            VsfType::v(_, data) => Some(data.clone()),
+            _ => None,
+        });
+
+    match blob_data {
+        Some(data) => {
+            crate::log(&format!("FGTW: Downloaded blob ({} bytes)", data.len()));
+            Ok(Some(data))
         }
-    } else if status == reqwest::StatusCode::NOT_FOUND {
-        Ok(None)
-    } else {
-        let body = response.text().unwrap_or_default();
-        Err(BlobError::ServerError(format!("{}: {}", status, body)))
+        None => Ok(None),
     }
 }
 
@@ -366,16 +377,20 @@ pub async fn delete_blob(storage_key: &str, device_keypair: &Keypair) -> Result<
         .map_err(|e| BlobError::Network(format!("DELETE request failed: {}", e)))?;
 
     let status = response.status();
-    if status.is_success() {
-        crate::log("FGTW: Deleted blob");
-        Ok(())
-    } else if status == reqwest::StatusCode::NOT_FOUND {
-        Ok(())
-    } else if status == reqwest::StatusCode::FORBIDDEN {
-        let body = response.text().await.unwrap_or_default();
-        Err(BlobError::Unauthorized(body))
-    } else {
-        let body = response.text().await.unwrap_or_default();
-        Err(BlobError::ServerError(format!("{}: {}", status, body)))
+    let body = response.bytes().await.unwrap_or_default();
+    // not_found → idempotent success (already gone); slot_owned → ownership rejection.
+    if fgtw::client::is_error(&body, "not_found") {
+        return Ok(());
     }
+    if let Some((reason, detail)) = fgtw::client::error_frame(&body) {
+        return Err(match reason.as_str() {
+            "slot_owned" => BlobError::Unauthorized(format!("{reason}: {detail}")),
+            _ => BlobError::ServerError(format!("{reason}: {detail}")),
+        });
+    }
+    if !status.is_success() {
+        return Err(BlobError::ServerError(format!("transport {}", status)));
+    }
+    crate::log("FGTW: Deleted blob");
+    Ok(())
 }

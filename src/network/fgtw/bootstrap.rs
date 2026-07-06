@@ -82,13 +82,6 @@ fn try_parse_vsf_error(bytes: &[u8]) -> Option<String> {
     None
 }
 
-/// Format a non-2xx HTTP response as a short user-facing error string. Tries the signed-VSF-error body first (the worker answers failures with a signed message — print it verbatim). Async helper to lift the body out of the response before stringifying.
-async fn format_http_error(step: &str, response: reqwest::Response) -> String {
-    let status = response.status();
-    let body_bytes = response.bytes().await.unwrap_or_default();
-    format_http_error_from_bytes(step, status, &body_bytes)
-}
-
 /// Turn an FGTW error response into a SHORT, plain message with no web-stack jargon (no status numbers, no "Bad Request"/"Internal Server Error" reason phrases, no URLs). FGTW signs its own error reasons; if one is present we surface that (it's ours and it's meaningful); otherwise the message is a plain "FGTW couldn't <step>" split only by whether the fault is on their side (5xx) or ours (4xx). The raw HTTP terminology is a transport detail the user can't act on.
 /// Body-from-bytes variant — used by the announce path where the body was already buffered for VSF-error parsing before falling thru here.
 fn format_http_error_from_bytes(step: &str, status: reqwest::StatusCode, body: &[u8]) -> String {
@@ -99,6 +92,17 @@ fn format_http_error_from_bytes(step: &str, status: reqwest::StatusCode, body: &
         format!("FGTW is having trouble — couldn't {step}")
     } else {
         format!("FGTW rejected {step}")
+    }
+}
+
+/// Turn a worker `error`-frame `(reason, detail)` into a short user-facing message. The worker now
+/// answers every failure this way at HTTP 200; the `detail` string is already plain (no web-stack
+/// jargon), so surface it verbatim, keeping the operation `step` for context.
+fn reason_error(step: &str, reason: &str, detail: &str) -> String {
+    if detail.is_empty() {
+        format!("FGTW rejected {step} ({reason})")
+    } else {
+        format!("FGTW: {detail}")
     }
 }
 
@@ -164,14 +168,19 @@ async fn load_bootstrap_peers_inner(
         .await
         .map_err(|e| crate::network::http::short_send_error("reach FGTW", &e))?;
 
-    if !challenge_response.status().is_success() {
-        return Err(format_http_error("challenge", challenge_response).await);
-    }
-
+    let challenge_status = challenge_response.status();
     let challenge_bytes = challenge_response
         .bytes()
         .await
         .map_err(|e| crate::network::http::short_send_error("reach FGTW", &e))?;
+
+    // The worker answers every failure with a VSF `error` frame at HTTP 200; surface its reason.
+    if let Some((reason, detail)) = fgtw::client::error_frame(&challenge_bytes) {
+        return Err(reason_error("challenge", &reason, &detail));
+    }
+    if !challenge_status.is_success() {
+        return Err(format_http_error_from_bytes("challenge", challenge_status, &challenge_bytes));
+    }
 
     #[cfg(feature = "development")]
     crate::log(&crate::network::inspect::vsf_inspect(
@@ -209,7 +218,6 @@ async fn load_bootstrap_peers_inner(
         .map_err(|e| crate::network::http::short_send_error("reach FGTW", &e))?;
 
     let status = announce_response.status();
-    let is_success = status.is_success();
 
     let response_bytes = announce_response
         .bytes()
@@ -224,7 +232,13 @@ async fn load_bootstrap_peers_inner(
         "announce",
     ));
 
-    if !is_success {
+    // App-level failure first: the worker answers every failure with a VSF `error` frame at HTTP 200
+    // (`not_fleet_member`, `bad_signature`, …). Fall back to the legacy VSF-error / transport phrasing
+    // only if it isn't one of the new reason frames.
+    if let Some((reason, detail)) = fgtw::client::error_frame(&response_bytes) {
+        return Err(reason_error("announce", &reason, &detail));
+    }
+    if !status.is_success() {
         if let Some(error_msg) = try_parse_vsf_error(&response_bytes) {
             return Err(error_msg);
         }
