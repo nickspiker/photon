@@ -118,7 +118,9 @@ pub fn set_wairua_override(w: &[u8; 32])          // fallback when /proc boot_id
 Zero permissions, zero user interaction gives the case that matters: **app-restart resume works on every device, forever, no prompt** (`filesDir` + shadow).
 Only reinstall/uninstall-without-re-typing is gated, behind a single SAF file-pick (not a scary blanket permission).
 
-The optional backup is offered up front and is fully decline-friendly — declining costs nothing on reboot (you re-type the handle either way, by design) and only means a reinstall asks for your handle once.
+The optional backup is offered **after attest, not up front**: let the user in first, show a short explainer of the no-password model, then ask for the SAF backup.
+It is fully decline-friendly — declining costs nothing on reboot (you re-type the handle either way, by design) and only means a reinstall asks for your handle once.
+A decline may re-surface later, but only event-driven and non-nagging (never on a timer).
 
 User-facing copy:
 
@@ -133,12 +135,15 @@ User-facing copy:
 
 The forgot-your-handle-and-rebooted-with-no-backup lockout is the recovery case, filled by **custodes**.
 
+## Migration
+
+None. Photon is pre-public, so there are no old-format sessions in the field to upgrade — a device on the pre-seal format simply nukes and re-attests. The capsule carries a version byte so *future* format changes can be handled, but there is deliberately no backward-compat path for pre-seal blobs.
+
 ## Implementation order
 
-0. **SELinux check** — confirm whether the `untrusted_app` domain can read `/proc/sys/kernel/random/boot_id`; decides `boot_id`-in-Rust vs the Kotlin `set_wairua_override` fallback.
+0. **SELinux check — RESOLVED 2026-07-06.** `/proc/sys/kernel/random/boot_id` is READABLE from the `untrusted_app` domain, verified on-device via an in-app probe: the value was stable across uninstall/reinstall (`e61629d8…` both times, same boot) and fresh after a reboot (`71adc99a…`). So tohu reads `/proc` directly. The `set_wairua_override` hook stays in the design as a dormant safety valve for any ROM that blocks the read (wired, not on the critical path), but the primary source is the direct read.
 1. **tohu capsule crypto** — `SealMode`, `seal_session`, `open_session`, *wairua* derivation, with round-trip + wrong-wairua-fails + MAC-tamper-fails tests.
 2. **tohu local tiers** — `set_session_dir`; repoint `session`/`set_session`/`clear_session` to the sealed capsule in `filesDir` + shadow.
 3. **photon** — JNI passes the data dir to `tohu`; extend the attest-success handler (write local tiers) and the launch try-order (local → platform).
-4. **sticky broadcast** — carry the sealed `Shared` capsule (send + restore paths); it is now inert ciphertext, so its OEM flakiness is only a "might re-attest after reinstall" matter, never a security one.
-5. **SAF optional backup** — the up-front decline-friendly prompt, the file-pick, the persisted URI, write-on-attest and read-on-launch.
-6. **Decide whether the sticky broadcast earns its JNI complexity** at all, given `filesDir` + SAF cover restart and reinstall more reliably.
+4. **sticky broadcast (kept)** — carry the sealed `Shared` capsule (send + restore paths); it is now inert ciphertext, so its OEM flakiness is only a "might re-attest after reinstall" matter, never a security one. Retained as the zero-permission reinstall garnish even though Samsung/aggressive OEMs may drop it — where it survives, it is a free win.
+5. **SAF optional backup** — the post-attest flow: explainer screen → decline-friendly permission ask → file-pick → persisted URI, write-on-attest and read-on-launch.
