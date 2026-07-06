@@ -80,16 +80,18 @@ pub async fn send_via_relay(
         .map_err(|e| format!("Failed to send relay: {}", e))?;
 
     let status = response.status();
-    if status.is_success() {
-        crate::log(&format!(
-            "RELAY: Stored message for {}...",
-            hex::encode(&recipient_pubkey[..4])
-        ));
-        Ok(())
-    } else {
-        let body = response.text().await.unwrap_or_default();
-        Err(format!("Relay failed ({}): {}", status, body))
+    let body = response.bytes().await.unwrap_or_default();
+    if let Some((reason, detail)) = fgtw::client::error_frame(&body) {
+        return Err(format!("Relay failed ({reason}): {detail}"));
     }
+    if !status.is_success() {
+        return Err(format!("Relay failed (transport {})", status));
+    }
+    crate::log(&format!(
+        "RELAY: Stored message for {}...",
+        hex::encode(&recipient_pubkey[..4])
+    ));
+    Ok(())
 }
 
 /// Fetch pending messages from FGTW conduit
@@ -117,44 +119,46 @@ pub async fn fetch_relay_messages(keypair: &Keypair) -> Result<Vec<u8>, String> 
         .map_err(|e| format!("Failed to fetch relay: {}", e))?;
 
     let status = response.status();
-    if status.is_success() {
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|e| format!("Failed to read body: {}", e))?;
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| format!("Failed to read body: {}", e))?;
 
-        // Response is VSF with section "fetched" containing "messages" field Parse to extract the raw messages
-        if bytes.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        // Parse response VSF to extract messages
-        use vsf::file_format::{VsfHeader, VsfSection};
-        let (_, header_end) =
-            VsfHeader::decode(&bytes).map_err(|e| format!("Parse response header: {}", e))?;
-
-        let mut ptr = header_end;
-        let section = VsfSection::parse(&bytes, &mut ptr)
-            .map_err(|e| format!("Parse fetched section: {}", e))?;
-
-        let messages = section
-            .get_field("messages")
-            .and_then(|f| f.values.first())
-            .and_then(|v| match v {
-                VsfType::v(_, data) => Some(data.clone()),
-                _ => None,
-            })
-            .unwrap_or_default();
-
-        if !messages.is_empty() {
-            crate::log(&format!("RELAY: Fetched {} bytes", messages.len()));
-        }
-
-        Ok(messages)
-    } else {
-        let body = response.text().await.unwrap_or_default();
-        Err(format!("Fetch failed ({}): {}", status, body))
+    if let Some((reason, detail)) = fgtw::client::error_frame(&bytes) {
+        return Err(format!("Fetch failed ({reason}): {detail}"));
     }
+    if !status.is_success() {
+        return Err(format!("Fetch failed (transport {})", status));
+    }
+
+    // Response is VSF with section "fetched" containing "messages" field Parse to extract the raw messages
+    if bytes.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Parse response VSF to extract messages
+    use vsf::file_format::{VsfHeader, VsfSection};
+    let (_, header_end) =
+        VsfHeader::decode(&bytes).map_err(|e| format!("Parse response header: {}", e))?;
+
+    let mut ptr = header_end;
+    let section = VsfSection::parse(&bytes, &mut ptr)
+        .map_err(|e| format!("Parse fetched section: {}", e))?;
+
+    let messages = section
+        .get_field("messages")
+        .and_then(|f| f.values.first())
+        .and_then(|v| match v {
+            VsfType::v(_, data) => Some(data.clone()),
+            _ => None,
+        })
+        .unwrap_or_default();
+
+    if !messages.is_empty() {
+        crate::log(&format!("RELAY: Fetched {} bytes", messages.len()));
+    }
+
+    Ok(messages)
 }
 
 /// Synchronous version of send_via_relay for non-async contexts
@@ -192,16 +196,18 @@ pub fn send_via_relay_sync(
         .map_err(|e| format!("Failed to send relay: {}", e))?;
 
     let status = response.status();
-    if status.is_success() {
-        crate::log(&format!(
-            "RELAY: Stored message for {}...",
-            hex::encode(&recipient_pubkey[..4])
-        ));
-        Ok(())
-    } else {
-        let body = response.text().unwrap_or_default();
-        Err(format!("Relay failed ({}): {}", status, body))
+    let body = response.bytes().unwrap_or_default();
+    if let Some((reason, detail)) = fgtw::client::error_frame(&body) {
+        return Err(format!("Relay failed ({reason}): {detail}"));
     }
+    if !status.is_success() {
+        return Err(format!("Relay failed (transport {})", status));
+    }
+    crate::log(&format!(
+        "RELAY: Stored message for {}...",
+        hex::encode(&recipient_pubkey[..4])
+    ));
+    Ok(())
 }
 
 /// Synchronous version of fetch_relay_messages for non-async contexts
@@ -222,40 +228,42 @@ pub fn fetch_relay_messages_sync(keypair: &Keypair) -> Result<Vec<u8>, String> {
         .map_err(|e| format!("Failed to fetch relay: {}", e))?;
 
     let status = response.status();
-    if status.is_success() {
-        let bytes = response
-            .bytes()
-            .map_err(|e| format!("Failed to read body: {}", e))?;
+    let bytes = response
+        .bytes()
+        .map_err(|e| format!("Failed to read body: {}", e))?;
 
-        if bytes.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        // Parse response VSF to extract messages
-        use vsf::file_format::{VsfHeader, VsfSection};
-        let (_, header_end) =
-            VsfHeader::decode(&bytes).map_err(|e| format!("Parse response header: {}", e))?;
-
-        let mut ptr = header_end;
-        let section = VsfSection::parse(&bytes, &mut ptr)
-            .map_err(|e| format!("Parse fetched section: {}", e))?;
-
-        let messages = section
-            .get_field("messages")
-            .and_then(|f| f.values.first())
-            .and_then(|v| match v {
-                VsfType::v(_, data) => Some(data.clone()),
-                _ => None,
-            })
-            .unwrap_or_default();
-
-        if !messages.is_empty() {
-            crate::log(&format!("RELAY: Fetched {} bytes", messages.len()));
-        }
-
-        Ok(messages)
-    } else {
-        let body = response.text().unwrap_or_default();
-        Err(format!("Fetch failed ({}): {}", status, body))
+    if let Some((reason, detail)) = fgtw::client::error_frame(&bytes) {
+        return Err(format!("Fetch failed ({reason}): {detail}"));
     }
+    if !status.is_success() {
+        return Err(format!("Fetch failed (transport {})", status));
+    }
+
+    if bytes.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Parse response VSF to extract messages
+    use vsf::file_format::{VsfHeader, VsfSection};
+    let (_, header_end) =
+        VsfHeader::decode(&bytes).map_err(|e| format!("Parse response header: {}", e))?;
+
+    let mut ptr = header_end;
+    let section = VsfSection::parse(&bytes, &mut ptr)
+        .map_err(|e| format!("Parse fetched section: {}", e))?;
+
+    let messages = section
+        .get_field("messages")
+        .and_then(|f| f.values.first())
+        .and_then(|v| match v {
+            VsfType::v(_, data) => Some(data.clone()),
+            _ => None,
+        })
+        .unwrap_or_default();
+
+    if !messages.is_empty() {
+        crate::log(&format!("RELAY: Fetched {} bytes", messages.len()));
+    }
+
+    Ok(messages)
 }
