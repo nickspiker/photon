@@ -22,7 +22,7 @@ const FGTW_URL: &str = "https://fgtw.org";
 
 // ── Transport injection: the crate owns the FGTW protocol; photon supplies the raw HTTP (pooled reqwest, warm TLS, short "No connection to FGTW" errors) and the roster AEAD (kete). ──
 
-/// Photon's HTTP reach to FGTW: POST via the shared pooled client, hand the crate back `{status, body}` so it owns the 404/409/success interpretation.
+/// Photon's HTTP reach to FGTW: POST via the shared pooled client, hand the crate back `{status, body}` so it owns the `error`-frame reason / success interpretation.
 struct PhotonTransport;
 impl FgtwTransport for PhotonTransport {
     fn post(&self, body: Vec<u8>) -> Result<FgtwResponse, String> {
@@ -60,7 +60,7 @@ pub fn fetch(handle_proof: &[u8; 32]) -> Result<Option<MembershipBlob>, String> 
     fgtw::client::fetch(&PhotonTransport, handle_proof)
 }
 
-/// Publish a new (or extended) chain (409 → `"fleet: 409"` for the retry loop).
+/// Publish a new (or extended) chain (`stale` reason → `"fleet: stale"` for the retry loop).
 pub fn publish(blob: &MembershipBlob) -> Result<(), String> {
     fgtw::client::publish(&PhotonTransport, blob)
 }
