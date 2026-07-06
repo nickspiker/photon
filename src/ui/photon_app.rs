@@ -529,10 +529,12 @@ pub struct PhotonApp {
     add_join_rx: Option<std::sync::mpsc::Receiver<JoinUpdate>>,
     /// Fleet key received during a JOIN, held until attest sets the vault up so it can be persisted (the new device has no storage during the join thread).
     pending_fleet_key: Option<[u8; 32]>,
-    /// In-flight fleet-roster pull; its result (merged into contacts) is drained in `tick`. `Some` = a pull is running, which also debounces re-spawns.
-    roster_pull_rx: Option<std::sync::mpsc::Receiver<Vec<crate::network::fgtw::fleet::RosterEntry>>>,
-    /// Set on each attest/resume: "do one roster pull as soon as the fleet key is available." The key is written by an ASYNC fan-out sync, so an immediate pull races it and loses (reads an empty key, early-returns, never retries) — this flag makes tick fire the pull the moment `fleet_key_cached()` goes Some, which is the wake-up catch-up that brings a friend added on a sibling device onto this one.
+    /// In-flight fleet-roster pull; its `Ok` result merges into contacts, its `Err` triggers a retry — both drained in `tick`. `Some` = a pull is running, which also debounces re-spawns.
+    roster_pull_rx: Option<std::sync::mpsc::Receiver<Result<Vec<crate::network::fgtw::fleet::RosterEntry>, String>>>,
+    /// Set on each attest/resume: "do one roster pull as soon as the fleet key is available." The key is written by an ASYNC fan-out sync, so an immediate pull races it and loses — this flag makes tick fire the pull the moment `fleet_key_cached()` goes Some, which is the wake-up catch-up that brings a friend added on a sibling device onto this one.
     needs_initial_roster_pull: bool,
+    /// Retry budget for the initial roster pull. A fresh device's pairing-recovered key is a PRE-rotation generation (adding a device rotates the fleet key via the fan-out re-key), so the first pull decrypts the current roster with a stale key and fails `aead::Error`. The in-flight `spawn_fleet_key_sync` writes the current key within ~150ms, so on a failed pull we re-arm `needs_initial_roster_pull` and retry — the pull's own ~150ms round-trip naturally spaces attempts, and this budget caps them so a genuinely-undecryptable roster gives up instead of spinning (next fleet event / relaunch re-tries).
+    roster_pull_retries_left: u8,
     /// This device's avatar in BT.2020 γ=2.0 u8 RGB, sized `crate::avatar::AVATAR_SIZE × AVATAR_SIZE × 3`. `None` until `on_query_result` pulls one from local storage (no saved avatar = stays `None`, Ready screen falls back to the grey placeholder).
     device_avatar_pixels: Option<Vec<u8>>,
     /// Cached Mitchell resize of `device_avatar_pixels` at the current Ready-screen circle diameter. Rebuilt on diameter change (resize / zoom).
@@ -664,6 +666,7 @@ impl PhotonApp {
             pending_fleet_key: None,
             roster_pull_rx: None,
             needs_initial_roster_pull: false,
+            roster_pull_retries_left: 0,
             device_avatar_pixels: None,
             device_avatar_scaled: None,
             device_avatar_scaled_diameter: 0,
@@ -2090,10 +2093,25 @@ impl FluorApp for PhotonApp {
         }
 
         match self.roster_pull_rx.as_ref().map(|rx| rx.try_recv()) {
-            Some(Ok(entries)) => {
+            Some(Ok(Ok(entries))) => {
                 self.roster_pull_rx = None;
+                self.roster_pull_retries_left = 0;
                 self.merge_roster_entries(entries);
                 needs_redraw = true;
+            }
+            Some(Ok(Err(_e))) => {
+                // Pull failed to fetch/decrypt. On a fresh join this is the pairing key still being a pre-rotation generation; the in-flight fan-out key sync writes the current key within ~150ms, so re-arm and retry until the budget runs out (the pull's own round-trip spaces the attempts).
+                self.roster_pull_rx = None;
+                if self.roster_pull_retries_left > 0 {
+                    self.roster_pull_retries_left -= 1;
+                    self.needs_initial_roster_pull = true;
+                    crate::log(&format!(
+                        "FLEET: roster pull failed — retrying once the current fleet key lands ({} attempt(s) left)",
+                        self.roster_pull_retries_left
+                    ));
+                } else {
+                    crate::log("FLEET: roster pull retries exhausted — will re-try on the next fleet event or relaunch");
+                }
             }
             Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
                 self.roster_pull_rx = None; // thread died without sending; drop the dead channel
@@ -4030,21 +4048,21 @@ impl PhotonApp {
         let (tx, rx) = std::sync::mpsc::channel();
         self.roster_pull_rx = Some(rx);
         std::thread::spawn(move || {
-            let entries = match fleet::pull_roster(&hp, &fleet_key) {
+            let result = match fleet::pull_roster(&hp, &fleet_key) {
                 Ok(Some(e)) => {
                     crate::log(&format!("FLEET: roster pulled — {} entr(ies)", e.len()));
-                    e
+                    Ok(e)
                 }
                 Ok(None) => {
                     crate::log("FLEET: roster pull — slot empty");
-                    Vec::new()
+                    Ok(Vec::new())
                 }
                 Err(e) => {
                     crate::log(&format!("FLEET: roster pull failed: {e}"));
-                    Vec::new()
+                    Err(e)
                 }
             };
-            let _ = tx.send(entries);
+            let _ = tx.send(result);
         });
     }
 
@@ -4273,17 +4291,12 @@ impl PhotonApp {
         });
     }
 
+    /// Textbox front-end for the open conversation: pull + trim the compose text, hand it to
+    /// [`Self::send_chain_message`] for the active contact (bubble shown), then clear the box.
     fn submit_message(&mut self) {
-        use vsf::schema::section::FieldValue;
-
         let Some(ci) = self.active_contact else {
             return;
         };
-        let our_handle_hash = match self.session.as_ref().map(|s| s.identity_seed) {
-            Some(h) => h,
-            None => return,
-        };
-
         // Pull + trim the compose text; bail on empty.
         let text: String = match self.message_textbox.as_ref() {
             Some(tb) => tb.chars.iter().collect(),
@@ -4293,25 +4306,43 @@ impl PhotonApp {
         if text.is_empty() {
             return;
         }
+        self.send_chain_message(ci, &text, false);
+        if let Some(tb) = self.message_textbox.as_mut() {
+            tb.clear();
+        }
+        // Tell the Android host to restart IME input — a predictive keyboard still holds the just-sent text as a composing buffer and would re-materialise it on the next keystroke without this.
+        self.pending_input_reset = true;
+    }
+
+    /// Encrypt + send + persist one chat message to `contact_idx` over the friendship chain, appending an outgoing bubble only when `!suppress_bubble`. Returns `true` if the message was dispatched to the network (so callers like the chain-weave probe only latch `probe_sent` on an actual send, and retry next cycle if the contact had no address yet). This is the reusable core factored out of the old open-contact send: it works for ANY contact index (not just `active_contact`), so the hidden chain-weave probe can ride the exact same ratchet path with its UI suppressed. Chain math (`prepare_send`, salt/advance) is untouched — the probe is a normal message whose only difference is a reserved marker content and a hidden bubble.
+    fn send_chain_message(&mut self, contact_idx: usize, text: &str, suppress_bubble: bool) -> bool {
+        use vsf::schema::section::FieldValue;
+
+        let ci = contact_idx;
+        let text = text.to_string();
+        let our_handle_hash = match self.session.as_ref().map(|s| s.identity_seed) {
+            Some(h) => h,
+            None => return false,
+        };
 
         // Contact must be CLUTCH-Complete with a friendship chain.
         let (friendship_id, recipient_pubkey, addr_pair) = {
             let Some(contact) = self.contacts.get(ci) else {
-                return;
+                return false;
             };
             if contact.clutch_state != crate::types::ClutchState::Complete {
                 crate::log("CHAT: cannot send — CLUTCH not complete");
-                return;
+                return false;
             }
             let Some(fid) = contact.friendship_id else {
                 crate::log("CHAT: cannot send — no friendship chain");
-                return;
+                return false;
             };
             (fid, contact.public_identity.key, contact.race_addrs())
         };
         let Some((peer_addr, alt_addr)) = addr_pair else {
             crate::log("CHAT: cannot send — no known address for contact");
-            return;
+            return false;
         };
 
         let eagle_time = vsf::eagle_time_oscillations();
@@ -4361,7 +4392,7 @@ impl PhotonApp {
                 .find(|(id, _)| *id == friendship_id)
             else {
                 crate::log("CHAT: friendship chains missing for open contact");
-                return;
+                return false;
             };
             let incorporated_hp = chains
                 .last_incorporated_hp()
@@ -4395,7 +4426,7 @@ impl PhotonApp {
                 Some((ct, prev, _msg_hp, _ph)) => (ct, prev, conv_token),
                 None => {
                     crate::log("CHAT: prepare_send failed (not a participant)");
-                    return;
+                    return false;
                 }
             }
         };
@@ -4431,21 +4462,65 @@ impl PhotonApp {
             ));
         }
 
-        // Append the outgoing bubble (delivered=false until the ACK lands), persist, clear the box.
+        // Append the outgoing bubble (delivered=false until the ACK lands) and persist — unless this is a suppressed send (the hidden chain-weave probe: it must ride the chain but show no UI).
         if let Some(contact) = self.contacts.get_mut(ci) {
-            contact.insert_message_sorted(ChatMessage::new_with_timestamp(text, true, eagle_time));
-            contact.message_scroll_offset = 0.0;
-            if let Some(storage) = self.storage.as_ref() {
-                if let Err(e) = crate::storage::contacts::save_messages(contact, storage) {
-                    crate::log(&format!("STORAGE: failed to save messages: {}", e));
+            if !suppress_bubble {
+                contact
+                    .insert_message_sorted(ChatMessage::new_with_timestamp(text, true, eagle_time));
+                contact.message_scroll_offset = 0.0;
+                if let Some(storage) = self.storage.as_ref() {
+                    if let Err(e) = crate::storage::contacts::save_messages(contact, storage) {
+                        crate::log(&format!("STORAGE: failed to save messages: {}", e));
+                    }
                 }
             }
         }
-        if let Some(tb) = self.message_textbox.as_mut() {
-            tb.clear();
+        true
+    }
+
+    /// Just after a contact's CLUTCH reaches `Complete`, fire the one hidden chain-weave probe: a normal chat message with the reserved [`CHAIN_PROBE_MARKER`] content, sent once (guarded by `probe_sent`) with its UI bubble suppressed. When it lands the peer advances+ACKs the chain like any message, which is what proves the ratchet works end-to-end without the user seeing a decoy message. No-op if the contact isn't Complete, has no friendship chain yet, or already probed. Skips self-contacts (no peer to answer). Consolidates the transition-site logic so every `= ClutchState::Complete` path only needs one call.
+    fn maybe_send_chain_probe(&mut self, contact_idx: usize) {
+        let should_send = match self.contacts.get(contact_idx) {
+            Some(c) => {
+                c.clutch_state == crate::types::ClutchState::Complete
+                    && c.friendship_id.is_some()
+                    && !c.probe_sent
+                    // Self-contact has no peer device to answer the probe.
+                    && self.session.as_ref().map(|s| s.identity_seed) != Some(c.handle_hash)
+            }
+            None => false,
+        };
+        if !should_send {
+            return;
         }
-        // Tell the Android host to restart IME input — a predictive keyboard still holds the just-sent text as a composing buffer and would re-materialise it on the next keystroke without this.
-        self.pending_input_reset = true;
+        crate::log("CHAIN-PROBE: sending hidden chain-weave probe");
+        // Latch `probe_sent` only on an actual dispatch — if the contact had no address yet the send is a no-op and we retry on the next Complete transition / re-arm cycle rather than stalling.
+        if self.send_chain_message(contact_idx, crate::types::CHAIN_PROBE_MARKER, true) {
+            if let Some(c) = self.contacts.get_mut(contact_idx) {
+                c.probe_sent = true;
+            }
+        }
+    }
+
+    /// Mark the chain end-to-end proven (`chain_woven = true`) once BOTH directions are validated: we've seen the peer's probe (their TX / our RX proven, `their_probe_seen`) AND our own chain has advanced via an ACK at least once (`chain_advanced_by_ack`, our TX / their RX proven). On seal, kill the ceremony proof rebroadcast (`clutch_proof_resends_left = 0`) so the completed CLUTCH stops re-announcing, flip the status line from "weaving the chain" to "secured", and persist. Idempotent — safe to call from either the probe-receive path or the ACK path. The chain math itself is never touched here.
+    fn seal_chain_if_ready(&mut self, contact_idx: usize) {
+        let Some(c) = self.contacts.get_mut(contact_idx) else {
+            return;
+        };
+        if c.chain_woven {
+            return;
+        }
+        if !(c.their_probe_seen && c.chain_advanced_by_ack) {
+            return;
+        }
+        c.chain_woven = true;
+        c.clutch_proof_resends_left = 0;
+        crate::log("CHAIN-PROBE: chain woven — end-to-end verified, ceremony rebroadcast cancelled");
+        if let Some(storage) = self.storage.as_ref() {
+            if let Err(e) = crate::storage::contacts::save_contact(c, storage) {
+                crate::log(&format!("CHAIN-PROBE: failed to persist woven contact: {}", e));
+            }
+        }
     }
 
     /// Send the current textbox contents as an attestation query and transition Launch → Attesting. Called from Enter in the textbox path and from clicking the Attest button — same submit path. No-op if the textbox is empty, HandleQuery wasn't constructed (init failure path), or the launch sub-state forbids submission (`LaunchState::Attesting` — query already in flight; second submit would double-spend the ~5s memory-hard proof).
@@ -4596,8 +4671,10 @@ impl PhotonApp {
                 }
                 // Establish (genesis founder) or refresh (existing device, picks up a rotation) the fleet key from the fan-out and cache it, so the roster/state seal uses the current key.
                 self.spawn_fleet_key_sync();
-                // Sync the fleet's shared contact roster. The pull is DEFERRED to tick (via the flag) because the fleet key is written by the async sync above — pulling here would race it and read an empty key. On the INITIAL attest also push our existing set so a fleet formed before roster-sync existed seeds FGTW for newly-joined devices. Pulled contacts merge in as Pending stubs and re-CLUTCH on this device's own key (drained in tick).
+                // Sync the fleet's shared contact roster. The pull is DEFERRED to tick (via the flag) because the fleet key is written by the async sync above — pulling here would race it and read an empty/stale key. On the INITIAL attest also push our existing set so a fleet formed before roster-sync existed seeds FGTW for newly-joined devices. Pulled contacts merge in as Pending stubs and re-CLUTCH on this device's own key (drained in tick).
                 self.needs_initial_roster_pull = true;
+                // ~8 attempts × the pull's ~150ms round-trip ≈ 1.2s — enough to outlast the fan-out key sync writing the current (post-rotation) key, after which the retry decrypts the roster cleanly.
+                self.roster_pull_retries_left = 8;
                 if !in_app {
                     self.spawn_roster_push();
                 }
@@ -5904,6 +5981,15 @@ impl PhotonApp {
                     result_id_hex
                 ));
             }
+
+            // If the early-proof branch just took this contact to Complete, fire the hidden chain-weave probe (once). Done after the mutable-borrow block above releases.
+            if let Some(idx) = self
+                .contacts
+                .iter()
+                .position(|c| c.id == result.contact_id)
+            {
+                self.maybe_send_chain_probe(idx);
+            }
         }
 
         if changed {}
@@ -6477,6 +6563,10 @@ impl PhotonApp {
         // Flag to update sync records after the loop (when borrows are released)
         let mut need_sync_update = false;
 
+        // Chain-weave probe deferrals — the loop holds an immutable `checker` borrow of `self`, so the `&mut self` seal/probe helpers can't run inline; collect contact indices and process them after the loop, like ceremony_completions / lan_ping_indices already do.
+        let mut chain_seal_indices: Vec<usize> = Vec::new(); // seal_chain_if_ready after loop
+        let mut chain_probe_indices: Vec<usize> = Vec::new(); // maybe_send_chain_probe after loop
+
         // The braid / strict-ordering replay queue: when a successful decrypt fills a hash-chain gap, the now-contiguous buffered messages are pushed here as synthetic ChatMessage updates and drained BEFORE the next channel item, so a buffered N+1 is reprocessed immediately after N (and can itself cascade to N+2). FIFO front-drain.
         let mut replay_queue: std::collections::VecDeque<StatusUpdate> =
             std::collections::VecDeque::new();
@@ -6710,6 +6800,8 @@ impl PhotonApp {
                         .find(|(_, c)| c.conversation_token == conversation_token);
 
                     let mut need_sync_records_update = false;
+                    // Contact index to seal the chain-weave for AFTER the `chains` borrow ends.
+                    let mut recv_seal_idx: Option<usize> = None;
                     if let Some((fid, chains)) = chains_result {
                         // For 2-party chats, infer sender as the "other" participant
                         let from_handle_hash = match chains.other_participant(&our_handle_hash) {
@@ -6904,10 +6996,14 @@ impl PhotonApp {
                             continue;
                         }
 
+                        // Hidden chain-weave probe: a reserved-marker message that proves the ratchet works but must show NO chat bubble.
+                        // Everything else on the receive path (chain advance, set_last_plaintext, mark_received, ACK send) still runs so the sender's chain advances and dedup works — only the UI is suppressed.
+                        let is_chain_probe = message_text == crate::types::CHAIN_PROBE_MARKER;
+
                         crate::log(&format!(
                             "CHAT: Decrypted message from {}: \"{}\" (incorporated_hp={}...)",
                             handle,
-                            message_text,
+                            if is_chain_probe { "<chain-weave probe>" } else { &message_text },
                             hex::encode(&incorporated_hp[..8])
                         ));
 
@@ -7005,8 +7101,17 @@ impl PhotonApp {
                             need_sync_records_update = true;
                         }
 
-                        // Add message to contact's message list and persist
-                        if let Some(contact) = self.contacts.get_mut(contact_idx) {
+                        // Add message to contact's message list and persist — UNLESS this is the hidden chain-weave probe, which advances/ACKs the chain but must never surface a bubble or chime.
+                        // For the probe we only flip `their_probe_seen` (their TX / our RX proven) and try to seal the chain.
+                        if is_chain_probe {
+                            if let Some(contact) = self.contacts.get_mut(contact_idx) {
+                                contact.their_probe_seen = true;
+                            }
+                            crate::log("CHAIN-PROBE: received peer's chain-weave probe — RX chain proven");
+                            recv_seal_idx = Some(contact_idx);
+                        } else if let Some(contact) = self.contacts.get_mut(contact_idx) {
+                            // Any real received message means the chain is demonstrably working end-to-end in at least the RX direction — belt-and-suspenders toward woven.
+                            contact.their_probe_seen = true;
                             // Use actual eagle_time and sorted insert for correct chronological order
                             contact.insert_message_sorted(
                                 ChatMessage::new_with_timestamp(
@@ -7037,6 +7142,8 @@ impl PhotonApp {
                                     chirp::Chirp::from_hash(digest).play_blocking().unwrap_or_else(|e| crate::log(&format!("CHIME: {e}")));
                                 });
                             }
+                            // A real inbound message proves both directions once ACKed, but even the RX half alone can seal if our TX was already ACK-confirmed.
+                            recv_seal_idx = Some(contact_idx);
                         }
 
                         // *** THEN send ACK - if we crash here, sender will resend, we can dedup *** Get recipient pubkey for relay fallback
@@ -7069,6 +7176,11 @@ impl PhotonApp {
                         ));
                     }
 
+                    // Defer the chain-weave seal until after the loop (the outer `checker` borrow blocks `&mut self` here). No-op later unless both directions are proven.
+                    if let Some(idx) = recv_seal_idx {
+                        chain_seal_indices.push(idx);
+                    }
+
                     // Flag to update sync records after outer loop (checker borrow must end first)
                     if need_sync_records_update {
                         need_sync_update = true;
@@ -7094,6 +7206,8 @@ impl PhotonApp {
                         .iter_mut()
                         .find(|(_, c)| c.conversation_token == conversation_token);
 
+                    // Contact index to seal AFTER the `chains` borrow ends (seal needs &mut self).
+                    let mut ack_sealed_idx: Option<usize> = None;
                     if let Some((_, chains)) = chains_result {
                         // For 2-party chats, the ACK sender is the "other" participant
                         let from_handle_hash = match chains.other_participant(&our_handle_hash) {
@@ -7137,6 +7251,13 @@ impl PhotonApp {
                                 "CHAT: Chain advanced for {} (ACK verified)",
                                 handle
                             ));
+
+                            // Our TX chain just advanced on a matching ACK — their RX is proven.
+                            // Record it so the chain-weave can seal (sealing itself happens after the `chains` borrow ends, below). This is the "our TX / their RX" half of woven.
+                            if let Some(contact) = self.contacts.get_mut(contact_idx) {
+                                contact.chain_advanced_by_ack = true;
+                            }
+                            ack_sealed_idx = Some(contact_idx);
 
                             // First ACK confirms both sides have working chains - safe to zeroize CLUTCH keypairs
                             if let Some(contact) = self.contacts.get_mut(contact_idx) {
@@ -7233,6 +7354,11 @@ impl PhotonApp {
                             "CHAT: No friendship found for ACK conversation_token {}...",
                             hex::encode(&conversation_token[..8])
                         ));
+                    }
+
+                    // Defer the chain-weave seal until after the loop (outer `checker` borrow blocks `&mut self` here). No-op later unless both directions are proven.
+                    if let Some(idx) = ack_sealed_idx {
+                        chain_seal_indices.push(idx);
                     }
                 }
 
@@ -8222,7 +8348,8 @@ impl PhotonApp {
                     }
 
                     // Find contact and process proof
-                    for contact in &mut self.contacts {
+                    let mut newly_complete_idx: Option<usize> = None;
+                    for (contact_idx, contact) in self.contacts.iter_mut().enumerate() {
                         if contact.handle_hash == their_handle_hash {
                             contact.ip = Some(sender_addr);
                             // Authenticated CLUTCH traffic from them ⇒ reachable right now ⇒ show online immediately, don't wait for the next pong.
@@ -8256,6 +8383,7 @@ impl PhotonApp {
                                                 hex::encode(&our_proof[..8])
                                             ));
                                             contact.clutch_state = ClutchState::Complete;
+                                            newly_complete_idx = Some(contact_idx);
                                             // Store their HQC pub prefix to detect stale offers after restart
                                             if let Some(their_slot) =
                                                 contact.get_slot(&contact.handle_hash)
@@ -8337,7 +8465,13 @@ impl PhotonApp {
                                 }
                                 ClutchState::Complete => {
                                     // We're Complete but the peer is STILL sending its proof — that means our ClutchComplete never reached them (a dropped proof strands them in AwaitingProof forever, since we'd otherwise ignore the duplicate). Treat the duplicate as an implicit re-request: re-arm our proof-resend budget so the next ping cycle re-sends our ClutchComplete. This is the recovery half of the asymmetric-completion bug (the other half is the AwaitingProof side re-sending its proof while the peer is online).
-                                    if contact.clutch_our_eggs_proof.is_some()
+                                    if contact.chain_woven {
+                                        // The chain is proven end-to-end (probe exchanged + ACKed), so a duplicate proof is just late network echo — stop rebroadcasting.
+                                        crate::log(&format!(
+                                            "CLUTCH: Ignoring duplicate proof from {} — chain already woven, rebroadcast retired",
+                                            crate::fp(&contact.handle_proof)
+                                        ));
+                                    } else if contact.clutch_our_eggs_proof.is_some()
                                         && contact.ceremony_id.is_some()
                                     {
                                         contact.clutch_proof_resends_left = 5;
@@ -8356,6 +8490,10 @@ impl PhotonApp {
                             }
                             break;
                         }
+                    }
+                    // If this proof took the contact to Complete, fire the one hidden chain-weave probe — deferred past the outer `checker` borrow like the other helpers.
+                    if let Some(idx) = newly_complete_idx {
+                        chain_probe_indices.push(idx);
                     }
                 }
 
@@ -8480,6 +8618,15 @@ impl PhotonApp {
         // Ping contacts immediately when a new LAN address is discovered Fixes timing gap: startup ping fires before first LAN discovery arrives
         for idx in lan_ping_indices {
             self.ping_contact(idx);
+        }
+
+        // Chain-weave probe (deferred past the checker borrow): fire the one hidden probe for any contact that just reached CLUTCH Complete, then seal any contact whose chain is now proven both ways (their probe seen + our TX ACK-advanced).
+        // Order: probe first, then seal, so a probe+ACK that both landed in this same drain still seals in the same pass.
+        for idx in chain_probe_indices {
+            self.maybe_send_chain_probe(idx);
+        }
+        for idx in chain_seal_indices {
+            self.seal_chain_if_ready(idx);
         }
 
         // Retransmit pending messages to contacts that just came online Use last_received_ef6 from pong to only retransmit messages they don't have
