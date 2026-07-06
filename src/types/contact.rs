@@ -106,6 +106,9 @@ impl std::fmt::Display for HandleText {
     }
 }
 
+/// Reserved sentinel content for the hidden chain-weave probe message. After CLUTCH reaches Complete, each device sends exactly one message with this exact content to validate the ratchet end-to-end. The receive path recognises it, advances/ACKs the chain like any message, but suppresses the chat bubble. The control bytes (SOH/STX around the tag) make a collision with a real user message effectively impossible.
+pub const CHAIN_PROBE_MARKER: &str = "\u{1}\u{2}photon-chain-probe\u{2}\u{1}";
+
 /// State of the CLUTCH key ceremony for a contact
 ///
 /// Slot-based design: each party has a slot indexed by sorted handle_hash position. Ceremony completes when all slots have both offer and kem_secrets filled, AND both parties have exchanged matching eggs_proof values.
@@ -179,6 +182,18 @@ pub struct Contact {
     pub avatar_pixels: Option<Vec<u8>>, // Full 256x256 VSF RGB pixels (cached)
     pub avatar_scaled: Option<Vec<u8>>, // Pre-scaled to current display size
     pub avatar_scaled_diameter: usize,  // Diameter the scaled pixels were rendered for
+
+    // Chain weave probe — after CLUTCH reaches Complete, both devices auto-exchange one hidden probe chat message each way to prove the ratchet works end-to-end.
+    // Once proven, the ceremony proof rebroadcast is cancelled (clutch_proof_resends_left = 0).
+    // Runtime-only, not persisted: a resumed Complete contact already has a working chain and needs no re-probe.
+    /// The chain has been validated end-to-end (our probe/message got ACKed AND we saw theirs). Gates the status line from "weaving the chain" to "secured" and stops the ceremony rebroadcast.
+    pub chain_woven: bool,
+    /// We've already sent (or queued) our chain-weave probe for this contact — send it once only.
+    pub probe_sent: bool,
+    /// We've received the peer's chain-weave probe (their TX chain / our RX proven for at least one hop).
+    pub their_probe_seen: bool,
+    /// Our own TX chain has advanced via a matching ACK at least once (our TX / their RX proven). Sealed with `their_probe_seen` this is the both-directions-proven condition for `chain_woven`.
+    pub chain_advanced_by_ack: bool,
 }
 
 /// Contact identifier - BLAKE3 hash of the contact's public identity key This provides deterministic, collision-resistant identification
@@ -254,6 +269,10 @@ impl Contact {
             avatar_pixels: None,        // Fetched from FGTW by handle when online
             avatar_scaled: None,        // Scaled on demand for display
             avatar_scaled_diameter: 0,
+            chain_woven: false,           // Chain not yet proven end-to-end (probe pending)
+            probe_sent: false,            // Chain-weave probe not sent yet
+            their_probe_seen: false,      // Haven't seen their chain-weave probe yet
+            chain_advanced_by_ack: false, // Our TX chain not yet ACK-advanced
         }
     }
 
@@ -400,7 +419,13 @@ impl Contact {
     pub fn clutch_status_detail(&self) -> String {
         let n = Self::CLUTCH_STEPS;
         match self.clutch_state {
-            ClutchState::Complete => "secured".to_string(),
+            ClutchState::Complete => {
+                if self.chain_woven {
+                    "secured".to_string()
+                } else {
+                    "testing · weaving the chain".to_string()
+                }
+            }
             ClutchState::AwaitingProof => {
                 if self.clutch_their_eggs_proof.is_some() {
                     format!("{n}/{n} · verifying proof")
