@@ -52,7 +52,8 @@ pub fn photon_config_dir() -> Result<std::path::PathBuf, std::io::Error> {
 }
 
 /// Holds the single-instance lock for the whole process; dropping it (or process exit/crash) releases it.
-#[cfg(not(target_os = "android"))]
+/// Unix-only: this is the `flock`-backed variant. Non-unix desktops (Windows) use the socket-backed `InstanceLock` defined below, and Android is single-instance by construction so neither is compiled there.
+#[cfg(all(unix, not(target_os = "android")))]
 pub struct InstanceLock {
     _file: std::fs::File,
 }
