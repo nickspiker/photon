@@ -3703,8 +3703,13 @@ impl FluorApp for PhotonApp {
 
             // --- Selected page body ---
             let body = layout.content_body();
-            let tspan = body.size(22.0).max(8.0);
+            // Fold the zoom factor (ru) into fonts + element sizes so they scale with Ctrl/Cmd-zoom, matching the launch screen (which sizes off effective_span = span × ru; bare region sizes ignore zoom).
+            // The region divisions stay physical / window-proportional and fixed, as they should; at ru = 1 this is identical to the region-derived sizes.
+            let ru = ctx.viewport.ru;
+            let tspan = body.size(22.0).max(8.0) * ru;
             let hspan2 = tspan * 0.75;
+            // Stub-pill height as a fraction of its (fixed) row — grows with ru, capped so it never exceeds the row.
+            let pillf = |base: Coord| (base * ru).min(1.0);
             // Draw a labelled action pill; stamps `settings_btn_base + slot` and returns nothing (stub). `n` rows must match update_widget_layout's split where widgets coexist.
             let btn_base = self.settings_btn_base;
             // Immediate-mode stub pill helper — captured as a closure over the canvas/text/hit-map isn't possible (multiple &mut borrows), so pills are drawn inline per page below via `draw_stub_pill`.
@@ -3714,7 +3719,7 @@ impl FluorApp for PhotonApp {
                     settings_line(&mut canvas, ctx.text, rows[0], "Handle", tspan, CONTACT_NAME_COLOUR, 600);
                     settings_line(&mut canvas, ctx.text, rows[1], "zesty-otter-4383  (double-click to copy)", hspan2, LABEL_COLOUR, 400);
                     settings_line(&mut canvas, ctx.text, rows[2], "Avatar", tspan, CONTACT_NAME_COLOUR, 600);
-                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[3].center_h(0.5), "Change avatar…", btn_base.wrapping_add(0));
+                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[3].center_h(pillf(0.5)), "Change avatar…", btn_base.wrapping_add(0));
                     settings_line(&mut canvas, ctx.text, rows[4], "Pubkey / handle_proof", tspan, CONTACT_NAME_COLOUR, 600);
                     settings_line(&mut canvas, ctx.text, rows[5], "b3:9f2a…c701  (double-click to copy)", hspan2, LABEL_COLOUR, 400);
                 }
@@ -3733,9 +3738,9 @@ impl FluorApp for PhotonApp {
                     let rows = body.split_v([1.0; 8]);
                     settings_line(&mut canvas, ctx.text, rows[0], "Security", tspan, CONTACT_NAME_COLOUR, 600);
                     settings_line(&mut canvas, ctx.text, rows[1], "Named by destructiveness.", hspan2, LABEL_COLOUR, 400);
-                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[2].center_h(0.55), "Lock (re-unlock with your handle)", btn_base.wrapping_add(0));
-                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[3].center_h(0.55), "Retire this device", btn_base.wrapping_add(1));
-                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[4].center_h(0.55), "Shred (crypto-wipe)", btn_base.wrapping_add(2));
+                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[2].center_h(pillf(0.55)), "Lock (re-unlock with your handle)", btn_base.wrapping_add(0));
+                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[3].center_h(pillf(0.55)), "Retire this device", btn_base.wrapping_add(1));
+                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[4].center_h(pillf(0.55)), "Shred (crypto-wipe)", btn_base.wrapping_add(2));
                     settings_line(&mut canvas, ctx.text, rows[6], "Security: strong   ·   Recovery: not set up", hspan2, LABEL_COLOUR, 400);
                 }
                 SettingsPage::Recovery => {
@@ -3747,7 +3752,7 @@ impl FluorApp for PhotonApp {
                     }
                     settings_line(&mut canvas, ctx.text, rows[4], "Identity backup", hspan2, CONTACT_NAME_COLOUR, 600);
                     settings_line(&mut canvas, ctx.text, rows[5], "Reinstalling won't ask for your handle.", hspan2, LABEL_COLOUR, 400);
-                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[6].center_h(0.5), "Back up identity…", btn_base.wrapping_add(0));
+                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[6].center_h(pillf(0.5)), "Back up identity…", btn_base.wrapping_add(0));
                 }
                 SettingsPage::Appearance => {
                     let rows = body.split_v([1.0; 8]);
