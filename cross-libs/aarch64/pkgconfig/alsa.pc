@@ -1,0 +1,9 @@
+prefix=/usr/aarch64-redhat-linux/sys-root/fc42/usr
+includedir=${prefix}/include
+libdir=/mnt/Octopus/Code/photon/cross-libs/aarch64
+
+Name: alsa
+Description: Advanced Linux Sound Architecture (ALSA) - cross libs for aarch64
+Version: 1.2.15.3
+Libs: -L${libdir} -lasound
+Cflags: -I${includedir}
