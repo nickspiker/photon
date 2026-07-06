@@ -4,7 +4,8 @@ use super::chromatic_wave::chromatic_wave;
 use super::launch_layout::{AttestBlockLayout, LaunchLayout};
 use super::photon_logo::paint_photon_logo;
 use super::ready_layout::ReadyLayout;
-use super::state::{AppState, LaunchState};
+use super::settings_layout::SettingsLayout;
+use super::state::{AppState, LaunchState, SettingsPage};
 use super::PhotonEvent;
 #[cfg(not(target_os = "android"))]
 use crate::network::fgtw::get_machine_fingerprint;
@@ -559,6 +560,26 @@ pub struct PhotonApp {
     hints_dismissed: bool,
     /// `true` while the cursor is over the Ready-screen avatar circle. Drives the "drag/drop to update avatar" hover hint.
     avatar_hovered: bool,
+
+    // --- Settings panel (STUB) ---
+    /// Base hit id for the settings nav-rail rows. Row `i` (page `SettingsPage::ALL[i]`) stamps `settings_nav_base + i`. Allocated in `init`.
+    settings_nav_base: HitId,
+    /// Base hit id for the settings stub action pills (immediate-mode Buttons — Add device, Lock, Shred, Snapshot, …). Each page draws its pills over a small contiguous slice of this range; clicks land here and log a stub line. Allocated in `init` with a fixed span.
+    settings_btn_base: HitId,
+    /// Appearance-page theme selector — a real fluor `Dropdown`. Only in the widget walk while the Settings/Appearance page is up.
+    settings_theme_dropdown: Option<fluor::widgets::Dropdown>,
+    /// Appearance-page zoom / text-size control — a real fluor `Slider`.
+    settings_zoom_slider: Option<fluor::widgets::Slider>,
+    /// Recovery-page "be a custodian" opt-in — a custom `Checkbox`.
+    settings_custodian_check: Option<crate::ui::settings_widgets::Checkbox>,
+    /// Notifications-page global chime on/off — a custom `Checkbox`.
+    settings_chime_check: Option<crate::ui::settings_widgets::Checkbox>,
+    /// Notifications-page presence-visibility toggle — a custom `Checkbox`.
+    settings_presence_check: Option<crate::ui::settings_widgets::Checkbox>,
+    /// Updates-page auto-update on/off — a custom `Checkbox`.
+    settings_autoupdate_check: Option<crate::ui::settings_widgets::Checkbox>,
+    /// Diagnostics-page optional-note field — a real fluor `Textbox` (distinct from the launch / contacts / compose boxes so content never bleeds).
+    settings_note_textbox: Option<Textbox>,
 }
 
 impl PhotonApp {
@@ -679,6 +700,15 @@ impl PhotonApp {
             contacts_scroll: 0,
             hints_dismissed: false,
             avatar_hovered: false,
+            settings_nav_base: HIT_NONE,
+            settings_btn_base: HIT_NONE,
+            settings_theme_dropdown: None,
+            settings_zoom_slider: None,
+            settings_custodian_check: None,
+            settings_chime_check: None,
+            settings_presence_check: None,
+            settings_autoupdate_check: None,
+            settings_note_textbox: None,
         }
     }
 
@@ -858,6 +888,44 @@ impl Container for PhotonApp {
                 }
             }
         }
+        if let AppState::Settings(page) = self.state {
+            // Only the stateful widgets on the SELECTED page enter the walk (dispatch + tab + hover + dropdown-popup). Immediate-mode action pills and the nav rail aren't Widgets — they're hit-stamped and handled directly in the Pressed arm.
+            match page {
+                SettingsPage::Appearance => {
+                    if let Some(dd) = self.settings_theme_dropdown.as_mut() {
+                        f(dd);
+                        dd.visit_rows(f);
+                    }
+                    if let Some(sl) = self.settings_zoom_slider.as_mut() {
+                        f(sl);
+                    }
+                }
+                SettingsPage::Recovery => {
+                    if let Some(cb) = self.settings_custodian_check.as_mut() {
+                        f(cb);
+                    }
+                }
+                SettingsPage::Notifications => {
+                    if let Some(cb) = self.settings_chime_check.as_mut() {
+                        f(cb);
+                    }
+                    if let Some(cb) = self.settings_presence_check.as_mut() {
+                        f(cb);
+                    }
+                }
+                SettingsPage::Updates => {
+                    if let Some(cb) = self.settings_autoupdate_check.as_mut() {
+                        f(cb);
+                    }
+                }
+                SettingsPage::Diagnostics => {
+                    if let Some(tb) = self.settings_note_textbox.as_mut() {
+                        f(tb);
+                    }
+                }
+                _ => {}
+            }
+        }
         if let Some(chrome) = self.chrome.as_mut() {
             chrome.visit(f);
         }
@@ -909,9 +977,18 @@ impl FluorApp for PhotonApp {
         db.load_font_data(include_bytes!("../../assets/Oxanium/Oxanium-ExtraBold.ttf").to_vec());
 
         // Chrome owns its own hit-test map sized to the viewport, allocates four hit-ids for its buttons via the threaded counter, and stamps the perimeter + button rasters in `rasterize_chrome`. The Photon orb (chromatic starburst — same brand mark as the OS-level app icon) ships as a VSF image and decodes into the chrome's app_icon slot.
-        let orb_icon =
-            fluor::host::icon::Icon::from_vsf_bytes(include_bytes!("../../assets/photon-orb.vsf"))
-                .ok();
+        // Decode the bundled orb (the Photon brand mark, and the app_icon slot that swaps to a peer's avatar in a conversation). A decode failure logs LOUDLY instead of silently falling back to a plain coloured disk — a stale asset against a bumped vsf format is exactly how a blank orb shipped unnoticed, so make the next one scream rather than degrade in silence.
+        let orb_icon = match fluor::host::icon::Icon::from_vsf_bytes(include_bytes!(
+            "../../assets/photon-orb.vsf"
+        )) {
+            Ok(icon) => Some(icon),
+            Err(e) => {
+                crate::log(&format!(
+                    "ORB: bundled photon-orb.vsf failed to decode ({e:?}) — orb falls back to a plain disk; the asset is likely stale against the current vsf format"
+                ));
+                None
+            }
+        };
         let mut chrome = DefaultChrome::new(
             ctx.viewport,
             "Photon",
@@ -957,6 +1034,67 @@ impl FluorApp for PhotonApp {
         // Back button on conversation screen.
         self.hit_counter = self.hit_counter.wrapping_add(1);
         self.back_btn_hit_id = self.hit_counter;
+
+        // Settings panel (STUB) hit-id blocks + widgets. Reserve a contiguous 9-id block for the nav-rail rows and a 32-id block for the immediate-mode action pills, then construct the stateful fluor widgets (dropdown / slider / textbox) and the custom checkboxes. All get placeholder geometry; `update_widget_layout` repositions the ones on the active page each frame.
+        self.hit_counter = self.hit_counter.wrapping_add(1);
+        self.settings_nav_base = self.hit_counter;
+        self.hit_counter = self.hit_counter.wrapping_add(8); // rows 0..=8
+        self.hit_counter = self.hit_counter.wrapping_add(1);
+        self.settings_btn_base = self.hit_counter;
+        self.hit_counter = self.hit_counter.wrapping_add(31); // pills 0..=31
+        self.settings_theme_dropdown = Some(fluor::widgets::Dropdown::new(
+            &mut self.hit_counter,
+            0.,
+            0.,
+            1.,
+            1.,
+            12.,
+            vec!["Dark chrome".to_string(), "Light chrome".to_string()],
+        ));
+        self.settings_zoom_slider =
+            Some(fluor::widgets::Slider::new(&mut self.hit_counter, 0., 0., 1., 1., 0.5));
+        self.settings_custodian_check = Some(crate::ui::settings_widgets::Checkbox::new(
+            &mut self.hit_counter,
+            "Be a custodian for others",
+            0.,
+            0.,
+            1.,
+            1.,
+            12.,
+            false,
+        ));
+        self.settings_chime_check = Some(crate::ui::settings_widgets::Checkbox::new(
+            &mut self.hit_counter,
+            "Chime on new message",
+            0.,
+            0.,
+            1.,
+            1.,
+            12.,
+            true,
+        ));
+        self.settings_presence_check = Some(crate::ui::settings_widgets::Checkbox::new(
+            &mut self.hit_counter,
+            "Show my presence to contacts",
+            0.,
+            0.,
+            1.,
+            1.,
+            12.,
+            true,
+        ));
+        self.settings_autoupdate_check = Some(crate::ui::settings_widgets::Checkbox::new(
+            &mut self.hit_counter,
+            "Install updates automatically",
+            0.,
+            0.,
+            1.,
+            1.,
+            12.,
+            true,
+        ));
+        self.settings_note_textbox = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
+
         self.update_widget_layout(ctx);
 
         // HandleQuery: device keypair is derived deterministically from the machine fingerprint (NEVER stored to disk — same machine yields the same keypair so attestations are reproducible across restarts). HandleQuery owns the UDP socket + sends/receives FGTW packets; an empty PeerStore wires the transport so query packets have somewhere to fan out to. The proxy expect is structurally safe: fluor's host calls `set_event_proxy` BEFORE `init` (see `run_app` in fluor/src/host/app.rs), so `event_proxy` is always `Some` here.
@@ -1385,6 +1523,45 @@ impl FluorApp for PhotonApp {
                     if matches!(self.state, AppState::AddDevice) {
                         self.end_add_device_flow();
                         self.state = AppState::Ready;
+                        ctx.window.request_redraw();
+                        return EventResponse::Handled;
+                    }
+                    if matches!(self.state, AppState::Settings(_)) {
+                        self.change_focus(None);
+                        self.state = AppState::Ready;
+                        ctx.window.request_redraw();
+                        return EventResponse::Handled;
+                    }
+                }
+
+                // Settings nav rail + stub action pills — hit-id ranges owned by the panel. Rail rows switch the page; pills are inert stubs (log only), except Fleet's "Add device" pill which opens the pairing-words flow.
+                if let AppState::Settings(page) = self.state {
+                    if self.settings_nav_base != HIT_NONE
+                        && hit_id >= self.settings_nav_base
+                        && hit_id < self.settings_nav_base.wrapping_add(9)
+                    {
+                        let idx = (hit_id - self.settings_nav_base) as usize;
+                        if let Some(p) = SettingsPage::ALL.get(idx) {
+                            self.change_focus(None);
+                            self.state = AppState::Settings(*p);
+                            ctx.window.request_redraw();
+                        }
+                        return EventResponse::Handled;
+                    }
+                    if self.settings_btn_base != HIT_NONE
+                        && hit_id >= self.settings_btn_base
+                        && hit_id < self.settings_btn_base.wrapping_add(32)
+                    {
+                        let slot = hit_id - self.settings_btn_base;
+                        // Fleet page, first pill = "Add device" → the pairing-words flow. Everything else is an inert stub.
+                        if page == SettingsPage::Fleet && slot == 0 {
+                            self.open_add_device_flow();
+                        } else {
+                            crate::log(&format!(
+                                "settings-stub: pill {slot} on {:?} (no behaviour wired)",
+                                page
+                            ));
+                        }
                         ctx.window.request_redraw();
                         return EventResponse::Handled;
                     }
@@ -2246,6 +2423,10 @@ impl FluorApp for PhotonApp {
             // Contacts version watermark rides the scroll block: it sits just past the last contact row (one row-height of breathing room) and scrolls up with everything else, rather than being pinned to the bottom. Stash the scrolled Y for the bg-layer closure below; other screens keep the pinned `version_cy`.
             ready_block_version_y =
                 Some((block_bottom_at_zero + row_h - self.contacts_scroll) as f32);
+        }
+        // Settings panel (STUB): reposition the active page's widgets each frame so zoom / resize track. Mirrors the Ready branch above; must run before the long-lived `chrome` borrow since it takes `&mut self`.
+        if matches!(self.state, AppState::Settings(_)) {
+            self.update_widget_layout(ctx);
         }
 
         let Some(chrome) = self.chrome.as_mut() else {
@@ -3444,6 +3625,190 @@ impl FluorApp for PhotonApp {
             );
         }
 
+        // Settings panel (STUB) — nav rail + selected page body. Controls render but wire nothing (a checkbox may flip its own visual state; every button / dropdown / slider is inert).
+        if let AppState::Settings(page) = self.state {
+            let layout = SettingsLayout::compute(&ctx.viewport);
+            let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
+
+            // Clear the whole settings region in the shared hit_test_map before re-stamping this frame's rail rows + pills — same reason as the launch block: immediate-mode stamps must not linger across page switches.
+            restamp_hit_rect(
+                &mut chrome.hit_test_map, buf_w, buf_h,
+                0, layout.rail.y as isize, buf_w as isize, buf_h as isize,
+                HIT_NONE,
+            );
+
+            // Open dropdown popup FIRST (under-blend: topmost content paints first) so it composites over everything painted after it.
+            if page == SettingsPage::Appearance {
+                if let Some(dd) = self.settings_theme_dropdown.as_mut() {
+                    dd.render_popup_into(&mut canvas, ctx.text, None, Some(&mut chrome.hit_test_map));
+                }
+            }
+
+            // --- Header: title + back affordance ---
+            let hspan = layout.header.size(2.2);
+            ctx.text.draw_text_left_u32(
+                &mut canvas, "Settings", layout.header.x + hspan * 0.6,
+                layout.header.center_y(), hspan, 600, CONTACT_NAME_COLOUR, "Oxanium",
+                None, None, None,
+            );
+            {
+                let back_text = "‹ Back";
+                let bs = layout.header.size(3.2);
+                let bx = layout.header.right() - layout.header.size(1.0);
+                let bw = ctx.text.measure_text_width(back_text, bs, 500, "Oxanium");
+                ctx.text.draw_text_left_u32(
+                    &mut canvas, back_text, bx - bw, layout.header.center_y(), bs, 500,
+                    SEARCH_FOUND_COLOUR, "Oxanium", None, None, None,
+                );
+                restamp_hit_rect(
+                    &mut chrome.hit_test_map, buf_w, buf_h,
+                    (bx - bw - bs) as isize, (layout.header.center_y() - bs) as isize,
+                    (bx + bs) as isize, (layout.header.center_y() + bs) as isize,
+                    self.back_btn_hit_id,
+                );
+            }
+
+            // --- Nav rail: nine page labels; active one highlighted, all hit-stamped ---
+            let rows = layout.rail_rows();
+            let rspan = layout.rail.size(20.0).max(9.0);
+            for (i, p) in SettingsPage::ALL.iter().enumerate() {
+                let r = rows[i];
+                let active = *p == page;
+                // Active-row backing bar (faint) so the selected page reads at a glance.
+                if active {
+                    paint::fill_rect(
+                        &mut canvas, r.x as isize, r.y as isize,
+                        r.w as isize, r.h as isize, SEPARATOR_COLOUR, None, None,
+                    );
+                }
+                let colour = if active { CONTACT_NAME_COLOUR } else { LABEL_COLOUR };
+                ctx.text.draw_text_left_u32(
+                    &mut canvas, p.label(), r.x + rspan * 0.6, r.center_y(),
+                    rspan, if active { 600 } else { 400 }, colour, "Oxanium",
+                    None, None, None,
+                );
+                restamp_hit_rect(
+                    &mut chrome.hit_test_map, buf_w, buf_h,
+                    r.x as isize, r.y as isize,
+                    r.right() as isize, r.bottom() as isize,
+                    self.settings_nav_base.wrapping_add(i as HitId),
+                );
+            }
+
+            // Hairline between rail and content.
+            paint::fill_rect(
+                &mut canvas, layout.content.x as isize, layout.content.y as isize,
+                1, layout.content.h as isize, SEPARATOR_COLOUR, None, None,
+            );
+
+            // --- Selected page body ---
+            let body = layout.content_body();
+            let tspan = body.size(22.0).max(8.0);
+            let hspan2 = tspan * 0.75;
+            // Draw a labelled action pill; stamps `settings_btn_base + slot` and returns nothing (stub). `n` rows must match update_widget_layout's split where widgets coexist.
+            let btn_base = self.settings_btn_base;
+            // Immediate-mode stub pill helper — captured as a closure over the canvas/text/hit-map isn't possible (multiple &mut borrows), so pills are drawn inline per page below via `draw_stub_pill`.
+            match page {
+                SettingsPage::You => {
+                    let rows = body.split_v([1.0; 7]);
+                    settings_line(&mut canvas, ctx.text, rows[0], "Handle", tspan, CONTACT_NAME_COLOUR, 600);
+                    settings_line(&mut canvas, ctx.text, rows[1], "zesty-otter-4383  (double-click to copy)", hspan2, LABEL_COLOUR, 400);
+                    settings_line(&mut canvas, ctx.text, rows[2], "Avatar", tspan, CONTACT_NAME_COLOUR, 600);
+                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[3].center_h(0.5), "Change avatar…", btn_base.wrapping_add(0));
+                    settings_line(&mut canvas, ctx.text, rows[4], "Pubkey / handle_proof", tspan, CONTACT_NAME_COLOUR, 600);
+                    settings_line(&mut canvas, ctx.text, rows[5], "b3:9f2a…c701  (double-click to copy)", hspan2, LABEL_COLOUR, 400);
+                }
+                SettingsPage::Fleet => {
+                    let rows = body.split_v([1.0; 8]);
+                    settings_line(&mut canvas, ctx.text, rows[0], "Your devices", tspan, CONTACT_NAME_COLOUR, 600);
+                    settings_line(&mut canvas, ctx.text, rows[1], "zesty-otter    online",  hspan2, SEARCH_FOUND_COLOUR, 400);
+                    settings_line(&mut canvas, ctx.text, rows[2], "quiet-heron    last seen 2h ago", hspan2, LABEL_COLOUR, 400);
+                    settings_line(&mut canvas, ctx.text, rows[3], "brisk-maple    last seen yesterday", hspan2, LABEL_COLOUR, 400);
+                    let pr = rows[5].split_h([1.0, 1.0, 1.0]);
+                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[0].center_h(0.85), "Add device", btn_base.wrapping_add(0));
+                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[1].center_h(0.85), "Rename", btn_base.wrapping_add(1));
+                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[2].center_h(0.85), "Retire", btn_base.wrapping_add(2));
+                }
+                SettingsPage::Security => {
+                    let rows = body.split_v([1.0; 8]);
+                    settings_line(&mut canvas, ctx.text, rows[0], "Security", tspan, CONTACT_NAME_COLOUR, 600);
+                    settings_line(&mut canvas, ctx.text, rows[1], "Named by destructiveness.", hspan2, LABEL_COLOUR, 400);
+                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[2].center_h(0.55), "Lock (re-unlock with your handle)", btn_base.wrapping_add(0));
+                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[3].center_h(0.55), "Retire this device", btn_base.wrapping_add(1));
+                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[4].center_h(0.55), "Shred (crypto-wipe)", btn_base.wrapping_add(2));
+                    settings_line(&mut canvas, ctx.text, rows[6], "Security: strong   ·   Recovery: not set up", hspan2, LABEL_COLOUR, 400);
+                }
+                SettingsPage::Recovery => {
+                    let rows = body.split_v([1.0; 8]);
+                    settings_line(&mut canvas, ctx.text, rows[0], "Recovery", tspan, CONTACT_NAME_COLOUR, 600);
+                    settings_line(&mut canvas, ctx.text, rows[1], "Custodians (v1)", hspan2, CONTACT_NAME_COLOUR, 600);
+                    if let Some(cb) = self.settings_custodian_check.as_mut() {
+                        cb.render_content_into(&mut canvas, ctx.text, None, Some(&mut chrome.hit_test_map));
+                    }
+                    settings_line(&mut canvas, ctx.text, rows[4], "Identity backup", hspan2, CONTACT_NAME_COLOUR, 600);
+                    settings_line(&mut canvas, ctx.text, rows[5], "Reinstalling won't ask for your handle.", hspan2, LABEL_COLOUR, 400);
+                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[6].center_h(0.5), "Back up identity…", btn_base.wrapping_add(0));
+                }
+                SettingsPage::Appearance => {
+                    let rows = body.split_v([1.0; 8]);
+                    settings_line(&mut canvas, ctx.text, rows[0], "Appearance", tspan, CONTACT_NAME_COLOUR, 600);
+                    settings_line(&mut canvas, ctx.text, rows[1], "Theme", hspan2, LABEL_COLOUR, 400);
+                    if let Some(dd) = self.settings_theme_dropdown.as_mut() {
+                        dd.render_content_into(&mut canvas, 0., 0., ctx.text, None, Some(&mut chrome.hit_test_map));
+                    }
+                    settings_line(&mut canvas, ctx.text, rows[3], "Party colours (placeholder → perceptual L≈50%)", hspan2, LABEL_COLOUR, 400);
+                    settings_line(&mut canvas, ctx.text, rows[4], "Zoom / text size", hspan2, LABEL_COLOUR, 400);
+                    if let Some(sl) = self.settings_zoom_slider.as_mut() {
+                        sl.render_content_into(&mut canvas, Some(&mut chrome.hit_test_map), sl.hit_id());
+                    }
+                    settings_line(&mut canvas, ctx.text, rows[6], "Colour calibration (Android panel)", hspan2, LABEL_COLOUR, 400);
+                }
+                SettingsPage::Notifications => {
+                    let rows = body.split_v([1.0; 8]);
+                    settings_line(&mut canvas, ctx.text, rows[0], "Notifications", tspan, CONTACT_NAME_COLOUR, 600);
+                    if let Some(cb) = self.settings_chime_check.as_mut() {
+                        cb.render_content_into(&mut canvas, ctx.text, None, Some(&mut chrome.hit_test_map));
+                    }
+                    settings_line(&mut canvas, ctx.text, rows[2], "Per-contact override lives in each conversation.", hspan2, LABEL_COLOUR, 400);
+                    if let Some(cb) = self.settings_presence_check.as_mut() {
+                        cb.render_content_into(&mut canvas, ctx.text, None, Some(&mut chrome.hit_test_map));
+                    }
+                }
+                SettingsPage::Updates => {
+                    let rows = body.split_v([1.0; 8]);
+                    settings_line(&mut canvas, ctx.text, rows[0], "Updates", tspan, CONTACT_NAME_COLOUR, 600);
+                    settings_line(&mut canvas, ctx.text, rows[1], "Photon 0.0.25 (dozenal 21)", hspan2, LABEL_COLOUR, 400);
+                    if let Some(cb) = self.settings_autoupdate_check.as_mut() {
+                        cb.render_content_into(&mut canvas, ctx.text, None, Some(&mut chrome.hit_test_map));
+                    }
+                }
+                SettingsPage::Diagnostics => {
+                    let rows = body.split_v([1.0; 10]);
+                    settings_line(&mut canvas, ctx.text, rows[0], "Diagnostics", tspan, CONTACT_NAME_COLOUR, 600);
+                    settings_line(&mut canvas, ctx.text, rows[1], "On-device log · 16 MiB · self-expires 24–48h", hspan2, LABEL_COLOUR, 400);
+                    let pr = rows[3].split_h([1.0, 1.0, 1.0]);
+                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[0].center_h(0.85), "Clear", btn_base.wrapping_add(0));
+                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[1].center_h(0.85), "Snapshot", btn_base.wrapping_add(1));
+                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[2].center_h(0.85), "Submit", btn_base.wrapping_add(2));
+                    settings_line(&mut canvas, ctx.text, rows[6], "Optional note", hspan2, LABEL_COLOUR, 400);
+                    if let Some(tb) = self.settings_note_textbox.as_mut() {
+                        let id = tb.hit_id();
+                        tb.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, Some(&mut chrome.hit_test_map), id);
+                    }
+                }
+                SettingsPage::About => {
+                    let rows = body.split_v([1.0; 8]);
+                    settings_line(&mut canvas, ctx.text, rows[0], "About Photon", tspan, CONTACT_NAME_COLOUR, 600);
+                    settings_line(&mut canvas, ctx.text, rows[1], "No password. Your device is your key.", hspan2, CONTACT_NAME_COLOUR, 400);
+                    settings_line(&mut canvas, ctx.text, rows[2], "Stay signed in until power-off; reboot → re-enter your handle.", hspan2, LABEL_COLOUR, 400);
+                    settings_line(&mut canvas, ctx.text, rows[3], "No servers. No tracking. Your data is yours.", hspan2, LABEL_COLOUR, 400);
+                    settings_line(&mut canvas, ctx.text, rows[5], "Version 0.0.25 (dozenal 21)", hspan2, LABEL_COLOUR, 400);
+                    settings_line(&mut canvas, ctx.text, rows[6], "Feedback: fractaldecoder@proton.me", hspan2, LABEL_COLOUR, 400);
+                    settings_line(&mut canvas, ctx.text, rows[7], "Built on the TOKEN stack · licences under the hood.", hspan2, LABEL_COLOUR, 400);
+                }
+            }
+        }
+
         chrome.flatten_into(target, buf_w, buf_h, None);
 
         // Hit-mask overlay (`[]h`): replace every pixel with the opaque random colour for its hit_test_map ID. Drawn LAST over everything (including chrome + chord hint) — hit testing is per-final-pixel anyway, so the overlay shows exactly what `hit_at` would return. `.get` keeps the index lookup safe for any stale stamp at an unregistered high ID.
@@ -3600,6 +3965,67 @@ impl PhotonApp {
             btn.set_rect(send_cx, compose_cy, send_size, send_size);
             btn.set_font_size(font_size);
         }
+
+        // Settings panel (STUB): position the stateful widgets on the selected page. Content-body rows give each control a slot; a control's rect is a portion of its row so the label can sit beside / above it. Only the active page's widgets are repositioned — the others keep their placeholder geometry off-screen, and `visit` gates them out anyway.
+        if let AppState::Settings(page) = self.state {
+            let layout = SettingsLayout::compute(&ctx.viewport);
+            let body = layout.content_body();
+            let ctrl_font = (body.size(22.0)).max(8.0);
+            let ctrl_h = body.size(11.0).max(14.0);
+            match page {
+                SettingsPage::Appearance => {
+                    // Rows: [0]=title [1]=Theme label [2]=Theme dropdown [3]=Party colours [4]=Zoom label [5]=Zoom slider [6]=Calibration.
+                    let rows = body.split_v([1.0; 8]);
+                    if let Some(dd) = self.settings_theme_dropdown.as_mut() {
+                        let r = rows[2].center_h(0.7);
+                        dd.set_rect(r.center_x(), r.center_y(), r.w, ctrl_h);
+                        dd.set_font_size(ctrl_font);
+                    }
+                    if let Some(sl) = self.settings_zoom_slider.as_mut() {
+                        let r = rows[5].center_h(0.8);
+                        sl.set_rect(r.center_x(), r.center_y(), r.w, ctrl_h);
+                    }
+                }
+                SettingsPage::Recovery => {
+                    let rows = body.split_v([1.0; 8]);
+                    if let Some(cb) = self.settings_custodian_check.as_mut() {
+                        let r = rows[2];
+                        cb.set_rect(r.x + r.w * 0.45, r.center_y(), r.w * 0.9, ctrl_h);
+                        cb.set_font_size(ctrl_font);
+                    }
+                }
+                SettingsPage::Notifications => {
+                    let rows = body.split_v([1.0; 8]);
+                    if let Some(cb) = self.settings_chime_check.as_mut() {
+                        let r = rows[1];
+                        cb.set_rect(r.x + r.w * 0.45, r.center_y(), r.w * 0.9, ctrl_h);
+                        cb.set_font_size(ctrl_font);
+                    }
+                    if let Some(cb) = self.settings_presence_check.as_mut() {
+                        let r = rows[3];
+                        cb.set_rect(r.x + r.w * 0.45, r.center_y(), r.w * 0.9, ctrl_h);
+                        cb.set_font_size(ctrl_font);
+                    }
+                }
+                SettingsPage::Updates => {
+                    let rows = body.split_v([1.0; 8]);
+                    if let Some(cb) = self.settings_autoupdate_check.as_mut() {
+                        let r = rows[2];
+                        cb.set_rect(r.x + r.w * 0.45, r.center_y(), r.w * 0.9, ctrl_h);
+                        cb.set_font_size(ctrl_font);
+                    }
+                }
+                SettingsPage::Diagnostics => {
+                    let rows = body.split_v([1.0; 10]);
+                    if let Some(tb) = self.settings_note_textbox.as_mut() {
+                        let r = rows[7].center_h(0.95);
+                        tb.set_rect(r.center_x(), r.center_y(), r.w, ctrl_h * 1.2);
+                        tb.set_font_size(ctrl_font, ctx.text);
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     /// Submit the contacts-page textbox contents as an FGTW handle search. Called from Enter in `contacts_textbox` and from clicking `contacts_plus_btn`. Bails on empty input, on no `HandleQuery` available (init failure path), and on a search for the user's own attested handle (would just find their own device — no point). Successful Found results land in `tick()`'s drain loop and append to `self.contacts`. Persistence + UI transition into a search-in-flight visual state (the rotating-hourglass plus button) ride in subsequent slices.
@@ -3753,31 +4179,34 @@ impl PhotonApp {
 
     /// Encrypt + send the compose-box contents to the open contact, append it as an outgoing bubble, and persist. No-op unless a CLUTCH-Complete contact is open with a friendship chain and the box is non-empty. The crypto/wire/persist layers already exist (`FriendshipChains::prepare_send`, `StatusChecker::send_message`, `save_messages`); this is the UI→chain→network glue.
     /// Orb (chrome app-icon) tap. Returns true if it acted (caller redraws). Routed by screen:
-    /// Ready → open the add-device flow (a words-entry screen — the NEW device shows the words, this device types them); AddDevice → bind if the words matched, else cancel; Launch → toggle join mode. Other screens ignore it.
+    /// Ready → open the settings / about / help panel (its own screen with a nine-page nav rail); Settings → no-op (the dedicated back affordance exits). Launch / AddDevice / Conversation ignore the orb. The interim Ready → AddDevice entry moved onto the Fleet page's "Add device" pill.
     fn on_orb_click(&mut self) -> bool {
-        use crate::network::fgtw::fleet;
         match self.state {
             AppState::Ready => {
-                self.add_device_match = None;
-                self.add_device_last_checked.clear();
-                self.add_device_checking = false;
-                self.add_device_status =
-                    "Type the words shown on the new device".to_string();
-                let (tx, rx) = std::sync::mpsc::channel();
-                self.add_device_rx = Some(rx);
-                self.add_device_tx = Some(tx);
-                self.state = AppState::AddDevice;
-                // Focus the words-entry box (the launch textbox instance does double duty here) so typing — and the Android soft keyboard — start immediately.
-                if let Some(tb) = self.textbox.as_mut() {
-                    tb.clear();
-                }
-                let tb_id = self.textbox.as_ref().map(|t| t.hit_id());
-                self.change_focus(tb_id);
+                self.change_focus(None);
+                self.state = AppState::Settings(SettingsPage::You);
                 true
             }
-            // AddDevice: the orb no longer cancels — the dedicated back button does. AddDevice and Launch fall through to the no-op below (the orb is settings-only; the Launch JOIN entry moves to the attest probe-then-branch flow).
+            // Settings / AddDevice / Launch / Conversation fall through: the orb is settings-only, and navigation off those screens is a dedicated control (back button), never the orb.
             _ => false,
         }
+    }
+
+    /// Enter the add-device (pairing-words) flow. Was the interim Ready-orb action; now reached from the Fleet page's stubbed "Add device" pill. Mirrors the old orb path exactly.
+    fn open_add_device_flow(&mut self) {
+        self.add_device_match = None;
+        self.add_device_last_checked.clear();
+        self.add_device_checking = false;
+        self.add_device_status = "Type the words shown on the new device".to_string();
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.add_device_rx = Some(rx);
+        self.add_device_tx = Some(tx);
+        self.state = AppState::AddDevice;
+        if let Some(tb) = self.textbox.as_mut() {
+            tb.clear();
+        }
+        let tb_id = self.textbox.as_ref().map(|t| t.hit_id());
+        self.change_focus(tb_id);
     }
 
     /// Off-thread check of a complete words entry against the posted pairing request: decode → fetch → compare → (on match) post the signed matched flag so the new device's screen flips to ready.
@@ -9023,6 +9452,96 @@ fn stamp_hit_circle(
             }
         }
     }
+}
+
+/// Draw one left-aligned settings text line vertically centred in `row`, indented a little from the row's left edge. Used for page titles, field labels, and placeholder read-outs on the settings stub.
+fn settings_line(
+    canvas: &mut Canvas,
+    text: &mut fluor::text::TextRenderer,
+    row: fluor::region::Region,
+    s: &str,
+    size: Coord,
+    colour: u32,
+    weight: u16,
+) {
+    text.draw_text_left_u32(
+        canvas,
+        s,
+        row.x + size * 0.3,
+        row.center_y(),
+        size,
+        weight,
+        colour,
+        "Oxanium",
+        None,
+        None,
+        None,
+    );
+}
+
+/// Draw an inert stub action pill filling `rect`: a Button-family squircle (fill + two-tone raised edge) with a centred label, hit-stamped with `hit_id`. STUB only — clicks land in the settings dispatch range and log a line; nothing functional fires. Kept immediate-mode (not a persistent `Button`) because the panel has many one-off action pills and a stub doesn't need each to carry click-counter state.
+fn draw_stub_pill(
+    canvas: &mut Canvas,
+    text: &mut fluor::text::TextRenderer,
+    hit_map: &mut [HitId],
+    buf_w: usize,
+    buf_h: usize,
+    rect: fluor::region::Region,
+    label: &str,
+    hit_id: HitId,
+) {
+    let w = rect.w as isize;
+    let h = rect.h as isize;
+    if w <= 0 || h <= 0 {
+        return;
+    }
+    let x0 = rect.x as isize;
+    let y0 = rect.y as isize;
+    let font_size = rect.h * 0.5;
+    let stroke = (font_size / 32.0) as isize + 1;
+    // Label first (topmost-first): centred in the pill.
+    let tw = text.measure_text_width(label, font_size, 400, "Open Sans");
+    text.draw_text_left_u32(
+        canvas,
+        label,
+        rect.center_x() - tw * 0.5,
+        rect.center_y(),
+        font_size,
+        400,
+        fluor::theme::TEXTBOX_TEXT,
+        "Open Sans",
+        None,
+        None,
+        None,
+    );
+    let inner_w = (w - 2 * stroke).max(0);
+    let inner_h = (h - 2 * stroke).max(0);
+    if inner_w > 0 && inner_h > 0 {
+        paint::draw_squircle_pill_f(
+            canvas,
+            x0 + stroke,
+            y0 + stroke,
+            inner_w,
+            inner_h,
+            fluor::theme::BUTTON_FILL,
+            1.75,
+        );
+    }
+    // Two-tone raised edge.
+    paint::draw_squircle_pill_two_tone_f(
+        canvas,
+        x0,
+        y0,
+        w,
+        h,
+        fluor::theme::TEXTBOX_SHADOW_EDGE,
+        fluor::theme::TEXTBOX_LIGHT_EDGE,
+        1.75,
+        None,
+        0,
+    );
+    // Stamp the whole pill bbox so the entire pill is clickable (the two-tone pass only stamps the edge band).
+    restamp_hit_rect(hit_map, buf_w, buf_h, x0, y0, x0 + w, y0 + h, hit_id);
 }
 
 /// Stamp `hit_id` over every pixel in `[x0, x1) × [y0, y1)` of `hit_map`. Used to reclaim hit-test coverage for a widget that paints visually on top of another but whose hit stamps were overwritten by the under-blend partner's later stamping pass (the contacts-page plus button overlaid inside the textbox). Bbox over-stamp — corners outside the pill silhouette claim a few extra pixels, which dispatches those clicks to the button. Acceptable UX since the area is tiny and inside the pill anyway.

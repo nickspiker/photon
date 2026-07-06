@@ -24,7 +24,13 @@ pub mod colour_convert;
 // Avatar paint — Mitchell resize + AA textured circle into a fluor `Canvas`.
 pub mod avatar_render;
 
-pub use state::{AppState, FoundPeer, LaunchState, SearchResult};
+pub use state::{AppState, FoundPeer, LaunchState, SearchResult, SettingsPage};
+
+// Settings-panel stub: a minimal on/off `Checkbox` widget (fluor has no toggle/checkbox) styled to match the Button/Textbox family.
+pub mod settings_widgets;
+
+// Settings-panel layout calculator — nav-rail-vs-content split and stacked content rows via fluor's `Region`.
+pub mod settings_layout;
 
 // The fluor-hosted `FluorApp` impl. Drives desktop via `host-winit` and Android via `host-android`.
 pub mod photon_app;

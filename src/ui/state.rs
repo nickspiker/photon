@@ -20,6 +20,9 @@ pub enum AppState {
     /// Existing (attested) device adding another device to the fleet: a words-entry screen — the NEW device displays its pairing words, the user types them here, and a match lights the Bind affordance (orb tap). Entered by tapping the orb on Ready.
     AddDevice,
 
+    /// Settings / About / Help panel — the orb's real destination on Ready. Carries the currently-selected page so the render + layout know which page body to draw. STUB: every page + control renders, but no behaviour is wired.
+    Settings(SettingsPage),
+
     /// Active P2P conversation (legacy - may remove)
     Connected { peer_handle: String },
 }
@@ -27,6 +30,59 @@ pub enum AppState {
 impl Default for AppState {
     fn default() -> Self {
         AppState::Launch(LaunchState::Fresh)
+    }
+}
+
+/// The nine top-level pages of the settings panel — the value carried by [`AppState::Settings`] naming the page whose body is currently drawn. The left nav rail lists all nine; clicking one swaps this value. Order here is the render order in the rail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsPage {
+    /// Handle / avatar / pubkey — the identity read-out page.
+    You,
+    /// Bound-device list + add / rename / retire — the multi-device page.
+    Fleet,
+    /// Lock / retire / shred — the destructive-actions page.
+    Security,
+    /// Custodian opt-in + identity backup — the getting-back-in page.
+    Recovery,
+    /// Theme / party colours / zoom / calibration.
+    Appearance,
+    /// Chime toggles + presence visibility.
+    Notifications,
+    /// Auto-update toggle.
+    Updates,
+    /// The on-device VSF log: clear / snapshot / submit.
+    Diagnostics,
+    /// Explainer / philosophy / version / feedback / credits.
+    About,
+}
+
+impl SettingsPage {
+    /// All pages in rail order — the nav rail and the tab-cycle iterate this.
+    pub const ALL: [SettingsPage; 9] = [
+        SettingsPage::You,
+        SettingsPage::Fleet,
+        SettingsPage::Security,
+        SettingsPage::Recovery,
+        SettingsPage::Appearance,
+        SettingsPage::Notifications,
+        SettingsPage::Updates,
+        SettingsPage::Diagnostics,
+        SettingsPage::About,
+    ];
+
+    /// Human-readable rail label for this page.
+    pub fn label(self) -> &'static str {
+        match self {
+            SettingsPage::You => "You",
+            SettingsPage::Fleet => "Fleet",
+            SettingsPage::Security => "Security",
+            SettingsPage::Recovery => "Recovery",
+            SettingsPage::Appearance => "Appearance",
+            SettingsPage::Notifications => "Notifications",
+            SettingsPage::Updates => "Updates",
+            SettingsPage::Diagnostics => "Diagnostics",
+            SettingsPage::About => "About",
+        }
     }
 }
 
