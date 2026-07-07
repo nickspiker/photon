@@ -873,13 +873,21 @@ impl Container for PhotonApp {
             }
         }
         if matches!(self.state, AppState::Conversation) {
-            // The compose box is the only focusable widget in a conversation; yielding it here wires click-to-focus, Tab, and key dispatch. Only when CLUTCH is Complete — before that the box isn't rendered and sending no-ops, so it must not be focusable either (otherwise a click or Tab could land focus on an invisible dead input).
-            let complete = self
+            // The compose box is the only focusable widget in a conversation; yielding it here wires click-to-focus, Tab, and key dispatch. Only once the chain is PROVEN (chain_woven — both probe directions sealed; self-contacts exempt, they never probe) — before that the box isn't rendered, so it must not be focusable either (otherwise a click or Tab could land focus on an invisible dead input). Must mirror the render gate exactly.
+            let our_handle_hash = self
+                .session
+                .as_ref()
+                .map(|s| s.identity_seed)
+                .unwrap_or([0u8; 32]);
+            let compose_ready = self
                 .active_contact
                 .and_then(|ci| self.contacts.get(ci))
-                .map(|c| c.clutch_state == crate::types::ClutchState::Complete)
+                .map(|c| {
+                    c.clutch_state == crate::types::ClutchState::Complete
+                        && (c.chain_woven || c.handle_hash == our_handle_hash)
+                })
                 .unwrap_or(false);
-            if complete {
+            if compose_ready {
                 if let Some(tb) = self.message_textbox.as_mut() {
                     f(tb);
                 }
@@ -2346,12 +2354,21 @@ impl FluorApp for PhotonApp {
             union_in(self.contacts_plus_btn.as_ref().and_then(|b| b.damage_rect(vw, vh)));
         }
         if matches!(self.state, AppState::Conversation) {
-            let complete = self
+            // Mirrors the render/focus gates: compose damage only counts once the box is actually shown (chain woven, or self-contact loopback).
+            let our_handle_hash = self
+                .session
+                .as_ref()
+                .map(|s| s.identity_seed)
+                .unwrap_or([0u8; 32]);
+            let compose_ready = self
                 .active_contact
                 .and_then(|ci| self.contacts.get(ci))
-                .map(|c| c.clutch_state == crate::types::ClutchState::Complete)
+                .map(|c| {
+                    c.clutch_state == crate::types::ClutchState::Complete
+                        && (c.chain_woven || c.handle_hash == our_handle_hash)
+                })
                 .unwrap_or(false);
-            if complete {
+            if compose_ready {
                 union_in(self.message_textbox.as_ref().and_then(|t| t.damage_rect(vw, vh)));
                 union_in(self.message_send_btn.as_ref().and_then(|b| b.damage_rect(vw, vh)));
             }
@@ -3472,69 +3489,72 @@ impl FluorApp for PhotonApp {
                         let _ = n;
 
                         // ── Compose box (pinned bottom) ────────────────────────────
-                        let compose_empty = self
-                            .message_textbox
-                            .as_ref()
-                            .map(|t| t.chars.is_empty())
-                            .unwrap_or(true);
-                        let compose_focused = self
-                            .message_textbox
-                            .as_ref()
-                            .map(|t| Some(t.hit_id()) == self.focused)
-                            .unwrap_or(false);
-                        let compose_cy = buf_h as f32 - compose_margin - compose_h * 0.5;
-                        if compose_empty && !compose_focused {
-                            ctx.text.draw_text_left_u32(
-                                &mut canvas,
-                                "message",
-                                pad_x * 1.2,
-                                compose_cy,
-                                msg_size,
-                                400,
-                                LABEL_COLOUR,
-                                "Open Sans",
-                                None,
-                                None,
-                                None,
-                            );
-                        }
-                        if let Some(tb) = self.message_textbox.as_mut() {
-                            let id = tb.hit_id();
-                            tb.render_content_into(
-                                &mut canvas,
-                                0.,
-                                0.,
-                                ctx.text,
-                                None,
-                                None,
-                                Some(&mut chrome.hit_test_map),
-                                id,
-                            );
-                        }
-                        // Send button — overlaid inside the compose box's right edge, mirroring the contacts-screen search '+' button (7/8 of the box height, inset from the right). Painted AFTER the textbox so it's visually on top (under-blend = topmost-first would bury it, so we re-stamp its hit rect afterward to recover click dispatch in the overlap). Geometry set in the layout pass.
-                        if let Some(btn) = self.message_send_btn.as_mut() {
-                            let id = btn.hit_id();
-                            btn.render_content_into(
-                                &mut canvas,
-                                0.,
-                                0.,
-                                ctx.text,
-                                None,
-                                Some(&mut chrome.hit_test_map),
-                                id,
-                            );
-                            let bbox = button_bbox(btn);
-                            restamp_hit_rect(
-                                &mut chrome.hit_test_map,
-                                buf_w,
-                                buf_h,
-                                bbox.0,
-                                bbox.1,
-                                bbox.2,
-                                bbox.3,
-                                id,
-                            );
-                        }
+                        // Hidden until the chain-weave probe seals BOTH directions (chain_woven: their probe seen + our ACK-advanced) — Complete alone only proves the ceremony, not the ratchet, and a message typed into an unproven chain can desync it. The status line above reads "testing · weaving the chain" for exactly this window. Self-contacts are exempt (loopback, no peer to weave with, probe deliberately skipped).
+                        if is_self_contact || contact.chain_woven {
+                            let compose_empty = self
+                                .message_textbox
+                                .as_ref()
+                                .map(|t| t.chars.is_empty())
+                                .unwrap_or(true);
+                            let compose_focused = self
+                                .message_textbox
+                                .as_ref()
+                                .map(|t| Some(t.hit_id()) == self.focused)
+                                .unwrap_or(false);
+                            let compose_cy = buf_h as f32 - compose_margin - compose_h * 0.5;
+                            if compose_empty && !compose_focused {
+                                ctx.text.draw_text_left_u32(
+                                    &mut canvas,
+                                    "message",
+                                    pad_x * 1.2,
+                                    compose_cy,
+                                    msg_size,
+                                    400,
+                                    LABEL_COLOUR,
+                                    "Open Sans",
+                                    None,
+                                    None,
+                                    None,
+                                );
+                            }
+                            if let Some(tb) = self.message_textbox.as_mut() {
+                                let id = tb.hit_id();
+                                tb.render_content_into(
+                                    &mut canvas,
+                                    0.,
+                                    0.,
+                                    ctx.text,
+                                    None,
+                                    None,
+                                    Some(&mut chrome.hit_test_map),
+                                    id,
+                                );
+                            }
+                            // Send button — overlaid inside the compose box's right edge, mirroring the contacts-screen search '+' button (7/8 of the box height, inset from the right). Painted AFTER the textbox so it's visually on top (under-blend = topmost-first would bury it, so we re-stamp its hit rect afterward to recover click dispatch in the overlap). Geometry set in the layout pass.
+                            if let Some(btn) = self.message_send_btn.as_mut() {
+                                let id = btn.hit_id();
+                                btn.render_content_into(
+                                    &mut canvas,
+                                    0.,
+                                    0.,
+                                    ctx.text,
+                                    None,
+                                    Some(&mut chrome.hit_test_map),
+                                    id,
+                                );
+                                let bbox = button_bbox(btn);
+                                restamp_hit_rect(
+                                    &mut chrome.hit_test_map,
+                                    buf_w,
+                                    buf_h,
+                                    bbox.0,
+                                    bbox.1,
+                                    bbox.2,
+                                    bbox.3,
+                                    id,
+                                );
+                            }
+                        } // end chain-woven compose gate
                     } // end CLUTCH-Complete gate (message list + compose box)
                 }
             }
