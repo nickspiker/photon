@@ -1,5 +1,14 @@
 # VSF trust-boundary remediation
 
+## STATUS 2026-07-06 — network-facing conversion LANDED (photon b0f18c3, worker 5a35e54 deployed, vsf 15a27c3)
+
+- vsf crate: `read_verified`/`parse_document` are the un-skippable front doors; vsfinfo prints per-anchor verdicts.
+- **Signature-scheme fork found and closed**: two schemes coexisted — canonical (ge over BLAKE3(file, ge zeroed): sign_file/verify_file_signature) vs hand-rolled (ge over the bare hp value: worker challenge, photon avatar content doc, relay/fetch requests). Relay was silently dead: scheme-2 TX vs scheme-1 worker verify = every relay send rejected. All signers/verifiers now canonical.
+- Converted: avatar.rs (readers + both writers), bootstrap.rs (challenge pinned to the FGTW key, peer list via parse_document), protocol.rs offer parsers, relay.rs signer, worker (challenge, inner-avatar verify, read_verified with pinned signer, skip-walk deleted, stored avatars carry hb).
+- `FoldError::Empty` → Fresh/ours at probe + attest verdict (the "chain unverifiable: Empty" fix).
+- **LOCKSTEP**: worker deployed — old photon builds fail challenge verification until rebuilt; pre-existing stored avatars (hp-only, scheme-2) are rejected by new readers → re-set avatars once.
+- REMAINING: ping/pong/chat/KEM/complete frames use hp as an application field (chain linkage / ceremony_id) — annotated spec deviation, resolves in the messaging rework; vault parsers (debt register below); fgtw crate client reads; the dev.sh hand-roll gate (Phase C).
+
 Photon hand-rolls VSF parse/encode at ~495 sites vs ~16 using the schema API — the "string-concatenated SQL" problem, at trust boundaries.
 This doc is the audit synthesis + the fix plan. Source: the vsf-trust-audit workflow (4 parallel readers, 2026-07-06).
 
