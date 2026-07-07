@@ -406,6 +406,15 @@ impl NetworkContext {
         #[cfg(feature = "logging")]
         crate::set_android_log_dir(shadow_dir.to_string());
 
+        // Wire tohu's boot-locked session capsule to the app dirs — WITHOUT this, session_capsule_paths() is None, set_session falls thru to the desktop XDG tmpfs path (absent on Android) and FAILS, so the session never persists: attest succeeds but self.session stays None (avatar picker "not attested", broadcast "no session stored") and every restart lands back on the attest screen.
+        let primary = std::path::Path::new(data_dir).join("session");
+        let shadow = if shadow_dir.is_empty() {
+            None
+        } else {
+            Some(std::path::Path::new(shadow_dir).join("session"))
+        };
+        tohu::set_session_dir(&primary, shadow.as_deref());
+
         // tohu reads Settings.Secure.ANDROID_ID itself (via the JavaVM handed to it in JNI_OnLoad). Fall back to the Java-pushed `fingerprint` if tohu's fetch errors, so a wrong JNI path logs loudly instead of bricking the app. NOTE: switching the oracle to pure ANDROID_ID changes device_secret vs the old Java-pushed value — existing Android vaults must be cleared.
         let oracle = match tohu::device::machine_fingerprint() {
             Ok(id) => {
