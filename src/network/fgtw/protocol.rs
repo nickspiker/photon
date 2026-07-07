@@ -1432,7 +1432,8 @@ pub fn parse_clutch_offer_vsf(
         ));
         crate::log(&format!(
             "CLUTCH: Parsed offer HQC pub[..8]={}",
-            hex::encode(&payload.hqc256_public[..8])
+            // `.min(8)` guards a short (forged / truncated) field — a bare `[..8]` panics the whole receiver task.
+            hex::encode(&payload.hqc256_public[..payload.hqc256_public.len().min(8)])
         ));
     }
 
@@ -1713,7 +1714,8 @@ pub fn parse_clutch_kem_response_vsf(
         ));
         crate::log(&format!(
             "CLUTCH: Parsed KEM response HQC ct[..8]={}, EC ephemerals: X25519 {}B, P384 {}B",
-            hex::encode(&payload.hqc256_ciphertext[..8]),
+            // `.min(8)` guards a short field so a truncated/forged ciphertext can't panic the receiver.
+            hex::encode(&payload.hqc256_ciphertext[..payload.hqc256_ciphertext.len().min(8)]),
             payload.x25519_ephemeral.len(),
             payload.p384_ephemeral.len()
         ));
@@ -1866,7 +1868,9 @@ pub fn parse_clutch_offer_vsf_without_recipient_check(
     #[cfg(feature = "development")]
     crate::log(&format!(
         "CLUTCH: Parsed offer (no recipient check) HQC pub[..8]={} provenance={}...",
-        hex::encode(&payload.hqc256_public[..8]),
+        // `.min(8)` guards a short field so a truncated/forged public key can't panic the receiver
+        // (offer_provenance is a fixed [u8;32], so its slice is always in-bounds).
+        hex::encode(&payload.hqc256_public[..payload.hqc256_public.len().min(8)]),
         hex::encode(&offer_provenance[..8])
     ));
 
@@ -2061,7 +2065,8 @@ pub fn parse_clutch_kem_response_vsf_without_recipient_check(
     #[cfg(feature = "development")]
     crate::log(&format!(
         "CLUTCH: Parsed KEM response (no recipient check) HQC ct[..8]={} target_hqc[..8]={} EC ephemerals present",
-        hex::encode(&payload.hqc256_ciphertext[..8]),
+        // `.min(8)` guards a short field so a truncated/forged ciphertext can't panic the receiver.
+        hex::encode(&payload.hqc256_ciphertext[..payload.hqc256_ciphertext.len().min(8)]),
         hex::encode(&payload.target_hqc_pub_prefix)
     ));
 

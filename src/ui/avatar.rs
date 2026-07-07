@@ -803,7 +803,17 @@ pub fn load_cached_avatar_from_seed(
         }
     };
     crate::log("Avatar: Loading from local vault");
-    load_avatar_from_bytes_from_seed(&vsf_data, identity_seed)
+    match load_avatar_from_bytes_from_seed(&vsf_data, identity_seed) {
+        Some(loaded) => Some(loaded),
+        None => {
+            // The cached bytes failed to verify/decrypt/decode — a poisoned cache (e.g. an old error
+            // frame written before the validate-before-cache fix). Evict it so the next fetch can
+            // repopulate; this self-heals already-poisoned test vaults without a nuke.
+            crate::log("Avatar: cached bytes failed to decode, evicting poisoned vault entry");
+            let _ = storage.delete_addr(&addr);
+            None
+        }
+    }
 }
 
 /// Save avatar VSF bytes to the local vault by handle.
@@ -1461,17 +1471,27 @@ pub fn upload_avatar_from_seed(
         .send()
         .map_err(|e| format!("Failed to upload avatar: {}", e))?;
 
-    if response.status().is_success() {
-        crate::log(&format!(
-            "Avatar: Uploaded to FGTW (key: {}...)",
-            &storage_key[..8]
-        ));
-        Ok(storage_key)
-    } else {
+    if !response.status().is_success() {
         let status = response.status();
         let body = response.text().unwrap_or_else(|_| String::new());
-        Err(format!("Avatar upload failed: {} - {}", status, body))
+        return Err(format!("Avatar upload failed: {} - {}", status, body));
     }
+
+    // The worker signals rejection (stale, bad_signature, …) as a VSF error frame at HTTP 200, so a
+    // success status alone does NOT mean the avatar published — inspect the body first, otherwise a
+    // rejection reads as "uploaded" and the real avatar never lands.
+    let body = response
+        .bytes()
+        .map_err(|e| format!("Avatar upload: read response body: {}", e))?;
+    if let Some((reason, detail)) = fgtw::client::error_frame(&body) {
+        return Err(format!("Avatar upload rejected by FGTW {}: {}", reason, detail));
+    }
+
+    crate::log(&format!(
+        "Avatar: Uploaded to FGTW (key: {}...)",
+        &storage_key[..8]
+    ));
+    Ok(storage_key)
 }
 
 /// Download avatar from FGTW by handle
@@ -1531,11 +1551,25 @@ pub fn download_avatar(
         &format!("/avatar/{}", &storage_key[..8]),
     ));
 
-    // Save to local cache before decoding
-    let _ = save_avatar_to_cache(handle, &vsf_data, storage);
+    // The worker answers every failure as a VSF error frame at HTTP 200 that PASSES is_original, so
+    // the error-frame rejection must come FIRST and separately — status() above can never catch it.
+    // Expected absence ("not_found") is a quiet None; any other error frame is logged and dropped.
+    if fgtw::client::is_error(&vsf_data, "not_found") {
+        return None;
+    }
+    if let Some((reason, detail)) = fgtw::client::error_frame(&vsf_data) {
+        crate::log(&format!("Avatar: FGTW error frame {}: {}", reason, detail));
+        return None;
+    }
 
-    // Verify, decrypt, and decode (FGTW stripped ke/ge, so only provenance hash is verified)
-    load_avatar_from_bytes(&vsf_data, handle)
+    // Verify, decrypt, and decode (FGTW stripped ke/ge, so only provenance hash is verified).
+    // Cache ONLY on full success — never persist bytes that didn't verify+decrypt+decode, or we
+    // poison the vault with a frame that then fails to decode forever.
+    let decoded = load_avatar_from_bytes(&vsf_data, handle);
+    if decoded.is_some() {
+        let _ = save_avatar_to_cache(handle, &vsf_data, storage);
+    }
+    decoded
 }
 
 /// Download an avatar by IDENTITY SEED rather than handle string. Same cache-first → FGTW-fetch flow as [`download_avatar`], but keyed off the seed the caller already has (no handle string needed).
@@ -1577,8 +1611,22 @@ pub fn download_avatar_from_seed(
     }
 
     let vsf_data = response.bytes().ok()?;
-    let _ = save_avatar_to_cache_from_seed(identity_seed, &vsf_data, storage);
-    load_avatar_from_bytes_from_seed(&vsf_data, identity_seed)
+
+    // Error-frame rejection FIRST (a worker error frame arrives at HTTP 200 and passes is_original).
+    if fgtw::client::is_error(&vsf_data, "not_found") {
+        return None;
+    }
+    if let Some((reason, detail)) = fgtw::client::error_frame(&vsf_data) {
+        crate::log(&format!("Avatar: FGTW error frame {}: {}", reason, detail));
+        return None;
+    }
+
+    // Cache ONLY on full verify+decrypt+decode success — never poison the vault with a frame.
+    let decoded = load_avatar_from_bytes_from_seed(&vsf_data, identity_seed);
+    if decoded.is_some() {
+        let _ = save_avatar_to_cache_from_seed(identity_seed, &vsf_data, storage);
+    }
+    decoded
 }
 
 /// Outcome of a bidirectional avatar sync — which side won the newer-wins comparison.
@@ -1686,6 +1734,21 @@ pub fn sync_avatar_bidirectional_from_seed(
         };
     }
 
+    // Error-frame rejection FIRST (the worker sends 200 with a frame that passes is_original, so the
+    // NOT_FOUND status check above never fires). "not_found" is server-empty → route to the upload /
+    // server-empty branch; any other error frame is NOT a real avatar — its fresh creation_time must
+    // never win newest-wins and clobber a good local copy, so return Error and do not adopt.
+    if fgtw::client::is_error(&vsf_data, "not_found") {
+        return if local_ts.is_some() {
+            upload("Server empty")
+        } else {
+            AvatarSyncResult::ServerEmpty
+        };
+    }
+    if let Some((reason, detail)) = fgtw::client::error_frame(&vsf_data) {
+        return AvatarSyncResult::Error(format!("Server error frame {}: {}", reason, detail));
+    }
+
     #[cfg(feature = "development")]
     crate::log(&crate::network::inspect::vsf_inspect(
         &vsf_data,
@@ -1699,21 +1762,34 @@ pub fn sync_avatar_bidirectional_from_seed(
 
     match (local_ts, server_ts) {
         (None, _) => {
-            // No local copy — adopt the server's.
-            crate::log("Avatar sync: No local avatar, caching server copy");
-            let _ = save_avatar_to_cache_from_seed(identity_seed, &vsf_data, storage);
-            AvatarSyncResult::ServerNewer
+            // No local copy — adopt the server's, but only if it actually verifies+decrypts+decodes.
+            // Caching before validating would poison the vault with a frame we can't decode later.
+            if load_avatar_from_bytes_from_seed(&vsf_data, identity_seed).is_some() {
+                crate::log("Avatar sync: No local avatar, caching server copy");
+                let _ = save_avatar_to_cache_from_seed(identity_seed, &vsf_data, storage);
+                AvatarSyncResult::ServerNewer
+            } else {
+                AvatarSyncResult::Error("Server copy failed to decode, not caching".to_string())
+            }
         }
         (Some(local), Some(server)) => {
             if local > server {
                 upload(&format!("Local newer ({} > {})", local, server))
             } else if server > local {
-                crate::log(&format!(
-                    "Avatar sync: Server newer ({} > {}), caching",
-                    server, local
-                ));
-                let _ = save_avatar_to_cache_from_seed(identity_seed, &vsf_data, storage);
-                AvatarSyncResult::ServerNewer
+                // Adopt the server copy only if it validates — never overwrite a good local avatar
+                // with a body that fails to decode.
+                if load_avatar_from_bytes_from_seed(&vsf_data, identity_seed).is_some() {
+                    crate::log(&format!(
+                        "Avatar sync: Server newer ({} > {}), caching",
+                        server, local
+                    ));
+                    let _ = save_avatar_to_cache_from_seed(identity_seed, &vsf_data, storage);
+                    AvatarSyncResult::ServerNewer
+                } else {
+                    AvatarSyncResult::Error(
+                        "Server copy newer but failed to decode, not caching".to_string(),
+                    )
+                }
             } else {
                 AvatarSyncResult::InSync
             }

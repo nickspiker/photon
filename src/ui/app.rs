@@ -2590,6 +2590,8 @@ impl PhotonApp {
                 (AppState::Ready, Some(data))
             }
             QueryResult::AlreadyAttested(_peers) => {
+                // Chain-proven takeover only (fold-verified different-identity genesis); indeterminate
+                // results arrive as QueryResult::Error, which does not touch the session here.
                 crate::log("UI: Handle already attested - showing error");
                 (
                     AppState::Launch(LaunchState::Error("Handle already attested".to_string())),

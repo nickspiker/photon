@@ -5172,7 +5172,12 @@ impl PhotonApp {
                     voca::encode(BigUint::from_bytes_be(peer.device_pubkey.as_bytes()))
                 );
                 eprintln!("attestation rejected: {msg}");
-                // The handle is owned by another device — our stored roots are contested. Clear them so the next launch can't auto-resume into the same rejection, and bail to the attest screen (even from an optimistic Ready: this is the genuine takeover case).
+                // AlreadyAttested is now sent ONLY on a CHAIN-PROVEN takeover: the worker fold-verified
+                // a fleet chain whose genesis identity is not ours (handle_query.rs verdict). This is
+                // the genuine takeover case, so clearing the contested roots is correct — an
+                // indeterminate result (fold/parse/transport error) arrives as QueryResult::Error
+                // below, which does NOT clear the session. Clear so the next launch can't auto-resume
+                // into the same rejection, and bail to the attest screen (even from an optimistic Ready).
                 tohu::clear_session();
                 self.session = None;
                 self.state = AppState::Launch(LaunchState::Error(msg));
@@ -8980,17 +8985,34 @@ impl PhotonApp {
                             .read_addr(&crate::storage::vault_key("avatar", &session.identity_seed))
                         {
                             Ok(Some(avatar_vsf)) => {
-                                crate::log(&format!(
-                                    "Avatar: sending our avatar to mutual peer ({} bytes)",
-                                    avatar_vsf.len()
-                                ));
-                                checker.send_avatar_response(
-                                    crate::network::status::AvatarResponseSend {
-                                        peer_addr: sender_addr,
-                                        recipient_pubkey: *sender_pubkey.as_bytes(),
-                                        avatar_vsf,
-                                    },
-                                );
+                                // Validate the vault bytes before we device-sign and ship them: an
+                                // error frame or a body that doesn't decode would be signed as a
+                                // "poisoned" avatar the friend then can't decode. Reject an error
+                                // frame outright, and require a full verify+decrypt+decode against
+                                // our own seed before serving.
+                                let servable = fgtw::client::error_frame(&avatar_vsf).is_none()
+                                    && crate::ui::avatar::load_avatar_from_bytes_from_seed(
+                                        &avatar_vsf,
+                                        &session.identity_seed,
+                                    )
+                                    .is_some();
+                                if !servable {
+                                    crate::log(
+                                        "Avatar: local avatar bytes failed to validate, not serving to peer",
+                                    );
+                                } else {
+                                    crate::log(&format!(
+                                        "Avatar: sending our avatar to mutual peer ({} bytes)",
+                                        avatar_vsf.len()
+                                    ));
+                                    checker.send_avatar_response(
+                                        crate::network::status::AvatarResponseSend {
+                                            peer_addr: sender_addr,
+                                            recipient_pubkey: *sender_pubkey.as_bytes(),
+                                            avatar_vsf,
+                                        },
+                                    );
+                                }
                             }
                             _ => crate::log("Avatar: mutual peer requested avatar, but we have none"),
                         }

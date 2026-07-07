@@ -736,7 +736,9 @@ async fn run_checker(
                 multicast_addr, multicast_port
             ));
 
-            let mut buf = [0u8; 2048];
+            // 64 KiB so a sync-record-laden datagram is never silently truncated (a short recv drops
+            // the tail → parse error → one-way presence).
+            let mut buf = [0u8; 65536];
             loop {
                 match socket.recv_from(&mut buf).await {
                     Ok((len, src_addr)) => {
@@ -888,7 +890,8 @@ async fn run_checker(
                 multicast_addr, multicast_port
             ));
 
-            let mut buf = [0u8; 2048];
+            // 64 KiB so a sync-record-laden datagram is never silently truncated.
+            let mut buf = [0u8; 65536];
             loop {
                 match socket.recv_from(&mut buf).await {
                     Ok((len, src_addr)) => {
@@ -974,6 +977,24 @@ async fn run_checker(
                                                     let contact_list = contacts_tcp.lock().unwrap();
                                                     contact_list.iter().any(|p| *p == sender)
                                                 };
+
+                                            // Trust gate BEFORE the ~500KB CLUTCH section parse: the
+                                            // signer pubkey lives in the header (cheap to extract, no
+                                            // section walk), so reject an untrusted sender here rather
+                                            // than after parsing half a megabyte of their payload. The
+                                            // per-message is_known_sender checks below stay as
+                                            // defence-in-depth.
+                                            if let Ok(signer) =
+                                                vsf::verification::extract_signer_pubkey(&data)
+                                            {
+                                                if !is_known_sender(&signer) {
+                                                    crate::log(&format!(
+                                                        "TCP: CLUTCH message REJECTED before parse - sender not in contacts (pubkey: {})",
+                                                        hex::encode(&signer[..signer.len().min(8)])
+                                                    ));
+                                                    continue;
+                                                }
+                                            }
 
                                             // Try full offer first (has clutch_offer section)
                                             if let Ok((payload, sender_pubkey, offer_provenance, conversation_token)) =
@@ -1085,7 +1106,9 @@ async fn run_checker(
     // Spawn UDP receiver task
     tokio::spawn(async move {
         crate::log("Status: Receiver task started, waiting for UDP packets...");
-        let mut buf = [0u8; 2048];
+        // 64 KiB RX buffer: a pong laden with per-conversation sync records exceeds 2 KiB and a short
+        // recv silently truncated it → parse error → one-way presence (a peer never saw the other).
+        let mut buf = [0u8; 65536];
         loop {
             match socket_recv.recv_from(&mut buf).await {
                 Ok((len, src_addr)) => {
@@ -1182,6 +1205,22 @@ async fn run_checker(
                                         let contact_list = contacts_recv.lock().unwrap();
                                         contact_list.iter().any(|p| *p == sender)
                                     };
+
+                                    // Trust gate BEFORE the ~500KB CLUTCH section parse: the signer
+                                    // pubkey is a cheap header extraction (no section walk), so an
+                                    // untrusted sender is dropped before we parse their payload. The
+                                    // per-message checks below remain as defence-in-depth.
+                                    if let Ok(signer) =
+                                        vsf::verification::extract_signer_pubkey(&data)
+                                    {
+                                        if !is_known_sender_pt(&signer) {
+                                            crate::log(&format!(
+                                                "PT: CLUTCH message REJECTED before parse - sender not in contacts (pubkey: {})",
+                                                hex::encode(&signer[..signer.len().min(8)])
+                                            ));
+                                            continue;
+                                        }
+                                    }
 
                                     // Try to parse as ClutchOffer
                                     if let Ok((
@@ -1328,9 +1367,23 @@ async fn run_checker(
                     {
                         use crate::network::fgtw::protocol::parse_clutch_complete_vsf_without_recipient_check;
 
-                        if let Ok((payload, sender_pubkey, ceremony_id, conversation_token)) =
-                            parse_clutch_complete_vsf_without_recipient_check(msg_bytes)
-                        {
+                        // Contact-allowlist gate BEFORE the ~500KB CLUTCH parse, parity with the
+                        // TCP/PT branches (which had a gate; this UDP-direct path had none, so it
+                        // adopted — and even acked — a CLUTCH proof from any pubkey). The signer is a
+                        // cheap header extraction, so reject untrusted senders before parsing. A
+                        // non-contact (or a non-signed frame) falls through to the general message
+                        // path below; this branch is opportunistic for small direct UDP CLUTCH.
+                        let signer_known = vsf::verification::extract_signer_pubkey(msg_bytes)
+                            .map(|signer| {
+                                let sender = DevicePubkey::from_bytes(signer);
+                                let contact_list = contacts_recv.lock().unwrap();
+                                contact_list.iter().any(|p| *p == sender)
+                            })
+                            .unwrap_or(false);
+                        if signer_known {
+                            if let Ok((payload, sender_pubkey, ceremony_id, conversation_token)) =
+                                parse_clutch_complete_vsf_without_recipient_check(msg_bytes)
+                            {
                             crate::log("UDP: Received ClutchComplete directly (VSF verified)");
                             // Delivery ack — ClutchComplete is sent as a reliable PT packet; without acking it the sender's stop-and-wait queue head never clears and it blocks every later packet (chat) behind it. Pure transport "bytes got here"; the proof's own convergence logic is layered on top.
                             {
@@ -1352,6 +1405,7 @@ async fn run_checker(
                                 &event_proxy_recv,
                             );
                             continue;
+                            }
                         }
                     }
 
@@ -1940,6 +1994,17 @@ async fn run_checker(
 
         // Process avatar response sends (return our own avatar to a requesting peer) Routed thru PT for unified transport (UDP → TCP after 1s → relay fallback)
         while let Ok(request) = avatar_response_rx.try_recv() {
+            // Defence-in-depth: never device-sign and ship an FGTW error frame as an avatar (the
+            // caller validates+decodes first, but a poisoned frame reaching here would be signed as
+            // a real avatar the friend can't decode). The full decode needs the seed, so here we
+            // reject only the cheap-to-detect error frame; the seed-gated decode happens upstream.
+            if let Some((reason, detail)) = fgtw::client::error_frame(&request.avatar_vsf) {
+                crate::log(&format!(
+                    "Status: refusing to serve avatar error frame {}: {}",
+                    reason, detail
+                ));
+                continue;
+            }
             let timestamp = eagle_time_now();
 
             // provenance = BLAKE3(avatar_vsf) - the signature covers the avatar bytes' hash

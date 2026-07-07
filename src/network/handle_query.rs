@@ -470,12 +470,29 @@ impl HandleQuery {
                         Ok(None) => ProbeOutcome::Fresh,
                         Ok(Some(blob)) => {
                             let me = keypair.public.to_bytes();
-                            if blob.fold().map(|m| m.contains(&me)).unwrap_or(false) {
-                                ProbeOutcome::Member
-                            } else if blob.genesis_identity_matches(&identity_seed) {
-                                ProbeOutcome::JoinOurs
-                            } else {
-                                ProbeOutcome::Taken
+                            // Match fold() explicitly: a FoldError must NOT be swallowed into a
+                            // false "Taken" with an unverified genesis compare. An unfoldable chain
+                            // is indeterminate (corrupt / partial / KV read-lag) — surface an error
+                            // and let the next cycle retry, never brand the handle taken.
+                            match blob.fold() {
+                                Ok(members) => {
+                                    if members.contains(&me) {
+                                        ProbeOutcome::Member
+                                    } else if blob.genesis_identity_matches(&identity_seed) {
+                                        ProbeOutcome::JoinOurs
+                                    } else {
+                                        ProbeOutcome::Taken
+                                    }
+                                }
+                                Err(fold_err) => {
+                                    crate::log(&format!(
+                                        "Network: probe fold failed (indeterminate, not taken): {fold_err:?}"
+                                    ));
+                                    let _ = tx.send(QueryResult::Error(format!(
+                                        "chain unverifiable: {fold_err:?}"
+                                    )));
+                                    continue;
+                                }
                             }
                         }
                         Err(e) => {
@@ -560,13 +577,60 @@ impl HandleQuery {
                     crate::log(&format!("Network: ERROR - {}", error));
                     QueryResult::Error(error)
                 } else {
-                    // Check if this is our device or someone else's
-                    let our_pubkey = keypair.public.as_bytes();
-                    let is_ours = result.peers.is_empty()
-                        || result
-                            .peers
-                            .iter()
-                            .any(|p| p.device_pubkey.as_bytes() == our_pubkey);
+                    // Reaching here means the announce did NOT error, and the announce is
+                    // membership-gated: `ensure_member` already proved this device folds into the
+                    // fleet chain (bootstrap.rs load_bootstrap_peers_inner). Announce success ⇒ ours.
+                    //
+                    // The old "taken" verdict was inferred from the UNVERIFIED announce peer echo
+                    // (a non-empty list not echoing our record), which is a false positive: the echo
+                    // is not a fold-verified chain, and a device can be a proven member while absent
+                    // from a given peer-list snapshot (KV lag, list paging, add ordering). A false
+                    // "taken" then made the consumer clear the session. That inference is deleted.
+                    //
+                    // "Taken" now comes ONLY from a fold-verified chain naming a DIFFERENT identity,
+                    // computed exactly like the probe: fetch → fold. Since ensure_member just proved
+                    // membership, this normally confirms ours; a fold/parse/transport error is
+                    // INDETERMINATE → QueryResult::Error, NEVER taken, never clear the session.
+                    // A resume retries on the next ~30s cycle; a first attest surfaces the error on the launch screen for a manual re-submit (there is no auto-retry loop for FirstAttest).
+                    let me = keypair.public.to_bytes();
+                    let verdict = match crate::network::fgtw::fleet::fetch(&handle_proof) {
+                        // No chain despite a successful membership-gated announce: treat as ours
+                        // (indeterminate the other way — we were just admitted). Proceed to load.
+                        Ok(None) => Ok(true),
+                        Ok(Some(blob)) => match blob.fold() {
+                            Ok(members) => {
+                                if members.contains(&me) {
+                                    Ok(true) // fold-proven member — ours
+                                } else if blob.genesis_identity_matches(&identity_seed) {
+                                    Ok(true) // our identity founded it, this device not yet enrolled — still ours to attest
+                                } else {
+                                    Ok(false) // fold-verified chain names a DIFFERENT identity — genuinely taken
+                                }
+                            }
+                            Err(fold_err) => {
+                                // Dev-log the raw body so a Cloudflare KV read-lag serving a
+                                // pre-wipe chain is visible (gated to the development feature).
+                                #[cfg(feature = "development")]
+                                crate::log(&format!(
+                                    "Network: attest verdict fold failed (indeterminate): {fold_err:?}"
+                                ));
+                                Err(format!("chain unverifiable: {fold_err:?}"))
+                            }
+                        },
+                        Err(e) => Err(e),
+                    };
+
+                    let is_ours = match verdict {
+                        Ok(ours) => ours,
+                        Err(e) => {
+                            // Indeterminate — never taken, never clear the session; retry next cycle.
+                            crate::log(&format!(
+                                "Network: attest verdict indeterminate (keeping session): {e}"
+                            ));
+                            let _ = tx.send(QueryResult::Error(e));
+                            continue;
+                        }
+                    };
 
                     if is_ours {
                         *handle_proof_store.lock().unwrap() = Some(handle_proof);
@@ -741,8 +805,46 @@ impl HandleQuery {
                             vault_degraded,
                         }))
                     } else {
-                        crate::log("Network: Handle is CLAIMED by another device");
-                        QueryResult::AlreadyAttested(result.peers[0].clone())
+                        // Reached only via a FOLD-VERIFIED chain whose genesis identity is NOT ours
+                        // (see verdict above) — a genuine chain-proven takeover. Dev-log the raw
+                        // fetch body (hex) so a Cloudflare KV read-lag serving a pre-wipe chain is
+                        // catchable from the trace.
+                        crate::log("Network: Handle is CLAIMED by another device (fold-verified different identity)");
+                        #[cfg(feature = "development")]
+                        {
+                            // Dump the chain's identity binding so a Cloudflare KV read-lag serving a
+                            // pre-wipe chain is catchable: a stale chain shows the OLD genesis identity
+                            // and op set even though the handle was wiped.
+                            if let Ok(Some(blob)) =
+                                crate::network::fgtw::fleet::fetch(&handle_proof)
+                            {
+                                let genesis_ident = blob
+                                    .ops
+                                    .first()
+                                    .map(|op| hex::encode(op.identity_pubkey))
+                                    .unwrap_or_else(|| "<no ops>".to_string());
+                                crate::log(&format!(
+                                    "Development: attest-taken chain = {} op(s), genesis identity_pubkey = {}",
+                                    blob.ops.len(),
+                                    genesis_ident
+                                ));
+                            }
+                        }
+                        // The `AlreadyAttested` payload is a peer record for the consumer's display.
+                        // If the (unverified) peer echo carried one, pass it; if not, the takeover is
+                        // still chain-proven but we have no concrete peer to show — surface as a
+                        // (retryable) error rather than fabricate a record or panic on an empty list.
+                        match result.peers.first() {
+                            Some(peer) => QueryResult::AlreadyAttested(peer.clone()),
+                            None => {
+                                crate::log(
+                                    "Network: chain-proven takeover but no peer record echoed — treating as retryable",
+                                );
+                                QueryResult::Error(
+                                    "handle claimed by another identity (no peer record)".to_string(),
+                                )
+                            }
+                        }
                     }
                 };
 
