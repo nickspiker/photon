@@ -857,34 +857,37 @@ pub fn load_avatar_from_bytes(vsf_data: &[u8], handle: &str) -> Option<(usize, V
     load_avatar_from_bytes_from_seed(vsf_data, &crate::types::Handle::to_identity_seed(handle))
 }
 
+/// Avatar document schema: an "image" section whose "pixels" field is v'e'-wrapped (encrypted) AV1 data. The Wrapped(b'e') constraint rejects any other encoding at validation time.
+fn avatar_image_schema() -> vsf::schema::SectionSchema {
+    vsf::schema::SectionSchema::new("image")
+        .field("pixels", vsf::schema::TypeConstraint::Wrapped(b'e'))
+}
+
+/// Verified read of an avatar VSF document → the encrypted AV1 payload. Goes thru `parse_document`, so verification (hp + hb or signature) is un-skippable — tampered or anchor-less bytes never reach the decrypt step.
+fn avatar_encrypted_payload(vsf_data: &[u8]) -> Result<Vec<u8>, String> {
+    let section = vsf::schema::SectionBuilder::parse_document(avatar_image_schema(), vsf_data, None)
+        .map_err(|e| format!("verified avatar parse: {}", e))?;
+    section
+        .get_value::<Vec<u8>>("pixels")
+        .map_err(|e| format!("avatar pixels field: {}", e))
+}
+
 /// `load_avatar_from_bytes` from the already-derived `identity_seed`.
 pub fn load_avatar_from_bytes_from_seed(
     vsf_data: &[u8],
     identity_seed: &[u8; 32],
 ) -> Option<(usize, Vec<u8>)> {
-    // Verify this is an unmodified original before processing
-    if let Err(e) = vsf::verification::is_original(vsf_data) {
-        crate::log(&format!(
-            "Avatar: Provenance hash verification failed: {}",
-            e
-        ));
-        return None;
-    }
-
-    // Parse VSF container - expecting v'e' encrypted wrapper
-    let parsed = vsf::builders::parse_compressed_image(vsf_data).ok()?;
-
-    // Verify encrypted format
-    if parsed.encoding != b'e' {
-        crate::log(&format!(
-            "Avatar: Expected encrypted (v'e'), got: {}",
-            parsed.encoding as char
-        ));
-        return None;
-    }
+    // Verified parse: hp + (hb | signature) checked before any field is trusted.
+    let encrypted = match avatar_encrypted_payload(vsf_data) {
+        Ok(payload) => payload,
+        Err(e) => {
+            crate::log(&format!("Avatar: {}", e));
+            return None;
+        }
+    };
 
     // Decrypt to get raw AV1 data
-    let av1_data = match decrypt_av1_data_from_seed(&parsed.data, identity_seed) {
+    let av1_data = match decrypt_av1_data_from_seed(&encrypted, identity_seed) {
         Ok(data) => data,
         Err(e) => {
             crate::log(&format!("Avatar: Decryption failed: {}", e));
@@ -930,10 +933,9 @@ pub fn save_avatar_from_seed(
     let encrypted = encrypt_av1_data_from_seed(av1_data, identity_seed)
         .map_err(crate::storage::StorageError::Crypto)?;
 
-    // Build VSF with v'e' wrapped encrypted payload
+    // Build VSF with v'e' wrapped encrypted payload. The default build carries hp + hb — a provenance-only doc is UNVERIFIABLE under read_verified and would be rejected on every load.
     let vsf_bytes = VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .provenance_only()
         .add_section(
             "image",
             vec![("pixels".to_string(), VsfType::v(b'e', encrypted))],
@@ -952,16 +954,9 @@ fn extract_av1_data_from_seed(
     vsf_bytes: &[u8],
     identity_seed: &[u8; 32],
 ) -> Result<Vec<u8>, String> {
-    let parsed = vsf::builders::parse_compressed_image(vsf_bytes)?;
-
-    if parsed.encoding != b'e' {
-        return Err(format!(
-            "Expected encrypted (v'e'), got: {}",
-            parsed.encoding as char
-        ));
-    }
-
-    decrypt_av1_data_from_seed(&parsed.data, identity_seed)
+    // Verified parse (hp + hb | signature) + schema validation, then decrypt.
+    let encrypted = avatar_encrypted_payload(vsf_bytes)?;
+    decrypt_av1_data_from_seed(&encrypted, identity_seed)
 }
 
 /// Get avatar's provenance hash by handle (if cached locally) Used to include in ping/pong messages for avatar sync
@@ -969,14 +964,13 @@ pub fn get_avatar_provenance_hash(
     handle: &str,
     storage: &std::sync::Arc<crate::storage::FlatStorage>,
 ) -> Option<[u8; 32]> {
-    use vsf::file_format::VsfHeader;
     use vsf::VsfType;
 
     let addr = crate::storage::vault_key("avatar", &crate::types::Handle::to_identity_seed(handle));
     let vsf_data = storage.read_addr(&addr).ok()??;
 
-    // Parse header to extract provenance hash
-    let (header, _) = VsfHeader::decode(&vsf_data).ok()?;
+    // Verified header read — a provenance hash from a doc that doesn't verify is not an identity worth advertising in ping/pong.
+    let (header, _) = vsf::verification::read_verified(&vsf_data, None).ok()?;
     match header.provenance_hash {
         VsfType::hp(bytes) if bytes.len() == 32 => {
             let mut arr = [0u8; 32];
@@ -1000,7 +994,6 @@ pub fn get_local_avatar_timestamp_from_seed(
     identity_seed: &[u8; 32],
     storage: &std::sync::Arc<crate::storage::FlatStorage>,
 ) -> Option<i64> {
-    use vsf::file_format::VsfHeader;
     use vsf::types::EagleTime;
     use vsf::VsfType;
 
@@ -1020,10 +1013,10 @@ pub fn get_local_avatar_timestamp_from_seed(
         }
     };
 
-    // Parse header to extract creation timestamp. A timestamp we can't read is NOT a timestamp —
+    // Verified header read to extract the creation timestamp. A timestamp we can't read (or that rides an unverifiable doc) is NOT a timestamp —
     // return None, never a fabricated 0 (a zero would mean "created at the dawn of time" and would
     // always lose the newer-wins comparison, silently clobbering a fine local avatar with the server's).
-    let (header, _) = VsfHeader::decode(&vsf_data).ok()?;
+    let (header, _) = vsf::verification::read_verified(&vsf_data, None).ok()?;
     match header.creation_time {
         Some(VsfType::e(et)) => {
             let ts = EagleTime::new(et).oscillations();
@@ -1308,7 +1301,7 @@ fn decode_vsf_length(buf: &[u8]) -> Result<(usize, usize), String> {
 /// Creates a VSF with:
 /// - Encrypted AV1 data in "image" section with "pixels" v'e'(v'a'(AV1)) field
 /// - Avatar public key (ke) in header
-/// - Signature (ge) over provenance hash
+/// - Signature (ge) over BLAKE3(file, ge zeroed) — the canonical vsf scheme
 /// - Creation timestamp for replay protection
 ///
 /// # Arguments
@@ -1322,62 +1315,23 @@ pub fn build_signed_avatar_vsf(
     avatar_signing_key: &SigningKey,
     avatar_verifying_key: &VerifyingKey,
 ) -> Result<Vec<u8>, String> {
-    use ed25519_dalek::Signer;
     use vsf::{VsfBuilder, VsfType};
 
     // Encrypt AV1 data (wraps in v'a' then encrypts)
     let encrypted = encrypt_av1_data_from_seed(av1_data, identity_seed)?;
 
-    // Build VSF with avatar pubkey and signature placeholder Uses "image" section with "pixels" v'e' field for encrypted data
-    let vsf_bytes = VsfBuilder::new()
+    // Build the unsigned VSF (ke set, hp/ge placeholders) — "image" section with "pixels" v'e' field for the encrypted data.
+    let unsigned = VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .signature_ed25519(
-            *avatar_verifying_key.as_bytes(),
-            [0u8; 64], // Placeholder - will be filled after hp computed
-        )
+        .signed_only(VsfType::ke(avatar_verifying_key.as_bytes().to_vec()))
         .add_section(
             "image",
             vec![("pixels".to_string(), VsfType::v(b'e', encrypted))],
         )
         .build()?;
 
-    // Now we need to:
-    // 1. Compute provenance hash (hp) - already done by builder
-    // 2. Sign the provenance hash
-    // 3. Write signature into ge placeholder
-
-    // Extract provenance hash from the built VSF
-    let prov_hash = vsf::verification::compute_provenance_hash(&vsf_bytes)?;
-
-    // Sign the provenance hash
-    let signature = avatar_signing_key.sign(&prov_hash);
-
-    // Find and write signature into the ge placeholder
-    let vsf_bytes = write_signature_to_vsf(vsf_bytes, &signature.to_bytes())?;
-
-    Ok(vsf_bytes)
-}
-
-/// Write signature bytes into the ge placeholder in a VSF file
-fn write_signature_to_vsf(mut vsf_bytes: Vec<u8>, signature: &[u8; 64]) -> Result<Vec<u8>, String> {
-    // Scan for "ge" marker followed by length encoding and 64 zero bytes VSF encodes length as (len-1) with size marker: For 64 bytes: len-1 = 63, which fits in u8, so: '3' (0x33) + 63 (0x3F) Full encoding: 'g' 'e' '3' 63 <64 bytes>
-    let mut pos = 0;
-    while pos < vsf_bytes.len().saturating_sub(68) {
-        if vsf_bytes[pos] == b'g' && vsf_bytes[pos + 1] == b'e' {
-            // Check length encoding: '3' followed by 63 (for 64-byte signature)
-            if vsf_bytes[pos + 2] == b'3' && vsf_bytes[pos + 3] == 63 {
-                let sig_start = pos + 4;
-                // Verify it's all zeros (placeholder)
-                if vsf_bytes[sig_start..sig_start + 64].iter().all(|&b| b == 0) {
-                    // Write signature
-                    vsf_bytes[sig_start..sig_start + 64].copy_from_slice(signature);
-                    return Ok(vsf_bytes);
-                }
-            }
-        }
-        pos += 1;
-    }
-    Err("Could not find signature placeholder in VSF".to_string())
+    // Canonical vsf signing (fills hp, then ge over BLAKE3(file, ge zeroed)) — the same scheme read_verified/verify_file_signature checks and the worker now verifies. Replaces the hand-rolled sign-the-hp-value scheme and its ge-placeholder byte scanner.
+    vsf::verification::sign_file(unsigned, avatar_signing_key.as_bytes())
 }
 
 /// Upload avatar to FGTW with signature authentication
@@ -1417,10 +1371,7 @@ pub fn upload_avatar_from_seed(
     // The FGTW network locator (public wire address peers compute from a handle) is still the base64url storage key.
     let storage_key = avatar_storage_key_from_seed(identity_seed);
 
-    // Verify local file is unmodified original
-    vsf::verification::is_original(&local_vsf)?;
-
-    // Extract AV1 data from local avatar VSF (decrypts if encrypted)
+    // Extract AV1 data from local avatar VSF (verified parse + decrypt) — read_verified inside subsumes the old standalone is_original check.
     let av1_data = extract_av1_data_from_seed(&local_vsf, identity_seed)?;
 
     // Derive avatar keypair
@@ -1642,10 +1593,10 @@ pub enum AvatarSyncResult {
 
 /// Read the eagle-time creation stamp embedded in an in-memory avatar VSF buffer (the server's `avatar_get` response). The VSF conduit returns the stripped-but-creation-time-preserving VSF, so the timestamp travels in the body itself — no `X-Avatar-Timestamp` HTTP header (that was the dead REST path). Returns `None` if the buffer has no decodable creation time.
 fn avatar_vsf_timestamp(vsf_data: &[u8]) -> Option<i64> {
-    use vsf::file_format::VsfHeader;
     use vsf::types::EagleTime;
     use vsf::VsfType;
-    let (header, _) = VsfHeader::decode(vsf_data).ok()?;
+    // Verified read: a creation stamp on a doc that fails hp/hb must never enter the newest-wins comparison.
+    let (header, _) = vsf::verification::read_verified(vsf_data, None).ok()?;
     match header.creation_time {
         Some(VsfType::e(et)) => EagleTime::new(et).oscillations(),
         _ => None,

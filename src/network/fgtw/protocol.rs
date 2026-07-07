@@ -1274,18 +1274,12 @@ pub fn parse_clutch_offer_vsf(
     vsf_bytes: &[u8],
     expected_conversation_token: &[u8; 32],
 ) -> Result<(ClutchOfferPayload, [u8; 32], [u8; 32], [u8; 32]), String> {
-    // Verify signature first
-    if !vsf::verification::verify_file_signature(vsf_bytes)? {
-        return Err("Invalid signature on ClutchOffer".to_string());
-    }
+    // Verified read: is_original (content hp — the offer is built canonically by sign_file) + Ed25519 signature, un-skippable and in the right order. Replaces the separate verify_file_signature + bare decode pair.
+    let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None)
+        .map_err(|e| format!("ClutchOffer verification failed: {}", e))?;
 
     // Extract signer pubkey
     let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
-
-    // Parse header and section
-    use vsf::file_format::VsfHeader;
-    let (header, header_end) =
-        VsfHeader::decode(vsf_bytes).map_err(|e| format!("Failed to parse header: {}", e))?;
 
     // offer_provenance will be computed from keys after parsing (deterministic, no timestamp)
 
@@ -1515,6 +1509,7 @@ pub fn parse_clutch_kem_response_vsf(
     vsf_bytes: &[u8],
     expected_conversation_token: &[u8; 32],
 ) -> Result<(ClutchKemResponsePayload, [u8; 32], [u8; 32], [u8; 32]), String> {
+    // SPEC DEVIATION (messaging rework will resolve): this frame's hp carries the ceremony_id — application semantics, not content provenance — so is_original/read_verified would reject it by design. The scheme-1 signature below still covers the ENTIRE file (including that hp), so integrity + authorship ARE verified; only content-hp self-attestation is waived. Canonicalising means moving ceremony_id into a section field (wire change).
     // Verify signature first
     if !vsf::verification::verify_file_signature(vsf_bytes)? {
         return Err("Invalid signature on ClutchKemResponse".to_string());
@@ -1737,18 +1732,12 @@ pub fn parse_clutch_kem_response_vsf(
 pub fn parse_clutch_offer_vsf_without_recipient_check(
     vsf_bytes: &[u8],
 ) -> Result<(ClutchOfferPayload, [u8; 32], [u8; 32], [u8; 32]), String> {
-    // Verify signature first
-    if !vsf::verification::verify_file_signature(vsf_bytes)? {
-        return Err("Invalid signature on ClutchOffer".to_string());
-    }
+    // Verified read: is_original (content hp — the offer is built canonically by sign_file) + Ed25519 signature, un-skippable and in the right order. Replaces the separate verify_file_signature + bare decode pair.
+    let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None)
+        .map_err(|e| format!("ClutchOffer verification failed: {}", e))?;
 
     // Extract signer pubkey
     let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
-
-    // Parse header and section
-    use vsf::file_format::VsfHeader;
-    let (header, header_end) =
-        VsfHeader::decode(vsf_bytes).map_err(|e| format!("Failed to parse header: {}", e))?;
 
     // offer_provenance will be computed from keys after parsing (deterministic, no timestamp)
 
@@ -1889,6 +1878,7 @@ pub fn parse_clutch_offer_vsf_without_recipient_check(
 pub fn parse_clutch_kem_response_vsf_without_recipient_check(
     vsf_bytes: &[u8],
 ) -> Result<(ClutchKemResponsePayload, [u8; 32], [u8; 32], [u8; 32]), String> {
+    // SPEC DEVIATION (messaging rework will resolve): this frame's hp carries the ceremony_id — application semantics, not content provenance — so is_original/read_verified would reject it by design. The scheme-1 signature below still covers the ENTIRE file (including that hp), so integrity + authorship ARE verified; only content-hp self-attestation is waived. Canonicalising means moving ceremony_id into a section field (wire change).
     // Verify signature first
     if !vsf::verification::verify_file_signature(vsf_bytes)? {
         return Err("Invalid signature on ClutchKemResponse".to_string());
@@ -2190,6 +2180,7 @@ pub fn parse_clutch_complete_vsf(
     vsf_bytes: &[u8],
     expected_conversation_token: &[u8; 32],
 ) -> Result<(ClutchCompletePayload, [u8; 32], [u8; 32], [u8; 32]), String> {
+    // SPEC DEVIATION (messaging rework will resolve): this frame's hp carries the ceremony_id — application semantics, not content provenance — so is_original/read_verified would reject it by design. The scheme-1 signature below still covers the ENTIRE file (including that hp), so integrity + authorship ARE verified; only content-hp self-attestation is waived. Canonicalising means moving ceremony_id into a section field (wire change).
     // Verify signature first
     if !vsf::verification::verify_file_signature(vsf_bytes)? {
         return Err("Invalid signature on ClutchComplete".to_string());
@@ -2253,6 +2244,7 @@ pub fn parse_clutch_complete_vsf(
 pub fn parse_clutch_complete_vsf_without_recipient_check(
     vsf_bytes: &[u8],
 ) -> Result<(ClutchCompletePayload, [u8; 32], [u8; 32], [u8; 32]), String> {
+    // SPEC DEVIATION (messaging rework will resolve): this frame's hp carries the ceremony_id — application semantics, not content provenance — so is_original/read_verified would reject it by design. The scheme-1 signature below still covers the ENTIRE file (including that hp), so integrity + authorship ARE verified; only content-hp self-attestation is waived. Canonicalising means moving ceremony_id into a section field (wire change).
     // Verify signature first
     if !vsf::verification::verify_file_signature(vsf_bytes)? {
         return Err("Invalid signature on ClutchComplete".to_string());

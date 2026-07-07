@@ -1,7 +1,7 @@
 use super::{fingerprint::Keypair, PeerRecord};
 use crate::types::DevicePubkey;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use vsf::{schema::FromVsfType, VsfHeader, VsfSection};
+use vsf::{schema::FromVsfType, VsfSection};
 
 const FGTW_URL: &str = "https://fgtw.org";
 
@@ -26,62 +26,10 @@ pub const FGTW_ED25519_PUBLIC_KEY: [u8; 32] = [
     0x8F, 0xA7, 0x01, 0x6A, 0x60, 0xA6, 0xF4, 0x02, 0x05, 0xCA, 0x95, 0x0D, 0x9B, 0xF0, 0x58, 0x88,
 ];
 
-/// Try to parse a VSF error message from response bytes Returns Some(error_message) if the response is a valid VSF error, None otherwise Uses VsfHeader::decode() for robust parsing
+/// Try to parse a VSF error message from response bytes Returns Some(error_message) if the response is a worker `error` frame, None otherwise. The old hand-rolled scan for legacy "message"/"error" section shapes is retired — the worker answers every failure as a `{reason, detail}` error frame (fgtw 6b01e46).
 fn try_parse_vsf_error(bytes: &[u8]) -> Option<String> {
-    use vsf::VsfType;
-
-    // Use VsfHeader::decode() to parse the header
-    let (header, header_len) = VsfHeader::decode(bytes).ok()?;
-
-    // Look for "error" field in header fields
-    for field in &header.fields {
-        if field.name == "error" {
-            // Try to parse the error section at the field's offset
-            let mut ptr = field.offset_bytes;
-            if let Ok(section) = VsfSection::parse(bytes, &mut ptr) {
-                // Look for error message in section fields - try "message" first, then "error"
-                for field_name in &["message", "error"] {
-                    if let Some(section_field) = section.get_field(field_name) {
-                        // Return first text value (l for long text, x for VSF text)
-                        for value in &section_field.values {
-                            match value {
-                                VsfType::x(msg) => return Some(msg.clone()),
-                                VsfType::a(msg) => return Some(msg.clone()),
-                                _ => {}
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Fallback: check if there's an error section without header field (for simple inline error responses)
-    let mut ptr = header_len;
-    while ptr < bytes.len() {
-        if bytes[ptr] == b'[' {
-            if let Ok(section) = VsfSection::parse(bytes, &mut ptr) {
-                if section.name == "error" {
-                    // Look for message field
-                    for field_name in &["message", "error"] {
-                        if let Some(section_field) = section.get_field(field_name) {
-                            for value in &section_field.values {
-                                match value {
-                                    VsfType::x(msg) => return Some(msg.clone()),
-                                    VsfType::a(msg) => return Some(msg.clone()),
-                                    _ => {}
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        } else {
-            break;
-        }
-    }
-
-    None
+    fgtw::client::error_frame(bytes)
+        .map(|(reason, detail)| if detail.is_empty() { reason } else { detail })
 }
 
 /// Turn an FGTW error response into a SHORT, plain message with no web-stack jargon (no status numbers, no "Bad Request"/"Internal Server Error" reason phrases, no URLs). FGTW signs its own error reasons; if one is present we surface that (it's ours and it's meaningful); otherwise the message is a plain "FGTW couldn't <step>" split only by whether the fault is on their side (5xx) or ours (4xx). The raw HTTP terminology is a transport detail the user can't act on.
@@ -261,50 +209,23 @@ async fn load_bootstrap_peers_inner(
 
 /// Parse challenge VSF to extract provenance hash The timestamp in the challenge is ignored - announce generates its own timestamp
 fn parse_challenge_hash(bytes: &[u8]) -> Result<[u8; 32], String> {
-    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
     use vsf::VsfType;
 
-    // Use VsfHeader::decode() to parse the entire header
-    let (header, _header_len) = VsfHeader::decode(bytes)?;
+    // Verified read pinned to the FGTW signing key: is_original + Ed25519(ge over BLAKE3(file, ge zeroed)) + ke must equal FGTW_ED25519_PUBLIC_KEY. A challenge that fails ANY of those is not from FGTW.
+    let (header, _header_len) =
+        vsf::verification::read_verified(bytes, Some(FGTW_ED25519_PUBLIC_KEY))
+            .map_err(|e| format!("Challenge verification failed - not from authentic FGTW: {}", e))?;
 
-    // Extract provenance hash (hp) - this is what gets signed
-    let prov_hash_bytes = match &header.provenance_hash {
-        VsfType::hp(hash) if hash.len() == 32 => hash.clone(),
-        VsfType::hp(hash) => return Err(format!("Invalid provenance hash length: {}", hash.len())),
-        _ => return Err("Invalid provenance hash type".to_string()),
-    };
-
-    // Extract signature (ge) - must be present for challenge
-    let signature_bytes = match &header.signature {
-        Some(VsfType::ge(sig)) if sig.len() == 64 => sig.clone(),
-        Some(VsfType::ge(sig)) => {
-            return Err(format!(
-                "Invalid signature length: {} (expected 64)",
-                sig.len()
-            ))
+    // The provenance hash is the challenge value.
+    match &header.provenance_hash {
+        VsfType::hp(hash) if hash.len() == 32 => {
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(hash);
+            Ok(arr)
         }
-        _ => return Err("Challenge missing signature (ge)".to_string()),
-    };
-
-    // Verify signature over provenance hash
-    let verifying_key = VerifyingKey::from_bytes(&FGTW_ED25519_PUBLIC_KEY)
-        .map_err(|e| format!("Invalid FGTW public key: {}", e))?;
-
-    let signature = Signature::from_bytes(
-        signature_bytes
-            .as_slice()
-            .try_into()
-            .map_err(|_| "Invalid signature bytes".to_string())?,
-    );
-
-    verifying_key
-        .verify(&prov_hash_bytes, &signature)
-        .map_err(|_| "Challenge signature verification failed - not from authentic FGTW")?;
-
-    // Return the provenance hash (which becomes the challenge value)
-    let mut arr = [0u8; 32];
-    arr.copy_from_slice(&prov_hash_bytes);
-    Ok(arr)
+        VsfType::hp(hash) => Err(format!("Invalid provenance hash length: {}", hash.len())),
+        _ => Err("Invalid provenance hash type".to_string()),
+    }
 }
 
 /// Encrypt data for FGTW using ephemeral X25519 + AES-256-GCM Format: [ephemeral_pubkey:32][nonce:12][ciphertext+tag] This matches FGTW's Web Crypto API implementation
@@ -470,32 +391,16 @@ fn build_announce_message(
 
 /// Parse peer list from VSF bytes
 fn parse_peer_list(bytes: &[u8], device_key: &Keypair) -> Result<Vec<PeerRecord>, String> {
-    // 1. Parse outer VSF file wrapper (proper VSF with header + provenance)
-    let (outer_header, _) =
-        VsfHeader::decode(bytes).map_err(|e| format!("Parse response header: {}", e))?;
+    // 1+2. Verified whole-document read (hp + hb) + schema-validated section parse — the response cannot be read without verification passing first.
+    let schema = vsf::schema::SectionSchema::new("encrypted_peers")
+        .field("data", vsf::schema::TypeConstraint::Wrapped(b'e'));
+    let section = vsf::schema::SectionBuilder::parse_document(schema, bytes, None)
+        .map_err(|e| format!("Verified parse of encrypted_peers response: {}", e))?;
 
-    // 2. Find encrypted_peers section in outer wrapper
-    let section_offset = outer_header
-        .fields
-        .iter()
-        .find(|f| f.name == "encrypted_peers")
-        .map(|f| f.offset_bytes)
-        .ok_or("Missing 'encrypted_peers' section in response")?;
-
-    // 3. Parse section to get encrypted data field
-    let mut ptr = section_offset;
-    let section = VsfSection::parse(bytes, &mut ptr)
-        .map_err(|e| format!("Parse encrypted_peers section: {}", e))?;
-
-    // 4. Extract v'e' encrypted blob from "data" field
+    // 3. Extract the v'e' encrypted blob from the "data" field (encoding enforced by the Wrapped(b'e') constraint above).
     let encrypted_data = section
-        .get_field("data")
-        .and_then(|f| f.values.first())
-        .and_then(|v| match v {
-            vsf::VsfType::v(b'e', data) => Some(data.clone()),
-            _ => None,
-        })
-        .ok_or("Missing encrypted data field (v'e') in encrypted_peers section")?;
+        .get_value::<Vec<u8>>("data")
+        .map_err(|e| format!("encrypted_peers data field: {}", e))?;
 
     // 5. Decrypt to get raw section data (just `[peers: ...]`, no VSF header)
     let plaintext_bytes = decrypt_from_fgtw(&encrypted_data, device_key)?;
