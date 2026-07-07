@@ -85,14 +85,14 @@ vsf::verification::is_original(&body).map_err(...)?;
 - A `dev.sh`/CI gate that fails on NEW `.flatten()` / hand-matched `VsfType::` parses in network-facing files (the "make the next violation scream" step — rules unenforced by tooling don't survive).
 - This doc's debt register (below) tracked, not force-converted.
 
-## Debt register (local-trust vault parsers — NOT this pass)
+## Debt register — RESOLVED 2026-07-06 (photon 71d0be9)
 
-AEAD-gated (you wrote + trust these bytes locally), so debt not danger; convert opportunistically once `parse_document` exists:
-- `src/storage/contacts.rs` ≈30 manual sites / 9 parse fns
-- `src/crypto/clutch.rs` ≈32 sites / 3 `from_vsf_section` fns (0 schema uses)
-- `src/types/message.rs` ≈24 sites (its width-tolerant uint arms are the GOOD pattern to copy)
-- `src/storage/friendship.rs` ≈15 sites
-≈101 manual match sites / 9 schema uses across the four.
+The register turned out to be mostly corpses: CLUTCH persistence had become memory-only no-ops, orphaning its whole serialization layer.
+- `contacts.rs`: reader → `SectionBuilder::parse(contact_state_schema)`; 331 dead lines (slot/secrets/KEM parsers) deleted
+- `friendship.rs`: reader → `SectionBuilder::parse(chains_schema)`
+- `types/message.rs`: DELETED (zero callers; `ChatMessage` in contact.rs is the real type)
+- `crypto/clutch.rs`: all six VSF fns deleted (zero callers); the file contains no VSF parsing now
+Phase C shipped too: `scripts/lib/vsf-gate.sh` — a per-file baseline ratchet on raw `VsfHeader::decode`/`VsfSection::parse` in network-facing files, wired into every build. New hand-rolls fail the build.
 
 ## Staged (writer byte-output changes → wire-compat risk while mid-test — deferred)
 
