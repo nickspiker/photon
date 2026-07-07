@@ -22,20 +22,8 @@ fn build_signed_vsf(
         .build()
         .map_err(|e| format!("Build VSF: {}", e))?;
 
-    // Compute provenance hash and sign
-    let hash_bytes = vsf::verification::compute_provenance_hash(&unsigned_bytes)
-        .map_err(|e| format!("Compute hash: {}", e))?;
-
-    let signature = keypair.sign(&hash_bytes);
-
-    // Fill in hp and ge fields
-    let mut signed_bytes = unsigned_bytes;
-    vsf::verification::fill_provenance_hash(&mut signed_bytes, &hash_bytes)
-        .map_err(|e| format!("Fill hash: {}", e))?;
-    vsf::verification::fill_signature(&mut signed_bytes, &signature.to_bytes())
-        .map_err(|e| format!("Fill signature: {}", e))?;
-
-    Ok(signed_bytes)
+    // Canonical vsf signing (fills hp, then ge over BLAKE3(file, ge zeroed)) — matches the scheme the worker verifies. The old code signed the bare hp value, which the worker's file-hash verification REJECTED, so every relay send died with bad_signature (masked because relay is a non-fatal last-resort fallback).
+    vsf::verification::sign_file(unsigned_bytes, keypair.secret.as_bytes())
 }
 
 /// Send a message via FGTW conduit relay
