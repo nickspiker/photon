@@ -5,7 +5,9 @@ use vsf::{schema::FromVsfType, VsfHeader, VsfSection};
 
 const FGTW_URL: &str = "https://fgtw.org";
 
-/// Result of a bootstrap query - includes peers even on error
+/// Result of a bootstrap query. `peers` carries whatever records parsed successfully; a malformed
+/// record is skipped (not fatal) rather than aborting the whole list, and a transport/decode-level
+/// failure is reported in `error` while still returning any peers already recovered.
 #[derive(Debug)]
 pub struct BootstrapResult {
     pub peers: Vec<PeerRecord>,
@@ -517,12 +519,20 @@ fn parse_peer_list(bytes: &[u8], device_key: &Keypair) -> Result<Vec<PeerRecord>
     let peers_section = VsfSection::parse(&plaintext_bytes, &mut ptr)
         .map_err(|e| format!("Parse peers section: {}", e))?;
 
-    // 9. Get all peer fields and convert to PeerRecords
+    // 9. Get all peer fields and convert to PeerRecords.
+    // Per-record skip: one malformed record must NOT abort the whole peer list — a single bad entry
+    // used to `?`-bail here, leaving the requester with zero peers (so it never dialled anyone and
+    // presence went one-way). Skip the bad record loudly and keep the rest.
     let peer_fields = peers_section.get_fields("peer");
     let mut peers = Vec::new();
-    for field in peer_fields {
-        let peer = parse_peer_from_field(field)?;
-        peers.push(peer);
+    for (idx, field) in peer_fields.into_iter().enumerate() {
+        match parse_peer_from_field(field) {
+            Ok(peer) => peers.push(peer),
+            Err(e) => crate::log(&format!(
+                "Bootstrap: skipping malformed peer record at index {} = {}",
+                idx, e
+            )),
+        }
     }
 
     Ok(peers)
