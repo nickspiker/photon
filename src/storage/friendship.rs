@@ -5,7 +5,7 @@
 //! All encryption, addressing, and atomicity is handled by FlatStorage.
 
 use vsf::schema::{SectionSchema, TypeConstraint};
-use vsf::{VsfSection, VsfType};
+use vsf::VsfType;
 
 use crate::storage::{FlatStorage, StorageError};
 use crate::types::{FriendshipChains, FriendshipId};
@@ -206,9 +206,8 @@ pub fn load_friendship_chains(
     #[cfg(feature = "development")]
     crate::network::inspect::vsf_read_decrypted(&vsf_bytes, "friendship/chains");
 
-    // Parse VSF
-    let mut ptr = 0;
-    let section = VsfSection::parse(&vsf_bytes, &mut ptr)
+    // Schema-validated parse — the same chains_schema the writer encodes with, so reader and writer can no longer drift.
+    let section = vsf::schema::SectionBuilder::parse(chains_schema(), &vsf_bytes)
         .map_err(|e| StorageError::Parse(format!("VSF parse: {}", e)))?;
 
     // Extract participants (handle hashes as hb)
@@ -241,17 +240,7 @@ pub fn load_friendship_chains(
     // === Hash chain state (v2) ===
 
     // last_sent_hash - optional (None if not present or never sent)
-    let last_sent_hash: Option<[u8; 32]> = section
-        .get_field("last_sent_hash")
-        .and_then(|f| f.values.first())
-        .and_then(|v| match v {
-            VsfType::hp(bytes) if bytes.len() == 32 => {
-                let mut arr = [0u8; 32];
-                arr.copy_from_slice(bytes);
-                Some(arr)
-            }
-            _ => None,
-        });
+    let last_sent_hash: Option<[u8; 32]> = section.get_value::<[u8; 32]>("last_sent_hash").ok();
 
     // last_received_hashes - one per participant (empty hb = None/anchor expected)
     let mut last_received_hashes: Vec<Option<[u8; 32]>> = Vec::new();
@@ -371,43 +360,15 @@ pub fn load_friendship_chains(
     // === Bidirectional entropy state (v3) ===
 
     // last_received_weave - derived weave hash for mixing (32 bytes)
-    let last_received_weave: Option<[u8; 32]> = section
-        .get_field("last_received_weave")
-        .and_then(|f| f.values.first())
-        .and_then(|v| match v {
-            VsfType::hp(bytes) if bytes.len() == 32 => {
-                let mut arr = [0u8; 32];
-                arr.copy_from_slice(bytes);
-                Some(arr)
-            }
-            _ => None,
-        });
+    let last_received_weave: Option<[u8; 32]> =
+        section.get_value::<[u8; 32]>("last_received_weave").ok();
 
     // last_sent_weave - what we sent (what they received)
-    let last_sent_weave: Option<[u8; 32]> = section
-        .get_field("last_sent_weave")
-        .and_then(|f| f.values.first())
-        .and_then(|v| match v {
-            VsfType::hp(bytes) if bytes.len() == 32 => {
-                let mut arr = [0u8; 32];
-                arr.copy_from_slice(bytes);
-                Some(arr)
-            }
-            _ => None,
-        });
+    let last_sent_weave: Option<[u8; 32]> = section.get_value::<[u8; 32]>("last_sent_weave").ok();
 
     // last_incorporated_hp - which of their messages we mixed in
-    let last_incorporated_hp: Option<[u8; 32]> = section
-        .get_field("last_incorporated_hp")
-        .and_then(|f| f.values.first())
-        .and_then(|v| match v {
-            VsfType::hp(bytes) if bytes.len() == 32 => {
-                let mut arr = [0u8; 32];
-                arr.copy_from_slice(bytes);
-                Some(arr)
-            }
-            _ => None,
-        });
+    let last_incorporated_hp: Option<[u8; 32]> =
+        section.get_value::<[u8; 32]>("last_incorporated_hp").ok();
 
     // === Last plaintexts (v4) - one per participant ===
     let last_plaintexts: Vec<Vec<u8>> = section
