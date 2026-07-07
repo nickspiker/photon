@@ -605,56 +605,17 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeRestoreSessionF
 // Permission: com.photon.SESSION_READ (signature-level, declared in manifest).
 // ============================================================================
 
-/// Pack a SessionIdentity into a VSF capsule: a full file with header, one section "session" containing three fields (is=hI, vs=hV, hp=hP), BLAKE3-sealed.
+/// Seal a SessionIdentity for the sticky broadcast: the boot-locked `Shared` capsule — spaghettify(boot_id ‖ device_secret) AEAD + device_secret MAC (docs/android-session-persistence.md).
+/// The OLD packing here was a PLAINTEXT VSF (raw hI/hV/hP, hb integrity only) — a stale sticky from a previous boot would have restored raw roots straight across a reboot, violating the power-rail boundary the wairua exists to enforce. The sealed capsule fails AEAD on any other boot, so the "None → attest" path fires exactly as designed.
 #[cfg(target_os = "android")]
-fn pack_session_vsf(s: &tohu::SessionIdentity) -> Vec<u8> {
-    use vsf::{VsfBuilder, VsfType};
-    VsfBuilder::new()
-        .add_section(
-            "session",
-            vec![
-                ("is".to_string(), VsfType::hI(s.identity_seed.to_vec())),
-                ("vs".to_string(), VsfType::hV(s.vault_seed.to_vec())),
-                ("hp".to_string(), VsfType::hP(s.handle_proof.to_vec())),
-            ],
-        )
-        .build()
-        .expect("session VSF build")
+fn pack_session_vsf(s: &tohu::SessionIdentity) -> Option<Vec<u8>> {
+    tohu::seal_session(s, tohu::SealMode::Shared)
 }
 
-/// Unpack a SessionIdentity from a VSF capsule produced by `pack_session_vsf`.
-/// Verifies the BLAKE3 rolling hash before reading any fields — returns `None` on tampered or truncated bytes.
+/// Open a broadcast capsule produced by `pack_session_vsf`. `None` on MAC mismatch, AEAD failure (wrong boot = reboot), tamper, or truncation.
 #[cfg(target_os = "android")]
 pub fn unpack_session_vsf(bytes: &[u8]) -> Option<tohu::SessionIdentity> {
-    use vsf::{parse, VsfType};
-    if let Err(e) = vsf::verification::verify_file_hash(bytes) {
-        error!("unpack_session_vsf: integrity check failed: {}", e);
-        return None;
-    }
-    let mut ptr = 0;
-    let mut identity_seed = None::<[u8; 32]>;
-    let mut vault_seed = None::<[u8; 32]>;
-    let mut handle_proof = None::<[u8; 32]>;
-    while ptr < bytes.len() {
-        match parse(bytes, &mut ptr) {
-            Ok(VsfType::hI(v)) if v.len() == 32 => {
-                identity_seed = Some(v.try_into().unwrap());
-            }
-            Ok(VsfType::hV(v)) if v.len() == 32 => {
-                vault_seed = Some(v.try_into().unwrap());
-            }
-            Ok(VsfType::hP(v)) if v.len() == 32 => {
-                handle_proof = Some(v.try_into().unwrap());
-            }
-            Err(_) => break,
-            _ => {}
-        }
-    }
-    Some(tohu::SessionIdentity {
-        identity_seed: identity_seed?,
-        vault_seed: vault_seed?,
-        handle_proof: handle_proof?,
-    })
+    tohu::open_session(bytes, tohu::SealMode::Shared)
 }
 
 /// Send (or replace) the sticky session broadcast. Reads the current session from `tohu::session()` — seeds never leave Rust. Called from Kotlin after attest succeeds.
@@ -672,7 +633,13 @@ pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeSendSe
             return;
         }
     };
-    let bytes = pack_session_vsf(&session);
+    let bytes = match pack_session_vsf(&session) {
+        Some(b) => b,
+        None => {
+            error!("nativeSendSessionBroadcast: seal failed (no boot secret or device_secret)");
+            return;
+        }
+    };
     let result = (|| -> Result<(), jni::errors::Error> {
         let intent_class = env.find_class("android/content/Intent")?;
         let action = env.new_string("com.photon.SESSION")?;
