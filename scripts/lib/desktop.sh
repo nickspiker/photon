@@ -8,6 +8,11 @@
 build_sign_install() {
     local profile="$1"
     local prof_dir
+
+    # Hand-rolled-VSF ratchet: block the build if a network-facing file grew a raw parse site.
+    source "$(dirname "${BASH_SOURCE[0]}")/vsf-gate.sh"
+    vsf_gate
+
     if [ "$profile" = "release" ]; then
         prof_dir="release"
         export PHOTON_ALLOW_RELEASE=1
