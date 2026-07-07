@@ -647,12 +647,17 @@ impl HandleQuery {
                         crate::log("Network: Handle registered to this device");
 
                         // Ownership confirmed — now it is safe to remember the session roots for resume.
+                        // A persist failure must be LOUD: it was silently swallowed here while Android's tohu dirs were unwired, so attest "succeeded" with no session anywhere — avatar picker dead, broadcast empty, every restart back on the attest screen.
                         if persist_session {
-                            let _ = tohu::set_session(&tohu::SessionIdentity {
+                            if let Err(e) = tohu::set_session(&tohu::SessionIdentity {
                                 identity_seed,
                                 vault_seed,
                                 handle_proof,
-                            });
+                            }) {
+                                crate::log(&format!(
+                                    "Network: session persist FAILED (resume will not survive restart): {e}"
+                                ));
+                            }
                         }
 
                         // === Load all data in background (proof → network → disk → cloud) ===

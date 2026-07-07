@@ -5070,7 +5070,12 @@ impl PhotonApp {
                     voca::encode(BigUint::from_bytes_be(&data.handle_proof))
                 );
                 // Adopt the session roots the worker just derived + persisted (register-shaped, no handle string). Shared across the user's TOKEN apps, gone at logout; a close/reopen resumes from these without re-typing or recomputing the proof.
-                self.session = tohu::session();
+                // Fall back to the roots carried in the attest result if the tohu READ-BACK comes up empty (a persist failure must not leave THIS RUN sessionless — that made the avatar picker report "not attested" seconds after a successful attest). vault_seed == identity_seed mirrors the worker's derivation (handle_query FirstAttest).
+                self.session = tohu::session().or(Some(tohu::SessionIdentity {
+                    identity_seed: data.identity_seed,
+                    vault_seed: data.identity_seed,
+                    handle_proof: data.handle_proof,
+                }));
                 self.pending_broadcast_signal = 1;
                 self.vault_degraded = data.vault_degraded;
                 // The worker already loaded this device's avatar (keyed on identity_seed) into `data.avatar_pixels`; colour-convert it to BT.2020 γ=2.0 for the Ready screen. `None` = storage-miss → grey placeholder.
