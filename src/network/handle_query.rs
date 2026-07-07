@@ -484,6 +484,12 @@ impl HandleQuery {
                                         ProbeOutcome::Taken
                                     }
                                 }
+                                // An EMPTY chain is not corruption — it's "no one holds this handle"
+                                // (a blob with zero ops folds to Empty, e.g. after a wipe left the
+                                // slot allocated but unwritten). Same classification as Ok(None).
+                                Err(crate::network::fgtw::fleet::FoldError::Empty) => {
+                                    ProbeOutcome::Fresh
+                                }
                                 Err(fold_err) => {
                                     crate::log(&format!(
                                         "Network: probe fold failed (indeterminate, not taken): {fold_err:?}"
@@ -607,6 +613,9 @@ impl HandleQuery {
                                     Ok(false) // fold-verified chain names a DIFFERENT identity — genuinely taken
                                 }
                             }
+                            // An EMPTY chain (zero ops) is "no one holds this handle", not
+                            // corruption — same as Ok(None): we were just admitted, ours.
+                            Err(crate::network::fgtw::fleet::FoldError::Empty) => Ok(true),
                             Err(fold_err) => {
                                 // Dev-log the raw body so a Cloudflare KV read-lag serving a
                                 // pre-wipe chain is visible (gated to the development feature).
