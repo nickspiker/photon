@@ -40,9 +40,29 @@ use fluor::host::android::AndroidShell;
 static MESSAGE_NOTIFIER: std::sync::OnceLock<(jni::JavaVM, jni::objects::GlobalRef)> =
     std::sync::OnceLock::new();
 
-/// Fire the Android "new message" notification (Kotlin decides visibility/foreground suppression + posts on the photon_messages channel, which carries the sound). No-op if the service never registered. Callable from any thread — attaches to the JVM as needed.
+/// The identity of the last message we fired a notification for, so a retransmit of the SAME logical
+/// message doesn't re-ding. A dozing/off-LAN peer retransmits the same frame many times (observed: one
+/// message → 5+ retransmits, and its ACK echoed 10× in a single millisecond), and `notify()` re-alerts
+/// the sound on every call even under a fixed notification id — so without this gate one message becomes
+/// a burst of dings. Keyed on the message's `prev_msg_hp` (unique per position in the chain).
 #[cfg(target_os = "android")]
-pub fn notify_new_message() {
+static LAST_NOTIFIED_MSG: std::sync::Mutex<Option<[u8; 32]>> = std::sync::Mutex::new(None);
+
+/// Fire the Android "new message" notification for the message identified by `msg_hp` (its `prev_msg_hp`
+/// chain position). Deduplicated: a repeat of the same `msg_hp` (a retransmit) is a no-op, so one logical
+/// message dings once. Kotlin decides visibility/foreground suppression + posts on the photon_messages
+/// channel, which carries the sound. No-op if the service never registered. Callable from any thread —
+/// attaches to the JVM as needed.
+#[cfg(target_os = "android")]
+pub fn notify_new_message(msg_hp: &[u8; 32]) {
+    // Dedup: skip if this is the same message we most recently notified for (a retransmit).
+    {
+        let mut last = LAST_NOTIFIED_MSG.lock().unwrap();
+        if last.as_ref() == Some(msg_hp) {
+            return;
+        }
+        *last = Some(*msg_hp);
+    }
     let Some((vm, svc)) = MESSAGE_NOTIFIER.get() else {
         return;
     };
