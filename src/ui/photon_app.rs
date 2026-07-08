@@ -6740,6 +6740,32 @@ impl PhotonApp {
 
     /// Ping all contacts that have IP addresses (call periodically)
     fn ping_contacts(&mut self) {
+        use crate::network::traverse::session::PATH_TTL;
+        // Cycles an online contact may go punched-but-unvalidated before we treat it as direct-unreachable.
+        const PUNCH_UNREACHABLE_THRESHOLD: u8 = 3;
+
+        // Expire stale validated paths (no keepalive ack within TTL → the NAT mapping is likely dead): clear
+        // so `race_addrs` falls back to LAN/public and this cycle re-punches. Track the symmetric↔symmetric
+        // case: an online contact we keep punching but never validate is direct-unreachable — bump the
+        // graceful-failure counter (the hook M2's relay reads) and log the state once at the threshold.
+        for c in self.contacts.iter_mut() {
+            if let Some((_, at)) = c.validated_path {
+                if at.elapsed() >= PATH_TTL {
+                    c.validated_path = None;
+                }
+            }
+            if c.is_online && c.validated_path.is_none() {
+                c.punch_unvalidated_cycles = c.punch_unvalidated_cycles.saturating_add(1);
+                if c.punch_unvalidated_cycles == PUNCH_UNREACHABLE_THRESHOLD {
+                    crate::log(&format!(
+                        "TRAVERSE: {} online but no direct path after {} cycles — pending relay (M2)",
+                        crate::fp(&c.handle_proof).as_str(),
+                        PUNCH_UNREACHABLE_THRESHOLD
+                    ));
+                }
+            }
+        }
+
         let Some(checker) = self.status_checker.as_ref() else {
             return;
         };
@@ -6752,17 +6778,18 @@ impl PhotonApp {
                 }
                 _ => None,
             };
-            // Hole-punch candidates: the peer's addresses, gathered best-first. Fire probes alongside the
-            // first ping only (they cover the same LAN/public addresses), and only while we lack a validated
-            // direct path — once punched, `race_addrs` uses it and we stop re-probing.
-            let mut punch: Vec<std::net::SocketAddr> = if contact.validated_path.is_none() {
-                crate::network::traverse::gather::gather_peer_candidates(contact)
+            // Punch candidates, fired alongside the first ping (stale paths were cleared above):
+            // - validated → keepalive: probe just the validated remote to keep its NAT mapping warm; its
+            //   ack refreshes liveness so the path never expires while the contact stays reachable.
+            // - unvalidated → (re)punch: probe all the peer's addresses, best-first, so the first to
+            //   round-trip wins.
+            let mut punch: Vec<std::net::SocketAddr> = match contact.validated_path {
+                Some((remote, _)) => vec![remote],
+                None => crate::network::traverse::gather::gather_peer_candidates(contact)
                     .sorted()
                     .into_iter()
                     .map(|c| c.addr)
-                    .collect()
-            } else {
-                Vec::new()
+                    .collect(),
             };
             let mut sent = false;
             if let Some(addr) = lan_addr {
@@ -6938,14 +6965,13 @@ impl PhotonApp {
             _ => contact.ip,
         };
         if let Some(ip) = addr {
-            let punch: Vec<std::net::SocketAddr> = if contact.validated_path.is_none() {
-                crate::network::traverse::gather::gather_peer_candidates(contact)
+            let punch: Vec<std::net::SocketAddr> = match contact.validated_path {
+                Some((remote, _)) => vec![remote], // keepalive the validated path
+                None => crate::network::traverse::gather::gather_peer_candidates(contact)
                     .sorted()
                     .into_iter()
                     .map(|c| c.addr)
-                    .collect()
-            } else {
-                Vec::new()
+                    .collect(),
             };
             checker.ping(ip, contact.public_identity.clone(), punch);
         }
@@ -9130,20 +9156,28 @@ impl PhotonApp {
                 }
 
                 StatusUpdate::PathValidated { peer_pubkey, remote } => {
-                    // A hole-punch round-tripped. Record it on the matching contact (any device in the friend's fleet) so `race_addrs` prefers this direct path, keeping the public/LAN as the alternate. First-wins: we stop re-punching once a path is set, so this only chooses among a single cycle's candidates — the first to round-trip, which is ≈ the lowest-latency/best path. Keepalive/expiry (P5) refreshes or clears it.
-                    let now_osc = vsf::eagle_time_oscillations();
+                    // A hole-punch (or keepalive) round-tripped. Record/refresh it on the matching contact (any device in the friend's fleet) so `race_addrs` prefers this direct path, keeping the public/LAN as the alternate. First-wins on the address (we stop full-punching once a path is set, so among a single cycle's candidates the first to round-trip — ≈ the lowest-latency path — wins); the timestamp is refreshed on every ack for that same path (keepalive liveness). Any validation clears the graceful-failure counter.
+                    let now = std::time::Instant::now();
                     if let Some(contact) = self
                         .contacts
                         .iter_mut()
                         .find(|c| c.knows_device(&peer_pubkey.key))
                     {
-                        if contact.validated_path.is_none() {
-                            crate::log(&format!(
-                                "TRAVERSE: path validated to {} = {}",
-                                crate::fp(&contact.handle_proof).as_str(),
-                                remote
-                            ));
-                            contact.validated_path = Some((remote, now_osc));
+                        contact.punch_unvalidated_cycles = 0;
+                        match contact.validated_path {
+                            None => {
+                                crate::log(&format!(
+                                    "TRAVERSE: path validated to {} = {}",
+                                    crate::fp(&contact.handle_proof).as_str(),
+                                    remote
+                                ));
+                                contact.validated_path = Some((remote, now));
+                            }
+                            Some((existing, _)) if existing == remote => {
+                                // Keepalive ack for the current path — refresh liveness.
+                                contact.validated_path = Some((remote, now));
+                            }
+                            Some(_) => { /* a different candidate acked; keep the first-won path */ }
                         }
                     }
                 }

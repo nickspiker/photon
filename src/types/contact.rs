@@ -194,8 +194,10 @@ pub struct Contact {
     pub their_probe_seen: bool,
     /// Our own TX chain has advanced via a matching ACK at least once (our TX / their RX proven). Sealed with `their_probe_seen` this is the both-directions-proven condition for `chain_woven`.
     pub chain_advanced_by_ack: bool,
-    /// Runtime-only: a punch-validated direct path to this contact `(remote_addr, validated_at_eagle_osc)`, set when a hole-punch round-trips (see [`crate::network::traverse`]). `race_addrs` prefers it as the primary send address, keeping the public/LAN as the alternate so PT still races if the NAT mapping went stale. Refreshed/cleared by keepalive (traversal P5). Not persisted — a resumed session re-punches.
-    pub validated_path: Option<(SocketAddr, i64)>,
+    /// Runtime-only: a punch-validated direct path to this contact `(remote_addr, last_confirmed)`, set when a hole-punch round-trips (see [`crate::network::traverse`]). `race_addrs` prefers it as the primary send address, keeping the public/LAN as the alternate so PT still races if the NAT mapping went stale. Each keepalive ack refreshes `last_confirmed`; once it exceeds the traversal TTL with no ack the path is cleared and re-punched. `Instant` (not eagle-time) because it's never persisted — a resumed session re-punches.
+    pub validated_path: Option<(SocketAddr, std::time::Instant)>,
+    /// Runtime-only graceful-failure counter: consecutive ping cycles where an ONLINE contact was punched but never validated a direct path (the symmetric↔symmetric case). Past a small threshold the peer is treated as direct-unreachable — the hook the relay milestone (M2) reads. Reset to 0 on any validation.
+    pub punch_unvalidated_cycles: u8,
 }
 
 /// Contact identifier - BLAKE3 hash of the contact's public identity key This provides deterministic, collision-resistant identification
@@ -276,6 +278,7 @@ impl Contact {
             their_probe_seen: false,      // Haven't seen their chain-weave probe yet
             chain_advanced_by_ack: false, // Our TX chain not yet ACK-advanced
             validated_path: None,         // No punch-validated direct path yet
+            punch_unvalidated_cycles: 0,  // No failed punch cycles yet
         }
     }
 
