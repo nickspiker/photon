@@ -57,6 +57,9 @@ const SEARCH_FOUND_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_40_E0
 const SEARCH_FAIL_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_E0_40_40));
 /// Hourglass tint while the search is in flight (orange). α+darkness.
 const HOURGLASS_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_FF_A5_00));
+/// Send-button arrowhead glyph — light grey, α+darkness format for under-blend (matches the intent of
+/// theme::BUTTON_TEXT, which is legacy visible-RGB and not usable on this canvas).
+const SEND_ARROW_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_D0_D0_D0));
 /// Grey placeholder circle for contacts/avatars without a loaded image.
 const AVATAR_PLACEHOLDER: u32 = 0xFF_C5_C5_C5;
 /// Thin white rule between conversation messages. α+darkness.
@@ -172,6 +175,97 @@ fn draw_hourglass(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, angle_deg: f
             }
             // Coverage AA across a 1px band at the zero level set (clamped to [0,1] — it's coverage, the algorithm).
             let cov = (0.5 - d).clamp(0.0, 1.0);
+            if cov <= 0.0 {
+                continue;
+            }
+            let alpha = (base_a as f32 * cov) as u32;
+            if alpha == 0 {
+                continue;
+            }
+            let idx = row + px;
+            canvas.pixels[idx] = canvas.pixels[idx].under((alpha << 24) | dark, BlendMode::Normal);
+        }
+    }
+}
+
+/// Draw an upward-pointing arrowhead (a filled 4-vertex chevron) centred at (cx, cy), sized to a
+/// `size`×`size` box, onto the Canvas via under-blend + coverage AA — same model as `draw_hourglass`.
+/// The four vertices: apex (top centre), right wing tip, bottom notch (centre, pulled up so it reads
+/// as a chevron with thickness, not a solid triangle), left wing tip. Used for the send button glyph.
+fn draw_up_arrowhead(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, colour: u32) {
+    use fluor::pixel::{Blend, BlendMode};
+    // Geometry as fractions of the box: apex up top, wings at the bottom corners, notch pulled up so
+    // the shape is a chevron (^) with visible thickness.
+    let half_w = size * 0.42;
+    let top = cy - size * 0.34; // apex
+    let bot = cy + size * 0.30; // wing tips
+    let notch = cy + size * 0.02; // bottom-centre notch (above the wing tips)
+    let verts = [
+        (cx, top),
+        (cx + half_w, bot),
+        (cx, notch),
+        (cx - half_w, bot),
+    ];
+
+    let (w, h) = (canvas.width, canvas.height);
+    let x0 = (cx - half_w - 1.0).floor().max(0.0) as usize;
+    let x1 = ((cx + half_w + 1.0).ceil() as usize).min(w);
+    let y0 = (top - 1.0).floor().max(0.0) as usize;
+    let y1 = ((bot + 1.0).ceil() as usize).min(h);
+    if x0 >= x1 || y0 >= y1 {
+        return;
+    }
+    canvas.damage.add_bounds(x0, y0, x1, y1);
+    let dark = colour & 0x00FF_FFFF;
+    let base_a = (colour >> 24) & 0xFF;
+
+    // Even-odd inside test + distance-to-nearest-edge for 1px coverage AA.
+    let inside = |px: f32, py: f32| -> bool {
+        let mut wind = false;
+        let mut j = verts.len() - 1;
+        for i in 0..verts.len() {
+            let (xi, yi) = verts[i];
+            let (xj, yj) = verts[j];
+            if ((yi > py) != (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi) {
+                wind = !wind;
+            }
+            j = i;
+        }
+        wind
+    };
+    let edge_dist = |px: f32, py: f32| -> f32 {
+        let mut best = f32::MAX;
+        let mut j = verts.len() - 1;
+        for i in 0..verts.len() {
+            let (xi, yi) = verts[i];
+            let (xj, yj) = verts[j];
+            let (ex, ey) = (xj - xi, yj - yi);
+            let len2 = ex * ex + ey * ey;
+            let t = if len2 > 0.0 {
+                (((px - xi) * ex + (py - yi) * ey) / len2).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let (dx, dy) = (px - (xi + t * ex), py - (yi + t * ey));
+            best = best.min((dx * dx + dy * dy).sqrt());
+            j = i;
+        }
+        best
+    };
+
+    for py in y0..y1 {
+        let row = py * w;
+        for px in x0..x1 {
+            let fx = px as f32 + 0.5;
+            let fy = py as f32 + 0.5;
+            let d = edge_dist(fx, fy);
+            let cov = if inside(fx, fy) {
+                d.min(1.0)
+            } else if d < 1.0 {
+                1.0 - d
+            } else {
+                0.0
+            };
             if cov <= 0.0 {
                 continue;
             }
@@ -1035,7 +1129,8 @@ impl FluorApp for PhotonApp {
         // Conversation compose box — placeholder geometry; positioned each frame via `update_widget_layout`.
         self.message_textbox = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
         // Send button overlaid in the compose box. ASCII ">" (not "→" U+2192 — absent from the Android font, so it rendered blank there; the contacts "+" button proves ASCII renders). Geometry set each frame in `update_widget_layout`.
-        self.message_send_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., ">"));
+        // Empty label — the glyph is a drawn 4-vertex up arrowhead (draw_up_arrowhead), not text.
+        self.message_send_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., ""));
         // Reserve a hit-id for the Ready-screen avatar circle. Not a Widget — the avatar is just a paint primitive — so click dispatch is handled directly in `on_event`'s MouseInput::Pressed arm, not thru `widget::dispatch_click`. Incrementing the shared counter keeps the contiguous-id contract intact for the `[]h` debug overlay.
         self.hit_counter = self.hit_counter.wrapping_add(1);
         self.avatar_hit_id = self.hit_counter;
@@ -2035,278 +2130,12 @@ impl FluorApp for PhotonApp {
             }
         }
 
-        // Recurring background presence sweep — re-ping every contact so online/offline rings stay live. The interval tapers with idle time (5s active → 1min idle → 15min deep-idle) so an untouched window isn't hammering the network.
-        // Runs on Ready AND in a Conversation — CRITICAL: presence is symmetric only if both sides keep pinging, and the person you most need a live status for is the one you're actively chatting with. Gating this to Ready meant opening a conversation stopped your pings, so your view of that contact went stale — and if both people opened the chat with each other, NEITHER pinged and both showed offline (observed: peer-B on Ready saw a peer online, a peer in the conversation saw peer-B offline). `wake_at()` schedules the next sweep so this fires even while otherwise idle.
-        if matches!(self.state, AppState::Ready | AppState::Conversation) {
-            let interval = self.presence_ping_interval(now);
-            let due = self
-                .last_presence_ping
-                .is_none_or(|last| now.duration_since(last) >= interval);
-            if due {
-                self.last_presence_ping = Some(now);
-                self.ping_contacts();
-            }
-        }
-
-        // Drain per-contact presence + CLUTCH ceremony updates (pongs → is_online/ip; offers/KEM/complete → ceremony progress), plus the three background-job result channels (keygen / KEM-encap / ceremony-expand).
-        // TEMP instrumentation: log any tick phase that blocks the UI thread > 50ms so the launch hang is pinpointed in the trace rather than guessed at. Remove once the hang source is fixed.
-        macro_rules! timed {
-            ($label:literal, $body:expr) => {{
-                let __t = Instant::now();
-                let __r = $body;
-                let __ms = __t.elapsed().as_millis();
-                if __ms > 50 {
-                    crate::log(&format!("PERF: {} took {}ms (UI thread)", $label, __ms));
-                }
-                __r
-            }};
-        }
-        if timed!("check_status_updates", self.check_status_updates()) {
-            needs_redraw = true;
-        }
-        if timed!("check_clutch_keygens", self.check_clutch_keygens()) {
-            needs_redraw = true;
-        }
-        // Serialized keygen queue: once the in-flight keygen (if any) has completed and cleared its flag above, start the next Pending-keyless contact's keygen. One McEliece at a time keeps the UI responsive on a multi-contact launch instead of spawning them all at once.
-        timed!(
-            "spawn_next_pending_keygen",
-            self.spawn_next_pending_keygen()
-        );
-        if timed!("check_clutch_kem_encaps", self.check_clutch_kem_encaps()) {
-            needs_redraw = true;
-        }
-        if timed!("check_clutch_ceremonies", self.check_clutch_ceremonies()) {
-            needs_redraw = true;
-        }
-
-        // Drain handle_query results. `try_recv` is non-blocking; we collect into local Vecs so the immutable borrow on `handle_query` ends before the `&mut self` handlers run. Three channels feed in: attestation results, connectivity changes, handle searches.
-        let mut drained: Vec<QueryResult> = Vec::new();
-        let mut drained_searches: Vec<crate::ui::state::SearchResult> = Vec::new();
-        if let Some(hq) = self.handle_query.as_ref() {
-            while let Some(result) = hq.try_recv() {
-                drained.push(result);
-            }
-            while let Some(online) = hq.try_recv_online() {
-                self.online = online;
-                if let Some(chrome) = self.chrome.as_mut() {
-                    chrome.set_orb_tint(orb_tint_for(online));
-                }
-                needs_redraw = true;
-            }
-            while let Some(search) = hq.try_recv_search() {
-                drained_searches.push(search);
-            }
-        }
-        for result in drained {
-            timed!("on_query_result", self.on_query_result(result));
-            needs_redraw = true;
-        }
-        for search in drained_searches {
-            self.on_search_result(search);
-            needs_redraw = true;
-        }
-
-        // AddDevice flow: apply off-thread match-check/bind results (drain first so the rx borrow ends before we mutate self).
-        let add_updates: Vec<AddDeviceUpdate> = self
-            .add_device_rx
-            .as_ref()
-            .map(|rx| rx.try_iter().collect())
-            .unwrap_or_default();
-        for update in add_updates {
-            match update {
-                AddDeviceUpdate::Match(req) => {
-                    self.add_device_checking = false;
-                    // Auto-bind: correct words ARE the confirmation, and the matched flag is already posted (the new device's ready light is flipping) — waiting for a tap here only lets the two screens drift apart.
-                    self.add_device_match = Some(req.clone());
-                    self.spawn_bind_device(req);
-                }
-                AddDeviceUpdate::NoMatch(why) => {
-                    self.add_device_checking = false;
-                    // Only show the result if the entry we checked is still on screen — if the user has edited past it, the status was already cleared and a stale "Words don't match" must not pop back.
-                    if self.add_device_wordcheck_text == self.add_device_last_checked {
-                        self.add_device_status = why;
-                    }
-                }
-                AddDeviceUpdate::Bound => {
-                    self.add_device_checking = false;
-                    // Ceremony complete — back to the contact list with a transient confirmation, instead of stranding the user on a finished words screen.
-                    self.end_add_device_flow();
-                    self.state = AppState::Ready;
-                    self.ready_toast = Some("Device added \u{221a}".to_string());
-                    // The add rotated the fleet key — pull the new epoch into our cache now; the next presence/attest cycle re-seals the roster under it (pushing here would race the async cache update and seal under the stale key).
-                    self.spawn_fleet_key_sync();
-                }
-                AddDeviceUpdate::Failed(e) => {
-                    self.add_device_checking = false;
-                    self.add_device_status = format!("Error: {e}");
-                }
-            }
-            needs_redraw = true;
-        }
-
-        // AddDevice flow: the status line is EVENT-driven, derived from the current text on every edit. No good/bad while a word is still a valid in-progress prefix (blank) — a signal appears only when a word is definitively misspelled (an impossible prefix) or the whole entry is complete (then the network match-check runs). Every keypress re-derives, so a red flag clears the moment the offending word is fixed, and never lingers while typing a now-fine entry.
-        if matches!(self.state, AppState::AddDevice) {
-            let text: String = self.textbox.as_ref().map(|tb| tb.chars.iter().collect()).unwrap_or_default();
-            if text != self.add_device_wordcheck_text {
-                self.add_device_wordcheck_text = text.clone();
-                self.add_device_typo = crate::network::fgtw::fleet::first_bad_pair_word(&text);
-                if self.add_device_match.is_none() {
-                    if let Some(w) = &self.add_device_typo {
-                        // Misspell: a word that can't become any list word ("contraversy"). Flag it, and keep it flagged across keypresses only while it stays misspelled.
-                        self.add_device_status = format!("'{w}' isn't one of the words");
-                    } else if crate::network::fgtw::fleet::pair_entry_complete(&text) {
-                        // Every word is an exact list member and there are 23 of them — check against the posted request (once per distinct complete entry). spawn sets "Checking…"; the result owns the line until the next edit.
-                        if !self.add_device_checking && text != self.add_device_last_checked {
-                            self.add_device_last_checked = text.clone();
-                            self.spawn_add_device_check(text.clone());
-                        }
-                    } else if text.trim().is_empty() {
-                        self.add_device_status = "Type the words shown on the new device".to_string();
-                    } else {
-                        // Valid partial mid-word: no good/bad — blank the line (this is what clears a prior red or a stale "Words don't match" on the next keypress).
-                        self.add_device_status.clear();
-                    }
-                }
-                needs_redraw = true;
-            }
-        }
-
-        // New-device JOIN flow: words display + matched flag + membership results.
-        let join_updates: Vec<JoinUpdate> = self
-            .add_join_rx
-            .as_ref()
-            .map(|rx| rx.try_iter().collect())
-            .unwrap_or_default();
-        for update in join_updates {
-            match update {
-                JoinUpdate::ShowWords(words) => {
-                    self.add_join_words = Some(words);
-                    self.add_join_ready = false;
-                    self.add_join_status =
-                        "Type these words into Add-a-device on your other device".to_string();
-                }
-                JoinUpdate::Matched => {
-                    // The device in your hand visibly flips: an existing device verified our words — bind is imminent.
-                    self.add_join_ready = true;
-                    self.add_join_status = "Matched \u{221a} — binding\u{2026}".to_string();
-                }
-                JoinUpdate::Joined(fleet_key, session) => {
-                    // We're in the fleet now — drop add-mode and run the normal attest (it now passes the fleet gate). Stash any received fleet key to persist once attest sets the vault up.
-                    self.add_join_rx = None;
-                    self.launch_add_mode = false;
-                    self.add_join_words = None;
-                    self.add_join_ready = false;
-                    self.add_join_status.clear();
-                    self.pending_fleet_key = fleet_key;
-                    self.add_join_handle = None;
-                    // Attest with the roots the join thread already derived — no handle re-entry, no second ~1s proof, and no route thru submit_handle's permanence interstitial (this claims nothing new; the fleet exists and we were just bound into it).
-                    if let Some(hq) = self.handle_query.as_ref() {
-                        hq.query_first_attest_with_roots(session);
-                        self.state = AppState::Launch(LaunchState::Attesting);
-                        self.change_focus(None);
-                    }
-                }
-                JoinUpdate::Failed(e) => {
-                    // The ceremony is dead — take the words DOWN with it. Leaving them up strands the screen on a corpse: the user keeps waiting on words no thread is polling for. Back to handle entry with the error visible; re-submitting starts a fresh ceremony.
-                    self.add_join_rx = None;
-                    self.add_join_words = None;
-                    self.add_join_ready = false;
-                    self.add_join_status = format!("Join failed: {e}");
-                }
-            }
-            needs_redraw = true;
-        }
-
-        // Deferred initial roster pull: fire the moment the (async-synced) fleet key lands, so wake-up catch-up brings sibling-added friends onto this device. One-shot per attest/resume.
-        if self.needs_initial_roster_pull
-            && self.roster_pull_rx.is_none()
-            && self.fleet_key_cached().is_some()
-        {
-            self.needs_initial_roster_pull = false;
-            crate::log("FLEET: initial roster pull (wake-up catch-up)");
-            self.spawn_roster_pull();
-        }
-
-        // Fleet roster pull result: merge into the contact list (re-CLUTCH happens via the serialized keygen kick inside merge_roster_entries).
-        // Fleet-event push: a sibling device changed the shared roster (fstate) or the membership chain (fleet) — pull the change NOW instead of at our next attest. This is what makes a friend added on one device appear on the rest of the fleet in about a second.
-        let fleet_evts: Vec<(&'static str, [u8; 32])> = self
-            .fleet_evt_rx
-            .as_ref()
-            .map(|rx| rx.try_iter().collect())
-            .unwrap_or_default();
-        if !fleet_evts.is_empty() {
-            let our_hp = self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof());
-            let mut refresh_contacts: Vec<[u8; 32]> = Vec::new();
-            for (kind, evt_hp) in &fleet_evts {
-                if Some(*evt_hp) == our_hp {
-                    // OUR fleet: shared-state or membership change — pull it now.
-                    match *kind {
-                        "fstate" | "friendship" if self.roster_pull_rx.is_none() => self.spawn_roster_pull(),
-                        "fleet" => self.spawn_fleet_key_sync(),
-                        _ => {}
-                    }
-                } else if *kind == "fleet"
-                    && self.contacts.iter().any(|c| c.handle_proof == *evt_hp)
-                    && !refresh_contacts.contains(evt_hp)
-                {
-                    // A CONTACT's fleet chain extended (they added/removed a device) — re-fold so we honour their current device set.
-                    refresh_contacts.push(*evt_hp);
-                }
-            }
-            if !refresh_contacts.is_empty() {
-                self.spawn_contact_fleet_refresh(refresh_contacts);
-            }
-            needs_redraw = true;
-        }
-
-        // Contact-fleet refresh results: fold-and-honour a friend's current device set.
-        let member_updates: Vec<([u8; 32], Vec<[u8; 32]>)> = self
-            .contact_members_rx
-            .as_ref()
-            .map(|rx| rx.try_iter().collect())
-            .unwrap_or_default();
-        if !member_updates.is_empty() {
-            let mut changed = false;
-            for (hp, members) in member_updates {
-                if let Some(c) = self.contacts.iter_mut().find(|c| c.handle_proof == hp) {
-                    if c.fleet_members != members {
-                        c.fleet_members = members;
-                        changed = true;
-                    }
-                }
-            }
-            if changed {
-                self.reseed_contact_pubkeys();
-                needs_redraw = true;
-            }
-        }
-
-        match self.roster_pull_rx.as_ref().map(|rx| rx.try_recv()) {
-            Some(Ok(Ok(entries))) => {
-                self.roster_pull_rx = None;
-                self.roster_pull_retries_left = 0;
-                self.merge_roster_entries(entries);
-                needs_redraw = true;
-            }
-            Some(Ok(Err(_e))) => {
-                // Pull failed to fetch/decrypt. On a fresh join this is the pairing key still being a pre-rotation generation; the in-flight fan-out key sync writes the current key within ~150ms, so re-arm and retry until the budget runs out (the pull's own round-trip spaces the attempts).
-                self.roster_pull_rx = None;
-                if self.roster_pull_retries_left > 0 {
-                    self.roster_pull_retries_left -= 1;
-                    self.needs_initial_roster_pull = true;
-                    crate::log(&format!(
-                        "FLEET: roster pull failed — retrying once the current fleet key lands ({} attempt(s) left)",
-                        self.roster_pull_retries_left
-                    ));
-                } else {
-                    crate::log("FLEET: roster pull retries exhausted — will re-try on the next fleet event or relaunch");
-                }
-            }
-            Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
-                self.roster_pull_rx = None; // thread died without sending; drop the dead channel
-            }
-            _ => {} // still pending, or no pull in flight
-        }
+        // Everything network/protocol lives in advance_protocol(): presence sweep, channel drains,
+        // CLUTCH ceremony + chain advancement, retransmits. It touches NO surface, so it can also run
+        // headless from the Android foreground service while the app is backgrounded (screen off ⇒ the
+        // Choreographer stops calling tick, but the state is alive — see docs/background-tick.md). The
+        // frame-only work (animations above, render below) stays here in tick.
+        needs_redraw |= self.advance_protocol(now);
 
         // Content-flavoured redraws dirty the scene (full-viewport frame); a pure blinkey flip stays out so its frame narrows to the textbox's own damage rect.
         self.scene_dirty |= needs_redraw;
@@ -2447,6 +2276,13 @@ impl FluorApp for PhotonApp {
         }
         // Settings panel (STUB): reposition the active page's widgets each frame so zoom / resize track. Mirrors the Ready branch above; must run before the long-lived `chrome` borrow since it takes `&mut self`.
         if matches!(self.state, AppState::Settings(_)) {
+            self.update_widget_layout(ctx);
+        }
+        // Conversation: lay out the compose textbox + send button each frame. Without this the send
+        // button kept stale placeholder geometry (mid-screen), rendered under the opaque message-list
+        // fill, and under()-blend discarded it — it never appeared. Same reason as the Ready/Settings
+        // branches above; must run before the long-lived `chrome` borrow (takes `&mut self`).
+        if matches!(self.state, AppState::Conversation) {
             self.update_widget_layout(ctx);
         }
 
@@ -3521,6 +3357,38 @@ impl FluorApp for PhotonApp {
                                     None,
                                 );
                             }
+                            // Under-blend semantics ("topmost paints FIRST; a later opaque dst wins"): the
+                            // send button must be painted BEFORE the textbox, or the textbox's opaque
+                            // background composites on top and buries it (this was the bug — it painted
+                            // after and never showed). Mirrors the working search '+' button path. The
+                            // textbox stamps hit_test_map over its whole bbox, so we re-stamp the button's
+                            // hit rect AFTER the textbox to recover click dispatch in the overlap.
+                            let send_bbox = if let Some(btn) = self.message_send_btn.as_mut() {
+                                let id = btn.hit_id();
+                                // Under-blend is topmost-FIRST: the arrowhead must be painted BEFORE the
+                                // button pill, or the pill's opaque fill wins the pixel and the arrowhead
+                                // is discarded (exactly how the button draws its own label — glyph cache
+                                // blitted before the pill). Arrowhead first → pill under it.
+                                draw_up_arrowhead(
+                                    &mut canvas,
+                                    btn.center_x,
+                                    btn.center_y,
+                                    btn.height * 0.5,
+                                    SEND_ARROW_COLOUR,
+                                );
+                                btn.render_content_into(
+                                    &mut canvas,
+                                    0.,
+                                    0.,
+                                    ctx.text,
+                                    None,
+                                    Some(&mut chrome.hit_test_map),
+                                    id,
+                                );
+                                Some((button_bbox(btn), id))
+                            } else {
+                                None
+                            };
                             if let Some(tb) = self.message_textbox.as_mut() {
                                 let id = tb.hit_id();
                                 tb.render_content_into(
@@ -3534,19 +3402,7 @@ impl FluorApp for PhotonApp {
                                     id,
                                 );
                             }
-                            // Send button — overlaid inside the compose box's right edge, mirroring the contacts-screen search '+' button (7/8 of the box height, inset from the right). Painted AFTER the textbox so it's visually on top (under-blend = topmost-first would bury it, so we re-stamp its hit rect afterward to recover click dispatch in the overlap). Geometry set in the layout pass.
-                            if let Some(btn) = self.message_send_btn.as_mut() {
-                                let id = btn.hit_id();
-                                btn.render_content_into(
-                                    &mut canvas,
-                                    0.,
-                                    0.,
-                                    ctx.text,
-                                    None,
-                                    Some(&mut chrome.hit_test_map),
-                                    id,
-                                );
-                                let bbox = button_bbox(btn);
+                            if let Some((bbox, id)) = send_bbox {
                                 restamp_hit_rect(
                                     &mut chrome.hit_test_map,
                                     buf_w,
@@ -3922,6 +3778,291 @@ impl FluorApp for PhotonApp {
 }
 
 impl PhotonApp {
+    /// The surface-free half of `tick`: presence pinging, draining every network/background channel,
+    /// and advancing the CLUTCH ceremony + message chains. Returns `true` if anything changed (the
+    /// caller turns that into a redraw request). Split out of `tick` so the Android foreground service
+    /// can drive it headlessly while backgrounded — the paused Activity's Choreographer has stopped
+    /// calling `tick`, but `PhotonApp` is alive and its inbound CLUTCH/chat still needs to advance so
+    /// ceremonies complete and messages get ACKed without the screen being on. See
+    /// docs/background-tick.md. MUST touch no `Context`/surface state — everything here is pure `self`.
+    pub fn advance_protocol(&mut self, now: Instant) -> bool {
+        let mut needs_redraw = false;
+
+        // Recurring background presence sweep — re-ping every contact so online/offline rings stay live. The interval tapers with idle time (5s active → 1min idle → 15min deep-idle) so an untouched window isn't hammering the network.
+        // Runs on Ready AND in a Conversation — CRITICAL: presence is symmetric only if both sides keep pinging, and the person you most need a live status for is the one you're actively chatting with. Gating this to Ready meant opening a conversation stopped your pings, so your view of that contact went stale — and if both people opened the chat with each other, NEITHER pinged and both showed offline (observed: peer-B on Ready saw a peer online, a peer in the conversation saw peer-B offline). `wake_at()` schedules the next sweep so this fires even while otherwise idle.
+        if matches!(self.state, AppState::Ready | AppState::Conversation) {
+            let interval = self.presence_ping_interval(now);
+            let due = self
+                .last_presence_ping
+                .is_none_or(|last| now.duration_since(last) >= interval);
+            if due {
+                self.last_presence_ping = Some(now);
+                self.ping_contacts();
+            }
+        }
+
+        // Drain per-contact presence + CLUTCH ceremony updates (pongs → is_online/ip; offers/KEM/complete → ceremony progress), plus the three background-job result channels (keygen / KEM-encap / ceremony-expand).
+        // TEMP instrumentation: log any tick phase that blocks the UI thread > 50ms so the launch hang is pinpointed in the trace rather than guessed at. Remove once the hang source is fixed.
+        macro_rules! timed {
+            ($label:literal, $body:expr) => {{
+                let __t = Instant::now();
+                let __r = $body;
+                let __ms = __t.elapsed().as_millis();
+                if __ms > 50 {
+                    crate::log(&format!("PERF: {} took {}ms (UI thread)", $label, __ms));
+                }
+                __r
+            }};
+        }
+        if timed!("check_status_updates", self.check_status_updates()) {
+            needs_redraw = true;
+        }
+        if timed!("check_clutch_keygens", self.check_clutch_keygens()) {
+            needs_redraw = true;
+        }
+        // Serialized keygen queue: once the in-flight keygen (if any) has completed and cleared its flag above, start the next Pending-keyless contact's keygen. One McEliece at a time keeps the UI responsive on a multi-contact launch instead of spawning them all at once.
+        timed!(
+            "spawn_next_pending_keygen",
+            self.spawn_next_pending_keygen()
+        );
+        if timed!("check_clutch_kem_encaps", self.check_clutch_kem_encaps()) {
+            needs_redraw = true;
+        }
+        if timed!("check_clutch_ceremonies", self.check_clutch_ceremonies()) {
+            needs_redraw = true;
+        }
+
+        // Drain handle_query results. `try_recv` is non-blocking; we collect into local Vecs so the immutable borrow on `handle_query` ends before the `&mut self` handlers run. Three channels feed in: attestation results, connectivity changes, handle searches.
+        let mut drained: Vec<QueryResult> = Vec::new();
+        let mut drained_searches: Vec<crate::ui::state::SearchResult> = Vec::new();
+        if let Some(hq) = self.handle_query.as_ref() {
+            while let Some(result) = hq.try_recv() {
+                drained.push(result);
+            }
+            while let Some(online) = hq.try_recv_online() {
+                self.online = online;
+                if let Some(chrome) = self.chrome.as_mut() {
+                    chrome.set_orb_tint(orb_tint_for(online));
+                }
+                needs_redraw = true;
+            }
+            while let Some(search) = hq.try_recv_search() {
+                drained_searches.push(search);
+            }
+        }
+        for result in drained {
+            timed!("on_query_result", self.on_query_result(result));
+            needs_redraw = true;
+        }
+        for search in drained_searches {
+            self.on_search_result(search);
+            needs_redraw = true;
+        }
+
+        // AddDevice flow: apply off-thread match-check/bind results (drain first so the rx borrow ends before we mutate self).
+        let add_updates: Vec<AddDeviceUpdate> = self
+            .add_device_rx
+            .as_ref()
+            .map(|rx| rx.try_iter().collect())
+            .unwrap_or_default();
+        for update in add_updates {
+            match update {
+                AddDeviceUpdate::Match(req) => {
+                    self.add_device_checking = false;
+                    // Auto-bind: correct words ARE the confirmation, and the matched flag is already posted (the new device's ready light is flipping) — waiting for a tap here only lets the two screens drift apart.
+                    self.add_device_match = Some(req.clone());
+                    self.spawn_bind_device(req);
+                }
+                AddDeviceUpdate::NoMatch(why) => {
+                    self.add_device_checking = false;
+                    // Only show the result if the entry we checked is still on screen — if the user has edited past it, the status was already cleared and a stale "Words don't match" must not pop back.
+                    if self.add_device_wordcheck_text == self.add_device_last_checked {
+                        self.add_device_status = why;
+                    }
+                }
+                AddDeviceUpdate::Bound => {
+                    self.add_device_checking = false;
+                    // Ceremony complete — back to the contact list with a transient confirmation, instead of stranding the user on a finished words screen.
+                    self.end_add_device_flow();
+                    self.state = AppState::Ready;
+                    self.ready_toast = Some("Device added \u{221a}".to_string());
+                    // The add rotated the fleet key — pull the new epoch into our cache now; the next presence/attest cycle re-seals the roster under it (pushing here would race the async cache update and seal under the stale key).
+                    self.spawn_fleet_key_sync();
+                }
+                AddDeviceUpdate::Failed(e) => {
+                    self.add_device_checking = false;
+                    self.add_device_status = format!("Error: {e}");
+                }
+            }
+            needs_redraw = true;
+        }
+
+        // AddDevice flow: the status line is EVENT-driven, derived from the current text on every edit. No good/bad while a word is still a valid in-progress prefix (blank) — a signal appears only when a word is definitively misspelled (an impossible prefix) or the whole entry is complete (then the network match-check runs). Every keypress re-derives, so a red flag clears the moment the offending word is fixed, and never lingers while typing a now-fine entry.
+        if matches!(self.state, AppState::AddDevice) {
+            let text: String = self.textbox.as_ref().map(|tb| tb.chars.iter().collect()).unwrap_or_default();
+            if text != self.add_device_wordcheck_text {
+                self.add_device_wordcheck_text = text.clone();
+                self.add_device_typo = crate::network::fgtw::fleet::first_bad_pair_word(&text);
+                if self.add_device_match.is_none() {
+                    if let Some(w) = &self.add_device_typo {
+                        // Misspell: a word that can't become any list word ("contraversy"). Flag it, and keep it flagged across keypresses only while it stays misspelled.
+                        self.add_device_status = format!("'{w}' isn't one of the words");
+                    } else if crate::network::fgtw::fleet::pair_entry_complete(&text) {
+                        // Every word is an exact list member and there are 23 of them — check against the posted request (once per distinct complete entry). spawn sets "Checking…"; the result owns the line until the next edit.
+                        if !self.add_device_checking && text != self.add_device_last_checked {
+                            self.add_device_last_checked = text.clone();
+                            self.spawn_add_device_check(text.clone());
+                        }
+                    } else if text.trim().is_empty() {
+                        self.add_device_status = "Type the words shown on the new device".to_string();
+                    } else {
+                        // Valid partial mid-word: no good/bad — blank the line (this is what clears a prior red or a stale "Words don't match" on the next keypress).
+                        self.add_device_status.clear();
+                    }
+                }
+                needs_redraw = true;
+            }
+        }
+
+        // New-device JOIN flow: words display + matched flag + membership results.
+        let join_updates: Vec<JoinUpdate> = self
+            .add_join_rx
+            .as_ref()
+            .map(|rx| rx.try_iter().collect())
+            .unwrap_or_default();
+        for update in join_updates {
+            match update {
+                JoinUpdate::ShowWords(words) => {
+                    self.add_join_words = Some(words);
+                    self.add_join_ready = false;
+                    self.add_join_status =
+                        "Type these words into Add-a-device on your other device".to_string();
+                }
+                JoinUpdate::Matched => {
+                    // The device in your hand visibly flips: an existing device verified our words — bind is imminent.
+                    self.add_join_ready = true;
+                    self.add_join_status = "Matched \u{221a} — binding\u{2026}".to_string();
+                }
+                JoinUpdate::Joined(fleet_key, session) => {
+                    // We're in the fleet now — drop add-mode and run the normal attest (it now passes the fleet gate). Stash any received fleet key to persist once attest sets the vault up.
+                    self.add_join_rx = None;
+                    self.launch_add_mode = false;
+                    self.add_join_words = None;
+                    self.add_join_ready = false;
+                    self.add_join_status.clear();
+                    self.pending_fleet_key = fleet_key;
+                    self.add_join_handle = None;
+                    // Attest with the roots the join thread already derived — no handle re-entry, no second ~1s proof, and no route thru submit_handle's permanence interstitial (this claims nothing new; the fleet exists and we were just bound into it).
+                    if let Some(hq) = self.handle_query.as_ref() {
+                        hq.query_first_attest_with_roots(session);
+                        self.state = AppState::Launch(LaunchState::Attesting);
+                        self.change_focus(None);
+                    }
+                }
+                JoinUpdate::Failed(e) => {
+                    // The ceremony is dead — take the words DOWN with it. Leaving them up strands the screen on a corpse: the user keeps waiting on words no thread is polling for. Back to handle entry with the error visible; re-submitting starts a fresh ceremony.
+                    self.add_join_rx = None;
+                    self.add_join_words = None;
+                    self.add_join_ready = false;
+                    self.add_join_status = format!("Join failed: {e}");
+                }
+            }
+            needs_redraw = true;
+        }
+
+        // Deferred initial roster pull: fire the moment the (async-synced) fleet key lands, so wake-up catch-up brings sibling-added friends onto this device. One-shot per attest/resume.
+        if self.needs_initial_roster_pull
+            && self.roster_pull_rx.is_none()
+            && self.fleet_key_cached().is_some()
+        {
+            self.needs_initial_roster_pull = false;
+            crate::log("FLEET: initial roster pull (wake-up catch-up)");
+            self.spawn_roster_pull();
+        }
+
+        // Fleet roster pull result: merge into the contact list (re-CLUTCH happens via the serialized keygen kick inside merge_roster_entries).
+        // Fleet-event push: a sibling device changed the shared roster (fstate) or the membership chain (fleet) — pull the change NOW instead of at our next attest. This is what makes a friend added on one device appear on the rest of the fleet in about a second.
+        let fleet_evts: Vec<(&'static str, [u8; 32])> = self
+            .fleet_evt_rx
+            .as_ref()
+            .map(|rx| rx.try_iter().collect())
+            .unwrap_or_default();
+        if !fleet_evts.is_empty() {
+            let our_hp = self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof());
+            let mut refresh_contacts: Vec<[u8; 32]> = Vec::new();
+            for (kind, evt_hp) in &fleet_evts {
+                if Some(*evt_hp) == our_hp {
+                    // OUR fleet: shared-state or membership change — pull it now.
+                    match *kind {
+                        "fstate" | "friendship" if self.roster_pull_rx.is_none() => self.spawn_roster_pull(),
+                        "fleet" => self.spawn_fleet_key_sync(),
+                        _ => {}
+                    }
+                } else if *kind == "fleet"
+                    && self.contacts.iter().any(|c| c.handle_proof == *evt_hp)
+                    && !refresh_contacts.contains(evt_hp)
+                {
+                    // A CONTACT's fleet chain extended (they added/removed a device) — re-fold so we honour their current device set.
+                    refresh_contacts.push(*evt_hp);
+                }
+            }
+            if !refresh_contacts.is_empty() {
+                self.spawn_contact_fleet_refresh(refresh_contacts);
+            }
+            needs_redraw = true;
+        }
+
+        // Contact-fleet refresh results: fold-and-honour a friend's current device set.
+        let member_updates: Vec<([u8; 32], Vec<[u8; 32]>)> = self
+            .contact_members_rx
+            .as_ref()
+            .map(|rx| rx.try_iter().collect())
+            .unwrap_or_default();
+        if !member_updates.is_empty() {
+            let mut changed = false;
+            for (hp, members) in member_updates {
+                if let Some(c) = self.contacts.iter_mut().find(|c| c.handle_proof == hp) {
+                    if c.fleet_members != members {
+                        c.fleet_members = members;
+                        changed = true;
+                    }
+                }
+            }
+            if changed {
+                self.reseed_contact_pubkeys();
+                needs_redraw = true;
+            }
+        }
+
+        match self.roster_pull_rx.as_ref().map(|rx| rx.try_recv()) {
+            Some(Ok(Ok(entries))) => {
+                self.roster_pull_rx = None;
+                self.roster_pull_retries_left = 0;
+                self.merge_roster_entries(entries);
+                needs_redraw = true;
+            }
+            Some(Ok(Err(_e))) => {
+                // Pull failed to fetch/decrypt. On a fresh join this is the pairing key still being a pre-rotation generation; the in-flight fan-out key sync writes the current key within ~150ms, so re-arm and retry until the budget runs out (the pull's own round-trip spaces the attempts).
+                self.roster_pull_rx = None;
+                if self.roster_pull_retries_left > 0 {
+                    self.roster_pull_retries_left -= 1;
+                    self.needs_initial_roster_pull = true;
+                    crate::log(&format!(
+                        "FLEET: roster pull failed — retrying once the current fleet key lands ({} attempt(s) left)",
+                        self.roster_pull_retries_left
+                    ));
+                } else {
+                    crate::log("FLEET: roster pull retries exhausted — will re-try on the next fleet event or relaunch");
+                }
+            }
+            Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
+                self.roster_pull_rx = None; // thread died without sending; drop the dead channel
+            }
+            _ => {} // still pending, or no pull in flight
+        }
+
+        needs_redraw
+    }
     /// Send a [`PhotonEvent`] thru the event-loop proxy. Returns `false` if the proxy hasn't been set yet (host hasn't called `set_event_proxy`) or if the event loop has closed. Background tasks clone the proxy once at startup and call this; UI-thread code should mutate state directly + return `true` from `tick` or `on_event` instead of going thru the proxy.
     #[allow(dead_code)] // Wired for background tasks to push events onto the UI thread; no caller yet.
     pub fn send_event(&self, event: PhotonEvent) -> bool {
@@ -4755,13 +4896,18 @@ impl PhotonApp {
         let Some(ci) = self.active_contact else {
             return;
         };
-        // Pull + trim the compose text; bail on empty.
+        // Pull the compose text and send it VERBATIM. Any non-empty content sends, whitespace included
+        // (a lone space, all spaces, a newline are all valid messages). No trim, no whitespace judgment.
         let text: String = match self.message_textbox.as_ref() {
             Some(tb) => tb.chars.iter().collect(),
             None => return,
         };
-        let text = text.trim().to_string();
         if text.is_empty() {
+            // Empty send = liveness probe. Optimistically mark the peer offline and ping them; a
+            // returning pong flips is_online back true (check_status_updates), so an empty send confirms
+            // whether they're actually reachable right now instead of doing nothing.
+            self.contacts[ci].is_online = false;
+            self.ping_contact(ci);
             return;
         }
         self.send_chain_message(ci, &text, false);
@@ -7002,13 +7148,21 @@ impl PhotonApp {
         /// ~3 seconds (oscillations) before a mutual peer's silent P2P request falls back to FGTW.
         const AVATAR_P2P_FALLBACK_OSC: i64 = 3 * crate::OSC_PER_SEC;
         enum AvatarPlan {
-            // Complete + addressable: try the peer directly; FGTW only after the timeout.
+            // Cached locally (the common launch case): just kick the local-first background load, which
+            // reads the vault and never touches the network. Keeps the P2P/FGTW escalation from firing a
+            // redundant request every launch when we already hold the avatar. `spawn_avatar_download`'s
+            // worker is cache-first, so this IS the "look local first" path — the caller states intent,
+            // the fetch layer serves it from the vault.
+            LocalCached {
+                handle: String,
+            },
+            // Complete + addressable, NOT cached: try the peer directly; FGTW only after the timeout.
             P2pThenFgtw {
                 peer_addr: std::net::SocketAddr,
                 recipient_pubkey: [u8; 32],
                 handle: String,
             },
-            // Non-mutual, or Complete-but-unaddressable: public FGTW copy only.
+            // Non-mutual (or Complete-but-unaddressable) and not cached: public FGTW copy only.
             FgtwOnly {
                 handle: String,
             },
@@ -7022,6 +7176,16 @@ impl PhotonApp {
             .filter(|c| c.avatar_pixels.is_none())
             .map(|c| {
                 let handle = c.handle.as_str().to_string();
+                // Local vault first — a cheap `read_addr` (encrypted blob, no decode). If we have it,
+                // the network never runs. This is what stops the every-launch redundant P2P request:
+                // the friend's avatar is already cached, so we don't re-ask them for it.
+                let cached = self
+                    .storage
+                    .as_ref()
+                    .is_some_and(|s| crate::ui::avatar::has_cached_avatar_from_seed(&c.handle_hash, s));
+                if cached {
+                    return AvatarPlan::LocalCached { handle };
+                }
                 if c.is_mutual() {
                     if let Some((addr, _alt)) = c.race_addrs() {
                         return AvatarPlan::P2pThenFgtw {
@@ -7036,6 +7200,8 @@ impl PhotonApp {
             .collect();
         for plan in plans {
             match plan {
+                // Cache-first background load; never hits the network for an already-cached avatar.
+                AvatarPlan::LocalCached { handle } => self.spawn_avatar_download(handle),
                 AvatarPlan::FgtwOnly { handle } => self.spawn_avatar_download(handle),
                 AvatarPlan::P2pThenFgtw {
                     peer_addr,
@@ -7836,10 +8002,31 @@ impl PhotonApp {
                                 }
                             }
                         } else {
-                            crate::log(&format!(
-                                "CHAT: ACK verification failed for {} (no matching pending message)",
-                                handle
-                            ));
+                            // No pending message matched. Two cases: (a) a DUPLICATE ACK — dual-path
+                            // racing (P3) delivers the same ACK on both the LAN and public path, so
+                            // the second copy arrives after the first already advanced + cleared the
+                            // pending entry; (b) a genuinely UNKNOWN ACK. Tell them apart via the
+                            // outgoing message: if it exists and is already `delivered`, this is the
+                            // benign duplicate — log at DEBUG so it stops reading as a failure.
+                            let is_dup = self.contacts.get(contact_idx).is_some_and(|c| {
+                                c.messages.iter().any(|m| {
+                                    m.is_outgoing && m.delivered && m.timestamp == acked_eagle_time
+                                })
+                            });
+                            if is_dup {
+                                crate::log_at(
+                                    crate::LogLevel::Debug,
+                                    &format!(
+                                        "CHAT: Duplicate ACK from {} (eagle_time {}) — already delivered, dual-path echo",
+                                        handle, acked_eagle_time
+                                    ),
+                                );
+                            } else {
+                                crate::log(&format!(
+                                    "CHAT: ACK verification failed for {} (no matching pending message)",
+                                    handle
+                                ));
+                            }
                         }
 
                         // Mark message as delivered in UI

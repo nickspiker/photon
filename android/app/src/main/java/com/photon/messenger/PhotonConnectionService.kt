@@ -15,6 +15,8 @@ import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
+import android.os.PowerManager
+import android.os.VibrationAttributes
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
@@ -51,6 +53,20 @@ class PhotonConnectionService : Service() {
     // Native network context pointer (HandleQuery + FgtwTransport)
     private var networkPtr: Long = 0
 
+    // The Activity-side native context ptr (fluor shell + PhotonApp), handed to us by the Activity in
+    // initializeNativeIfReady and retracted (0) in onDestroy. Lets the RX worker drive a headless
+    // protocol tick while the Activity is backgrounded. @Volatile: written on the main thread, read on
+    // the RX worker thread. 0 = no live Activity context → skip the tick. See docs/background-tick.md.
+    @Volatile private var activityContextPtr: Long = 0
+
+    // Brief wakelock held only across a headless tick, so the CPU is scheduled to run advance_protocol
+    // when a packet arrives while the screen is off. Acquired with a short timeout as a safety net.
+    private val wakeLock: PowerManager.WakeLock by lazy {
+        (getSystemService(POWER_SERVICE) as PowerManager)
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "photon:serviceTick")
+            .apply { setReferenceCounted(false) }
+    }
+
     // Device keypair info for display
     private var devicePubkeyHex: String = ""
 
@@ -71,6 +87,7 @@ class PhotonConnectionService : Service() {
     private external fun nativeNetworkDestroy(networkPtr: Long)
     private external fun nativeNetworkPoll(networkPtr: Long)  // Check for incoming messages, refresh peers
     private external fun nativeGetDevicePubkey(networkPtr: Long): String
+    private external fun nativeServiceTick(contextPtr: Long)  // Headless advance_protocol on the Activity ctx (background delivery)
 
     // Session broadcast — VSF capsule carrying identity_seed + vault_seed + handle_proof.
     // Sticky broadcast survives uninstall/reinstall (OS holds it); dies on reboot (desired).
@@ -159,6 +176,36 @@ class PhotonConnectionService : Service() {
      */
     fun isNetworkReady(): Boolean = networkPtr != 0L
 
+    /**
+     * The Activity hands us its native context ptr once the fluor shell + PhotonApp exist, and retracts
+     * it (0) in onDestroy before freeing. We only ever tick a ptr the Activity currently vouches is live.
+     */
+    fun setActivityContextPtr(ptr: Long) {
+        activityContextPtr = ptr
+    }
+
+    /**
+     * Called FROM RUST (the status RX worker, via the service global-ref) whenever an inbound StatusUpdate
+     * lands, so the protocol advances (CLUTCH ceremony, chain, ACKs) even while the Activity is
+     * backgrounded and its Choreographer has stopped calling tick. Grabs a brief PARTIAL_WAKE_LOCK so the
+     * CPU is scheduled to run the tick, drives the headless advance_protocol via nativeServiceTick, then
+     * releases. No-op if the Activity context isn't set (destroyed / not yet created) — that native side
+     * also skips if a foreground draw is concurrently in progress (the onResume overlap). Any thread.
+     * See docs/background-tick.md.
+     */
+    fun requestServiceTick() {
+        val ptr = activityContextPtr
+        if (ptr == 0L) return  // no live Activity context (destroyed / not yet created)
+        try {
+            wakeLock.acquire(2_000L)  // safety-net timeout; the tick is milliseconds
+            nativeServiceTick(ptr)
+        } catch (e: Exception) {
+            Log.w(TAG, "requestServiceTick failed", e)
+        } finally {
+            if (wakeLock.isHeld) wakeLock.release()
+        }
+    }
+
     private fun startNetworkPolling() {
         if (isPolling) return
         isPolling = true
@@ -170,6 +217,17 @@ class PhotonConnectionService : Service() {
             override fun run() {
                 if (networkPtr != 0L && isPolling) {
                     nativeNetworkPoll(networkPtr)
+                    // While backgrounded, the Activity's Choreographer has stopped calling tick, so the
+                    // protocol (presence pings, CLUTCH ceremony, chain/ACK) would stall. Drive a headless
+                    // advance_protocol from this self-scheduled poll instead — it keeps pinging (so pongs
+                    // keep arriving) and drains inbound traffic without the screen on. Foregrounded, the
+                    // live draw already does this, so we skip (the native guard would make us skip anyway).
+                    // The RX-triggered requestServiceTick still fires on inbound packets for lower latency;
+                    // this periodic drive is what keeps the send side alive so there's traffic to react to.
+                    // See docs/background-tick.md.
+                    if (!PhotonActivity.inForeground) {
+                        requestServiceTick()
+                    }
                     networkHandler?.postDelayed(this, POLL_INTERVAL_MS)
                 }
             }
@@ -320,9 +378,26 @@ class PhotonConnectionService : Service() {
 
     /** Fire the chirp's amplitude-envelope haptic via VibrationEffect.createWaveform (API 26+). timings
      *  are per-step durations (ms), amplitudes are 0..255 motor levels — the pair the chirp crate's
-     *  haptic_waveform produced. -1 = no repeat. Logged-not-fatal on any failure. */
+     *  haptic_waveform produced. -1 = no repeat. Logged-not-fatal on any failure.
+     *
+     *  Two things the raw audio envelope needs before it FEELS right:
+     *  1. Usage attributes — a bare effect is usage=UNKNOWN and the OS drops it. Picking the usage is
+     *     fiddly because each is gated by a DIFFERENT device setting: USAGE_NOTIFICATION is gated by our
+     *     (deliberately silent) notification channel, and USAGE_TOUCH is gated by the touch-feedback
+     *     setting (off by default on Pixel → ignored_for_settings). USAGE_COMMUNICATION_REQUEST is gated
+     *     by none of those — it played on-device (dumpsys: finished, not ignored) when the others didn't
+     *     — so the app-driven chirp haptic fires regardless of the silent channel and touch-feedback off.
+     *  2. A GENTLE floor + slight lift. The audio envelope's reverb tail sits below the motor's felt
+     *     threshold, but flooring aggressively (a high feltFloor + sqrt) flattens the whole thing into
+     *     one constant buzz — the strike/decay dynamics are the "flavor," so they must survive. We use a
+     *     low floor (just enough that a real hit isn't lost) and a mild curve, keeping the punch of the
+     *     attack and letting the tail fall away to nothing. Steps below the floor drop to 0 (silent) so
+     *     the buzz actually stops instead of humming. */
     private fun vibrateChirp(timings: LongArray, amplitudes: IntArray) {
-        if (timings.isEmpty() || timings.size != amplitudes.size) return
+        if (timings.isEmpty() || timings.size != amplitudes.size) {
+            Log.w(TAG, "vibrateChirp: bad arrays t=${timings.size} a=${amplitudes.size}")
+            return
+        }
         try {
             val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 (getSystemService(VibratorManager::class.java)).defaultVibrator
@@ -330,9 +405,41 @@ class PhotonConnectionService : Service() {
                 @Suppress("DEPRECATION")
                 getSystemService(Vibrator::class.java)
             }
-            if (vibrator == null || !vibrator.hasVibrator()) return
-            val effect = VibrationEffect.createWaveform(timings, amplitudes, -1)
-            vibrator.vibrate(effect)
+            if (vibrator == null || !vibrator.hasVibrator()) {
+                Log.w(TAG, "vibrateChirp: no vibrator")
+                return
+            }
+
+            // Dynamics-preserving remap. Steps below cutoff → 0 (real silence, so the tail lets go and
+            // it doesn't hum). Above cutoff, keep the amplitude nearly linear with a mild lift, so the
+            // attack stays punchy at full scale and the decay actually decays. NOT a high floor + sqrt —
+            // that flattened the envelope into one constant buzz.
+            val cutoff = 40          // ~0.16 of full scale — below this the motor barely renders it; treat as silence
+            val liftFloor = 60       // where an at-cutoff step lands once it clears the gate — audible but not slammed
+            val felt = IntArray(amplitudes.size) { i ->
+                val a = amplitudes[i]
+                if (a < cutoff) 0
+                else {
+                    // Map [cutoff..255] → [liftFloor..255] linearly: preserves the shape, lifts the whole
+                    // audible band up off the motor's dead zone without crushing the peaks together.
+                    val norm = (a - cutoff).toDouble() / (255 - cutoff)
+                    (liftFloor + norm * (255 - liftFloor)).toInt().coerceIn(0, 255)
+                }
+            }
+
+            val effect = VibrationEffect.createWaveform(timings, felt, -1)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                // USAGE_COMMUNICATION_REQUEST: ungated by the silent notification channel AND by the
+                // touch-feedback setting — the one usage that actually played on-device (see doc above).
+                val attrs = VibrationAttributes.Builder()
+                    .setUsage(VibrationAttributes.USAGE_COMMUNICATION_REQUEST)
+                    .build()
+                vibrator.vibrate(effect, attrs)
+            } else {
+                @Suppress("DEPRECATION")
+                vibrator.vibrate(effect)
+            }
+            Log.i(TAG, "vibrateChirp: fired ${felt.size} steps, peak=${felt.max()}")
         } catch (e: Exception) {
             Log.w(TAG, "vibrateChirp failed", e)
         }

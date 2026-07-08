@@ -411,6 +411,11 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
 
         if (nativePtr != 0L) {
             Log.d(TAG, "Native UI initialized at 0x${nativePtr.toString(16)}")
+            // Hand the Activity-context ptr to the service so its RX worker can drive a headless
+            // protocol tick (nativeServiceTick) while we're backgrounded — the Choreographer stops
+            // calling doFrame then, but CLUTCH/chat still needs to advance. The ptr stays valid until
+            // onDestroy, which clears it back to 0 so the service never ticks a freed context.
+            service.setActivityContextPtr(nativePtr)
             // Start render loop
             Choreographer.getInstance().postFrameCallback(this)
         } else {
@@ -498,6 +503,9 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         super.onDestroy()
         Choreographer.getInstance().removeFrameCallback(this)
         if (nativePtr != 0L) {
+            // Retract the ptr from the service FIRST so its RX worker can't fire a headless tick into
+            // a context we're about to free, then destroy.
+            connectionService?.setActivityContextPtr(0L)
             nativeDestroy(nativePtr)
             nativePtr = 0
         }

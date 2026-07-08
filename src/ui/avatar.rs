@@ -788,6 +788,18 @@ pub fn load_cached_avatar(
     load_cached_avatar_from_seed(&crate::types::Handle::to_identity_seed(handle), storage)
 }
 
+/// Cheap "is this avatar in the local vault?" probe — a raw `read_addr` (reads the ~17KB encrypted AV1
+/// blob off disk) with NO decrypt and NO AV1 decode. Lets the avatar sweep serve a cached avatar from
+/// the vault (a local-first `spawn_avatar_download`) instead of firing a redundant P2P/FGTW request for
+/// it every launch. The decode still happens on the background load; this only decides local-vs-network.
+pub fn has_cached_avatar_from_seed(
+    identity_seed: &[u8; 32],
+    storage: &std::sync::Arc<crate::storage::FlatStorage>,
+) -> bool {
+    let addr = crate::storage::vault_key("avatar", identity_seed);
+    matches!(storage.read_addr(&addr), Ok(Some(_)))
+}
+
 /// `load_cached_avatar` from the already-derived `identity_seed`. String-free owner path. The avatar VSF lives in the vault at `vault_key("avatar", identity_seed)` — no filesystem file, no base64 filename, the 32-byte address goes straight to the vault.
 pub fn load_cached_avatar_from_seed(
     identity_seed: &[u8; 32],
