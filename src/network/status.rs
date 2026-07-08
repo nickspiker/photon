@@ -1635,9 +1635,9 @@ async fn run_checker(
                                         &event_proxy_recv,
                                     );
 
-                                    // Android: fire the system notification from HERE — this RX worker lives in the foreground service and keeps running while the Activity is paused/dead, which is exactly when a notification matters. Signature already verified above; Kotlin suppresses it when the app is visible. (No plaintext available at this layer, and none needed — the notification is a generic "new message".)
+                                    // Android: fire the system notification from HERE — this RX worker lives in the foreground service and keeps running while the Activity is paused/dead, which is exactly when a notification matters. Signature already verified above; Kotlin suppresses it when the app is visible. (No plaintext available at this layer, and none needed — the notification is a generic "new message".) Deduped on prev_msg_hp so a retransmit of the same message doesn't re-ding.
                                     #[cfg(target_os = "android")]
-                                    crate::platform::jni_android::notify_new_message();
+                                    crate::platform::jni_android::notify_new_message(&prev_msg_hp);
 
                                     // Forward to UI for decryption
                                     send_status_update(
