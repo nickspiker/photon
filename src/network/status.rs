@@ -244,6 +244,8 @@ pub enum StatusUpdate {
         local_ip: Ipv4Addr,
         port: u16,
     },
+    /// Our own reflexive (public) address, learned+adopted from peer-echoed reflection (pong `observed_addr` or a `ReflectResponse`). The app stores it as `PhotonApp.our_reflexive`, feeding candidate gathering and the FGTW announce (so our published address is the one seen on the live UDP data socket, not fgtw.org's cone-only TLS view).
+    ReflexiveLearned { addr: SocketAddr },
 }
 
 /// Pending ping waiting for pong
@@ -1109,6 +1111,8 @@ async fn run_checker(
         // 64 KiB RX buffer: a pong laden with per-conversation sync records exceeds 2 KiB and a short
         // recv silently truncated it → parse error → one-way presence (a peer never saw the other).
         let mut buf = [0u8; 65536];
+        // This node's own reflexive (public) address, learned from peer-echoed reflection (pong `observed_addr` + `ReflectResponse`). Local to the long-lived receiver task; each adoption change is pushed to the app as `StatusUpdate::ReflexiveLearned`.
+        let mut reflexive = crate::network::traverse::reflexive::ReflexiveState::new();
         loop {
             match socket_recv.recv_from(&mut buf).await {
                 Ok((len, src_addr)) => {
@@ -1484,12 +1488,14 @@ async fn run_checker(
                                         records.clone()
                                     };
 
+                                    // Reflexive echo: tell the pinger the source address we saw its ping arrive from (canonicalised out of the dual-stack `::ffff:` form). This is the peer-echoed STUN primitive — the pinger learns its own public address on the exact UDP socket data flows over.
                                     let pong = FgtwMessage::StatusPong {
                                         timestamp: eagle_time_now(),
                                         responder_pubkey: our_pubkey_recv.clone(),
                                         provenance_hash,
                                         signature: sig_bytes,
                                         sync_records,
+                                        observed_addr: Some(udp::canon_socketaddr(src_addr)),
                                     };
 
                                     let pong_bytes = pong.to_vsf_bytes();
@@ -1504,6 +1510,7 @@ async fn run_checker(
                                     provenance_hash,
                                     signature,
                                     sync_records,
+                                    observed_addr,
                                 } => {
                                     // Find and remove matching pending ping
                                     let pending_ping = {
@@ -1535,6 +1542,22 @@ async fn run_checker(
                                         &signature,
                                     ) {
                                         continue;
+                                    }
+
+                                    // Peer-echoed reflexive address, from a pong we just signature-verified: OUR public address as this contact saw our ping arrive on the data socket. The pong is contact-gated, so the echo is from a friend → trusted, adopt immediately. On an adoption change, push it to the app as `our_reflexive` (feeds candidate gathering + the announce).
+                                    if let Some(obs) = observed_addr {
+                                        if let Some(addr) = reflexive.record(
+                                            udp::canon_socketaddr(obs),
+                                            *responder_pubkey.as_bytes(),
+                                            true,
+                                        ) {
+                                            crate::log(&format!("TRAVERSE: reflexive learned = {}", addr));
+                                            send_status_update(
+                                                &status_tx_recv,
+                                                StatusUpdate::ReflexiveLearned { addr },
+                                                &event_proxy_recv,
+                                            );
+                                        }
                                     }
 
                                     // Reset failure counter on successful pong (prevents bouncing)
@@ -1725,6 +1748,97 @@ async fn run_checker(
                                         },
                                         &event_proxy_recv,
                                     );
+                                }
+
+                                FgtwMessage::Reflect {
+                                    timestamp: _,
+                                    sender_pubkey,
+                                    provenance_hash,
+                                    signature,
+                                } => {
+                                    // Open-tier STUN: answer ANY signed node (not just contacts) with the source address we observed the request arrive from — this is what lets peers reflect for one another so nobody needs a central STUN server. Reveals only the requester's own address, so it's safe to serve openly; the P4 "serve directory" toggle will gate it (default on).
+                                    if !verify_provenance_signature(
+                                        &provenance_hash,
+                                        &sender_pubkey,
+                                        &signature,
+                                    ) {
+                                        continue;
+                                    }
+                                    let sig = keypair_recv.sign(&provenance_hash);
+                                    let mut sig_bytes = [0u8; 64];
+                                    sig_bytes.copy_from_slice(&sig.to_bytes());
+                                    let resp = FgtwMessage::ReflectResponse {
+                                        timestamp: eagle_time_now(),
+                                        responder_pubkey: our_pubkey_recv.clone(),
+                                        provenance_hash,
+                                        signature: sig_bytes,
+                                        observed_addr: udp::canon_socketaddr(src_addr),
+                                    };
+                                    let resp_bytes = resp.to_vsf_bytes();
+                                    if !resp_bytes.is_empty() {
+                                        udp::send(&socket_recv, &resp_bytes, src_addr).await;
+                                    }
+                                }
+
+                                FgtwMessage::ReflectResponse {
+                                    timestamp: _,
+                                    responder_pubkey,
+                                    provenance_hash,
+                                    signature,
+                                    observed_addr,
+                                } => {
+                                    // Open-tier reflexive answer. Verify it's a signed reply, then feed the quorum buffer as UNtrusted — a stranger's claim about our address needs corroboration from a second source before we adopt and re-publish it (anti-poison). A contact's echo arrives via the trusted pong path instead.
+                                    if !verify_provenance_signature(
+                                        &provenance_hash,
+                                        &responder_pubkey,
+                                        &signature,
+                                    ) {
+                                        continue;
+                                    }
+                                    if let Some(addr) = reflexive.record(
+                                        udp::canon_socketaddr(observed_addr),
+                                        *responder_pubkey.as_bytes(),
+                                        false,
+                                    ) {
+                                        crate::log(&format!("TRAVERSE: reflexive learned = {}", addr));
+                                        send_status_update(
+                                            &status_tx_recv,
+                                            StatusUpdate::ReflexiveLearned { addr },
+                                            &event_proxy_recv,
+                                        );
+                                    }
+                                }
+
+                                FgtwMessage::PunchProbe {
+                                    timestamp: _,
+                                    sender_pubkey,
+                                    provenance_hash,
+                                    signature,
+                                } => {
+                                    // Friend-tier hole-punch: only a contact/fleet member's probe is answered (the data plane is friend-gated, same set as ping). Receiving the probe means their packet traversed our NAT; replying opens ours toward them, and the ack — echoing their provenance — lets them validate this exact `(local, remote)` path. The ack also carries the address we saw, doubling as a reflexive echo for them.
+                                    let is_contact = {
+                                        let list = contacts_recv.lock().unwrap();
+                                        list.iter().any(|p| *p == sender_pubkey)
+                                    };
+                                    if !is_contact {
+                                        continue;
+                                    }
+                                    if !verify_provenance_signature(
+                                        &provenance_hash,
+                                        &sender_pubkey,
+                                        &signature,
+                                    ) {
+                                        continue;
+                                    }
+                                    let ack = crate::network::traverse::punch::build_probe_ack(
+                                        &keypair_recv,
+                                        our_pubkey_recv.clone(),
+                                        provenance_hash,
+                                        udp::canon_socketaddr(src_addr),
+                                    );
+                                    if !ack.is_empty() {
+                                        udp::send(&socket_recv, &ack, src_addr).await;
+                                    }
                                 }
 
                                 _ => {

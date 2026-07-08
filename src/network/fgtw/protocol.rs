@@ -65,6 +65,8 @@ pub enum FgtwMessage {
         signature: [u8; 64],            // Ed25519 signature of provenance_hash
         /// Per-conversation sync records: (conversation_token, last_received_osc) Tells peer: "For this conversation, your last message I received was at time X" Peer retransmits any pending messages with eagle_time > X
         sync_records: Vec<SyncRecord>,
+        /// The source address the responder observed this pong's ping arriving from — i.e. the requester's reflexive (public) address on the live UDP data socket. `None` from legacy peers. This is the peer-echoed STUN primitive: a node learns its own public address from any node whose pong it receives (see the traversal plan, P0), on the exact socket the data flows over — unlike fgtw.org's `cf-connecting-ip`, which only sees the TLS flow and is thus cone-NAT-only.
+        observed_addr: Option<SocketAddr>,
     },
     // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete REMOVED Full 8-primitive CLUTCH uses ClutchOffer and ClutchKemResponse which are handled via build_clutch_offer_vsf() and parse_clutch_offer_vsf() See CLUTCH.md Section 4.2 for the slot-based ceremony protocol.
     /// Encrypted chat message
@@ -132,6 +134,37 @@ pub enum FgtwMessage {
         provenance_hash: [u8; 32], // BLAKE3(avatar_vsf) — also what the signature covers
         signature: [u8; 64],
         avatar_vsf: Vec<u8>,
+    },
+    /// Address-reflection REQUEST (open-tier STUN) — "tell me the source address you see me at".
+    /// Body-less + signed like a ping, but answerable by ANY node serving the directory (not just contacts) — this is the peer-echoed reflexive primitive that lets a node learn its own public address on the live UDP data socket without a central STUN server. Reveals only the requester's own address; the response is the same size (no amplification).
+    Reflect {
+        timestamp: i64,
+        sender_pubkey: DevicePubkey,
+        provenance_hash: [u8; 32], // BLAKE3(sender_pubkey || timestamp)
+        signature: [u8; 64],       // Ed25519 over provenance_hash
+    },
+    /// Address-reflection RESPONSE — echoes the source address the responder observed the [`FgtwMessage::Reflect`] arrive from, i.e. the requester's reflexive address.
+    ReflectResponse {
+        timestamp: i64,
+        responder_pubkey: DevicePubkey,
+        provenance_hash: [u8; 32], // echoes the request's provenance (proves we saw it)
+        signature: [u8; 64],
+        observed_addr: SocketAddr,
+    },
+    /// Hole-punch PROBE (friend tier) — a signed datagram fired at a peer's candidate address to open our NAT toward them and elicit an ack. Contact/fleet-gated like ping (only a friend's punch is answered). Body-less; the header `provenance_hash` is the fresh per-probe correlator the ack echoes back.
+    PunchProbe {
+        timestamp: i64,
+        sender_pubkey: DevicePubkey,
+        provenance_hash: [u8; 32], // fresh per-probe; the ack echoes it for correlation
+        signature: [u8; 64],
+    },
+    /// Hole-punch ACK — the reply to a [`FgtwMessage::PunchProbe`]. Echoes the probe's provenance so the prober can match which candidate round-tripped (that `(local, remote)` pair is then validated), and carries `observed_addr` so the ack doubles as a reflexive echo.
+    PunchProbeAck {
+        timestamp: i64,
+        responder_pubkey: DevicePubkey,
+        provenance_hash: [u8; 32], // echoes the probe's provenance
+        signature: [u8; 64],
+        observed_addr: SocketAddr,
     },
 }
 
@@ -390,8 +423,9 @@ impl FgtwMessage {
                 provenance_hash,
                 signature,
                 sync_records,
+                observed_addr,
             } => {
-                // Pong with sync records for efficient resync Format: RÅ< ... ke[pubkey] ge[sig] > [pong (sync_count: N) (sync_0_tok: hb) (sync_0_ef6: f6) ...]
+                // Pong with sync records for efficient resync Format: RÅ< ... ke[pubkey] ge[sig] > [pong (sync_count: N) (sync_0_tok: hb) (sync_0_ef6: f6) (obs: hb)?]
                 let mut fields = vec![(
                     "sync_count".to_string(),
                     VsfType::u(sync_records.len(), false),
@@ -405,6 +439,10 @@ impl FgtwMessage {
                         format!("sync_{}_osc", i),
                         VsfType::e(vsf::types::EtType::e6(record.last_received_osc)),
                     ));
+                }
+                // Peer-echoed reflexive address: the src we saw the ping come from, so the requester learns its own public address on the data socket. Absent → legacy/unknown, parses back to None.
+                if let Some(addr) = observed_addr {
+                    fields.push(("obs".to_string(), VsfType::hb(socketaddr_to_bytes(addr))));
                 }
                 builder
                     .creation_time_oscillations(*timestamp)
@@ -507,6 +545,64 @@ impl FgtwMessage {
                     .add_section_direct(section)
                     .build()
             }
+            FgtwMessage::Reflect {
+                timestamp,
+                sender_pubkey,
+                provenance_hash,
+                signature,
+            } => builder
+                .creation_time_oscillations(*timestamp)
+                .provenance_hash(*provenance_hash)
+                .signature_ed25519(*sender_pubkey.as_bytes(), *signature)
+                .add_section("reflect", vec![])
+                .build(),
+            FgtwMessage::ReflectResponse {
+                timestamp,
+                responder_pubkey,
+                provenance_hash,
+                signature,
+                observed_addr,
+            } => builder
+                .creation_time_oscillations(*timestamp)
+                .provenance_hash(*provenance_hash)
+                .signature_ed25519(*responder_pubkey.as_bytes(), *signature)
+                .add_section(
+                    "reflect_resp",
+                    vec![(
+                        "obs".to_string(),
+                        VsfType::hb(socketaddr_to_bytes(observed_addr)),
+                    )],
+                )
+                .build(),
+            FgtwMessage::PunchProbe {
+                timestamp,
+                sender_pubkey,
+                provenance_hash,
+                signature,
+            } => builder
+                .creation_time_oscillations(*timestamp)
+                .provenance_hash(*provenance_hash)
+                .signature_ed25519(*sender_pubkey.as_bytes(), *signature)
+                .add_section("punch", vec![])
+                .build(),
+            FgtwMessage::PunchProbeAck {
+                timestamp,
+                responder_pubkey,
+                provenance_hash,
+                signature,
+                observed_addr,
+            } => builder
+                .creation_time_oscillations(*timestamp)
+                .provenance_hash(*provenance_hash)
+                .signature_ed25519(*responder_pubkey.as_bytes(), *signature)
+                .add_section(
+                    "punch_ack",
+                    vec![(
+                        "obs".to_string(),
+                        VsfType::hb(socketaddr_to_bytes(observed_addr)),
+                    )],
+                )
+                .build(),
             FgtwMessage::AvatarRequest {
                 timestamp,
                 sender_pubkey,
@@ -568,7 +664,12 @@ impl FgtwMessage {
                 .fields
                 .iter()
                 .find(|f| {
-                    f.name == "ping" || f.name == "pong" || f.name == "pb_req" || f.name == "av_req"
+                    f.name == "ping"
+                        || f.name == "pong"
+                        || f.name == "pb_req"
+                        || f.name == "av_req"
+                        || f.name == "reflect"
+                        || f.name == "punch"
                 })
                 .map(|f| f.name.as_str());
 
@@ -594,6 +695,22 @@ impl FgtwMessage {
                         provenance_hash,
                         signature,
                     });
+                } else if section_name == "reflect" {
+                    // Address-reflection request is body-less too — header-only fast path like ping.
+                    return Ok(FgtwMessage::Reflect {
+                        timestamp,
+                        sender_pubkey: pubkey,
+                        provenance_hash,
+                        signature,
+                    });
+                } else if section_name == "punch" {
+                    // Hole-punch probe is body-less — header-only fast path like ping.
+                    return Ok(FgtwMessage::PunchProbe {
+                        timestamp,
+                        sender_pubkey: pubkey,
+                        provenance_hash,
+                        signature,
+                    });
                 } else if section_name == "ping" {
                     return Ok(FgtwMessage::StatusPing {
                         timestamp,
@@ -602,13 +719,14 @@ impl FgtwMessage {
                         signature,
                     });
                 } else {
-                    // Old header-only pong format - no sync records (backwards compat)
+                    // Old header-only pong format - no sync records, no observed_addr (backwards compat)
                     return Ok(FgtwMessage::StatusPong {
                         timestamp,
                         responder_pubkey: pubkey,
                         provenance_hash,
                         signature,
                         sync_records: vec![],
+                        observed_addr: None,
                     });
                 }
             }
@@ -635,9 +753,10 @@ impl FgtwMessage {
                     signature,
                 });
             } else {
-                // Pong - parse sync records from section body
+                // Pong - parse sync records + optional observed_addr from section body
                 let fields = section_fields_to_tuples(&section);
                 let sync_records = extract_sync_records(&fields)?;
+                let observed_addr = extract_observed_addr(&fields);
 
                 return Ok(FgtwMessage::StatusPong {
                     timestamp,
@@ -645,8 +764,45 @@ impl FgtwMessage {
                     provenance_hash,
                     signature,
                     sync_records,
+                    observed_addr,
                 });
             }
+        }
+
+        // Address-reflection response: header carries the signed provenance, the `obs` field the observed address.
+        if section_name == "reflect_resp" {
+            let timestamp = extract_header_timestamp(&header)?;
+            let pubkey = extract_header_pubkey(&header)?;
+            let provenance_hash = extract_header_provenance(&header)?;
+            let signature = extract_header_signature(&header)?;
+            let fields = section_fields_to_tuples(&section);
+            let observed_addr = extract_observed_addr(&fields)
+                .ok_or_else(|| "reflect_resp missing observed_addr".to_string())?;
+            return Ok(FgtwMessage::ReflectResponse {
+                timestamp,
+                responder_pubkey: pubkey,
+                provenance_hash,
+                signature,
+                observed_addr,
+            });
+        }
+
+        // Hole-punch ack: same shape as reflect_resp (echoed provenance in the header, observed address in `obs`).
+        if section_name == "punch_ack" {
+            let timestamp = extract_header_timestamp(&header)?;
+            let pubkey = extract_header_pubkey(&header)?;
+            let provenance_hash = extract_header_provenance(&header)?;
+            let signature = extract_header_signature(&header)?;
+            let fields = section_fields_to_tuples(&section);
+            let observed_addr = extract_observed_addr(&fields)
+                .ok_or_else(|| "punch_ack missing observed_addr".to_string())?;
+            return Ok(FgtwMessage::PunchProbeAck {
+                timestamp,
+                responder_pubkey: pubkey,
+                provenance_hash,
+                signature,
+                observed_addr,
+            });
         }
 
         // NOTE: clutch_offer, clutch_init, clutch_resp, clutch_done deserialization REMOVED Full CLUTCH uses parse_clutch_offer_vsf() and parse_clutch_kem_response_vsf() which handle "clutch_offer" and "clutch_kem_response" sections
@@ -1101,6 +1257,14 @@ fn extract_sync_records(fields: &[(String, VsfType)]) -> Result<Vec<SyncRecord>,
     }
 
     Ok(records)
+}
+
+/// Extract the peer-echoed reflexive address from a pong body, if present. Carried as an `obs` byte field holding [`socketaddr_to_bytes`] (6 bytes v4 / 18 bytes v6). Absent (legacy peers) or malformed → `None`, so this never fails a pong parse.
+fn extract_observed_addr(fields: &[(String, VsfType)]) -> Option<SocketAddr> {
+    match get_field(fields, "obs") {
+        Some(VsfType::hb(bytes)) => bytes_to_socketaddr(bytes),
+        _ => None,
+    }
 }
 
 // Helper functions to extract from VsfHeader for simplified ping/pong format
