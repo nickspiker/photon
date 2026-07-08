@@ -1619,6 +1619,10 @@ async fn run_checker(
                                         continue;
                                     }
 
+                                    // Capture the sender's key bytes before the Online update moves sender_pubkey — the Android notification below seeds the per-contact chirp from them.
+                                    #[cfg(target_os = "android")]
+                                    let sender_key_bytes = *sender_pubkey.as_bytes();
+
                                     // A chat IS liveness proof — stronger than a pong. Clear the sender's ping-failure counter and mark them online, so the ping-timeout can't flip a peer offline while they're actively messaging us (the "shows offline but receives messages" bug).
                                     {
                                         let mut failures = failed_pings_recv.lock().unwrap();
@@ -1635,9 +1639,9 @@ async fn run_checker(
                                         &event_proxy_recv,
                                     );
 
-                                    // Android: fire the system notification from HERE — this RX worker lives in the foreground service and keeps running while the Activity is paused/dead, which is exactly when a notification matters. Signature already verified above; Kotlin suppresses it when the app is visible. (No plaintext available at this layer, and none needed — the notification is a generic "new message".) Deduped on prev_msg_hp so a retransmit of the same message doesn't re-ding.
+                                    // Android: fire the system notification from HERE — this RX worker lives in the foreground service and keeps running while the Activity is paused/dead, which is exactly when a notification matters. Signature already verified above; Kotlin suppresses it when the app is visible. (No plaintext available at this layer, and none needed — the notification is a generic "new message".) Deduped on prev_msg_hp so a retransmit of the same message doesn't re-ding. sender_pubkey seeds the per-contact chirp sound + haptic (derived + rendered in notify_new_message; only the audio/haptic cross to Kotlin, never the key).
                                     #[cfg(target_os = "android")]
-                                    crate::platform::jni_android::notify_new_message(&prev_msg_hp);
+                                    crate::platform::jni_android::notify_new_message(&prev_msg_hp, &sender_key_bytes);
 
                                     // Forward to UI for decryption
                                     send_status_update(
