@@ -580,6 +580,9 @@ pub struct PhotonApp {
     settings_autoupdate_check: Option<crate::ui::settings_widgets::Checkbox>,
     /// Diagnostics-page optional-note field — a real fluor `Textbox` (distinct from the launch / contacts / compose boxes so content never bleeds).
     settings_note_textbox: Option<Textbox>,
+
+    /// This node's own reflexive (public) address, learned via peer-echoed reflection (see [`crate::network::traverse::reflexive`]). `None` until the first signed pong / `ReflectResponse` echo. Fed forward to candidate gathering and the FGTW announce so our published address is the one seen on the live UDP data socket — not fgtw.org's TLS-flow `cf-connecting-ip`, which is only right for cone NATs.
+    our_reflexive: Option<std::net::SocketAddr>,
 }
 
 impl PhotonApp {
@@ -589,6 +592,7 @@ impl PhotonApp {
             chrome: None,
             hit_counter: 0,
             event_proxy: None,
+            our_reflexive: None,
             bg_scroll: 0,
             zoom_hint: false,
             last_ru: 1.0,
@@ -9085,6 +9089,14 @@ impl PhotonApp {
                                 None => crate::log("Avatar: failed to decode peer avatar bytes"),
                             }
                         }
+                    }
+                }
+
+                StatusUpdate::ReflexiveLearned { addr } => {
+                    // Our own public address, learned via peer-echoed reflection on the live UDP data socket. Store it for P1 candidate gathering and the P4 announce to publish (so our `PeerRecord.ip` is the real data-socket address, not fgtw.org's cone-only TLS view). Note: the legacy `Contact::best_addr(our_public_ip)` same-NAT path is currently dead (no callers) — the live send seam `race_addrs()` already covers same-NAT by racing the LAN candidate — so we don't touch it here.
+                    if self.our_reflexive != Some(addr) {
+                        self.our_reflexive = Some(addr);
+                        crate::log(&format!("TRAVERSE: our reflexive address = {}", addr));
                     }
                 }
             }
