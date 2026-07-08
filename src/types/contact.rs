@@ -305,27 +305,6 @@ impl Contact {
         self.last_seen = Some(timestamp);
     }
 
-    /// Get the best address to reach this contact. If we share the same public IP (same NAT), use their local_ip to bypass AP isolation. Otherwise use their public IP.
-    pub fn best_addr(
-        &self,
-        our_public_ip: Option<std::net::IpAddr>,
-    ) -> Option<std::net::SocketAddr> {
-        let public_addr = self.ip?;
-
-        // If peer has a USABLE local_ip and we share the same public IP, use local_ip (skip CLAT/service-continuity noise).
-        if let (Some(local_v4), Some(our_ip)) = (self.local_ip, our_public_ip) {
-            if crate::network::udp::is_usable_lan_ipv4(local_v4) && public_addr.ip() == our_ip {
-                // Same public IP = same NAT, use local_ip to bypass AP isolation
-                return Some(std::net::SocketAddr::new(
-                    std::net::IpAddr::V4(local_v4),
-                    public_addr.port(),
-                ));
-            }
-        }
-
-        Some(public_addr)
-    }
-
     /// Returns the (primary, alternate) address pair for racing a CLUTCH transfer across both the same-LAN and public paths. Primary is the LAN address (preferred — no router hairpin, no AP isolation), alternate is the public address. When no LAN address is known, primary is the public address and alternate is `None`. PT sends the SPEC to both and locks onto whichever ACKs first (see [`crate::network::pt::PtManager::send_with_pubkey_and_alt`]).
     pub fn race_addrs(&self) -> Option<(SocketAddr, Option<SocketAddr>)> {
         let public_addr = self.ip?;

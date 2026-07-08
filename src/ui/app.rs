@@ -994,7 +994,6 @@ pub struct PhotonApp {
     // P2P status checker for contact online status
     pub status_checker: Option<StatusChecker>,
     pub next_status_ping: std::time::Instant, // When to ping contacts next
-    pub our_public_ip: Option<std::net::IpAddr>, // Our public IP from FGTW (for same-NAT detection)
 
     pub attesting_handle: Option<String>,      // Handle being attested (for storing handle_proof)
 
@@ -1221,7 +1220,6 @@ impl PhotonApp {
             selected_contact: None,
             status_checker: None, // Initialized AFTER attestation succeeds
             next_status_ping: std::time::Instant::now(),
-            our_public_ip: None,
             attesting_handle: None,
             avatar_pixels,
             avatar_scaled: None,
@@ -1383,7 +1381,6 @@ impl PhotonApp {
             selected_contact: None,
             status_checker: None,
             next_status_ping: std::time::Instant::now(),
-            our_public_ip: None,
             attesting_handle: None,
             avatar_pixels: None,
             avatar_scaled: None,

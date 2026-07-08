@@ -565,6 +565,7 @@ pub fn load_messages(contact: &mut Contact, storage: &FlatStorage) -> Result<(),
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vsf::VsfSection;
 
     #[test]
     fn test_contact_identity_roundtrip() {

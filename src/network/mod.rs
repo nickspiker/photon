@@ -9,6 +9,7 @@ pub mod peer_updates;
 pub mod pt;
 pub mod status;
 pub mod tcp;
+pub mod traverse;
 pub mod udp;
 
 pub use clock_check::{ClockCheckResult, ClockJumpDetector, ClockWake};

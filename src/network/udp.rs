@@ -16,6 +16,17 @@ fn map_v4_for_dualstack(addr: SocketAddr) -> SocketAddr {
     }
 }
 
+/// Canonicalise a socket address to plain IPv4 when it's an IPv4-mapped IPv6 (`::ffff:a.b.c.d`). The dual-stack `[::]` socket delivers every inbound v4 datagram in this mapped form, so a raw `src_addr` from `recv_from` and a `race_addrs`-built v4 address compare unequal despite being the same host. Canonicalise before storing, comparing, or wire-encoding an observed address (e.g. the pong reflexive echo and the punch candidate matrix) so the two representations don't flap. Inverse of [`map_v4_for_dualstack`], which is applied only at send time.
+pub fn canon_socketaddr(addr: SocketAddr) -> SocketAddr {
+    match addr {
+        SocketAddr::V6(v6) => match v6.ip().to_ipv4_mapped() {
+            Some(v4) => SocketAddr::new(std::net::IpAddr::V4(v4), v6.port()),
+            None => addr,
+        },
+        SocketAddr::V4(_) => addr,
+    }
+}
+
 pub async fn send(socket: &tokio::net::UdpSocket, data: &[u8], addr: SocketAddr) {
     // An empty payload is never a real datagram — it's PT's "queued, nothing to send now" signal (a small packet waiting behind an in-flight one in the stop-and-wait queue). Skip it so callers don't have to guard every send site.
     if data.is_empty() {
