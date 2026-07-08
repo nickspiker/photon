@@ -137,11 +137,46 @@ pub fn notify_new_message(msg_hp: &[u8; 32], sender_pubkey: &[u8]) {
     }
 }
 
+/// Poke the foreground service to run a headless protocol tick. Called from the status RX worker
+/// (`send_status_update`) whenever ANY inbound `StatusUpdate` lands, so a CLUTCH offer/KEM/complete or a
+/// chat/ACK advances the ceremony + chain even while the Activity is backgrounded and its Choreographer
+/// (and thus `tick`) has stopped. Reuses the `MESSAGE_NOTIFIER` service global-ref: calls Kotlin
+/// `requestServiceTick()`, which grabs a brief wakelock and calls `nativeServiceTick(activityPtr)`. The
+/// wakelock lives on the Kotlin side because it needs the service `Context`/`PowerManager`. No-op if the
+/// service never registered or the Activity context ptr isn't set (Kotlin guards that). Callable from any
+/// thread — attaches to the JVM as needed. See docs/background-tick.md.
+#[cfg(target_os = "android")]
+pub fn request_service_tick() {
+    let Some((vm, svc)) = MESSAGE_NOTIFIER.get() else {
+        return;
+    };
+    match vm.attach_current_thread() {
+        Ok(mut env) => {
+            if env
+                .call_method(svc.as_obj(), "requestServiceTick", "()V", &[])
+                .is_err()
+            {
+                let _ = env.exception_clear();
+                error!("request_service_tick: requestServiceTick call failed");
+            }
+        }
+        Err(e) => error!("request_service_tick: JVM attach failed: {:?}", e),
+    }
+}
+
 // PhotonActivity context — wraps fluor::AndroidShell<PhotonApp> ============================================================================
 /// Activity-side context. Holds the fluor shell that owns the FluorApp + surface + pipeline. Lifetime: created on Activity surface-creation (`nativeInitWithNetwork`), destroyed on Activity teardown (`nativeDestroy`).
 #[cfg(target_os = "android")]
 pub struct PhotonContext {
     pub shell: AndroidShell<PhotonApp>,
+    /// Re-entry guard between the Activity draw thread (`nativeDraw` → `tick`) and the foreground-service
+    /// thread (`nativeServiceTick` → `advance_protocol`). Both mutate the one `PhotonApp` through the
+    /// `&'static mut` handed out by `get_context`, so they must never run concurrently. They normally
+    /// can't — the frame callback is removed on `onPause`, exactly when the service tick takes over — but
+    /// the `onResume` re-arm can momentarily overlap. This flag serialises them: whoever holds it runs,
+    /// the other skips (a skipped background tick is harmless — the next foreground `tick` drains the
+    /// same channels anyway). See docs/background-tick.md.
+    pub ticking: std::sync::atomic::AtomicBool,
 }
 
 #[cfg(target_os = "android")]
@@ -156,6 +191,7 @@ impl PhotonContext {
         );
         Self {
             shell: AndroidShell::new(app, width, height),
+            ticking: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -213,7 +249,47 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeDraw(
         error!("Failed to convert Surface to NativeWindow");
         return;
     };
+    // Hold the tick guard across the whole draw (which runs `tick` → `advance_protocol` internally):
+    // a background `nativeServiceTick` racing us on `onResume` will see it busy and skip. The draw is
+    // the foreground owner and always wins; the deferred background tick is a harmless no-op because
+    // this very draw drains the same channels. `Acquire`/`Release` order the flag against the mutations.
+    use std::sync::atomic::Ordering;
+    ctx.ticking.store(true, Ordering::Relaxed);
     ctx.shell.draw(&window);
+    ctx.ticking.store(false, Ordering::Release);
+}
+
+/// Headless protocol advance, called from the foreground **service** thread (`PhotonConnectionService`)
+/// when inbound traffic arrives while the Activity is backgrounded — the Choreographer has stopped
+/// calling `nativeDraw`, so `tick` isn't running and CLUTCH/chat would otherwise stall until the screen
+/// comes on. Runs the surface-free `PhotonApp::advance_protocol` (drain channels, advance the ceremony +
+/// chain, retransmit) with NO drawing. Skips if a draw is concurrently in progress (the `onResume`
+/// overlap) — that draw covers the same work. Reuses the Activity `PhotonContext` ptr, which stays valid
+/// while the app is merely paused (destroyed only at `onDestroy`; a 0/stale ptr here is a no-op).
+/// See docs/background-tick.md.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeServiceTick(
+    _env: JNIEnv<'_>,
+    _class: JObject<'_>,
+    context_ptr: jlong,
+) {
+    use std::sync::atomic::Ordering;
+    let Some(ctx) = get_context(context_ptr) else {
+        return;
+    };
+    // CAS false→true: acquire the guard only if no draw (or another service tick) holds it. On failure
+    // we skip — the concurrent draw advances the same state, so a dropped background tick loses nothing.
+    if ctx
+        .ticking
+        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        return;
+    }
+    let now = std::time::Instant::now();
+    ctx.shell.app().advance_protocol(now);
+    ctx.ticking.store(false, Ordering::Release);
 }
 
 #[cfg(target_os = "android")]
