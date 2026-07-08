@@ -598,6 +598,13 @@ fn send_status_update(
             crate::log(&format!("Status: Failed to send wake event: {:?}", e));
         }
     }
+    // Android has no event-loop proxy — the UI thread's tick is Choreographer-driven and stops when the
+    // app backgrounds. So the wake instead pokes the foreground service to run a headless protocol tick
+    // (advance_protocol), which drains this very update off the channel and advances the ceremony/chain
+    // without the screen being on. No-op while foregrounded (the service defers to the live draw) and
+    // when the Activity context isn't registered. See docs/background-tick.md.
+    #[cfg(target_os = "android")]
+    crate::platform::jni_android::request_service_tick();
 }
 
 /// Main checker loop running in tokio

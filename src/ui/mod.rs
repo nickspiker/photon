@@ -1,4 +1,5 @@
-// All platforms now share the fluor-hosted UI stack. Phase 3 of the host-android plan: the legacy Android compositor (ui::app, ui::compositing, ui::drawing, ui::keyboard, ui::mouse, ui::text_editing, ui::text_rasterizing, ui::renderer_android) is retired in favour of `photon_app::PhotonApp` running under `fluor::host::android::AndroidShell` on Android and `fluor::host::app::run_app` on desktop.
+// All platforms share the fluor-hosted UI stack: `photon_app::PhotonApp` runs under `fluor::host::android::AndroidShell` on Android and `fluor::host::app::run_app` on desktop.
+// The legacy Android compositor (app / compositing / drawing / keyboard / mouse / text_editing / text_rasterizing / renderer_android) was deleted once fully retired — text measurement, editing, and rendering now live in fluor.
 
 pub mod avatar;
 pub mod display_profile;
