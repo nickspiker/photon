@@ -6,11 +6,18 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
+import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioManager
+import android.media.AudioTrack
 import android.os.Binder
 import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 
@@ -220,20 +227,25 @@ class PhotonConnectionService : Service() {
     }
 
     /**
-     * Post the "new message" notification. Called FROM RUST (the status RX worker, via the
-     * global-ref registered in nativeNetworkInit) on any thread — NotificationManager is
-     * thread-safe. Suppressed while the Activity is visible (the user is already looking at
-     * the app; in-app presentation owns that case). Posts on PhotonActivity.CHANNEL_ID
-     * ("photon_messages", IMPORTANCE_HIGH) — the channel carries the default sound +
-     * vibration, which is the whole point. A fixed id collapses a burst into one entry while
-     * still re-alerting per message. No content beyond "New message": plaintext never reaches
-     * this layer, and the handle deliberately stays off the lock screen.
+     * Post the "new message" notification, sounding + buzzing the SENDER's per-contact chirp. Called
+     * FROM RUST (the status RX worker, via the global-ref registered in nativeNetworkInit) on any
+     * thread. Suppressed while the Activity is visible (the user is already looking at the app; in-app
+     * presentation owns that case).
+     *
+     * The channel is SILENT (no channel sound/vibration) — this method plays the sound and haptic
+     * ITSELF: [wav] (mono 16-bit PCM the Rust chirp crate rendered) via AudioTrack, and [timings] /
+     * [amplitudes] (the matching amplitude envelope) via VibrationEffect.createWaveform. That's the
+     * "app plays it after wake" path: the tone is per-contact, the OS default never fires, and it works
+     * even from deep Doze once the process is scheduled. A fixed notification id collapses a burst into
+     * one entry. No content beyond "New message": plaintext never reaches this layer and the handle
+     * stays off the lock screen; only the rendered audio/haptic came from Rust, never the sender key.
      */
-    fun postMessageNotification() {
+    fun postMessageNotification(wav: ByteArray, timings: LongArray, amplitudes: IntArray) {
         if (PhotonActivity.inForeground) return
 
-        // The Activity normally creates the channel before starting this service, but be
-        // self-sufficient: channel creation is idempotent.
+        // The Activity normally creates the silent channel first, but be self-sufficient: creation is
+        // idempotent, and it MUST match the Activity's silent definition (setSound(null)/no vibration)
+        // — whichever creates it first wins, and its sound/vibration are then immutable.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 PhotonActivity.CHANNEL_ID,
@@ -241,8 +253,8 @@ class PhotonConnectionService : Service() {
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
                 description = "Photon message notifications"
-                enableVibration(true)
-                vibrationPattern = longArrayOf(0, 250, 100, 250)
+                setSound(null, null)
+                enableVibration(false)
             }
             getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
@@ -262,5 +274,67 @@ class PhotonConnectionService : Service() {
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .build()
         getSystemService(NotificationManager::class.java).notify(MESSAGE_NOTIFICATION_ID, notification)
+
+        playChirp(wav)
+        vibrateChirp(timings, amplitudes)
+    }
+
+    /** Play the chirp WAV (mono 16-bit PCM) on the NOTIFICATION audio stream via AudioTrack. Fire-and-
+     *  forget on the service's own thread; any failure (no output route, malformed clip) is logged, never
+     *  fatal — a missing sound must not take the service down. The 44-byte WAV header is skipped; the rest
+     *  is streamed as PCM16. Sample rate is read from the header so it tracks the chirp crate's rate. */
+    private fun playChirp(wav: ByteArray) {
+        if (wav.size <= 44) return
+        try {
+            // Little-endian sample rate lives at header offset 24..27.
+            val sampleRate = (wav[24].toInt() and 0xFF) or
+                ((wav[25].toInt() and 0xFF) shl 8) or
+                ((wav[26].toInt() and 0xFF) shl 16) or
+                ((wav[27].toInt() and 0xFF) shl 24)
+            val pcm = wav.copyOfRange(44, wav.size)
+
+            val attrs = AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .build()
+            val format = AudioFormat.Builder()
+                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                .setSampleRate(sampleRate)
+                .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                .build()
+            val track = AudioTrack(
+                attrs, format, pcm.size,
+                AudioTrack.MODE_STATIC, AudioManager.AUDIO_SESSION_ID_GENERATE
+            )
+            track.write(pcm, 0, pcm.size)
+            track.setNotificationMarkerPosition(pcm.size / 2) // 2 bytes/frame (mono 16-bit)
+            track.setPlaybackPositionUpdateListener(object : AudioTrack.OnPlaybackPositionUpdateListener {
+                override fun onMarkerReached(t: AudioTrack) { t.release() }
+                override fun onPeriodicNotification(t: AudioTrack) {}
+            })
+            track.play()
+        } catch (e: Exception) {
+            Log.w(TAG, "playChirp failed", e)
+        }
+    }
+
+    /** Fire the chirp's amplitude-envelope haptic via VibrationEffect.createWaveform (API 26+). timings
+     *  are per-step durations (ms), amplitudes are 0..255 motor levels — the pair the chirp crate's
+     *  haptic_waveform produced. -1 = no repeat. Logged-not-fatal on any failure. */
+    private fun vibrateChirp(timings: LongArray, amplitudes: IntArray) {
+        if (timings.isEmpty() || timings.size != amplitudes.size) return
+        try {
+            val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                (getSystemService(VibratorManager::class.java)).defaultVibrator
+            } else {
+                @Suppress("DEPRECATION")
+                getSystemService(Vibrator::class.java)
+            }
+            if (vibrator == null || !vibrator.hasVibrator()) return
+            val effect = VibrationEffect.createWaveform(timings, amplitudes, -1)
+            vibrator.vibrate(effect)
+        } catch (e: Exception) {
+            Log.w(TAG, "vibrateChirp failed", e)
+        }
     }
 }
