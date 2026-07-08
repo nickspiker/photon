@@ -33,6 +33,7 @@ class PhotonConnectionService : Service() {
         }
         const val CHANNEL_ID = "photon_connection"
         const val NOTIFICATION_ID = 1001
+        const val MESSAGE_NOTIFICATION_ID = 1002
         private const val TAG = "PhotonService"
         private const val POLL_INTERVAL_MS = 1000L // 1 second network polling
         const val SESSION_ACTION = "com.photon.SESSION"
@@ -216,5 +217,50 @@ class PhotonConnectionService : Service() {
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
+    }
+
+    /**
+     * Post the "new message" notification. Called FROM RUST (the status RX worker, via the
+     * global-ref registered in nativeNetworkInit) on any thread — NotificationManager is
+     * thread-safe. Suppressed while the Activity is visible (the user is already looking at
+     * the app; in-app presentation owns that case). Posts on PhotonActivity.CHANNEL_ID
+     * ("photon_messages", IMPORTANCE_HIGH) — the channel carries the default sound +
+     * vibration, which is the whole point. A fixed id collapses a burst into one entry while
+     * still re-alerting per message. No content beyond "New message": plaintext never reaches
+     * this layer, and the handle deliberately stays off the lock screen.
+     */
+    fun postMessageNotification() {
+        if (PhotonActivity.inForeground) return
+
+        // The Activity normally creates the channel before starting this service, but be
+        // self-sufficient: channel creation is idempotent.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                PhotonActivity.CHANNEL_ID,
+                PhotonActivity.CHANNEL_NAME,
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Photon message notifications"
+                enableVibration(true)
+                vibrationPattern = longArrayOf(0, 250, 100, 250)
+            }
+            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+        }
+
+        val pendingIntent = PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, PhotonActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE
+        )
+        val notification = NotificationCompat.Builder(this, PhotonActivity.CHANNEL_ID)
+            .setContentTitle("Photon")
+            .setContentText("New message")
+            .setSmallIcon(android.R.drawable.ic_dialog_email)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .build()
+        getSystemService(NotificationManager::class.java).notify(MESSAGE_NOTIFICATION_ID, notification)
     }
 }

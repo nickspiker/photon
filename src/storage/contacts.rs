@@ -147,6 +147,7 @@ fn contact_state_schema() -> SectionSchema {
         .field("friendship_id", TypeConstraint::AnyHash) // Links to friendship storage
         .field("last_seen", TypeConstraint::Any) // f64 Eagle Time
         .field("completed_their_hqc_prefix", TypeConstraint::AnyHash) // Detects stale offers (8 bytes)
+        .field("chain_woven", TypeConstraint::AnyUnsigned) // bool: chain proven end-to-end once (double-toggle seal) — persists so an established conversation allows composing (+ the staging queue) across restarts, even to an offline peer
 }
 
 /// Save contact state (mutable data) with schema validation
@@ -200,6 +201,12 @@ pub fn save_contact_state(contact: &Contact, storage: &FlatStorage) -> Result<()
                 "completed_their_hqc_prefix",
                 VsfType::hb(hqc_prefix.to_vec()),
             )
+            .map_err(|e| StorageError::Parse(e.to_string()))?;
+    }
+    if contact.chain_woven {
+        // Persist the seal only once true — absent reads as false (unwoven), so old vaults and fresh ceremonies re-prove as before.
+        builder = builder
+            .set("chain_woven", true)
             .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
 
@@ -282,6 +289,13 @@ pub fn load_contact_state(
         if prefix.len() == 8 {
             contact.completed_their_hqc_prefix = prefix.as_slice().try_into().ok();
         }
+    }
+    // Chain-weave seal: a chain proven once stays proven across restarts, so composing (+ the staging queue) works even while the peer is offline. Set the probe flags coherently so the one-shot probe doesn't refire into an already-proven chain.
+    if section.get_value::<bool>("chain_woven").unwrap_or(false) {
+        contact.chain_woven = true;
+        contact.probe_sent = true;
+        contact.their_probe_seen = true;
+        contact.chain_advanced_by_ack = true;
     }
 
     Ok(contact)
