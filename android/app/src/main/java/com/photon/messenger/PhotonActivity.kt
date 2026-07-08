@@ -44,6 +44,10 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         const val CHANNEL_ID = "photon_messages"
         const val CHANNEL_NAME = "Messages"
         private const val TAG = "PhotonActivity"
+
+        /** True while the Activity is between onResume and onPause — the service's message notification suppresses itself when the user is already looking at the app. @Volatile: read from the Rust RX thread's upcall. */
+        @Volatile
+        var inForeground = false
     }
 
     // Native UI context pointer (rendering, touch, etc.)
@@ -495,12 +499,17 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
 
     override fun onPause() {
         super.onPause()
+        inForeground = false
         Choreographer.getInstance().removeFrameCallback(this)
         sensorManager.unregisterListener(gravityListener)
     }
 
     override fun onResume() {
         super.onResume()
+        inForeground = true
+        // Entering the app clears any pending "new message" notification — the user is now looking at the message list.
+        getSystemService(NotificationManager::class.java)
+            ?.cancel(PhotonConnectionService.MESSAGE_NOTIFICATION_ID)
         gravitySensor?.let {
             sensorManager.registerListener(gravityListener, it, SensorManager.SENSOR_DELAY_UI)
         }

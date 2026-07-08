@@ -35,6 +35,31 @@ use fluor::host::android::AndroidShell;
 
 // ============================================================================
 
+/// The message-notification sink: the JavaVM + a global ref of the PhotonConnectionService, registered at `nativeNetworkInit`. Lets any Rust thread (the status RX worker, chiefly) call up into Kotlin's `postMessageNotification()` — the service outlives the Activity, so this works while the app is backgrounded.
+#[cfg(target_os = "android")]
+static MESSAGE_NOTIFIER: std::sync::OnceLock<(jni::JavaVM, jni::objects::GlobalRef)> =
+    std::sync::OnceLock::new();
+
+/// Fire the Android "new message" notification (Kotlin decides visibility/foreground suppression + posts on the photon_messages channel, which carries the sound). No-op if the service never registered. Callable from any thread — attaches to the JVM as needed.
+#[cfg(target_os = "android")]
+pub fn notify_new_message() {
+    let Some((vm, svc)) = MESSAGE_NOTIFIER.get() else {
+        return;
+    };
+    match vm.attach_current_thread() {
+        Ok(mut env) => {
+            if env
+                .call_method(svc.as_obj(), "postMessageNotification", "()V", &[])
+                .is_err()
+            {
+                let _ = env.exception_clear();
+                error!("notify_new_message: postMessageNotification call failed");
+            }
+        }
+        Err(e) => error!("notify_new_message: JVM attach failed: {:?}", e),
+    }
+}
+
 // PhotonActivity context — wraps fluor::AndroidShell<PhotonApp> ============================================================================
 /// Activity-side context. Holds the fluor shell that owns the FluorApp + surface + pipeline. Lifetime: created on Activity surface-creation (`nativeInitWithNetwork`), destroyed on Activity teardown (`nativeDestroy`).
 #[cfg(target_os = "android")]
@@ -467,12 +492,24 @@ fn get_network_context(ptr: jlong) -> Option<&'static mut NetworkContext> {
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeNetworkInit(
     mut env: JNIEnv<'_>,
-    _class: JClass<'_>,
+    service: JObject<'_>,
     fingerprint: JByteArray<'_>,
     data_dir: JString<'_>,
     shadow_dir: JString<'_>,
 ) -> jlong {
     info!("PhotonConnectionService: Initializing network stack");
+
+    // Register the service as the message-notification sink. nativeNetworkInit is an INSTANCE method on the Kotlin side, so the second JNI parameter is the service `this` — a global ref of it (+ the JavaVM) lets the RX thread post "new message" notifications up thru Kotlin regardless of Activity lifecycle (the Choreographer poll bridge stops when the app backgrounds, which is exactly when notifications matter).
+    match (env.get_java_vm(), env.new_global_ref(&service)) {
+        (Ok(vm), Ok(svc)) => {
+            let _ = MESSAGE_NOTIFIER.set((vm, svc));
+        }
+        (vm, svc) => error!(
+            "nativeNetworkInit: notifier registration failed (vm ok: {}, ref ok: {})",
+            vm.is_ok(),
+            svc.is_ok()
+        ),
+    }
 
     let fingerprint_bytes = match env.convert_byte_array(&fingerprint) {
         Ok(bytes) => bytes,
