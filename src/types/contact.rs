@@ -194,6 +194,8 @@ pub struct Contact {
     pub their_probe_seen: bool,
     /// Our own TX chain has advanced via a matching ACK at least once (our TX / their RX proven). Sealed with `their_probe_seen` this is the both-directions-proven condition for `chain_woven`.
     pub chain_advanced_by_ack: bool,
+    /// Runtime-only: a punch-validated direct path to this contact `(remote_addr, validated_at_eagle_osc)`, set when a hole-punch round-trips (see [`crate::network::traverse`]). `race_addrs` prefers it as the primary send address, keeping the public/LAN as the alternate so PT still races if the NAT mapping went stale. Refreshed/cleared by keepalive (traversal P5). Not persisted — a resumed session re-punches.
+    pub validated_path: Option<(SocketAddr, i64)>,
 }
 
 /// Contact identifier - BLAKE3 hash of the contact's public identity key This provides deterministic, collision-resistant identification
@@ -273,6 +275,7 @@ impl Contact {
             probe_sent: false,            // Chain-weave probe not sent yet
             their_probe_seen: false,      // Haven't seen their chain-weave probe yet
             chain_advanced_by_ack: false, // Our TX chain not yet ACK-advanced
+            validated_path: None,         // No punch-validated direct path yet
         }
     }
 
@@ -305,8 +308,23 @@ impl Contact {
         self.last_seen = Some(timestamp);
     }
 
-    /// Returns the (primary, alternate) address pair for racing a CLUTCH transfer across both the same-LAN and public paths. Primary is the LAN address (preferred — no router hairpin, no AP isolation), alternate is the public address. When no LAN address is known, primary is the public address and alternate is `None`. PT sends the SPEC to both and locks onto whichever ACKs first (see [`crate::network::pt::PtManager::send_with_pubkey_and_alt`]).
+    /// Returns the (primary, alternate) address pair for racing a transfer across the reachable paths. A punch-validated direct path (from NAT traversal) wins as primary when present, with the public/LAN kept as the alternate so PT still races if the validated mapping went stale. Otherwise: primary is the LAN address (preferred — no router hairpin, no AP isolation), alternate is the public address; and when no LAN address is known, primary is the public address and alternate is `None`. PT sends the SPEC to both and locks onto whichever ACKs first (see [`crate::network::pt::PtManager::send_with_pubkey_and_alt`]).
     pub fn race_addrs(&self) -> Option<(SocketAddr, Option<SocketAddr>)> {
+        // A punch-validated direct path wins. Keep a distinct public/LAN address as the alternate so a stale NAT mapping still falls back via PT's race. This also makes a peer reachable when we only learned an address by punching (no phonebook `ip` yet).
+        if let Some((validated, _at)) = self.validated_path {
+            let alt = self
+                .ip
+                .filter(|ip| *ip != validated)
+                .or_else(|| match (self.local_ip, self.local_port) {
+                    (Some(v4), Some(p)) if crate::network::udp::is_usable_lan_ipv4(v4) => {
+                        let lan = SocketAddr::new(std::net::IpAddr::V4(v4), p);
+                        (lan != validated).then_some(lan)
+                    }
+                    _ => None,
+                });
+            return Some((validated, alt));
+        }
+
         let public_addr = self.ip?;
         if let (Some(local_v4), Some(local_port)) = (self.local_ip, self.local_port) {
             // Skip an unreachable LAN candidate (464XLAT CLAT `192.0.0.4` and friends) — racing it just burns the retry budget before the WAN path wins. A peer on cellular has no real LAN address; the public path is the only one.

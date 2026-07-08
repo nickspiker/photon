@@ -51,6 +51,10 @@ fn compute_provenance_hash(sender_pubkey: &DevicePubkey, timestamp: i64) -> [u8;
 pub struct PingRequest {
     pub peer_addr: SocketAddr,
     pub peer_pubkey: DevicePubkey,
+    /// Hole-punch candidate addresses to fire a probe at, alongside the ping. Empty = no punch this cycle
+    /// (e.g. we already have a fresh validated path). Piggybacking on the ping cycle gives the punch a
+    /// natural cadence and doubles as keepalive on a validated path.
+    pub punch_candidates: Vec<SocketAddr>,
 }
 
 // NOTE: ClutchRequest and ClutchRequestType REMOVED Full 8-primitive CLUTCH uses ClutchOfferRequest and ClutchKemResponseRequest which are handled via build_clutch_offer_vsf() and build_clutch_kem_response_vsf() See CLUTCH.md Section 4.2 for the slot-based ceremony protocol.
@@ -246,6 +250,11 @@ pub enum StatusUpdate {
     },
     /// Our own reflexive (public) address, learned+adopted from peer-echoed reflection (pong `observed_addr` or a `ReflectResponse`). The app stores it as `PhotonApp.our_reflexive`, feeding candidate gathering and the FGTW announce (so our published address is the one seen on the live UDP data socket, not fgtw.org's cone-only TLS view).
     ReflexiveLearned { addr: SocketAddr },
+    /// A hole-punch to `peer_pubkey` round-tripped: `remote` is a validated direct path. The app records it on the matching contact's `validated_path`, so `race_addrs` prefers it. `peer_pubkey` may be any device in the friend's fleet (match via `Contact::knows_device`).
+    PathValidated {
+        peer_pubkey: DevicePubkey,
+        remote: SocketAddr,
+    },
 }
 
 /// Pending ping waiting for pong
@@ -487,10 +496,16 @@ impl StatusChecker {
     }
 
     /// Request to ping a contact (non-blocking)
-    pub fn ping(&self, peer_addr: SocketAddr, peer_pubkey: DevicePubkey) {
+    pub fn ping(
+        &self,
+        peer_addr: SocketAddr,
+        peer_pubkey: DevicePubkey,
+        punch_candidates: Vec<SocketAddr>,
+    ) {
         let _ = self.ping_sender.send(PingRequest {
             peer_addr,
             peer_pubkey,
+            punch_candidates,
         });
     }
 
@@ -673,6 +688,10 @@ async fn run_checker(
 
     let pending: Arc<Mutex<Vec<PendingPing>>> = Arc::new(Mutex::new(Vec::new()));
 
+    // Outstanding hole-punch probes, shared with the receiver task: the main loop inserts on send (fired alongside the ping cycle), the receiver resolves on a matching PunchProbeAck → a validated direct path.
+    let pending_probes: Arc<Mutex<crate::network::traverse::punch::PendingProbes>> =
+        Arc::new(Mutex::new(crate::network::traverse::punch::PendingProbes::new()));
+
     // Track consecutive failed pings per contact (hysteresis - don't flip offline on 1 lost packet)
     let failed_pings: Arc<Mutex<Vec<([u8; 32], u8)>>> = Arc::new(Mutex::new(Vec::new()));
     const OFFLINE_THRESHOLD: u8 = 3;
@@ -682,6 +701,7 @@ async fn run_checker(
 
     let socket_recv = socket.clone();
     let pending_recv = pending.clone();
+    let pending_probes_recv = pending_probes.clone();
     let our_pubkey_recv = our_pubkey.clone();
     let keypair_recv = keypair.clone();
     let status_tx_recv = status_tx.clone();
@@ -1841,6 +1861,60 @@ async fn run_checker(
                                     }
                                 }
 
+                                FgtwMessage::PunchProbeAck {
+                                    timestamp: _,
+                                    responder_pubkey,
+                                    provenance_hash,
+                                    signature,
+                                    observed_addr,
+                                } => {
+                                    // A hole-punch we sent round-tripped. Gate on contact/fleet + signature, fold the reflexive echo the ack carries (trusted — from a contact), then match it to the probe we sent (by provenance) to report the validated direct path.
+                                    let is_contact = {
+                                        let list = contacts_recv.lock().unwrap();
+                                        list.iter().any(|p| *p == responder_pubkey)
+                                    };
+                                    if !is_contact {
+                                        continue;
+                                    }
+                                    if !verify_provenance_signature(
+                                        &provenance_hash,
+                                        &responder_pubkey,
+                                        &signature,
+                                    ) {
+                                        continue;
+                                    }
+                                    if let Some(addr) = reflexive.record(
+                                        udp::canon_socketaddr(observed_addr),
+                                        *responder_pubkey.as_bytes(),
+                                        true,
+                                    ) {
+                                        crate::log(&format!("TRAVERSE: reflexive learned = {}", addr));
+                                        send_status_update(
+                                            &status_tx_recv,
+                                            StatusUpdate::ReflexiveLearned { addr },
+                                            &event_proxy_recv,
+                                        );
+                                    }
+                                    // Resolve the probe → validated path. The address we sent to (`target`) is what we'll use to reach them; the ack's src confirms reachability. `resolve` removes the entry so a replayed ack can't re-validate.
+                                    let resolved = {
+                                        pending_probes_recv.lock().unwrap().resolve(&provenance_hash)
+                                    };
+                                    if let Some((peer, target)) = resolved {
+                                        crate::log(&format!(
+                                            "TRAVERSE: ACK from {} — path validated {}",
+                                            src_addr, target
+                                        ));
+                                        send_status_update(
+                                            &status_tx_recv,
+                                            StatusUpdate::PathValidated {
+                                                peer_pubkey: peer,
+                                                remote: target,
+                                            },
+                                            &event_proxy_recv,
+                                        );
+                                    }
+                                }
+
                                 _ => {
                                     crate::log("Status: Unknown message type received");
                                 }
@@ -1906,11 +1980,38 @@ async fn run_checker(
                 }
 
                 udp::send(&socket, &msg_bytes, request.peer_addr).await;
+
+                // Fire hole-punch probes at the peer's candidates (piggybacked on the ping cycle). Sending each probe opens our NAT toward that candidate; a friend's ack — matched by provenance in `pending_probes` — validates that path. Candidates arrive best-first, so the first to round-trip (usually the lowest-latency path) wins. The nonce is derived from the candidate so concurrent probes get distinct provenances.
+                for cand in &request.punch_candidates {
+                    let mut nonce = [0u8; 32];
+                    nonce.copy_from_slice(blake3::hash(cand.to_string().as_bytes()).as_bytes());
+                    let (probe_bytes, provenance) =
+                        crate::network::traverse::punch::build_probe(
+                            &keypair,
+                            our_pubkey.clone(),
+                            nonce,
+                        );
+                    {
+                        let mut probes = pending_probes.lock().unwrap();
+                        probes.insert(
+                            provenance,
+                            request.peer_pubkey.clone(),
+                            *cand,
+                            Instant::now(),
+                        );
+                    }
+                    udp::send(&socket, &probe_bytes, *cand).await;
+                }
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+        }
+
+        // Drop hole-punch probes that never round-tripped (unreachable candidate / symmetric NAT), so pending_probes doesn't grow unbounded across ping cycles.
+        {
+            pending_probes.lock().unwrap().expire(Instant::now());
         }
 
         // Cleanup stale pending pings (older than 5 seconds) Use hysteresis: only mark offline after OFFLINE_THRESHOLD consecutive failures

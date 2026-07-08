@@ -2543,7 +2543,7 @@ impl PhotonApp {
                                         "Status: Immediately pinging {} (on add)",
                                         contact.handle
                                     ));
-                                    checker.ping(ip, contact.public_identity.clone());
+                                    checker.ping(ip, contact.public_identity.clone(), Vec::new());
                                 }
                             }
                         }
@@ -2780,7 +2780,7 @@ impl PhotonApp {
                 if !other_peers.is_empty() {
                     if let Some(ref checker) = self.status_checker {
                         for peer in &other_peers {
-                            checker.ping(peer.ip, peer.device_pubkey.clone());
+                            checker.ping(peer.ip, peer.device_pubkey.clone(), Vec::new());
                         }
                         crate::log(&format!(
                             "Network: Initial broadcast ping to {} peer(s)",
@@ -5811,7 +5811,7 @@ impl PhotonApp {
                 contact.ip
             };
             if let Some(ip) = addr {
-                checker.ping(ip, contact.public_identity.clone());
+                checker.ping(ip, contact.public_identity.clone(), Vec::new());
                 pinged += 1;
             }
         }
@@ -5846,7 +5846,7 @@ impl PhotonApp {
                 contact.ip
             };
             if let Some(ip) = addr {
-                checker.ping(ip, contact.public_identity.clone());
+                checker.ping(ip, contact.public_identity.clone(), Vec::new());
                 crate::log(&format!(
                     "Status: Pinged {} on conversation enter",
                     contact.handle

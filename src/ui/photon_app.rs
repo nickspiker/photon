@@ -6752,15 +6752,35 @@ impl PhotonApp {
                 }
                 _ => None,
             };
+            // Hole-punch candidates: the peer's addresses, gathered best-first. Fire probes alongside the
+            // first ping only (they cover the same LAN/public addresses), and only while we lack a validated
+            // direct path — once punched, `race_addrs` uses it and we stop re-probing.
+            let mut punch: Vec<std::net::SocketAddr> = if contact.validated_path.is_none() {
+                crate::network::traverse::gather::gather_peer_candidates(contact)
+                    .sorted()
+                    .into_iter()
+                    .map(|c| c.addr)
+                    .collect()
+            } else {
+                Vec::new()
+            };
             let mut sent = false;
             if let Some(addr) = lan_addr {
-                checker.ping(addr, contact.public_identity.clone());
+                checker.ping(
+                    addr,
+                    contact.public_identity.clone(),
+                    std::mem::take(&mut punch),
+                );
                 sent = true;
             }
             // Public address — skip only if it's identical to the LAN address we already pinged.
             if let Some(public) = contact.ip {
                 if Some(public) != lan_addr {
-                    checker.ping(public, contact.public_identity.clone());
+                    checker.ping(
+                        public,
+                        contact.public_identity.clone(),
+                        std::mem::take(&mut punch),
+                    );
                     sent = true;
                 }
             }
@@ -6918,7 +6938,16 @@ impl PhotonApp {
             _ => contact.ip,
         };
         if let Some(ip) = addr {
-            checker.ping(ip, contact.public_identity.clone());
+            let punch: Vec<std::net::SocketAddr> = if contact.validated_path.is_none() {
+                crate::network::traverse::gather::gather_peer_candidates(contact)
+                    .sorted()
+                    .into_iter()
+                    .map(|c| c.addr)
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            checker.ping(ip, contact.public_identity.clone(), punch);
         }
     }
 
@@ -9093,10 +9122,29 @@ impl PhotonApp {
                 }
 
                 StatusUpdate::ReflexiveLearned { addr } => {
-                    // Our own public address, learned via peer-echoed reflection on the live UDP data socket. Store it for P1 candidate gathering and the P4 announce to publish (so our `PeerRecord.ip` is the real data-socket address, not fgtw.org's cone-only TLS view). Note: the legacy `Contact::best_addr(our_public_ip)` same-NAT path is currently dead (no callers) — the live send seam `race_addrs()` already covers same-NAT by racing the LAN candidate — so we don't touch it here.
+                    // Our own public address, learned via peer-echoed reflection on the live UDP data socket. Store it for candidate gathering and the announce to publish (so our `PeerRecord.ip` is the real data-socket address, not fgtw.org's cone-only TLS view).
                     if self.our_reflexive != Some(addr) {
                         self.our_reflexive = Some(addr);
                         crate::log(&format!("TRAVERSE: our reflexive address = {}", addr));
+                    }
+                }
+
+                StatusUpdate::PathValidated { peer_pubkey, remote } => {
+                    // A hole-punch round-tripped. Record it on the matching contact (any device in the friend's fleet) so `race_addrs` prefers this direct path, keeping the public/LAN as the alternate. First-wins: we stop re-punching once a path is set, so this only chooses among a single cycle's candidates — the first to round-trip, which is ≈ the lowest-latency/best path. Keepalive/expiry (P5) refreshes or clears it.
+                    let now_osc = vsf::eagle_time_oscillations();
+                    if let Some(contact) = self
+                        .contacts
+                        .iter_mut()
+                        .find(|c| c.knows_device(&peer_pubkey.key))
+                    {
+                        if contact.validated_path.is_none() {
+                            crate::log(&format!(
+                                "TRAVERSE: path validated to {} = {}",
+                                crate::fp(&contact.handle_proof).as_str(),
+                                remote
+                            ));
+                            contact.validated_path = Some((remote, now_osc));
+                        }
                     }
                 }
             }
