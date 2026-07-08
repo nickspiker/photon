@@ -41,7 +41,10 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         init {
             System.loadLibrary("photon_messenger")
         }
-        const val CHANNEL_ID = "photon_messages"
+        // _v2: the channel went SILENT (no channel sound/vibration — the app plays the per-contact
+        // chirp + haptic itself). A channel's sound/vibration are immutable after first creation, so a
+        // new id is the only way the silence takes effect on devices that already had the old channel.
+        const val CHANNEL_ID = "photon_messages_v2"
         const val CHANNEL_NAME = "Messages"
         private const val TAG = "PhotonActivity"
 
@@ -325,8 +328,11 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
             val importance = NotificationManager.IMPORTANCE_HIGH
             val channel = NotificationChannel(CHANNEL_ID, CHANNEL_NAME, importance).apply {
                 description = "Photon message notifications"
-                enableVibration(true)
-                vibrationPattern = longArrayOf(0, 250, 100, 250)
+                // Silent channel: the app plays the sender's chirp (AudioTrack) + haptic (VibrationEffect)
+                // itself, so the OS default tone never fires and the sound is per-contact. See
+                // PhotonConnectionService.postMessageNotification.
+                setSound(null, null)
+                enableVibration(false)
             }
             val manager = getSystemService(NotificationManager::class.java)
             manager.createNotificationChannel(channel)

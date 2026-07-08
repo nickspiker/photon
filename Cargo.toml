@@ -157,6 +157,10 @@ ndk = { version = "0.9.0", features = ["api-level-26"] }
 ndk-sys = "0.6.0"
 # fluor's Android backend — ANativeWindow surface + JNI shims + Choreographer-driven render scheduling. Same `PhotonApp` FluorApp impl runs on Android (via AndroidShell) and desktop (via host-winit's DesktopShell). winit no longer appears in the Android dep graph — fluor's `WakeSender` trait abstracts cross-thread wake-up (which previously needed `winit::event_loop::EventLoopProxy<UserEvent>` in the trait signature), so the platform-data-types-only `winit` dep + the `android-activity` compile-glue dep + the `android_main` linker shim all retire.
 fluor = { path = "../fluor", default-features = false, features = ["host-android"] }
+# Per-contact notification chime, synthesis-only (no rodio/playback): Rust derives the sender's chirp
+# WAV + haptic envelope and hands both to Kotlin, which plays them (MediaPlayer + VibrationEffect). The
+# `playback` feature (rodio) stays off — it can't cross-compile to the NDK and the OS does the playing.
+chirp = { path = "../chirp", default-features = false }
 
 # Redox uses Orbital, not X11 — winit's Orbital backend + softbuffer both support Redox. fluor's `host-winit` feature now carries only winit + softbuffer (wgpu/arboard moved to per-target blocks that exclude Redox), so the same FluorApp host that runs on desktop compiles here too. No arboard (Redox has no clipboard backend); clipboard chords are cfg'd out in src/ui/keyboard.rs.
 [target.'cfg(target_os = "redox")'.dependencies]

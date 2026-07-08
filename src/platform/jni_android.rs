@@ -49,12 +49,20 @@ static MESSAGE_NOTIFIER: std::sync::OnceLock<(jni::JavaVM, jni::objects::GlobalR
 static LAST_NOTIFIED_MSG: std::sync::Mutex<Option<[u8; 32]>> = std::sync::Mutex::new(None);
 
 /// Fire the Android "new message" notification for the message identified by `msg_hp` (its `prev_msg_hp`
-/// chain position). Deduplicated: a repeat of the same `msg_hp` (a retransmit) is a no-op, so one logical
-/// message dings once. Kotlin decides visibility/foreground suppression + posts on the photon_messages
-/// channel, which carries the sound. No-op if the service never registered. Callable from any thread —
-/// attaches to the JVM as needed.
+/// chain position), sounding + buzzing the SENDER's per-contact chirp. Deduplicated: a repeat of the same
+/// `msg_hp` (a retransmit) is a no-op, so one logical message dings once.
+///
+/// The sound/haptic are the sender's deterministic chirp (`chirp::Chirp::from_hash(blake3(sender_pubkey))`)
+/// rendered here to a WAV + the matching amplitude-envelope haptic, and handed to Kotlin, which plays them
+/// itself (silent channel + MediaPlayer + VibrationEffect) — the "app plays it after wake" path, so the OS
+/// default tone never fires and the sound is per-contact even from deep Doze. Sender identity stays
+/// in-process: only the rendered audio/haptic cross to Kotlin, never the pubkey or plaintext, and the
+/// notification text stays a generic "New message" (handle off the lock screen).
+///
+/// Kotlin decides visibility/foreground suppression. No-op if the service never registered. Callable from
+/// any thread — attaches to the JVM as needed.
 #[cfg(target_os = "android")]
-pub fn notify_new_message(msg_hp: &[u8; 32]) {
+pub fn notify_new_message(msg_hp: &[u8; 32], sender_pubkey: &[u8]) {
     // Dedup: skip if this is the same message we most recently notified for (a retransmit).
     {
         let mut last = LAST_NOTIFIED_MSG.lock().unwrap();
@@ -66,10 +74,59 @@ pub fn notify_new_message(msg_hp: &[u8; 32]) {
     let Some((vm, svc)) = MESSAGE_NOTIFIER.get() else {
         return;
     };
+
+    // Derive the sender's chirp → WAV bytes + haptic (timings, amplitudes). blake3(pubkey) gives a clean
+    // 32-byte seed; same sender → same chirp every time. 200 Hz matches the LRA motor's usable band.
+    let seed: [u8; 32] = *blake3::hash(sender_pubkey).as_bytes();
+    let chirp = chirp::Chirp::from_hash(seed);
+    let wav = chirp.to_wav();
+    let (timings, amplitudes) = chirp.haptic_waveform(200);
+
     match vm.attach_current_thread() {
         Ok(mut env) => {
+            // Marshal WAV (byte[]), timings (long[] — createWaveform wants long[]), amplitudes (int[] —
+            // createWaveform wants int[]).
+            let wav_arr = match env.byte_array_from_slice(&wav) {
+                Ok(a) => a,
+                Err(e) => {
+                    error!("notify_new_message: wav array alloc failed: {:?}", e);
+                    return;
+                }
+            };
+            let timings_i64: Vec<i64> = timings.iter().map(|&t| t as i64).collect();
+            let timings_arr = match env.new_long_array(timings_i64.len() as i32) {
+                Ok(a) => {
+                    let _ = env.set_long_array_region(&a, 0, &timings_i64);
+                    a
+                }
+                Err(e) => {
+                    error!("notify_new_message: timings array alloc failed: {:?}", e);
+                    return;
+                }
+            };
+            let amps_i32: Vec<i32> = amplitudes.iter().map(|&a| a as i32).collect();
+            let amps_arr = match env.new_int_array(amps_i32.len() as i32) {
+                Ok(a) => {
+                    let _ = env.set_int_array_region(&a, 0, &amps_i32);
+                    a
+                }
+                Err(e) => {
+                    error!("notify_new_message: amplitudes array alloc failed: {:?}", e);
+                    return;
+                }
+            };
+
             if env
-                .call_method(svc.as_obj(), "postMessageNotification", "()V", &[])
+                .call_method(
+                    svc.as_obj(),
+                    "postMessageNotification",
+                    "([B[J[I)V",
+                    &[
+                        (&wav_arr).into(),
+                        (&timings_arr).into(),
+                        (&amps_arr).into(),
+                    ],
+                )
                 .is_err()
             {
                 let _ = env.exception_clear();
