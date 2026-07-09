@@ -216,6 +216,8 @@ pub struct Contact {
     pub punch_unvalidated_cycles: u8,
     /// Friend-assisted history recovery state machine (newest-first cursor pagination from the friend's copy). `None` = no recovery running/known. Runtime struct; the durable cursor + complete flag persist as `hist_oldest` / `hist_complete` in contact state.
     pub history_recovery: Option<HistoryRecovery>,
+    /// Runtime-only: when the CLUTCH ceremony last reached Complete (proof verified). Guards a post-completion RE-KEY COOLDOWN: completion zeroizes our ephemeral keypairs, so a peer's offer that was in flight just before they saw our completion arrives with `clutch_our_keypairs == None` and would trip the "peer lost chains, accept re-key" path — a spurious re-key that, when both sides do it near-simultaneously, storms into divergent ceremonies (observed: two devices wedged at 5/8 and 7/8 forever, though they'd already computed matching eggs). The window opens at completion (before the ~1s-later weave), so it's armed HERE, not at weave. Within it we ignore such offers; a GENUINE reset peer keeps sending and re-keys once it passes. `Instant` — never persisted.
+    pub clutch_completed_at: Option<std::time::Instant>,
 }
 
 /// Contact identifier - BLAKE3 hash of the contact's public identity key This provides deterministic, collision-resistant identification
@@ -298,6 +300,7 @@ impl Contact {
             validated_path: None,         // No punch-validated direct path yet
             punch_unvalidated_cycles: 0,  // No failed punch cycles yet
             history_recovery: None,       // No history recovery running
+            clutch_completed_at: None,         // Ceremony not yet complete
         }
     }
 
