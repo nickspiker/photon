@@ -151,6 +151,9 @@ fn contact_state_schema() -> SectionSchema {
         .field("sibling", TypeConstraint::AnyUnsigned) // bool: this entry is one of OUR OWN fleet devices (fleet weave), keyed by sibling party id. Absent = false (a friend).
         .field("blind", TypeConstraint::Any) // multi-value per deposited blind: (depositor device ke, 64B blob tensor, deposited-at e6). Friend-side storage of OTP-blinded S blobs; absent = none.
         .field("blind_deposited", TypeConstraint::AnyUnsigned) // bool: OUR blind is disk-confirmed at this friend (their blind_ack arrived). Absent = false.
+        .field("fleet_member", TypeConstraint::Ed25519Key) // multi-value: one folded member device pubkey. Absent = empty folded set (bootstrap).
+        .field("fleet_folded_once", TypeConstraint::AnyUnsigned) // bool: chain folded ≥1 time (arms members-only trust). Absent = false (bootstrap).
+        .field("fleet_members_ts", TypeConstraint::Any) // e6: chain-tip eagle time of last adopted fold (monotonic floor). Absent = 0.
 }
 
 /// Save contact state (mutable data) with schema validation
@@ -249,6 +252,25 @@ pub fn save_contact_state(contact: &Contact, storage: &FlatStorage) -> Result<()
     if contact.blind_deposited {
         builder = builder
             .set("blind_deposited", true)
+            .map_err(|e| StorageError::Parse(e.to_string()))?;
+    }
+    // Folded fleet: persist the adopted member set + the armed flag + the tip ts, so a restart resumes fold-respecting trust immediately (no bootstrap regression, no trust-nobody window). One multi-value field per member device (the `blind` idiom).
+    for m in &contact.fleet_members {
+        builder = builder
+            .append_multi("fleet_member", vec![VsfType::ke(m.to_vec())])
+            .map_err(|e| StorageError::Parse(e.to_string()))?;
+    }
+    if contact.fleet_folded_once {
+        builder = builder
+            .set("fleet_folded_once", true)
+            .map_err(|e| StorageError::Parse(e.to_string()))?;
+    }
+    if contact.fleet_members_ts != 0 {
+        builder = builder
+            .set(
+                "fleet_members_ts",
+                VsfType::e(vsf::types::EtType::e6(contact.fleet_members_ts)),
+            )
             .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
 
@@ -382,6 +404,22 @@ fn apply_contact_state(contact: &mut Contact, vsf_bytes: &[u8]) -> Result<(), St
     }
     if section.get_value::<bool>("blind_deposited").unwrap_or(false) {
         contact.blind_deposited = true;
+    }
+    // Folded fleet: restore the adopted set + arm flag + tip ts. Order-independent — fleet_folded_once=true makes knows_device members-only immediately on load. All absent (old vault) = empty set + false + 0 = bootstrap.
+    for field in section.get_fields("fleet_member") {
+        if let Some(VsfType::ke(v)) = field.values.first() {
+            if v.len() == 32 {
+                if let Ok(arr) = <[u8; 32]>::try_from(v.as_slice()) {
+                    contact.fleet_members.push(arr);
+                }
+            }
+        }
+    }
+    if section.get_value::<bool>("fleet_folded_once").unwrap_or(false) {
+        contact.fleet_folded_once = true;
+    }
+    if let Some(v) = section.get_fields("fleet_members_ts").first().and_then(|f| f.values.first()) {
+        contact.fleet_members_ts = vsf_to_oscillations(v);
     }
 
     Ok(())
