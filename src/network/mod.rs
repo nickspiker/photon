@@ -2,6 +2,7 @@ pub mod clock_check;
 pub mod clutch_jobs;
 pub mod fgtw;
 pub mod handle_query;
+pub mod history_pages;
 pub mod http;
 pub mod inspect;
 #[cfg(not(target_os = "android"))]

@@ -227,6 +227,9 @@ pub struct FriendshipChains {
 
     /// Buffer for out-of-order messages (gap handling). When we receive a message with prev_msg_hp that doesn't match our last_received_hash, we store it here until the gap is filled.
     gap_buffer: Vec<BufferedMessage>,
+
+    /// Friend-history bulk key: seals history-recovery pages between the participants, OUTSIDE the ratchet. Derived once at ceremony birth (`from_clutch`) via spaghettify over the pristine active chains — identical on both sides exactly then, divergent after any advance. `None` for chains loaded from pre-feature vaults (recovery unavailable until their next re-key, which is the recovery scenario anyway). Persisted with the chains; zeroized on supersede.
+    history_key: Option<[u8; 32]>,
 }
 
 /// A message buffered due to a gap in the hash chain (out-of-order delivery). Held until its predecessor arrives and the gap fills. Buffered BEFORE decrypt, so the message's own `msg_hp` is not yet known (it needs the plaintext hash); we key purely on the `prev_msg_hp` it awaits. When a successful decrypt advances `last_received_hash` to some `H`, every buffered entry with `prev_msg_hp == H` becomes contiguous and is reprocessed (which can cascade).
@@ -371,6 +374,7 @@ impl FriendshipChains {
 
         // Step 2: Derive each participant's chain via truncate-and-append derive_chain_from_avalanche returns 8KB (256 active links) We need 16KB (256 history zeros + 256 active links)
         let mut chains = Vec::with_capacity(sorted_participants.len());
+        let mut active_snapshots: Vec<Vec<u8>> = Vec::with_capacity(sorted_participants.len());
         for participant in &sorted_participants {
             let active_bytes = derive_chain_from_avalanche(&avalanche, participant);
 
@@ -380,6 +384,20 @@ impl FriendshipChains {
 
             let chain = Chain::from_full_bytes(&full_chain).expect("chain is 16KB");
             chains.push(chain);
+            active_snapshots.push(active_bytes);
+        }
+
+        // Friend-history bulk key — derived HERE, at ceremony birth, from the pristine active chains
+        // (the one moment both sides are byte-identical). Every completion path flows thru from_clutch,
+        // so this is the single derivation site. See crypto::clutch::derive_history_key.
+        let history_key = {
+            let refs: Vec<&[u8]> = active_snapshots.iter().map(|v| v.as_slice()).collect();
+            crate::crypto::clutch::derive_history_key(friendship_id.as_bytes(), &refs)
+        };
+        // The snapshots duplicate live chain secret material — scrub them.
+        for snap in active_snapshots.iter_mut() {
+            use zeroize::Zeroize;
+            snap.zeroize();
         }
 
         // Initialize last_plaintexts with empty vecs (first message on each chain)
@@ -414,6 +432,7 @@ impl FriendshipChains {
             last_sent_weave: None,
             last_incorporated_hp: None,
             gap_buffer: Vec::new(),
+            history_key: Some(history_key),
         }
     }
 
@@ -481,6 +500,7 @@ impl FriendshipChains {
             last_sent_weave,
             last_incorporated_hp,
             gap_buffer: Vec::new(), // Gap buffer is transient, not persisted
+            history_key: None,      // pre-v6 file: no history key (set by the loader when present)
         })
     }
 
@@ -582,7 +602,27 @@ impl FriendshipChains {
             last_sent_weave,
             last_incorporated_hp,
             gap_buffer: Vec::new(), // Gap buffer is transient, not persisted
+            history_key: None,      // pre-v6 file default: loader sets it when the field is present
         })
+    }
+
+    /// The friend-history bulk key (None = pre-feature chains; recovery unavailable until re-key).
+    pub fn history_key(&self) -> Option<&[u8; 32]> {
+        self.history_key.as_ref()
+    }
+
+    /// Install the history key (storage loader, after a v6 file carried one).
+    pub fn set_history_key(&mut self, key: Option<[u8; 32]>) {
+        self.history_key = key;
+    }
+
+    /// Scrub the history key (supersede on re-key / delete): zeroize then drop.
+    pub fn zeroize_history_key(&mut self) {
+        use zeroize::Zeroize;
+        if let Some(k) = self.history_key.as_mut() {
+            k.zeroize();
+        }
+        self.history_key = None;
     }
 
     /// Serialize all chains to bytes (for storage).
