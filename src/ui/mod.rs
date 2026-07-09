@@ -5,7 +5,6 @@ pub mod avatar;
 pub mod display_profile;
 pub mod lms2006so;
 pub mod state;
-pub mod theme;
 
 // Chromatic wave (sine-modulated visible-spectrum bar). Reads LMS2006SO; writes α + darkness pixels.
 pub mod chromatic_wave;
