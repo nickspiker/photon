@@ -104,8 +104,7 @@ pub struct AvatarResponseSend {
     pub avatar_vsf: Vec<u8>,
 }
 
-/// Request to send a pre-built, signed history frame (hist_req or hist_page). Bytes are built on the
-/// UI thread (which owns device_secret + the vault); this thread just races them down both paths.
+/// Request to send a pre-built, signed history frame (hist_req or hist_page). Bytes are built on the UI thread (which owns device_secret + the vault); this thread just races them down both paths.
 #[derive(Clone)]
 pub struct HistorySendRequest {
     pub peer_addr: SocketAddr,
@@ -1511,9 +1510,7 @@ async fn run_checker(
                             );
                             continue;
                             }
-                            // History request (hist_req, ~200B — always rides this small-frame path).
-                            // MUST packet-ack: it's sent via send_with_pubkey's reliable stop-and-wait
-                            // queue; an un-acked type retransmits forever and head-of-line-blocks chat.
+                            // History request (hist_req, ~200B — always rides this small-frame path). MUST packet-ack: it's sent via send_with_pubkey's reliable stop-and-wait queue; an un-acked type retransmits forever and head-of-line-blocks chat.
                             if let Ok((payload, sender_pubkey)) =
                                 crate::network::fgtw::protocol::parse_history_request_vsf(msg_bytes)
                             {
@@ -1539,8 +1536,7 @@ async fn run_checker(
                                 );
                                 continue;
                             }
-                            // History page (hist_page — small pages ride this path; big ones arrive
-                            // via the PT-transfer-complete branch). Same mandatory packet-ack.
+                            // History page (hist_page — small pages ride this path; big ones arrive via the PT-transfer-complete branch). Same mandatory packet-ack.
                             if let Ok((
                                 (conversation_token, request_id, sealed),
                                 sender_pubkey,
@@ -1571,9 +1567,7 @@ async fn run_checker(
 
                     match FgtwMessage::from_vsf_bytes(msg_bytes) {
                         Ok(message) => {
-                            // Delivery ack for EVERY message sent through PT's reliable stop-and-wait queue (send_with_pubkey), keyed by BLAKE3(bytes), so the sender stops retransmitting and its per-peer FIFO advances.
-                            // This MUST list every reliably-queued type or that type retransmits FOREVER and head-of-line-blocks chat behind it. AvatarRequest/AvatarResponse were the missing entries: both go out via send_with_pubkey but were never acked, so a post-CLUTCH avatar request retransmitted until it blocked every chat message — the "messages stick" bug, hit hardest against an avatar-less peer that also sends no app-level response.
-                            // Ping/pong are excluded on purpose: best-effort on their own schedule, NOT queued reliably, so acking them would be pointless noise. CLUTCH proof (ClutchComplete) is acked earlier in its own branch. Packet-acks are pt_ack frames handled earlier (no ack-of-ack). The delivery ack is pure transport "bytes received"; the app still sends its own semantic reply (MessageAck / avatar response).
+                            // Delivery ack for EVERY message sent through PT's reliable stop-and-wait queue (send_with_pubkey), keyed by BLAKE3(bytes), so the sender stops retransmitting and its per-peer FIFO advances. This MUST list every reliably-queued type or that type retransmits FOREVER and head-of-line-blocks chat behind it. AvatarRequest/AvatarResponse were the missing entries: both go out via send_with_pubkey but were never acked, so a post-CLUTCH avatar request retransmitted until it blocked every chat message — the "messages stick" bug, hit hardest against an avatar-less peer that also sends no app-level response. Ping/pong are excluded on purpose: best-effort on their own schedule, NOT queued reliably, so acking them would be pointless noise. CLUTCH proof (ClutchComplete) is acked earlier in its own branch. Packet-acks are pt_ack frames handled earlier (no ack-of-ack). The delivery ack is pure transport "bytes received"; the app still sends its own semantic reply (MessageAck / avatar response).
                             let reliable = matches!(
                                 message,
                                 FgtwMessage::ChatMessage { .. }
@@ -2263,9 +2257,7 @@ async fn run_checker(
             }
         }
 
-        // Process history frames (hist_req / hist_page) — pre-built + signed on the UI thread; this
-        // loop just routes them thru PT (UDP → TCP after 1s → relay) and races the alt path with the
-        // SAME wire bytes, exactly like chat. Requester/server both dedup (rid), so redelivery is free.
+        // Process history frames (hist_req / hist_page) — pre-built + signed on the UI thread; this loop just routes them thru PT (UDP → TCP after 1s → relay) and races the alt path with the SAME wire bytes, exactly like chat. Requester/server both dedup (rid), so redelivery is free.
         while let Ok(request) = history_rx.try_recv() {
             let pt_bytes = {
                 let mut pt_mgr = pt.lock().unwrap();
@@ -2544,8 +2536,7 @@ async fn run_checker(
                 crate::log(&format!("Status: ClutchComplete VSF:\n{}", inspection));
             }
 
-            // Send via PT - handles retries/fallback internally. Races LAN vs WAN if alt given.
-            // (Complete proof is small and sent directly, so racing here is just dual UDP send.)
+            // Send via PT - handles retries/fallback internally. Races LAN vs WAN if alt given. (Complete proof is small and sent directly, so racing here is just dual UDP send.)
             let bytes_to_send = {
                 let mut pt_mgr = pt.lock().unwrap();
                 pt_mgr.send_with_pubkey_and_alt(

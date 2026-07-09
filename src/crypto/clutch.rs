@@ -52,14 +52,9 @@ pub fn derive_conversation_token(participant_seeds: &[[u8; 32]]) -> [u8; 32] {
 /// Domain separation for the friend-history bulk key
 const HISTORY_KEY_DOMAIN: &[u8] = b"PHOTON_HISTORY_KEY_v0";
 
-/// Derive the friend-history bulk key: the AEAD key that seals history-recovery pages between the
-/// participants, OUTSIDE the ratchet (bulk backfill must not advance or pollute the live braid).
+/// Derive the friend-history bulk key: the AEAD key that seals history-recovery pages between the participants, OUTSIDE the ratchet (bulk backfill must not advance or pollute the live braid).
 ///
-/// input = DOMAIN ‖ friendship_id ‖ each participant's ACTIVE chain half (8KB, links[256..512]) in
-/// participant-sorted order, run thru spaghettify (domain-separated, provably lossy — the key cannot
-/// be inverted back to chain material). Both sides hold byte-identical pristine chains at ceremony
-/// birth, so the key is identical; any later advance diverges — hence derive-at-birth only, in
-/// `FriendshipChains::from_clutch`. Superseded (and zeroized) on re-key.
+/// input = DOMAIN ‖ friendship_id ‖ each participant's ACTIVE chain half (8KB, links[256..512]) in participant-sorted order, run thru spaghettify (domain-separated, provably lossy — the key cannot be inverted back to chain material). Both sides hold byte-identical pristine chains at ceremony birth, so the key is identical; any later advance diverges — hence derive-at-birth only, in `FriendshipChains::from_clutch`. Superseded (and zeroized) on re-key.
 pub fn derive_history_key(friendship_id: &[u8; 32], active_chains_sorted: &[&[u8]]) -> [u8; 32] {
     let total: usize = active_chains_sorted.iter().map(|c| c.len()).sum();
     let mut input = Vec::with_capacity(HISTORY_KEY_DOMAIN.len() + 32 + total);
@@ -129,8 +124,7 @@ pub fn x25519_ecdh(local_secret: &[u8; 32], peer_public: &[u8; 32]) -> [u8; 32] 
     *shared.as_bytes()
 }
 
-// ============================================================================
-// CLASS 0: CLASSICAL ELLIPTIC CURVES ============================================================================
+// ============================================================================ CLASS 0: CLASSICAL ELLIPTIC CURVES ============================================================================
 
 /// Generate P-384 ephemeral keypair Returns (secret_bytes, public_bytes)
 pub fn generate_p384_ephemeral() -> (Vec<u8>, Vec<u8>) {
@@ -210,8 +204,7 @@ pub fn p256_ecdh(local_secret: &[u8], peer_public: &[u8]) -> Vec<u8> {
     shared.raw_secret_bytes().to_vec()
 }
 
-// ============================================================================
-// CLASS 1: POST-QUANTUM LATTICE KEMS ============================================================================
+// ============================================================================ CLASS 1: POST-QUANTUM LATTICE KEMS ============================================================================
 
 /// Generate FrodoKEM-976-SHAKE keypair Returns (secret_key, public_key)
 pub fn generate_frodo976_keypair() -> (Vec<u8>, Vec<u8>) {
@@ -301,8 +294,7 @@ pub fn ntru701_decapsulate(our_secret_key: &[u8], ciphertext: &[u8]) -> Vec<u8> 
     SharedSecret::as_bytes(&ss).to_vec()
 }
 
-// ============================================================================
-// CLASS 2: POST-QUANTUM CODE-BASED KEMS ============================================================================
+// ============================================================================ CLASS 2: POST-QUANTUM CODE-BASED KEMS ============================================================================
 
 /// Generate Classic McEliece 460896 keypair Returns (secret_key, public_key ~512KB)
 pub fn generate_mceliece460896_keypair() -> (Vec<u8>, Vec<u8>) {
@@ -412,8 +404,7 @@ fn sort_pair<'a>(a: &'a [u8; 32], b: &'a [u8; 32]) -> (&'a [u8; 32], &'a [u8; 32
     }
 }
 
-// ============================================================================
-// LAYER 1: CONVERSATION PROVENANCE (permanent identity binding) ============================================================================
+// ============================================================================ LAYER 1: CONVERSATION PROVENANCE (permanent identity binding) ============================================================================
 
 /// Derive the conversation provenance hash.
 ///
@@ -488,8 +479,7 @@ pub fn compute_handshake_message(
     *hasher.finalize().as_bytes()
 }
 
-// ============================================================================
-// LAYER 2: clutch SEED (ephemeral encryption key material) ============================================================================
+// ============================================================================ LAYER 2: clutch SEED (ephemeral encryption key material) ============================================================================
 
 /// Derive the clutch shared seed from private handle hashes and X25519 shared secret.
 ///
@@ -616,8 +606,7 @@ impl ClutchAllKeypairs {
 
 }
 
-// =============================================================================
-// CLUTCH PAYLOAD STRUCTS FOR NETWORK TRANSFER =============================================================================
+// ============================================================================= CLUTCH PAYLOAD STRUCTS FOR NETWORK TRANSFER =============================================================================
 
 /// Full offer with all 8 public keys (~548KB). Sent by both parties at start of CLUTCH ceremony.
 ///
@@ -1453,8 +1442,8 @@ pub fn avalanche_expand_eggs(eggs: &ClutchEggs) -> Vec<u8> {
 /// Algorithm:
 /// 1. Domain separation: BLAKE3_XOF(avalanche || participant) → 2MB buffer
 /// 2. For 256 rounds:
-///    - link = smear_hash(buffer)  // BLAKE3 ⊕ SHA3 ⊕ SHA512
-///    - Drop first 32B, append link at end
+/// - link = smear_hash(buffer)  // BLAKE3 ⊕ SHA3 ⊕ SHA512
+/// - Drop first 32B, append link at end
 /// 3. Chain = last 8KB (256 links in order)
 pub fn derive_chain_from_avalanche(avalanche: &[u8], participant: &[u8; 32]) -> Vec<u8> {
     // Domain separation: mix participant identity into state
@@ -1819,8 +1808,7 @@ mod tests {
         assert_ne!(legit_seed.as_bytes(), spoofed_seed.as_bytes());
     }
 
-    // ========================================================================
-    // PROVENANCE TESTS ========================================================================
+    // ======================================================================== PROVENANCE TESTS ========================================================================
 
     #[test]
     fn test_provenance_deterministic_both_parties() {
@@ -2206,8 +2194,7 @@ mod tests {
         bob_keys.zeroize();
     }
 
-    // ========================================================================
-    // SPAGHETTIFY TESTS ========================================================================
+    // ======================================================================== SPAGHETTIFY TESTS ========================================================================
 
     #[test]
     fn test_spaghettify_deterministic() {

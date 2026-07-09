@@ -1,11 +1,6 @@
 //! History-recovery page codec — the KEY-AGNOSTIC seal/open layer for conversation backfill.
 //!
-//! A page is a batch of plaintext conversation rows (newest-first cursor pagination) encoded as a
-//! schema-validated VSF section and sealed with kete ChaCha20-Poly1305 under a bare 32-byte key.
-//! Phase 1 (friend recovery) seals under the friendship history key (`FriendshipChains::history_key`,
-//! spaghettify-derived at ceremony birth); phase 2 (fleet sync) reuses this codec verbatim under the
-//! fleet key — nothing in this module knows which. Page metadata (`oldest_osc`, `more`) lives INSIDE
-//! the seal so the wire leaks nothing beyond conversation token + blob size.
+//! A page is a batch of plaintext conversation rows (newest-first cursor pagination) encoded as a schema-validated VSF section and sealed with kete ChaCha20-Poly1305 under a bare 32-byte key. Phase 1 (friend recovery) seals under the friendship history key (`FriendshipChains::history_key`, spaghettify-derived at ceremony birth); phase 2 (fleet sync) reuses this codec verbatim under the fleet key — nothing in this module knows which. Page metadata (`oldest_osc`, `more`) lives INSIDE the seal so the wire leaks nothing beyond conversation token + blob size.
 
 use vsf::schema::{SectionBuilder, SectionSchema, TypeConstraint};
 use vsf::VsfType;
@@ -15,8 +10,7 @@ pub const MAX_PAGE_ROWS: usize = 50;
 /// Max summed plaintext content bytes per page — the serve-side byte budget before the seal.
 pub const MAX_PAGE_BYTES: usize = 24 * 1024;
 
-/// One conversation row as served — the SENDER'S OWN view (`sender_outgoing` = their `is_outgoing`);
-/// the requester flips direction on merge. `ack_hash` never travels (device-local reliability state).
+/// One conversation row as served — the SENDER'S OWN view (`sender_outgoing` = their `is_outgoing`); the requester flips direction on merge. `ack_hash` never travels (device-local reliability state).
 #[derive(Clone, Debug, PartialEq)]
 pub struct HistoryRow {
     pub timestamp: i64,
@@ -36,8 +30,7 @@ pub struct HistoryPagePlain {
     pub more: bool,
 }
 
-/// Schema for the sealed page plaintext. Rows are four parallel multi-value arrays zipped on decode
-/// (the `pending_*` idiom from friendship storage).
+/// Schema for the sealed page plaintext. Rows are four parallel multi-value arrays zipped on decode (the `pending_*` idiom from friendship storage).
 fn page_schema() -> SectionSchema {
     SectionSchema::new("hist_rows")
         .field("oldest", TypeConstraint::Any) // e6 eagle-time
