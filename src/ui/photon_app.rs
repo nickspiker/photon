@@ -59,6 +59,10 @@ const SEARCH_FAIL_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_E0_40_
 const HOURGLASS_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_FF_A5_00));
 /// Send-button arrowhead glyph — light grey, α+darkness format for under-blend (matches the intent of theme::BUTTON_TEXT, which is legacy visible-RGB and not usable on this canvas).
 const SEND_ARROW_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_D0_D0_D0));
+/// Hover fill for the send / plus action buttons — a SUBTLE neutral brightening of BUTTON_FILL
+/// (0x1A224E), reproducing the pre-fluor QUERY_BUTTON_HOVER feel rather than the shared BUTTON_HOVER's
+/// saturated-blue shift. A small delta also keeps the overlay from cooking the near-white arrowhead.
+const SEND_BUTTON_HOVER: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_25_2D_59));
 /// Grey placeholder circle for contacts/avatars without a loaded image.
 const AVATAR_PLACEHOLDER: u32 = 0xFF_C5_C5_C5;
 /// Thin white rule between conversation messages. α+darkness.
@@ -531,6 +535,8 @@ pub struct PhotonApp {
     /// Mutual peers we've sent a direct P2P AvatarRequest to, mapped to the eagle-time we sent it.
     /// The per-tick sweep asks each mutual peer once, then — if no AvatarResponse has installed an avatar within `AVATAR_P2P_FALLBACK_OSC` — falls back to FGTW. So a friend's avatar comes from the friend first, and FGTW only covers the case where the friend is offline or avatar-less.
     avatar_req_pending: std::collections::HashMap<[u8; 32], i64>,
+    /// History-serve rate limiting, keyed by conversation_token: (last-served eagle-time, recent request ids). Dedups replayed hist_req frames (the redundant alt-path copy arrives ~always) and caps the serve cadence per conversation.
+    history_serve: std::collections::HashMap<[u8; 32], (i64, std::collections::VecDeque<[u8; 32]>)>,
     /// Completed friendship chains, keyed by friendship id — populated when a CLUTCH ceremony completes (the per-conversation rolling key material lives here). Persisted via `save_friendship_chains`; loaded on attest/resume.
     friendship_chains: Vec<(
         crate::types::friendship::FriendshipId,
@@ -740,6 +746,7 @@ impl PhotonApp {
             avatar_dl_rx: std::sync::mpsc::channel().1,
             avatar_dl_started: std::collections::HashSet::new(),
             avatar_req_pending: std::collections::HashMap::new(),
+            history_serve: std::collections::HashMap::new(),
             friendship_chains: Vec::new(),
             chord_lb_press: None,
             chord_lb_release: None,
@@ -1144,6 +1151,14 @@ impl FluorApp for PhotonApp {
         // Send button overlaid in the compose box. ASCII ">" (not "→" U+2192 — absent from the Android font, so it rendered blank there; the contacts "+" button proves ASCII renders). Geometry set each frame in `update_widget_layout`.
         // Empty label — the glyph is a drawn 4-vertex up arrowhead (draw_up_arrowhead), not text.
         self.message_send_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., ""));
+        // Specific subtle hover for the two overlay-in-textbox action buttons (pre-fluor per-control
+        // hover colours), instead of the generic saturated BUTTON_HOVER.
+        if let Some(b) = self.contacts_plus_btn.as_mut() {
+            b.set_hover_fill(Some(SEND_BUTTON_HOVER));
+        }
+        if let Some(b) = self.message_send_btn.as_mut() {
+            b.set_hover_fill(Some(SEND_BUTTON_HOVER));
+        }
         // Reserve a hit-id for the Ready-screen avatar circle. Not a Widget — the avatar is just a paint primitive — so click dispatch is handled directly in `on_event`'s MouseInput::Pressed arm, not thru `widget::dispatch_click`. Incrementing the shared counter keeps the contiguous-id contract intact for the `[]h` debug overlay.
         self.hit_counter = self.hit_counter.wrapping_add(1);
         self.avatar_hit_id = self.hit_counter;
@@ -1573,6 +1588,14 @@ impl FluorApp for PhotonApp {
                             if let Some(contact) = self.contacts.get_mut(ci) {
                                 contact.message_scroll_offset =
                                     (contact.message_scroll_offset + dy as f32 * 8.0).max(0.0);
+                                // Scrollback jumps the history-backfill queue: the user is heading toward the old edge, so the next page request fires on the next tick instead of waiting out the trickle interval.
+                                if dy > 0 {
+                                    if let Some(rec) = contact.history_recovery.as_mut() {
+                                        if !rec.complete {
+                                            rec.urgent = true;
+                                        }
+                                    }
+                                }
                             }
                         }
                     } else {
@@ -5101,6 +5124,24 @@ impl PhotonApp {
         c.chain_woven = true;
         c.clutch_proof_resends_left = 0;
         crate::log("CHAIN-PROBE: chain woven — end-to-end verified, ceremony rebroadcast cancelled");
+        // Kick off friend-history recovery on the woven-chain EDGE (this fn fires exactly once per
+        // seal; vault loads latch chain_woven without passing here, so restarts resume via the
+        // persisted cursor instead of re-kicking). Always request the head page — if we already hold
+        // the history, merging dedups and the early-stop rule completes after one page.
+        let was_complete_before = c
+            .history_recovery
+            .as_ref()
+            .map(|r| r.complete)
+            .unwrap_or(false);
+        c.history_recovery = Some(crate::types::HistoryRecovery {
+            oldest_recovered_osc: i64::MAX,
+            complete: false,
+            in_flight: None,
+            next_request_osc: 0,
+            urgent: true, // head page jumps the trickle interval — conversation usable ASAP
+            was_complete_before,
+        });
+        crate::log("HISTORY: recovery kicked off (head page next tick)");
         if let Some(storage) = self.storage.as_ref() {
             if let Err(e) = crate::storage::contacts::save_contact(c, storage) {
                 crate::log(&format!("CHAIN-PROBE: failed to persist woven contact: {}", e));
@@ -6454,6 +6495,8 @@ impl PhotonApp {
                 .iter_mut()
                 .find(|(id, _)| *id == friendship_id)
             {
+                // Supersede: scrub the OLD chains' history key before the re-keyed chains replace them (the fresh chains carry their own newly derived key).
+                entry.1.zeroize_history_key();
                 entry.1 = result.friendship_chains;
             } else {
                 self.friendship_chains
@@ -6516,6 +6559,11 @@ impl PhotonApp {
                             hex::encode(&result.eggs_proof[..8])
                         ));
                         contact.clutch_state = ClutchState::Complete;
+                        // A FRESH ceremony just completed = a brand-new chain — any prior weave seal is void. Reset the double-toggle state so the hidden probe REFIRES for this chain. Without this, a peer that client-reset and re-CLUTCHed hits a deadlock: our persisted chain_woven=true (load latches all probe flags true) suppresses our probe, the reset peer waits forever for it ("weaving the chain"), and we dismiss their re-sent proofs as woven-duplicates. First-ceremony case: flags already false, no-op.
+                        contact.chain_woven = false;
+                        contact.probe_sent = false;
+                        contact.their_probe_seen = false;
+                        contact.chain_advanced_by_ack = false;
                         // Store their HQC pub prefix to detect stale offers after restart
                         contact.completed_their_hqc_prefix = Some(result.their_hqc_prefix);
                         // We're Complete, but the peer may not have our proof yet — we got theirs first, and our single send (just above) might have dropped. Keep the proof and the resend budget so ping_contacts keeps delivering it for a few more cycles; that's exactly what stops the peer from hanging in AwaitingProof.
@@ -7061,6 +7109,103 @@ impl PhotonApp {
                         eagle_time, attempts
                     ));
                 }
+            }
+        }
+    }
+
+    /// History-recovery driver (every tick): for each contact mid-backfill, expire a lost in-flight
+    /// request and fire the next page request when due. Newest-first cursor pagination — `urgent`
+    /// (weave-seal kickoff / scrollback) jumps the trickle interval; otherwise pages are rate-limited
+    /// to one per HIST_TRICKLE_OSC so a 10-year backfill hums along in the background without
+    /// competing with live traffic. Requests are idempotent (rid-correlated, merge dedups), so an
+    /// expiry + re-request after a lost page is always safe.
+    fn drive_history_recovery(&mut self) {
+        const HIST_TRICKLE_OSC: i64 = 2 * crate::OSC_PER_SEC; // one page per ~2s in background
+        const HIST_INFLIGHT_TIMEOUT_OSC: i64 = 15 * crate::OSC_PER_SEC; // lost request/page
+
+        let now_osc = vsf::eagle_time_oscillations();
+
+        // Snapshot device keys once (frame building signs on this thread).
+        let Some(kp) = self.device_keypair.as_ref() else {
+            return;
+        };
+        let device_pubkey = *kp.public.as_bytes();
+        let device_secret = *kp.secret.as_bytes();
+
+        // Candidate pass (read-only): eligible contacts + their conversation token/history key route.
+        let candidates: Vec<(usize, [u8; 32], std::net::SocketAddr, Option<std::net::SocketAddr>, [u8; 32])> = self
+            .contacts
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, c)| {
+                let rec = c.history_recovery.as_ref()?;
+                if rec.complete || !c.is_online || !c.chain_woven {
+                    return None;
+                }
+                let fid = c.friendship_id?;
+                let (_, chains) = self.friendship_chains.iter().find(|(id, _)| *id == fid)?;
+                chains.history_key()?; // no key (pre-feature chains) = recovery unavailable
+                let (primary, alt) = c.race_addrs()?;
+                Some((
+                    idx,
+                    chains.conversation_token,
+                    primary,
+                    alt,
+                    *c.public_identity.as_bytes(),
+                ))
+            })
+            .collect();
+        if candidates.is_empty() {
+            return;
+        }
+        let Some(checker) = self.status_checker.as_ref() else {
+            return;
+        };
+
+        for (idx, token, primary, alt, recipient_pubkey) in candidates {
+            let Some(rec) = self.contacts[idx].history_recovery.as_mut() else {
+                continue;
+            };
+            // Expire a lost in-flight request so the walk resumes.
+            if let Some((_, sent_osc, _)) = rec.in_flight {
+                if now_osc.saturating_sub(sent_osc) > HIST_INFLIGHT_TIMEOUT_OSC {
+                    crate::log("HISTORY: in-flight request expired — re-requesting");
+                    rec.in_flight = None;
+                } else {
+                    continue; // one request at a time per conversation
+                }
+            }
+            if !rec.urgent && now_osc < rec.next_request_osc {
+                continue; // trickle interval not up yet
+            }
+
+            let rid: [u8; 32] = rand::random();
+            let before = rec.oldest_recovered_osc;
+            match crate::network::fgtw::protocol::build_history_request_vsf(
+                &token,
+                before,
+                crate::network::history_pages::MAX_PAGE_ROWS as u32,
+                &rid,
+                &device_pubkey,
+                &device_secret,
+            ) {
+                Ok(vsf_bytes) => {
+                    rec.in_flight = Some((rid, now_osc, before));
+                    rec.next_request_osc = now_osc + HIST_TRICKLE_OSC;
+                    rec.urgent = false;
+                    crate::log(&format!(
+                        "HISTORY: requesting page before {} from {}",
+                        if before == i64::MAX { "HEAD".to_string() } else { before.to_string() },
+                        primary
+                    ));
+                    checker.send_history(crate::network::status::HistorySendRequest {
+                        peer_addr: primary,
+                        alt_addr: alt,
+                        recipient_pubkey,
+                        vsf_bytes,
+                    });
+                }
+                Err(e) => crate::log(&format!("HISTORY: request build failed: {e}")),
             }
         }
     }
@@ -8677,6 +8822,12 @@ impl PhotonApp {
 
                     // Remove invalidated chains from memory and disk
                     for old_id in chains_to_remove {
+                        // Scrub the doomed chains' history key before dropping them (re-key path — the fresh ceremony derives its own).
+                        for (id, chains) in self.friendship_chains.iter_mut() {
+                            if *id == old_id {
+                                chains.zeroize_history_key();
+                            }
+                        }
                         self.friendship_chains.retain(|(id, _)| *id != old_id);
                         // Delete from disk
                         if let Some(storage) = self.storage.as_ref() {
@@ -9050,6 +9201,11 @@ impl PhotonApp {
                                                 hex::encode(&our_proof[..8])
                                             ));
                                             contact.clutch_state = ClutchState::Complete;
+                                            // Fresh ceremony = fresh chain: void any prior weave seal so the probe refires (see the twin reset at the Early-proof-verified site for the full deadlock story).
+                                            contact.chain_woven = false;
+                                            contact.probe_sent = false;
+                                            contact.their_probe_seen = false;
+                                            contact.chain_advanced_by_ack = false;
                                             newly_complete_idx = Some(contact_idx);
                                             // Store their HQC pub prefix to detect stale offers after restart
                                             if let Some(their_slot) =
@@ -9287,6 +9443,288 @@ impl PhotonApp {
                     }
                 }
 
+                // A friend (post-reset / new device) is asking for conversation history. Serve one
+                // newest-first page from our rārangi rows, sealed under the friendship history key.
+                // Authorization is OURS to do (the RX worker only verified the signature): the signer
+                // must be a known device of the contact this conversation belongs to, and mutual.
+                StatusUpdate::HistoryRequestReceived {
+                    conversation_token,
+                    before_osc,
+                    limit,
+                    request_id,
+                    sent_osc,
+                    sender_pubkey,
+                    sender_addr,
+                } => {
+                    let now = vsf::eagle_time_oscillations();
+                    // Staleness cap: a hist_req older than ~10 min is a replay or a badly delayed
+                    // duplicate — pages are useless to an attacker (sealed) but serving costs us I/O.
+                    const HIST_STALE_OSC: i64 = 600 * crate::OSC_PER_SEC;
+                    let stale = sent_osc != 0 && now.saturating_sub(sent_osc) > HIST_STALE_OSC;
+
+                    // Per-conversation dedup (rid) + cadence cap (≥500ms between served pages).
+                    let entry = self
+                        .history_serve
+                        .entry(conversation_token)
+                        .or_insert_with(|| (0, std::collections::VecDeque::new()));
+                    let duplicate = entry.1.contains(&request_id);
+                    let too_fast = now.saturating_sub(entry.0) < crate::OSC_PER_SEC / 2;
+
+                    if !stale && !duplicate && !too_fast {
+                        entry.0 = now;
+                        entry.1.push_back(request_id);
+                        while entry.1.len() > 8 {
+                            entry.1.pop_front();
+                        }
+
+                        // Bind token → chains (history key) → the OTHER participant → contact, and
+                        // require the requesting device to belong to that exact contact + be mutual.
+                        let our_seed = self.session.as_ref().map(|s| s.identity_seed);
+                        let key_and_other = self
+                            .friendship_chains
+                            .iter()
+                            .find(|(_, c)| c.conversation_token == conversation_token)
+                            .and_then(|(_, c)| {
+                                let key = c.history_key().copied()?;
+                                let other = c
+                                    .participants()
+                                    .iter()
+                                    .find(|p| Some(**p) != our_seed)
+                                    .copied()?;
+                                Some((key, other))
+                            });
+                        let contact_idx = key_and_other.and_then(|(_, other)| {
+                            self.contacts.iter().position(|c| {
+                                c.handle_hash == other
+                                    && c.knows_device(&sender_pubkey.key)
+                                    && c.is_mutual()
+                            })
+                        });
+
+                        if let (Some((key, _)), Some(idx), Some(storage), Some(checker)) = (
+                            key_and_other,
+                            contact_idx,
+                            self.storage.as_ref(),
+                            self.status_checker.as_ref(),
+                        ) {
+                            use crate::network::history_pages::{
+                                seal_history_page, HistoryPagePlain, HistoryRow, MAX_PAGE_BYTES,
+                                MAX_PAGE_ROWS,
+                            };
+                            let their_seed = self.contacts[idx].handle_hash;
+                            let page_limit = (limit as usize).clamp(1, MAX_PAGE_ROWS);
+                            match crate::storage::contacts::load_message_page_before(
+                                &their_seed,
+                                before_osc,
+                                page_limit,
+                                MAX_PAGE_BYTES,
+                                storage,
+                            ) {
+                                Ok((rows, more)) => {
+                                    // Cursor progresses over ALL returned rows (probe rows included)
+                                    // so a probe-heavy stretch can't stall the walk; the probe rows
+                                    // themselves are filtered out of what we ship.
+                                    let oldest_osc =
+                                        rows.first().map(|m| m.timestamp).unwrap_or(before_osc);
+                                    let hist_rows: Vec<HistoryRow> = rows
+                                        .iter()
+                                        .filter(|m| m.content != crate::types::CHAIN_PROBE_MARKER)
+                                        .map(|m| HistoryRow {
+                                            timestamp: m.timestamp,
+                                            content: m.content.clone(),
+                                            sender_outgoing: m.is_outgoing,
+                                            delivered: m.delivered,
+                                        })
+                                        .collect();
+                                    let page = HistoryPagePlain {
+                                        rows: hist_rows,
+                                        oldest_osc,
+                                        more,
+                                    };
+                                    let device_pubkey = *self
+                                        .device_keypair
+                                        .as_ref()
+                                        .expect("device_keypair set in init")
+                                        .public
+                                        .as_bytes();
+                                    let device_secret = *self
+                                        .device_keypair
+                                        .as_ref()
+                                        .expect("device_keypair set in init")
+                                        .secret
+                                        .as_bytes();
+                                    match seal_history_page(&page, &key).and_then(|sealed| {
+                                        crate::network::fgtw::protocol::build_history_page_vsf(
+                                            &conversation_token,
+                                            &request_id,
+                                            sealed,
+                                            &device_pubkey,
+                                            &device_secret,
+                                        )
+                                    }) {
+                                        Ok(vsf_bytes) => {
+                                            crate::log(&format!(
+                                                "HISTORY: serving page ({} rows, more={}) to {}",
+                                                page.rows.len(),
+                                                page.more,
+                                                sender_addr
+                                            ));
+                                            checker.send_history(
+                                                crate::network::status::HistorySendRequest {
+                                                    peer_addr: sender_addr,
+                                                    alt_addr: None,
+                                                    recipient_pubkey: *sender_pubkey.as_bytes(),
+                                                    vsf_bytes,
+                                                },
+                                            );
+                                        }
+                                        Err(e) => crate::log(&format!(
+                                            "HISTORY: page build failed: {e}"
+                                        )),
+                                    }
+                                }
+                                Err(e) => {
+                                    crate::log(&format!("HISTORY: page read failed: {e}"))
+                                }
+                            }
+                        } else {
+                            crate::log(
+                                "HISTORY: request rejected (no key / unknown device / not mutual)",
+                            );
+                        }
+                    }
+                }
+
+                // A history page arrived for our recovery. Open it with the friendship history key,
+                // merge rows (direction flipped, friend-attested), advance the cursor, persist.
+                StatusUpdate::HistoryPageReceived {
+                    conversation_token,
+                    request_id,
+                    sealed,
+                    sender_pubkey: _,
+                    sender_addr: _,
+                } => {
+                    let our_seed = self.session.as_ref().map(|s| s.identity_seed);
+                    let key_and_other = self
+                        .friendship_chains
+                        .iter()
+                        .find(|(_, c)| c.conversation_token == conversation_token)
+                        .and_then(|(_, c)| {
+                            let key = c.history_key().copied()?;
+                            let other = c
+                                .participants()
+                                .iter()
+                                .find(|p| Some(**p) != our_seed)
+                                .copied()?;
+                            Some((key, other))
+                        });
+                    let contact_idx = key_and_other.and_then(|(_, other)| {
+                        self.contacts.iter().position(|c| c.handle_hash == other)
+                    });
+
+                    if let (Some((key, _)), Some(idx)) = (key_and_other, contact_idx) {
+                        // rid must match our in-flight request — a page we didn't ask for (or asked
+                        // for long ago) is dropped; merging is idempotent so a raced duplicate that
+                        // DOES match is harmless.
+                        let rid_matches = self.contacts[idx]
+                            .history_recovery
+                            .as_ref()
+                            .and_then(|r| r.in_flight.as_ref())
+                            .is_some_and(|(rid, _, _)| *rid == request_id);
+                        if rid_matches {
+                            match crate::network::history_pages::open_history_page(&sealed, &key) {
+                                Ok(page) => {
+                                    let contact = &mut self.contacts[idx];
+                                    // Merge: flip direction to OUR perspective; recovered-outgoing is
+                                    // delivered by definition (the friend has it); dedup on
+                                    // (timestamp, content) against what we already hold.
+                                    let mut fresh: Vec<crate::types::ChatMessage> = Vec::new();
+                                    for row in &page.rows {
+                                        if row.content == crate::types::CHAIN_PROBE_MARKER {
+                                            continue;
+                                        }
+                                        let is_outgoing = !row.sender_outgoing;
+                                        let already = contact
+                                            .messages
+                                            .iter()
+                                            .any(|m| {
+                                                m.timestamp == row.timestamp
+                                                    && m.content == row.content
+                                            });
+                                        if already {
+                                            continue;
+                                        }
+                                        let msg = crate::types::ChatMessage {
+                                            content: row.content.clone(),
+                                            timestamp: row.timestamp,
+                                            is_outgoing,
+                                            delivered: is_outgoing,
+                                            ack_hash: None,
+                                            recovered: true,
+                                        };
+                                        contact.insert_message_sorted(msg.clone());
+                                        fresh.push(msg);
+                                    }
+
+                                    // Cursor + completion. Early-stop: if history was already
+                                    // complete before this (re-)kickoff and the page brought nothing
+                                    // new, we're still complete — a routine re-key on an intact pair
+                                    // stops after one page instead of re-walking years.
+                                    let their_seed = contact.handle_hash;
+                                    if let Some(rec) = contact.history_recovery.as_mut() {
+                                        rec.in_flight = None;
+                                        if page.oldest_osc < rec.oldest_recovered_osc {
+                                            rec.oldest_recovered_osc = page.oldest_osc;
+                                        }
+                                        if !page.more
+                                            || (rec.was_complete_before && fresh.is_empty())
+                                        {
+                                            rec.complete = true;
+                                        }
+                                    }
+                                    crate::log(&format!(
+                                        "HISTORY: merged page ({} new of {} rows, more={}, complete={})",
+                                        fresh.len(),
+                                        page.rows.len(),
+                                        page.more,
+                                        contact
+                                            .history_recovery
+                                            .as_ref()
+                                            .is_some_and(|r| r.complete)
+                                    ));
+
+                                    // Persist the new rows + the cursor (AGENT.md: every change hits disk).
+                                    if let Some(storage) = self.storage.as_ref() {
+                                        if !fresh.is_empty() {
+                                            if let Err(e) = crate::storage::contacts::save_messages_page(
+                                                &their_seed,
+                                                &fresh,
+                                                storage,
+                                            ) {
+                                                crate::log(&format!(
+                                                    "HISTORY: page persist failed: {e}"
+                                                ));
+                                            }
+                                        }
+                                        let contact_ref = &self.contacts[idx];
+                                        if let Err(e) =
+                                            crate::storage::contacts::save_contact(contact_ref, storage)
+                                        {
+                                            crate::log(&format!(
+                                                "HISTORY: cursor persist failed: {e}"
+                                            ));
+                                        }
+                                    }
+                                    changed = true;
+                                }
+                                Err(e) => {
+                                    crate::log(&format!("HISTORY: page open failed ({e}) — dropped"))
+                                }
+                            }
+                        }
+                    }
+                }
+
                 StatusUpdate::ReflexiveLearned { addr } => {
                     // Our own public address, learned via peer-echoed reflection on the live UDP data socket. Store it for candidate gathering and the announce to publish (so our `PeerRecord.ip` is the real data-socket address, not fgtw.org's cone-only TLS view).
                     if self.our_reflexive != Some(addr) {
@@ -9400,6 +9838,9 @@ impl PhotonApp {
 
         // Reliability: per-message retransmit with exponential backoff. The came-online loop above only fires on the offline→online EDGE, so a message (or its ACK) dropped while the peer was already online would otherwise never be resent — the exact desync seen live (msg 1 ACKed, msg 2 garbage because the sender's chain never advanced on a lost ACK). This sweep runs every tick and resends any unacked pending whose backoff deadline has passed, until an ACK clears it or it exhausts its attempts.
         self.retransmit_due_messages();
+
+        // History recovery: fire the next backfill page request for any contact mid-recovery (newest-first cursor; urgent jumps the trickle interval; in-flight expiry re-requests lost pages).
+        self.drive_history_recovery();
 
         // NOTE: Proactive CLUTCH initiation is now handled via background keygen:
         // 1. spawn_clutch_keygen() is called when contact is added (background thread)

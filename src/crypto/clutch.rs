@@ -49,6 +49,31 @@ pub fn derive_conversation_token(participant_seeds: &[[u8; 32]]) -> [u8; 32] {
     result
 }
 
+/// Domain separation for the friend-history bulk key
+const HISTORY_KEY_DOMAIN: &[u8] = b"PHOTON_HISTORY_KEY_v0";
+
+/// Derive the friend-history bulk key: the AEAD key that seals history-recovery pages between the
+/// participants, OUTSIDE the ratchet (bulk backfill must not advance or pollute the live braid).
+///
+/// input = DOMAIN ‖ friendship_id ‖ each participant's ACTIVE chain half (8KB, links[256..512]) in
+/// participant-sorted order, run thru spaghettify (domain-separated, provably lossy — the key cannot
+/// be inverted back to chain material). Both sides hold byte-identical pristine chains at ceremony
+/// birth, so the key is identical; any later advance diverges — hence derive-at-birth only, in
+/// `FriendshipChains::from_clutch`. Superseded (and zeroized) on re-key.
+pub fn derive_history_key(friendship_id: &[u8; 32], active_chains_sorted: &[&[u8]]) -> [u8; 32] {
+    let total: usize = active_chains_sorted.iter().map(|c| c.len()).sum();
+    let mut input = Vec::with_capacity(HISTORY_KEY_DOMAIN.len() + 32 + total);
+    input.extend_from_slice(HISTORY_KEY_DOMAIN);
+    input.extend_from_slice(friendship_id);
+    for chain in active_chains_sorted {
+        input.extend_from_slice(chain);
+    }
+    let key = spaghettify(&input);
+    // The input buffer holds live chain secret material — scrub it.
+    input.zeroize();
+    key
+}
+
 /// Domain separator for ceremony instance derivation
 const CEREMONY_INSTANCE_DOMAIN: &[u8] = b"PHOTON_CEREMONY_INSTANCE_v0";
 

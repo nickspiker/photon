@@ -2450,6 +2450,264 @@ pub fn parse_clutch_complete_vsf_without_recipient_check(
     Ok((payload, sender_pubkey, ceremony_id, conversation_token))
 }
 
+// ============================================================================
+// History recovery frames — hist_req / hist_page ============================================================================
+//
+// Standalone signed VSF frames for friend-assisted conversation backfill (newest-first cursor
+// pagination). Both are built CANONICALLY (sign_file computes the content-hp provenance) and parsed
+// via read_verified + parse_section_after_header — no raw decode sites, vsf-gate untouched. The page
+// payload is an opaque AEAD blob sealed under the friendship history key (see network::history_pages);
+// the wire leaks only the conversation token + blob size.
+
+/// A parsed history request: "send me up to `limit` rows strictly OLDER than `before_osc`".
+#[derive(Clone, Debug)]
+pub struct HistoryRequestPayload {
+    pub conversation_token: [u8; 32],
+    /// Cursor: rows strictly older than this eagle-time. `i64::MAX` = head page.
+    pub before_osc: i64,
+    /// Requested row cap (server clamps to its own page maximum).
+    pub limit: u32,
+    /// Random request id, echoed in the page — correlates request↔response and dedups replays.
+    pub request_id: [u8; 32],
+    /// Header creation time (eagle oscillations) — the responder's staleness check.
+    pub sent_osc: i64,
+}
+
+/// Build a signed `hist_req` frame (~200 bytes).
+pub fn build_history_request_vsf(
+    conversation_token: &[u8; 32],
+    before_osc: i64,
+    limit: u32,
+    request_id: &[u8; 32],
+    device_pubkey: &[u8; 32],
+    device_secret: &[u8; 32],
+) -> Result<Vec<u8>, String> {
+    use vsf::file_format::VsfSection;
+    use vsf::VsfBuilder;
+
+    let mut section = VsfSection::new("hist_req");
+    section.add_field("tok", VsfType::hg(conversation_token.to_vec()));
+    section.add_field("before", VsfType::e(vsf::types::EtType::e6(before_osc)));
+    section.add_field("limit", VsfType::u5(limit));
+    section.add_field("rid", VsfType::hb(request_id.to_vec()));
+
+    let unsigned = VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .signature_ed25519(*device_pubkey, [0u8; 64])
+        .add_section_direct(section)
+        .build()
+        .map_err(|e| format!("Failed to build hist_req VSF: {}", e))?;
+
+    // Canonical scheme-1: sign_file computes the content hp + ge over the whole file.
+    vsf::verification::sign_file(unsigned, device_secret)
+}
+
+/// Parse + verify a `hist_req` frame. Returns (payload, sender_pubkey). The caller authorizes the
+/// sender against the conversation's contact (known device + mutual) — signature validity alone is
+/// NOT authorization.
+pub fn parse_history_request_vsf(
+    vsf_bytes: &[u8],
+) -> Result<(HistoryRequestPayload, [u8; 32]), String> {
+    // Verified read: is_original (content hp) + Ed25519 signature, un-skippable and in order.
+    let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None)
+        .map_err(|e| format!("hist_req verification failed: {}", e))?;
+    let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
+
+    let sent_osc = header_creation_oscillations(&header);
+
+    let (section, section_name) = parse_section_after_header(vsf_bytes, &header, header_end)?;
+    if section_name != "hist_req" {
+        return Err(format!("Expected 'hist_req' section, got '{}'", section_name));
+    }
+    let fields = &section.fields;
+
+    let conversation_token = field_hash32(fields, "tok", |v| matches!(v, VsfType::hg(_)))
+        .ok_or("hist_req missing tok")?;
+    let before_osc = fields
+        .iter()
+        .find(|f| f.name == "before")
+        .and_then(|f| f.values.first())
+        .and_then(|v| match v {
+            VsfType::e(vsf::types::EtType::e6(osc)) => Some(*osc),
+            _ => None,
+        })
+        .ok_or("hist_req missing before")?;
+    let limit = fields
+        .iter()
+        .find(|f| f.name == "limit")
+        .and_then(|f| f.values.first())
+        .and_then(|v| match v {
+            VsfType::u3(n) => Some(*n as u32),
+            VsfType::u4(n) => Some(*n as u32),
+            VsfType::u5(n) => Some(*n),
+            VsfType::u6(n) => Some(*n as u32),
+            _ => None,
+        })
+        .ok_or("hist_req missing limit")?;
+    let request_id =
+        field_hash32(fields, "rid", |v| matches!(v, VsfType::hb(_))).ok_or("hist_req missing rid")?;
+
+    Ok((
+        HistoryRequestPayload {
+            conversation_token,
+            before_osc,
+            limit,
+            request_id,
+            sent_osc,
+        },
+        sender_pubkey,
+    ))
+}
+
+/// Build a signed `hist_page` frame carrying the sealed page blob (typically 3–8KB; PT shards larger).
+pub fn build_history_page_vsf(
+    conversation_token: &[u8; 32],
+    request_id: &[u8; 32],
+    sealed_blob: Vec<u8>,
+    device_pubkey: &[u8; 32],
+    device_secret: &[u8; 32],
+) -> Result<Vec<u8>, String> {
+    use vsf::file_format::VsfSection;
+    use vsf::VsfBuilder;
+
+    let mut section = VsfSection::new("hist_page");
+    section.add_field("tok", VsfType::hg(conversation_token.to_vec()));
+    section.add_field("rid", VsfType::hb(request_id.to_vec()));
+    let blob_len = sealed_blob.len();
+    section.add_field(
+        "data",
+        VsfType::t_u3(vsf::Tensor::new(vec![blob_len], sealed_blob)),
+    );
+
+    let unsigned = VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .signature_ed25519(*device_pubkey, [0u8; 64])
+        .add_section_direct(section)
+        .build()
+        .map_err(|e| format!("Failed to build hist_page VSF: {}", e))?;
+
+    vsf::verification::sign_file(unsigned, device_secret)
+}
+
+/// Parse + verify a `hist_page` frame. Returns ((conversation_token, request_id, sealed_blob), sender_pubkey).
+/// The blob is opaque here; the requester opens it with the friendship history key (AEAD failure = drop).
+pub fn parse_history_page_vsf(
+    vsf_bytes: &[u8],
+) -> Result<(([u8; 32], [u8; 32], Vec<u8>), [u8; 32]), String> {
+    let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None)
+        .map_err(|e| format!("hist_page verification failed: {}", e))?;
+    let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
+
+    let (section, section_name) = parse_section_after_header(vsf_bytes, &header, header_end)?;
+    if section_name != "hist_page" {
+        return Err(format!(
+            "Expected 'hist_page' section, got '{}'",
+            section_name
+        ));
+    }
+    let fields = &section.fields;
+
+    let conversation_token = field_hash32(fields, "tok", |v| matches!(v, VsfType::hg(_)))
+        .ok_or("hist_page missing tok")?;
+    let request_id = field_hash32(fields, "rid", |v| matches!(v, VsfType::hb(_)))
+        .ok_or("hist_page missing rid")?;
+    let sealed = fields
+        .iter()
+        .find(|f| f.name == "data")
+        .and_then(|f| f.values.first())
+        .and_then(|v| match v {
+            VsfType::t_u3(tensor) => Some(tensor.data.clone()),
+            _ => None,
+        })
+        .ok_or("hist_page missing data")?;
+
+    Ok(((conversation_token, request_id, sealed), sender_pubkey))
+}
+
+/// Extract a 32-byte hash field of the given VSF flavor from section fields.
+fn field_hash32(
+    fields: &[vsf::file_format::VsfField],
+    name: &str,
+    flavor: impl Fn(&VsfType) -> bool,
+) -> Option<[u8; 32]> {
+    fields
+        .iter()
+        .find(|f| f.name == name)
+        .and_then(|f| f.values.first())
+        .filter(|v| flavor(v))
+        .and_then(|v| match v {
+            VsfType::hg(b) | VsfType::hb(b) | VsfType::hp(b) if b.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(b);
+                Some(arr)
+            }
+            _ => None,
+        })
+}
+
+/// Header creation time in eagle oscillations (0 when the header omitted it).
+fn header_creation_oscillations(header: &vsf::file_format::VsfHeader) -> i64 {
+    match &header.creation_time {
+        Some(VsfType::e(vsf::types::EtType::e5(t))) => *t as i64,
+        Some(VsfType::e(vsf::types::EtType::e6(t))) => *t,
+        Some(VsfType::e(vsf::types::EtType::e7(t))) => *t as i64,
+        _ => 0,
+    }
+}
+
+#[cfg(test)]
+mod history_frame_tests {
+    use super::*;
+    use ed25519_dalek::SigningKey;
+
+    fn keypair(seed: u8) -> ([u8; 32], [u8; 32]) {
+        let sk = SigningKey::from_bytes(&[seed; 32]);
+        (sk.verifying_key().to_bytes(), [seed; 32])
+    }
+
+    #[test]
+    fn hist_req_round_trips() {
+        let (pubkey, secret) = keypair(7);
+        let tok = [0xA1u8; 32];
+        let rid = [0xB2u8; 32];
+        let bytes =
+            build_history_request_vsf(&tok, i64::MAX, 50, &rid, &pubkey, &secret).unwrap();
+        let (payload, signer) = parse_history_request_vsf(&bytes).unwrap();
+        assert_eq!(signer, pubkey);
+        assert_eq!(payload.conversation_token, tok);
+        assert_eq!(payload.request_id, rid);
+        assert_eq!(payload.before_osc, i64::MAX);
+        assert_eq!(payload.limit, 50);
+        assert!(payload.sent_osc > 0);
+    }
+
+    #[test]
+    fn hist_page_round_trips() {
+        let (pubkey, secret) = keypair(9);
+        let tok = [0xC3u8; 32];
+        let rid = [0xD4u8; 32];
+        let blob = vec![0x5Au8; 4096];
+        let bytes =
+            build_history_page_vsf(&tok, &rid, blob.clone(), &pubkey, &secret).unwrap();
+        let ((ptok, prid, psealed), signer) = parse_history_page_vsf(&bytes).unwrap();
+        assert_eq!(signer, pubkey);
+        assert_eq!(ptok, tok);
+        assert_eq!(prid, rid);
+        assert_eq!(psealed, blob);
+    }
+
+    #[test]
+    fn hist_req_bit_flip_rejected() {
+        let (pubkey, secret) = keypair(7);
+        let mut bytes =
+            build_history_request_vsf(&[0xA1u8; 32], 1000, 10, &[0xB2u8; 32], &pubkey, &secret)
+                .unwrap();
+        let mid = bytes.len() / 2;
+        bytes[mid] ^= 0x01;
+        assert!(parse_history_request_vsf(&bytes).is_err());
+    }
+}
+
 #[cfg(test)]
 mod phonebook_tests {
     use super::*;
