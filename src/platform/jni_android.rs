@@ -76,11 +76,11 @@ pub fn notify_new_message(msg_hp: &[u8; 32], sender_pubkey: &[u8]) {
     };
 
     // Derive the sender's chirp → WAV bytes + haptic (timings, amplitudes). blake3(pubkey) gives a clean
-    // 32-byte seed; same sender → same chirp every time. 200 Hz matches the LRA motor's usable band.
+    // 32-byte seed; same sender → same chirp every time. 60 Hz bins the envelope into ~16.7ms steps.
     let seed: [u8; 32] = *blake3::hash(sender_pubkey).as_bytes();
     let chirp = chirp::Chirp::from_hash(seed);
     let wav = chirp.to_wav();
-    let (timings, amplitudes) = chirp.haptic_waveform(200);
+    let (timings, amplitudes) = chirp.haptic_waveform(60);
 
     match vm.attach_current_thread() {
         Ok(mut env) => {
