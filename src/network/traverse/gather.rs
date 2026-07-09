@@ -1,28 +1,22 @@
 //! Candidate gathering — turning known addresses into a [`CandidateSet`].
 //!
 //! Two directions:
-//! - [`gather_peer_candidates`] builds the set of addresses at which a *peer* might be reachable (where we
-//!   send probes), from what we already know about them: their public address and their LAN address. This
-//!   reads the same `Contact` fields `race_addrs` does, so [`CandidateSet::best_pair`] reproduces its result.
-//! - [`gather_own_candidates`] builds the set of *our* addresses to advertise to a peer so they can punch
-//!   back at us: our learned reflexive address and our own LAN address.
+//! - [`gather_peer_candidates`] builds the set of addresses at which a *peer* might be reachable (where we send probes), from what we already know about them: their public address and their LAN address. This reads the same `Contact` fields `race_addrs` does, so [`CandidateSet::best_pair`] reproduces its result.
+//! - [`gather_own_candidates`] builds the set of *our* addresses to advertise to a peer so they can punch back at us: our learned reflexive address and our own LAN address.
 //!
-//! Full local-interface enumeration (multiple NICs, a global-IPv6 host address) is deferred to when the
-//! candidate offer actually ships (P2); for now our own set is reflexive + the one LAN v4 the OS routes on.
+//! Full local-interface enumeration (multiple NICs, a global-IPv6 host address) is deferred to when the candidate offer actually ships (P2); for now our own set is reflexive + the one LAN v4 the OS routes on.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use super::candidate::{Candidate, CandidateKind, CandidateSet};
 use crate::types::contact::Contact;
 
-/// The addresses at which `contact` might be reachable — their public address (reflexive, or a v6 host)
-/// and their usable LAN address. This is the set we punch toward.
+/// The addresses at which `contact` might be reachable — their public address (reflexive, or a v6 host) and their usable LAN address. This is the set we punch toward.
 pub fn gather_peer_candidates(contact: &Contact) -> CandidateSet {
     let mut set = CandidateSet::new();
 
     if let Some(ip) = contact.ip {
-        // Their announced public address. A v6 public address is a direct host (no NAT rewriting v6);
-        // a v4 public address is reached by hole-punch → reflexive-class.
+        // Their announced public address. A v6 public address is a direct host (no NAT rewriting v6); a v4 public address is reached by hole-punch → reflexive-class.
         let kind = if ip.is_ipv6() {
             CandidateKind::HostV6
         } else {
@@ -42,8 +36,7 @@ pub fn gather_peer_candidates(contact: &Contact) -> CandidateSet {
     set
 }
 
-/// Our own addresses to advertise so a peer can punch back at us: our learned reflexive address
-/// (public, from peer-echoed reflection) and our LAN address on the port we listen on.
+/// Our own addresses to advertise so a peer can punch back at us: our learned reflexive address (public, from peer-echoed reflection) and our LAN address on the port we listen on.
 pub fn gather_own_candidates(
     our_reflexive: Option<SocketAddr>,
     local_v4: Option<Ipv4Addr>,

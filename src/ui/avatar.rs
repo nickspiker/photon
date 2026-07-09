@@ -684,9 +684,7 @@ pub fn decode_avatar(av1_data: &[u8]) -> Result<(usize, usize, Vec<u8>), String>
         std::ptr::copy_nonoverlapping(av1_data.as_ptr(), data_ptr, av1_data.len());
     }
 
-    // dav1d returns negated errno; EAGAIN means "retry". errno is PLATFORM-SPECIFIC (Linux EAGAIN=11, macOS/BSD EAGAIN=35), and rav1d propagates the host's value (`EAGAIN = libc::EAGAIN`). Hardcoding
-    // -11 worked on Linux but on Mac the decoder's EAGAIN (-35) fell through to the error branch, so
-    // every AVIF avatar failed with "dav1d_get_picture failed: -35". Compare against libc::EAGAIN.
+    // dav1d returns negated errno; EAGAIN means "retry". errno is PLATFORM-SPECIFIC (Linux EAGAIN=11, macOS/BSD EAGAIN=35), and rav1d propagates the host's value (`EAGAIN = libc::EAGAIN`). Hardcoding -11 worked on Linux but on Mac the decoder's EAGAIN (-35) fell through to the error branch, so every AVIF avatar failed with "dav1d_get_picture failed: -35". Compare against libc::EAGAIN.
     let eagain = -(libc::EAGAIN as i32);
 
     // Send data to decoder - keep sending until consumed
@@ -788,10 +786,7 @@ pub fn load_cached_avatar(
     load_cached_avatar_from_seed(&crate::types::Handle::to_identity_seed(handle), storage)
 }
 
-/// Cheap "is this avatar in the local vault?" probe — a raw `read_addr` (reads the ~17KB encrypted AV1
-/// blob off disk) with NO decrypt and NO AV1 decode. Lets the avatar sweep serve a cached avatar from
-/// the vault (a local-first `spawn_avatar_download`) instead of firing a redundant P2P/FGTW request for
-/// it every launch. The decode still happens on the background load; this only decides local-vs-network.
+/// Cheap "is this avatar in the local vault?" probe — a raw `read_addr` (reads the ~17KB encrypted AV1 blob off disk) with NO decrypt and NO AV1 decode. Lets the avatar sweep serve a cached avatar from the vault (a local-first `spawn_avatar_download`) instead of firing a redundant P2P/FGTW request for it every launch. The decode still happens on the background load; this only decides local-vs-network.
 pub fn has_cached_avatar_from_seed(
     identity_seed: &[u8; 32],
     storage: &std::sync::Arc<crate::storage::FlatStorage>,
@@ -818,9 +813,7 @@ pub fn load_cached_avatar_from_seed(
     match load_avatar_from_bytes_from_seed(&vsf_data, identity_seed) {
         Some(loaded) => Some(loaded),
         None => {
-            // The cached bytes failed to verify/decrypt/decode — a poisoned cache (e.g. an old error
-            // frame written before the validate-before-cache fix). Evict it so the next fetch can
-            // repopulate; this self-heals already-poisoned test vaults without a nuke.
+            // The cached bytes failed to verify/decrypt/decode — a poisoned cache (e.g. an old error frame written before the validate-before-cache fix). Evict it so the next fetch can repopulate; this self-heals already-poisoned test vaults without a nuke.
             crate::log("Avatar: cached bytes failed to decode, evicting poisoned vault entry");
             let _ = storage.delete_addr(&addr);
             None
@@ -1025,9 +1018,7 @@ pub fn get_local_avatar_timestamp_from_seed(
         }
     };
 
-    // Verified header read to extract the creation timestamp. A timestamp we can't read (or that rides an unverifiable doc) is NOT a timestamp —
-    // return None, never a fabricated 0 (a zero would mean "created at the dawn of time" and would
-    // always lose the newer-wins comparison, silently clobbering a fine local avatar with the server's).
+    // Verified header read to extract the creation timestamp. A timestamp we can't read (or that rides an unverifiable doc) is NOT a timestamp — return None, never a fabricated 0 (a zero would mean "created at the dawn of time" and would always lose the newer-wins comparison, silently clobbering a fine local avatar with the server's).
     let (header, _) = vsf::verification::read_verified(&vsf_data, None).ok()?;
     match header.creation_time {
         Some(VsfType::e(et)) => {
@@ -1440,9 +1431,7 @@ pub fn upload_avatar_from_seed(
         return Err(format!("Avatar upload failed: {} - {}", status, body));
     }
 
-    // The worker signals rejection (stale, bad_signature, …) as a VSF error frame at HTTP 200, so a
-    // success status alone does NOT mean the avatar published — inspect the body first, otherwise a
-    // rejection reads as "uploaded" and the real avatar never lands.
+    // The worker signals rejection (stale, bad_signature, …) as a VSF error frame at HTTP 200, so a success status alone does NOT mean the avatar published — inspect the body first, otherwise a rejection reads as "uploaded" and the real avatar never lands.
     let body = response
         .bytes()
         .map_err(|e| format!("Avatar upload: read response body: {}", e))?;
@@ -1514,8 +1503,7 @@ pub fn download_avatar(
         &format!("/avatar/{}", &storage_key[..8]),
     ));
 
-    // The worker answers every failure as a VSF error frame at HTTP 200 that PASSES is_original, so
-    // the error-frame rejection must come FIRST and separately — status() above can never catch it.
+    // The worker answers every failure as a VSF error frame at HTTP 200 that PASSES is_original, so the error-frame rejection must come FIRST and separately — status() above can never catch it.
     // Expected absence ("not_found") is a quiet None; any other error frame is logged and dropped.
     if fgtw::client::is_error(&vsf_data, "not_found") {
         return None;
@@ -1526,8 +1514,7 @@ pub fn download_avatar(
     }
 
     // Verify, decrypt, and decode (FGTW stripped ke/ge, so only provenance hash is verified).
-    // Cache ONLY on full success — never persist bytes that didn't verify+decrypt+decode, or we
-    // poison the vault with a frame that then fails to decode forever.
+    // Cache ONLY on full success — never persist bytes that didn't verify+decrypt+decode, or we poison the vault with a frame that then fails to decode forever.
     let decoded = load_avatar_from_bytes(&vsf_data, handle);
     if decoded.is_some() {
         let _ = save_avatar_to_cache(handle, &vsf_data, storage);
@@ -1697,10 +1684,7 @@ pub fn sync_avatar_bidirectional_from_seed(
         };
     }
 
-    // Error-frame rejection FIRST (the worker sends 200 with a frame that passes is_original, so the
-    // NOT_FOUND status check above never fires). "not_found" is server-empty → route to the upload /
-    // server-empty branch; any other error frame is NOT a real avatar — its fresh creation_time must
-    // never win newest-wins and clobber a good local copy, so return Error and do not adopt.
+    // Error-frame rejection FIRST (the worker sends 200 with a frame that passes is_original, so the NOT_FOUND status check above never fires). "not_found" is server-empty → route to the upload / server-empty branch; any other error frame is NOT a real avatar — its fresh creation_time must never win newest-wins and clobber a good local copy, so return Error and do not adopt.
     if fgtw::client::is_error(&vsf_data, "not_found") {
         return if local_ts.is_some() {
             upload("Server empty")
@@ -1739,8 +1723,7 @@ pub fn sync_avatar_bidirectional_from_seed(
             if local > server {
                 upload(&format!("Local newer ({} > {})", local, server))
             } else if server > local {
-                // Adopt the server copy only if it validates — never overwrite a good local avatar
-                // with a body that fails to decode.
+                // Adopt the server copy only if it validates — never overwrite a good local avatar with a body that fails to decode.
                 if load_avatar_from_bytes_from_seed(&vsf_data, identity_seed).is_some() {
                     crate::log(&format!(
                         "Avatar sync: Server newer ({} > {}), caching",

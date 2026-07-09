@@ -1,13 +1,12 @@
-//! "Photon" wordmark for the Launch screen — visible-RGB composite ops (wrap-add glow + highlight; alpha-weighted darken-toward-black body).
+//! "Photon" wordmark for the Launch screen — three fluor `under()` layers (white glow + highlight, black body).
 //!
-//! Compose order: glow → body → highlight, painted bottom-up over a bg that's already in place (noise + chromatic wave). Each pass reads the pixel's visible RGB, applies the op, writes back to α + darkness storage with α preserved.
+//! Each visual layer is a proper α+darkness layer composited via `Blend::under` — white (darkness 0) with α = coverage for the glow and highlight rim, black (darkness 0xFFFFFF) with α = coverage for the body.
+//! Because they're real under() layers, the logo needs nothing opaque beneath it and draws front-to-back like any fluor content; the background (noise + chromatic wave) composes under it afterward.
 //!
-//! Visual layers (bottom to top in compose order):
-//! 1. **Glow scratch (`scratch_glow`)** — "Photon" rendered at [`LOGO_GLOW_GRAY`] gets horizontal+vertical exponential-falloff blur passes → soft outer halo. Wrap-added per visible-RGB channel over the bg (wraps to dark where the bg is already bright — the characteristic Photon chromatic interaction).
-//! 2. **Sharp body** — "Photon" rasterized as u8 glyph coverage; each coverage value `a` darkens the bg toward pure black via `visible_new = visible_bg × (255 − a) / 255` (text colour is pure visible black).
-//! 3. **Highlight scratch (`scratch_highlight`)** — "Photon" rendered at [`LOGO_HIGHLIGHT_GRAY`] PLUS black-carve passes at `(x+1, y)` and `(x, y+1)` to bevel the right + bottom edges of every glyph, then a sharper horizontal-only blur. Wrap-added over the body → bright top-left rim with a beveled-into-the-surface look.
-//!
-//! Wrap-add (rather than saturating add) is intentional: where the bg is already light, the glow value wraps around darker — the chromatic interaction between the logo and the spectrum bar behind it that's part of Photon's visual identity. Don't "fix" it to saturating.
+//! Composite order is TOPMOST-FIRST (fluor's convention — first-drawn wins the pixel):
+//! 1. **Sharp body** — "Photon" rasterized as u8 glyph coverage; each value `a` is the α of a full-darkness (black) under() write, driving the destination toward black (bit-identical to the legacy `visible × (255 − a) / 255` darken). Drawn FIRST so the solid black letters sit on top.
+//! 2. **Highlight scratch (`scratch_highlight`)** — "Photon" at [`LOGO_HIGHLIGHT_GRAY`] PLUS black-carve passes at `(x+1, y)` and `(x, y+1)` to bevel the right/bottom edges, then a sharp horizontal blur. A white under() layer, so it shows only where it extends past the black body — a rim bleeding from the letter edges.
+//! 3. **Glow scratch (`scratch_glow`)** — "Photon" at [`LOGO_GLOW_GRAY`] with horizontal+vertical falloff blur → soft outer halo. A white under() layer, drawn last so it fills the remaining α budget behind everything: an additive-white glow that soft-clamps at 255 (no wrap artifacts).
 //!
 //! Font: Oxanium 800 (ExtraBold). Sized via harmonic mean of region-width-by-aspect and region-height so it fits inside the layout's `photon_text` rect smoothly across viewport sizes.
 
@@ -68,7 +67,7 @@ pub fn paint_photon_logo(canvas: &mut Canvas, text: &mut TextRenderer, rect: Pix
     blur_horizontal_soft(&mut scratch_glow);
     blur_vertical_soft(&mut scratch_glow, buf_w, virtual_height);
 
-    // Body scratch — "Photon" at full coverage (255). The coverage byte at each pixel is the alpha-weight used by `composite_body_darken_to_black` to drive the bg toward pure black; AA edges get partial coverage so the rasterized body inherits cosmic-text's hinted antialiasing.
+    // Body scratch — "Photon" at full coverage (255). The coverage byte at each pixel is the α-weight used by `composite_body_black` (an all-dark under() layer) to drive the bg toward pure black; AA edges get partial coverage so the rasterized body inherits cosmic-text's hinted antialiasing.
     let mut scratch_body = vec![0_u8; scratch_size];
     text.draw_text_center(
         &mut scratch_body,
@@ -131,10 +130,12 @@ pub fn paint_photon_logo(canvas: &mut Canvas, text: &mut TextRenderer, rect: Pix
     );
     blur_horizontal_sharp(&mut scratch_highlight);
 
-    // Compose bottom-to-top over the existing bg (noise + wave): glow under body, body under highlight. Each pass operates in visible-RGB space and preserves α — the bg is opaque (α=0xFF) so no transparency math is needed at the merge points.
-    composite_grey_wrap_add(canvas.pixels, buf_w, start, &scratch_glow);
-    composite_body_darken_to_black(canvas.pixels, buf_w, start, &scratch_body);
-    composite_grey_wrap_add(canvas.pixels, buf_w, start, &scratch_highlight);
+    // Composite via under() — fluor is TOPMOST-FIRST (first-drawn = frontmost). Each layer is a proper α+darkness layer (white for glow/highlight, black for body), so the logo needs nothing opaque beneath it — it can be drawn first/topmost and the noise composes under it. (Was painter's-order bottom-to-top RMW that read the background and required the noise painted first; coupling gone.)
+    //
+    // Stack, front to back: black BODY on top (solid legible letters), then the highlight rim and glow halo behind it (they bleed out from the letter edges). Chosen over highlight-on-the-letters — the embossed look read worse.
+    composite_body_black(canvas.pixels, buf_w, start, &scratch_body);
+    composite_glow_white(canvas.pixels, buf_w, start, &scratch_highlight);
+    composite_glow_white(canvas.pixels, buf_w, start, &scratch_glow);
 
     // Report the rasterized area to the damage accumulator — full window width since blur passes spread horizontally.
     canvas.damage.add_bounds(0, start, buf_w, stop);
@@ -201,55 +202,30 @@ fn blur_vertical_soft(buf: &mut [u8], buf_w: usize, virtual_height: usize) {
 }
 
 /// Wrap-add each scratch byte into the canvas pixel's visible RGB (legacy compose op for glow + highlight). Read pixel → XOR to visible → wrap-add grey per channel → XOR back to darkness → preserve α. Wrap-around (not saturating) is intentional: produces Photon's characteristic chromatic-interaction look where bright bg pixels wrap dark.
-fn composite_grey_wrap_add(pixels: &mut [u32], buf_w: usize, start_row: usize, scratch: &[u8]) {
-    const VISIBLE_FLIP: u32 = 0x00FFFFFF;
-    const ALPHA_MASK: u32 = 0xFF000000;
+/// Glow: a WHITE light layer (darkness = 0) composited UNDER whatever's there, α = the blurred coverage byte. `under()` of a darkness-0 pixel brightens the destination toward white by α — an additive-white halo that soft-clamps at 255 (no wrap artifacts). A proper fluor layer, so it needs nothing opaque beneath it and the logo can draw first/topmost.
+fn composite_glow_white(pixels: &mut [u32], buf_w: usize, start_row: usize, scratch: &[u8]) {
+    use fluor::pixel::{Blend, BlendMode};
     for (i, &grey) in scratch.iter().enumerate() {
         if grey == 0 {
             continue;
         }
         let pixel_idx = i + start_row * buf_w;
-        let pixel = pixels[pixel_idx];
-        let alpha = pixel & ALPHA_MASK;
-        let visible = (pixel & 0x00FFFFFF) ^ VISIBLE_FLIP;
-        let r = ((visible >> 16) & 0xFF) as u8;
-        let g = ((visible >> 8) & 0xFF) as u8;
-        let b = (visible & 0xFF) as u8;
-        let r_new = r.wrapping_add(grey) as u32;
-        let g_new = g.wrapping_add(grey) as u32;
-        let b_new = b.wrapping_add(grey) as u32;
-        let visible_new = (r_new << 16) | (g_new << 8) | b_new;
-        let darkness_new = visible_new ^ VISIBLE_FLIP;
-        pixels[pixel_idx] = alpha | darkness_new;
+        // darkness = 0x000000 (white), α = coverage.
+        let src = (grey as u32) << 24;
+        pixels[pixel_idx] = pixels[pixel_idx].under(src, BlendMode::Normal);
     }
 }
 
-/// Alpha-weighted darken-toward-pure-black (legacy compose op for the sharp body — text colour was visible 0x000000). For coverage byte `a`, blend `visible_new = visible_bg × (255 − a) / 255` per channel. Coverage 255 → fully black, 0 → bg unchanged. α stays put.
-fn composite_body_darken_to_black(
-    pixels: &mut [u32],
-    buf_w: usize,
-    start_row: usize,
-    scratch: &[u8],
-) {
-    const VISIBLE_FLIP: u32 = 0x00FFFFFF;
-    const ALPHA_MASK: u32 = 0xFF000000;
+/// Body: a fully-DARK layer (darkness = 0xFFFFFF, i.e. visible black) composited UNDER what's there, α = the glyph coverage byte. `under()` of a full-darkness pixel drives the destination toward black by α — bit-identical to the legacy `visible_bg × (255 − cov) / 255` darken, with AA edges feathering via partial α. A proper fluor layer (needs no opaque base).
+fn composite_body_black(pixels: &mut [u32], buf_w: usize, start_row: usize, scratch: &[u8]) {
+    use fluor::pixel::{Blend, BlendMode};
     for (i, &cov) in scratch.iter().enumerate() {
         if cov == 0 {
             continue;
         }
         let pixel_idx = i + start_row * buf_w;
-        let pixel = pixels[pixel_idx];
-        let alpha = pixel & ALPHA_MASK;
-        let visible = (pixel & 0x00FFFFFF) ^ VISIBLE_FLIP;
-        let r = (visible >> 16) & 0xFF;
-        let g = (visible >> 8) & 0xFF;
-        let b = visible & 0xFF;
-        let inv_cov = 0xFF - cov as u32;
-        let r_new = (r * inv_cov) / 0xFF;
-        let g_new = (g * inv_cov) / 0xFF;
-        let b_new = (b * inv_cov) / 0xFF;
-        let visible_new = (r_new << 16) | (g_new << 8) | b_new;
-        let darkness_new = visible_new ^ VISIBLE_FLIP;
-        pixels[pixel_idx] = alpha | darkness_new;
+        // darkness = 0x00FFFFFF (black), α = coverage.
+        let src = ((cov as u32) << 24) | 0x00FF_FFFF;
+        pixels[pixel_idx] = pixels[pixel_idx].under(src, BlendMode::Normal);
     }
 }

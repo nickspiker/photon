@@ -40,27 +40,15 @@ use fluor::host::android::AndroidShell;
 static MESSAGE_NOTIFIER: std::sync::OnceLock<(jni::JavaVM, jni::objects::GlobalRef)> =
     std::sync::OnceLock::new();
 
-/// The identity of the last message we fired a notification for, so a retransmit of the SAME logical
-/// message doesn't re-ding. A dozing/off-LAN peer retransmits the same frame many times (observed: one
-/// message → 5+ retransmits, and its ACK echoed 10× in a single millisecond), and `notify()` re-alerts
-/// the sound on every call even under a fixed notification id — so without this gate one message becomes
-/// a burst of dings. Keyed on the message's `prev_msg_hp` (unique per position in the chain).
+/// The identity of the last message we fired a notification for, so a retransmit of the SAME logical message doesn't re-ding. A dozing/off-LAN peer retransmits the same frame many times (observed: one message → 5+ retransmits, and its ACK echoed 10× in a single millisecond), and `notify()` re-alerts the sound on every call even under a fixed notification id — so without this gate one message becomes a burst of dings. Keyed on the message's `prev_msg_hp` (unique per position in the chain).
 #[cfg(target_os = "android")]
 static LAST_NOTIFIED_MSG: std::sync::Mutex<Option<[u8; 32]>> = std::sync::Mutex::new(None);
 
-/// Fire the Android "new message" notification for the message identified by `msg_hp` (its `prev_msg_hp`
-/// chain position), sounding + buzzing the SENDER's per-contact chirp. Deduplicated: a repeat of the same
-/// `msg_hp` (a retransmit) is a no-op, so one logical message dings once.
+/// Fire the Android "new message" notification for the message identified by `msg_hp` (its `prev_msg_hp` chain position), sounding + buzzing the SENDER's per-contact chirp. Deduplicated: a repeat of the same `msg_hp` (a retransmit) is a no-op, so one logical message dings once.
 ///
-/// The sound/haptic are the sender's deterministic chirp (`chirp::Chirp::from_hash(blake3(sender_pubkey))`)
-/// rendered here to a WAV + the matching amplitude-envelope haptic, and handed to Kotlin, which plays them
-/// itself (silent channel + MediaPlayer + VibrationEffect) — the "app plays it after wake" path, so the OS
-/// default tone never fires and the sound is per-contact even from deep Doze. Sender identity stays
-/// in-process: only the rendered audio/haptic cross to Kotlin, never the pubkey or plaintext, and the
-/// notification text stays a generic "New message" (handle off the lock screen).
+/// The sound/haptic are the sender's deterministic chirp (`chirp::Chirp::from_hash(blake3(sender_pubkey))`) rendered here to a WAV + the matching amplitude-envelope haptic, and handed to Kotlin, which plays them itself (silent channel + MediaPlayer + VibrationEffect) — the "app plays it after wake" path, so the OS default tone never fires and the sound is per-contact even from deep Doze. Sender identity stays in-process: only the rendered audio/haptic cross to Kotlin, never the pubkey or plaintext, and the notification text stays a generic "New message" (handle off the lock screen).
 ///
-/// Kotlin decides visibility/foreground suppression. No-op if the service never registered. Callable from
-/// any thread — attaches to the JVM as needed.
+/// Kotlin decides visibility/foreground suppression. No-op if the service never registered. Callable from any thread — attaches to the JVM as needed.
 #[cfg(target_os = "android")]
 pub fn notify_new_message(msg_hp: &[u8; 32], sender_pubkey: &[u8]) {
     // Dedup: skip if this is the same message we most recently notified for (a retransmit).
@@ -75,8 +63,7 @@ pub fn notify_new_message(msg_hp: &[u8; 32], sender_pubkey: &[u8]) {
         return;
     };
 
-    // Derive the sender's chirp → WAV bytes + haptic (timings, amplitudes). blake3(pubkey) gives a clean
-    // 32-byte seed; same sender → same chirp every time. 60 Hz bins the envelope into ~16.7ms steps.
+    // Derive the sender's chirp → WAV bytes + haptic (timings, amplitudes). blake3(pubkey) gives a clean 32-byte seed; same sender → same chirp every time. 60 Hz bins the envelope into ~16.7ms steps.
     let seed: [u8; 32] = *blake3::hash(sender_pubkey).as_bytes();
     let chirp = chirp::Chirp::from_hash(seed);
     let wav = chirp.to_wav();
@@ -84,8 +71,7 @@ pub fn notify_new_message(msg_hp: &[u8; 32], sender_pubkey: &[u8]) {
 
     match vm.attach_current_thread() {
         Ok(mut env) => {
-            // Marshal WAV (byte[]), timings (long[] — createWaveform wants long[]), amplitudes (int[] —
-            // createWaveform wants int[]).
+            // Marshal WAV (byte[]), timings (long[] — createWaveform wants long[]), amplitudes (int[] — createWaveform wants int[]).
             let wav_arr = match env.byte_array_from_slice(&wav) {
                 Ok(a) => a,
                 Err(e) => {
@@ -137,14 +123,7 @@ pub fn notify_new_message(msg_hp: &[u8; 32], sender_pubkey: &[u8]) {
     }
 }
 
-/// Poke the foreground service to run a headless protocol tick. Called from the status RX worker
-/// (`send_status_update`) whenever ANY inbound `StatusUpdate` lands, so a CLUTCH offer/KEM/complete or a
-/// chat/ACK advances the ceremony + chain even while the Activity is backgrounded and its Choreographer
-/// (and thus `tick`) has stopped. Reuses the `MESSAGE_NOTIFIER` service global-ref: calls Kotlin
-/// `requestServiceTick()`, which grabs a brief wakelock and calls `nativeServiceTick(activityPtr)`. The
-/// wakelock lives on the Kotlin side because it needs the service `Context`/`PowerManager`. No-op if the
-/// service never registered or the Activity context ptr isn't set (Kotlin guards that). Callable from any
-/// thread — attaches to the JVM as needed. See docs/background-tick.md.
+/// Poke the foreground service to run a headless protocol tick. Called from the status RX worker (`send_status_update`) whenever ANY inbound `StatusUpdate` lands, so a CLUTCH offer/KEM/complete or a chat/ACK advances the ceremony + chain even while the Activity is backgrounded and its Choreographer (and thus `tick`) has stopped. Reuses the `MESSAGE_NOTIFIER` service global-ref: calls Kotlin `requestServiceTick()`, which grabs a brief wakelock and calls `nativeServiceTick(activityPtr)`. The wakelock lives on the Kotlin side because it needs the service `Context`/`PowerManager`. No-op if the service never registered or the Activity context ptr isn't set (Kotlin guards that). Callable from any thread — attaches to the JVM as needed. See docs/background-tick.md.
 #[cfg(target_os = "android")]
 pub fn request_service_tick() {
     let Some((vm, svc)) = MESSAGE_NOTIFIER.get() else {
@@ -169,13 +148,7 @@ pub fn request_service_tick() {
 #[cfg(target_os = "android")]
 pub struct PhotonContext {
     pub shell: AndroidShell<PhotonApp>,
-    /// Re-entry guard between the Activity draw thread (`nativeDraw` → `tick`) and the foreground-service
-    /// thread (`nativeServiceTick` → `advance_protocol`). Both mutate the one `PhotonApp` through the
-    /// `&'static mut` handed out by `get_context`, so they must never run concurrently. They normally
-    /// can't — the frame callback is removed on `onPause`, exactly when the service tick takes over — but
-    /// the `onResume` re-arm can momentarily overlap. This flag serialises them: whoever holds it runs,
-    /// the other skips (a skipped background tick is harmless — the next foreground `tick` drains the
-    /// same channels anyway). See docs/background-tick.md.
+    /// Re-entry guard between the Activity draw thread (`nativeDraw` → `tick`) and the foreground-service thread (`nativeServiceTick` → `advance_protocol`). Both mutate the one `PhotonApp` through the `&'static mut` handed out by `get_context`, so they must never run concurrently. They normally can't — the frame callback is removed on `onPause`, exactly when the service tick takes over — but the `onResume` re-arm can momentarily overlap. This flag serialises them: whoever holds it runs, the other skips (a skipped background tick is harmless — the next foreground `tick` drains the same channels anyway). See docs/background-tick.md.
     pub ticking: std::sync::atomic::AtomicBool,
 }
 
@@ -249,23 +222,14 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeDraw(
         error!("Failed to convert Surface to NativeWindow");
         return;
     };
-    // Hold the tick guard across the whole draw (which runs `tick` → `advance_protocol` internally):
-    // a background `nativeServiceTick` racing us on `onResume` will see it busy and skip. The draw is
-    // the foreground owner and always wins; the deferred background tick is a harmless no-op because
-    // this very draw drains the same channels. `Acquire`/`Release` order the flag against the mutations.
+    // Hold the tick guard across the whole draw (which runs `tick` → `advance_protocol` internally): a background `nativeServiceTick` racing us on `onResume` will see it busy and skip. The draw is the foreground owner and always wins; the deferred background tick is a harmless no-op because this very draw drains the same channels. `Acquire`/`Release` order the flag against the mutations.
     use std::sync::atomic::Ordering;
     ctx.ticking.store(true, Ordering::Relaxed);
     ctx.shell.draw(&window);
     ctx.ticking.store(false, Ordering::Release);
 }
 
-/// Headless protocol advance, called from the foreground **service** thread (`PhotonConnectionService`)
-/// when inbound traffic arrives while the Activity is backgrounded — the Choreographer has stopped
-/// calling `nativeDraw`, so `tick` isn't running and CLUTCH/chat would otherwise stall until the screen
-/// comes on. Runs the surface-free `PhotonApp::advance_protocol` (drain channels, advance the ceremony +
-/// chain, retransmit) with NO drawing. Skips if a draw is concurrently in progress (the `onResume`
-/// overlap) — that draw covers the same work. Reuses the Activity `PhotonContext` ptr, which stays valid
-/// while the app is merely paused (destroyed only at `onDestroy`; a 0/stale ptr here is a no-op).
+/// Headless protocol advance, called from the foreground **service** thread (`PhotonConnectionService`) when inbound traffic arrives while the Activity is backgrounded — the Choreographer has stopped calling `nativeDraw`, so `tick` isn't running and CLUTCH/chat would otherwise stall until the screen comes on. Runs the surface-free `PhotonApp::advance_protocol` (drain channels, advance the ceremony + chain, retransmit) with NO drawing. Skips if a draw is concurrently in progress (the `onResume` overlap) — that draw covers the same work. Reuses the Activity `PhotonContext` ptr, which stays valid while the app is merely paused (destroyed only at `onDestroy`; a 0/stale ptr here is a no-op).
 /// See docs/background-tick.md.
 #[cfg(target_os = "android")]
 #[no_mangle]
@@ -278,8 +242,7 @@ pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeServic
     let Some(ctx) = get_context(context_ptr) else {
         return;
     };
-    // CAS false→true: acquire the guard only if no draw (or another service tick) holds it. On failure
-    // we skip — the concurrent draw advances the same state, so a dropped background tick loses nothing.
+    // CAS false→true: acquire the guard only if no draw (or another service tick) holds it. On failure we skip — the concurrent draw advances the same state, so a dropped background tick loses nothing.
     if ctx
         .ticking
         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)

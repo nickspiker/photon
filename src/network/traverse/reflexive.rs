@@ -1,14 +1,9 @@
 //! Reflexive (public) address discovery — the peer-echoed STUN primitive.
 //!
 //! A node cannot see its own public address directly: NAT rewrites the source of every outbound datagram.
-//! It learns that address by asking another node "what source did you see me at?" — and that answer,
-//! echoed on the *same UDP socket the data flows over*, is the correct reflexive address (unlike
-//! fgtw.org's `cf-connecting-ip`, which reflects the TLS flow and is thus only right for cone NATs).
+//! It learns that address by asking another node "what source did you see me at?" — and that answer, echoed on the *same UDP socket the data flows over*, is the correct reflexive address (unlike fgtw.org's `cf-connecting-ip`, which reflects the TLS flow and is thus only right for cone NATs).
 //!
-//! Two channels feed this: a friend's signed pong (`observed_addr`, trusted — the pong is contact-gated,
-//! so it comes from someone in our fleet/contacts) and an open `ReflectResponse` from any directory-serving
-//! node (untrusted — corroborated by quorum before adoption, so a single lying peer can't poison the
-//! address we then publish). See the traversal plan, P0.
+//! Two channels feed this: a friend's signed pong (`observed_addr`, trusted — the pong is contact-gated, so it comes from someone in our fleet/contacts) and an open `ReflectResponse` from any directory-serving node (untrusted — corroborated by quorum before adoption, so a single lying peer can't poison the address we then publish). See the traversal plan, P0.
 
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
@@ -39,8 +34,7 @@ impl ReflexiveState {
     /// `trusted` = the observation came from a contact's pong or the bootstrap seed → adopt immediately.
     /// Otherwise the address must be seen from [`QUORUM`] distinct sources before adoption (anti-poison).
     ///
-    /// Returns `Some(addr)` when this observation *changed* the adopted address for its family (the caller
-    /// should then update `PhotonApp.our_reflexive` and re-announce), else `None`.
+    /// Returns `Some(addr)` when this observation *changed* the adopted address for its family (the caller should then update `PhotonApp.our_reflexive` and re-announce), else `None`.
     pub fn record(&mut self, observed: SocketAddr, from: [u8; 32], trusted: bool) -> Option<SocketAddr> {
         let adopt = if trusted {
             true
@@ -75,9 +69,7 @@ impl ReflexiveState {
         self.v6
     }
 
-    /// This node's adopted public IP (prefers v4, falls back to v6). Currently informational; kept for
-    /// candidate gathering and any future same-NAT/hairpin use (the old `Contact::best_addr` path was dead
-    /// and removed — `race_addrs` already covers same-NAT by racing the LAN candidate).
+    /// This node's adopted public IP (prefers v4, falls back to v6). Currently informational; kept for candidate gathering and any future same-NAT/hairpin use (the old `Contact::best_addr` path was dead and removed — `race_addrs` already covers same-NAT by racing the LAN candidate).
     pub fn public_ip(&self) -> Option<IpAddr> {
         self.v4.map(|a| a.ip()).or_else(|| self.v6.map(|a| a.ip()))
     }

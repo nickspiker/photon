@@ -1,12 +1,8 @@
 //! Hole-punch probe/ack helpers and the pending-probe tracker.
 //!
-//! A probe is a signed datagram fired at a peer's candidate address: *sending* it opens our NAT toward that
-//! address, and a friend's ack (echoing the probe's provenance) confirms the `(local, remote)` pair
-//! round-trips → that path is validated. Probes are tracked by their provenance hash so an incoming ack
-//! identifies which candidate won, for which peer.
+//! A probe is a signed datagram fired at a peer's candidate address: *sending* it opens our NAT toward that address, and a friend's ack (echoing the probe's provenance) confirms the `(local, remote)` pair round-trips → that path is validated. Probes are tracked by their provenance hash so an incoming ack identifies which candidate won, for which peer.
 //!
-//! The probe is friend-tier: a friend answers it (contact/fleet-gated in the dispatch, exactly like ping),
-//! a stranger is ignored. Wire framing is the canonical full-header VSF via [`FgtwMessage::to_vsf_bytes`].
+//! The probe is friend-tier: a friend answers it (contact/fleet-gated in the dispatch, exactly like ping), a stranger is ignored. Wire framing is the canonical full-header VSF via [`FgtwMessage::to_vsf_bytes`].
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -19,8 +15,7 @@ use crate::types::device::DevicePubkey;
 /// A probe is abandoned if unanswered this long (a candidate that never round-trips).
 pub const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// Build a signed hole-punch probe. Returns the wire bytes and the provenance hash (the per-probe
-/// correlator the ack echoes back). `nonce` guarantees the provenance is unique even within one time tick.
+/// Build a signed hole-punch probe. Returns the wire bytes and the provenance hash (the per-probe correlator the ack echoes back). `nonce` guarantees the provenance is unique even within one time tick.
 pub fn build_probe(
     keypair: &Keypair,
     sender_pubkey: DevicePubkey,
@@ -46,8 +41,7 @@ pub fn build_probe(
     (msg.to_vsf_bytes(), provenance_hash)
 }
 
-/// Build a signed ack echoing `provenance_hash` and reporting the address we observed the probe arrive from
-/// (canonicalise it with [`crate::network::udp::canon_socketaddr`] before calling).
+/// Build a signed ack echoing `provenance_hash` and reporting the address we observed the probe arrive from (canonicalise it with [`crate::network::udp::canon_socketaddr`] before calling).
 pub fn build_probe_ack(
     keypair: &Keypair,
     responder_pubkey: DevicePubkey,
@@ -96,8 +90,7 @@ impl PendingProbes {
         );
     }
 
-    /// Resolve an ack: if we sent this probe, remove and return `(peer, target)`; `None` for an
-    /// unknown or duplicate ack (so a replayed ack can't re-validate a stale path).
+    /// Resolve an ack: if we sent this probe, remove and return `(peer, target)`; `None` for an unknown or duplicate ack (so a replayed ack can't re-validate a stale path).
     pub fn resolve(&mut self, provenance: &[u8; 32]) -> Option<(DevicePubkey, SocketAddr)> {
         self.inner.remove(provenance).map(|p| (p.peer, p.target))
     }
@@ -125,8 +118,7 @@ mod tests {
 
     #[test]
     fn punch_probe_codec_roundtrips_full_header() {
-        // The wire format is the risky part — verify a probe (body-less) and an ack (with obs) round-trip
-        // through the canonical full-header VSF path, independent of signing.
+        // The wire format is the risky part — verify a probe (body-less) and an ack (with obs) round-trip through the canonical full-header VSF path, independent of signing.
         let pk = DevicePubkey::from_bytes([7u8; 32]);
         let prov = [9u8; 32];
 

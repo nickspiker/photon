@@ -531,8 +531,7 @@ impl FgtwMessage {
                 signature,
                 peers,
             } => {
-                // One multi-value `peer` field per record (positional, parse_peer_from_field shape).
-                // add_section only takes single-value fields, so build the section directly.
+                // One multi-value `peer` field per record (positional, parse_peer_from_field shape). add_section only takes single-value fields, so build the section directly.
                 let mut section = vsf::VsfSection::new("pb_resp");
                 for peer in peers {
                     let (name, values) = encode_peer_field(peer);
@@ -2021,8 +2020,7 @@ pub fn parse_clutch_offer_vsf_without_recipient_check(
     #[cfg(feature = "development")]
     crate::log(&format!(
         "CLUTCH: Parsed offer (no recipient check) HQC pub[..8]={} provenance={}...",
-        // `.min(8)` guards a short field so a truncated/forged public key can't panic the receiver
-        // (offer_provenance is a fixed [u8;32], so its slice is always in-bounds).
+        // `.min(8)` guards a short field so a truncated/forged public key can't panic the receiver (offer_provenance is a fixed [u8;32], so its slice is always in-bounds).
         hex::encode(&payload.hqc256_public[..payload.hqc256_public.len().min(8)]),
         hex::encode(&offer_provenance[..8])
     ));
