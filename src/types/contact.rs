@@ -148,8 +148,12 @@ pub struct Contact {
     pub handle_proof: [u8; 32], // Cached handle_proof (expensive to compute - ~1 second) - PUBLIC
     pub handle_hash: [u8; 32], // BLAKE3(handle) - PRIVATE, used for seed derivation
     pub public_identity: DevicePubkey,
-    /// The friend's CURRENT fleet device set, folded from their public membership chain (`fleet::current_members` by `handle_proof`). A contact is an IDENTITY, not a device: pings/pongs/offers/messages are honoured from ANY member here, not just `public_identity` (which is only the device we happened to meet first). Empty until the first refresh; refreshed on load and on a `fleet` bump for this contact. Runtime cache — re-fetched from the network, never authoritative on disk.
+    /// The friend's CURRENT fleet device set, folded from their public membership chain (`fleet::current_members` by `handle_proof`). A contact is an IDENTITY, not a device: pings/pongs/offers/messages are honoured from ANY member here, not just `public_identity` (which is only the device we happened to meet first). Empty until the first refresh; refreshed on load and on a `fleet` bump for this contact. Now persisted alongside `fleet_folded_once` / `fleet_members_ts` so a restart resumes fold-respecting trust immediately instead of a trust-nobody gap while the re-fold is in flight.
     pub fleet_members: Vec<[u8; 32]>,
+    /// True once this contact's fleet chain has SUCCESSFULLY folded at least once. Arms the fold-respecting trust rule in `knows_device`: once armed, only current folded members are trusted, and `public_identity` loses its unconditional pass if the fold excluded it (that device was removed). A fold FAILURE never arms it — only a real adopted fold does — so a network outage never flips a healthy contact to trust-nobody. Siblings never fold (their proof routes to `reconcile_fleet_siblings`), so this stays false for them and they keep the bootstrap path.
+    pub fleet_folded_once: bool,
+    /// The chain-tip eagle time of the last adopted fold — a monotonic guard so we never adopt an OLDER fold over a newer one (guards against an R2 eventual-consistency read serving a stale pre-removal member set over a fresh post-removal one). 0 means no fold adopted yet.
+    pub fleet_members_ts: i64,
     pub ip: Option<SocketAddr>, // Last known IP:port from FGTW or direct (public IP)
     pub local_ip: Option<Ipv4Addr>, // LAN IP discovered via broadcast (for hairpin NAT workaround)
     pub local_port: Option<u16>, // LAN port discovered via broadcast
@@ -269,6 +273,8 @@ impl Contact {
             handle_hash,
             public_identity,
             fleet_members: Vec::new(), // Folded from the friend's chain on the first refresh
+            fleet_folded_once: false,  // Armed only by a successful adopted fold
+            fleet_members_ts: 0,       // No fold adopted yet (bootstrap)
             ip: None,
             local_ip: None,   // Discovered via LAN broadcast
             local_port: None, // Discovered via LAN broadcast
@@ -395,21 +401,32 @@ impl Contact {
         self.clutch_state == ClutchState::Complete
     }
 
-    /// Does `device_pubkey` belong to this contact's identity? True for the first-met device (`public_identity`) OR any current member of the friend's folded fleet. This is the fold-and-honour gate: a friend's second phone is a different device key we've never seen, but it's a valid member of their chain, so its pings/offers/messages must be honoured. `public_identity` stays in the check so a not-yet-refreshed contact still answers its known device.
+    /// Does `device_pubkey` belong to this contact's identity? Trust respects the fold.
+    /// Pre-fold (`fleet_folded_once == false`, i.e. bootstrap or a sibling that never folds): trust the first-met device (`public_identity`) OR any cached member — keeps a fresh first-met friend and sibling contacts working before any successful fold.
+    /// Post-fold (`fleet_folded_once == true`): the friend's chain has authoritatively spoken, so trust ONLY current folded members. `public_identity` keeps its pass iff it's still a member (the device we met is still in their fleet), and loses it if the fold excluded it — that device was removed, which is what makes revocation real.
+    /// A fold FAILURE never reaches here (it doesn't arm the flag), so a network outage keeps the last-known behaviour, never trust-nobody.
     pub fn knows_device(&self, device_pubkey: &[u8; 32]) -> bool {
-        self.public_identity.key == *device_pubkey || self.fleet_members.contains(device_pubkey)
+        if self.fleet_folded_once {
+            self.fleet_members.contains(device_pubkey)
+        } else {
+            self.public_identity.key == *device_pubkey || self.fleet_members.contains(device_pubkey)
+        }
     }
 
-    /// Every device pubkey we'll answer for this contact — `public_identity` unioned with the folded fleet. Feeds the status checker's answerable-pubkey set so pongs from any of the friend's devices are honoured.
+    /// Every device pubkey we'll answer for this contact — feeds the status checker's answerable set. Mirrors `knows_device`: post-fold it's exactly the folded members (public_identity included only if it's still one); pre-fold it's public_identity unioned with any cached members, deduped, first-met leading.
     pub fn answerable_pubkeys(&self) -> Vec<[u8; 32]> {
-        let mut v = Vec::with_capacity(self.fleet_members.len() + 1);
-        v.push(self.public_identity.key);
-        for m in &self.fleet_members {
-            if *m != self.public_identity.key {
-                v.push(*m);
+        if self.fleet_folded_once {
+            self.fleet_members.clone()
+        } else {
+            let mut v = Vec::with_capacity(self.fleet_members.len() + 1);
+            v.push(self.public_identity.key);
+            for m in &self.fleet_members {
+                if *m != self.public_identity.key {
+                    v.push(*m);
+                }
             }
+            v
         }
-        v
     }
 
     pub fn can_be_custodian(&self) -> bool {
