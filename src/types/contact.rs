@@ -566,6 +566,43 @@ mod fold_honour_tests {
     }
 
     #[test]
+    fn folded_trust_includes_public_identity_when_still_a_member() {
+        // The normal post-fold case: the device we first met is still in the friend's fleet, so it stays trusted VIA membership.
+        let mut c = contact_with([1u8; 32]);
+        c.fleet_members = vec![[1u8; 32], [2u8; 32]];
+        c.fleet_folded_once = true;
+        assert!(c.knows_device(&[1u8; 32]), "first-met is still a member");
+        assert!(c.knows_device(&[2u8; 32]), "their other device is a member");
+        assert!(!c.knows_device(&[9u8; 32]), "a stranger is rejected");
+        // Post-fold, answerable is exactly the folded members (no unconditional public_identity prepend).
+        assert_eq!(c.answerable_pubkeys(), vec![[1u8; 32], [2u8; 32]]);
+    }
+
+    #[test]
+    fn folded_trust_revokes_public_identity_when_removed() {
+        // Revocation: the fold no longer includes the first-met device (it was removed), so it LOSES trust — this is the whole point of fold-respecting trust.
+        let mut c = contact_with([1u8; 32]);
+        c.fleet_members = vec![[2u8; 32]]; // first-met (1) is gone; only 2 remains
+        c.fleet_folded_once = true;
+        assert!(!c.knows_device(&[1u8; 32]), "removed first-met device is no longer trusted");
+        assert!(c.knows_device(&[2u8; 32]), "the current member is trusted");
+        assert_eq!(c.answerable_pubkeys(), vec![[2u8; 32]], "answerable drops the revoked device");
+    }
+
+    #[test]
+    fn sibling_never_arms_stays_bootstrap() {
+        // A sibling contact never folds a contact-chain, so fleet_folded_once stays false and knows_device answers only the one sibling device (empty fleet_members is load-bearing for first-match routing).
+        let sib = Contact::new_sibling(
+            HandleText::new("me"),
+            [0x22; 32],
+            DevicePubkey::from_bytes([5u8; 32]),
+        );
+        assert!(!sib.fleet_folded_once, "siblings are never armed");
+        assert!(sib.knows_device(&[5u8; 32]), "the sibling device is trusted (bootstrap)");
+        assert!(!sib.knows_device(&[6u8; 32]), "another device is not");
+    }
+
+    #[test]
     fn new_sibling_keys_on_device_pid_and_slots_stay_distinct() {
         let sib_device = [5u8; 32];
         let sib = Contact::new_sibling(

@@ -1136,6 +1136,52 @@ mod tests {
         }
     }
 
+    /// Fold-respecting trust persistence: the adopted folded member set + the arm flag + the tip ts survive a vault close/reopen, so a restart resumes members-only trust immediately. A contact saved before the feature (all three fields absent) loads as bootstrap (empty set, false, 0).
+    #[test]
+    fn fold_trust_state_round_trips_and_absent_loads_bootstrap() {
+        use crate::types::HandleText;
+
+        let device_secret = [41u8; 32];
+        let vault_seed = *ihi::handle_to_hash("me-fold-test").as_bytes();
+        let app = crate::storage::APP;
+
+        let mut c = Contact::new(
+            HandleText::new("dave"),
+            [0x77; 32],
+            DevicePubkey::from_bytes([0x20; 32]),
+        );
+        c.fleet_members = vec![[0x20; 32], [0x21; 32]];
+        c.fleet_folded_once = true;
+        c.fleet_members_ts = 12_345;
+
+        let identity = ContactIdentity { handle_proof: [0x77; 32], handle: "dave".to_string() };
+
+        {
+            let storage = FlatStorage::new(app, vault_seed, device_secret).unwrap();
+            save_contact_state(&c, &storage).unwrap();
+            let loaded = load_contact_state(&identity, &storage).unwrap();
+            assert_eq!(loaded.fleet_members, vec![[0x20; 32], [0x21; 32]]);
+            assert!(loaded.fleet_folded_once, "the arm flag persists");
+            assert_eq!(loaded.fleet_members_ts, 12_345);
+        }
+
+        // A contact with none of the fields set (pre-feature vault) loads as bootstrap.
+        {
+            let storage = FlatStorage::new(app, vault_seed, device_secret).unwrap();
+            let bare = Contact::new(HandleText::new("dave"), [0x77; 32], DevicePubkey::from_bytes([0x20; 32]));
+            save_contact_state(&bare, &storage).unwrap();
+            let loaded = load_contact_state(&identity, &storage).unwrap();
+            assert!(loaded.fleet_members.is_empty(), "absent = empty folded set");
+            assert!(!loaded.fleet_folded_once, "absent = bootstrap");
+            assert_eq!(loaded.fleet_members_ts, 0);
+        }
+
+        if let Ok([primary, shadow]) = kete::vault_ring_paths(app, &vault_seed, &device_secret) {
+            let _ = std::fs::remove_file(primary);
+            let _ = std::fs::remove_file(shadow);
+        }
+    }
+
     /// Newest-first cursor pagination over a real vault: head page = the newest rows, the cursor walk visits everything exactly once, terminates with more=false — and `load_messages` returns time-sorted output even though recovery inserts OLDER rows into the catalog LATER.
     #[test]
     fn history_pagination_walk_and_load_sort() {
