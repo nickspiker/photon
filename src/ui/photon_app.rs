@@ -617,10 +617,10 @@ pub struct PhotonApp {
     fleet_evt_rx: Option<std::sync::mpsc::Receiver<(&'static str, [u8; 32])>>,
     /// Stop flag for the fleet-event subscription task (dropped app / de-attest).
     fleet_evt_stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
-    /// Off-thread contact-fleet refresh results: (contact handle_proof, current member pubkeys folded from their chain). Drained in tick into the matching contact's `fleet_members`, then `reseed_contact_pubkeys`. Lets a friend's NEW device be honoured without waiting for our next launch.
-    contact_members_rx: Option<std::sync::mpsc::Receiver<([u8; 32], Vec<[u8; 32]>)>>,
+    /// Off-thread contact-fleet refresh results: (contact handle_proof, current member pubkeys folded from their chain, chain-tip eagle time). Drained in tick into the matching contact's `fleet_members`, gated on the tip being fresher than the last adopted one, then `reseed_contact_pubkeys`. Lets a friend's NEW device be honoured — and a REMOVED device revoked — without waiting for our next launch.
+    contact_members_rx: Option<std::sync::mpsc::Receiver<([u8; 32], Vec<[u8; 32]>, i64)>>,
     /// Sender half of the contact-fleet-refresh channel, kept alive so successive refreshes reuse one channel (the receiver is drained in tick).
-    contact_members_tx: Option<std::sync::mpsc::Sender<([u8; 32], Vec<[u8; 32]>)>>,
+    contact_members_tx: Option<std::sync::mpsc::Sender<([u8; 32], Vec<[u8; 32]>, i64)>>,
     /// Launch add-mode (NEW device joining a fleet): orb on Launch toggles it, and a failed attest against an existing fleet auto-enters it. Enter the handle; this device then generates + displays its pairing words and waits for the other device to match and bind.
     launch_add_mode: bool,
     /// Join flow: the handle once entered; `None` while still awaiting it.
@@ -4311,8 +4311,8 @@ impl PhotonApp {
             needs_redraw = true;
         }
 
-        // Contact-fleet refresh results: fold-and-honour a friend's current device set. OUR OWN hp routes to sibling reconcile FIRST and never into any contact's fleet_members — the self-contact and every sibling contact carry our hp, and folding our own fleet into one of them would make it swallow sibling pongs/paths via first-match `knows_device` routing.
-        let member_updates: Vec<([u8; 32], Vec<[u8; 32]>)> = self
+        // Contact-fleet refresh results: fold-and-honour a friend's current device set, and ARM the fold-respecting trust rule. OUR OWN hp routes to sibling reconcile FIRST and never into any contact's fleet_members — the self-contact and every sibling contact carry our hp, and folding our own fleet into one of them would make it swallow sibling pongs/paths via first-match `knows_device` routing.
+        let member_updates: Vec<([u8; 32], Vec<[u8; 32]>, i64)> = self
             .contact_members_rx
             .as_ref()
             .map(|rx| rx.try_iter().collect())
@@ -4320,22 +4320,55 @@ impl PhotonApp {
         if !member_updates.is_empty() {
             let our_hp = self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof());
             let mut changed = false;
-            for (hp, members) in member_updates {
+            let mut to_persist: Vec<usize> = Vec::new();
+            for (hp, members, tip_ts) in member_updates {
                 if Some(hp) == our_hp {
                     self.reconcile_fleet_siblings(&members);
                     needs_redraw = true;
                     continue;
                 }
-                if let Some(c) = self.contacts.iter_mut().find(|c| c.handle_proof == hp) {
-                    if c.fleet_members != members {
-                        c.fleet_members = members;
-                        changed = true;
+                let Some((idx, c)) = self
+                    .contacts
+                    .iter_mut()
+                    .enumerate()
+                    .find(|(_, c)| c.handle_proof == hp)
+                else {
+                    continue;
+                };
+                // Monotonic freshness gate FIRST, before any mutation: never adopt a fold whose tip is older than the last one we adopted (an R2 eventual-consistency read serving a stale pre-removal set must not overwrite a fresh post-removal one). A first fold (fleet_members_ts == 0) always passes since real eagle times are positive.
+                if c.fleet_folded_once && tip_ts < c.fleet_members_ts {
+                    crate::log(&format!("FLEET: ignoring stale fold for {} (tip {} < adopted {})", crate::fp(&hp), tip_ts, c.fleet_members_ts));
+                    continue;
+                }
+                let shrank = c.fleet_folded_once && c.fleet_members.iter().any(|m| !members.contains(m));
+                let set_changed = c.fleet_members != members;
+                let arming = !c.fleet_folded_once;
+                if set_changed || arming || tip_ts != c.fleet_members_ts {
+                    c.fleet_members = members;
+                    c.fleet_members_ts = tip_ts;
+                    c.fleet_folded_once = true; // armed ONLY here, on an adopted fold — never on Err/stale
+                    changed = changed || set_changed || arming;
+                    to_persist.push(idx);
+                    if shrank {
+                        crate::log(&format!("FLEET: device revoked from {}'s fleet — dropping it from the answerable set", crate::fp(&hp)));
                     }
                 }
             }
             if changed {
-                self.reseed_contact_pubkeys();
+                self.reseed_contact_pubkeys(); // rebuild answerable set BEFORE persist: an in-flight pong this tick already sees the revoked device gone
                 needs_redraw = true;
+            }
+            // Persist the adopted folded set + arm flag + tip ts so a restart resumes fold-respecting trust immediately (no bootstrap regression, no trust-nobody window).
+            if !to_persist.is_empty() {
+                if let Some(storage) = self.storage.as_ref().cloned() {
+                    to_persist.sort_unstable();
+                    to_persist.dedup();
+                    for idx in to_persist {
+                        if let Err(e) = crate::storage::contacts::save_contact(&self.contacts[idx], &storage) {
+                            crate::log(&format!("FLEET: persist folded set failed: {e}"));
+                        }
+                    }
+                }
             }
         }
 
@@ -4807,13 +4840,13 @@ impl PhotonApp {
         crate::log("FLEET: event subscription started (fstate/fleet/friendship push)");
     }
 
-    /// Off-thread: fold each given contact's public membership chain (`fleet::current_members` by handle_proof, blocking HTTP) and post the current device set back for tick to store into `fleet_members`. Idempotent and best-effort — a fetch failure just leaves the last-known set (or empty, honouring only `public_identity`). Results land via `contact_members_rx`. Started on contact load/merge (wake-up catch-up) and on a `fleet` bump for a contact's identity (live).
+    /// Off-thread: fold each given contact's public membership chain (`fleet::current_members_with_ts` by handle_proof, blocking HTTP) and post back the current device set plus the chain-tip eagle time for tick to adopt into `fleet_members` (monotonically — see the drain). Idempotent and best-effort: a fetch failure sends nothing, so the drain never runs and the last-known folded set + arm flag stay untouched (never trust-nobody on a network blip). Results land via `contact_members_rx`. Started on contact load/merge (wake-up catch-up) and on a `fleet` bump for a contact's identity (live).
     fn spawn_contact_fleet_refresh(&mut self, handle_proofs: Vec<[u8; 32]>) {
         if handle_proofs.is_empty() {
             return;
         }
         if self.contact_members_tx.is_none() {
-            let (tx, rx) = std::sync::mpsc::channel::<([u8; 32], Vec<[u8; 32]>)>();
+            let (tx, rx) = std::sync::mpsc::channel::<([u8; 32], Vec<[u8; 32]>, i64)>();
             self.contact_members_rx = Some(rx);
             self.contact_members_tx = Some(tx);
         }
@@ -4821,9 +4854,9 @@ impl PhotonApp {
         let wake = self.event_proxy.clone();
         std::thread::spawn(move || {
             for hp in handle_proofs {
-                match crate::network::fgtw::fleet::current_members(&hp) {
-                    Ok(members) => {
-                        if tx.send((hp, members)).is_err() {
+                match crate::network::fgtw::fleet::current_members_with_ts(&hp) {
+                    Ok((members, tip_ts)) => {
+                        if tx.send((hp, members, tip_ts)).is_err() {
                             return; // app dropped the receiver
                         }
                     }
