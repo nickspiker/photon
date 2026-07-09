@@ -5076,6 +5076,7 @@ impl PhotonApp {
             return;
         }
         c.chain_woven = true;
+        c.clutch_completed_at = Some(std::time::Instant::now()); // refresh the re-key cooldown thru the weave (armed at completion; this extends it)
         c.clutch_proof_resends_left = 0;
         crate::log("CHAIN-PROBE: chain woven — end-to-end verified, ceremony rebroadcast cancelled");
         // Kick off friend-history recovery on the woven-chain EDGE (this fn fires exactly once per seal; vault loads latch chain_woven without passing here, so restarts resume via the persisted cursor instead of re-kicking). Always request the head page — if we already hold the history, merging dedups and the early-stop rule completes after one page.
@@ -6496,6 +6497,7 @@ impl PhotonApp {
                             hex::encode(&result.eggs_proof[..8])
                         ));
                         contact.clutch_state = ClutchState::Complete;
+                        contact.clutch_completed_at = Some(std::time::Instant::now()); // arm the post-completion re-key cooldown (before the ~1s-later weave)
                         // A FRESH ceremony just completed = a brand-new chain — any prior weave seal is void. Reset the double-toggle state so the hidden probe REFIRES for this chain. Without this, a peer that client-reset and re-CLUTCHed hits a deadlock: our persisted chain_woven=true (load latches all probe flags true) suppresses our probe, the reset peer waits forever for it ("weaving the chain"), and we dismiss their re-sent proofs as woven-duplicates. First-ceremony case: flags already false, no-op.
                         contact.chain_woven = false;
                         contact.probe_sent = false;
@@ -8276,6 +8278,20 @@ impl PhotonApp {
                                             ));
                                             continue;
                                         }
+                                        // Post-weave cooldown (see the twin guard in the no-keypairs branch below): a different-keyed offer arriving right after we wove is a crossed pre-completion re-offer from the peer's own racing ceremony, not a deliberate reset. Ignore it briefly so we don't nuke a just-woven chain into a divergent re-key. A genuine reset persists past the window.
+                                        const REKEY_COOLDOWN: std::time::Duration =
+                                            std::time::Duration::from_secs(10);
+                                        if contact
+                                            .clutch_completed_at
+                                            .is_some_and(|t| t.elapsed() < REKEY_COOLDOWN)
+                                        {
+                                            crate::log(&format!(
+                                                "CLUTCH: Ignoring different-keyed offer from {} — completed {}ms ago (post-completion re-key cooldown)",
+                                                crate::fp(&contact.handle_proof),
+                                                contact.clutch_completed_at.map(|t| t.elapsed().as_millis()).unwrap_or(0)
+                                            ));
+                                            continue;
+                                        }
                                         crate::log(&format!(
                                             "CLUTCH: Re-key from {} - we're Complete, they have new keys, nuking for fresh ceremony",
                                             crate::fp(&contact.handle_proof)
@@ -8627,6 +8643,20 @@ impl PhotonApp {
                                 } else {
                                     // No keypairs - need to respond (whether Complete or not) If Complete: peer lost their chains, accept re-key If not Complete: restart mid-ceremony or fresh re-key
                                     if contact.clutch_state == ClutchState::Complete {
+                                        // POST-WEAVE RE-KEY COOLDOWN. Completion zeroizes our ephemeral keypairs (is_none here), so a peer's offer that was in flight just before they saw our completion lands right after we weave and would trip the re-key path below — a SPURIOUS re-key that, when both sides do it near-simultaneously, storms into divergent ceremonies (observed: two devices stuck at 5/8 and 7/8 forever). Within the cooldown, ignore the stray offer: a crossed leftover stops within ~1s (the peer completes too). A GENUINE reset peer keeps sending and re-keys once the window passes.
+                                        const REKEY_COOLDOWN: std::time::Duration =
+                                            std::time::Duration::from_secs(10);
+                                        if contact
+                                            .clutch_completed_at
+                                            .is_some_and(|t| t.elapsed() < REKEY_COOLDOWN)
+                                        {
+                                            crate::log(&format!(
+                                                "CLUTCH: Ignoring offer from {} — completed {}ms ago (post-completion re-key cooldown; likely a crossed pre-completion offer, not a reset)",
+                                                crate::fp(&contact.handle_proof),
+                                                contact.clutch_completed_at.map(|t| t.elapsed().as_millis()).unwrap_or(0)
+                                            ));
+                                            continue;
+                                        }
                                         // Peer is sending an offer while we think we're Complete. This means either:
                                         // 1. Same HQC prefix: peer missed our KEM response (can't re-send without keypairs)
                                         // 2. Different HQC prefix: peer lost chains, wants re-key
@@ -9121,6 +9151,7 @@ impl PhotonApp {
                                                 hex::encode(&our_proof[..8])
                                             ));
                                             contact.clutch_state = ClutchState::Complete;
+                                            contact.clutch_completed_at = Some(std::time::Instant::now()); // arm the post-completion re-key cooldown (before the ~1s-later weave)
                                             // Fresh ceremony = fresh chain: void any prior weave seal so the probe refires (see the twin reset at the Early-proof-verified site for the full deadlock story).
                                             contact.chain_woven = false;
                                             contact.probe_sent = false;
