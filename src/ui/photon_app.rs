@@ -3261,12 +3261,19 @@ impl FluorApp for PhotonApp {
                         None,
                     );
 
-                    // CLUTCH state (compact, under the name). Show the base state PLUS a behind-the-scenes detail (slot fill, keygen / KEM / proof stage) so a stuck handshake reads as "what's it waiting on" instead of a flat "pending" — see Contact::clutch_status_detail.
+                    // CLUTCH state (compact, under the name). Show the base state PLUS a behind-the-scenes detail (slot fill, keygen / KEM / proof stage) so a stuck handshake reads as "what's it waiting on" instead of a flat "pending" — see Contact::clutch_status_detail. Self-contact (notes-to-self) has no peer + no ceremony: the weave probe is skipped, so chain_woven never seals and clutch_status_detail would read "testing · weaving the chain" forever — show a plain reachability line instead.
                     let clutch_y = name_y + unit * 1.5;
-                    let clutch_label = format!("CLUTCH: {}", contact.clutch_status_detail());
-                    let clutch_colour = match contact.clutch_state {
-                        crate::types::ClutchState::Complete => SEARCH_FOUND_COLOUR,
-                        _ => HOURGLASS_COLOUR,
+                    let clutch_label = if is_self_contact {
+                        "notes to self".to_string()
+                    } else {
+                        format!("CLUTCH: {}", contact.clutch_status_detail())
+                    };
+                    let clutch_colour = if is_self_contact
+                        || contact.clutch_state == crate::types::ClutchState::Complete
+                    {
+                        SEARCH_FOUND_COLOUR
+                    } else {
+                        HOURGLASS_COLOUR
                     };
                     ctx.text.draw_text_center_u32(
                         &mut canvas,
@@ -3744,6 +3751,18 @@ impl FluorApp for PhotonApp {
         // Walk the container once; every Hover-capable widget contributes its tint to the slot indexed by its HitId. Slot 0 is HIT_NONE (= 0 tint). Chrome's four buttons emit their per-action hover colours via the impl in chrome_widget; future Photon widgets get the same treatment for free as soon as they impl Hover::tint_delta.
         let count = self.hit_counter as usize + 1;
         widget::build_overlay_deltas(self, count)
+    }
+
+    fn overlay_bboxes(
+        &mut self,
+        viewport_w: usize,
+        viewport_h: usize,
+    ) -> Vec<Option<fluor::canvas::PixelRect>> {
+        // Parallel to overlay_deltas: each Hover widget's pill bbox by HitId, so the host bounds the tint
+        // scan to the hovered widget's rect instead of the whole window. Widgets without a bbox (e.g.
+        // chrome buttons that don't impl hover_bbox yet) get None → full-window fallback for that id.
+        let count = self.hit_counter as usize + 1;
+        widget::build_overlay_bboxes(self, count, viewport_w, viewport_h)
     }
 
     fn cursor_for(&self, x: Coord, y: Coord, ctx: &Context) -> CursorIcon {
