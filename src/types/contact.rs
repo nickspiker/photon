@@ -172,10 +172,7 @@ pub struct Contact {
     pub clutch_our_eggs_proof: Option<[u8; 32]>,
     /// Peer's eggs_proof if received before we computed ours
     pub clutch_their_eggs_proof: Option<[u8; 32]>,
-    /// Bounded retransmit budget for our ClutchComplete proof.
-    /// The proof is a small single-packet UDP send with no PT retransmit, so one drop would strand the peer in AwaitingProof forever (the asymmetric-completion bug: we go Complete via early-proof, null our state, and never resend).
-    /// Set to a small N when we compute our eggs proof; ping_contacts re-sends the proof and decrements each cycle until it hits 0, so both sides converge even on a lossy or just-refreshed path.
-    /// Runtime-only — not persisted (a resumed Complete contact needs no further proof sends).
+    /// Bounded retransmit budget for our ClutchComplete proof. The proof is a small single-packet UDP send with no PT retransmit, so one drop would strand the peer in AwaitingProof forever (the asymmetric-completion bug: we go Complete via early-proof, null our state, and never resend). Set to a small N when we compute our eggs proof; ping_contacts re-sends the proof and decrements each cycle until it hits 0, so both sides converge even on a lossy or just-refreshed path. Runtime-only — not persisted (a resumed Complete contact needs no further proof sends).
     pub clutch_proof_resends_left: u8,
     /// Flag to prevent multiple concurrent keygens (race condition guard)
     pub clutch_keygen_in_progress: bool,
@@ -204,9 +201,7 @@ pub struct Contact {
     pub avatar_scaled: Option<Vec<u8>>, // Pre-scaled to current display size
     pub avatar_scaled_diameter: usize,  // Diameter the scaled pixels were rendered for
 
-    // Chain weave probe — after CLUTCH reaches Complete, both devices auto-exchange one hidden probe chat message each way to prove the ratchet works end-to-end.
-    // Once proven, the ceremony proof rebroadcast is cancelled (clutch_proof_resends_left = 0).
-    // Runtime-only, not persisted: a resumed Complete contact already has a working chain and needs no re-probe.
+    // Chain weave probe — after CLUTCH reaches Complete, both devices auto-exchange one hidden probe chat message each way to prove the ratchet works end-to-end. Once proven, the ceremony proof rebroadcast is cancelled (clutch_proof_resends_left = 0). Runtime-only, not persisted: a resumed Complete contact already has a working chain and needs no re-probe.
     /// The chain has been validated end-to-end (our probe/message got ACKed AND we saw theirs). Gates the status line from "weaving the chain" to "secured" and stops the ceremony rebroadcast.
     pub chain_woven: bool,
     /// We've already sent (or queued) our chain-weave probe for this contact — send it once only.
@@ -311,8 +306,7 @@ impl Contact {
         self
     }
 
-    /// Record the same-LAN address FGTW reported for this device's last announce, alongside the public address from [`with_ip`](Self::with_ip). Lets the offer/KEM send race the LAN path against the WAN path without waiting for LAN multicast discovery (which routers often drop).
-    /// Only IPv4 LAN addresses are stored — `local_ip`/`local_port` are typed for the v4 hairpin case; a v6 local address is left unset and the WAN path carries it.
+    /// Record the same-LAN address FGTW reported for this device's last announce, alongside the public address from [`with_ip`](Self::with_ip). Lets the offer/KEM send race the LAN path against the WAN path without waiting for LAN multicast discovery (which routers often drop). Only IPv4 LAN addresses are stored — `local_ip`/`local_port` are typed for the v4 hairpin case; a v6 local address is left unset and the WAN path carries it.
     pub fn with_local_ip(mut self, local_ip: Option<std::net::IpAddr>, port: u16) -> Self {
         if let Some(std::net::IpAddr::V4(v4)) = local_ip {
             self.local_ip = Some(v4);
@@ -432,8 +426,7 @@ impl Contact {
         !self.clutch_slots.is_empty() && self.clutch_slots.iter().all(|s| s.is_complete())
     }
 
-    /// The eight independent KEM "eggs" a CLUTCH braids, across three security families — a compromise of any one family still leaves the shared secret protected by the others. Named here so the status line can say WHAT is being exchanged, not just "pending".
-    /// 4 elliptic-curve (x25519, P-384, secp256k1, P-256) · 2 lattice (Frodo-976, NTRU-701) · 2 code-based (McEliece-460896, HQC-256).
+    /// The eight independent KEM "eggs" a CLUTCH braids, across three security families — a compromise of any one family still leaves the shared secret protected by the others. Named here so the status line can say WHAT is being exchanged, not just "pending". 4 elliptic-curve (x25519, P-384, secp256k1, P-256) · 2 lattice (Frodo-976, NTRU-701) · 2 code-based (McEliece-460896, HQC-256).
     pub const CLUTCH_EGGS: usize = 8;
 
     /// Total ceremony milestones for a 2-party CLUTCH — the denominator of the status fraction. Keygen, our offer, their offer, our KEM, their KEM, braid, their proof, verify.

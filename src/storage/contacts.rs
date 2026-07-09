@@ -53,8 +53,7 @@ fn contact_key(their_identity_seed: &[u8; 32], domain: &str) -> [u8; 32] {
     crate::storage::vault_key(domain, their_identity_seed)
 }
 
-// ============================================================================
-// Contact List (Index) - Static Identity Data (Schema-validated) ============================================================================
+// ============================================================================ Contact List (Index) - Static Identity Data (Schema-validated) ============================================================================
 
 /// Schema for contact_list section Each contact field contains: (handle_proof: hb, handle: x)
 fn contact_list_schema() -> SectionSchema {
@@ -130,8 +129,7 @@ pub fn load_contact_list(storage: &FlatStorage) -> Result<Vec<ContactIdentity>, 
     Ok(contacts)
 }
 
-// ============================================================================
-// Contact State - Mutable Session Data (Schema-validated) ============================================================================
+// ============================================================================ Contact State - Mutable Session Data (Schema-validated) ============================================================================
 
 /// Schema for contact_state section
 fn contact_state_schema() -> SectionSchema {
@@ -330,8 +328,7 @@ pub fn load_contact_state(
     Ok(contact)
 }
 
-// ============================================================================
-// High-Level API ============================================================================
+// ============================================================================ High-Level API ============================================================================
 
 /// Save a contact (updates both list and state)
 pub fn save_contact(contact: &Contact, storage: &FlatStorage) -> Result<(), StorageError> {
@@ -425,8 +422,7 @@ fn u8_to_trust_level(v: u8) -> TrustLevel {
     }
 }
 
-// ============================================================================
-// CLUTCH Keypairs Storage (~600KB, stored separately) ============================================================================
+// ============================================================================ CLUTCH Keypairs Storage (~600KB, stored separately) ============================================================================
 
 use crate::crypto::clutch::ClutchAllKeypairs;
 
@@ -455,8 +451,7 @@ pub fn delete_clutch_keypairs(
     Ok(())
 }
 
-// ============================================================================
-// CLUTCH Slots Storage (ceremony progress - offers, KEM secrets) ============================================================================
+// ============================================================================ CLUTCH Slots Storage (ceremony progress - offers, KEM secrets) ============================================================================
 
 use crate::types::PartySlot;
 
@@ -496,8 +491,7 @@ pub fn delete_clutch_slots(
     Ok(())
 }
 
-// ============================================================================
-// Message Storage — rārangi conversation rows ============================================================================
+// ============================================================================ Message Storage — rārangi conversation rows ============================================================================
 //
 // Messages are conversation *content*, not contact state, so they live in the rārangi conversation DB rather than as a per-peer blob in the vault. Each conversation is one byte-keyed rārangi table addressed by its `friendship_id` (deterministic from the sorted participant seeds, so the same conversation resolves to the same table on every participant's — and every fleet — device). Each message is one row keyed by a monotonic counter (`Pk::Int(0)`, `1`, `2`, …): a conversation is an ordered sequence delivered in the same order everywhere, so message N is message N on every device, and the catalog gives chronological `list_in` for free.
 
@@ -520,8 +514,7 @@ pub fn save_messages(contact: &Contact, storage: &FlatStorage) -> Result<(), Sto
 
     let mut db = Db::open(storage).map_err(|e| StorageError::Vault(e.to_string()))?;
     for msg in contact.messages.iter() {
-        // Key each row by the message's eagle_time, NOT a local enumerate index. eagle_time is monotonic (a clock) so it's stable + shared across both devices (the renumber-on-insert hazard of an index key is gone), it's the braid's weave reference, and Pk::Int encodes big-endian so key order == chronological. eagle_time is i64 but always positive (oscillations since Apollo 11), so `as u64` is safe and order-preserving.
-        // `content_hash` = blake3 of the message text, stored so the braid's eagle_time->text weave lookup has an integrity/tiebreak check (the adversarial multi-device-same-tick case).
+        // Key each row by the message's eagle_time, NOT a local enumerate index. eagle_time is monotonic (a clock) so it's stable + shared across both devices (the renumber-on-insert hazard of an index key is gone), it's the braid's weave reference, and Pk::Int encodes big-endian so key order == chronological. eagle_time is i64 but always positive (oscillations since Apollo 11), so `as u64` is safe and order-preserving. `content_hash` = blake3 of the message text, stored so the braid's eagle_time->text weave lookup has an integrity/tiebreak check (the adversarial multi-device-same-tick case).
         let content_hash = blake3::hash(msg.content.as_bytes());
         let mut rec = Record::new()
             .set("content", msg.content.clone())
@@ -561,9 +554,7 @@ pub fn load_messages(contact: &mut Contact, storage: &FlatStorage) -> Result<(),
         .list_in(&table)
         .map_err(|e| StorageError::Vault(e.to_string()))?;
 
-    // Sort keys numerically — the catalog yields INSERTION order, which matched chronological order
-    // only while rows were appended live. History recovery inserts OLDER rows later, so trusting
-    // insertion order would interleave the conversation. Key = eagle_time, so numeric sort = time sort.
+    // Sort keys numerically — the catalog yields INSERTION order, which matched chronological order only while rows were appended live. History recovery inserts OLDER rows later, so trusting insertion order would interleave the conversation. Key = eagle_time, so numeric sort = time sort.
     let mut keys: Vec<u64> = pks
         .into_iter()
         .filter_map(|pk| match pk {
@@ -608,9 +599,7 @@ pub fn load_messages(contact: &mut Contact, storage: &FlatStorage) -> Result<(),
     Ok(())
 }
 
-/// Persist ONLY the given rows into the conversation table (same field layout as [`save_messages`]).
-/// History recovery lands pages of ~50 rows at a time — rewriting the whole conversation per page
-/// would be O(n) per page; this is O(page).
+/// Persist ONLY the given rows into the conversation table (same field layout as [`save_messages`]). History recovery lands pages of ~50 rows at a time — rewriting the whole conversation per page would be O(n) per page; this is O(page).
 pub fn save_messages_page(
     their_identity_seed: &[u8; 32],
     msgs: &[ChatMessage],
@@ -641,10 +630,7 @@ pub fn save_messages_page(
     Ok(())
 }
 
-/// Serve one newest-first history page: the newest `max_rows` rows strictly OLDER than `before_osc`
-/// (pass `i64::MAX` for the head page), bounded by `max_bytes` of summed content. Returns the rows in
-/// ascending time order plus `more` = whether older rows remain below the returned page. The catalog
-/// scan is O(n) in conversation size — fine to ~10⁵ rows; a rārangi range index is a later optimization.
+/// Serve one newest-first history page: the newest `max_rows` rows strictly OLDER than `before_osc` (pass `i64::MAX` for the head page), bounded by `max_bytes` of summed content. Returns the rows in ascending time order plus `more` = whether older rows remain below the returned page. The catalog scan is O(n) in conversation size — fine to ~10⁵ rows; a rārangi range index is a later optimization.
 pub fn load_message_page_before(
     their_identity_seed: &[u8; 32],
     before_osc: i64,
@@ -837,9 +823,7 @@ mod tests {
         }
     }
 
-    /// Newest-first cursor pagination over a real vault: head page = the newest rows, the cursor walk
-    /// visits everything exactly once, terminates with more=false — and `load_messages` returns
-    /// time-sorted output even though recovery inserts OLDER rows into the catalog LATER.
+    /// Newest-first cursor pagination over a real vault: head page = the newest rows, the cursor walk visits everything exactly once, terminates with more=false — and `load_messages` returns time-sorted output even though recovery inserts OLDER rows into the catalog LATER.
     #[test]
     fn history_pagination_walk_and_load_sort() {
         use crate::types::HandleText;
@@ -851,8 +835,7 @@ mod tests {
 
         let storage = FlatStorage::new(app, vault_seed, device_secret).unwrap();
 
-        // Write 120 rows OUT OF CHRONOLOGICAL ORDER (newest batch first — the recovery insertion
-        // pattern), timestamps 1..=120.
+        // Write 120 rows OUT OF CHRONOLOGICAL ORDER (newest batch first — the recovery insertion pattern), timestamps 1..=120.
         let make = |t: i64| ChatMessage {
             content: format!("msg {t}"),
             timestamp: t,
@@ -895,8 +878,7 @@ mod tests {
         assert!(small.len() < 50 && !small.is_empty());
         assert!(small_more);
 
-        // load_messages: full conversation, time-sorted despite out-of-order catalog insertion,
-        // with the recovered flag intact on the older half.
+        // load_messages: full conversation, time-sorted despite out-of-order catalog insertion, with the recovered flag intact on the older half.
         let mut contact = Contact::new(
             HandleText::new("paging-peer"),
             [9u8; 32],

@@ -59,9 +59,7 @@ const SEARCH_FAIL_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_E0_40_
 const HOURGLASS_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_FF_A5_00));
 /// Send-button arrowhead glyph — light grey, α+darkness format for under-blend (matches the intent of theme::BUTTON_TEXT, which is legacy visible-RGB and not usable on this canvas).
 const SEND_ARROW_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_D0_D0_D0));
-/// Hover fill for the send / plus action buttons — a SUBTLE neutral brightening of BUTTON_FILL
-/// (0x1A224E), reproducing the pre-fluor QUERY_BUTTON_HOVER feel rather than the shared BUTTON_HOVER's
-/// saturated-blue shift. A small delta also keeps the overlay from cooking the near-white arrowhead.
+/// Hover fill for the send / plus action buttons — a SUBTLE neutral brightening of BUTTON_FILL (0x1A224E), reproducing the pre-fluor QUERY_BUTTON_HOVER feel rather than the shared BUTTON_HOVER's saturated-blue shift. A small delta also keeps the overlay from cooking the near-white arrowhead.
 const SEND_BUTTON_HOVER: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_25_2D_59));
 /// Grey placeholder circle for contacts/avatars without a loaded image.
 const AVATAR_PLACEHOLDER: u32 = 0xFF_C5_C5_C5;
@@ -106,7 +104,7 @@ fn posture_colour(filled: usize) -> u32 {
 }
 
 /// Security and Recovery posture for the current identity — each a count of filled pips out of [`POSTURE_PIPS`]. Two orthogonal axes, surfaced on the Ready-screen bottom strip: * Security — how hard it is for an attacker to steal or forge this identity. Bounded by the device root. Today every platform derives `device_secret` from a *readable* fingerprint (Linux machine-id, Windows MachineGuid, macOS IOPlatformUUID), so same-privilege code can lift it: 1 pip everywhere. A root-gated firmware fact would be 2; a hardware enclave or PIPE, 3.
-///   * Recovery — how hard it is for the *owner* to lose this identity for good. For a single device it is whether the root survives a factory reset: macOS's IOPlatformUUID is firmware and re-derives after a wipe (2); Linux machine-id, Windows MachineGuid and Android's ANDROID_ID are software / reset-volatile (1). Device redundancy (Mirrored), a durable anchor (desktop/PIPE) and social vouching raise this toward 3.
+/// * Recovery — how hard it is for the *owner* to lose this identity for good. For a single device it is whether the root survives a factory reset: macOS's IOPlatformUUID is firmware and re-derives after a wipe (2); Linux machine-id, Windows MachineGuid and Android's ANDROID_ID are software / reset-volatile (1). Device redundancy (Mirrored), a durable anchor (desktop/PIPE) and social vouching raise this toward 3.
 ///
 /// This is the single seam multi-device, vouching and PIPE plug into: they change what this returns and nothing else.
 fn identity_posture() -> (usize, usize) {
@@ -191,10 +189,7 @@ fn draw_hourglass(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, angle_deg: f
     }
 }
 
-/// Draw an upward-pointing arrowhead (a filled 4-vertex chevron) centred at (cx, cy), sized to a `size`×`size` box — the send-button glyph, painted OVER the already-drawn pill (the window-controls pattern: fill the button first, draw the symbol after).
-/// The four vertices: apex (top centre), right wing tip, bottom notch (centre, pulled up so it reads as a chevron with thickness, not a solid triangle), left wing tip.
-/// `colour` is α+darkness packed. Composites via source-over onto the existing (opaque pill) pixel, writing the result OPAQUE — so it CAN'T be an under() write (that would be discarded on the opaque pill). Crucially it does NOT touch the hit map: the pill already stamped the full silhouette, so the hover overlay (which wrap-adds a FILL-calibrated delta onto every hit-id pixel) tints only the pill, never the near-white glyph. Stamping the glyph's hit id here cooked the hover — don't.
-/// Coverage feathers the 1px boundary against the actual pill colour; `colour`'s α scales the glyph.
+/// Draw an upward-pointing arrowhead (a filled 4-vertex chevron) centred at (cx, cy), sized to a `size`×`size` box — the send-button glyph, painted OVER the already-drawn pill (the window-controls pattern: fill the button first, draw the symbol after). The four vertices: apex (top centre), right wing tip, bottom notch (centre, pulled up so it reads as a chevron with thickness, not a solid triangle), left wing tip. `colour` is α+darkness packed. Composites via source-over onto the existing (opaque pill) pixel, writing the result OPAQUE — so it CAN'T be an under() write (that would be discarded on the opaque pill). Crucially it does NOT touch the hit map: the pill already stamped the full silhouette, so the hover overlay (which wrap-adds a FILL-calibrated delta onto every hit-id pixel) tints only the pill, never the near-white glyph. Stamping the glyph's hit id here cooked the hover — don't. Coverage feathers the 1px boundary against the actual pill colour; `colour`'s α scales the glyph.
 fn draw_up_arrowhead(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, colour: u32) {
     // Geometry as fractions of the box: apex up top, wings at the bottom corners, notch pulled up so the shape is a chevron (^) with visible thickness.
     let half_w = size * 0.42;
@@ -280,10 +275,7 @@ fn draw_up_arrowhead(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, colour: u
             }
             let idx = row + px;
             let dst = canvas.pixels[idx];
-            // Source-over the glyph darkness onto the pill pixel, keeping the pill's opacity. Feathers the
-            // AA edge against the ACTUAL pill colour (any hover/active state) — no halo. Does NOT touch the
-            // hit map: the pill's silhouette stamp already covers here, so the hover overlay tints only the
-            // pill, never this near-white glyph.
+            // Source-over the glyph darkness onto the pill pixel, keeping the pill's opacity. Feathers the AA edge against the ACTUAL pill colour (any hover/active state) — no halo. Does NOT touch the hit map: the pill's silhouette stamp already covers here, so the hover overlay tints only the pill, never this near-white glyph.
             let (dr, dg, db) = (
                 ((dst >> 16) & 0xFF) as f32,
                 ((dst >> 8) & 0xFF) as f32,
@@ -312,8 +304,7 @@ const PRESENCE_IDLE_NEAR: std::time::Duration = std::time::Duration::from_secs(3
 /// Idle past this → drop from idle (1min) to deep-idle (15min).
 const PRESENCE_IDLE_FAR: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
-/// One deterministic aesthetic channel in `[0, 1]` from a relationship digest: `blake3(name ‖ digest)`, first 8 bytes as u64, divided by `u64::MAX`.
-/// Same convention as chirp's `channel_unit` (the chime derivation) — duplicated here rather than imported because chirp is desktop-gated and colour must build on every target. Keep the two in lockstep.
+/// One deterministic aesthetic channel in `[0, 1]` from a relationship digest: `blake3(name ‖ digest)`, first 8 bytes as u64, divided by `u64::MAX`. Same convention as chirp's `channel_unit` (the chime derivation) — duplicated here rather than imported because chirp is desktop-gated and colour must build on every target. Keep the two in lockstep.
 fn aesthetic_channel_unit(name: &str, digest: &[u8; 32]) -> f32 {
     let mut h = blake3::Hasher::new();
     h.update(name.as_bytes());
@@ -323,8 +314,7 @@ fn aesthetic_channel_unit(name: &str, digest: &[u8; 32]) -> f32 {
     (u64::from_le_bytes(out) as f64 / u64::MAX as f64) as f32
 }
 
-/// The relationship digest for party `p` as seen alongside `other`: `spaghettify(p ‖ other)`.
-/// One derivation feeds ears and eyes: the chime uses (sender ‖ receiver), colours use (party ‖ other) — both devices agree on a party's colour within a conversation, and nothing links a party across conversations.
+/// The relationship digest for party `p` as seen alongside `other`: `spaghettify(p ‖ other)`. One derivation feeds ears and eyes: the chime uses (sender ‖ receiver), colours use (party ‖ other) — both devices agree on a party's colour within a conversation, and nothing links a party across conversations.
 fn relationship_digest(p: &[u8; 32], other: &[u8; 32]) -> [u8; 32] {
     let mut input = [0u8; 64];
     input[..32].copy_from_slice(p);
@@ -354,9 +344,7 @@ fn self_colour() -> u32 {
 
 /// Deterministic per-party text colour: an iso-luminance hue ray in linear VSF RGB, fed by the relationship digest (`spaghettify(party ‖ other)` — the same digest family as the chime, so ears and eyes derive from one relationship identity).
 ///
-/// Brightness is locked at photopic Y = 0.5 LINEAR via the spectral pipeline (Stockman & Sharpe 2000 10° cone fundamentals, LMS2PHOTOPIC): photopic Y is linear in linear RGB, so the legal colours form a plane slicing the gamut cube thru grey (0.5, 0.5, 0.5).
-/// "colour hue" picks a direction in that plane (⊥ the luminance gradient), "colour chroma" (√-biased toward saturated) walks from grey toward the wall.
-/// The walk is clipped against BOTH the VSF RGB cube and the preimage of the linear sRGB cube, so the displayed colour is never gamut-clipped — the 50% promise holds on the actual screen. Returns fluor stored α+darkness.
+/// Brightness is locked at photopic Y = 0.5 LINEAR via the spectral pipeline (Stockman & Sharpe 2000 10° cone fundamentals, LMS2PHOTOPIC): photopic Y is linear in linear RGB, so the legal colours form a plane slicing the gamut cube thru grey (0.5, 0.5, 0.5). "colour hue" picks a direction in that plane (⊥ the luminance gradient), "colour chroma" (√-biased toward saturated) walks from grey toward the wall. The walk is clipped against BOTH the VSF RGB cube and the preimage of the linear sRGB cube, so the displayed colour is never gamut-clipped — the 50% promise holds on the actual screen. Returns fluor stored α+darkness.
 fn party_colour(digest: &[u8; 32]) -> u32 {
     use vsf::colour::convert::vsf_rgb_to_photopic_f32;
     use vsf::colour::VSF_RGB2SRGB;
@@ -532,8 +520,7 @@ pub struct PhotonApp {
     avatar_dl_rx: std::sync::mpsc::Receiver<crate::ui::avatar::AvatarDownloadResult>,
     /// Handles we've already kicked an avatar download for this session, so we don't re-spawn a fetch every time a conversation is reopened or the contact list re-renders.
     avatar_dl_started: std::collections::HashSet<String>,
-    /// Mutual peers we've sent a direct P2P AvatarRequest to, mapped to the eagle-time we sent it.
-    /// The per-tick sweep asks each mutual peer once, then — if no AvatarResponse has installed an avatar within `AVATAR_P2P_FALLBACK_OSC` — falls back to FGTW. So a friend's avatar comes from the friend first, and FGTW only covers the case where the friend is offline or avatar-less.
+    /// Mutual peers we've sent a direct P2P AvatarRequest to, mapped to the eagle-time we sent it. The per-tick sweep asks each mutual peer once, then — if no AvatarResponse has installed an avatar within `AVATAR_P2P_FALLBACK_OSC` — falls back to FGTW. So a friend's avatar comes from the friend first, and FGTW only covers the case where the friend is offline or avatar-less.
     avatar_req_pending: std::collections::HashMap<[u8; 32], i64>,
     /// History-serve rate limiting, keyed by conversation_token: (last-served eagle-time, recent request ids). Dedups replayed hist_req frames (the redundant alt-path copy arrives ~always) and caps the serve cadence per conversation.
     history_serve: std::collections::HashMap<[u8; 32], (i64, std::collections::VecDeque<[u8; 32]>)>,
@@ -567,8 +554,7 @@ pub struct PhotonApp {
     /// nunc-time clock sanity check: result channel + drain. The worker (one-shot, off-thread) posts the consensus-vs-system offset here; `drain_clock_check` reads it and updates `clock_off`.
     clock_check_tx: std::sync::mpsc::Sender<crate::network::ClockCheckResult>,
     clock_check_rx: std::sync::mpsc::Receiver<crate::network::ClockCheckResult>,
-    /// `Some(offset_secs)` when the last consensus said the system clock is off by more than the threshold (consensus − system; positive = system behind). Drives the amber "clock off" banner.
-    /// Tracks the LATEST verdict, not sticky — a corrected clock clears it on the next clean check.
+    /// `Some(offset_secs)` when the last consensus said the system clock is off by more than the threshold (consensus − system; positive = system behind). Drives the amber "clock off" banner. Tracks the LATEST verdict, not sticky — a corrected clock clears it on the next clean check.
     clock_off: Option<i64>,
     /// Watches the wall clock against the monotonic clock; a gross unexplained jump (NTP step, long sleep, or an adversary moving the clock after boot) triggers a fresh consensus re-check.
     clock_jump: crate::network::ClockJumpDetector,
@@ -957,8 +943,7 @@ impl Default for PhotonApp {
 impl Container for PhotonApp {
     fn visit(&mut self, f: &mut dyn FnMut(&mut dyn Widget)) {
         if matches!(self.state, AppState::Launch(_)) {
-            // The attest button is only part of the tree when there's a handle to attest — same reveal as the render gate. An empty field yields just the textbox, so Tab can't land focus on a button that isn't drawn and a hit-test can't dispatch to it.
-            // Join words phase (new device displaying its pairing words): no input widgets at all — the screen is display-only until bound or cancelled.
+            // The attest button is only part of the tree when there's a handle to attest — same reveal as the render gate. An empty field yields just the textbox, so Tab can't land focus on a button that isn't drawn and a hit-test can't dispatch to it. Join words phase (new device displaying its pairing words): no input widgets at all — the screen is display-only until bound or cancelled.
             let join_words_up = self.launch_add_mode && self.add_join_words.is_some();
             let handle_entered = self
                 .textbox
@@ -1102,8 +1087,7 @@ impl FluorApp for PhotonApp {
         db.load_font_data(include_bytes!("../../assets/Oxanium/Oxanium-Bold.ttf").to_vec());
         db.load_font_data(include_bytes!("../../assets/Oxanium/Oxanium-ExtraBold.ttf").to_vec());
 
-        // Chrome owns its own hit-test map sized to the viewport, allocates four hit-ids for its buttons via the threaded counter, and stamps the perimeter + button rasters in `rasterize_chrome`. The Photon orb (chromatic starburst — same brand mark as the OS-level app icon) ships as a VSF image and decodes into the chrome's app_icon slot.
-        // Decode the bundled orb (the Photon brand mark, and the app_icon slot that swaps to a peer's avatar in a conversation). A decode failure logs LOUDLY instead of silently falling back to a plain coloured disk — a stale asset against a bumped vsf format is exactly how a blank orb shipped unnoticed, so make the next one scream rather than degrade in silence.
+        // Chrome owns its own hit-test map sized to the viewport, allocates four hit-ids for its buttons via the threaded counter, and stamps the perimeter + button rasters in `rasterize_chrome`. The Photon orb (chromatic starburst — same brand mark as the OS-level app icon) ships as a VSF image and decodes into the chrome's app_icon slot. Decode the bundled orb (the Photon brand mark, and the app_icon slot that swaps to a peer's avatar in a conversation). A decode failure logs LOUDLY instead of silently falling back to a plain coloured disk — a stale asset against a bumped vsf format is exactly how a blank orb shipped unnoticed, so make the next one scream rather than degrade in silence.
         let orb_icon = match fluor::host::icon::Icon::from_vsf_bytes(include_bytes!(
             "../../assets/photon-orb.vsf"
         )) {
@@ -1148,11 +1132,9 @@ impl FluorApp for PhotonApp {
         self.contacts_plus_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., "+"));
         // Conversation compose box — placeholder geometry; positioned each frame via `update_widget_layout`.
         self.message_textbox = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
-        // Send button overlaid in the compose box. ASCII ">" (not "→" U+2192 — absent from the Android font, so it rendered blank there; the contacts "+" button proves ASCII renders). Geometry set each frame in `update_widget_layout`.
-        // Empty label — the glyph is a drawn 4-vertex up arrowhead (draw_up_arrowhead), not text.
+        // Send button overlaid in the compose box. ASCII ">" (not "→" U+2192 — absent from the Android font, so it rendered blank there; the contacts "+" button proves ASCII renders). Geometry set each frame in `update_widget_layout`. Empty label — the glyph is a drawn 4-vertex up arrowhead (draw_up_arrowhead), not text.
         self.message_send_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., ""));
-        // Specific subtle hover for the two overlay-in-textbox action buttons (pre-fluor per-control
-        // hover colours), instead of the generic saturated BUTTON_HOVER.
+        // Specific subtle hover for the two overlay-in-textbox action buttons (pre-fluor per-control hover colours), instead of the generic saturated BUTTON_HOVER.
         if let Some(b) = self.contacts_plus_btn.as_mut() {
             b.set_hover_fill(Some(SEND_BUTTON_HOVER));
         }
@@ -1323,8 +1305,7 @@ impl FluorApp for PhotonApp {
 
         self.handle_query = Some(hq);
 
-        // Auto-resume from the remembered session roots. If tohu has this login's roots (persisted on a prior, FGTW-confirmed attest), paint Ready IMMEDIATELY from local state — we already own this identity, so there is no reason to block the first frame on the network. The avatar comes from a local cache file (no vault, no network); contacts + peer presence + cloud-merge arrive a beat later via the background `query_resume` and merge in through `on_query_result`. A rejection (handle claimed by another device) bails back to the attest screen; a transient network error leaves the local session on Ready untouched.
-        // None (first run / post-logout) falls through to the normal typed-attest flow.
+        // Auto-resume from the remembered session roots. If tohu has this login's roots (persisted on a prior, FGTW-confirmed attest), paint Ready IMMEDIATELY from local state — we already own this identity, so there is no reason to block the first frame on the network. The avatar comes from a local cache file (no vault, no network); contacts + peer presence + cloud-merge arrive a beat later via the background `query_resume` and merge in through `on_query_result`. A rejection (handle claimed by another device) bails back to the attest screen; a transient network error leaves the local session on Ready untouched. None (first run / post-logout) falls through to the normal typed-attest flow.
         if let Some(remembered) = tohu::session() {
             self.session = Some(remembered);
             self.hints_dismissed = false; // fresh Ready entry → the avatar prompt gets a chance until first interaction
@@ -1368,8 +1349,7 @@ impl FluorApp for PhotonApp {
                         // Wake-up catch-up: re-fold each contact's fleet so a friend's device added while we were off is honoured now, not next launch.
                         let hps: Vec<[u8; 32]> = self.contacts.iter().map(|c| c.handle_proof).collect();
                         self.spawn_contact_fleet_refresh(hps);
-                        // Rehydrate each contact's saved ephemeral keypairs from disk (~588KB each).
-                        // load_contact_state deliberately doesn't pull these (they're huge and live in a separate vault key), so without this every resume re-runs the McEliece-heavy keygen below — which is what froze the UI on launch. Loading the persisted keypairs makes the re-key filter a no-op for contacts that already have them, so keygen only fires for genuinely keyless Pending ones.
+                        // Rehydrate each contact's saved ephemeral keypairs from disk (~588KB each). load_contact_state deliberately doesn't pull these (they're huge and live in a separate vault key), so without this every resume re-runs the McEliece-heavy keygen below — which is what froze the UI on launch. Loading the persisted keypairs makes the re-key filter a no-op for contacts that already have them, so keygen only fires for genuinely keyless Pending ones.
                         for contact in self.contacts.iter_mut() {
                             if contact.clutch_our_keypairs.is_none() {
                                 match crate::storage::contacts::load_clutch_keypairs(
@@ -2101,7 +2081,7 @@ impl FluorApp for PhotonApp {
 
     fn wake_at(&self) -> Option<Instant> {
         // Schedule the next wakeup at the soonest of: * `blink_timer.next_tick()` — drives the focused-textbox cursor pulse (random 0-300ms intervals); `None` while no textbox is focused.
-        //   * `now` when an attestation is in flight — `tick()` advances `attest_anim_phase` at 1 cycle/sec for the "query in flight" wave shift; we need a wakeup every frame to keep it animating smoothly. Without this, the host blocks waiting for input and the animation stalls.
+        // * `now` when an attestation is in flight — `tick()` advances `attest_anim_phase` at 1 cycle/sec for the "query in flight" wave shift; we need a wakeup every frame to keep it animating smoothly. Without this, the host blocks waiting for input and the animation stalls.
         let blink = self.blink_timer.next_tick();
         // An attestation OR an in-flight add-friend search both need a wakeup every frame to animate (the spectrum wave / the hourglass wobble).
         let animating = matches!(
@@ -2155,8 +2135,7 @@ impl FluorApp for PhotonApp {
             needs_redraw = true;
         }
 
-        // Drive the blinkey on the focused textbox. `BlinkTimer::poll(now)` returns `true` ONLY on the rising edge of each fire (then schedules the next random 0-300ms interval and returns false the rest of the time). On each fire, toggle the focused textbox's blinkey via `flip_blinkey` — which is a no-op on an unfocused textbox, so we can call it on every textbox without gating.
-        // Tracked SEPARATELY from `needs_redraw`: a blinkey flip is fully covered by the textbox's own `damage_rect`, so a pure-blink frame must not raise `scene_dirty` — that's what keeps the idle repaint a teeny cursor-sized rect instead of the whole window.
+        // Drive the blinkey on the focused textbox. `BlinkTimer::poll(now)` returns `true` ONLY on the rising edge of each fire (then schedules the next random 0-300ms interval and returns false the rest of the time). On each fire, toggle the focused textbox's blinkey via `flip_blinkey` — which is a no-op on an unfocused textbox, so we can call it on every textbox without gating. Tracked SEPARATELY from `needs_redraw`: a blinkey flip is fully covered by the textbox's own `damage_rect`, so a pure-blink frame must not raise `scene_dirty` — that's what keeps the idle repaint a teeny cursor-sized rect instead of the whole window.
         let mut blink_redraw = false;
         if self.blink_timer.poll(now) {
             for (_, tb) in self.textboxes_mut() {
@@ -2280,8 +2259,7 @@ impl FluorApp for PhotonApp {
             "\u{2039} Network".to_string()
         };
 
-        // Clamp the contacts block scroll and refresh the contacts widget layout BEFORE taking the long-lived `chrome` borrow. The whole user section (avatar, hint, search box, separator) now scrolls with the contact rows as one block, and the search box / plus button rects are positioned in `update_widget_layout` off `contacts_scroll`; doing this here (rather than inside the borrowed render block, which can't call `&mut self`) keeps the box, the avatar, and the rows all reading the SAME clamped offset within a frame — no one-frame mismatch at the over-scroll boundary. The formula matches the in-block geometry exactly: `max_scroll = (rows.y0 + matching·row_h) − buf_h`, hard-stopped at 0.
-        // Scrolled Y for the Ready-screen version watermark (rides the scroll block); `None` on other screens, where the version uses its pinned `version_cy`.
+        // Clamp the contacts block scroll and refresh the contacts widget layout BEFORE taking the long-lived `chrome` borrow. The whole user section (avatar, hint, search box, separator) now scrolls with the contact rows as one block, and the search box / plus button rects are positioned in `update_widget_layout` off `contacts_scroll`; doing this here (rather than inside the borrowed render block, which can't call `&mut self`) keeps the box, the avatar, and the rows all reading the SAME clamped offset within a frame — no one-frame mismatch at the over-scroll boundary. The formula matches the in-block geometry exactly: `max_scroll = (rows.y0 + matching·row_h) − buf_h`, hard-stopped at 0. Scrolled Y for the Ready-screen version watermark (rides the scroll block); `None` on other screens, where the version uses its pinned `version_cy`.
         let mut ready_block_version_y: Option<f32> = None;
         if matches!(self.state, AppState::Ready) {
             let rl = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru);
@@ -2327,7 +2305,7 @@ impl FluorApp for PhotonApp {
                                // Launch layout: faithful proportional slicing port from legacy `Layout::new` — spectrum near the top, logo wordmark overlapping its bottom, attest block (textbox + hint + button) below. Compute every frame; cheap and lets resize flow thru without a separate cache.
         let layout = LaunchLayout::compute(buf_w, buf_h, ctx.viewport.ru);
         // Chromatic wave phase has two summands: * Scroll-driven base (`bg_scroll * 1/128 rad/scroll-unit`) — one wheel-notch ≈ 8 units → ~1/16 rad shift; user-tunable by changing the shift exponent.
-        //   * `attest_anim_phase` (advanced in `tick()` while `LaunchState::Attesting`) — the "query in flight" cue, 1 cycle/sec.
+        // * `attest_anim_phase` (advanced in `tick()` while `LaunchState::Attesting`) — the "query in flight" cue, 1 cycle/sec.
         // Summing them means the wave responds to BOTH inputs simultaneously: a user scrolling during an attestation still nudges the phase on top of the animation.
         let phase = bg_scroll as f32 * (1. / ((1 << 7) as f32)) + self.attest_anim_phase;
         let period_scale = 1.;
@@ -2403,10 +2381,7 @@ impl FluorApp for PhotonApp {
                 );
             }
             paint::background_noise(canvas, shimmer, bg_fullscreen, scroll_offset, None, bg_base);
-            // Wave then logo — RMW ops that read the now-opaque noise beneath as their base. The
-            // chromatic wave quadrature-blends with the bg colour (sqrt-linear-light) so it MUST follow
-            // the noise; the logo composites over the wave/noise. (Watermarks above went before the
-            // noise so it composes under them.)
+            // Wave then logo — RMW ops that read the now-opaque noise beneath as their base. The chromatic wave quadrature-blends with the bg colour (sqrt-linear-light) so it MUST follow the noise; the logo composites over the wave/noise. (Watermarks above went before the noise so it composes under them.)
             if on_launch {
                 chromatic_wave(canvas, spectrum_rect, phase, period_scale);
                 paint_photon_logo(canvas, text, logo_rect);
@@ -2590,8 +2565,7 @@ impl FluorApp for PhotonApp {
                     .map(|tb| Some(tb.hit_id()) == self.focused)
                     .unwrap_or(false);
 
-                // Dormant infinity centred IN the handle textbox — it sits where the typed handle will appear, a half-brightness grey placeholder for the resting field, shown only while the field is empty AND unfocused. Painted BEFORE the textbox: fluor's under-blend is "topmost paints first; later opaque dst wins", so the glyph must precede the textbox's empty-pill fill to survive (same ordering the contacts plus-button uses). The instant the user focuses (cursor in) or a character lands, the gate goes false and the textbox owns the slot alone.
-                // Anchor and size come straight off the textbox (`center_x/center_y/font_size`), so the glyph lands pixel-identical to where a typed character would — the textbox draws its own glyphs via `draw_text_center_u32` at the same anchor, so matching it here keeps the ∞ from sitting high or scaling differently.
+                // Dormant infinity centred IN the handle textbox — it sits where the typed handle will appear, a half-brightness grey placeholder for the resting field, shown only while the field is empty AND unfocused. Painted BEFORE the textbox: fluor's under-blend is "topmost paints first; later opaque dst wins", so the glyph must precede the textbox's empty-pill fill to survive (same ordering the contacts plus-button uses). The instant the user focuses (cursor in) or a character lands, the gate goes false and the textbox owns the slot alone. Anchor and size come straight off the textbox (`center_x/center_y/font_size`), so the glyph lands pixel-identical to where a typed character would — the textbox draws its own glyphs via `draw_text_center_u32` at the same anchor, so matching it here keeps the ∞ from sitting high or scaling differently.
                 if !handle_entered && !textbox_active {
                     if let Some(tb) = self.textbox.as_ref() {
                         // ∞ ink sits ~1-2px high because `draw_text_center_u32` centres on the line box (ascent+descent), and a math symbol's ink rides the math axis, slightly above where baseline-seated text reads as centred. Nudge the y anchor down by font_size/32 (≈1-2px here, scales with zoom) to seat the glyph at the pill's visual centre.
@@ -2726,9 +2700,7 @@ impl FluorApp for PhotonApp {
 
             // Contacts-page textbox + plus button. The plus button is OVERLAID inside the textbox right edge and ONLY rendered when the textbox has content — empty textbox shows no button. While an add-friend search is in flight, a rotating hourglass replaces the button (and the button is not hit-stampable, so it can't be re-clicked mid-search).
             //
-            // Under-blend is topmost-FIRST (first opaque writer wins colour AND its per-pixel hit stamp).
-            // Paint the button/hourglass BEFORE the textbox: the button claims its exact pill silhouette in the framebuffer and hit map, and the textbox drawn under it can't overwrite either (its own stamp is per-opaque-pixel too).
-            // No hit re-stamp — the draw yields the correct pill-shaped hit area on its own.
+            // Under-blend is topmost-FIRST (first opaque writer wins colour AND its per-pixel hit stamp). Paint the button/hourglass BEFORE the textbox: the button claims its exact pill silhouette in the framebuffer and hit map, and the textbox drawn under it can't overwrite either (its own stamp is per-opaque-pixel too). No hit re-stamp — the draw yields the correct pill-shaped hit area on its own.
             let plus_visible = self
                 .contacts_textbox
                 .as_ref()
@@ -2801,8 +2773,7 @@ impl FluorApp for PhotonApp {
                     id,
                 );
             }
-            // Re-win the plus button's hit silhouette after the search textbox clobbered it (only when
-            // the button actually rendered — not during the in-flight hourglass, which isn't clickable).
+            // Re-win the plus button's hit silhouette after the search textbox clobbered it (only when the button actually rendered — not during the in-flight hourglass, which isn't clickable).
             if !self.add_in_flight && plus_visible {
                 if let Some(btn) = self.contacts_plus_btn.as_ref() {
                     btn.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, btn.hit_id());
@@ -3313,8 +3284,7 @@ impl FluorApp for PhotonApp {
                                 Some(list_clip),
                                 None,
                             );
-                            // Dim outgoing until delivered; incoming always full.
-                            // Self-as-contact: every message is ours (there is no other party), so everything sits on the right in the neutral grey — their_colour is already the anchor in that case, and the loopback "incoming" copy renders like a delivered outgoing.
+                            // Dim outgoing until delivered; incoming always full. Self-as-contact: every message is ours (there is no other party), so everything sits on the right in the neutral grey — their_colour is already the anchor in that case, and the loopback "incoming" copy renders like a delivered outgoing.
                             let colour = if msg.is_outgoing {
                                 if msg.delivered {
                                     our_colour
@@ -3386,12 +3356,7 @@ impl FluorApp for PhotonApp {
                                     None,
                                 );
                             }
-                            // Send button COLOUR first (its under() blit lands on the noise), then the
-                            // arrowhead over the pill (source-over). The textbox draws after — it sits
-                            // over the button and clobbers the button's hit stamp with its own id — so we
-                            // re-stamp the button's TRUE pill silhouette (fill + stroke, which also covers
-                            // the arrowhead) AFTER the textbox, as the last writer. That's the whole click
-                            // + hover region: shape-accurate, not a bbox rectangle.
+                            // Send button COLOUR first (its under() blit lands on the noise), then the arrowhead over the pill (source-over). The textbox draws after — it sits over the button and clobbers the button's hit stamp with its own id — so we re-stamp the button's TRUE pill silhouette (fill + stroke, which also covers the arrowhead) AFTER the textbox, as the last writer. That's the whole click + hover region: shape-accurate, not a bbox rectangle.
                             if let Some(btn) = self.message_send_btn.as_mut() {
                                 let id = btn.hit_id();
                                 btn.render_content_into(
@@ -3597,8 +3562,7 @@ impl FluorApp for PhotonApp {
 
             // --- Selected page body ---
             let body = layout.content_body();
-            // Fold the zoom factor (ru) into fonts + element sizes so they scale with Ctrl/Cmd-zoom, matching the launch screen (which sizes off effective_span = span × ru; bare region sizes ignore zoom).
-            // The region divisions stay physical / window-proportional and fixed, as they should; at ru = 1 this is identical to the region-derived sizes.
+            // Fold the zoom factor (ru) into fonts + element sizes so they scale with Ctrl/Cmd-zoom, matching the launch screen (which sizes off effective_span = span × ru; bare region sizes ignore zoom). The region divisions stay physical / window-proportional and fixed, as they should; at ru = 1 this is identical to the region-derived sizes.
             let ru = ctx.viewport.ru;
             let tspan = body.size(22.0).max(8.0) * ru;
             let hspan2 = tspan * 0.75;
@@ -3796,8 +3760,7 @@ impl PhotonApp {
     pub fn advance_protocol(&mut self, now: Instant) -> bool {
         let mut needs_redraw = false;
 
-        // Recurring background presence sweep — re-ping every contact so online/offline rings stay live. The interval tapers with idle time (5s active → 1min idle → 15min deep-idle) so an untouched window isn't hammering the network.
-        // Runs on Ready AND in a Conversation — CRITICAL: presence is symmetric only if both sides keep pinging, and the person you most need a live status for is the one you're actively chatting with. Gating this to Ready meant opening a conversation stopped your pings, so your view of that contact went stale — and if both people opened the chat with each other, NEITHER pinged and both showed offline (observed: peer-B on Ready saw a peer online, a peer in the conversation saw peer-B offline). `wake_at()` schedules the next sweep so this fires even while otherwise idle.
+        // Recurring background presence sweep — re-ping every contact so online/offline rings stay live. The interval tapers with idle time (5s active → 1min idle → 15min deep-idle) so an untouched window isn't hammering the network. Runs on Ready AND in a Conversation — CRITICAL: presence is symmetric only if both sides keep pinging, and the person you most need a live status for is the one you're actively chatting with. Gating this to Ready meant opening a conversation stopped your pings, so your view of that contact went stale — and if both people opened the chat with each other, NEITHER pinged and both showed offline (observed: peer-B on Ready saw a peer online, a peer in the conversation saw peer-B offline). `wake_at()` schedules the next sweep so this fires even while otherwise idle.
         if matches!(self.state, AppState::Ready | AppState::Conversation) {
             let interval = self.presence_ping_interval(now);
             let due = self
@@ -3809,8 +3772,7 @@ impl PhotonApp {
             }
         }
 
-        // Drain per-contact presence + CLUTCH ceremony updates (pongs → is_online/ip; offers/KEM/complete → ceremony progress), plus the three background-job result channels (keygen / KEM-encap / ceremony-expand).
-        // TEMP instrumentation: log any tick phase that blocks the UI thread > 50ms so the launch hang is pinpointed in the trace rather than guessed at. Remove once the hang source is fixed.
+        // Drain per-contact presence + CLUTCH ceremony updates (pongs → is_online/ip; offers/KEM/complete → ceremony progress), plus the three background-job result channels (keygen / KEM-encap / ceremony-expand). TEMP instrumentation: log any tick phase that blocks the UI thread > 50ms so the launch hang is pinpointed in the trace rather than guessed at. Remove once the hang source is fixed.
         macro_rules! timed {
             ($label:literal, $body:expr) => {{
                 let __t = Instant::now();
@@ -3988,8 +3950,7 @@ impl PhotonApp {
             self.spawn_roster_pull();
         }
 
-        // Fleet roster pull result: merge into the contact list (re-CLUTCH happens via the serialized keygen kick inside merge_roster_entries).
-        // Fleet-event push: a sibling device changed the shared roster (fstate) or the membership chain (fleet) — pull the change NOW instead of at our next attest. This is what makes a friend added on one device appear on the rest of the fleet in about a second.
+        // Fleet roster pull result: merge into the contact list (re-CLUTCH happens via the serialized keygen kick inside merge_roster_entries). Fleet-event push: a sibling device changed the shared roster (fstate) or the membership chain (fleet) — pull the change NOW instead of at our next attest. This is what makes a friend added on one device appear on the rest of the fleet in about a second.
         let fleet_evts: Vec<(&'static str, [u8; 32])> = self
             .fleet_evt_rx
             .as_ref()
@@ -4355,9 +4316,7 @@ impl PhotonApp {
         }
     }
 
-    /// Encrypt + send the compose-box contents to the open contact, append it as an outgoing bubble, and persist. No-op unless a CLUTCH-Complete contact is open with a friendship chain and the box is non-empty. The crypto/wire/persist layers already exist (`FriendshipChains::prepare_send`, `StatusChecker::send_message`, `save_messages`); this is the UI→chain→network glue.
-    /// Orb (chrome app-icon) tap. Returns true if it acted (caller redraws). Routed by screen:
-    /// Ready → open the settings / about / help panel (its own screen with a nine-page nav rail); Settings → no-op (the dedicated back affordance exits). Launch / AddDevice / Conversation ignore the orb. The interim Ready → AddDevice entry moved onto the Fleet page's "Add device" pill.
+    /// Encrypt + send the compose-box contents to the open contact, append it as an outgoing bubble, and persist. No-op unless a CLUTCH-Complete contact is open with a friendship chain and the box is non-empty. The crypto/wire/persist layers already exist (`FriendshipChains::prepare_send`, `StatusChecker::send_message`, `save_messages`); this is the UI→chain→network glue. Orb (chrome app-icon) tap. Returns true if it acted (caller redraws). Routed by screen: Ready → open the settings / about / help panel (its own screen with a nine-page nav rail); Settings → no-op (the dedicated back affordance exits). Launch / AddDevice / Conversation ignore the orb. The interim Ready → AddDevice entry moved onto the Fleet page's "Add device" pill.
     fn on_orb_click(&mut self) -> bool {
         match self.state {
             AppState::Ready => {
@@ -4449,8 +4408,7 @@ impl PhotonApp {
         None
     }
 
-    /// Recover the current fleet key from the fan-out (or establish it at genesis), off-thread, and cache it in the vault. This is how a device gets the fleet key now — sealed to its own device key, recoverable with just its `ihi` — superseding the pairing-secret hand-off. Triggered on attest and after a membership change, so a rotation propagates to every device.
-    /// Session-long subscription to the FGTW hub's typed events for OUR identity. "fstate" (roster changed by a sibling device) and "fleet" (membership chain extended) land in `fleet_evt_rx`; tick drains them into a roster pull / key sync, and the wake proxy pokes the loop so it reacts immediately. Reconnects with jittered backoff — unlike the join ceremony's throwaway socket, this one is the LIVE propagation path (friend added on one device appears on the others), so it survives network blips. Idempotent: repeat calls while a subscription is live are no-ops.
+    /// Recover the current fleet key from the fan-out (or establish it at genesis), off-thread, and cache it in the vault. This is how a device gets the fleet key now — sealed to its own device key, recoverable with just its `ihi` — superseding the pairing-secret hand-off. Triggered on attest and after a membership change, so a rotation propagates to every device. Session-long subscription to the FGTW hub's typed events for OUR identity. "fstate" (roster changed by a sibling device) and "fleet" (membership chain extended) land in `fleet_evt_rx`; tick drains them into a roster pull / key sync, and the wake proxy pokes the loop so it reacts immediately. Reconnects with jittered backoff — unlike the join ceremony's throwaway socket, this one is the LIVE propagation path (friend added on one device appears on the others), so it survives network blips. Idempotent: repeat calls while a subscription is live are no-ops.
     fn spawn_fleet_event_sub(&mut self) {
         use std::sync::atomic::Ordering;
         if self.fleet_evt_rx.is_some() {
@@ -4694,8 +4652,7 @@ impl PhotonApp {
         });
     }
 
-    /// Clear the AddDevice (existing-device) words-entry state.
-    /// Sign the matched device into the fleet + rotate the fan-out, off-thread (both block on HTTP). Fires automatically when the typed words match the posted request — the deliberate act of typing 23 words on the already-trusted device IS the consent, and the new device's ready light has already flipped on the matched flag, so waiting for another tap only leaves the two screens out of step.
+    /// Clear the AddDevice (existing-device) words-entry state. Sign the matched device into the fleet + rotate the fan-out, off-thread (both block on HTTP). Fires automatically when the typed words match the posted request — the deliberate act of typing 23 words on the already-trusted device IS the consent, and the new device's ready light has already flipped on the matched flag, so waiting for another tap only leaves the two screens out of step.
     fn spawn_bind_device(&mut self, req: crate::network::fgtw::fleet::PairRequest) {
         use crate::network::fgtw::fleet;
         self.add_device_status = "Words match \u{2014} adding\u{2026}".to_string();
@@ -4955,10 +4912,7 @@ impl PhotonApp {
 
         let eagle_time = vsf::eagle_time_oscillations();
 
-        // The braid: choose up to TWO distinct prior PEER messages to weave into this chain step.
-        // Eligible = incoming messages (is_outgoing == false) in the last ≤256 of this conversation — any stored incoming row is one the receive path already ACKed, so the sender knows the peer holds it (both-held → identical strands → lockstep). The weave ingredient is the message's x-text (`content`), recoverable identically on both sides from the message DB. Each chosen message's eagle_time goes on the wire so the receiver resolves the SAME content.
-        //   0 eligible → weave nothing (anchor). 1 → single strand. ≥2 → two distinct (a true braid).
-        // Pick with gen_range (bounded, bias-free) — NEVER modulo. Strands are sorted by eagle_time so both peers frame derive_fresh_link identically regardless of pick order.
+        // The braid: choose up to TWO distinct prior PEER messages to weave into this chain step. Eligible = incoming messages (is_outgoing == false) in the last ≤256 of this conversation — any stored incoming row is one the receive path already ACKed, so the sender knows the peer holds it (both-held → identical strands → lockstep). The weave ingredient is the message's x-text (`content`), recoverable identically on both sides from the message DB. Each chosen message's eagle_time goes on the wire so the receiver resolves the SAME content. 0 eligible → weave nothing (anchor). 1 → single strand. ≥2 → two distinct (a true braid). Pick with gen_range (bounded, bias-free) — NEVER modulo. Strands are sorted by eagle_time so both peers frame derive_fresh_link identically regardless of pick order.
         let (woven_strands, woven_times): (Vec<Vec<u8>>, Vec<i64>) = {
             let mut chosen: Vec<(i64, Vec<u8>)> = Vec::new();
             if let Some(contact) = self.contacts.get(ci) {
@@ -5124,10 +5078,7 @@ impl PhotonApp {
         c.chain_woven = true;
         c.clutch_proof_resends_left = 0;
         crate::log("CHAIN-PROBE: chain woven — end-to-end verified, ceremony rebroadcast cancelled");
-        // Kick off friend-history recovery on the woven-chain EDGE (this fn fires exactly once per
-        // seal; vault loads latch chain_woven without passing here, so restarts resume via the
-        // persisted cursor instead of re-kicking). Always request the head page — if we already hold
-        // the history, merging dedups and the early-stop rule completes after one page.
+        // Kick off friend-history recovery on the woven-chain EDGE (this fn fires exactly once per seal; vault loads latch chain_woven without passing here, so restarts resume via the persisted cursor instead of re-kicking). Always request the head page — if we already hold the history, merging dedups and the early-stop rule completes after one page.
         let was_complete_before = c
             .history_recovery
             .as_ref()
@@ -5168,8 +5119,7 @@ impl PhotonApp {
         if handle.is_empty() {
             return;
         }
-        // A press FROM the Confirm interstitial is the deliberate second act: claim the (probed-Fresh) handle with the roots the probe already derived — no second proof, no permanence warning re-shown.
-        // GUARD: fire the stashed roots ONLY if the box still holds the handle they were derived from. Every edit path tears Confirm down, but this is the invariant that survives a missed one — firing stale roots attests a DIFFERENT identity than the box shows (observed: probe handle A, retype to taken handle B, press → attested as A, user believes they claimed B). On mismatch the press falls thru to a fresh probe of the current text.
+        // A press FROM the Confirm interstitial is the deliberate second act: claim the (probed-Fresh) handle with the roots the probe already derived — no second proof, no permanence warning re-shown. GUARD: fire the stashed roots ONLY if the box still holds the handle they were derived from. Every edit path tears Confirm down, but this is the invariant that survives a missed one — firing stale roots attests a DIFFERENT identity than the box shows (observed: probe handle A, retype to taken handle B, press → attested as A, user believes they claimed B). On mismatch the press falls thru to a fresh probe of the current text.
         if matches!(self.state, AppState::Launch(LaunchState::Confirm)) {
             if let Some(btn) = self.attest_btn.as_mut() {
                 btn.set_label("Attest");
@@ -5261,8 +5211,7 @@ impl PhotonApp {
                     "attestation success: pubkey = {}",
                     voca::encode(BigUint::from_bytes_be(&data.handle_proof))
                 );
-                // Adopt the session roots the worker just derived + persisted (register-shaped, no handle string). Shared across the user's TOKEN apps, gone at logout; a close/reopen resumes from these without re-typing or recomputing the proof.
-                // Fall back to the roots carried in the attest result if the tohu READ-BACK comes up empty (a persist failure must not leave THIS RUN sessionless — that made the avatar picker report "not attested" seconds after a successful attest). vault_seed == identity_seed mirrors the worker's derivation (handle_query FirstAttest).
+                // Adopt the session roots the worker just derived + persisted (register-shaped, no handle string). Shared across the user's TOKEN apps, gone at logout; a close/reopen resumes from these without re-typing or recomputing the proof. Fall back to the roots carried in the attest result if the tohu READ-BACK comes up empty (a persist failure must not leave THIS RUN sessionless — that made the avatar picker report "not attested" seconds after a successful attest). vault_seed == identity_seed mirrors the worker's derivation (handle_query FirstAttest).
                 self.session = tohu::session().or(Some(tohu::SessionIdentity {
                     identity_seed: data.identity_seed,
                     vault_seed: data.identity_seed,
@@ -5352,13 +5301,10 @@ impl PhotonApp {
                     ));
                     self.update_sync_records();
                 }
-                // Refresh existing contacts' WAN + LAN addresses from the FGTW peer list.
-                // FGTW reports both a public and a same-LAN address per device; pulling the LAN address in lets the offer/KEM send race the LAN path against the WAN path right away, instead of waiting for LAN multicast (which routers often drop) or a pong.
-                // This is what unblocks a same-router peer whose stored WAN IPv6 says "No route to host" — the case where m never received an offer.
+                // Refresh existing contacts' WAN + LAN addresses from the FGTW peer list. FGTW reports both a public and a same-LAN address per device; pulling the LAN address in lets the offer/KEM send race the LAN path against the WAN path right away, instead of waiting for LAN multicast (which routers often drop) or a pong. This is what unblocks a same-router peer whose stored WAN IPv6 says "No route to host" — the case where m never received an offer.
                 self.refresh_contact_addrs_from_peers(&data.peers);
                 self.hints_dismissed = false;
-                // Only flip to Ready on the INITIAL attest (we were still on the Launch screen).
-                // This Success branch also fires on every recurring background resume refresh — if the user has already navigated in-app (Ready, or inside a Conversation), forcing Ready here would yank them out of an open chat back to the contact list each sweep.
+                // Only flip to Ready on the INITIAL attest (we were still on the Launch screen). This Success branch also fires on every recurring background resume refresh — if the user has already navigated in-app (Ready, or inside a Conversation), forcing Ready here would yank them out of an open chat back to the contact list each sweep.
                 if !in_app {
                     self.state = AppState::Ready;
                 }
@@ -5501,8 +5447,7 @@ impl PhotonApp {
         }
     }
 
-    /// Apply a focus change: update `self.focused`, then walk the widget tree via `apply_focus_change` so the old + new widgets fire `set_focused(false/true)` and mark their caches dirty. Returns `true` if anything changed (caller decides whether to request a redraw — most callers do). Also drops a one-shot Android keyboard-show/hide request when focus enters or leaves a textbox; the Activity reads it via `FluorApp::wants_keyboard` after each touch and raises / dismisses the soft IME accordingly.
-    /// Dismiss the standing hints (the desktop avatar prompt) and clear the transient search status. Called on any click or keystroke: hints are event-shown and interaction-cleared — never hover- or time-driven. The avatar prompt's dismissal is reset on each `Ready` entry.
+    /// Apply a focus change: update `self.focused`, then walk the widget tree via `apply_focus_change` so the old + new widgets fire `set_focused(false/true)` and mark their caches dirty. Returns `true` if anything changed (caller decides whether to request a redraw — most callers do). Also drops a one-shot Android keyboard-show/hide request when focus enters or leaves a textbox; the Activity reads it via `FluorApp::wants_keyboard` after each touch and raises / dismisses the soft IME accordingly. Dismiss the standing hints (the desktop avatar prompt) and clear the transient search status. Called on any click or keystroke: hints are event-shown and interaction-cleared — never hover- or time-driven. The avatar prompt's dismissal is reset on each `Ready` entry.
     fn clear_hints(&mut self) {
         self.hints_dismissed = true;
         self.search_status = None;
@@ -5583,9 +5528,7 @@ impl PhotonApp {
         }
     }
 
-    /// Sync this device's own avatar with FGTW, newest-wins (off-thread). Call on attest success (handle_proof fresh). Replaces the old one-way "always upload": a blind upload would clobber a NEWER FGTW copy (e.g. one this same identity set on another device) with our stale local one.
-    /// `sync_avatar_bidirectional_from_seed` compares the local cache's eagle-time creation stamp to the server copy's and uploads only if we're newer, downloads + re-caches if the server is.
-    /// When the server wins, the freshly-cached avatar is delivered back over `avatar_dl_tx` with an EMPTY handle so the drain installs it as `device_avatar_pixels`. No-op without keypair / proof / session / storage.
+    /// Sync this device's own avatar with FGTW, newest-wins (off-thread). Call on attest success (handle_proof fresh). Replaces the old one-way "always upload": a blind upload would clobber a NEWER FGTW copy (e.g. one this same identity set on another device) with our stale local one. `sync_avatar_bidirectional_from_seed` compares the local cache's eagle-time creation stamp to the server copy's and uploads only if we're newer, downloads + re-caches if the server is. When the server wins, the freshly-cached avatar is delivered back over `avatar_dl_tx` with an EMPTY handle so the drain installs it as `device_avatar_pixels`. No-op without keypair / proof / session / storage.
     fn spawn_avatar_sync(&self) {
         let (Some(kp), Some(session), Some(storage)) = (
             self.device_keypair.as_ref(),
@@ -5642,9 +5585,7 @@ impl PhotonApp {
         });
     }
 
-    /// Kick a background download of `handle`'s avatar from FGTW (once per session per handle). The fetch + decode runs off the UI thread (FGTW round-trip + dav1d decode); the result is delivered over `avatar_dl_tx` and installed by the drain in `check_status_updates`. No-op if storage isn't ready yet or we've already started a download for this handle this session. This is the peer Send a direct P2P AvatarRequest to a MUTUAL (CLUTCH Complete) peer, once per session per peer.
-    /// The peer's `AvatarResponse` arrives via the status drain and installs on the matching contact.
-    /// This is the "a friend's avatar comes from the friend" path; if no response lands within the fallback window the sweep escalates to FGTW. `sent_at` (eagle-time) is recorded so the sweep can time the fallback. No-op without a status checker (the pending marker is only set once the request is actually handed off, so a checker that arrives later still triggers the request).
+    /// Kick a background download of `handle`'s avatar from FGTW (once per session per handle). The fetch + decode runs off the UI thread (FGTW round-trip + dav1d decode); the result is delivered over `avatar_dl_tx` and installed by the drain in `check_status_updates`. No-op if storage isn't ready yet or we've already started a download for this handle this session. This is the peer Send a direct P2P AvatarRequest to a MUTUAL (CLUTCH Complete) peer, once per session per peer. The peer's `AvatarResponse` arrives via the status drain and installs on the matching contact. This is the "a friend's avatar comes from the friend" path; if no response lands within the fallback window the sweep escalates to FGTW. `sent_at` (eagle-time) is recorded so the sweep can time the fallback. No-op without a status checker (the pending marker is only set once the request is actually handed off, so a checker that arrives later still triggers the request).
     fn spawn_avatar_request_p2p(
         &mut self,
         peer_addr: std::net::SocketAddr,
@@ -5746,8 +5687,7 @@ impl PhotonApp {
         }
     }
 
-    /// Recover the device's OWN avatar from FGTW after a local clear (the vault load returned nothing).
-    /// Off-thread (blocking FGTW round-trip); the result comes back over avatar_dl_tx with an EMPTY handle, which drain_avatar_downloads routes into device_avatar_pixels. No-op without storage.
+    /// Recover the device's OWN avatar from FGTW after a local clear (the vault load returned nothing). Off-thread (blocking FGTW round-trip); the result comes back over avatar_dl_tx with an EMPTY handle, which drain_avatar_downloads routes into device_avatar_pixels. No-op without storage.
     fn spawn_self_avatar_recover(&self, identity_seed: [u8; 32]) {
         let Some(storage) = self.storage.as_ref().map(Arc::clone) else {
             return;
@@ -5783,8 +5723,7 @@ impl PhotonApp {
         #[cfg(not(target_os = "android"))]
         let proxy = self.event_proxy.clone();
 
-        // Keypair generation includes McEliece460896 — very CPU-heavy (large matrix build).
-        // On resume every Pending contact re-keys at once (two contacts = two McEliece keygens in parallel), so this MUST run at Min priority or it starves the UI render thread and the window freezes until keygen finishes — the "GUI loads but you can't do anything until it syncs" symptom. Matches the Min-priority KEM-encap and ceremony-expand threads.
+        // Keypair generation includes McEliece460896 — very CPU-heavy (large matrix build). On resume every Pending contact re-keys at once (two contacts = two McEliece keygens in parallel), so this MUST run at Min priority or it starves the UI render thread and the window freezes until keygen finishes — the "GUI loads but you can't do anything until it syncs" symptom. Matches the Min-priority KEM-encap and ceremony-expand threads.
         let thread_body = move || {
             #[cfg(feature = "development")]
             crate::log("CLUTCH: Background keypair generation started...");
@@ -6198,8 +6137,7 @@ impl PhotonApp {
                         }
                     }
 
-                    // Process any pending KEM response that arrived before keygen completed.
-                    // Also compute ceremony_id here if provenances are ready — the KEM may have arrived in the network thread between when we added our provenance and when the main loop got here to run the ceremony_id derivation above.
+                    // Process any pending KEM response that arrived before keygen completed. Also compute ceremony_id here if provenances are ready — the KEM may have arrived in the network thread between when we added our provenance and when the main loop got here to run the ceremony_id derivation above.
                     if contact.clutch_pending_kem.is_some() {
                         if contact.ceremony_id.is_none() && contact.offer_provenances.len() >= 2 {
                             let ceremony_id = *CeremonyId::derive(
@@ -6236,8 +6174,7 @@ impl PhotonApp {
                                 ));
                             }
 
-                            // If we haven't sent our own KEM encap yet, do it now.
-                            // This covers the case where their KEM arrived before we had ceremony_id, so the normal encap-trigger was skipped.
+                            // If we haven't sent our own KEM encap yet, do it now. This covers the case where their KEM arrived before we had ceremony_id, so the normal encap-trigger was skipped.
                             let already_sent_kem = contact
                                 .get_slot(&our_handle_hash)
                                 .map(|s| s.kem_secrets_to_them.is_some())
@@ -6806,8 +6743,7 @@ impl PhotonApp {
         );
     }
 
-    /// Cross-reference the FGTW peer list into existing contacts, updating each matched contact's public address (`ip`) and same-LAN address (`local_ip`/`local_port`).
-    /// Matched by handle_proof + device_pubkey so the right device's record updates the right contact. Only IPv4 LAN addresses are stored (the hairpin case the `local_ip` field is typed for); a v6-only peer just refreshes the WAN address. The send path races both (see [`crate::types::Contact::race_addrs`]).
+    /// Cross-reference the FGTW peer list into existing contacts, updating each matched contact's public address (`ip`) and same-LAN address (`local_ip`/`local_port`). Matched by handle_proof + device_pubkey so the right device's record updates the right contact. Only IPv4 LAN addresses are stored (the hairpin case the `local_ip` field is typed for); a v6-only peer just refreshes the WAN address. The send path races both (see [`crate::types::Contact::race_addrs`]).
     fn refresh_contact_addrs_from_peers(&mut self, peers: &[crate::network::fgtw::PeerRecord]) {
         // Addresses whose transfers must be cancelled because they went stale (collected here so the checker borrow stays out of the contact-iter loop).
         let mut stale_addrs: Vec<std::net::SocketAddr> = Vec::new();
@@ -6863,8 +6799,7 @@ impl PhotonApp {
             .is_some_and(|s| s.identity_seed == *handle_hash)
     }
 
-    /// Force every self-contact in the list to CLUTCH-Complete and clear any in-flight CLUTCH work.
-    /// Applied after contacts load on resume and after cloud/FGTW merges, since those paths build contacts as Pending by default. Returns true if any contact changed.
+    /// Force every self-contact in the list to CLUTCH-Complete and clear any in-flight CLUTCH work. Applied after contacts load on resume and after cloud/FGTW merges, since those paths build contacts as Pending by default. Returns true if any contact changed.
     fn settle_self_contacts(&mut self) -> bool {
         let Some(our_seed) = self.session.as_ref().map(|s| s.identity_seed) else {
             return false;
@@ -6889,9 +6824,7 @@ impl PhotonApp {
         changed
     }
 
-    /// Current presence-sweep interval, chosen by how long since the user last interacted.
-    /// Active (5s) while engaged → idle (1min) → deep-idle (15min). `now` is the tick's clock.
-    /// Jittered to 50–100% of the tier so a roomful of devices doesn't ping their contacts in lockstep (a synchronised presence sweep is a self-inflicted DDoS). Presence timing is soft, so the fuzziness is free.
+    /// Current presence-sweep interval, chosen by how long since the user last interacted. Active (5s) while engaged → idle (1min) → deep-idle (15min). `now` is the tick's clock. Jittered to 50–100% of the tier so a roomful of devices doesn't ping their contacts in lockstep (a synchronised presence sweep is a self-inflicted DDoS). Presence timing is soft, so the fuzziness is free.
     fn presence_ping_interval(&self, now: Instant) -> std::time::Duration {
         let idle = self
             .last_interaction
@@ -7057,8 +6990,7 @@ impl PhotonApp {
         }
     }
 
-    /// Reliability sweep (every tick): resend any unacked outgoing message whose backoff deadline has passed, with exponential backoff, until an ACK clears it or it exhausts its attempts. This is the per-message retry the protocol was missing — without it, a single dropped message OR a single dropped ACK desyncs the chain permanently (the sender advances on ACK, so a lost ACK freezes its chain while the receiver's has moved on → every later message decrypts as garbage).
-    /// Resending is safe: the receiver dedupes by eagle_time and its ACK is deterministic, so a redelivered message just yields a free re-ACK. Uses the same LAN-preferring `race_addrs()` as the live send.
+    /// Reliability sweep (every tick): resend any unacked outgoing message whose backoff deadline has passed, with exponential backoff, until an ACK clears it or it exhausts its attempts. This is the per-message retry the protocol was missing — without it, a single dropped message OR a single dropped ACK desyncs the chain permanently (the sender advances on ACK, so a lost ACK freezes its chain while the receiver's has moved on → every later message decrypts as garbage). Resending is safe: the receiver dedupes by eagle_time and its ACK is deterministic, so a redelivered message just yields a free re-ACK. Uses the same LAN-preferring `race_addrs()` as the live send.
     fn retransmit_due_messages(&mut self) {
         let now_osc = vsf::eagle_time_oscillations();
 
@@ -7113,12 +7045,7 @@ impl PhotonApp {
         }
     }
 
-    /// History-recovery driver (every tick): for each contact mid-backfill, expire a lost in-flight
-    /// request and fire the next page request when due. Newest-first cursor pagination — `urgent`
-    /// (weave-seal kickoff / scrollback) jumps the trickle interval; otherwise pages are rate-limited
-    /// to one per HIST_TRICKLE_OSC so a 10-year backfill hums along in the background without
-    /// competing with live traffic. Requests are idempotent (rid-correlated, merge dedups), so an
-    /// expiry + re-request after a lost page is always safe.
+    /// History-recovery driver (every tick): for each contact mid-backfill, expire a lost in-flight request and fire the next page request when due. Newest-first cursor pagination — `urgent` (weave-seal kickoff / scrollback) jumps the trickle interval; otherwise pages are rate-limited to one per HIST_TRICKLE_OSC so a 10-year backfill hums along in the background without competing with live traffic. Requests are idempotent (rid-correlated, merge dedups), so an expiry + re-request after a lost page is always safe.
     fn drive_history_recovery(&mut self) {
         const HIST_TRICKLE_OSC: i64 = 2 * crate::OSC_PER_SEC; // one page per ~2s in background
         const HIST_INFLIGHT_TIMEOUT_OSC: i64 = 15 * crate::OSC_PER_SEC; // lost request/page
@@ -7256,9 +7183,7 @@ impl PhotonApp {
                 crate::network::spawn_clock_check(self.clock_check_tx.clone(), Some(proxy));
             }
         }
-        // Avatar acquisition policy (once/session/contact). A MUTUAL contact (CLUTCH Complete, which is impossible unless both added each other) gets a direct P2P AvatarRequest — a friend's avatar comes from the friend. We fall back to FGTW for that friend ONLY if no AvatarResponse has installed an avatar within AVATAR_P2P_FALLBACK_OSC (the friend is offline or avatar-less).
-        // A non-mutual contact never gets a direct request — it only ever pulls the public FGTW copy.
-        // Never blocks; each branch is dedup'd so the per-tick sweep is cheap.
+        // Avatar acquisition policy (once/session/contact). A MUTUAL contact (CLUTCH Complete, which is impossible unless both added each other) gets a direct P2P AvatarRequest — a friend's avatar comes from the friend. We fall back to FGTW for that friend ONLY if no AvatarResponse has installed an avatar within AVATAR_P2P_FALLBACK_OSC (the friend is offline or avatar-less). A non-mutual contact never gets a direct request — it only ever pulls the public FGTW copy. Never blocks; each branch is dedup'd so the per-tick sweep is cheap.
         /// ~3 seconds (oscillations) before a mutual peer's silent P2P request falls back to FGTW.
         const AVATAR_P2P_FALLBACK_OSC: i64 = 3 * crate::OSC_PER_SEC;
         enum AvatarPlan {
@@ -7425,8 +7350,7 @@ impl PhotonApp {
                                 }
                             }
 
-                            // True only on the offline→online EDGE, not every online ping/chat.
-                            // Retransmit-of-pending (below) keys off this — without the edge gate it re-fired on every received chat (now that a chat marks the sender online), resending all pending messages in a storm.
+                            // True only on the offline→online EDGE, not every online ping/chat. Retransmit-of-pending (below) keys off this — without the edge gate it re-fired on every received chat (now that a chat marks the sender online), resending all pending messages in a storm.
                             let came_online = is_online && !contact.is_online;
                             if contact.is_online != is_online {
                                 contact.is_online = is_online;
@@ -7663,8 +7587,7 @@ impl PhotonApp {
                             continue;
                         }
 
-                        // Strict in-order processing (Layer 1). The receiver decrypts at CURRENT_KEY_INDEX, which is only correct when this message is the immediate successor of the last one we processed. So verify_chain_link is now HARD: on a mismatch the message is "ahead" (its predecessor hasn't arrived yet) — buffer it on the `prev_msg_hp` it awaits and SKIP decrypt. It gets replayed when that predecessor lands (see the gap-buffer drain after a successful advance below).
-                        // "Behind"/duplicate is already handled by is_duplicate above; an unrelated stale prev_msg_hp simply waits in the buffer (and the retransmit path re-sends).
+                        // Strict in-order processing (Layer 1). The receiver decrypts at CURRENT_KEY_INDEX, which is only correct when this message is the immediate successor of the last one we processed. So verify_chain_link is now HARD: on a mismatch the message is "ahead" (its predecessor hasn't arrived yet) — buffer it on the `prev_msg_hp` it awaits and SKIP decrypt. It gets replayed when that predecessor lands (see the gap-buffer drain after a successful advance below). "Behind"/duplicate is already handled by is_duplicate above; an unrelated stale prev_msg_hp simply waits in the buffer (and the retransmit path re-sends).
                         if let Err(expected) =
                             chains.verify_chain_link(&from_handle_hash, &prev_msg_hp)
                         {
@@ -7793,8 +7716,7 @@ impl PhotonApp {
                             continue;
                         }
 
-                        // Hidden chain-weave probe: a reserved-marker message that proves the ratchet works but must show NO chat bubble.
-                        // Everything else on the receive path (chain advance, set_last_plaintext, mark_received, ACK send) still runs so the sender's chain advances and dedup works — only the UI is suppressed.
+                        // Hidden chain-weave probe: a reserved-marker message that proves the ratchet works but must show NO chat bubble. Everything else on the receive path (chain advance, set_last_plaintext, mark_received, ACK send) still runs so the sender's chain advances and dedup works — only the UI is suppressed.
                         let is_chain_probe = message_text == crate::types::CHAIN_PROBE_MARKER;
 
                         crate::log(&format!(
@@ -7897,8 +7819,7 @@ impl PhotonApp {
                             need_sync_records_update = true;
                         }
 
-                        // Add message to contact's message list and persist — UNLESS this is the hidden chain-weave probe, which advances/ACKs the chain but must never surface a bubble or chime.
-                        // For the probe we only flip `their_probe_seen` (their TX / our RX proven) and try to seal the chain.
+                        // Add message to contact's message list and persist — UNLESS this is the hidden chain-weave probe, which advances/ACKs the chain but must never surface a bubble or chime. For the probe we only flip `their_probe_seen` (their TX / our RX proven) and try to seal the chain.
                         if is_chain_probe {
                             if let Some(contact) = self.contacts.get_mut(contact_idx) {
                                 contact.their_probe_seen = true;
@@ -8048,8 +7969,7 @@ impl PhotonApp {
                                 handle
                             ));
 
-                            // Our TX chain just advanced on a matching ACK — their RX is proven.
-                            // Record it so the chain-weave can seal (sealing itself happens after the `chains` borrow ends, below). This is the "our TX / their RX" half of woven.
+                            // Our TX chain just advanced on a matching ACK — their RX is proven. Record it so the chain-weave can seal (sealing itself happens after the `chains` borrow ends, below). This is the "our TX / their RX" half of woven.
                             if let Some(contact) = self.contacts.get_mut(contact_idx) {
                                 contact.chain_advanced_by_ack = true;
                             }
@@ -9220,8 +9140,7 @@ impl PhotonApp {
                                                         Some(prefix);
                                                 }
                                             }
-                                            // Keep our proof + resend budget: we just verified theirs, but ours may still be in flight or dropped.
-                                            // ping_contacts drains the budget over the next few cycles, then clears it — so neither side strands.
+                                            // Keep our proof + resend budget: we just verified theirs, but ours may still be in flight or dropped. ping_contacts drains the budget over the next few cycles, then clears it — so neither side strands.
                                             contact.clutch_their_eggs_proof = None;
                                             changed = true;
 
@@ -9443,10 +9362,7 @@ impl PhotonApp {
                     }
                 }
 
-                // A friend (post-reset / new device) is asking for conversation history. Serve one
-                // newest-first page from our rārangi rows, sealed under the friendship history key.
-                // Authorization is OURS to do (the RX worker only verified the signature): the signer
-                // must be a known device of the contact this conversation belongs to, and mutual.
+                // A friend (post-reset / new device) is asking for conversation history. Serve one newest-first page from our rārangi rows, sealed under the friendship history key. Authorization is OURS to do (the RX worker only verified the signature): the signer must be a known device of the contact this conversation belongs to, and mutual.
                 StatusUpdate::HistoryRequestReceived {
                     conversation_token,
                     before_osc,
@@ -9457,8 +9373,7 @@ impl PhotonApp {
                     sender_addr,
                 } => {
                     let now = vsf::eagle_time_oscillations();
-                    // Staleness cap: a hist_req older than ~10 min is a replay or a badly delayed
-                    // duplicate — pages are useless to an attacker (sealed) but serving costs us I/O.
+                    // Staleness cap: a hist_req older than ~10 min is a replay or a badly delayed duplicate — pages are useless to an attacker (sealed) but serving costs us I/O.
                     const HIST_STALE_OSC: i64 = 600 * crate::OSC_PER_SEC;
                     let stale = sent_osc != 0 && now.saturating_sub(sent_osc) > HIST_STALE_OSC;
 
@@ -9477,8 +9392,7 @@ impl PhotonApp {
                             entry.1.pop_front();
                         }
 
-                        // Bind token → chains (history key) → the OTHER participant → contact, and
-                        // require the requesting device to belong to that exact contact + be mutual.
+                        // Bind token → chains (history key) → the OTHER participant → contact, and require the requesting device to belong to that exact contact + be mutual.
                         let our_seed = self.session.as_ref().map(|s| s.identity_seed);
                         let key_and_other = self
                             .friendship_chains
@@ -9521,9 +9435,7 @@ impl PhotonApp {
                                 storage,
                             ) {
                                 Ok((rows, more)) => {
-                                    // Cursor progresses over ALL returned rows (probe rows included)
-                                    // so a probe-heavy stretch can't stall the walk; the probe rows
-                                    // themselves are filtered out of what we ship.
+                                    // Cursor progresses over ALL returned rows (probe rows included) so a probe-heavy stretch can't stall the walk; the probe rows themselves are filtered out of what we ship.
                                     let oldest_osc =
                                         rows.first().map(|m| m.timestamp).unwrap_or(before_osc);
                                     let hist_rows: Vec<HistoryRow> = rows
@@ -9595,8 +9507,7 @@ impl PhotonApp {
                     }
                 }
 
-                // A history page arrived for our recovery. Open it with the friendship history key,
-                // merge rows (direction flipped, friend-attested), advance the cursor, persist.
+                // A history page arrived for our recovery. Open it with the friendship history key, merge rows (direction flipped, friend-attested), advance the cursor, persist.
                 StatusUpdate::HistoryPageReceived {
                     conversation_token,
                     request_id,
@@ -9623,9 +9534,7 @@ impl PhotonApp {
                     });
 
                     if let (Some((key, _)), Some(idx)) = (key_and_other, contact_idx) {
-                        // rid must match our in-flight request — a page we didn't ask for (or asked
-                        // for long ago) is dropped; merging is idempotent so a raced duplicate that
-                        // DOES match is harmless.
+                        // rid must match our in-flight request — a page we didn't ask for (or asked for long ago) is dropped; merging is idempotent so a raced duplicate that DOES match is harmless.
                         let rid_matches = self.contacts[idx]
                             .history_recovery
                             .as_ref()
@@ -9635,9 +9544,7 @@ impl PhotonApp {
                             match crate::network::history_pages::open_history_page(&sealed, &key) {
                                 Ok(page) => {
                                     let contact = &mut self.contacts[idx];
-                                    // Merge: flip direction to OUR perspective; recovered-outgoing is
-                                    // delivered by definition (the friend has it); dedup on
-                                    // (timestamp, content) against what we already hold.
+                                    // Merge: flip direction to OUR perspective; recovered-outgoing is delivered by definition (the friend has it); dedup on (timestamp, content) against what we already hold.
                                     let mut fresh: Vec<crate::types::ChatMessage> = Vec::new();
                                     for row in &page.rows {
                                         if row.content == crate::types::CHAIN_PROBE_MARKER {
@@ -9666,10 +9573,7 @@ impl PhotonApp {
                                         fresh.push(msg);
                                     }
 
-                                    // Cursor + completion. Early-stop: if history was already
-                                    // complete before this (re-)kickoff and the page brought nothing
-                                    // new, we're still complete — a routine re-key on an intact pair
-                                    // stops after one page instead of re-walking years.
+                                    // Cursor + completion. Early-stop: if history was already complete before this (re-)kickoff and the page brought nothing new, we're still complete — a routine re-key on an intact pair stops after one page instead of re-walking years.
                                     let their_seed = contact.handle_hash;
                                     if let Some(rec) = contact.history_recovery.as_mut() {
                                         rec.in_flight = None;
@@ -9773,8 +9677,7 @@ impl PhotonApp {
             self.ping_contact(idx);
         }
 
-        // Chain-weave probe (deferred past the checker borrow): fire the one hidden probe for any contact that just reached CLUTCH Complete, then seal any contact whose chain is now proven both ways (their probe seen + our TX ACK-advanced).
-        // Order: probe first, then seal, so a probe+ACK that both landed in this same drain still seals in the same pass.
+        // Chain-weave probe (deferred past the checker borrow): fire the one hidden probe for any contact that just reached CLUTCH Complete, then seal any contact whose chain is now proven both ways (their probe seen + our TX ACK-advanced). Order: probe first, then seal, so a probe+ACK that both landed in this same drain still seals in the same pass.
         for idx in chain_probe_indices {
             self.maybe_send_chain_probe(idx);
         }
@@ -9933,8 +9836,7 @@ impl PhotonApp {
             && key_held(self.chord_rb_press, self.chord_rb_release, now)
     }
 
-    /// Delete every `.vsf` in the Photon app dirs (the on-disk vault: contacts, CLUTCH slots, ephemeral keypairs, friendship chains, plus old-path strays and derivation-change orphans).
-    /// Returns the count deleted. Shared by the `[]n` (nuke, keep running) and `[]x` (nuke + exit) chords; `tag` prefixes the log lines so you can tell which fired. Does NOT touch the tohu session or any in-memory state — callers handle that.
+    /// Delete every `.vsf` in the Photon app dirs (the on-disk vault: contacts, CLUTCH slots, ephemeral keypairs, friendship chains, plus old-path strays and derivation-change orphans). Returns the count deleted. Shared by the `[]n` (nuke, keep running) and `[]x` (nuke + exit) chords; `tag` prefixes the log lines so you can tell which fired. Does NOT touch the tohu session or any in-memory state — callers handle that.
     fn dev_wipe_vault_files(tag: &str) -> usize {
         let mut count = 0usize;
         let wipe_dir = |dir: Option<std::path::PathBuf>, count: &mut usize| {

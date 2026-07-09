@@ -153,9 +153,7 @@ impl std::fmt::Display for FriendshipId {
 const DOMAIN_MSG_HP: &[u8] = b"PHOTON_MSG_HP_v1";
 const DOMAIN_ANCHOR: &[u8] = b"PHOTON_ANCHOR_v1";
 
-/// Reliability backoff for unacked outgoing messages. A message is (re)sent until an ACK arrives or we hit `MAX_SEND_ATTEMPTS`; between sends we wait `retry_delay_osc(attempts)` — exponential from
-/// ~1s, doubling, capped at ~30s. Covers both a dropped message AND a dropped ACK (the sender just
-/// keeps resending; the receiver dedupes by eagle_time and its ACK is deterministic, so a re-ACK is free). These live on `PendingMessage` and are runtime-only (not persisted).
+/// Reliability backoff for unacked outgoing messages. A message is (re)sent until an ACK arrives or we hit `MAX_SEND_ATTEMPTS`; between sends we wait `retry_delay_osc(attempts)` — exponential from ~1s, doubling, capped at ~30s. Covers both a dropped message AND a dropped ACK (the sender just keeps resending; the receiver dedupes by eagle_time and its ACK is deterministic, so a re-ACK is free). These live on `PendingMessage` and are runtime-only (not persisted).
 const RETRY_BASE_SECS: u64 = 1;
 const RETRY_CAP_SECS: u64 = 30;
 const MAX_SEND_ATTEMPTS: u8 = 8;
@@ -270,8 +268,7 @@ pub struct PendingMessage {
     pub msg_hp: [u8; 32],
     /// Encrypted ciphertext (for resend without re-encryption)
     pub ciphertext: Vec<u8>,
-    /// The braid's woven peer strands frozen at send time — the EXACT plaintext bytes of the (up to two) prior peer messages this message braided in, already sorted by eagle_time.
-    /// Frozen so `process_ack` advances our chain with the identical strands the receiver used to advance its copy (the receiver resolves them from the two eagle_times on the wire). Length 0 = anchor (wove nothing), 1 = single strand (early conversation), 2 = full braid.
+    /// The braid's woven peer strands frozen at send time — the EXACT plaintext bytes of the (up to two) prior peer messages this message braided in, already sorted by eagle_time. Frozen so `process_ack` advances our chain with the identical strands the receiver used to advance its copy (the receiver resolves them from the two eagle_times on the wire). Length 0 = anchor (wove nothing), 1 = single strand (early conversation), 2 = full braid.
     pub woven_strands: Vec<Vec<u8>>,
     /// Reliability (runtime-only, NOT persisted): how many times we've (re)sent this message. The first transmit counts as attempt 1. Used to drive exponential backoff and to give up after a ceiling so an undeliverable message surfaces instead of resending forever.
     pub attempts: u8,
@@ -279,8 +276,7 @@ pub struct PendingMessage {
     pub next_retry_osc: i64,
 }
 
-// ============================================================================
-// Hash Chain Derivation Functions ============================================================================
+// ============================================================================ Hash Chain Derivation Functions ============================================================================
 
 /// Derive first message anchor for a participant's hash chain.
 ///
@@ -387,9 +383,7 @@ impl FriendshipChains {
             active_snapshots.push(active_bytes);
         }
 
-        // Friend-history bulk key — derived HERE, at ceremony birth, from the pristine active chains
-        // (the one moment both sides are byte-identical). Every completion path flows thru from_clutch,
-        // so this is the single derivation site. See crypto::clutch::derive_history_key.
+        // Friend-history bulk key — derived HERE, at ceremony birth, from the pristine active chains (the one moment both sides are byte-identical). Every completion path flows thru from_clutch, so this is the single derivation site. See crypto::clutch::derive_history_key.
         let history_key = {
             let refs: Vec<&[u8]> = active_snapshots.iter().map(|v| v.as_slice()).collect();
             crate::crypto::clutch::derive_history_key(friendship_id.as_bytes(), &refs)
@@ -962,8 +956,7 @@ impl FriendshipChains {
     ///
     /// Does NOT advance the chain — advancement is deferred to [`process_ack`](Self::process_ack), the same invariant the receive side relies on (advancing on send would desync if the peer never decrypts).
     ///
-    /// Returns `(ciphertext, prev_msg_hp, msg_hp, plaintext_hash)` for the wire send, or `None` if `our_handle_hash` isn't a participant.
-    /// `plaintext` is the FULL flattened VSF payload (`(message: x{}, hp{}, hR{pad})`) — this is what goes on the wire (encrypted) and what both sides hash for `msg_hp`/ACK. `salt_text` is the bare message x-text only: the salt source + the `our_plaintext` fed to the braid's `derive_fresh_link` on ACK-advance. The two are SEPARATE on purpose — the random `hR` pad and the public `hp` are traffic-analysis/wire concerns, never chain-key material, and keeping them out of the chain ingredient keeps it valid UTF-8 (so it stores losslessly) and matches the receiver, which advances + salts from the decrypted x-text only.
+    /// Returns `(ciphertext, prev_msg_hp, msg_hp, plaintext_hash)` for the wire send, or `None` if `our_handle_hash` isn't a participant. `plaintext` is the FULL flattened VSF payload (`(message: x{}, hp{}, hR{pad})`) — this is what goes on the wire (encrypted) and what both sides hash for `msg_hp`/ACK. `salt_text` is the bare message x-text only: the salt source + the `our_plaintext` fed to the braid's `derive_fresh_link` on ACK-advance. The two are SEPARATE on purpose — the random `hR` pad and the public `hp` are traffic-analysis/wire concerns, never chain-key material, and keeping them out of the chain ingredient keeps it valid UTF-8 (so it stores losslessly) and matches the receiver, which advances + salts from the decrypted x-text only.
     pub fn prepare_send(
         &mut self,
         our_handle_hash: &[u8; 32],
@@ -1504,8 +1497,7 @@ mod tests {
         let far = t0 + one_s * 1_000_000;
         assert!(chains.collect_due_retransmits(far).is_empty(), "both exhausted");
 
-        // Peer's contiguous tip is t0 (it has the first message, is stalled missing the second).
-        // Re-arm should revive ONLY the newer message (eagle_time > tip), not the already-delivered one.
+        // Peer's contiguous tip is t0 (it has the first message, is stalled missing the second). Re-arm should revive ONLY the newer message (eagle_time > tip), not the already-delivered one.
         let rearmed = chains.rearm_pending_after(t0, far);
         assert_eq!(rearmed, 1);
 
