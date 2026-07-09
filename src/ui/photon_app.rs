@@ -45,7 +45,7 @@ const VERSION_COLOUR: u32 = 0x20_00_00_00;
 /// Colour for the zoom-percentage watermark at the top of the screen: pure white, α = 64 = 1/4 opacity (twice [`VERSION_COLOUR`]'s 1/8). Same α+darkness watermark scheme as the version — painted before the background noise so it reads as a faint top-centre indicator of the current `ru` zoom factor.
 const ZOOM_COLOUR: u32 = 0x40_00_00_00;
 
-/// Contact name text on the Ready list — near-white. α+darkness (the format fluor's text/shape rasterizers expect; the legacy `theme::CONTACT_NAME` is visible-RGB and not interchangeable here).
+/// Contact name text on the Ready list — near-white. α+darkness (the format fluor's text/shape rasterizers expect — visible-RGB is not interchangeable here).
 const CONTACT_NAME_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_F0_F0_F0));
 /// Hairline separating the user section from the contact list — pure white at 1/4 opacity (α=64), the same translucent treatment as the hints + zoom watermark. The 0-height `fill_rect` lays the whole 1px line at this α, so it reads as faint light over the dark background.
 const SEPARATOR_COLOUR: u32 = 0x40_00_00_00;
@@ -57,10 +57,14 @@ const SEARCH_FOUND_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_40_E0
 const SEARCH_FAIL_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_E0_40_40));
 /// Hourglass tint while the search is in flight (orange). α+darkness.
 const HOURGLASS_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_FF_A5_00));
-/// Send-button arrowhead glyph — light grey, α+darkness format for under-blend (matches the intent of theme::BUTTON_TEXT, which is legacy visible-RGB and not usable on this canvas).
+/// Send-button arrowhead glyph — light grey, α+darkness format for under-blend (visible-RGB is not usable on this canvas).
 const SEND_ARROW_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_D0_D0_D0));
 /// Hover fill for the send / plus action buttons — a SUBTLE neutral brightening of BUTTON_FILL (0x1A224E), reproducing the pre-fluor QUERY_BUTTON_HOVER feel rather than the shared BUTTON_HOVER's saturated-blue shift. A small delta also keeps the overlay from cooking the near-white arrowhead.
 const SEND_BUTTON_HOVER: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_25_2D_59));
+/// Noise-background base tint when the dual-ring vault flagged this session degraded — warning orange.
+/// This is a NOISE-MATH colour (visible-RGB space, like fluor's `BG_BASE`), so `fmt` not `dark`; passed
+/// to `background_noise` in place of its default base.
+const BG_BASE_WARNING: u32 = fluor::theme::fmt(0x00_30_10_00);
 /// Grey placeholder circle for contacts/avatars without a loaded image.
 const AVATAR_PLACEHOLDER: u32 = 0xFF_C5_C5_C5;
 /// Thin white rule between conversation messages. α+darkness.
@@ -604,6 +608,9 @@ pub struct PhotonApp {
     add_device_rx: Option<std::sync::mpsc::Receiver<AddDeviceUpdate>>,
     /// AddDevice flow: a clone-able sender so the check and bind threads report on the same channel.
     add_device_tx: Option<std::sync::mpsc::Sender<AddDeviceUpdate>>,
+    /// Device REMOVE flow: results from the off-thread unbind + rotate (fleet client blocks on HTTP). Mirror of `add_device_rx/tx`.
+    remove_device_rx: Option<std::sync::mpsc::Receiver<RemoveDeviceUpdate>>,
+    remove_device_tx: Option<std::sync::mpsc::Sender<RemoveDeviceUpdate>>,
     /// Stop flag for the NEW device's join thread — set true when the user cancels join mode so the thread quits re-posting its request (a zombie re-poster would race a later attempt for the inbox slot).
     add_stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Session-long fleet-event subscription (hub WebSocket): receiver of event kinds ("fstate" / "fleet") filtered to OUR identity. Drained in tick — fstate triggers a roster pull (a friend added on a sibling device appears here in ~a second), fleet triggers a key/membership sync. `None` until the first attest/resume succeeds.
@@ -658,6 +665,10 @@ pub struct PhotonApp {
     contact_hit_base: HitId,
     /// Hit ID for the "← Contacts" back button on the Conversation screen.
     back_btn_hit_id: HitId,
+    /// Hit ID for the "Start fresh (wipe this device)" line on the JOIN words screen — a removed device's only self-clean path (it can't attest → can't reach Security).
+    join_startfresh_hit_id: HitId,
+    /// Two-tap arm for "Start fresh" on the JOIN screen (destructive → confirm).
+    join_startfresh_armed: bool,
     /// Contact-list scroll offset in pixels (Ready screen). 0 = top; grows as the user scrolls down. The user section (avatar/search) stays fixed; only the rows below the separator scroll. Re-clamped to the list extent each render.
     contacts_scroll: isize,
     /// `true` once the user has interacted (any click or keystroke) since the last transition into `Ready` — hides the standing avatar prompt. Hints are event-shown and interaction-cleared, never hover- or time-driven; reset to `false` on each `Ready` entry. See [`clear_hints`].
@@ -684,6 +695,12 @@ pub struct PhotonApp {
     settings_autoupdate_check: Option<crate::ui::settings_widgets::Checkbox>,
     /// Diagnostics-page optional-note field — a real fluor `Textbox` (distinct from the launch / contacts / compose boxes so content never bleeds).
     settings_note_textbox: Option<Textbox>,
+    /// Fleet-page device management: the device pubkey the user tapped to select (highlighted row). `None` = nothing selected. Only OUR OTHER devices (siblings) are selectable — never this device (self-remove is deferred).
+    settings_fleet_selected: Option<[u8; 32]>,
+    /// Fleet-page Remove-confirm arm: the device pubkey a first Remove tap armed. A second Remove tap on the same armed device fires `spawn_unbind_device`; any other interaction clears it (event-shown, interaction-cleared — no timers).
+    settings_remove_armed: Option<[u8; 32]>,
+    /// Security-page "Shred (crypto-wipe)" confirm arm: a first tap arms, a second fires `clean_device_for_reuse` (nuke vault + clear session). Event-shown, interaction-cleared.
+    settings_shred_armed: bool,
 
     /// This node's own reflexive (public) address, learned via peer-echoed reflection (see [`crate::network::traverse::reflexive`]). `None` until the first signed pong / `ReflectResponse` echo. Fed forward to candidate gathering and the FGTW announce so our published address is the one seen on the live UDP data socket — not fgtw.org's TLS-flow `cf-connecting-ip`, which is only right for cone NATs.
     our_reflexive: Option<std::net::SocketAddr>,
@@ -780,6 +797,8 @@ impl PhotonApp {
             add_device_checking: false,
             add_device_rx: None,
             add_device_tx: None,
+            remove_device_rx: None,
+            remove_device_tx: None,
             add_stop: None,
             fleet_evt_rx: None,
             fleet_evt_stop: None,
@@ -805,6 +824,8 @@ impl PhotonApp {
             active_contact: None,
             contact_hit_base: HIT_NONE,
             back_btn_hit_id: HIT_NONE,
+            join_startfresh_hit_id: HIT_NONE,
+            join_startfresh_armed: false,
             pending_picker_request: false,
             pending_broadcast_signal: 0,
             contacts_scroll: 0,
@@ -819,6 +840,9 @@ impl PhotonApp {
             settings_presence_check: None,
             settings_autoupdate_check: None,
             settings_note_textbox: None,
+            settings_fleet_selected: None,
+            settings_remove_armed: None,
+            settings_shred_armed: false,
         }
     }
 
@@ -924,6 +948,14 @@ enum AddDeviceUpdate {
     /// The bind + rotation published — the new device is now a fleet member with the fresh epoch key.
     Bound,
     /// An error to surface in the status line.
+    Failed(String),
+}
+
+/// Off-thread result for removing ANOTHER of our own devices from the fleet (unbind + rotate excluding it), drained in `tick`.
+enum RemoveDeviceUpdate {
+    /// The Remove op published + the fan-out re-keyed excluding the removed device — it can no longer decrypt the fleet's future state, and its next attest hits "not in the fleet". `[u8; 32]` = the removed device pubkey (so the UI can clear it from the list).
+    Removed([u8; 32]),
+    /// An error to surface.
     Failed(String),
 }
 
@@ -1157,6 +1189,10 @@ impl FluorApp for PhotonApp {
         // Back button on conversation screen.
         self.hit_counter = self.hit_counter.wrapping_add(1);
         self.back_btn_hit_id = self.hit_counter;
+
+        // "Start fresh (wipe this device)" tappable on the JOIN words screen — the only clean path for a device that was REMOVED from a fleet and so can't attest (can't reach the Security page). Two-tap confirm → clean_device_for_reuse.
+        self.hit_counter = self.hit_counter.wrapping_add(1);
+        self.join_startfresh_hit_id = self.hit_counter;
 
         // Settings panel (STUB) hit-id blocks + widgets. Reserve a contiguous 9-id block for the nav-rail rows and a 32-id block for the immediate-mode action pills, then construct the stateful fluor widgets (dropdown / slider / textbox) and the custom checkboxes. All get placeholder geometry; `update_widget_layout` repositions the ones on the active page each frame.
         self.hit_counter = self.hit_counter.wrapping_add(1);
@@ -1513,6 +1549,22 @@ impl FluorApp for PhotonApp {
                         changed = true;
                     }
                 }
+                // Conversation compose box + send button — same screen-safe matching (their ids only land
+                // in the map while the conversation renders them).
+                if let Some(tb) = self.message_textbox.as_mut() {
+                    let want = new_hit == tb.hit_id();
+                    if tb.is_hovered() != want {
+                        tb.set_hovered(want);
+                        changed = true;
+                    }
+                }
+                if let Some(btn) = self.message_send_btn.as_mut() {
+                    let want = new_hit == btn.hit_id();
+                    if btn.is_hovered() != want {
+                        btn.set_hovered(want);
+                        changed = true;
+                    }
+                }
                 {
                     let want = self.avatar_hit_id != HIT_NONE && new_hit == self.avatar_hit_id;
                     if self.avatar_hovered != want {
@@ -1551,6 +1603,18 @@ impl FluorApp for PhotonApp {
                     }
                 }
                 if let Some(btn) = self.contacts_plus_btn.as_mut() {
+                    if btn.is_hovered() {
+                        btn.set_hovered(false);
+                        changed = true;
+                    }
+                }
+                if let Some(tb) = self.message_textbox.as_mut() {
+                    if tb.is_hovered() {
+                        tb.set_hovered(false);
+                        changed = true;
+                    }
+                }
+                if let Some(btn) = self.message_send_btn.as_mut() {
                     if btn.is_hovered() {
                         btn.set_hovered(false);
                         changed = true;
@@ -1670,6 +1734,19 @@ impl FluorApp for PhotonApp {
                     return EventResponse::Handled;
                 }
 
+                // "Start fresh (wipe this device)" on the JOIN words screen — a removed device's self-clean path. Two-tap confirm → full clean (nuke vault + clear session), leaving a blank slate ready to attest fresh or join another fleet.
+                if hit_id == self.join_startfresh_hit_id && self.join_startfresh_hit_id != HIT_NONE {
+                    if self.join_startfresh_armed {
+                        self.join_startfresh_armed = false;
+                        self.end_add_device_flow(); // leave JOIN mode before wiping
+                        self.clean_device_for_reuse();
+                    } else {
+                        self.join_startfresh_armed = true;
+                    }
+                    ctx.window.request_redraw();
+                    return EventResponse::Handled;
+                }
+
                 // Back button — Conversation and Add-device both return to the contact list. Navigation is a dedicated control; the orb is settings-only.
                 if hit_id == self.back_btn_hit_id && self.back_btn_hit_id != HIT_NONE {
                     if matches!(self.state, AppState::Conversation) {
@@ -1701,6 +1778,14 @@ impl FluorApp for PhotonApp {
                         let idx = (hit_id - self.settings_nav_base) as usize;
                         if let Some(p) = SettingsPage::ALL.get(idx) {
                             self.change_focus(None);
+                            // Leaving a page clears its destructive-action arms (interaction-cleared).
+                            if *p != SettingsPage::Fleet {
+                                self.settings_fleet_selected = None;
+                                self.settings_remove_armed = None;
+                            }
+                            if *p != SettingsPage::Security {
+                                self.settings_shred_armed = false;
+                            }
                             self.state = AppState::Settings(*p);
                             ctx.window.request_redraw();
                         }
@@ -1711,9 +1796,60 @@ impl FluorApp for PhotonApp {
                         && hit_id < self.settings_btn_base.wrapping_add(32)
                     {
                         let slot = hit_id - self.settings_btn_base;
-                        // Fleet page, first pill = "Add device" → the pairing-words flow. Everything else is an inert stub.
-                        if page == SettingsPage::Fleet && slot == 0 {
-                            self.open_add_device_flow();
+                        if page == SettingsPage::Fleet {
+                            if slot == 0 {
+                                // "Add device" pill → the pairing-words flow.
+                                self.settings_remove_armed = None;
+                                self.open_add_device_flow();
+                            } else if slot == 2 {
+                                // "Remove" pill: two-tap confirm on the selected (non-self) device. First tap arms; second tap on the same armed device fires the unbind+rotate.
+                                if let Some(sel) = self.settings_fleet_selected {
+                                    if self.settings_remove_armed == Some(sel) {
+                                        self.settings_remove_armed = None;
+                                        self.spawn_unbind_device(sel);
+                                    } else {
+                                        self.settings_remove_armed = Some(sel);
+                                    }
+                                }
+                            } else if slot >= 16 {
+                                // Device-row tap → select that device (non-self only; self rows aren't stamped). Selecting clears any pending Remove arm.
+                                let idx = (slot - 16) as usize;
+                                let devices = self.fleet_device_rows();
+                                if let Some((pk, is_self, ..)) = devices.get(idx) {
+                                    if !is_self {
+                                        self.settings_fleet_selected = Some(*pk);
+                                    }
+                                }
+                                self.settings_remove_armed = None;
+                            } else {
+                                // "Rename" (slot 1) is still a stub — no device-label chain-op yet.
+                                self.settings_remove_armed = None;
+                                crate::log("settings-stub: Rename (no label op yet)");
+                            }
+                        } else if page == SettingsPage::Security {
+                            if slot == 0 {
+                                // "Lock" → clear session only (de-attest); vault kept, re-unlock by re-typing your handle. Works on Android (the -1 broadcast drops Kotlin's sticky session).
+                                self.settings_shred_armed = false;
+                                tohu::clear_session();
+                                self.session = None;
+                                self.private_s = crate::crypto::blind::PrivateS::None;
+                                self.pending_broadcast_signal = -1;
+                                self.state = AppState::Launch(LaunchState::Fresh);
+                                self.refocus_handle_select_all();
+                                crate::log("SECURITY: locked — session cleared, vault kept; re-type handle to unlock");
+                            } else if slot == 2 {
+                                // "Shred (crypto-wipe)" → full clean (nuke vault + clear session). Two-tap confirm (destructive + irreversible).
+                                if self.settings_shred_armed {
+                                    self.settings_shred_armed = false;
+                                    self.clean_device_for_reuse();
+                                } else {
+                                    self.settings_shred_armed = true;
+                                }
+                            } else {
+                                // Slot 1 "Remove this device from fleet" (self-removal) is deferred.
+                                self.settings_shred_armed = false;
+                                crate::log("settings-stub: self-fleet-removal deferred");
+                            }
                         } else {
                             crate::log(&format!(
                                 "settings-stub: pill {slot} on {:?} (no behaviour wired)",
@@ -1835,6 +1971,11 @@ impl FluorApp for PhotonApp {
                     .unwrap_or(false);
                 if send_clicked {
                     self.submit_message();
+                    // Return focus to the compose box so the send button releases its focused/active
+                    // (dark, pressed-in) tint — otherwise it sticks down — and the user keeps typing.
+                    if let Some(id) = self.message_textbox.as_ref().map(|t| t.hit_id()) {
+                        self.change_focus(Some(id));
+                    }
                     ctx.window.request_redraw();
                 }
                 EventResponse::Pass
@@ -2328,6 +2469,12 @@ impl FluorApp for PhotonApp {
         if matches!(self.state, AppState::Settings(_)) {
             self.update_widget_layout(ctx);
         }
+        // Fleet device inventory, gathered before the long-lived `chrome` borrow (the Fleet render arm can't call the `&self` helper while `chrome` is borrowed mutably). Empty off the Fleet page.
+        let fleet_devices = if matches!(self.state, AppState::Settings(SettingsPage::Fleet)) {
+            self.fleet_device_rows()
+        } else {
+            Vec::new()
+        };
         // Conversation: lay out the compose textbox + send button each frame. Without this the send button kept stale placeholder geometry (mid-screen), rendered under the opaque message-list fill, and under()-blend discarded it — it never appeared. Same reason as the Ready/Settings branches above; must run before the long-lived `chrome` borrow (takes `&mut self`).
         if matches!(self.state, AppState::Conversation) {
             self.update_widget_layout(ctx);
@@ -2373,9 +2520,9 @@ impl FluorApp for PhotonApp {
         // Version watermark shows on the attest screen (Launch), the contacts screen (Ready), and the conversation screen — not other screens. (Settings, when it lands, spells the version out in words rather than glyphs; that's its own render path.) It's a faint bottom-left watermark painted in the bg pass, so on the conversation screen it sits behind the lifted compose box rather than competing with it.
         let show_version =
             on_launch || matches!(self.state, AppState::Ready | AppState::Conversation);
-        // Swap the noise base colour to BG_BASE_WARNING when the dual-ring vault flagged degraded this session — the noise pass already runs every frame so this changes a colour, not the pass count. None on the happy path keeps the default green-dark base from theme.rs.
+        // Swap the noise base colour to BG_BASE_WARNING when the dual-ring vault flagged degraded this session — the noise pass already runs every frame so this changes a colour, not the pass count. None on the happy path keeps fluor's default green-dark BG_BASE.
         let bg_base = if self.vault_degraded {
-            Some(crate::ui::theme::BG_BASE_WARNING)
+            Some(BG_BASE_WARNING)
         } else {
             None
         };
@@ -2561,6 +2708,31 @@ impl FluorApp for PhotonApp {
                             None,
                             None,
                             None,
+                        );
+                    }
+                    // "Start fresh (wipe this device)" — a removed device's self-clean path (it can't attest, so it can't reach the Security page). Two-tap confirm. Hit-stamped so a tap on Android works (no chords there). Uses the outer `chrome` borrow (a re-borrow would conflict).
+                    {
+                        y += line_h * 1.6;
+                        let sf_label = if self.join_startfresh_armed {
+                            "Start fresh — tap again to wipe this device"
+                        } else {
+                            "Start fresh (wipe this device)"
+                        };
+                        let sf_size = line_h * 0.8;
+                        let sf_colour = if self.join_startfresh_armed { ERROR_TEXT_COLOUR } else { fluor::theme::HINT_COLOUR };
+                        ctx.text.draw_text_center_u32(
+                            &mut canvas, sf_label, cx, y, sf_size, 500, sf_colour, "Oxanium", None, None, None,
+                        );
+                        let half_w = buf_w as f32 * 0.4;
+                        restamp_hit_rect(
+                            &mut chrome.hit_test_map,
+                            buf_w,
+                            buf_h,
+                            (cx - half_w) as isize,
+                            (y - sf_size * 0.8) as isize,
+                            (cx + half_w) as isize,
+                            (y + sf_size * 0.8) as isize,
+                            self.join_startfresh_hit_id,
                         );
                     }
                 }
@@ -3632,23 +3804,64 @@ impl FluorApp for PhotonApp {
                     settings_line(&mut canvas, ctx.text, rows[5], "b3:9f2a…c701  (double-click to copy)", hspan2, LABEL_COLOUR, 400);
                 }
                 SettingsPage::Fleet => {
+                    // Live device inventory (gathered above the chrome borrow): this device + our siblings. Rows 1..=6 hold up to 6 devices (fleets are usually ≤5; a scroll follows if this grows past the row budget). Non-self rows are tap-selectable (hit-stamped btn_base+16+index); the Remove pill acts on the selection with a two-tap confirm.
+                    let devices = &fleet_devices;
                     let rows = body.split_v([1.0; 8]);
                     settings_line(&mut canvas, ctx.text, rows[0], "Your devices", tspan, CONTACT_NAME_COLOUR, 600);
-                    settings_line(&mut canvas, ctx.text, rows[1], "zesty-otter    online",  hspan2, SEARCH_FOUND_COLOUR, 400);
-                    settings_line(&mut canvas, ctx.text, rows[2], "quiet-heron    last seen 2h ago", hspan2, LABEL_COLOUR, 400);
-                    settings_line(&mut canvas, ctx.text, rows[3], "brisk-maple    last seen yesterday", hspan2, LABEL_COLOUR, 400);
-                    let pr = rows[5].split_h([1.0, 1.0, 1.0]);
+                    for (i, (pk, is_self, online, name)) in devices.iter().take(6).enumerate() {
+                        let row = rows[1 + i];
+                        let selected = self.settings_fleet_selected == Some(*pk);
+                        let (label, colour) = if *is_self {
+                            (format!("{name}    (this device)"), LABEL_COLOUR)
+                        } else if *online {
+                            (format!("{name}    online"), SEARCH_FOUND_COLOUR)
+                        } else {
+                            (format!("{name}    offline"), LABEL_COLOUR)
+                        };
+                        // Selection cue: a leading marker + bold weight (no filled-rect machinery needed).
+                        let (label, weight) = if selected {
+                            (format!("\u{25b8} {label}"), 600)
+                        } else {
+                            (label, 400)
+                        };
+                        settings_line(&mut canvas, ctx.text, row, &label, hspan2, colour, weight);
+                        // Only OUR OTHER devices are selectable (self-remove is deferred).
+                        if !is_self {
+                            restamp_hit_rect(
+                                &mut chrome.hit_test_map,
+                                buf_w,
+                                buf_h,
+                                row.x as isize,
+                                row.y as isize,
+                                (row.x + row.w) as isize,
+                                (row.y + row.h) as isize,
+                                btn_base.wrapping_add(16 + i as HitId),
+                            );
+                        }
+                    }
+                    // Armed-confirm line (event-shown, interaction-cleared): only while a Remove tap is armed for the selected device.
+                    if let Some(armed) = self.settings_remove_armed {
+                        if let Some((_, _, _, name)) = devices.iter().find(|(pk, ..)| *pk == armed) {
+                            settings_line(&mut canvas, ctx.text, rows[6], &format!("Remove {name}? tap Remove again"), hspan2, ERROR_TEXT_COLOUR, 500);
+                        }
+                    }
+                    let pr = rows[7].split_h([1.0, 1.0, 1.0]);
                     draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[0].center_h(0.85), "Add device", btn_base.wrapping_add(0));
                     draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[1].center_h(0.85), "Rename", btn_base.wrapping_add(1));
-                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[2].center_h(0.85), "Retire", btn_base.wrapping_add(2));
+                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[2].center_h(0.85), "Remove", btn_base.wrapping_add(2));
                 }
                 SettingsPage::Security => {
                     let rows = body.split_v([1.0; 8]);
                     settings_line(&mut canvas, ctx.text, rows[0], "Security", tspan, CONTACT_NAME_COLOUR, 600);
                     settings_line(&mut canvas, ctx.text, rows[1], "Named by destructiveness.", hspan2, LABEL_COLOUR, 400);
+                    // Lock (slot 0): clear the session only — de-attest, vault kept, re-unlock by re-typing your handle. Shred (slot 2): full clean — nuke vault + clear session, a blank slate for a new owner (two-tap confirm). Slot 1 ("Sign out & remove") is self-fleet-removal, still deferred.
                     draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[2].center_h(pillf(0.55)), "Lock (re-unlock with your handle)", btn_base.wrapping_add(0));
-                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[3].center_h(pillf(0.55)), "Retire this device", btn_base.wrapping_add(1));
-                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[4].center_h(pillf(0.55)), "Shred (crypto-wipe)", btn_base.wrapping_add(2));
+                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[3].center_h(pillf(0.55)), "Remove this device from fleet", btn_base.wrapping_add(1));
+                    let shred_label = if self.settings_shred_armed { "Shred — tap again to confirm" } else { "Shred (crypto-wipe)" };
+                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[4].center_h(pillf(0.55)), shred_label, btn_base.wrapping_add(2));
+                    if self.settings_shred_armed {
+                        settings_line(&mut canvas, ctx.text, rows[5], "Wipes the vault AND identity on this device — irreversible.", hspan2, ERROR_TEXT_COLOUR, 500);
+                    }
                     settings_line(&mut canvas, ctx.text, rows[6], "Security: strong   ·   Recovery: not set up", hspan2, LABEL_COLOUR, 400);
                 }
                 SettingsPage::Recovery => {
@@ -3787,12 +4000,22 @@ impl FluorApp for PhotonApp {
                 return CursorIcon::Pointer;
             }
         }
+        if let Some(btn) = self.message_send_btn.as_ref() {
+            if btn.hit_id() == hit {
+                return CursorIcon::Pointer;
+            }
+        }
         if let Some(tb) = self.textbox.as_ref() {
             if tb.hit_id() == hit {
                 return CursorIcon::Text;
             }
         }
         if let Some(tb) = self.contacts_textbox.as_ref() {
+            if tb.hit_id() == hit {
+                return CursorIcon::Text;
+            }
+        }
+        if let Some(tb) = self.message_textbox.as_ref() {
             if tb.hit_id() == hit {
                 return CursorIcon::Text;
             }
@@ -3930,6 +4153,39 @@ impl PhotonApp {
                 AddDeviceUpdate::Failed(e) => {
                     self.add_device_checking = false;
                     self.add_device_status = format!("Error: {e}");
+                }
+            }
+            needs_redraw = true;
+        }
+
+        // Device REMOVE flow: apply off-thread unbind + rotate results.
+        let remove_updates: Vec<RemoveDeviceUpdate> = self
+            .remove_device_rx
+            .as_ref()
+            .map(|rx| rx.try_iter().collect())
+            .unwrap_or_default();
+        for update in remove_updates {
+            match update {
+                RemoveDeviceUpdate::Removed(device) => {
+                    self.ready_toast = Some("Device removed \u{221a}".to_string());
+                    self.settings_fleet_selected = None;
+                    self.settings_remove_armed = None;
+                    // The removed device is out of the chain + can't decrypt the rotated epoch. Re-seal the roster under the new epoch (surviving devices need the fresh sealing), then re-fold OUR OWN chain — the own-hp fold routes to reconcile_fleet_siblings, which drops the removed device's sibling contact + its state/chains. Mirror of the Bound reaction.
+                    self.spawn_roster_republish();
+                    if let Some(our_hp) =
+                        self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof())
+                    {
+                        self.spawn_contact_fleet_refresh(vec![our_hp]);
+                    }
+                    crate::log(&format!(
+                        "FLEET: removed device {} — rotated + re-sealed; it must re-enroll to rejoin",
+                        hex::encode(&device[..4])
+                    ));
+                }
+                RemoveDeviceUpdate::Failed(e) => {
+                    self.settings_remove_armed = None;
+                    self.ready_toast = Some(format!("Remove failed: {e}"));
+                    crate::log(&format!("FLEET: device remove failed: {e}"));
                 }
             }
             needs_redraw = true;
@@ -4898,6 +5154,58 @@ impl PhotonApp {
                 let _ = tx.send(match r {
                     Ok(()) => AddDeviceUpdate::Bound,
                     Err(e) => AddDeviceUpdate::Failed(e),
+                });
+            });
+        }
+    }
+
+    /// The fleet device inventory for the Fleet settings page: this device first, then our other devices (sibling contacts). Each entry is `(device_pubkey, is_self, is_online, name)`. Reuses phase-1's sibling reconcile as the live inventory (`current_members(own_hp)` is the authority; reconcile keeps the sibling set == fleet-minus-this-device) — no synchronous network fetch on render. Name = a short stable voca word from the pubkey prefix (no device-label chain-op exists yet; rename is a deferred follow-up).
+    fn fleet_device_rows(&self) -> Vec<([u8; 32], bool, bool, String)> {
+        fn device_name(pk: &[u8; 32]) -> String {
+            // 5-byte prefix → a short friendly voca word (camelCase). Stable per device.
+            voca::encode(num_bigint::BigUint::from_bytes_be(&pk[..5]))
+        }
+        let mut rows = Vec::new();
+        if let Some(kp) = self.device_keypair.as_ref() {
+            let me = *kp.public.as_bytes();
+            rows.push((me, true, true, device_name(&me)));
+        }
+        for c in self.contacts.iter().filter(|c| c.is_sibling) {
+            let pk = c.public_identity.key;
+            rows.push((pk, false, c.is_online, device_name(&pk)));
+        }
+        rows
+    }
+
+    /// Remove one of OUR OWN devices from the fleet (mirror of `spawn_bind_device`). Sign a Remove op onto the membership chain, then rotate the fan-out excluding the removed device — MANDATORY, or the evicted device keeps its old epoch key and can open every future roster/fstate blob. Off-thread (fleet client blocks on HTTP). The removed device's next attest hits "not in the fleet — enroll from an existing device first"; it can't silently re-fold. `target` is another device's pubkey — never our own (self-retire is a separate, deferred flow).
+    fn spawn_unbind_device(&mut self, target: [u8; 32]) {
+        use crate::network::fgtw::fleet;
+        if self.remove_device_tx.is_none() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            self.remove_device_rx = Some(rx);
+            self.remove_device_tx = Some(tx);
+        }
+        if let (Some(hp), Some(kp), Some(tx)) = (
+            self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()),
+            self.device_keypair.clone(),
+            self.remove_device_tx.clone(),
+        ) {
+            std::thread::spawn(move || {
+                let r = fleet::unbind_device(&kp, &hp, target);
+                if r.is_ok() {
+                    // MANDATORY rotate excluding the removed device: current_members is re-fetched AFTER the Remove published, so it already excludes `target` — sealing the new epoch only to the survivors strips the removed device's fan-out wrap.
+                    match fleet::current_members(&hp) {
+                        Ok(members) => {
+                            if let Err(e) = fleet::rotate_fleet_key(&hp, &kp, &members) {
+                                crate::log(&format!("FLEET: rotate on remove failed: {e}"));
+                            }
+                        }
+                        Err(e) => crate::log(&format!("FLEET: members-on-remove failed: {e}")),
+                    }
+                }
+                let _ = tx.send(match r {
+                    Ok(()) => RemoveDeviceUpdate::Removed(target),
+                    Err(e) => RemoveDeviceUpdate::Failed(e),
                 });
             });
         }
@@ -10823,9 +11131,42 @@ impl PhotonApp {
                 }
             }
         };
-        wipe_dir(dirs::config_dir(), &mut count);
-        wipe_dir(dirs::data_dir(), &mut count);
+        #[cfg(not(target_os = "android"))]
+        {
+            wipe_dir(dirs::config_dir(), &mut count);
+            wipe_dir(dirs::data_dir(), &mut count);
+        }
+        #[cfg(target_os = "android")]
+        {
+            // On Android the vault lives in the JNI-injected dirs, NOT dirs::config_dir() (which doesn't resolve there) — walk the actual (primary, shadow) pair so a clean genuinely nukes the vault.
+            if let Some((primary, shadow)) = crate::storage::android_vault_dirs() {
+                wipe_dir(Some(std::path::PathBuf::from(primary)), &mut count);
+                if !shadow.is_empty() {
+                    wipe_dir(Some(std::path::PathBuf::from(shadow)), &mut count);
+                }
+            }
+        }
         count
+    }
+
+    /// Fully clean this device for a new owner / a fresh identity: nuke the on-disk vault (all `.vsf` — contacts, chains, keypairs, the cached fleet key) AND clear the tohu session (identity_seed + vault_seed + handle_proof), drop all in-memory state, and drop back to the attest screen. The device KEY is fingerprint-derived (not stored) so it survives — but with no identity bound and an empty vault the device is a blank slate: a new owner types their handle to attest fresh, or JOINs another fleet. This is `[]n` + `[]u` combined, exposed as a real (non-dev-chord) action for the Security page + the removed-device "start fresh" path; the `-1` broadcast signal tells the Android host to drop its sticky session too.
+    fn clean_device_for_reuse(&mut self) {
+        let count = Self::dev_wipe_vault_files("clean");
+        tohu::clear_session();
+        self.session = None;
+        self.private_s = crate::crypto::blind::PrivateS::None; // zeroized on overwrite
+        self.contacts.clear();
+        self.friendship_chains.clear();
+        if let Ok(mut pks) = self.contact_pubkeys.lock() {
+            pks.clear();
+        }
+        self.storage = None; // next attest re-opens a fresh vault
+        self.pending_broadcast_signal = -1; // Android: drop the sticky session broadcast
+        self.state = AppState::Launch(LaunchState::Fresh);
+        self.refocus_handle_select_all();
+        crate::log(&format!(
+            "CLEAN: wiped {count} vault file(s) + cleared session — device is a blank slate, ready to attest fresh or join another fleet"
+        ));
     }
 
     /// Dispatch a chord action character (`a`, `h`, `p`, etc.) that was pressed while both brackets are held. Returns true if anything happened (caller should request a redraw); false for unknown letters (no-op fallthrough — no whitelist so new bindings only add to dispatch, not gating).
