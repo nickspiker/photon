@@ -100,17 +100,14 @@ pub enum FgtwMessage {
         sender_pubkey: DevicePubkey,
         signature: [u8; 64],
     },
-    /// Phonebook gossip REQUEST — "send me your peer list".
-    /// The peers-are-FGTW mesh: when fgtw.org is unreachable (or just to stay fresh), ask known peers for their phonebook and merge by Eagle-time.
-    /// Signed like a ping so the responder can authenticate + route the reply to `sender_pubkey`.
+    /// Phonebook gossip REQUEST — "send me your peer list". The peers-are-FGTW mesh: when fgtw.org is unreachable (or just to stay fresh), ask known peers for their phonebook and merge by Eagle-time. Signed like a ping so the responder can authenticate + route the reply to `sender_pubkey`.
     PhonebookRequest {
         timestamp: i64,
         sender_pubkey: DevicePubkey,
         provenance_hash: [u8; 32], // BLAKE3(sender_pubkey || timestamp)
         signature: [u8; 64],       // Ed25519 over provenance_hash
     },
-    /// Phonebook gossip RESPONSE — our known peer records, each SELF-SIGNED (see PeerRecord).
-    /// The receiver verifies + merge_peers each one, so trust rides the record, not this relay.
+    /// Phonebook gossip RESPONSE — our known peer records, each SELF-SIGNED (see PeerRecord). The receiver verifies + merge_peers each one, so trust rides the record, not this relay.
     PhonebookResponse {
         timestamp: i64,
         responder_pubkey: DevicePubkey,
@@ -118,16 +115,14 @@ pub enum FgtwMessage {
         signature: [u8; 64],
         peers: Vec<PeerRecord>,
     },
-    /// Avatar exchange REQUEST — "send me your avatar (directly)".
-    /// Sent peer-to-peer to a MUTUAL contact (a completed CLUTCH ceremony = both added each other), so a friend's avatar comes from the friend, not a public lookup. The responder authenticates `sender_pubkey` against its own contacts and replies ONLY if that peer is a Complete contact — otherwise it stays silent and the requester falls back to FGTW (or nothing). Signed like a ping.
+    /// Avatar exchange REQUEST — "send me your avatar (directly)". Sent peer-to-peer to a MUTUAL contact (a completed CLUTCH ceremony = both added each other), so a friend's avatar comes from the friend, not a public lookup. The responder authenticates `sender_pubkey` against its own contacts and replies ONLY if that peer is a Complete contact — otherwise it stays silent and the requester falls back to FGTW (or nothing). Signed like a ping.
     AvatarRequest {
         timestamp: i64,
         sender_pubkey: DevicePubkey,
         provenance_hash: [u8; 32], // BLAKE3(sender_pubkey || timestamp)
         signature: [u8; 64],       // Ed25519 over provenance_hash
     },
-    /// Avatar exchange RESPONSE — the responder's OWN avatar as raw VSF bytes (the same AVIF-in-VSF blob stored in their vault / published to FGTW). Tens of KB, so PT fragments it transparently.
-    /// The receiver decodes it the same way as an FGTW download. Signed over the avatar bytes' hash.
+    /// Avatar exchange RESPONSE — the responder's OWN avatar as raw VSF bytes (the same AVIF-in-VSF blob stored in their vault / published to FGTW). Tens of KB, so PT fragments it transparently. The receiver decodes it the same way as an FGTW download. Signed over the avatar bytes' hash.
     AvatarResponse {
         timestamp: i64,
         responder_pubkey: DevicePubkey,
@@ -135,8 +130,7 @@ pub enum FgtwMessage {
         signature: [u8; 64],
         avatar_vsf: Vec<u8>,
     },
-    /// Address-reflection REQUEST (open-tier STUN) — "tell me the source address you see me at".
-    /// Body-less + signed like a ping, but answerable by ANY node serving the directory (not just contacts) — this is the peer-echoed reflexive primitive that lets a node learn its own public address on the live UDP data socket without a central STUN server. Reveals only the requester's own address; the response is the same size (no amplification).
+    /// Address-reflection REQUEST (open-tier STUN) — "tell me the source address you see me at". Body-less + signed like a ping, but answerable by ANY node serving the directory (not just contacts) — this is the peer-echoed reflexive primitive that lets a node learn its own public address on the live UDP data socket without a central STUN server. Reveals only the requester's own address; the response is the same size (no amplification).
     Reflect {
         timestamp: i64,
         sender_pubkey: DevicePubkey,
@@ -170,10 +164,7 @@ pub enum FgtwMessage {
 
 /// Peer record - one device for a user handle.
 ///
-/// Self-attesting: `signature` is the device's own Ed25519 signature over its other fields, made with the secret half of `device_pubkey` (an Ed25519 verifying key — see [`DevicePubkey`]).
-/// This is what lets a record propagate thru phonebook GOSSIP without trusting the relay: anyone can `verify()` it against the embedded `device_pubkey`, so a relaying peer can carry a device's entry but cannot forge or redirect its address without breaking the signature.
-/// FGTW-sourced records get the same treatment, so both sources of truth (the bootstrap server and peer gossip) are verifiable the same way.
-/// A record whose signature doesn't verify is dropped on merge.
+/// Self-attesting: `signature` is the device's own Ed25519 signature over its other fields, made with the secret half of `device_pubkey` (an Ed25519 verifying key — see [`DevicePubkey`]). This is what lets a record propagate thru phonebook GOSSIP without trusting the relay: anyone can `verify()` it against the embedded `device_pubkey`, so a relaying peer can carry a device's entry but cannot forge or redirect its address without breaking the signature. FGTW-sourced records get the same treatment, so both sources of truth (the bootstrap server and peer gossip) are verifiable the same way. A record whose signature doesn't verify is dropped on merge.
 #[derive(Debug, Clone)]
 pub struct PeerRecord {
     pub handle_proof: [u8; 32], // Memory-hard PoW output (24MB, 17 rounds)
@@ -859,8 +850,7 @@ impl FgtwMessage {
                     signature,
                 });
             } else {
-                // Each `peer` field is a positional multi-value record; decode with the production parser (the same one the FGTW peer list uses).
-                // A record that fails to decode is skipped rather than failing the whole response.
+                // Each `peer` field is a positional multi-value record; decode with the production parser (the same one the FGTW peer list uses). A record that fails to decode is skipped rather than failing the whole response.
                 let peers: Vec<PeerRecord> = section
                     .get_fields("peer")
                     .iter()
@@ -990,9 +980,7 @@ impl PeerRecord {
         }
     }
 
-    /// Canonical bytes the device signs / a verifier checks: handle_proof ‖ device_pubkey ‖ ip ‖ local_ip ‖ last_seen, length-tagged so no field can bleed into the next (an injective framing, the same discipline the braid uses).
-    /// IP/local_ip serialize via their `to_string()` so a v4 and its v4-mapped-v6 form sign distinctly — which is correct, they're different reachability facts.
-    /// EXCLUDES `signature` itself. Anything in here that an attacker changes (e.g. the address) invalidates the signature, which is the whole point.
+    /// Canonical bytes the device signs / a verifier checks: handle_proof ‖ device_pubkey ‖ ip ‖ local_ip ‖ last_seen, length-tagged so no field can bleed into the next (an injective framing, the same discipline the braid uses). IP/local_ip serialize via their `to_string()` so a v4 and its v4-mapped-v6 form sign distinctly — which is correct, they're different reachability facts. EXCLUDES `signature` itself. Anything in here that an attacker changes (e.g. the address) invalidates the signature, which is the whole point.
     fn signing_bytes(&self) -> Vec<u8> {
         let ip = self.ip.to_string();
         let local = self.local_ip.map(|a| a.to_string()).unwrap_or_default();
@@ -1008,16 +996,14 @@ impl PeerRecord {
         out
     }
 
-    /// Self-sign this record with the device's Ed25519 secret key. The secret MUST be the half of `device_pubkey`; callers pass their own device keypair (the one derived from the machine fingerprint), so a device only ever signs its OWN entry.
-    /// Fills `signature` in place.
+    /// Self-sign this record with the device's Ed25519 secret key. The secret MUST be the half of `device_pubkey`; callers pass their own device keypair (the one derived from the machine fingerprint), so a device only ever signs its OWN entry. Fills `signature` in place.
     pub fn sign(&mut self, signing_key: &ed25519_dalek::SigningKey) {
         use ed25519_dalek::Signer;
         let sig = signing_key.sign(&self.signing_bytes());
         self.signature = sig.to_bytes();
     }
 
-    /// Verify the self-signature against the embedded `device_pubkey`. `true` only if the signature was made by the holder of that device's secret over THESE exact fields — so a gossiped record can be trusted without trusting the relay that carried it.
-    /// An all-zero signature (legacy / unsigned FGTW record) verifies `false`.
+    /// Verify the self-signature against the embedded `device_pubkey`. `true` only if the signature was made by the holder of that device's secret over THESE exact fields — so a gossiped record can be trusted without trusting the relay that carried it. An all-zero signature (legacy / unsigned FGTW record) verifies `false`.
     pub fn verify(&self) -> bool {
         use ed25519_dalek::{Signature, Verifier, VerifyingKey};
         let Ok(vk) = VerifyingKey::from_bytes(self.device_pubkey.as_bytes()) else {
@@ -1028,8 +1014,7 @@ impl PeerRecord {
     }
 }
 
-/// Encode one PeerRecord as a single multi-value `peer` field, in the exact POSITIONAL shape [`crate::network::fgtw::bootstrap::parse_peer_from_field`] reads — the production-proven encoding (FGTW peer lists decode thru it daily): `(peer: hP{handle_proof}, ke{device_pubkey}, t_u3{ip}, u4{port}, e6{last_seen}, t_u3{local_ip}, ge{sig})` The trailing `ge` self-signature lets the receiver verify each record independently of the relay.
-/// (The flat-named `peer_N_*` / `v_u3` style of the legacy DHT `extract_peer_list` is deliberately NOT used — it has a latent IP type mismatch and isn't exercised in production.)
+/// Encode one PeerRecord as a single multi-value `peer` field, in the exact POSITIONAL shape [`crate::network::fgtw::bootstrap::parse_peer_from_field`] reads — the production-proven encoding (FGTW peer lists decode thru it daily): `(peer: hP{handle_proof}, ke{device_pubkey}, t_u3{ip}, u4{port}, e6{last_seen}, t_u3{local_ip}, ge{sig})` The trailing `ge` self-signature lets the receiver verify each record independently of the relay. (The flat-named `peer_N_*` / `v_u3` style of the legacy DHT `extract_peer_list` is deliberately NOT used — it has a latent IP type mismatch and isn't exercised in production.)
 fn encode_peer_field(peer: &PeerRecord) -> (String, Vec<VsfType>) {
     let (ip_octets, port) = match peer.ip {
         SocketAddr::V4(v4) => (v4.ip().octets().to_vec(), v4.port()),
@@ -1342,8 +1327,7 @@ fn compute_ack_provenance_v2(
     *hasher.finalize().as_bytes()
 }
 
-// =============================================================================
-// VSF-WRAPPED CLUTCH MESSAGES (Full 8-Algorithm CLUTCH) =============================================================================
+// ============================================================================= VSF-WRAPPED CLUTCH MESSAGES (Full 8-Algorithm CLUTCH) =============================================================================
 
 use crate::crypto::clutch::{ClutchCompletePayload, ClutchKemResponsePayload, ClutchOfferPayload};
 
@@ -1672,8 +1656,7 @@ pub fn parse_clutch_kem_response_vsf(
     vsf_bytes: &[u8],
     expected_conversation_token: &[u8; 32],
 ) -> Result<(ClutchKemResponsePayload, [u8; 32], [u8; 32], [u8; 32]), String> {
-    // SPEC DEVIATION (messaging rework will resolve): this frame's hp carries the ceremony_id — application semantics, not content provenance — so is_original/read_verified would reject it by design. The scheme-1 signature below still covers the ENTIRE file (including that hp), so integrity + authorship ARE verified; only content-hp self-attestation is waived. Canonicalising means moving ceremony_id into a section field (wire change).
-    // Verify signature first
+    // SPEC DEVIATION (messaging rework will resolve): this frame's hp carries the ceremony_id — application semantics, not content provenance — so is_original/read_verified would reject it by design. The scheme-1 signature below still covers the ENTIRE file (including that hp), so integrity + authorship ARE verified; only content-hp self-attestation is waived. Canonicalising means moving ceremony_id into a section field (wire change). Verify signature first
     if !vsf::verification::verify_file_signature(vsf_bytes)? {
         return Err("Invalid signature on ClutchKemResponse".to_string());
     }
@@ -2040,8 +2023,7 @@ pub fn parse_clutch_offer_vsf_without_recipient_check(
 pub fn parse_clutch_kem_response_vsf_without_recipient_check(
     vsf_bytes: &[u8],
 ) -> Result<(ClutchKemResponsePayload, [u8; 32], [u8; 32], [u8; 32]), String> {
-    // SPEC DEVIATION (messaging rework will resolve): this frame's hp carries the ceremony_id — application semantics, not content provenance — so is_original/read_verified would reject it by design. The scheme-1 signature below still covers the ENTIRE file (including that hp), so integrity + authorship ARE verified; only content-hp self-attestation is waived. Canonicalising means moving ceremony_id into a section field (wire change).
-    // Verify signature first
+    // SPEC DEVIATION (messaging rework will resolve): this frame's hp carries the ceremony_id — application semantics, not content provenance — so is_original/read_verified would reject it by design. The scheme-1 signature below still covers the ENTIRE file (including that hp), so integrity + authorship ARE verified; only content-hp self-attestation is waived. Canonicalising means moving ceremony_id into a section field (wire change). Verify signature first
     if !vsf::verification::verify_file_signature(vsf_bytes)? {
         return Err("Invalid signature on ClutchKemResponse".to_string());
     }
@@ -2291,8 +2273,7 @@ fn extract_v(fields: &[(String, VsfType)], key: &str, expected_tag: u8) -> Resul
     }
 }
 
-// =============================================================================
-// CLUTCH COMPLETE (Proof Exchange) =============================================================================
+// ============================================================================= CLUTCH COMPLETE (Proof Exchange) =============================================================================
 
 /// Build a signed VSF ClutchComplete message (~200 bytes).
 ///
@@ -2342,8 +2323,7 @@ pub fn parse_clutch_complete_vsf(
     vsf_bytes: &[u8],
     expected_conversation_token: &[u8; 32],
 ) -> Result<(ClutchCompletePayload, [u8; 32], [u8; 32], [u8; 32]), String> {
-    // SPEC DEVIATION (messaging rework will resolve): this frame's hp carries the ceremony_id — application semantics, not content provenance — so is_original/read_verified would reject it by design. The scheme-1 signature below still covers the ENTIRE file (including that hp), so integrity + authorship ARE verified; only content-hp self-attestation is waived. Canonicalising means moving ceremony_id into a section field (wire change).
-    // Verify signature first
+    // SPEC DEVIATION (messaging rework will resolve): this frame's hp carries the ceremony_id — application semantics, not content provenance — so is_original/read_verified would reject it by design. The scheme-1 signature below still covers the ENTIRE file (including that hp), so integrity + authorship ARE verified; only content-hp self-attestation is waived. Canonicalising means moving ceremony_id into a section field (wire change). Verify signature first
     if !vsf::verification::verify_file_signature(vsf_bytes)? {
         return Err("Invalid signature on ClutchComplete".to_string());
     }
@@ -2406,8 +2386,7 @@ pub fn parse_clutch_complete_vsf(
 pub fn parse_clutch_complete_vsf_without_recipient_check(
     vsf_bytes: &[u8],
 ) -> Result<(ClutchCompletePayload, [u8; 32], [u8; 32], [u8; 32]), String> {
-    // SPEC DEVIATION (messaging rework will resolve): this frame's hp carries the ceremony_id — application semantics, not content provenance — so is_original/read_verified would reject it by design. The scheme-1 signature below still covers the ENTIRE file (including that hp), so integrity + authorship ARE verified; only content-hp self-attestation is waived. Canonicalising means moving ceremony_id into a section field (wire change).
-    // Verify signature first
+    // SPEC DEVIATION (messaging rework will resolve): this frame's hp carries the ceremony_id — application semantics, not content provenance — so is_original/read_verified would reject it by design. The scheme-1 signature below still covers the ENTIRE file (including that hp), so integrity + authorship ARE verified; only content-hp self-attestation is waived. Canonicalising means moving ceremony_id into a section field (wire change). Verify signature first
     if !vsf::verification::verify_file_signature(vsf_bytes)? {
         return Err("Invalid signature on ClutchComplete".to_string());
     }
@@ -2450,14 +2429,9 @@ pub fn parse_clutch_complete_vsf_without_recipient_check(
     Ok((payload, sender_pubkey, ceremony_id, conversation_token))
 }
 
-// ============================================================================
-// History recovery frames — hist_req / hist_page ============================================================================
+// ============================================================================ History recovery frames — hist_req / hist_page ============================================================================
 //
-// Standalone signed VSF frames for friend-assisted conversation backfill (newest-first cursor
-// pagination). Both are built CANONICALLY (sign_file computes the content-hp provenance) and parsed
-// via read_verified + parse_section_after_header — no raw decode sites, vsf-gate untouched. The page
-// payload is an opaque AEAD blob sealed under the friendship history key (see network::history_pages);
-// the wire leaks only the conversation token + blob size.
+// Standalone signed VSF frames for friend-assisted conversation backfill (newest-first cursor pagination). Both are built CANONICALLY (sign_file computes the content-hp provenance) and parsed via read_verified + parse_section_after_header — no raw decode sites, vsf-gate untouched. The page payload is an opaque AEAD blob sealed under the friendship history key (see network::history_pages); the wire leaks only the conversation token + blob size.
 
 /// A parsed history request: "send me up to `limit` rows strictly OLDER than `before_osc`".
 #[derive(Clone, Debug)]
@@ -2502,9 +2476,7 @@ pub fn build_history_request_vsf(
     vsf::verification::sign_file(unsigned, device_secret)
 }
 
-/// Parse + verify a `hist_req` frame. Returns (payload, sender_pubkey). The caller authorizes the
-/// sender against the conversation's contact (known device + mutual) — signature validity alone is
-/// NOT authorization.
+/// Parse + verify a `hist_req` frame. Returns (payload, sender_pubkey). The caller authorizes the sender against the conversation's contact (known device + mutual) — signature validity alone is NOT authorization.
 pub fn parse_history_request_vsf(
     vsf_bytes: &[u8],
 ) -> Result<(HistoryRequestPayload, [u8; 32]), String> {
@@ -2589,8 +2561,7 @@ pub fn build_history_page_vsf(
     vsf::verification::sign_file(unsigned, device_secret)
 }
 
-/// Parse + verify a `hist_page` frame. Returns ((conversation_token, request_id, sealed_blob), sender_pubkey).
-/// The blob is opaque here; the requester opens it with the friendship history key (AEAD failure = drop).
+/// Parse + verify a `hist_page` frame. Returns ((conversation_token, request_id, sealed_blob), sender_pubkey). The blob is opaque here; the requester opens it with the friendship history key (AEAD failure = drop).
 pub fn parse_history_page_vsf(
     vsf_bytes: &[u8],
 ) -> Result<(([u8; 32], [u8; 32], Vec<u8>), [u8; 32]), String> {
