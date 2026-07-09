@@ -1,10 +1,6 @@
 //! Connection candidates and their priority ordering.
 //!
-//! A candidate is one address at which a peer might be reachable. Traversal gathers a set per peer
-//! (their LAN address, their reflexive/public address, an IPv6 host address) and punches toward all of
-//! them; the first to round-trip wins. Priority orders which we *prefer* when several validate, and lets
-//! [`CandidateSet::best_pair`] reproduce the exact `(primary, alt)` shape `Contact::race_addrs` returns
-//! today, so the transport contract downstream is unchanged.
+//! A candidate is one address at which a peer might be reachable. Traversal gathers a set per peer (their LAN address, their reflexive/public address, an IPv6 host address) and punches toward all of them; the first to round-trip wins. Priority orders which we *prefer* when several validate, and lets [`CandidateSet::best_pair`] reproduce the exact `(primary, alt)` shape `Contact::race_addrs` returns today, so the transport contract downstream is unchanged.
 //!
 //! Ordering, best first:
 //! 1. **Global IPv6 host** — no NAT in the path at all, so it needs no hole-punch; just works when both ends have v6.
@@ -86,10 +82,7 @@ impl CandidateSet {
         self.candidates.is_empty()
     }
 
-    /// The `(primary, alternate)` pair for the transport, matching `Contact::race_addrs`'s contract:
-    /// primary = highest-priority candidate, alternate = next distinct-address candidate (or `None`).
-    /// PT races both and locks onto whichever ACKs first. Once the candidate model drives sends (P3),
-    /// this replaces the ad-hoc LAN-vs-WAN choice with the full priority order (e.g. an IPv6 host first).
+    /// The `(primary, alternate)` pair for the transport, matching `Contact::race_addrs`'s contract: primary = highest-priority candidate, alternate = next distinct-address candidate (or `None`). PT races both and locks onto whichever ACKs first. Once the candidate model drives sends (P3), this replaces the ad-hoc LAN-vs-WAN choice with the full priority order (e.g. an IPv6 host first).
     pub fn best_pair(&self) -> Option<(SocketAddr, Option<SocketAddr>)> {
         let sorted = self.sorted();
         let primary = sorted.first()?.addr;

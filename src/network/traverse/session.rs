@@ -1,5 +1,4 @@
-//! Per-peer reachability state — the result of traversal, cached with freshness so a warm path is reused
-//! without re-punching, and a stale one triggers a re-punch or falls to relay (M2).
+//! Per-peer reachability state — the result of traversal, cached with freshness so a warm path is reused without re-punching, and a stale one triggers a re-punch or falls to relay (M2).
 
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};

@@ -671,8 +671,7 @@ mod tests {
         assert!(loaded.messages[0].is_outgoing && loaded.messages[0].delivered);
         assert_eq!(loaded.messages[1].content, "hey");
         assert!(!loaded.messages[1].is_outgoing && !loaded.messages[1].delivered);
-        // The received message's ack_hash must survive the round-trip (re-ACK after restart);
-        // outgoing messages carry no ack_hash.
+        // The received message's ack_hash must survive the round-trip (re-ACK after restart); outgoing messages carry no ack_hash.
         assert_eq!(loaded.messages[1].ack_hash, Some([0x7Au8; 32]));
         assert_eq!(loaded.messages[0].ack_hash, None);
         assert_eq!(loaded.messages[2].content, "👋 unicode");

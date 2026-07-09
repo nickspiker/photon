@@ -51,9 +51,7 @@ fn compute_provenance_hash(sender_pubkey: &DevicePubkey, timestamp: i64) -> [u8;
 pub struct PingRequest {
     pub peer_addr: SocketAddr,
     pub peer_pubkey: DevicePubkey,
-    /// Hole-punch candidate addresses to fire a probe at, alongside the ping. Empty = no punch this cycle
-    /// (e.g. we already have a fresh validated path). Piggybacking on the ping cycle gives the punch a
-    /// natural cadence and doubles as keepalive on a validated path.
+    /// Hole-punch candidate addresses to fire a probe at, alongside the ping. Empty = no punch this cycle (e.g. we already have a fresh validated path). Piggybacking on the ping cycle gives the punch a natural cadence and doubles as keepalive on a validated path.
     pub punch_candidates: Vec<SocketAddr>,
 }
 
@@ -598,11 +596,7 @@ fn send_status_update(
             crate::log(&format!("Status: Failed to send wake event: {:?}", e));
         }
     }
-    // Android has no event-loop proxy — the UI thread's tick is Choreographer-driven and stops when the
-    // app backgrounds. So the wake instead pokes the foreground service to run a headless protocol tick
-    // (advance_protocol), which drains this very update off the channel and advances the ceremony/chain
-    // without the screen being on. No-op while foregrounded (the service defers to the live draw) and
-    // when the Activity context isn't registered. See docs/background-tick.md.
+    // Android has no event-loop proxy — the UI thread's tick is Choreographer-driven and stops when the app backgrounds. So the wake instead pokes the foreground service to run a headless protocol tick (advance_protocol), which drains this very update off the channel and advances the ceremony/chain without the screen being on. No-op while foregrounded (the service defers to the live draw) and when the Activity context isn't registered. See docs/background-tick.md.
     #[cfg(target_os = "android")]
     crate::platform::jni_android::request_service_tick();
 }
@@ -765,8 +759,7 @@ async fn run_checker(
                 multicast_addr, multicast_port
             ));
 
-            // 64 KiB so a sync-record-laden datagram is never silently truncated (a short recv drops
-            // the tail → parse error → one-way presence).
+            // 64 KiB so a sync-record-laden datagram is never silently truncated (a short recv drops the tail → parse error → one-way presence).
             let mut buf = [0u8; 65536];
             loop {
                 match socket.recv_from(&mut buf).await {
@@ -1007,12 +1000,7 @@ async fn run_checker(
                                                     contact_list.iter().any(|p| *p == sender)
                                                 };
 
-                                            // Trust gate BEFORE the ~500KB CLUTCH section parse: the
-                                            // signer pubkey lives in the header (cheap to extract, no
-                                            // section walk), so reject an untrusted sender here rather
-                                            // than after parsing half a megabyte of their payload. The
-                                            // per-message is_known_sender checks below stay as
-                                            // defence-in-depth.
+                                            // Trust gate BEFORE the ~500KB CLUTCH section parse: the signer pubkey lives in the header (cheap to extract, no section walk), so reject an untrusted sender here rather than after parsing half a megabyte of their payload. The per-message is_known_sender checks below stay as defence-in-depth.
                                             if let Ok(signer) =
                                                 vsf::verification::extract_signer_pubkey(&data)
                                             {
@@ -1135,8 +1123,7 @@ async fn run_checker(
     // Spawn UDP receiver task
     tokio::spawn(async move {
         crate::log("Status: Receiver task started, waiting for UDP packets...");
-        // 64 KiB RX buffer: a pong laden with per-conversation sync records exceeds 2 KiB and a short
-        // recv silently truncated it → parse error → one-way presence (a peer never saw the other).
+        // 64 KiB RX buffer: a pong laden with per-conversation sync records exceeds 2 KiB and a short recv silently truncated it → parse error → one-way presence (a peer never saw the other).
         let mut buf = [0u8; 65536];
         // This node's own reflexive (public) address, learned from peer-echoed reflection (pong `observed_addr` + `ReflectResponse`). Local to the long-lived receiver task; each adoption change is pushed to the app as `StatusUpdate::ReflexiveLearned`.
         let mut reflexive = crate::network::traverse::reflexive::ReflexiveState::new();
@@ -1150,9 +1137,7 @@ async fn run_checker(
                         if let Some(data) = PTData::from_bytes(msg_bytes) {
                             // Handle data and collect responses (must drop lock before await)
                             let (ack_bytes, complete_bytes, received_data, inbound_stats) = {
-                                // Capture the stream BEFORE `data` is moved into handle_data: completion
-                                // + drain are stream-scoped so concurrent transfers from the same peer
-                                // (CLUTCH offer + KEM response) don't get cross-wired and silently dropped.
+                                // Capture the stream BEFORE `data` is moved into handle_data: completion + drain are stream-scoped so concurrent transfers from the same peer (CLUTCH offer + KEM response) don't get cross-wired and silently dropped.
                                 let stream_id = data.stream_id;
                                 let mut pt_mgr = pt_recv.lock().unwrap();
                                 let ack = pt_mgr.handle_data(src_addr, data);
@@ -1237,10 +1222,7 @@ async fn run_checker(
                                         contact_list.iter().any(|p| *p == sender)
                                     };
 
-                                    // Trust gate BEFORE the ~500KB CLUTCH section parse: the signer
-                                    // pubkey is a cheap header extraction (no section walk), so an
-                                    // untrusted sender is dropped before we parse their payload. The
-                                    // per-message checks below remain as defence-in-depth.
+                                    // Trust gate BEFORE the ~500KB CLUTCH section parse: the signer pubkey is a cheap header extraction (no section walk), so an untrusted sender is dropped before we parse their payload. The per-message checks below remain as defence-in-depth.
                                     if let Ok(signer) =
                                         vsf::verification::extract_signer_pubkey(&data)
                                     {
@@ -1398,12 +1380,7 @@ async fn run_checker(
                     {
                         use crate::network::fgtw::protocol::parse_clutch_complete_vsf_without_recipient_check;
 
-                        // Contact-allowlist gate BEFORE the ~500KB CLUTCH parse, parity with the
-                        // TCP/PT branches (which had a gate; this UDP-direct path had none, so it
-                        // adopted — and even acked — a CLUTCH proof from any pubkey). The signer is a
-                        // cheap header extraction, so reject untrusted senders before parsing. A
-                        // non-contact (or a non-signed frame) falls through to the general message
-                        // path below; this branch is opportunistic for small direct UDP CLUTCH.
+                        // Contact-allowlist gate BEFORE the ~500KB CLUTCH parse, parity with the TCP/PT branches (which had a gate; this UDP-direct path had none, so it adopted — and even acked — a CLUTCH proof from any pubkey). The signer is a cheap header extraction, so reject untrusted senders before parsing. A non-contact (or a non-signed frame) falls through to the general message path below; this branch is opportunistic for small direct UDP CLUTCH.
                         let signer_known = vsf::verification::extract_signer_pubkey(msg_bytes)
                             .map(|signer| {
                                 let sender = DevicePubkey::from_bytes(signer);
@@ -2224,10 +2201,7 @@ async fn run_checker(
 
         // Process avatar response sends (return our own avatar to a requesting peer) Routed thru PT for unified transport (UDP → TCP after 1s → relay fallback)
         while let Ok(request) = avatar_response_rx.try_recv() {
-            // Defence-in-depth: never device-sign and ship an FGTW error frame as an avatar (the
-            // caller validates+decodes first, but a poisoned frame reaching here would be signed as
-            // a real avatar the friend can't decode). The full decode needs the seed, so here we
-            // reject only the cheap-to-detect error frame; the seed-gated decode happens upstream.
+            // Defence-in-depth: never device-sign and ship an FGTW error frame as an avatar (the caller validates+decodes first, but a poisoned frame reaching here would be signed as a real avatar the friend can't decode). The full decode needs the seed, so here we reject only the cheap-to-detect error frame; the seed-gated decode happens upstream.
             if let Some((reason, detail)) = fgtw::client::error_frame(&request.avatar_vsf) {
                 crate::log(&format!(
                     "Status: refusing to serve avatar error frame {}: {}",
