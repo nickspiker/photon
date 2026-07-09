@@ -1319,6 +1319,27 @@ impl FluorApp for PhotonApp {
                 ) {
                     Ok(s) => {
                         self.contacts = crate::storage::contacts::load_all_contacts(&s);
+                        // Fleet siblings load from their own index (they never enter the contacts index; the handle string is cosmetic — borrowed from the self-contact when present).
+                        {
+                            let our_handle = self
+                                .contacts
+                                .iter()
+                                .find(|c| c.handle_proof == remembered.handle_proof)
+                                .map(|c| c.handle.as_str().to_string())
+                                .unwrap_or_default();
+                            let siblings = crate::storage::contacts::load_all_siblings(
+                                &our_handle,
+                                remembered.handle_proof,
+                                &s,
+                            );
+                            if !siblings.is_empty() {
+                                crate::log(&format!(
+                                    "SIBLING: loaded {} sibling(s) from local vault on resume",
+                                    siblings.len()
+                                ));
+                            }
+                            self.contacts.extend(siblings);
+                        }
                         // Load each contact's conversation history too — load_all_contacts only loads per-peer contact STATE from the vault, not the messages (those live in the rārangi DB, loaded separately). Without this the resume frame paints contacts with empty message lists, and the later query_resume result can't fix it: on_query_result merges by handle_proof and SKIPS already-loaded contacts as duplicates, so the message-bearing copy is discarded → history looks wiped until the next app launch. Loading here makes resume show full history at once.
                         for contact in &mut self.contacts {
                             if let Err(e) = crate::storage::contacts::load_messages(contact, &s) {
@@ -1346,8 +1367,16 @@ impl FluorApp for PhotonApp {
                         self.update_sync_records();
                         // Seed the checker's answerable-pubkey set with every loaded contact's FULL fleet so pongs/offers from any of their devices are honoured.
                         self.reseed_contact_pubkeys();
-                        // Wake-up catch-up: re-fold each contact's fleet so a friend's device added while we were off is honoured now, not next launch.
-                        let hps: Vec<[u8; 32]> = self.contacts.iter().map(|c| c.handle_proof).collect();
+                        // Wake-up catch-up: re-fold each contact's fleet so a friend's device added while we were off is honoured now, not next launch. Our OWN hp is included explicitly — the drain routes it to sibling reconcile (fleet weave), so a freshly-joined device discovers its siblings on first resume even with an empty contact list.
+                        let mut hps: Vec<[u8; 32]> = self
+                            .contacts
+                            .iter()
+                            .filter(|c| !c.is_sibling)
+                            .map(|c| c.handle_proof)
+                            .collect();
+                        hps.push(remembered.handle_proof);
+                        hps.sort_unstable();
+                        hps.dedup();
                         self.spawn_contact_fleet_refresh(hps);
                         // Rehydrate each contact's saved ephemeral keypairs from disk (~588KB each). load_contact_state deliberately doesn't pull these (they're huge and live in a separate vault key), so without this every resume re-runs the McEliece-heavy keygen below — which is what froze the UI on launch. Loading the persisted keypairs makes the re-key filter a no-op for contacts that already have them, so keygen only fires for genuinely keyless Pending ones.
                         for contact in self.contacts.iter_mut() {
@@ -2272,7 +2301,12 @@ impl FluorApp for PhotonApp {
             let n_matching = self
                 .contacts
                 .iter()
-                .filter(|c| filter.is_empty() || c.handle.as_str().to_lowercase().contains(&filter))
+                .filter(|c| {
+                    // Must mirror the render pass's `matching` filter exactly (siblings hidden) or the two clamps disagree within a frame.
+                    !c.is_sibling
+                        && (filter.is_empty()
+                            || c.handle.as_str().to_lowercase().contains(&filter))
+                })
                 .count();
             let block_bottom_at_zero = rl.rows.y0 as isize + n_matching as isize * row_h;
             // The version footer rides the block one row-height past the last row; extend the scroll extent past it (footer gap + a row-height of bottom margin) so the user can scroll the version fully into view instead of the bottom edge swallowing it.
@@ -2858,7 +2892,10 @@ impl FluorApp for PhotonApp {
                 .iter()
                 .enumerate()
                 .filter(|(_, c)| {
-                    filter.is_empty() || c.handle.as_str().to_lowercase().contains(&filter)
+                    // Fleet siblings are infrastructure, not conversations — never listed (device management gets its own page later).
+                    !c.is_sibling
+                        && (filter.is_empty()
+                            || c.handle.as_str().to_lowercase().contains(&filter))
                 })
                 .map(|(i, _)| i)
                 .collect();
@@ -3858,6 +3895,12 @@ impl PhotonApp {
                     self.ready_toast = Some("Device added \u{221a}".to_string());
                     // The add rotated the fleet key — pull the new epoch into our cache now; the next presence/attest cycle re-seals the roster under it (pushing here would race the async cache update and seal under the stale key).
                     self.spawn_fleet_key_sync();
+                    // And re-fold our own chain immediately so the freshly-bound device gets its sibling contact (fleet weave kickoff) without waiting for the next fleet event.
+                    if let Some(our_hp) =
+                        self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof())
+                    {
+                        self.spawn_contact_fleet_refresh(vec![our_hp]);
+                    }
                 }
                 AddDeviceUpdate::Failed(e) => {
                     self.add_device_checking = false;
@@ -3964,7 +4007,13 @@ impl PhotonApp {
                     // OUR fleet: shared-state or membership change — pull it now.
                     match *kind {
                         "fstate" | "friendship" if self.roster_pull_rx.is_none() => self.spawn_roster_pull(),
-                        "fleet" => self.spawn_fleet_key_sync(),
+                        "fleet" => {
+                            self.spawn_fleet_key_sync();
+                            // Membership changed: re-fold our own chain so sibling contacts reconcile (fleet weave) — this is how existing members learn about a freshly-added device within ~a second.
+                            if !refresh_contacts.contains(evt_hp) {
+                                refresh_contacts.push(*evt_hp);
+                            }
+                        }
                         _ => {}
                     }
                 } else if *kind == "fleet"
@@ -3981,15 +4030,21 @@ impl PhotonApp {
             needs_redraw = true;
         }
 
-        // Contact-fleet refresh results: fold-and-honour a friend's current device set.
+        // Contact-fleet refresh results: fold-and-honour a friend's current device set. OUR OWN hp routes to sibling reconcile FIRST and never into any contact's fleet_members — the self-contact and every sibling contact carry our hp, and folding our own fleet into one of them would make it swallow sibling pongs/paths via first-match `knows_device` routing.
         let member_updates: Vec<([u8; 32], Vec<[u8; 32]>)> = self
             .contact_members_rx
             .as_ref()
             .map(|rx| rx.try_iter().collect())
             .unwrap_or_default();
         if !member_updates.is_empty() {
+            let our_hp = self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof());
             let mut changed = false;
             for (hp, members) in member_updates {
+                if Some(hp) == our_hp {
+                    self.reconcile_fleet_siblings(&members);
+                    needs_redraw = true;
+                    continue;
+                }
                 if let Some(c) = self.contacts.iter_mut().find(|c| c.handle_proof == hp) {
                     if c.fleet_members != members {
                         c.fleet_members = members;
@@ -4503,6 +4558,93 @@ impl PhotonApp {
         });
     }
 
+    /// Reconcile OUR OWN folded fleet membership into sibling contacts (the fleet weave). For each member device that isn't us and has no sibling contact yet: create one as `ClutchState::Pending` — the serialized keygen queue picks it up and the full CLUTCH ceremony + weave runs against it exactly like a friend. For each sibling contact whose device fell out of the fold: remove it and delete its state + chains (revocation hygiene — an ex-member must not stay ceremony-eligible). Idempotent; triggered from attest/resume, our-hp `fleet` events, and the binder's `AddDeviceUpdate::Bound`.
+    fn reconcile_fleet_siblings(&mut self, members: &[[u8; 32]]) {
+        let Some(our_device) = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes())
+        else {
+            return;
+        };
+        let Some(our_hp) = self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()) else {
+            return;
+        };
+        // Our handle STRING is cosmetic on a sibling contact (hidden from UI, matched by hp/device) and the session stores registers, never the handle — borrow it from the self-contact when one exists, else empty.
+        let our_handle = self
+            .contacts
+            .iter()
+            .find(|c| !c.is_sibling && c.handle_proof == our_hp)
+            .map(|c| c.handle.as_str().to_string())
+            .unwrap_or_default();
+
+        let mut changed = false;
+
+        // Add newly-folded members.
+        for device in members {
+            if *device == our_device {
+                continue;
+            }
+            if self
+                .contacts
+                .iter()
+                .any(|c| c.is_sibling && c.public_identity.key == *device)
+            {
+                continue;
+            }
+            let sib = crate::types::Contact::new_sibling(
+                crate::types::HandleText::new(&our_handle),
+                our_hp,
+                crate::types::DevicePubkey::from_bytes(*device),
+            );
+            crate::log(&format!(
+                "SIBLING: reconciled +1 (device {}) — fleet weave pending",
+                hex::encode(&device[..4])
+            ));
+            if let Some(storage) = self.storage.as_ref() {
+                if let Err(e) = crate::storage::contacts::save_contact(&sib, storage) {
+                    crate::log(&format!("SIBLING: failed to persist sibling: {}", e));
+                }
+            }
+            self.contacts.push(sib);
+            changed = true;
+        }
+
+        // Drop de-folded members (device removed from OUR chain).
+        let mut removed: Vec<crate::types::Contact> = Vec::new();
+        self.contacts.retain(|c| {
+            if c.is_sibling && !members.contains(&c.public_identity.key) {
+                removed.push(c.clone());
+                false
+            } else {
+                true
+            }
+        });
+        for c in &removed {
+            crate::log(&format!(
+                "SIBLING: reconciled -1 (device {} left the fold)",
+                hex::encode(&c.public_identity.key[..4])
+            ));
+            changed = true;
+            if let Some(storage) = self.storage.as_ref() {
+                if let Err(e) =
+                    crate::storage::contacts::delete_sibling(&c.public_identity.key, storage)
+                {
+                    crate::log(&format!("SIBLING: failed to delete sibling state: {}", e));
+                }
+                if let Some(fid) = c.friendship_id {
+                    self.friendship_chains.retain(|(id, _)| *id != fid);
+                    if let Err(e) =
+                        crate::storage::friendship::delete_friendship_chains(&fid, storage)
+                    {
+                        crate::log(&format!("SIBLING: failed to delete sibling chains: {}", e));
+                    }
+                }
+            }
+        }
+
+        if changed {
+            self.reseed_contact_pubkeys();
+        }
+    }
+
     fn spawn_fleet_key_sync(&self) {
         use crate::network::fgtw::fleet;
         let (Some(hp), Some(device_key), Some(storage), Some(session)) = (
@@ -4539,13 +4681,13 @@ impl PhotonApp {
         }
     }
 
-    /// Build the fleet roster from the live contact list — the syncable subset, minus self-contacts (notes-to-self are device-local, not a friend to share). v0 uses `added` as the update clock and emits no tombstones (removal-propagation is a follow-up).
+    /// Build the fleet roster from the live contact list — the syncable subset, minus self-contacts (notes-to-self are device-local, not a friend to share) and minus fleet siblings (infrastructure, not friends — a sibling pid leaking into the roster would merge as a bogus contact on every device).
     fn current_roster(&self) -> Vec<crate::network::fgtw::fleet::RosterEntry> {
         use crate::network::fgtw::fleet::RosterEntry;
         let our_seed = self.session.as_ref().map(|s| s.identity_seed);
         self.contacts
             .iter()
-            .filter(|c| our_seed != Some(c.handle_hash))
+            .filter(|c| !c.is_sibling && our_seed != Some(c.handle_hash))
             .map(|c| RosterEntry {
                 handle_proof: c.handle_proof,
                 handle_hash: c.handle_hash,
@@ -4565,7 +4707,12 @@ impl PhotonApp {
             if e.tombstone {
                 continue;
             }
-            if self.contacts.iter().any(|c| c.handle_proof == e.handle_proof) {
+            // Dedup against FRIEND contacts only — sibling contacts carry OUR handle_proof and must not suppress a roster entry (nor be treated as its holder).
+            if self
+                .contacts
+                .iter()
+                .any(|c| !c.is_sibling && c.handle_proof == e.handle_proof)
+            {
                 continue;
             }
             let handle_text = crate::types::HandleText::new(&e.handle);
@@ -4583,7 +4730,14 @@ impl PhotonApp {
         ));
         self.reseed_contact_pubkeys();
         // Re-fold every contact's fleet after a roster merge (newly-merged contacts have no members yet).
-        let hps: Vec<[u8; 32]> = self.contacts.iter().map(|c| c.handle_proof).collect();
+        let mut hps: Vec<[u8; 32]> = self
+            .contacts
+            .iter()
+            .filter(|c| !c.is_sibling)
+            .map(|c| c.handle_proof)
+            .collect();
+        hps.sort_unstable();
+        hps.dedup();
         self.spawn_contact_fleet_refresh(hps);
         // Force any merged self-contact Complete so it's skipped by the keygen filter, then persist the newly-added tail (post-settle so a self→Complete flip is saved).
         self.settle_self_contacts();
@@ -4885,13 +5039,9 @@ impl PhotonApp {
 
         let ci = contact_idx;
         let text = text.to_string();
-        let our_handle_hash = match self.session.as_ref().map(|s| s.identity_seed) {
-            Some(h) => h,
-            None => return false,
-        };
 
         // Contact must be CLUTCH-Complete with a friendship chain.
-        let (friendship_id, recipient_pubkey, addr_pair) = {
+        let (friendship_id, recipient_pubkey, addr_pair, our_handle_hash) = {
             let Some(contact) = self.contacts.get(ci) else {
                 return false;
             };
@@ -4903,7 +5053,11 @@ impl PhotonApp {
                 crate::log("CHAT: cannot send — no friendship chain");
                 return false;
             };
-            (fid, contact.public_identity.key, contact.race_addrs())
+            // Party id per contact: identity seed for friends, device-derived pid for fleet siblings — the chain index in prepare_send must match what from_clutch was keyed with.
+            let Some(our_pid) = self.our_party_id(contact) else {
+                return false;
+            };
+            (fid, contact.public_identity.key, contact.race_addrs(), our_pid)
         };
         let Some((peer_addr, alt_addr)) = addr_pair else {
             crate::log("CHAT: cannot send — no known address for contact");
@@ -5079,21 +5233,23 @@ impl PhotonApp {
         c.clutch_completed_at = Some(std::time::Instant::now()); // refresh the re-key cooldown thru the weave (armed at completion; this extends it)
         c.clutch_proof_resends_left = 0;
         crate::log("CHAIN-PROBE: chain woven — end-to-end verified, ceremony rebroadcast cancelled");
-        // Kick off friend-history recovery on the woven-chain EDGE (this fn fires exactly once per seal; vault loads latch chain_woven without passing here, so restarts resume via the persisted cursor instead of re-kicking). Always request the head page — if we already hold the history, merging dedups and the early-stop rule completes after one page.
-        let was_complete_before = c
-            .history_recovery
-            .as_ref()
-            .map(|r| r.complete)
-            .unwrap_or(false);
-        c.history_recovery = Some(crate::types::HistoryRecovery {
-            oldest_recovered_osc: i64::MAX,
-            complete: false,
-            in_flight: None,
-            next_request_osc: 0,
-            urgent: true, // head page jumps the trickle interval — conversation usable ASAP
-            was_complete_before,
-        });
-        crate::log("HISTORY: recovery kicked off (head page next tick)");
+        // Kick off friend-history recovery on the woven-chain EDGE (this fn fires exactly once per seal; vault loads latch chain_woven without passing here, so restarts resume via the persisted cursor instead of re-kicking). Always request the head page — if we already hold the history, merging dedups and the early-stop rule completes after one page. Siblings are excluded: friend-history recovery resolves "the other participant ≠ our seed", which is ambiguous on a sibling chain — fleet history sync is its own later phase.
+        if !c.is_sibling {
+            let was_complete_before = c
+                .history_recovery
+                .as_ref()
+                .map(|r| r.complete)
+                .unwrap_or(false);
+            c.history_recovery = Some(crate::types::HistoryRecovery {
+                oldest_recovered_osc: i64::MAX,
+                complete: false,
+                in_flight: None,
+                next_request_osc: 0,
+                urgent: true, // head page jumps the trickle interval — conversation usable ASAP
+                was_complete_before,
+            });
+            crate::log("HISTORY: recovery kicked off (head page next tick)");
+        }
         if let Some(storage) = self.storage.as_ref() {
             if let Err(e) = crate::storage::contacts::save_contact(c, storage) {
                 crate::log(&format!("CHAIN-PROBE: failed to persist woven contact: {}", e));
@@ -5259,14 +5415,14 @@ impl PhotonApp {
                 if !in_app {
                     self.spawn_roster_push();
                 }
-                // Merge incoming contacts with any already loaded locally — union by handle_proof so contacts added on another device (via FGTW/cloud) appear without losing locally-added ones.
+                // Merge incoming contacts with any already loaded locally — union by handle_proof so contacts added on another device (via FGTW/cloud) appear without losing locally-added ones. Siblings are excluded from domination: they carry OUR handle_proof and must not suppress a merged self-contact.
                 let mut added = 0usize;
                 let mut merged_ids: Vec<(ContactId, [u8; 32])> = Vec::new();
                 for incoming in &data.contacts {
                     let dominated = self
                         .contacts
                         .iter()
-                        .any(|c| c.handle_proof == incoming.handle_proof);
+                        .any(|c| !c.is_sibling && c.handle_proof == incoming.handle_proof);
                     if !dominated {
                         merged_ids.push((incoming.id.clone(), incoming.handle_hash));
                         self.contacts.push(incoming.clone());
@@ -5304,6 +5460,40 @@ impl PhotonApp {
                 }
                 // Refresh existing contacts' WAN + LAN addresses from the FGTW peer list. FGTW reports both a public and a same-LAN address per device; pulling the LAN address in lets the offer/KEM send race the LAN path against the WAN path right away, instead of waiting for LAN multicast (which routers often drop) or a pong. This is what unblocks a same-router peer whose stored WAN IPv6 says "No route to host" — the case where m never received an offer.
                 self.refresh_contact_addrs_from_peers(&data.peers);
+                // Fleet weave: load persisted siblings if this attest path didn't come thru the resume loader (e.g. JOIN-flow first attest, or []u→re-attest), then re-fold OUR OWN chain — the members drain routes our hp to reconcile_fleet_siblings, which creates Pending sibling contacts for any member device we don't hold yet. Fires on every background refresh too, giving a ~30s catch-up cadence for fleet changes we missed.
+                if let Some(storage) = self.storage.as_ref().cloned() {
+                    if !self.contacts.iter().any(|c| c.is_sibling) {
+                        let our_handle = self
+                            .contacts
+                            .iter()
+                            .find(|c| !c.is_sibling && c.handle_proof == data.handle_proof)
+                            .map(|c| c.handle.as_str().to_string())
+                            .unwrap_or_default();
+                        let siblings = crate::storage::contacts::load_all_siblings(
+                            &our_handle,
+                            data.handle_proof,
+                            &storage,
+                        );
+                        if !siblings.is_empty() {
+                            crate::log(&format!(
+                                "SIBLING: loaded {} sibling(s) from local vault on attest",
+                                siblings.len()
+                            ));
+                            let fids: Vec<crate::types::FriendshipId> =
+                                siblings.iter().filter_map(|c| c.friendship_id).collect();
+                            for (fid, chains) in
+                                crate::storage::friendship::load_all_friendships(&fids, &storage)
+                            {
+                                if !self.friendship_chains.iter().any(|(id, _)| *id == fid) {
+                                    self.friendship_chains.push((fid, chains));
+                                }
+                            }
+                            self.contacts.extend(siblings);
+                            self.reseed_contact_pubkeys();
+                        }
+                    }
+                    self.spawn_contact_fleet_refresh(vec![data.handle_proof]);
+                }
                 self.hints_dismissed = false;
                 // Only flip to Ready on the INITIAL attest (we were still on the Launch screen). This Success branch also fires on every recurring background resume refresh — if the user has already navigated in-app (Ready, or inside a Conversation), forcing Ready here would yank them out of an open chat back to the contact list each sweep.
                 if !in_app {
@@ -5475,6 +5665,24 @@ impl PhotonApp {
 
     // ───────── CLUTCH ceremony machinery (extracted verbatim from the retired src/ui/app.rs; only field-access seams adapted: device_keypair/event_proxy are Option here, user_identity_seed → session.identity_seed, window_dirty → the returned changed bool) ─────────
 
+    /// OUR party id when this device participates in a SIBLING ceremony (fleet weave): device-derived, since all our devices share one handle_hash. `None` only pre-init (device_keypair unset).
+    fn our_sibling_pid(&self) -> Option<[u8; 32]> {
+        self.device_keypair
+            .as_ref()
+            .map(|kp| crate::crypto::clutch::sibling_party_id(kp.public.as_bytes()))
+    }
+
+    /// OUR party id in a ceremony with `contact`: the identity seed for friends, the device-derived sibling pid for fleet siblings. Every slot lookup, conversation token, ceremony id, and chain index in a ceremony must use THIS, not `session.identity_seed` directly — the seed would collide with the sibling's own id (same handle).
+    fn our_party_id(&self, contact: &crate::types::Contact) -> Option<[u8; 32]> {
+        if contact.is_sibling {
+            self.our_sibling_pid()
+        } else {
+            self.session.as_ref().map(|s| s.identity_seed)
+        }
+    }
+
+    // (Chains-first paths — chat/ACK receive — resolve our party id INLINE: whichever of (identity seed, sibling pid) is a participant. A &self helper can't be called there while the chains are mutably borrowed.)
+
     /// Recompute the shared sync-records (last-received-time per conversation) from `friendship_chains` and publish them to the checker, for message retransmit.
     pub fn update_sync_records(&mut self) {
         use crate::network::fgtw::protocol::SyncRecord;
@@ -5505,24 +5713,29 @@ impl PhotonApp {
 
     /// Spawn at most ONE CLUTCH keygen, for the first Pending contact that needs keypairs, but only if no keygen is already running. McEliece keygen is heavy; running several in parallel (e.g. after a multi-contact cloud merge on launch) starves the UI thread. Serializing to one-at-a-time keeps the app responsive — each completion frees the slot and `tick()` calls this again to start the next. Returns true if a keygen was spawned.
     fn spawn_next_pending_keygen(&mut self) -> bool {
-        let Some(our_handle_hash) = self.session.as_ref().map(|s| s.identity_seed) else {
+        let Some(our_seed) = self.session.as_ref().map(|s| s.identity_seed) else {
             return false;
         };
         // One keygen at a time.
         if self.contacts.iter().any(|c| c.clutch_keygen_in_progress) {
             return false;
         }
-        let next = self.contacts.iter_mut().find(|c| {
-            c.handle_hash != our_handle_hash
+        let next_idx = self.contacts.iter().position(|c| {
+            c.handle_hash != our_seed
                 && c.clutch_state == crate::types::ClutchState::Pending
                 && c.clutch_our_keypairs.is_none()
                 && !c.clutch_keygen_in_progress
         });
-        if let Some(c) = next {
+        if let Some(i) = next_idx {
+            // Party id per contact: identity seed for friends, device-derived pid for fleet siblings.
+            let Some(our_pid) = self.our_party_id(&self.contacts[i]) else {
+                return false;
+            };
+            let c = &mut self.contacts[i];
             c.clutch_keygen_in_progress = true;
             let (cid, their_hh) = (c.id.clone(), c.handle_hash);
             crate::log("CLUTCH: spawning keygen for Pending contact (serialized, one at a time)");
-            self.spawn_clutch_keygen(cid, our_handle_hash, their_hh);
+            self.spawn_clutch_keygen(cid, our_pid, their_hh);
             true
         } else {
             false
@@ -5952,6 +6165,13 @@ impl PhotonApp {
                 if contact.id == result.contact_id {
                     found = true;
 
+                    // Party-id seam: shadow the hoisted seed with THIS contact's "our" id — the device-derived sibling pid for fleet siblings (same handle ⇒ the seed would collide), the identity seed for friends. Every slot lookup / token / ceremony-id below then keys correctly with no further edits.
+                    let our_handle_hash = if contact.is_sibling {
+                        crate::crypto::clutch::sibling_party_id(&device_pubkey)
+                    } else {
+                        our_handle_hash
+                    };
+
                     // Clear the in-progress flag now that keygen is complete
                     contact.clutch_keygen_in_progress = false;
 
@@ -6257,7 +6477,7 @@ impl PhotonApp {
 
         // Process deferred ceremony completions (after releasing contacts borrow)
         for idx in ceremony_completions {
-            self.complete_clutch_ceremony_by_idx(idx, our_handle_hash);
+            self.complete_clutch_ceremony_by_idx(idx);
             changed = true;
         }
 
@@ -6301,6 +6521,13 @@ impl PhotonApp {
                 if contact.id == result.contact_id {
                     found_idx = Some(idx);
                     contact.clutch_kem_encap_in_progress = false;
+
+                    // Party-id seam: sibling ceremonies key our slot on the device-derived pid, not the (shared) identity seed.
+                    let our_handle_hash = if contact.is_sibling {
+                        crate::crypto::clutch::sibling_party_id(&device_pubkey)
+                    } else {
+                        our_handle_hash
+                    };
 
                     // Store local encapsulation secrets in local slot (local contribution) Also store the KEM response payload for re-send
                     if let Some(slot) = contact.get_slot_mut(&our_handle_hash) {
@@ -6364,7 +6591,7 @@ impl PhotonApp {
 
         // Process deferred ceremony completions (after releasing contacts borrow)
         for idx in ceremony_completions {
-            self.complete_clutch_ceremony_by_idx(idx, our_handle_hash);
+            self.complete_clutch_ceremony_by_idx(idx);
             changed = true;
         }
 
@@ -6573,9 +6800,21 @@ impl PhotonApp {
 
     /// Spawn background CLUTCH ceremony completion when all slots are filled. Extracts data from contact and spawns background thread for heavy crypto.
     ///
-    /// Takes contact index to avoid borrow conflicts in the event loop.
-    fn complete_clutch_ceremony_by_idx(&mut self, contact_idx: usize, our_handle_hash: [u8; 32]) {
+    /// Takes contact index to avoid borrow conflicts in the event loop. Derives OUR party id internally (identity seed for friends, device-derived pid for fleet siblings) — callers used to pass a hoisted seed, which was wrong for sibling ceremonies.
+    fn complete_clutch_ceremony_by_idx(&mut self, contact_idx: usize) {
         use crate::crypto::clutch::{derive_conversation_token, ClutchSharedSecrets};
+
+        let our_handle_hash = match self
+            .contacts
+            .get(contact_idx)
+            .and_then(|c| self.our_party_id(c))
+        {
+            Some(pid) => pid,
+            None => {
+                crate::log("CLUTCH: No party id available for ceremony completion");
+                return;
+            }
+        };
 
         // Extract data from contact to avoid borrow issues
         let contact = match self.contacts.get_mut(contact_idx) {
@@ -6968,7 +7207,13 @@ impl PhotonApp {
             let Some((primary, alt)) = contact.race_addrs() else {
                 continue;
             };
-            let conv_token = derive_conversation_token(&[our_handle_hash, contact.handle_hash]);
+            // Party-id seam: sibling tokens derive from the device pids, not the shared seed.
+            let our_pid = if contact.is_sibling {
+                crate::crypto::clutch::sibling_party_id(&device_pubkey)
+            } else {
+                our_handle_hash
+            };
+            let conv_token = derive_conversation_token(&[our_pid, contact.handle_hash]);
             checker.send_complete_proof(ClutchCompleteRequest {
                 peer_addr: primary,
                 alt_addr: alt,
@@ -7272,6 +7517,12 @@ impl PhotonApp {
         // Also need our_identity_seed alias for keygen spawning (same value)
         let our_identity_seed = our_handle_hash;
 
+        // Our device pubkey, hoisted for the sibling party-id shadow inside the contacts loop (a &self method call there would conflict with the &mut contacts borrow).
+        let our_device_pubkey = match self.device_keypair.as_ref() {
+            Some(kp) => *kp.public.as_bytes(),
+            None => return false,
+        };
+
         let mut changed = false;
         let mut ceremony_completions: Vec<usize> = Vec::new(); // Contact indices to complete after loop
         let mut lan_ping_indices: Vec<usize> = Vec::new(); // Contact indices to ping immediately on new LAN discovery
@@ -7330,6 +7581,12 @@ impl PhotonApp {
                     // Find matching contact and update status
                     for contact in &mut self.contacts {
                         if contact.knows_device(&peer_pubkey.key) {
+                            // Party-id seam: sibling offers/tokens key on the device-derived pid, not the (shared) identity seed.
+                            let our_handle_hash = if contact.is_sibling {
+                                crate::crypto::clutch::sibling_party_id(&our_device_pubkey)
+                            } else {
+                                our_handle_hash
+                            };
                             // Note: ceremony_id is now computed from offer_provenances, not ping provenances. Offer provenances are collected when ClutchOfferReceived messages arrive.
 
                             // Update the address from the ping/pong source — but keep PUBLIC and LAN addresses in their own fields. We now ping both the LAN (`local_ip`) and the public (`ip`) address every cycle, so pongs arrive from BOTH; blindly writing every `src_addr` into `contact.ip` made it flap between the public IPv6 and the `192.168.x` LAN address each cycle, corrupting `race_addrs` (which reads `ip` as the public path). So: a pong from a PUBLIC source refreshes `contact.ip` (the peer's WAN address may have changed); a pong from a PRIVATE/LAN source refreshes `contact.local_ip`/`local_port` instead, never clobbering the public address.
@@ -7515,6 +7772,8 @@ impl PhotonApp {
                             continue;
                         }
                     };
+                    // Sibling pid candidate, resolved BEFORE the chains borrow (a &self method call inside would conflict). Sibling chains carry the device-derived pid as our participant, not the identity seed.
+                    let our_sibling_pid = self.our_sibling_pid();
 
                     // Find friendship by conversation_token
                     let chains_result = self
@@ -7526,6 +7785,17 @@ impl PhotonApp {
                     // Contact index to seal the chain-weave for AFTER the `chains` borrow ends.
                     let mut recv_seal_idx: Option<usize> = None;
                     if let Some((fid, chains)) = chains_result {
+                        // Party-id seam: whichever of (identity seed, sibling pid) is actually a participant is "us" in these chains.
+                        let our_handle_hash = if chains.participants().contains(&our_handle_hash) {
+                            our_handle_hash
+                        } else if let Some(pid) =
+                            our_sibling_pid.filter(|p| chains.participants().contains(p))
+                        {
+                            pid
+                        } else {
+                            crate::log("CHAT: we are not a participant in these chains");
+                            continue;
+                        };
                         // For 2-party chats, infer sender as the "other" participant
                         let from_handle_hash = match chains.other_participant(&our_handle_hash) {
                             Some(h) => *h,
@@ -7918,6 +8188,8 @@ impl PhotonApp {
                             continue;
                         }
                     };
+                    // Sibling pid candidate, resolved BEFORE the chains borrow (see the ChatMessage arm).
+                    let our_sibling_pid = self.our_sibling_pid();
 
                     // Find friendship by conversation_token
                     let chains_result = self
@@ -7928,6 +8200,17 @@ impl PhotonApp {
                     // Contact index to seal AFTER the `chains` borrow ends (seal needs &mut self).
                     let mut ack_sealed_idx: Option<usize> = None;
                     if let Some((_, chains)) = chains_result {
+                        // Party-id seam: whichever of (identity seed, sibling pid) is a participant is "us".
+                        let our_handle_hash = if chains.participants().contains(&our_handle_hash) {
+                            our_handle_hash
+                        } else if let Some(pid) =
+                            our_sibling_pid.filter(|p| chains.participants().contains(p))
+                        {
+                            pid
+                        } else {
+                            crate::log("CHAT: we are not a participant in these chains (ACK)");
+                            continue;
+                        };
                         // For 2-party chats, the ACK sender is the "other" participant
                         let from_handle_hash = match chains.other_participant(&our_handle_hash) {
                             Some(h) => *h,
@@ -8145,18 +8428,23 @@ impl PhotonApp {
                             continue;
                         }
                     };
+                    let our_sibling_pid = self.our_sibling_pid();
 
-                    // Find contact by conversation_token (compute token for each contact and match)
-                    let their_handle_hash = match self
+                    // Find contact by conversation_token (compute token for each contact and match). Party-id seam: sibling candidates token with the device-derived pid pair; the resolved "our" id shadows the seed for the whole arm.
+                    let (their_handle_hash, our_handle_hash) = match self
                         .contacts
                         .iter()
-                        .find(|c| {
-                            derive_conversation_token(&[our_handle_hash, c.handle_hash])
-                                == conversation_token
-                        })
-                        .map(|c| c.handle_hash)
-                    {
-                        Some(h) => h,
+                        .find_map(|c| {
+                            let our = if c.is_sibling {
+                                our_sibling_pid?
+                            } else {
+                                our_handle_hash
+                            };
+                            (derive_conversation_token(&[our, c.handle_hash])
+                                == conversation_token)
+                                .then_some((c.handle_hash, our))
+                        }) {
+                        Some(pair) => pair,
                         None => {
                             crate::log(&format!(
                                 "CLUTCH: Received offer with unknown conversation_token {}",
@@ -8834,18 +9122,23 @@ impl PhotonApp {
                             continue;
                         }
                     };
+                    let our_sibling_pid = self.our_sibling_pid();
 
-                    // Find contact by conversation_token
-                    let their_handle_hash = match self
+                    // Find contact by conversation_token. Party-id seam: sibling candidates token with the device-derived pid pair; the resolved "our" id shadows the seed for the whole arm.
+                    let (their_handle_hash, our_handle_hash) = match self
                         .contacts
                         .iter()
-                        .find(|c| {
-                            derive_conversation_token(&[our_handle_hash, c.handle_hash])
-                                == conversation_token
-                        })
-                        .map(|c| c.handle_hash)
-                    {
-                        Some(h) => h,
+                        .find_map(|c| {
+                            let our = if c.is_sibling {
+                                our_sibling_pid?
+                            } else {
+                                our_handle_hash
+                            };
+                            (derive_conversation_token(&[our, c.handle_hash])
+                                == conversation_token)
+                                .then_some((c.handle_hash, our))
+                        }) {
+                        Some(pair) => pair,
                         None => {
                             crate::log(&format!(
                                 "CLUTCH: Received KEM response with unknown conversation_token {}",
@@ -9070,17 +9363,22 @@ impl PhotonApp {
                         hex::encode(&payload.eggs_proof[..8])
                     ));
 
-                    // Find contact by conversation_token
-                    let their_handle_hash = match self
+                    // Find contact by conversation_token. Party-id seam: sibling candidates token with the device-derived pid pair. (Our id isn't needed downstream — completion derives it internally — so it's discarded.)
+                    let our_sibling_pid = self.our_sibling_pid();
+                    let (their_handle_hash, _our_handle_hash) = match self
                         .contacts
                         .iter()
-                        .find(|c| {
-                            derive_conversation_token(&[our_handle_hash, c.handle_hash])
-                                == conversation_token
-                        })
-                        .map(|c| c.handle_hash)
-                    {
-                        Some(h) => h,
+                        .find_map(|c| {
+                            let our = if c.is_sibling {
+                                our_sibling_pid?
+                            } else {
+                                our_handle_hash
+                            };
+                            (derive_conversation_token(&[our, c.handle_hash])
+                                == conversation_token)
+                                .then_some((c.handle_hash, our))
+                        }) {
+                        Some(pair) => pair,
                         None => {
                             crate::log(&format!(
                                 "CLUTCH: Received complete proof with unknown conversation_token {}",
@@ -9276,9 +9574,12 @@ impl PhotonApp {
                     local_ip,
                     port,
                 } => {
-                    // Find contact by handle_proof and store their LAN IP + port
+                    // Find contact by handle_proof and store their LAN IP + port. Siblings AND the self-contact are skipped — an own-hp broadcast carries only (hp, port) with no device disambiguation, so it can't say WHICH of our devices it came from; sibling addresses flow via FGTW peer rows + pong source addresses instead.
                     for (idx, contact) in self.contacts.iter_mut().enumerate() {
-                        if contact.handle_proof == handle_proof {
+                        if !contact.is_sibling
+                            && contact.handle_hash != our_handle_hash
+                            && contact.handle_proof == handle_proof
+                        {
                             let old_local = contact.local_ip;
                             let old_port = contact.local_port;
                             contact.local_ip = Some(local_ip);
@@ -9440,7 +9741,9 @@ impl PhotonApp {
                             });
                         let contact_idx = key_and_other.and_then(|(_, other)| {
                             self.contacts.iter().position(|c| {
-                                c.handle_hash == other
+                                // Friend chains only — a sibling chain's "other ≠ our seed" resolution is ambiguous (both participant pids differ from the seed); fleet history sync is its own later phase.
+                                !c.is_sibling
+                                    && c.handle_hash == other
                                     && c.knows_device(&sender_pubkey.key)
                                     && c.is_mutual()
                             })
@@ -9699,7 +10002,7 @@ impl PhotonApp {
 
         // Process deferred ceremony completions (after releasing checker borrow)
         for idx in ceremony_completions {
-            self.complete_clutch_ceremony_by_idx(idx, our_handle_hash);
+            self.complete_clutch_ceremony_by_idx(idx);
             changed = true;
         }
 

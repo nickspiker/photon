@@ -148,11 +148,13 @@ fn contact_state_schema() -> SectionSchema {
         .field("chain_woven", TypeConstraint::AnyUnsigned) // bool: chain proven end-to-end once (double-toggle seal) — persists so an established conversation allows composing (+ the staging queue) across restarts, even to an offline peer
         .field("hist_oldest", TypeConstraint::Any) // e6 eagle-time cursor: oldest recovered row so far (i64::MAX = head page pending). Absent = history recovery never ran for this contact.
         .field("hist_complete", TypeConstraint::AnyUnsigned) // bool: friend-history backfill finished (server said no-more, or early-stop). Absent = false.
+        .field("sibling", TypeConstraint::AnyUnsigned) // bool: this entry is one of OUR OWN fleet devices (fleet weave), keyed by sibling party id. Absent = false (a friend).
 }
 
 /// Save contact state (mutable data) with schema validation
 pub fn save_contact_state(contact: &Contact, storage: &FlatStorage) -> Result<(), StorageError> {
-    let identity_seed = derive_identity_seed(contact.handle.as_str());
+    // Key the state entry off the contact's party id (`handle_hash`), not a re-derivation from the handle string. For friends the two are equal by construction (`Contact::new`), so this is a no-op; for fleet siblings the party id is device-derived (`sibling_party_id`) — deriving from the handle would collide every sibling AND the self-contact onto one state entry.
+    let identity_seed = contact.handle_hash;
 
     let schema = contact_state_schema();
     let mut builder = schema
@@ -223,6 +225,12 @@ pub fn save_contact_state(contact: &Contact, storage: &FlatStorage) -> Result<()
                 .map_err(|e| StorageError::Parse(e.to_string()))?;
         }
     }
+    if contact.is_sibling {
+        // Self-describing sibling marker — written only when true (absent = friend), so old vaults parse unchanged.
+        builder = builder
+            .set("sibling", true)
+            .map_err(|e| StorageError::Parse(e.to_string()))?;
+    }
 
     let vsf_bytes = builder
         .encode()
@@ -255,29 +263,42 @@ pub fn load_contact_state(
     #[cfg(feature = "development")]
     crate::network::inspect::vsf_read_decrypted(&vsf_bytes, "contact/state");
 
+    let pubkey = state_pubkey(&vsf_bytes)?;
+    let mut contact = Contact::new(
+        HandleText::new(&identity.handle),
+        identity.handle_proof,
+        pubkey,
+    );
+    apply_contact_state(&mut contact, &vsf_bytes)?;
+
+    Ok(contact)
+}
+
+/// Extract just the device pubkey from an encoded contact-state blob (needed before the Contact can be constructed).
+fn state_pubkey(vsf_bytes: &[u8]) -> Result<DevicePubkey, StorageError> {
+    let section = SectionBuilder::parse(contact_state_schema(), vsf_bytes)
+        .map_err(|e| StorageError::Parse(format!("Contact state parse: {}", e)))?;
+    let pubkey_bytes: [u8; 32] = section
+        .get_value::<[u8; 32]>("pubkey")
+        .map_err(|_| StorageError::Parse("Missing pubkey".into()))?;
+    Ok(DevicePubkey::from_bytes(pubkey_bytes))
+}
+
+/// Apply a parsed contact-state blob onto a freshly-constructed Contact (friend via `Contact::new`, sibling via `Contact::new_sibling`). Shared by both loaders so the field set can't drift between them.
+fn apply_contact_state(contact: &mut Contact, vsf_bytes: &[u8]) -> Result<(), StorageError> {
     // Schema-validated parse — the same contact_state_schema the writer encodes with, so reader and writer can no longer drift. Typed extraction is width-tolerant (the old hand-match on u3 broke if the writer ever emitted a wider uint).
-    let section = SectionBuilder::parse(contact_state_schema(), &vsf_bytes)
+    let section = SectionBuilder::parse(contact_state_schema(), vsf_bytes)
         .map_err(|e| StorageError::Parse(format!("Contact state parse: {}", e)))?;
 
     // Required fields
     let clutch_u8 = section.get_value::<u8>("clutch_state").unwrap_or(0);
     let trust_u8 = section.get_value::<u8>("trust_level").unwrap_or(0);
-    let pubkey_bytes: [u8; 32] = section
-        .get_value::<[u8; 32]>("pubkey")
-        .map_err(|_| StorageError::Parse("Missing pubkey".into()))?;
     let added = section
         .get_fields("added")
         .first()
         .and_then(|f| f.values.first())
         .map(vsf_to_oscillations)
         .unwrap_or(0);
-
-    let pubkey = DevicePubkey::from_bytes(pubkey_bytes);
-    let mut contact = Contact::new(
-        HandleText::new(&identity.handle),
-        identity.handle_proof,
-        pubkey,
-    );
 
     contact.clutch_state = u8_to_clutch_state(clutch_u8);
     contact.trust_level = u8_to_trust_level(trust_u8);
@@ -325,15 +346,129 @@ pub fn load_contact_state(
         });
     }
 
-    Ok(contact)
+    Ok(())
+}
+
+// ============================================================================ Sibling Index — own-fleet devices (fleet weave) ============================================================================
+
+/// Schema for the sibling index: one `device` field per sibling device pubkey. Siblings can't live in the contacts index — it's keyed by handle string and dedups on it, so every sibling (sharing OUR handle) would collapse into one entry.
+fn sibling_list_schema() -> SectionSchema {
+    SectionSchema::new("sibling_list").field("device", TypeConstraint::Ed25519Key)
+}
+
+/// Save the sibling device-pubkey index at `vault_key("siblings", vault_seed)`.
+pub fn save_sibling_list(devices: &[[u8; 32]], storage: &FlatStorage) -> Result<(), StorageError> {
+    let schema = sibling_list_schema();
+    let mut builder = schema.build();
+    for d in devices {
+        builder = builder
+            .append_multi("device", vec![VsfType::ke(d.to_vec())])
+            .map_err(|e| StorageError::Parse(e.to_string()))?;
+    }
+    let vsf_bytes = builder
+        .encode()
+        .map_err(|e| StorageError::Parse(e.to_string()))?;
+    storage.write_addr(
+        &crate::storage::vault_key("siblings", storage.vault_seed()),
+        &vsf_bytes,
+    )
+}
+
+/// Load the sibling device-pubkey index. Missing entry = empty fleet knowledge (single-device or pre-feature vault).
+pub fn load_sibling_list(storage: &FlatStorage) -> Result<Vec<[u8; 32]>, StorageError> {
+    let vsf_bytes =
+        match storage.read_addr(&crate::storage::vault_key("siblings", storage.vault_seed()))? {
+            Some(b) => b,
+            None => return Ok(Vec::new()),
+        };
+    let builder = SectionBuilder::parse(sibling_list_schema(), &vsf_bytes)
+        .map_err(|e| StorageError::Parse(format!("Sibling list parse: {}", e)))?;
+    let mut devices = Vec::new();
+    for field in builder.get_fields("device") {
+        if let Some(VsfType::ke(v)) = field.values.first() {
+            if v.len() == 32 {
+                devices.push(v.as_slice().try_into().unwrap());
+            }
+        }
+    }
+    Ok(devices)
+}
+
+/// Load all persisted fleet-sibling contacts: walk the sibling index, rebuild each via `Contact::new_sibling` (party id re-derived from the device pubkey), then apply its saved state. A missing state entry yields a fresh Pending sibling — the ceremony machinery re-runs CLUTCH.
+pub fn load_all_siblings(
+    our_handle: &str,
+    our_handle_proof: [u8; 32],
+    storage: &FlatStorage,
+) -> Vec<Contact> {
+    let devices = match load_sibling_list(storage) {
+        Ok(d) => d,
+        Err(e) => {
+            crate::log(&format!("Failed to load sibling list: {}", e));
+            return Vec::new();
+        }
+    };
+
+    let mut siblings = Vec::new();
+    for device in devices {
+        let mut c = Contact::new_sibling(
+            HandleText::new(our_handle),
+            our_handle_proof,
+            DevicePubkey::from_bytes(device),
+        );
+        match storage.read_addr(&contact_key(&c.handle_hash, "state")) {
+            Ok(Some(vsf_bytes)) => {
+                if let Err(e) = apply_contact_state(&mut c, &vsf_bytes) {
+                    crate::log(&format!(
+                        "Failed to parse sibling state for device {}: {}",
+                        hex::encode(&device[..4]),
+                        e
+                    ));
+                }
+            }
+            Ok(None) => {} // Fresh Pending sibling — ceremony re-runs
+            Err(e) => {
+                crate::log(&format!(
+                    "Failed to read sibling state for device {}: {}",
+                    hex::encode(&device[..4]),
+                    e
+                ));
+            }
+        }
+        // The applied state's stored pubkey/id equal the index-derived ones by construction; the sibling flag is authoritative from new_sibling, not the blob.
+        c.is_sibling = true;
+        siblings.push(c);
+    }
+    siblings
+}
+
+/// Remove a sibling from the index and delete its per-device vault entries. Called when the fold drops a device (revocation hygiene). Chains are deleted by the caller (they're keyed by friendship_id, which the caller holds).
+pub fn delete_sibling(device_pubkey: &[u8; 32], storage: &FlatStorage) -> Result<(), StorageError> {
+    let pid = crate::crypto::clutch::sibling_party_id(device_pubkey);
+    delete_contact(&pid, storage)?;
+    let mut list = load_sibling_list(storage).unwrap_or_default();
+    let before = list.len();
+    list.retain(|d| d != device_pubkey);
+    if list.len() != before {
+        save_sibling_list(&list, storage)?;
+    }
+    Ok(())
 }
 
 // ============================================================================ High-Level API ============================================================================
 
-/// Save a contact (updates both list and state)
+/// Save a contact (updates both list and state). Siblings go to the sibling index; friends to the contacts index — a sibling must never enter the contacts index (its handle-string dedup would collapse all siblings into the self entry).
 pub fn save_contact(contact: &Contact, storage: &FlatStorage) -> Result<(), StorageError> {
     // Save state file
     save_contact_state(contact, storage)?;
+
+    if contact.is_sibling {
+        let mut list = load_sibling_list(storage).unwrap_or_default();
+        if !list.contains(&contact.public_identity.key) {
+            list.push(contact.public_identity.key);
+            save_sibling_list(&list, storage)?;
+        }
+        return Ok(());
+    }
 
     // Update contact list
     let mut list = load_contact_list(storage).unwrap_or_default();
@@ -815,6 +950,66 @@ mod tests {
         // Provenance flag round-trip: friend-attested stays flagged, originals stay unflagged (absent field = false, so pre-feature rows load unflagged too).
         assert!(loaded.messages[2].recovered);
         assert!(!loaded.messages[0].recovered && !loaded.messages[1].recovered);
+
+        // Clean up the on-disk vault so reruns start fresh.
+        if let Ok([primary, shadow]) = kete::vault_ring_paths(app, &vault_seed, &device_secret) {
+            let _ = std::fs::remove_file(primary);
+            let _ = std::fs::remove_file(shadow);
+        }
+    }
+
+    /// Fleet siblings round-trip through their OWN index on a real vault: `save_contact` routes a sibling to the sibling list (never the contacts index — its handle-string dedup would collapse all siblings into one), state persists under the device-derived pid, `load_all_siblings` rebuilds contact + state across a vault close/reopen, and `delete_sibling` removes both index entry and state.
+    #[test]
+    fn sibling_round_trip_on_real_vault() {
+        use crate::types::{ClutchState, HandleText};
+
+        let device_secret = [31u8; 32];
+        let vault_seed = *ihi::handle_to_hash("me-sibling-test").as_bytes();
+        let app = crate::storage::APP;
+
+        let sib_device = [0x44u8; 32];
+        let mut sib = Contact::new_sibling(
+            HandleText::new("me"),
+            [0x22; 32],
+            DevicePubkey::from_bytes(sib_device),
+        );
+        sib.clutch_state = ClutchState::Complete;
+        sib.friendship_id = Some(FriendshipId::from_bytes([0x55; 32]));
+        sib.chain_woven = true;
+
+        // session 1: save, then drop the vault
+        {
+            let storage = FlatStorage::new(app, vault_seed, device_secret).unwrap();
+            save_contact(&sib, &storage).unwrap();
+            // Never in the contacts index...
+            assert!(load_contact_list(&storage).unwrap().is_empty());
+            // ...always in the sibling index.
+            assert_eq!(load_sibling_list(&storage).unwrap(), vec![sib_device]);
+            // Idempotent re-save doesn't duplicate the index entry.
+            save_contact(&sib, &storage).unwrap();
+            assert_eq!(load_sibling_list(&storage).unwrap().len(), 1);
+        }
+
+        // session 2: reopen from disk, rebuild from the index
+        let storage = FlatStorage::new(app, vault_seed, device_secret).unwrap();
+        let loaded = load_all_siblings("me", [0x22; 32], &storage);
+        assert_eq!(loaded.len(), 1);
+        let l = &loaded[0];
+        assert!(l.is_sibling);
+        assert_eq!(l.public_identity.key, sib_device);
+        assert_eq!(
+            l.handle_hash,
+            crate::crypto::clutch::sibling_party_id(&sib_device),
+            "pid re-derives from the device pubkey"
+        );
+        assert_eq!(l.clutch_state, ClutchState::Complete);
+        assert_eq!(l.friendship_id.map(|f| *f.as_bytes()), Some([0x55u8; 32]));
+        assert!(l.chain_woven, "the weave seal survives the round-trip");
+
+        // delete: gone from index AND state (a fresh load yields a Pending stub only if re-added).
+        delete_sibling(&sib_device, &storage).unwrap();
+        assert!(load_sibling_list(&storage).unwrap().is_empty());
+        assert!(load_all_siblings("me", [0x22; 32], &storage).is_empty());
 
         // Clean up the on-disk vault so reruns start fresh.
         if let Ok([primary, shadow]) = kete::vault_ring_paths(app, &vault_seed, &device_secret) {
