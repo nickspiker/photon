@@ -25,16 +25,15 @@ vsf_gate() {
     )
 
     local fail=0
-    declare -A allowed
-    for entry in "${baselines[@]}"; do
-        allowed["${entry%=*}"]="${entry#*=}"
-    done
 
     while IFS= read -r f; do
         local count
         count=$(grep -cE "$pattern" "$f" 2>/dev/null || true)
         [ "$count" = "0" ] && continue
-        local max="${allowed[$f]:-0}"
+        local max=0
+        for entry in "${baselines[@]}"; do
+            if [ "${entry%=*}" = "$f" ]; then max="${entry#*=}"; break; fi
+        done
         if [ "$count" -gt "$max" ]; then
             echo "VSF GATE: $f has $count raw VsfHeader::decode/VsfSection::parse sites (baseline $max)." >&2
             echo "  New network-facing reads must go thru vsf::verification::read_verified or SectionBuilder::parse_document." >&2
