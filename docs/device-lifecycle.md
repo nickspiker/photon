@@ -125,12 +125,11 @@ Same fleet ADD underneath either way.
 
 ## 3. Device REMOVE
 
-The chain primitive is built and server-verified (member-signed `Remove` op, same fold rules); the management UI is unbuilt.
-⏳
+SHIPPED (2026-07-09). The chain primitive was already built and server-verified (member-signed `Remove` op, same fold rules); R1 wired the management UI and R2 wired the trust side, so revocation now works end to end.
 
 ```mermaid
 flowchart TD
-    A["⏳ Devices page (orb panel):\npick a device, confirm removal"] --> B["unbind_device: fetch chain,\nappend member-signed Remove op,\npublish (409 → re-fetch, retry ×4)"]
+    A["Settings → Fleet: pick a device,\ntwo-tap Remove confirm"] --> B["unbind_device: fetch chain,\nappend member-signed Remove op,\npublish (409 → re-fetch, retry ×4)"]
     B --> C["MANDATORY: rotate_fleet_key\nexcluding the removed device\n(it still holds the old epoch key)"]
     C --> D["Re-seal roster/fstate under the new epoch"]
     D --> E["Evicted device thereafter:\nannounce 403, avatar/fstate writes 403,\nfan-out has no wrap for it"]
@@ -141,8 +140,11 @@ Rules:
 - Revocation sticks because FGTW gates every write and announce on the folded chain — the network refuses the device, not the device forgetting.
 - Rotate-on-remove is not optional: skipping it leaves the evicted device able to open every future roster/fstate blob.
 - Remote removal of a LOST device is the point — any remaining member device can sign the Remove (current auth rule: any single member may Add and Remove).
-- ⏳ **A buddy must refresh their re-key allowlist on a fresher fleet list.** Revocation gates the removed device against FGTW (announces/writes), but a *friend's* CLUTCH re-key gate trusts whatever fleet membership that friend last saw. When we receive a buddy's fleet-membership list carrying a **newer eagle timestamp**, update our answerable/allowlist set (`Contact::answerable_pubkeys` / the CLUTCH offer gate) from it — and re-key accordingly — rather than sticking with stale membership. Otherwise a removed device stays trusted at the peer's re-key gate simply because that peer never refreshed. This is the mechanism that carries revocation across to *peers'* re-key safety. Pair it with the un-revocability fix below. See [rekey-threat-model.md](rekey-threat-model.md).
-- ⏳ **The first-met device (`public_identity`) must lose its unconditional pass once a real chain has folded.** Today `answerable_pubkeys` always includes `public_identity.key` and the offer gate pins to it, so removing the *first-met* device from the fleet chain would not cut it off — the case most likely to be the stolen device. When remove lands, trust a device iff it is a current folded member; fall back to `public_identity` only pre-fold (bootstrap), gated on a "have we ever folded a real chain for this contact" flag so a fold *failure* (network down) can't silently re-trust a revoked device.
+- The removed device must be able to shed the identity so the hardware is reusable: Settings → Security "Shred" (or the JOIN-screen "Start fresh") runs `clean_device_for_reuse` — nuke vault + clear session — leaving a blank slate that can attest fresh or JOIN another fleet. The device key is fingerprint-derived (survives), but with no identity bound and an empty vault it's clean.
+
+Trust side (R2, SHIPPED) — how a peer honours the removal:
+- **A buddy refreshes their re-key allowlist on a fresher fleet list.** Revocation gates the removed device against FGTW (announces/writes), but a *friend's* CLUTCH gate trusts whatever fleet membership that friend last folded. `spawn_contact_fleet_refresh` now folds with the chain-tip eagle time (`current_members_with_ts`), and the drain adopts a fold **only if its tip is ≥ the last adopted one** (monotonic — a stale R2 read can't resurrect a removed device), reseeds the answerable set on a shrink, and persists. So a removed device drops out of `Contact::answerable_pubkeys` and fails the CLUTCH gates within a refresh cycle, without waiting for a relaunch.
+- **The first-met device (`public_identity`) loses its unconditional pass once a real chain has folded.** `knows_device`/`answerable_pubkeys` are fold-respecting: pre-fold (`fleet_folded_once == false`) they trust `public_identity` ∪ cached members (bootstrap); post-fold they trust **only** current folded members, so removing the first-met device from the chain cuts it off (the case most likely to be the stolen device). A fold *failure* never arms the flag, so a network outage can't silently re-trust a revoked device or flip a healthy contact to trust-nobody. The three CLUTCH gates (offer/KEM/complete) call `knows_device` rather than pinning to first-met, which both enables revocation and lets a friend's current device CLUTCH.
 
 ## 4. Device MODIFY ⏳ (future, patent-specified)
 
