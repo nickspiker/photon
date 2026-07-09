@@ -79,6 +79,11 @@ pub fn current_members(handle_proof: &[u8; 32]) -> Result<Vec<[u8; 32]>, String>
     fgtw::client::current_members(&PhotonTransport, handle_proof)
 }
 
+/// The current member set + chain-tip eagle time (monotonic freshness guard for the fold-respecting trust rule).
+pub fn current_members_with_ts(handle_proof: &[u8; 32]) -> Result<(Vec<[u8; 32]>, i64), String> {
+    fgtw::client::current_members_with_ts(&PhotonTransport, handle_proof)
+}
+
 /// Existing-device side of device-ADD: add `new_pubkey`, signed by this member device.
 pub fn bind_device(
     member_key: &Keypair,

@@ -9000,29 +9000,28 @@ impl PhotonApp {
                         hex::encode(&conversation_token[..8])
                     ));
 
-                    // Verify sender's device pubkey matches the contact's known identity
-                    let contact_pubkey = self
+                    // Gate: the sender must be a CURRENTLY-TRUSTED device of this contact (fold-respecting `knows_device`). Post-fold this widens to ANY current fleet member (a friend's 2nd device can now CLUTCH — was pinned to first-met only) AND revokes a removed device (it fails membership); pre-fold + siblings pin to the one known device exactly as before.
+                    let sender_known = self
                         .contacts
                         .iter()
                         .find(|c| c.handle_hash == their_handle_hash)
-                        .map(|c| c.public_identity.key);
-
-                    match contact_pubkey {
+                        .map(|c| c.knows_device(&sender_pubkey));
+                    match sender_known {
                         None => {
                             #[cfg(feature = "development")]
                             #[cfg(feature = "development")]
                             crate::log("CLUTCH: Received offer from unknown contact");
                             continue;
                         }
-                        Some(expected) if expected != sender_pubkey => {
+                        Some(false) => {
                             crate::log(&format!(
-                                "CLUTCH: Device pubkey mismatch! Expected {}, got {}",
-                                hex::encode(&expected[..8]),
-                                hex::encode(&sender_pubkey[..8])
+                                "CLUTCH: offer from untrusted/removed device {} for {} — dropping",
+                                hex::encode(&sender_pubkey[..8]),
+                                hex::encode(&their_handle_hash[..8])
                             ));
                             continue;
                         }
-                        Some(_) => {} // Match - proceed
+                        Some(true) => {} // Trusted current device — proceed
                     }
 
                     // The payload is already parsed
@@ -9694,29 +9693,27 @@ impl PhotonApp {
                         hex::encode(&conversation_token[..8])
                     ));
 
-                    // Verify sender's device pubkey matches the contact's known identity
-                    let contact_pubkey = self
+                    // Gate: sender must be a currently-trusted device of this contact (fold-respecting). See the offer gate for the widen/revoke rationale.
+                    let sender_known = self
                         .contacts
                         .iter()
                         .find(|c| c.handle_hash == their_handle_hash)
-                        .map(|c| c.public_identity.key);
-
-                    match contact_pubkey {
+                        .map(|c| c.knows_device(&sender_pubkey));
+                    match sender_known {
                         None => {
                             #[cfg(feature = "development")]
                             #[cfg(feature = "development")]
                             crate::log("CLUTCH: Received KEM response from unknown contact");
                             continue;
                         }
-                        Some(expected) if expected != sender_pubkey => {
+                        Some(false) => {
                             crate::log(&format!(
-                                "CLUTCH: KEM device pubkey mismatch! Expected {}, got {}",
-                                hex::encode(&expected[..8]),
+                                "CLUTCH: KEM from untrusted/removed device {} — dropping",
                                 hex::encode(&sender_pubkey[..8])
                             ));
                             continue;
                         }
-                        Some(_) => {} // Match - proceed
+                        Some(true) => {}
                     }
 
                     // The payload is already parsed
@@ -9928,29 +9925,27 @@ impl PhotonApp {
                         }
                     };
 
-                    // Verify sender's device pubkey matches the contact's known identity
-                    let contact_pubkey = self
+                    // Gate: sender must be a currently-trusted device of this contact (fold-respecting). See the offer gate for the widen/revoke rationale.
+                    let sender_known = self
                         .contacts
                         .iter()
                         .find(|c| c.handle_hash == their_handle_hash)
-                        .map(|c| c.public_identity.key);
-
-                    match contact_pubkey {
+                        .map(|c| c.knows_device(&sender_pubkey));
+                    match sender_known {
                         None => {
                             #[cfg(feature = "development")]
                             #[cfg(feature = "development")]
                             crate::log("CLUTCH: Received proof from unknown contact");
                             continue;
                         }
-                        Some(expected) if expected != sender_pubkey => {
+                        Some(false) => {
                             crate::log(&format!(
-                                "CLUTCH: Proof device pubkey mismatch! Expected {}, got {}",
-                                hex::encode(&expected[..8]),
+                                "CLUTCH: proof from untrusted/removed device {} — dropping",
                                 hex::encode(&sender_pubkey[..8])
                             ));
                             continue;
                         }
-                        Some(_) => {} // Match - proceed
+                        Some(true) => {}
                     }
 
                     // Find contact and process proof
