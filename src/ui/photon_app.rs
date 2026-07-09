@@ -2383,6 +2383,14 @@ impl FluorApp for PhotonApp {
                 );
             }
             paint::background_noise(canvas, shimmer, bg_fullscreen, scroll_offset, None, bg_base);
+            // Wave then logo — RMW ops that read the now-opaque noise beneath as their base. The
+            // chromatic wave quadrature-blends with the bg colour (sqrt-linear-light) so it MUST follow
+            // the noise; the logo composites over the wave/noise. (Watermarks above went before the
+            // noise so it composes under them.)
+            if on_launch {
+                chromatic_wave(canvas, spectrum_rect, phase, period_scale);
+                paint_photon_logo(canvas, text, logo_rect);
+            }
         });
         // Window-perimeter hairline FIRST — painted straight into `target` (not the chrome group) and carves the window-shape clip_mask. fluor is under-blend only, so whatever lands in `target` first wins at shared edge pixels; drawing the hairline before any content makes it survive over full-bleed screens (Ready/Conversation) whose content reaches the window edge. The chrome group (buttons / orb / strip / title) still composites UNDER content via `flatten_into` below. The clip_mask carve here is the SOLE source of the single window-shape alpha-trim done at the OS boundary in finalize.
         chrome.rasterize_perimeter(target, buf_w, buf_h, ctx.clip_mask);
