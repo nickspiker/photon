@@ -638,6 +638,8 @@ pub struct PhotonApp {
     needs_initial_roster_pull: bool,
     /// Retry budget for the initial roster pull. A fresh device's pairing-recovered key is a PRE-rotation generation (adding a device rotates the fleet key via the fan-out re-key), so the first pull decrypts the current roster with a stale key and fails `aead::Error`. The in-flight `spawn_fleet_key_sync` writes the current key within ~150ms, so on a failed pull we re-arm `needs_initial_roster_pull` and retry — the pull's own ~150ms round-trip naturally spaces attempts, and this budget caps them so a genuinely-undecryptable roster gives up instead of spinning (next fleet event / relaunch re-tries).
     roster_pull_retries_left: u8,
+    /// The FGTW peer rows from the most recent attest echo (device-keyed: hp + device pubkey). Retained so `reconcile_fleet_siblings` can address a freshly-created sibling contact IMMEDIATELY from the same echo — the attest-time `refresh_contact_addrs_from_peers` runs before the async fleet-fold creates the sibling, so without this the sibling has no address, its CLUTCH offer never sends (send needs `contact.ip`), and it never pings/comes-online to retry.
+    last_peers: Vec<crate::network::fgtw::PeerRecord>,
     /// This device's avatar in BT.2020 γ=2.0 u8 RGB, sized `crate::avatar::AVATAR_SIZE × AVATAR_SIZE × 3`. `None` until `on_query_result` pulls one from local storage (no saved avatar = stays `None`, Ready screen falls back to the grey placeholder).
     device_avatar_pixels: Option<Vec<u8>>,
     /// Cached Mitchell resize of `device_avatar_pixels` at the current Ready-screen circle diameter. Rebuilt on diameter change (resize / zoom).
@@ -794,6 +796,7 @@ impl PhotonApp {
             pending_fleet_key: None,
             roster_pull_rx: None,
             needs_initial_roster_pull: false,
+            last_peers: Vec::new(),
             roster_pull_retries_left: 0,
             device_avatar_pixels: None,
             device_avatar_scaled: None,
@@ -3896,8 +3899,8 @@ impl PhotonApp {
                     self.end_add_device_flow();
                     self.state = AppState::Ready;
                     self.ready_toast = Some("Device added \u{221a}".to_string());
-                    // The add rotated the fleet key — pull the new epoch into our cache now; the next presence/attest cycle re-seals the roster under it (pushing here would race the async cache update and seal under the stale key).
-                    self.spawn_fleet_key_sync();
+                    // The add rotated the fleet key — recover the new epoch AND re-seal the roster under it in one ordered pass, so the just-joined device's roster pull decrypts instead of failing aead::Error until a relaunch. (Was a bare key-sync that left the roster stale-sealed forever, since the periodic re-push only fires on a non-in-app attest.)
+                    self.spawn_roster_republish();
                     // And re-fold our own chain immediately so the freshly-bound device gets its sibling contact (fleet weave kickoff) without waiting for the next fleet event.
                     if let Some(our_hp) =
                         self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof())
@@ -4645,6 +4648,12 @@ impl PhotonApp {
 
         if changed {
             self.reseed_contact_pubkeys();
+            // Address the freshly-created siblings from the retained attest echo (device-keyed rows). Without this the sibling has no `ip`, so its CLUTCH offer — built the moment keygen finishes — silently no-ops on the missing address and never retries (no address ⇒ never pinged ⇒ never Online ⇒ Online-handler re-send never fires). The echo carried the sibling's row all along; it was just consumed before the sibling existed.
+            if !self.last_peers.is_empty() {
+                let peers = std::mem::take(&mut self.last_peers);
+                self.refresh_contact_addrs_from_peers(&peers);
+                self.last_peers = peers;
+            }
         }
     }
 
@@ -4672,6 +4681,41 @@ impl PhotonApp {
                 Err(e) => crate::log(&format!("FLEET: fleet key sync failed: {e}")),
             },
         );
+    }
+
+    /// After binding a new device (which rotated the fan-out epoch), recover the CURRENT fleet key and re-seal our contact roster under it — in ONE ordered thread so the push can't race the async cache write and seal under the stale epoch. Without this the roster slot stays sealed under the pre-rotation key, and the freshly-joined device's pulls fail `aead::Error` forever (it correctly holds the new key). The roster entries are snapshotted on the UI thread (needs `&self`); the recover+cache+push run off-thread.
+    fn spawn_roster_republish(&self) {
+        use crate::network::fgtw::fleet;
+        let entries = self.current_roster();
+        let (Some(hp), Some(kp), Some(storage), Some(session)) = (
+            self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()),
+            self.device_keypair.clone(),
+            self.storage.as_ref().cloned(),
+            self.session.as_ref(),
+        ) else {
+            return;
+        };
+        let addr = crate::storage::vault_key("fleet_key", &session.vault_seed);
+        std::thread::spawn(move || match fleet::recover_or_establish_fleet_key(&hp, &kp) {
+            Ok(Some(k)) => {
+                if let Err(e) = storage.write_addr(&addr, &k) {
+                    crate::log(&format!("FLEET: fleet key cache failed: {e}"));
+                }
+                crate::log("FLEET: fleet key synced from fan-out (post-bind)");
+                if entries.is_empty() {
+                    return; // no contacts to share, but the key is now current for the roster PULL
+                }
+                match fleet::push_roster(&hp, &kp, &k, &entries) {
+                    Ok(()) => crate::log(&format!(
+                        "FLEET: roster re-pushed under rotated epoch ({} entr(ies))",
+                        entries.len()
+                    )),
+                    Err(e) => crate::log(&format!("FLEET: roster re-push failed: {e}")),
+                }
+            }
+            Ok(None) => {}
+            Err(e) => crate::log(&format!("FLEET: post-bind key sync failed: {e}")),
+        });
     }
 
     /// Persist a fleet key received over pairing (new device), overwriting any local placeholder so this device converges on the founder's key.
@@ -4957,6 +5001,7 @@ impl PhotonApp {
             }
             // PUSH-DRIVEN, no deadline, no poll cadence. The hub events (matched / fleet) wake each check instantly; the ONLY timers are the ones the protocol/transport demand — the pairing slot's 5-minute freshness (re-post at ~3.5min when no event arrives sooner) and a degraded-transport fallback cadence when the socket is dead. The user standing at the screen is the timeout: the ceremony ends when the bind lands, when they tap the orb (the stop flag), or on a hard network error.
             let mut matched_sent = false;
+            let mut last_repost = std::time::Instant::now();
             loop {
                 if stop.load(Ordering::Relaxed) {
                     return;
@@ -4997,15 +5042,24 @@ impl PhotonApp {
                         continue;
                     }
                 }
-                // Wait for a push. A hub event for our identity checks immediately; the timeout exists ONLY for the slot-freshness re-post (protocol-required: the pair/req inbox expires at 5 minutes). If the socket died (channel disconnected), fall back to a slow transport-degraded cadence — the one timing the unreliable transport forces on us.
-                match wake_rx.recv_timeout(crate::jitter_dur(std::time::Duration::from_secs(210))) {
-                    Ok(()) => {}
+                // Wait for a push, but re-poll membership on a SHORT cadence so the ceremony completes fast even when the hub WebSocket push never arrives (observed on macOS: the bind landed but the new device sat ~3.5 min on the old 210s timeout before its next `current_members` check). The pairing-request re-post stays on its protocol cadence (~3.5 min — the pair/req slot expires at 5), tracked separately so the frequent membership polls don't spam re-posts. A hub event still short-circuits instantly.
+                const MEMBERSHIP_POLL: std::time::Duration = std::time::Duration::from_secs(8);
+                const REPOST_EVERY: std::time::Duration = std::time::Duration::from_secs(210);
+                match wake_rx.recv_timeout(crate::jitter_dur(MEMBERSHIP_POLL)) {
+                    Ok(()) => {} // hub push — loop re-checks membership immediately
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                        let _ = fleet::post_pairing_request(&pairing, &me, &hp);
+                        if last_repost.elapsed() >= REPOST_EVERY {
+                            let _ = fleet::post_pairing_request(&pairing, &me, &hp);
+                            last_repost = std::time::Instant::now();
+                        }
+                        // else: just loop and re-poll current_members (the fast path)
                     }
                     Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                        std::thread::sleep(crate::jitter_dur(std::time::Duration::from_secs(15)));
-                        let _ = fleet::post_pairing_request(&pairing, &me, &hp);
+                        std::thread::sleep(crate::jitter_dur(std::time::Duration::from_secs(8)));
+                        if last_repost.elapsed() >= REPOST_EVERY {
+                            let _ = fleet::post_pairing_request(&pairing, &me, &hp);
+                            last_repost = std::time::Instant::now();
+                        }
                     }
                 }
             }
@@ -5484,7 +5538,8 @@ impl PhotonApp {
                     ));
                     self.update_sync_records();
                 }
-                // Refresh existing contacts' WAN + LAN addresses from the FGTW peer list. FGTW reports both a public and a same-LAN address per device; pulling the LAN address in lets the offer/KEM send race the LAN path against the WAN path right away, instead of waiting for LAN multicast (which routers often drop) or a pong. This is what unblocks a same-router peer whose stored WAN IPv6 says "No route to host" — the case where m never received an offer.
+                // Refresh existing contacts' WAN + LAN addresses from the FGTW peer list. FGTW reports both a public and a same-LAN address per device; pulling the LAN address in lets the offer/KEM send race the LAN path against the WAN path right away, instead of waiting for LAN multicast (which routers often drop) or a pong. This is what unblocks a same-router peer whose stored WAN IPv6 says "No route to host" — the case where m never received an offer. Retain the echo so a sibling contact created LATER (by the async fleet fold below) can be addressed from the same rows.
+                self.last_peers = data.peers.clone();
                 self.refresh_contact_addrs_from_peers(&data.peers);
                 // Fleet weave: load persisted siblings if this attest path didn't come thru the resume loader (e.g. JOIN-flow first attest, or []u→re-attest), then re-fold OUR OWN chain — the members drain routes our hp to reconcile_fleet_siblings, which creates Pending sibling contacts for any member device we don't hold yet. Fires on every background refresh too, giving a ~30s catch-up cadence for fleet changes we missed.
                 if let Some(storage) = self.storage.as_ref().cloned() {
