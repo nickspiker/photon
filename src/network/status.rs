@@ -241,6 +241,20 @@ pub enum StatusUpdate {
         sender_pubkey: DevicePubkey,
         sender_addr: SocketAddr,
     },
+    /// One of the four blind frames received (blind_put/ack/get/srv — the friend-blinded private-identity-secret S plumbing; signature verified, UI authorizes per-contact and dispatches on `kind`).
+    BlindFrameReceived {
+        kind: crate::network::fgtw::protocol::BlindFrameKind,
+        conversation_token: [u8; 32],
+        request_id: [u8; 32],
+        /// The 64-byte blind blob (put, srv-hit); empty otherwise.
+        blob: Vec<u8>,
+        /// srv only: whether the friend held a deposit for the requesting device.
+        found: bool,
+        /// Header creation time — the UI's staleness check.
+        sent_osc: i64,
+        sender_pubkey: DevicePubkey,
+        sender_addr: SocketAddr,
+    },
     /// PT large transfer completed - received data from peer
     PTReceived {
         peer_addr: SocketAddr,
@@ -1421,6 +1435,33 @@ async fn run_checker(
                                             },
                                             &event_proxy_recv,
                                         );
+                                    }
+                                    // Try to parse as a blind frame (blind_put/ack/get/srv — tiny, but PT delivery is possible under fallback routing)
+                                    else if let Some((kind, payload, sender_pubkey)) =
+                                        crate::network::fgtw::protocol::parse_any_blind_frame(
+                                            &data,
+                                        )
+                                    {
+                                        if !is_known_sender_pt(&sender_pubkey) {
+                                            crate::log("PT: blind frame REJECTED - unknown sender");
+                                            continue;
+                                        }
+                                        send_status_update(
+                                            &status_tx_recv,
+                                            StatusUpdate::BlindFrameReceived {
+                                                kind,
+                                                conversation_token: payload.conversation_token,
+                                                request_id: payload.request_id,
+                                                blob: payload.blob,
+                                                found: payload.found,
+                                                sent_osc: payload.sent_osc,
+                                                sender_pubkey: DevicePubkey::from_bytes(
+                                                    sender_pubkey,
+                                                ),
+                                                sender_addr: src_addr,
+                                            },
+                                            &event_proxy_recv,
+                                        );
                                     } else {
                                         // Unknown PT data - emit generic event for debugging
                                         crate::log(&format!(
@@ -1555,6 +1596,33 @@ async fn run_checker(
                                         conversation_token,
                                         request_id,
                                         sealed,
+                                        sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
+                                        sender_addr: src_addr,
+                                    },
+                                    &event_proxy_recv,
+                                );
+                                continue;
+                            }
+                            // Blind frames (blind_put/ack/get/srv, ≤~400B — always this small-frame path). Same MANDATORY packet-ack: they ride send_with_pubkey's reliable queue; an un-acked type retransmits forever and head-of-line-blocks chat.
+                            if let Some((kind, payload, sender_pubkey)) =
+                                crate::network::fgtw::protocol::parse_any_blind_frame(msg_bytes)
+                            {
+                                {
+                                    let ack_bytes = {
+                                        let pt_mgr = pt_recv.lock().unwrap();
+                                        pt_mgr.build_packet_ack(msg_bytes)
+                                    };
+                                    udp::send(&socket_recv, &ack_bytes, src_addr).await;
+                                }
+                                send_status_update(
+                                    &status_tx_recv,
+                                    StatusUpdate::BlindFrameReceived {
+                                        kind,
+                                        conversation_token: payload.conversation_token,
+                                        request_id: payload.request_id,
+                                        blob: payload.blob,
+                                        found: payload.found,
+                                        sent_osc: payload.sent_osc,
                                         sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
                                         sender_addr: src_addr,
                                     },

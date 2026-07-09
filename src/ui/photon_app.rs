@@ -547,6 +547,8 @@ pub struct PhotonApp {
     scene_dirty: bool,
     /// The device's session identity (register-shaped roots), set on `QueryResult::Success`. `None` while the user is still on Launch. Replaces the handle string — Photon never holds the plaintext handle past first attest; an optional "show my handle" label would re-prompt rather than store it.
     session: Option<tohu::SessionIdentity>,
+    /// The private identity secret S — RAM-ONLY, never persisted (crypto::blind::PrivateS). Reconstituted from a friend's OTP-blinded deposit (blind_get→blind_srv) or generated fresh at first weave-seal AFTER every reachable woven friend answers found=0 (probe-before-generate: a []n-reset device must RECOVER its S, never mint a second one). Zeroized on []u/de-attest and on drop.
+    private_s: crate::crypto::blind::PrivateS,
     /// True when the dual-ring vault flagged a damaged ring on open this session. Drives the persistent amber banner on the Ready screen. Sticky for the session.
     vault_degraded: bool,
     /// Green confirmation band on the Ready screen ("Device added \u{221a}"). Event-shown, interaction-cleared (clear_hints), NEVER time-based. Stacks above the amber warning bands.
@@ -743,6 +745,7 @@ impl PhotonApp {
             last_chord_held: false,
             scene_dirty: true,
             session: None,
+            private_s: crate::crypto::blind::PrivateS::None,
             vault_degraded: false,
             ready_toast: None,
             clock_check_tx: {
@@ -5233,6 +5236,9 @@ impl PhotonApp {
         c.clutch_completed_at = Some(std::time::Instant::now()); // refresh the re-key cooldown thru the weave (armed at completion; this extends it)
         c.clutch_proof_resends_left = 0;
         crate::log("CHAIN-PROBE: chain woven — end-to-end verified, ceremony rebroadcast cancelled");
+        // A fresh weave re-opens the blind conversation with this friend: re-probe for a deposit (reset side) and allow a fresh put (their reset wiped nothing of ours, but a re-key on OUR side after []n starts from scratch).
+        c.blind_probe_missed = false;
+        c.blind_in_flight = None;
         // Kick off friend-history recovery on the woven-chain EDGE (this fn fires exactly once per seal; vault loads latch chain_woven without passing here, so restarts resume via the persisted cursor instead of re-kicking). Always request the head page — if we already hold the history, merging dedups and the early-stop rule completes after one page. Siblings are excluded: friend-history recovery resolves "the other participant ≠ our seed", which is ambiguous on a sibling chain — fleet history sync is its own later phase.
         if !c.is_sibling {
             let was_complete_before = c
@@ -7384,6 +7390,136 @@ impl PhotonApp {
         }
     }
 
+    /// Blind-ops driver (every tick, beside `drive_history_recovery`): keeps the friend-blinded private-identity-secret machinery converged. Per eligible friend (online, woven, mutual, not a sibling): expire a lost in-flight op (~15s), then fire the ONE op this contact needs — a `blind_get` while S is unknown and this friend hasn't answered `found=0` yet (probe and reconstitute are the SAME op), or a `blind_put` while S exists and this friend hasn't disk-confirmed our deposit. One op in flight per contact; responses land in the `BlindFrameReceived` arm. Steady state (S live, deposits confirmed everywhere) is a pure no-op.
+    fn drive_blind_ops(&mut self) {
+        use crate::crypto::blind::PrivateS;
+        const BLIND_INFLIGHT_TIMEOUT_OSC: i64 = 15 * crate::OSC_PER_SEC;
+        let now_osc = vsf::eagle_time_oscillations();
+
+        let Some(our_seed) = self.session.as_ref().map(|s| s.identity_seed) else {
+            return;
+        };
+        let Some(kp) = self.device_keypair.as_ref() else {
+            return;
+        };
+        let device_pubkey = *kp.public.as_bytes();
+        let device_secret = *kp.secret.as_bytes();
+        let s_known = !matches!(self.private_s, PrivateS::None);
+        // A stack copy for blob building inside the contacts borrow; lives only this call.
+        let s_copy: Option<zeroize::Zeroizing<[u8; 32]>> =
+            self.private_s.secret().map(|s| zeroize::Zeroizing::new(**s));
+        let Some(checker) = self.status_checker.as_ref() else {
+            return;
+        };
+
+        for contact in self.contacts.iter_mut() {
+            if !contact.is_online || !contact.chain_woven || !contact.is_mutual() {
+                continue;
+            }
+            // Expire a lost op so the machinery retries.
+            if let Some((_, sent_osc, _)) = contact.blind_in_flight {
+                if now_osc.saturating_sub(sent_osc) > BLIND_INFLIGHT_TIMEOUT_OSC {
+                    crate::log("BLIND: in-flight op expired — retrying");
+                    contact.blind_in_flight = None;
+                } else {
+                    continue; // one op at a time per contact
+                }
+            }
+            // Which op does this contact need? Siblings are PROBE-only — an S-less device pulls S over the sealed sibling channel (blind_get → AEAD-sealed srv); deposits go to friends only (a sibling holding our OTP blind would be pointless — it serves S itself when it has one).
+            let want_probe = !s_known && !contact.blind_probe_missed;
+            let want_put = s_known && !contact.blind_deposited && !contact.is_sibling;
+            if !want_probe && !want_put {
+                continue;
+            }
+            let Some((primary, alt)) = contact.race_addrs() else {
+                continue;
+            };
+            // Party-id seam: sibling tokens derive from the device pids (fleet weave), friend tokens from the seeds.
+            let our_pid = if contact.is_sibling {
+                crate::crypto::clutch::sibling_party_id(&device_pubkey)
+            } else {
+                our_seed
+            };
+            let token =
+                crate::crypto::clutch::derive_conversation_token(&[our_pid, contact.handle_hash]);
+            let rid: [u8; 32] = rand::random();
+            let built = if want_probe {
+                crate::network::fgtw::protocol::build_blind_get_vsf(
+                    &token,
+                    &rid,
+                    &device_pubkey,
+                    &device_secret,
+                )
+            } else {
+                let Some(s) = s_copy.as_ref() else { continue };
+                let pad = crate::crypto::blind::derive_blind_pad(&device_secret, &contact.handle_hash);
+                let blob = crate::crypto::blind::make_blind_blob(s, &pad);
+                crate::network::fgtw::protocol::build_blind_put_vsf(
+                    &token,
+                    &rid,
+                    &blob,
+                    &device_pubkey,
+                    &device_secret,
+                )
+            };
+            match built {
+                Ok(vsf_bytes) => {
+                    contact.blind_in_flight = Some((rid, now_osc, want_probe));
+                    crate::log(&format!(
+                        "BLIND: {} {}",
+                        if want_probe {
+                            "probing for our deposit at"
+                        } else {
+                            "depositing our blind with"
+                        },
+                        crate::fp(&contact.handle_proof)
+                    ));
+                    checker.send_history(crate::network::status::HistorySendRequest {
+                        peer_addr: primary,
+                        alt_addr: alt,
+                        recipient_pubkey: *contact.public_identity.as_bytes(),
+                        vsf_bytes,
+                    });
+                }
+                Err(e) => crate::log(&format!("BLIND: frame build failed: {e}")),
+            }
+        }
+    }
+
+    /// Probe-before-generate verdict, called when a `blind_srv` miss lands while S is None. Generates a fresh S ONLY when no probe is still in flight and EVERY eligible online+woven friend has answered `found=0` — i.e. the network reachable right now provably holds no deposit for this device. A single hit anywhere reconstitutes instead (handled at the srv arrival). This asymmetry is the whole point: a `[]n`-reset device must RECOVER its S, never mint a second one while a deposit is reachable.
+    fn maybe_generate_s(&mut self) {
+        use crate::crypto::blind::PrivateS;
+        if !matches!(self.private_s, PrivateS::None) {
+            return;
+        }
+        let mut any_eligible = false;
+        for c in &self.contacts {
+            // Siblings count: a woven sibling holding S serves it (a hit); one without answers found=0 like a friend, so the all-missed rule still converges. (Two FRESH siblings with zero friends can both generate — the deterministic lower-s_id tie-break at srv-adoption converges them after.)
+            if !c.is_online || !c.chain_woven || !c.is_mutual() {
+                continue;
+            }
+            any_eligible = true;
+            if c.blind_in_flight.map_or(false, |(_, _, is_get)| is_get) {
+                return; // a probe is still out — its answer decides
+            }
+            if !c.blind_probe_missed {
+                return; // not asked/answered yet — the driver will probe it
+            }
+        }
+        if !any_eligible {
+            return; // nobody reachable to attest a miss — keep waiting
+        }
+        let mut s = zeroize::Zeroizing::new([0u8; 32]);
+        rand::RngCore::fill_bytes(&mut rand::thread_rng(), s.as_mut());
+        crate::log("S: generated (provisional) — no deposit found at any reachable friend");
+        self.private_s = PrivateS::Provisional(s);
+        for c in self.contacts.iter_mut() {
+            c.blind_deposited = false;
+        }
+        // Deposit immediately (the answering friend is online right now); Provisional→Live flips on the first blind_ack.
+        self.drive_blind_ops();
+    }
+
     /// Ping a single contact (on conversation-enter) so its presence refreshes promptly. Same LAN-IPv4-preferring address selection as `ping_contacts`.
     fn ping_contact(&mut self, idx: usize) {
         let Some(checker) = self.status_checker.as_ref() else {
@@ -7537,6 +7673,8 @@ impl PhotonApp {
         )> = Vec::new();
         // Flag to update sync records after the loop (when borrows are released)
         let mut need_sync_update = false;
+        // Deferred probe-before-generate verdict (maybe_generate_s needs &mut self; the loop holds the checker borrow) — set when a blind_srv miss lands while S is None.
+        let mut check_s_genesis = false;
 
         // Chain-weave probe deferrals — the loop holds an immutable `checker` borrow of `self`, so the `&mut self` seal/probe helpers can't run inline; collect contact indices and process them after the loop, like ceremony_completions / lan_ping_indices already do.
         let mut chain_seal_indices: Vec<usize> = Vec::new(); // seal_chain_if_ready after loop
@@ -9963,6 +10101,392 @@ impl PhotonApp {
                     }
                 }
 
+                StatusUpdate::BlindFrameReceived {
+                    kind,
+                    conversation_token,
+                    request_id,
+                    blob,
+                    found,
+                    sent_osc,
+                    sender_pubkey,
+                    sender_addr,
+                } => {
+                    use crate::network::fgtw::protocol::BlindFrameKind;
+
+                    // Staleness: an old frame is a replay/duplicate — drop before any state change.
+                    let now = vsf::eagle_time_oscillations();
+                    const BLIND_STALE_OSC: i64 = 600 * crate::OSC_PER_SEC;
+                    if sent_osc != 0 && now.saturating_sub(sent_osc) > BLIND_STALE_OSC {
+                        continue;
+                    }
+                    let Some(our_seed) = self.session.as_ref().map(|s| s.identity_seed) else {
+                        continue;
+                    };
+
+                    match kind {
+                        // A friend's device deposits its blind with us (or asks for it back) — or a FLEET SIBLING asks for S over its own token. Authorization for all: the token must resolve to a contact AND the signer must be a device we trust for it AND the relationship must be mutual (for a sibling that means the exact device + Complete ceremony).
+                        BlindFrameKind::Put | BlindFrameKind::Get => {
+                            let our_sibling_pid = self.our_sibling_pid();
+                            let cidx = self.contacts.iter().position(|c| {
+                                let our = if c.is_sibling {
+                                    match our_sibling_pid {
+                                        Some(p) => p,
+                                        None => return false,
+                                    }
+                                } else {
+                                    our_seed
+                                };
+                                c.is_mutual()
+                                    && c.knows_device(&sender_pubkey.key)
+                                    && crate::crypto::clutch::derive_conversation_token(&[
+                                        our,
+                                        c.handle_hash,
+                                    ]) == conversation_token
+                            });
+                            let Some(idx) = cidx else {
+                                crate::log("BLIND: put/get REJECTED (unknown token or unauthorized device)");
+                                continue;
+                            };
+
+                            if kind == BlindFrameKind::Put && self.contacts[idx].is_sibling {
+                                // Siblings never deposit OTP blinds (they serve S directly) — a put on a sibling token is a protocol violation.
+                                crate::log("BLIND: put on a sibling token REJECTED");
+                                continue;
+                            }
+                            if kind == BlindFrameKind::Get && self.contacts[idx].is_sibling {
+                                // Sibling S-transfer: serve S sealed under the sibling chains' history key — only when OUR S is Live (a provisional S has no durable recovery anchor yet; the sibling keeps probing and adopts once we're Live, or generates if everyone misses).
+                                let blob_opt: Option<Vec<u8>> =
+                                    self.private_s.live().and_then(|(s, _)| {
+                                        let fid = self.contacts[idx].friendship_id?;
+                                        let (_, chains) = self
+                                            .friendship_chains
+                                            .iter()
+                                            .find(|(id, _)| *id == fid)?;
+                                        let key = chains.history_key().copied()?;
+                                        crate::crypto::blind::seal_sibling_s(s, &key).ok()
+                                    });
+                                if let (Some(kp), Some(checker)) =
+                                    (self.device_keypair.as_ref(), self.status_checker.as_ref())
+                                {
+                                    match crate::network::fgtw::protocol::build_blind_srv_vsf(
+                                        &conversation_token,
+                                        &request_id,
+                                        blob_opt.as_deref(),
+                                        kp.public.as_bytes(),
+                                        kp.secret.as_bytes(),
+                                    ) {
+                                        Ok(vsf_bytes) => {
+                                            let (primary, alt) = self.contacts[idx]
+                                                .race_addrs()
+                                                .unwrap_or((sender_addr, None));
+                                            checker.send_history(
+                                                crate::network::status::HistorySendRequest {
+                                                    peer_addr: primary,
+                                                    alt_addr: alt,
+                                                    recipient_pubkey: sender_pubkey.key,
+                                                    vsf_bytes,
+                                                },
+                                            );
+                                            crate::log(&format!(
+                                                "BLIND: served {} to sibling device {}",
+                                                if blob_opt.is_some() { "sealed S" } else { "found=0 (no live S)" },
+                                                hex::encode(&sender_pubkey.key[..4])
+                                            ));
+                                        }
+                                        Err(e) => crate::log(&format!("BLIND: sibling srv build failed: {e}")),
+                                    }
+                                }
+                                continue;
+                            }
+
+                            if kind == BlindFrameKind::Put {
+                                if blob.len() != crate::crypto::blind::BLIND_BLOB_LEN {
+                                    crate::log("BLIND: put REJECTED (bad blob length)");
+                                    continue;
+                                }
+                                // Upsert by depositor device — a redeposit (re-key, S regen) replaces. Idempotent, so a duplicate put just re-acks (lost-ack heal).
+                                let c = &mut self.contacts[idx];
+                                if let Some(entry) = c
+                                    .deposited_blinds
+                                    .iter_mut()
+                                    .find(|(d, _, _)| *d == sender_pubkey.key)
+                                {
+                                    entry.1 = blob.clone();
+                                    entry.2 = now;
+                                } else {
+                                    c.deposited_blinds.push((sender_pubkey.key, blob.clone(), now));
+                                }
+                                // DISK COMMIT BEFORE THE ACK — the ack is the depositor's Provisional→Live edge, so it must attest durable storage, not RAM.
+                                let committed = match self.storage.as_ref() {
+                                    Some(storage) => match crate::storage::contacts::save_contact_state(
+                                        &self.contacts[idx],
+                                        storage,
+                                    ) {
+                                        Ok(()) => true,
+                                        Err(e) => {
+                                            crate::log(&format!("BLIND: deposit persist failed: {e}"));
+                                            false
+                                        }
+                                    },
+                                    None => false,
+                                };
+                                if committed {
+                                    if let (Some(kp), Some(checker)) =
+                                        (self.device_keypair.as_ref(), self.status_checker.as_ref())
+                                    {
+                                        match crate::network::fgtw::protocol::build_blind_ack_vsf(
+                                            &conversation_token,
+                                            &request_id,
+                                            kp.public.as_bytes(),
+                                            kp.secret.as_bytes(),
+                                        ) {
+                                            Ok(vsf_bytes) => {
+                                                let (primary, alt) = self.contacts[idx]
+                                                    .race_addrs()
+                                                    .unwrap_or((sender_addr, None));
+                                                checker.send_history(
+                                                    crate::network::status::HistorySendRequest {
+                                                        peer_addr: primary,
+                                                        alt_addr: alt,
+                                                        recipient_pubkey: sender_pubkey.key,
+                                                        vsf_bytes,
+                                                    },
+                                                );
+                                                crate::log(&format!(
+                                                    "BLIND: stored deposit from {} device {} — acked (disk-committed)",
+                                                    crate::fp(&self.contacts[idx].handle_proof),
+                                                    hex::encode(&sender_pubkey.key[..4])
+                                                ));
+                                            }
+                                            Err(e) => crate::log(&format!("BLIND: ack build failed: {e}")),
+                                        }
+                                    }
+                                }
+                            } else {
+                                // Get: serve THE SIGNER's deposit back (or an explicit miss — the probe-before-generate signal).
+                                let blob_opt = self.contacts[idx]
+                                    .deposited_blinds
+                                    .iter()
+                                    .find(|(d, _, _)| *d == sender_pubkey.key)
+                                    .map(|(_, b, _)| b.clone());
+                                if let (Some(kp), Some(checker)) =
+                                    (self.device_keypair.as_ref(), self.status_checker.as_ref())
+                                {
+                                    match crate::network::fgtw::protocol::build_blind_srv_vsf(
+                                        &conversation_token,
+                                        &request_id,
+                                        blob_opt.as_deref(),
+                                        kp.public.as_bytes(),
+                                        kp.secret.as_bytes(),
+                                    ) {
+                                        Ok(vsf_bytes) => {
+                                            let (primary, alt) = self.contacts[idx]
+                                                .race_addrs()
+                                                .unwrap_or((sender_addr, None));
+                                            checker.send_history(
+                                                crate::network::status::HistorySendRequest {
+                                                    peer_addr: primary,
+                                                    alt_addr: alt,
+                                                    recipient_pubkey: sender_pubkey.key,
+                                                    vsf_bytes,
+                                                },
+                                            );
+                                            crate::log(&format!(
+                                                "BLIND: served {} to {} device {}",
+                                                if blob_opt.is_some() { "deposit" } else { "found=0 (no deposit)" },
+                                                crate::fp(&self.contacts[idx].handle_proof),
+                                                hex::encode(&sender_pubkey.key[..4])
+                                            ));
+                                        }
+                                        Err(e) => crate::log(&format!("BLIND: srv build failed: {e}")),
+                                    }
+                                }
+                            }
+                        }
+
+                        // Our deposit is disk-confirmed at the friend: rid must match our in-flight put.
+                        BlindFrameKind::Ack => {
+                            let Some(idx) = self.contacts.iter().position(|c| {
+                                c.blind_in_flight
+                                    .map_or(false, |(r, _, is_get)| r == request_id && !is_get)
+                            }) else {
+                                continue; // not ours / already resolved — duplicate ack, harmless
+                            };
+                            self.contacts[idx].blind_in_flight = None;
+                            self.contacts[idx].blind_deposited = true;
+                            if let Some(storage) = self.storage.as_ref() {
+                                if let Err(e) = crate::storage::contacts::save_contact_state(
+                                    &self.contacts[idx],
+                                    storage,
+                                ) {
+                                    crate::log(&format!("BLIND: deposited-flag persist failed: {e}"));
+                                }
+                            }
+                            crate::log(&format!(
+                                "BLIND: deposit confirmed at {}",
+                                crate::fp(&self.contacts[idx].handle_proof)
+                            ));
+                            // First confirmation flips Provisional → Live: from here S may author tags, because at least one friend durably holds the recovery blind.
+                            if matches!(self.private_s, crate::crypto::blind::PrivateS::Provisional(_)) {
+                                if let crate::crypto::blind::PrivateS::Provisional(s) =
+                                    std::mem::take(&mut self.private_s)
+                                {
+                                    let sid = crate::crypto::blind::s_id(&s);
+                                    crate::log(&format!("S: live (s_id={})", hex::encode(sid)));
+                                    self.private_s =
+                                        crate::crypto::blind::PrivateS::Live { s, s_id: sid };
+                                }
+                            }
+                        }
+
+                        // Answer to OUR probe: rid must match the in-flight get.
+                        BlindFrameKind::Srv => {
+                            let Some(idx) = self.contacts.iter().position(|c| {
+                                c.blind_in_flight
+                                    .map_or(false, |(r, _, is_get)| r == request_id && is_get)
+                            }) else {
+                                continue; // unsolicited/expired — drop
+                            };
+                            self.contacts[idx].blind_in_flight = None;
+
+                            if found && self.contacts[idx].is_sibling {
+                                // Sibling served S sealed under the sibling chains' history key. Adopt it; on a live-vs-live epoch clash both sides converge on the LOWER s_id deterministically (split-brain healing: only possible when two fresh devices genesised with zero shared friends).
+                                let opened = {
+                                    let fid = self.contacts[idx].friendship_id;
+                                    fid.and_then(|fid| {
+                                        self.friendship_chains
+                                            .iter()
+                                            .find(|(id, _)| *id == fid)
+                                            .and_then(|(_, chains)| chains.history_key().copied())
+                                    })
+                                    .and_then(|key| crate::crypto::blind::open_sibling_s(&blob, &key))
+                                };
+                                match opened {
+                                    Some(s) => {
+                                        let sid = crate::crypto::blind::s_id(&s);
+                                        match &self.private_s {
+                                            crate::crypto::blind::PrivateS::Live { s_id, .. }
+                                                if *s_id != sid =>
+                                            {
+                                                if sid < *s_id {
+                                                    crate::log(&format!(
+                                                        "S: CRITICAL — divergent epochs across the fleet; ADOPTING the lower ({} < {}) and redepositing everywhere",
+                                                        hex::encode(sid),
+                                                        hex::encode(s_id)
+                                                    ));
+                                                    self.private_s =
+                                                        crate::crypto::blind::PrivateS::Live {
+                                                            s,
+                                                            s_id: sid,
+                                                        };
+                                                    for c in self.contacts.iter_mut() {
+                                                        if !c.is_sibling {
+                                                            c.blind_deposited = false;
+                                                        }
+                                                    }
+                                                } else {
+                                                    crate::log(&format!(
+                                                        "S: CRITICAL — divergent epochs across the fleet; keeping the lower ({} < {}), sibling converges on its next probe",
+                                                        hex::encode(s_id),
+                                                        hex::encode(sid)
+                                                    ));
+                                                }
+                                            }
+                                            crate::crypto::blind::PrivateS::Live { .. } => {
+                                                crate::log("S: sibling cross-check OK (same epoch)");
+                                            }
+                                            _ => {
+                                                crate::log(&format!(
+                                                    "S: adopted from fleet sibling (check OK, s_id={})",
+                                                    hex::encode(sid)
+                                                ));
+                                                self.private_s =
+                                                    crate::crypto::blind::PrivateS::Live {
+                                                        s,
+                                                        s_id: sid,
+                                                    };
+                                            }
+                                        }
+                                    }
+                                    None => {
+                                        crate::log(
+                                            "BLIND: CRITICAL — sibling-served S failed AEAD/check; treating as miss",
+                                        );
+                                        self.contacts[idx].blind_probe_missed = true;
+                                        check_s_genesis = true;
+                                    }
+                                }
+                                continue;
+                            }
+
+                            if found && blob.len() == crate::crypto::blind::BLIND_BLOB_LEN {
+                                let Some(kp) = self.device_keypair.as_ref() else { continue };
+                                let device_secret = *kp.secret.as_bytes();
+                                let pad = crate::crypto::blind::derive_blind_pad(
+                                    &device_secret,
+                                    &self.contacts[idx].handle_hash,
+                                );
+                                match crate::crypto::blind::open_blind_blob(&blob, &pad) {
+                                    Some(s) => {
+                                        let sid = crate::crypto::blind::s_id(&s);
+                                        match &self.private_s {
+                                            crate::crypto::blind::PrivateS::Live { s_id, .. }
+                                                if *s_id != sid =>
+                                            {
+                                                // Split-brain: a friend holds a DIFFERENT epoch than the S we're running. Keep ours (it has live confirmations); the redeposit driver will overwrite theirs.
+                                                crate::log(&format!(
+                                                    "BLIND: CRITICAL — divergent S epoch from {} (theirs {}, ours {}); keeping ours + redepositing",
+                                                    crate::fp(&self.contacts[idx].handle_proof),
+                                                    hex::encode(sid),
+                                                    hex::encode(s_id)
+                                                ));
+                                                self.contacts[idx].blind_deposited = false;
+                                            }
+                                            crate::crypto::blind::PrivateS::Live { .. } => {
+                                                crate::log("BLIND: cross-check OK (same S epoch)");
+                                            }
+                                            _ => {
+                                                crate::log(&format!(
+                                                    "S: reconstituted from friend blind (check OK, s_id={})",
+                                                    hex::encode(sid)
+                                                ));
+                                                self.private_s = crate::crypto::blind::PrivateS::Live {
+                                                    s,
+                                                    s_id: sid,
+                                                };
+                                                // A served deposit IS a confirmed deposit at this friend.
+                                                self.contacts[idx].blind_deposited = true;
+                                                if let Some(storage) = self.storage.as_ref() {
+                                                    let _ = crate::storage::contacts::save_contact_state(
+                                                        &self.contacts[idx],
+                                                        storage,
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
+                                    None => {
+                                        // Tampered blob or a foreign device's deposit under our key — treat as a miss for THIS friend, loudly (a valid deposit at another friend must still win over genesis).
+                                        crate::log(&format!(
+                                            "BLIND: CRITICAL — served blob failed the check from {} (tampered?); treating as miss",
+                                            crate::fp(&self.contacts[idx].handle_proof)
+                                        ));
+                                        self.contacts[idx].blind_probe_missed = true;
+                                        check_s_genesis = true;
+                                    }
+                                }
+                            } else {
+                                crate::log(&format!(
+                                    "BLIND: no deposit at {} (found=0)",
+                                    crate::fp(&self.contacts[idx].handle_proof)
+                                ));
+                                self.contacts[idx].blind_probe_missed = true;
+                                check_s_genesis = true;
+                            }
+                        }
+                    }
+                }
+
                 StatusUpdate::ReflexiveLearned { addr } => {
                     // Our own public address, learned via peer-echoed reflection on the live UDP data socket. Store it for candidate gathering and the announce to publish (so our `PeerRecord.ip` is the real data-socket address, not fgtw.org's cone-only TLS view).
                     if self.our_reflexive != Some(addr) {
@@ -10004,6 +10528,11 @@ impl PhotonApp {
         for idx in ceremony_completions {
             self.complete_clutch_ceremony_by_idx(idx);
             changed = true;
+        }
+
+        // Deferred probe-before-generate verdict (a blind_srv miss landed while S was None).
+        if check_s_genesis {
+            self.maybe_generate_s();
         }
 
         // Ping contacts immediately when a new LAN address is discovered Fixes timing gap: startup ping fires before first LAN discovery arrives
@@ -10078,6 +10607,9 @@ impl PhotonApp {
 
         // History recovery: fire the next backfill page request for any contact mid-recovery (newest-first cursor; urgent jumps the trickle interval; in-flight expiry re-requests lost pages).
         self.drive_history_recovery();
+
+        // Private-identity-secret S: probe/reconstitute/deposit blinds toward whichever friends need an op (no-op at steady state).
+        self.drive_blind_ops();
 
         // NOTE: Proactive CLUTCH initiation is now handled via background keygen:
         // 1. spawn_clutch_keygen() is called when contact is added (background thread)
@@ -10309,6 +10841,8 @@ impl PhotonApp {
                 if let Ok(mut pks) = self.contact_pubkeys.lock() {
                     pks.clear();
                 }
+                // Drop S too (zeroized) — the reset-recovery E2E is exactly "[]n then reconstitute from a friend's blind"; keeping it in RAM would fake the recovery.
+                self.private_s = crate::crypto::blind::PrivateS::None;
                 eprintln!(
                     "[]n nuked {} vault file(s); session kept (still attested)",
                     count
@@ -10318,6 +10852,7 @@ impl PhotonApp {
                 // De-attest — clear the tohu session (identity_seed/vault_seed/handle_proof) and drop back to the attest screen, leaving the vault on disk intact. The identity is deterministic from the handle, so re-typing it re-derives the same roots. Mirror of []n: []u forgets WHO you are, []n forgets WHAT you've stored. Only fires in development builds.
                 tohu::clear_session();
                 self.session = None;
+                self.private_s = crate::crypto::blind::PrivateS::None; // zeroized on overwrite — no identity, no S
                 self.pending_broadcast_signal = -1; // Android: drop the sticky session broadcast.
                 self.state = AppState::Launch(LaunchState::Fresh);
                 self.refocus_handle_select_all();
