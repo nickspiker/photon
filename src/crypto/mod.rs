@@ -1,3 +1,4 @@
+pub mod blind;
 pub mod chain;
 pub mod clutch;
 pub mod handle_proof;
