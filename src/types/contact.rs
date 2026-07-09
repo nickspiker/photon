@@ -220,6 +220,14 @@ pub struct Contact {
     pub clutch_completed_at: Option<std::time::Instant>,
     /// This "contact" is one of OUR OWN fleet devices (a sibling), not a friend. Siblings run the same full CLUTCH ceremony + braided ratchet as friends — the fleet weave — but key the ceremony on `sibling_party_id(device_pubkey)` (stored in `handle_hash`) instead of the shared handle_hash, which would collide. `handle`/`handle_proof` hold OUR OWN handle so FGTW peer-row address matching works; `public_identity` is the sibling device and `fleet_members` stays EMPTY so `knows_device` answers only that one device (load-bearing for first-match routing). Sibling contacts are excluded from the contacts UI, roster/cloud sync, and friend-history recovery, and persist under the sibling index instead of the contacts index.
     pub is_sibling: bool,
+    /// FRIEND-side blind storage: OTP-blinded private-identity-secret blobs this contact's devices deposited WITH US — (depositor device pubkey, 64-byte blob, deposited-at osc). Provably opaque (one-time pad; see `crypto::blind`), served back ONLY to the exact depositing device (the `blind_get` signer), upsert-keyed by device pubkey (a redeposit replaces). Persisted in contact state.
+    pub deposited_blinds: Vec<([u8; 32], Vec<u8>, i64)>,
+    /// DEPOSITOR-side: our blind is CONFIRMED stored at this friend — their `blind_ack` arrived, which they send only after their own disk commit. This is the signal that flips S Provisional→Live (a crash before any ack orphans nothing: no tag was ever emitted). Persisted (absent = false).
+    pub blind_deposited: bool,
+    /// Runtime-only: the one in-flight blind op toward this contact — (rid, sent_osc, is_get). `drive_blind_ops` expires it after ~15s and retries; responses match on rid.
+    pub blind_in_flight: Option<([u8; 32], i64, bool)>,
+    /// Runtime-only: this friend answered our probe with `found=0` (no deposit for this device). When every online+woven friend has missed AND no probe is in flight, S genuinely doesn't exist and genesis may run (probe-before-generate — a reset device must RECOVER S, never regenerate it while a deposit is reachable).
+    pub blind_probe_missed: bool,
 }
 
 /// Contact identifier - BLAKE3 hash of the contact's public identity key This provides deterministic, collision-resistant identification
@@ -304,6 +312,10 @@ impl Contact {
             history_recovery: None,       // No history recovery running
             clutch_completed_at: None,         // Ceremony not yet complete
             is_sibling: false,            // A friend, unless made via new_sibling
+            deposited_blinds: Vec::new(), // No blinds deposited with us yet
+            blind_deposited: false,       // Our blind not confirmed at this friend yet
+            blind_in_flight: None,        // No blind op in flight
+            blind_probe_missed: false,    // No probe answered found=0 yet
         }
     }
 

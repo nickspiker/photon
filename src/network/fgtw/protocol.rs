@@ -2595,6 +2595,236 @@ pub fn parse_history_page_vsf(
     Ok(((conversation_token, request_id, sealed), sender_pubkey))
 }
 
+// ── Blind frames: friend-held storage of the OTP-blinded private identity secret S (crypto::blind). Four small signed frames, same canonical scheme as hist_req/hist_page (sign_file build, read_verified parse — vsf-gate compliant). blind_put deposits our 64-byte blind with a friend; blind_ack is the friend's DISK-COMMITTED confirmation (sent only after the serve-gate passed and the state persisted — this is what flips S Provisional→Live, so packet-ack transport delivery is NOT enough); blind_get asks a friend to serve our deposit back; blind_srv answers it, with found=0 as the explicit miss that drives probe-before-generate. ──
+
+/// Which of the four blind frames arrived. One RX arm handles all four; the UI dispatches on this.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlindFrameKind {
+    Put,
+    Ack,
+    Get,
+    Srv,
+}
+
+impl BlindFrameKind {
+    fn section_name(self) -> &'static str {
+        match self {
+            BlindFrameKind::Put => "blind_put",
+            BlindFrameKind::Ack => "blind_ack",
+            BlindFrameKind::Get => "blind_get",
+            BlindFrameKind::Srv => "blind_srv",
+        }
+    }
+}
+
+/// Parsed `blind_put` / `blind_get` / `blind_ack` / `blind_srv` common payload. `blob` is empty for get/ack and for a srv miss.
+pub struct BlindFramePayload {
+    pub conversation_token: [u8; 32],
+    pub request_id: [u8; 32],
+    /// The 64-byte blind blob (put, srv-hit); empty otherwise.
+    pub blob: Vec<u8>,
+    /// srv only: whether the friend held a deposit for the requesting device. true for every other frame.
+    pub found: bool,
+    /// Header creation time — staleness gate input (>10 min = replay, reject).
+    pub sent_osc: i64,
+}
+
+/// Parse + verify ANY blind frame (one signature verification, then dispatch on section name). `None` = not a blind frame / failed verification — the RX loop falls thru to the next parser.
+pub fn parse_any_blind_frame(
+    vsf_bytes: &[u8],
+) -> Option<(BlindFrameKind, BlindFramePayload, [u8; 32])> {
+    let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None).ok()?;
+    let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes).ok()?;
+    let sent_osc = header_creation_oscillations(&header);
+
+    let (section, section_name) = parse_section_after_header(vsf_bytes, &header, header_end).ok()?;
+    let kind = match section_name.as_str() {
+        "blind_put" => BlindFrameKind::Put,
+        "blind_ack" => BlindFrameKind::Ack,
+        "blind_get" => BlindFrameKind::Get,
+        "blind_srv" => BlindFrameKind::Srv,
+        _ => return None,
+    };
+    let fields = &section.fields;
+
+    let conversation_token = field_hash32(fields, "tok", |v| matches!(v, VsfType::hg(_)))?;
+    let request_id = field_hash32(fields, "rid", |v| matches!(v, VsfType::hb(_)))?;
+    let found = fields
+        .iter()
+        .find(|f| f.name == "found")
+        .and_then(|f| f.values.first())
+        .map(|v| match v {
+            VsfType::u3(n) => *n != 0,
+            VsfType::u4(n) => *n != 0,
+            _ => true,
+        })
+        .unwrap_or(true);
+    let blob = fields
+        .iter()
+        .find(|f| f.name == "blob")
+        .and_then(|f| f.values.first())
+        .and_then(|v| match v {
+            VsfType::t_u3(tensor) => Some(tensor.data.clone()),
+            _ => None,
+        })
+        .unwrap_or_default();
+
+    Some((
+        kind,
+        BlindFramePayload {
+            conversation_token,
+            request_id,
+            blob,
+            found,
+            sent_osc,
+        },
+        sender_pubkey,
+    ))
+}
+
+/// Build a signed blind frame. `section_name` ∈ {"blind_put","blind_ack","blind_get","blind_srv"}; `blob`/`found` per the frame semantics above.
+fn build_blind_frame_vsf(
+    section_name: &str,
+    conversation_token: &[u8; 32],
+    request_id: &[u8; 32],
+    blob: Option<&[u8]>,
+    found: Option<bool>,
+    device_pubkey: &[u8; 32],
+    device_secret: &[u8; 32],
+) -> Result<Vec<u8>, String> {
+    use vsf::file_format::VsfSection;
+    use vsf::VsfBuilder;
+
+    let mut section = VsfSection::new(section_name);
+    section.add_field("tok", VsfType::hg(conversation_token.to_vec()));
+    section.add_field("rid", VsfType::hb(request_id.to_vec()));
+    if let Some(found) = found {
+        section.add_field("found", VsfType::u3(found as u8));
+    }
+    if let Some(blob) = blob {
+        section.add_field(
+            "blob",
+            VsfType::t_u3(vsf::Tensor::new(vec![blob.len()], blob.to_vec())),
+        );
+    }
+
+    let unsigned = VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .signature_ed25519(*device_pubkey, [0u8; 64])
+        .add_section_direct(section)
+        .build()
+        .map_err(|e| format!("Failed to build {} VSF: {}", section_name, e))?;
+
+    vsf::verification::sign_file(unsigned, device_secret)
+}
+
+/// Parse + verify a blind frame of the expected section name. Returns (payload, sender_pubkey). Signature validity is NOT authorization — the caller gates on knows_device + is_mutual.
+fn parse_blind_frame_vsf(
+    expected: &str,
+    vsf_bytes: &[u8],
+) -> Result<(BlindFramePayload, [u8; 32]), String> {
+    let (kind, payload, sender_pubkey) = parse_any_blind_frame(vsf_bytes)
+        .ok_or_else(|| format!("{} parse/verification failed", expected))?;
+    if kind.section_name() != expected {
+        return Err(format!(
+            "Expected '{}' section, got '{}'",
+            expected,
+            kind.section_name()
+        ));
+    }
+    Ok((payload, sender_pubkey))
+}
+
+/// Deposit our blind with a friend: signed by the depositor device.
+pub fn build_blind_put_vsf(
+    conversation_token: &[u8; 32],
+    request_id: &[u8; 32],
+    blob: &[u8],
+    device_pubkey: &[u8; 32],
+    device_secret: &[u8; 32],
+) -> Result<Vec<u8>, String> {
+    build_blind_frame_vsf(
+        "blind_put",
+        conversation_token,
+        request_id,
+        Some(blob),
+        None,
+        device_pubkey,
+        device_secret,
+    )
+}
+
+pub fn parse_blind_put_vsf(vsf_bytes: &[u8]) -> Result<(BlindFramePayload, [u8; 32]), String> {
+    parse_blind_frame_vsf("blind_put", vsf_bytes)
+}
+
+/// Friend's disk-committed deposit confirmation (echoes the put's rid).
+pub fn build_blind_ack_vsf(
+    conversation_token: &[u8; 32],
+    request_id: &[u8; 32],
+    device_pubkey: &[u8; 32],
+    device_secret: &[u8; 32],
+) -> Result<Vec<u8>, String> {
+    build_blind_frame_vsf(
+        "blind_ack",
+        conversation_token,
+        request_id,
+        None,
+        None,
+        device_pubkey,
+        device_secret,
+    )
+}
+
+pub fn parse_blind_ack_vsf(vsf_bytes: &[u8]) -> Result<(BlindFramePayload, [u8; 32]), String> {
+    parse_blind_frame_vsf("blind_ack", vsf_bytes)
+}
+
+/// Ask a friend to serve OUR deposit back (keyed friend-side by our device pubkey — the frame signer).
+pub fn build_blind_get_vsf(
+    conversation_token: &[u8; 32],
+    request_id: &[u8; 32],
+    device_pubkey: &[u8; 32],
+    device_secret: &[u8; 32],
+) -> Result<Vec<u8>, String> {
+    build_blind_frame_vsf(
+        "blind_get",
+        conversation_token,
+        request_id,
+        None,
+        None,
+        device_pubkey,
+        device_secret,
+    )
+}
+
+pub fn parse_blind_get_vsf(vsf_bytes: &[u8]) -> Result<(BlindFramePayload, [u8; 32]), String> {
+    parse_blind_frame_vsf("blind_get", vsf_bytes)
+}
+
+/// Serve (or explicitly miss) a blind_get. A miss carries `found=0` and NO blob field (a zero-length tensor doesn't encode) — the explicit signal that lets a freshly-woven device conclude "no deposit exists" and generate S (probe-before-generate).
+pub fn build_blind_srv_vsf(
+    conversation_token: &[u8; 32],
+    request_id: &[u8; 32],
+    blob: Option<&[u8]>,
+    device_pubkey: &[u8; 32],
+    device_secret: &[u8; 32],
+) -> Result<Vec<u8>, String> {
+    build_blind_frame_vsf(
+        "blind_srv",
+        conversation_token,
+        request_id,
+        blob,
+        Some(blob.is_some()),
+        device_pubkey,
+        device_secret,
+    )
+}
+
+pub fn parse_blind_srv_vsf(vsf_bytes: &[u8]) -> Result<(BlindFramePayload, [u8; 32]), String> {
+    parse_blind_frame_vsf("blind_srv", vsf_bytes)
+}
+
 /// Extract a 32-byte hash field of the given VSF flavor from section fields.
 fn field_hash32(
     fields: &[vsf::file_format::VsfField],
@@ -2676,6 +2906,59 @@ mod history_frame_tests {
         let mid = bytes.len() / 2;
         bytes[mid] ^= 0x01;
         assert!(parse_history_request_vsf(&bytes).is_err());
+    }
+
+    #[test]
+    fn blind_frames_round_trip() {
+        let (pubkey, secret) = keypair(11);
+        let tok = [0xE5u8; 32];
+        let rid = [0xF6u8; 32];
+        let blob = vec![0x42u8; 64];
+
+        // put: carries the 64-byte blob
+        let bytes = build_blind_put_vsf(&tok, &rid, &blob, &pubkey, &secret).unwrap();
+        let (p, signer) = parse_blind_put_vsf(&bytes).unwrap();
+        assert_eq!(signer, pubkey);
+        assert_eq!(p.conversation_token, tok);
+        assert_eq!(p.request_id, rid);
+        assert_eq!(p.blob, blob);
+        assert!(p.sent_osc > 0);
+        // Cross-section parse must reject.
+        assert!(parse_blind_get_vsf(&bytes).is_err());
+
+        // ack: rid echo only
+        let bytes = build_blind_ack_vsf(&tok, &rid, &pubkey, &secret).unwrap();
+        let (p, _) = parse_blind_ack_vsf(&bytes).unwrap();
+        assert_eq!(p.request_id, rid);
+        assert!(p.blob.is_empty());
+
+        // get: rid only
+        let bytes = build_blind_get_vsf(&tok, &rid, &pubkey, &secret).unwrap();
+        let (p, _) = parse_blind_get_vsf(&bytes).unwrap();
+        assert_eq!(p.request_id, rid);
+
+        // srv hit: found=1 + blob
+        let bytes = build_blind_srv_vsf(&tok, &rid, Some(&blob), &pubkey, &secret).unwrap();
+        let (p, _) = parse_blind_srv_vsf(&bytes).unwrap();
+        assert!(p.found);
+        assert_eq!(p.blob, blob);
+
+        // srv miss: found=0, empty blob — the probe-before-generate signal
+        let bytes = build_blind_srv_vsf(&tok, &rid, None, &pubkey, &secret).unwrap();
+        let (p, _) = parse_blind_srv_vsf(&bytes).unwrap();
+        assert!(!p.found);
+        assert!(p.blob.is_empty());
+    }
+
+    #[test]
+    fn blind_frame_bit_flip_rejected() {
+        let (pubkey, secret) = keypair(11);
+        let mut bytes =
+            build_blind_put_vsf(&[0xE5u8; 32], &[0xF6u8; 32], &[0x42u8; 64], &pubkey, &secret)
+                .unwrap();
+        let mid = bytes.len() / 2;
+        bytes[mid] ^= 0x01;
+        assert!(parse_blind_put_vsf(&bytes).is_err());
     }
 }
 

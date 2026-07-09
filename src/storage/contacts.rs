@@ -149,6 +149,8 @@ fn contact_state_schema() -> SectionSchema {
         .field("hist_oldest", TypeConstraint::Any) // e6 eagle-time cursor: oldest recovered row so far (i64::MAX = head page pending). Absent = history recovery never ran for this contact.
         .field("hist_complete", TypeConstraint::AnyUnsigned) // bool: friend-history backfill finished (server said no-more, or early-stop). Absent = false.
         .field("sibling", TypeConstraint::AnyUnsigned) // bool: this entry is one of OUR OWN fleet devices (fleet weave), keyed by sibling party id. Absent = false (a friend).
+        .field("blind", TypeConstraint::Any) // multi-value per deposited blind: (depositor device ke, 64B blob tensor, deposited-at e6). Friend-side storage of OTP-blinded S blobs; absent = none.
+        .field("blind_deposited", TypeConstraint::AnyUnsigned) // bool: OUR blind is disk-confirmed at this friend (their blind_ack arrived). Absent = false.
 }
 
 /// Save contact state (mutable data) with schema validation
@@ -229,6 +231,24 @@ pub fn save_contact_state(contact: &Contact, storage: &FlatStorage) -> Result<()
         // Self-describing sibling marker — written only when true (absent = friend), so old vaults parse unchanged.
         builder = builder
             .set("sibling", true)
+            .map_err(|e| StorageError::Parse(e.to_string()))?;
+    }
+    // Friend-side blind deposits: one multi-value field per (device, blob, at) — the contact_list "contact" idiom. Blobs are OTP ciphertexts (provably opaque), safe at rest like any other vault entry.
+    for (dev, blob, at) in &contact.deposited_blinds {
+        builder = builder
+            .append_multi(
+                "blind",
+                vec![
+                    VsfType::ke(dev.to_vec()),
+                    VsfType::t_u3(vsf::Tensor::new(vec![blob.len()], blob.clone())),
+                    VsfType::e(vsf::types::EtType::e6(*at)),
+                ],
+            )
+            .map_err(|e| StorageError::Parse(e.to_string()))?;
+    }
+    if contact.blind_deposited {
+        builder = builder
+            .set("blind_deposited", true)
             .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
 
@@ -344,6 +364,24 @@ fn apply_contact_state(contact: &mut Contact, vsf_bytes: &[u8]) -> Result<(), St
             urgent: false,
             was_complete_before: complete,
         });
+    }
+    // Friend-side blind deposits: (device ke, blob tensor, at e6) per multi-value field.
+    for field in section.get_fields("blind") {
+        if field.values.len() >= 3 {
+            let dev: [u8; 32] = match &field.values[0] {
+                VsfType::ke(v) if v.len() == 32 => v.as_slice().try_into().unwrap(),
+                _ => continue,
+            };
+            let blob = match &field.values[1] {
+                VsfType::t_u3(t) => t.data.clone(),
+                _ => continue,
+            };
+            let at = vsf_to_oscillations(&field.values[2]);
+            contact.deposited_blinds.push((dev, blob, at));
+        }
+    }
+    if section.get_value::<bool>("blind_deposited").unwrap_or(false) {
+        contact.blind_deposited = true;
     }
 
     Ok(())
@@ -1012,6 +1050,48 @@ mod tests {
         assert!(load_all_siblings("me", [0x22; 32], &storage).is_empty());
 
         // Clean up the on-disk vault so reruns start fresh.
+        if let Ok([primary, shadow]) = kete::vault_ring_paths(app, &vault_seed, &device_secret) {
+            let _ = std::fs::remove_file(primary);
+            let _ = std::fs::remove_file(shadow);
+        }
+    }
+
+    /// Blind-state persistence: a friend's deposited blinds (device-keyed 64B blobs) + our confirmed-deposit flag survive a vault close/reopen; contacts saved before the feature load with empty/false defaults (absent-field idiom).
+    #[test]
+    fn blind_state_round_trip_on_real_vault() {
+        use crate::types::HandleText;
+
+        let device_secret = [37u8; 32];
+        let vault_seed = *ihi::handle_to_hash("me-blind-test").as_bytes();
+        let app = crate::storage::APP;
+
+        let mut c = Contact::new(
+            HandleText::new("carol"),
+            [0x66; 32],
+            DevicePubkey::from_bytes([0x10; 32]),
+        );
+        c.deposited_blinds = vec![
+            ([0x10; 32], vec![0xAB; 64], 1_000),
+            ([0x11; 32], vec![0xCD; 64], 2_000),
+        ];
+        c.blind_deposited = true;
+
+        {
+            let storage = FlatStorage::new(app, vault_seed, device_secret).unwrap();
+            save_contact_state(&c, &storage).unwrap();
+        }
+
+        let storage = FlatStorage::new(app, vault_seed, device_secret).unwrap();
+        let identity = ContactIdentity {
+            handle_proof: [0x66; 32],
+            handle: "carol".to_string(),
+        };
+        let loaded = load_contact_state(&identity, &storage).unwrap();
+        assert_eq!(loaded.deposited_blinds.len(), 2);
+        assert_eq!(loaded.deposited_blinds[0], ([0x10; 32], vec![0xAB; 64], 1_000));
+        assert_eq!(loaded.deposited_blinds[1], ([0x11; 32], vec![0xCD; 64], 2_000));
+        assert!(loaded.blind_deposited);
+
         if let Ok([primary, shadow]) = kete::vault_ring_paths(app, &vault_seed, &device_secret) {
             let _ = std::fs::remove_file(primary);
             let _ = std::fs::remove_file(shadow);
