@@ -134,8 +134,7 @@ fn get_broadcast_from_system(local_ip: &std::net::Ipv4Addr) -> Option<std::net::
     None
 }
 
-/// Parse LAN discovery packet Returns (handle_proof, ip, port, device_pubkey) if valid, None otherwise handle_proof is extracted from the VSF header's provenance hash (hp)
-/// device_pubkey (ke) is None on beacons from builds that predate it; receivers use it to drop their OWN looped-back beacon (a fleet shares one handle_proof, so the handle alone can't tell self from sibling).
+/// Parse LAN discovery packet Returns (handle_proof, ip, port, device_pubkey) if valid, None otherwise handle_proof is extracted from the VSF header's provenance hash (hp) device_pubkey (ke) is None on beacons from builds that predate it; receivers use it to drop their OWN looped-back beacon (a fleet shares one handle_proof, so the handle alone can't tell self from sibling).
 pub fn parse_lan_discovery(
     packet: &[u8],
     src_addr: SocketAddr,
@@ -192,8 +191,7 @@ pub fn parse_lan_discovery(
     Some((handle_proof, src_ip, port, device_pubkey))
 }
 
-/// Build LAN discovery broadcast packet handle_proof is stored in VSF header as provenance hash (hp) for identity One-shot broadcast - no rolling hash needed (provenance_only)
-/// device_pubkey rides along (ke) so receivers can tell WHICH fleet device is beaconing — and in particular drop their own looped-back beacon instead of learning themselves as a peer.
+/// Build LAN discovery broadcast packet handle_proof is stored in VSF header as provenance hash (hp) for identity One-shot broadcast - no rolling hash needed (provenance_only) device_pubkey rides along (ke) so receivers can tell WHICH fleet device is beaconing — and in particular drop their own looped-back beacon instead of learning themselves as a peer.
 pub fn build_lan_discovery(handle_proof: [u8; 32], port: u16, device_pubkey: [u8; 32]) -> Vec<u8> {
     use vsf::{VsfBuilder, VsfType};
 

@@ -57,8 +57,7 @@ const SEARCH_FOUND_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_40_E0
 const SEARCH_FAIL_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_E0_40_40));
 /// Hourglass tint while the search is in flight (orange). α+darkness.
 const HOURGLASS_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_FF_A5_00));
-/// Send-button arrowhead glyph — light grey, α+darkness format for under-blend (matches the intent of
-/// theme::BUTTON_TEXT, which is legacy visible-RGB and not usable on this canvas).
+/// Send-button arrowhead glyph — light grey, α+darkness format for under-blend (matches the intent of theme::BUTTON_TEXT, which is legacy visible-RGB and not usable on this canvas).
 const SEND_ARROW_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_D0_D0_D0));
 /// Grey placeholder circle for contacts/avatars without a loaded image.
 const AVATAR_PLACEHOLDER: u32 = 0xFF_C5_C5_C5;
@@ -188,19 +187,21 @@ fn draw_hourglass(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, angle_deg: f
     }
 }
 
-/// Draw an upward-pointing arrowhead (a filled 4-vertex chevron) centred at (cx, cy), sized to a
-/// `size`×`size` box, onto the Canvas via under-blend + coverage AA — same model as `draw_hourglass`.
-/// The four vertices: apex (top centre), right wing tip, bottom notch (centre, pulled up so it reads
-/// as a chevron with thickness, not a solid triangle), left wing tip. Used for the send button glyph.
-/// `colour` is α+darkness packed (α = strength of the glyph, darkness in the low 24 bits). Call this
-/// AFTER the button pill is painted: this canvas blends topmost-FIRST via `under()`, which discards any
-/// draw onto an already-opaque pixel — so the arrowhead can't be `under()`-ed onto the opaque pill. It
-/// instead reads the destination (the pill), composites the glyph OVER it by coverage in darkness-space,
-/// and writes the result back OPAQUE. That also feathers the AA edges against the ACTUAL pill colour
-/// (whatever its hover/active state), not the background, so no dark halo.
-fn draw_up_arrowhead(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, colour: u32) {
-    // Geometry as fractions of the box: apex up top, wings at the bottom corners, notch pulled up so
-    // the shape is a chevron (^) with visible thickness.
+/// Draw an upward-pointing arrowhead (a filled 4-vertex chevron) centred at (cx, cy), sized to a `size`×`size` box, as a proper fluor `under()` layer — same model as the logo glyphs.
+/// The four vertices: apex (top centre), right wing tip, bottom notch (centre, pulled up so it reads as a chevron with thickness, not a solid triangle), left wing tip. Used for the send button glyph.
+/// `colour` is α+darkness packed. This is a topmost-first `under()` write, so draw it BEFORE the button pill: the arrowhead claims its pixels first (glyph darkness at α = coverage), then the pill fills under it — the same discipline as the button's own text label and the logo body.
+/// Coverage feathers the 1px boundary; `colour`'s α scales the whole glyph so a translucent tint still works.
+/// Pass `hit` = (map, id) so the glyph stamps the same hit id it covers — since the arrowhead is drawn first, it would otherwise block the pill's hit stamp under the glyph, leaving an arrow-shaped hole in the click area. Stamping here fills that hole so the whole pill stays clickable.
+fn draw_up_arrowhead(
+    canvas: &mut Canvas,
+    cx: f32,
+    cy: f32,
+    size: f32,
+    colour: u32,
+    mut hit: Option<(&mut [HitId], HitId)>,
+) {
+    use fluor::pixel::{Blend, BlendMode};
+    // Geometry as fractions of the box: apex up top, wings at the bottom corners, notch pulled up so the shape is a chevron (^) with visible thickness.
     let half_w = size * 0.42;
     let top = cy - size * 0.34; // apex
     let bot = cy + size * 0.30; // wing tips
@@ -221,13 +222,9 @@ fn draw_up_arrowhead(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, colour: u
         return;
     }
     canvas.damage.add_bounds(x0, y0, x1, y1);
-    // Glyph darkness (low 24 bits), scaled by the colour's α so a translucent glyph tint still works.
-    let glyph_a = ((colour >> 24) & 0xFF) as f32 / 255.0;
-    let (gr, gg, gb) = (
-        ((colour >> 16) & 0xFF) as f32,
-        ((colour >> 8) & 0xFF) as f32,
-        (colour & 0xFF) as f32,
-    );
+    // Glyph darkness (low 24 bits) + its base α — coverage scales this α for the under() write.
+    let glyph_a = ((colour >> 24) & 0xFF) as f32;
+    let glyph_dark = colour & 0x00FF_FFFF;
 
     // Even-odd inside test + distance-to-nearest-edge for 1px coverage AA.
     let inside = |px: f32, py: f32| -> bool {
@@ -269,9 +266,7 @@ fn draw_up_arrowhead(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, colour: u
             let fx = px as f32 + 0.5;
             let fy = py as f32 + 0.5;
             let d = edge_dist(fx, fy);
-            // Coverage: 1.0 solidly inside; feather ONLY the 1px boundary band. (The old code faded
-            // interior pixels by edge distance too, carving a translucent groove along every inner
-            // edge — the "hollow" look. Interior = fully covered.)
+            // Coverage: 1.0 solidly inside; feather ONLY the 1px boundary band. (The old code faded interior pixels by edge distance too, carving a translucent groove along every inner edge — the "hollow" look. Interior = fully covered.)
             let cov = if inside(fx, fy) {
                 (d + 0.5).min(1.0)
             } else {
@@ -280,19 +275,23 @@ fn draw_up_arrowhead(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, colour: u
             if cov <= 0.0 {
                 continue;
             }
-            let a = cov * glyph_a;
+            // Coverage-scaled α; glyph darkness in the low 24 bits. under() = topmost-first, so this
+            // claims the pixel and the pill (drawn after) fills under it.
+            let a = (cov * glyph_a) as u32;
+            if a == 0 {
+                continue;
+            }
             let idx = row + px;
-            let dst = canvas.pixels[idx];
-            // Source-over the glyph darkness onto the existing (pill) pixel, keep dst's opacity.
-            let (dr, dg, db) = (
-                ((dst >> 16) & 0xFF) as f32,
-                ((dst >> 8) & 0xFF) as f32,
-                (dst & 0xFF) as f32,
-            );
-            let nr = (gr * a + dr * (1.0 - a)) as u32;
-            let ng = (gg * a + dg * (1.0 - a)) as u32;
-            let nb = (gb * a + db * (1.0 - a)) as u32;
-            canvas.pixels[idx] = (dst & 0xFF00_0000) | (nr << 16) | (ng << 8) | nb;
+            canvas.pixels[idx] = canvas.pixels[idx].under((a << 24) | glyph_dark, BlendMode::Normal);
+            // Stamp the button's hit id where the glyph is solid enough to have claimed the pixel — so the
+            // pill's hit stamp (blocked here because the glyph drew first + opaque) isn't a hole.
+            if a >= 128 {
+                if let Some((map, id)) = hit.as_mut() {
+                    if idx < map.len() {
+                        map[idx] = *id;
+                    }
+                }
+            }
         }
     }
 }
@@ -762,8 +761,7 @@ impl PhotonApp {
             },
             clock_check_rx: std::sync::mpsc::channel().1,
             clock_off: None,
-            // ~1 hour of unexplained wall-vs-monotonic skew triggers a re-check (loose enough to
-            // ignore NTP steps and short sleeps, tight enough to catch a day-scale set or long sleep).
+            // ~1 hour of unexplained wall-vs-monotonic skew triggers a re-check (loose enough to ignore NTP steps and short sleeps, tight enough to catch a day-scale set or long sleep).
             clock_jump: crate::network::ClockJumpDetector::new(3600),
             online: false,
             contacts_textbox: None,
@@ -2148,11 +2146,7 @@ impl FluorApp for PhotonApp {
             }
         }
 
-        // Everything network/protocol lives in advance_protocol(): presence sweep, channel drains,
-        // CLUTCH ceremony + chain advancement, retransmits. It touches NO surface, so it can also run
-        // headless from the Android foreground service while the app is backgrounded (screen off ⇒ the
-        // Choreographer stops calling tick, but the state is alive — see docs/background-tick.md). The
-        // frame-only work (animations above, render below) stays here in tick.
+        // Everything network/protocol lives in advance_protocol(): presence sweep, channel drains, CLUTCH ceremony + chain advancement, retransmits. It touches NO surface, so it can also run headless from the Android foreground service while the app is backgrounded (screen off ⇒ the Choreographer stops calling tick, but the state is alive — see docs/background-tick.md). The frame-only work (animations above, render below) stays here in tick.
         needs_redraw |= self.advance_protocol(now);
 
         // Content-flavoured redraws dirty the scene (full-viewport frame); a pure blinkey flip stays out so its frame narrows to the textbox's own damage rect.
@@ -2296,10 +2290,7 @@ impl FluorApp for PhotonApp {
         if matches!(self.state, AppState::Settings(_)) {
             self.update_widget_layout(ctx);
         }
-        // Conversation: lay out the compose textbox + send button each frame. Without this the send
-        // button kept stale placeholder geometry (mid-screen), rendered under the opaque message-list
-        // fill, and under()-blend discarded it — it never appeared. Same reason as the Ready/Settings
-        // branches above; must run before the long-lived `chrome` borrow (takes `&mut self`).
+        // Conversation: lay out the compose textbox + send button each frame. Without this the send button kept stale placeholder geometry (mid-screen), rendered under the opaque message-list fill, and under()-blend discarded it — it never appeared. Same reason as the Ready/Settings branches above; must run before the long-lived `chrome` borrow (takes `&mut self`).
         if matches!(self.state, AppState::Conversation) {
             self.update_widget_layout(ctx);
         }
@@ -2353,7 +2344,11 @@ impl FluorApp for PhotonApp {
         // The 1-px noise inset exists ONLY to clear the window perimeter hairline / shadow band — so gate it on whether that perimeter is actually drawn, which is exactly `!chrome.full_edge`. A windowed desktop draws the perimeter → inset. A maximized/fullscreen desktop goes full_edge (no perimeter) and Android forces full_edge too → paint to the screen edge, else a 1-px unpainted border shows. (Earlier this was hardcoded per-OS, so desktop-maximized still inset for a perimeter that wasn't there.) `|| cfg!(android)` keeps the Android always-fullscreen guarantee even on a transient pre-resize frame where full_edge hasn't synced yet.
         let bg_fullscreen = chrome.full_edge || cfg!(target_os = "android");
         chrome.rasterize_bg(ctx.damage, |canvas| {
-            // Version watermark FIRST — fluor's `under()` is topmost-first, and `background_noise` composes UNDER existing content, so the version must be painted before the noise to survive. At α≈1/32 white the noise blends thru ~97%, leaving it as a faint bottom-of-screen watermark. (This is what "before the background gets painted" meant — paint last and the opaque noise buries it.)
+            // Chromatic wave FIRST, then the background noise — that is the paint order for the spectrum band.
+            if on_launch {
+                chromatic_wave(canvas, spectrum_rect, phase, period_scale);
+                paint_photon_logo(canvas, text, logo_rect);
+            }
             if show_version {
                 // On the Ready screen the version rides the scroll block (positioned past the last contact row); elsewhere it stays pinned at `version_cy`.
                 let vy = ready_block_version_y.unwrap_or(version_cy);
@@ -2388,10 +2383,6 @@ impl FluorApp for PhotonApp {
                 );
             }
             paint::background_noise(canvas, shimmer, bg_fullscreen, scroll_offset, None, bg_base);
-            if on_launch {
-                chromatic_wave(canvas, spectrum_rect, phase, period_scale);
-                paint_photon_logo(canvas, text, logo_rect);
-            }
         });
         // Window-perimeter hairline FIRST — painted straight into `target` (not the chrome group) and carves the window-shape clip_mask. fluor is under-blend only, so whatever lands in `target` first wins at shared edge pixels; drawing the hairline before any content makes it survive over full-bleed screens (Ready/Conversation) whose content reaches the window edge. The chrome group (buttons / orb / strip / title) still composites UNDER content via `flatten_into` below. The clip_mask carve here is the SOLE source of the single window-shape alpha-trim done at the OS boundary in finalize.
         chrome.rasterize_perimeter(target, buf_w, buf_h, ctx.clip_mask);
@@ -2707,13 +2698,15 @@ impl FluorApp for PhotonApp {
 
             // Contacts-page textbox + plus button. The plus button is OVERLAID inside the textbox right edge and ONLY rendered when the textbox has content — empty textbox shows no button. While an add-friend search is in flight, a rotating hourglass replaces the button (and the button is not hit-stampable, so it can't be re-clicked mid-search).
             //
-            // Under-blend semantics ("topmost paints first; later opaque dst wins"): paint the button/hourglass FIRST so it's visually topmost, then the textbox under it. Textbox::render_content_into stamps hit_test_map unconditionally over its entire bbox, so after the textbox runs we re-stamp the button's bbox with the button's hit_id to recover correct click dispatch in the overlap.
+            // Under-blend is topmost-FIRST (first opaque writer wins colour AND its per-pixel hit stamp).
+            // Paint the button/hourglass BEFORE the textbox: the button claims its exact pill silhouette in the framebuffer and hit map, and the textbox drawn under it can't overwrite either (its own stamp is per-opaque-pixel too).
+            // No hit re-stamp — the draw yields the correct pill-shaped hit area on its own.
             let plus_visible = self
                 .contacts_textbox
                 .as_ref()
                 .map(|tb| !tb.chars.is_empty())
                 .unwrap_or(false);
-            let plus_bbox: Option<(isize, isize, isize, isize, HitId)> = if self.add_in_flight {
+            if self.add_in_flight {
                 if let Some(btn) = self.contacts_plus_btn.as_ref() {
                     let sz = btn.width.min(btn.height);
                     draw_hourglass(
@@ -2725,9 +2718,8 @@ impl FluorApp for PhotonApp {
                         HOURGLASS_COLOUR,
                     );
                 }
-                None
             } else if plus_visible {
-                self.contacts_plus_btn.as_mut().map(|btn| {
+                if let Some(btn) = self.contacts_plus_btn.as_mut() {
                     let id = btn.hit_id();
                     btn.render_content_into(
                         &mut canvas,
@@ -2738,12 +2730,8 @@ impl FluorApp for PhotonApp {
                         Some(&mut chrome.hit_test_map),
                         id,
                     );
-                    let bbox = button_bbox(btn);
-                    (bbox.0, bbox.1, bbox.2, bbox.3, id)
-                })
-            } else {
-                None
-            };
+                }
+            }
             // Search box placeholder — same treatment as the launch screen's ∞: a grey prompt centred in the empty, unfocused box, painted BEFORE the textbox so the under-blend keeps it behind the empty pill fill. Clears on focus or first character.
             let search_empty = self
                 .contacts_textbox
@@ -2783,18 +2771,6 @@ impl FluorApp for PhotonApp {
                     None,
                     Some(&mut chrome.hit_test_map),
                     id,
-                );
-            }
-            if let Some((x0, y0, x1, y1, btn_id)) = plus_bbox {
-                restamp_hit_rect(
-                    &mut chrome.hit_test_map,
-                    buf_w,
-                    buf_h,
-                    x0,
-                    y0,
-                    x1,
-                    y1,
-                    btn_id,
                 );
             }
 
@@ -3375,14 +3351,22 @@ impl FluorApp for PhotonApp {
                                     None,
                                 );
                             }
-                            // Under-blend semantics ("topmost paints FIRST; a later opaque dst wins"): the
-                            // send button must be painted BEFORE the textbox, or the textbox's opaque
-                            // background composites on top and buries it (this was the bug — it painted
-                            // after and never showed). Mirrors the working search '+' button path. The
-                            // textbox stamps hit_test_map over its whole bbox, so we re-stamp the button's
-                            // hit rect AFTER the textbox to recover click dispatch in the overlap.
-                            let send_bbox = if let Some(btn) = self.message_send_btn.as_mut() {
+                            // Under-blend is topmost-FIRST (first opaque writer wins the pixel — colour AND its per-pixel hit stamp).
+                            // Paint the send button BEFORE the textbox: the button claims its exact pill silhouette in both the framebuffer and the hit map, and the textbox drawn under it can't overwrite either (its own stamp is per-opaque-pixel too, so it never touches the button's won pixels).
+                            // No hit re-stamp needed — the draw already produces the correct pill-shaped hit area.
+                            if let Some(btn) = self.message_send_btn.as_mut() {
                                 let id = btn.hit_id();
+                                // Arrowhead FIRST (topmost, proper under() glyph), stamping the button's
+                                // hit id where it draws so the pill's stamp under it isn't a hole. Then the
+                                // pill renders under it, filling colour + hit around the glyph.
+                                draw_up_arrowhead(
+                                    &mut canvas,
+                                    btn.center_x,
+                                    btn.center_y,
+                                    btn.height * 0.5,
+                                    SEND_ARROW_COLOUR,
+                                    Some((&mut chrome.hit_test_map, id)),
+                                );
                                 btn.render_content_into(
                                     &mut canvas,
                                     0.,
@@ -3392,19 +3376,7 @@ impl FluorApp for PhotonApp {
                                     Some(&mut chrome.hit_test_map),
                                     id,
                                 );
-                                // Arrowhead composited OVER the now-painted pill (reads the pill as its
-                                // dst; see draw_up_arrowhead — it can't be under()-ed onto the opaque pill).
-                                draw_up_arrowhead(
-                                    &mut canvas,
-                                    btn.center_x,
-                                    btn.center_y,
-                                    btn.height * 0.5,
-                                    SEND_ARROW_COLOUR,
-                                );
-                                Some((button_bbox(btn), id))
-                            } else {
-                                None
-                            };
+                            }
                             if let Some(tb) = self.message_textbox.as_mut() {
                                 let id = tb.hit_id();
                                 tb.render_content_into(
@@ -3415,18 +3387,6 @@ impl FluorApp for PhotonApp {
                                     None,
                                     None,
                                     Some(&mut chrome.hit_test_map),
-                                    id,
-                                );
-                            }
-                            if let Some((bbox, id)) = send_bbox {
-                                restamp_hit_rect(
-                                    &mut chrome.hit_test_map,
-                                    buf_w,
-                                    buf_h,
-                                    bbox.0,
-                                    bbox.1,
-                                    bbox.2,
-                                    bbox.3,
                                     id,
                                 );
                             }
@@ -3794,13 +3754,7 @@ impl FluorApp for PhotonApp {
 }
 
 impl PhotonApp {
-    /// The surface-free half of `tick`: presence pinging, draining every network/background channel,
-    /// and advancing the CLUTCH ceremony + message chains. Returns `true` if anything changed (the
-    /// caller turns that into a redraw request). Split out of `tick` so the Android foreground service
-    /// can drive it headlessly while backgrounded — the paused Activity's Choreographer has stopped
-    /// calling `tick`, but `PhotonApp` is alive and its inbound CLUTCH/chat still needs to advance so
-    /// ceremonies complete and messages get ACKed without the screen being on. See
-    /// docs/background-tick.md. MUST touch no `Context`/surface state — everything here is pure `self`.
+    /// The surface-free half of `tick`: presence pinging, draining every network/background channel, and advancing the CLUTCH ceremony + message chains. Returns `true` if anything changed (the caller turns that into a redraw request). Split out of `tick` so the Android foreground service can drive it headlessly while backgrounded — the paused Activity's Choreographer has stopped calling `tick`, but `PhotonApp` is alive and its inbound CLUTCH/chat still needs to advance so ceremonies complete and messages get ACKed without the screen being on. See docs/background-tick.md. MUST touch no `Context`/surface state — everything here is pure `self`.
     pub fn advance_protocol(&mut self, now: Instant) -> bool {
         let mut needs_redraw = false;
 
@@ -4906,22 +4860,18 @@ impl PhotonApp {
         });
     }
 
-    /// Textbox front-end for the open conversation: pull + trim the compose text, hand it to
-    /// [`Self::send_chain_message`] for the active contact (bubble shown), then clear the box.
+    /// Textbox front-end for the open conversation: pull + trim the compose text, hand it to [`Self::send_chain_message`] for the active contact (bubble shown), then clear the box.
     fn submit_message(&mut self) {
         let Some(ci) = self.active_contact else {
             return;
         };
-        // Pull the compose text and send it VERBATIM. Any non-empty content sends, whitespace included
-        // (a lone space, all spaces, a newline are all valid messages). No trim, no whitespace judgment.
+        // Pull the compose text and send it VERBATIM. Any non-empty content sends, whitespace included (a lone space, all spaces, a newline are all valid messages). No trim, no whitespace judgment.
         let text: String = match self.message_textbox.as_ref() {
             Some(tb) => tb.chars.iter().collect(),
             None => return,
         };
         if text.is_empty() {
-            // Empty send = liveness probe. Optimistically mark the peer offline and ping them; a
-            // returning pong flips is_online back true (check_status_updates), so an empty send confirms
-            // whether they're actually reachable right now instead of doing nothing.
+            // Empty send = liveness probe. Optimistically mark the peer offline and ping them; a returning pong flips is_online back true (check_status_updates), so an empty send confirms whether they're actually reachable right now instead of doing nothing.
             self.contacts[ci].is_online = false;
             self.ping_contact(ci);
             return;
@@ -5363,12 +5313,7 @@ impl PhotonApp {
                     voca::encode(BigUint::from_bytes_be(peer.device_pubkey.as_bytes()))
                 );
                 eprintln!("attestation rejected: {msg}");
-                // AlreadyAttested is now sent ONLY on a CHAIN-PROVEN takeover: the worker fold-verified
-                // a fleet chain whose genesis identity is not ours (handle_query.rs verdict). This is
-                // the genuine takeover case, so clearing the contested roots is correct — an
-                // indeterminate result (fold/parse/transport error) arrives as QueryResult::Error
-                // below, which does NOT clear the session. Clear so the next launch can't auto-resume
-                // into the same rejection, and bail to the attest screen (even from an optimistic Ready).
+                // AlreadyAttested is now sent ONLY on a CHAIN-PROVEN takeover: the worker fold-verified a fleet chain whose genesis identity is not ours (handle_query.rs verdict). This is the genuine takeover case, so clearing the contested roots is correct — an indeterminate result (fold/parse/transport error) arrives as QueryResult::Error below, which does NOT clear the session. Clear so the next launch can't auto-resume into the same rejection, and bail to the attest screen (even from an optimistic Ready).
                 tohu::clear_session();
                 self.session = None;
                 self.state = AppState::Launch(LaunchState::Error(msg));
@@ -5556,9 +5501,7 @@ impl PhotonApp {
         *provider = records;
     }
 
-    /// Spawn at most ONE CLUTCH keygen, for the first Pending contact that needs keypairs, but only
-    /// if no keygen is already running. McEliece keygen is heavy; running several in parallel (e.g.
-    /// after a multi-contact cloud merge on launch) starves the UI thread. Serializing to one-at-a-time keeps the app responsive — each completion frees the slot and `tick()` calls this again to start the next. Returns true if a keygen was spawned.
+    /// Spawn at most ONE CLUTCH keygen, for the first Pending contact that needs keypairs, but only if no keygen is already running. McEliece keygen is heavy; running several in parallel (e.g. after a multi-contact cloud merge on launch) starves the UI thread. Serializing to one-at-a-time keeps the app responsive — each completion frees the slot and `tick()` calls this again to start the next. Returns true if a keygen was spawned.
     fn spawn_next_pending_keygen(&mut self) -> bool {
         let Some(our_handle_hash) = self.session.as_ref().map(|s| s.identity_seed) else {
             return false;
@@ -6906,10 +6849,7 @@ impl PhotonApp {
         // Cycles an online contact may go punched-but-unvalidated before we treat it as direct-unreachable.
         const PUNCH_UNREACHABLE_THRESHOLD: u8 = 3;
 
-        // Expire stale validated paths (no keepalive ack within TTL → the NAT mapping is likely dead): clear
-        // so `race_addrs` falls back to LAN/public and this cycle re-punches. Track the symmetric↔symmetric
-        // case: an online contact we keep punching but never validate is direct-unreachable — bump the
-        // graceful-failure counter (the hook M2's relay reads) and log the state once at the threshold.
+        // Expire stale validated paths (no keepalive ack within TTL → the NAT mapping is likely dead): clear so `race_addrs` falls back to LAN/public and this cycle re-punches. Track the symmetric↔symmetric case: an online contact we keep punching but never validate is direct-unreachable — bump the graceful-failure counter (the hook M2's relay reads) and log the state once at the threshold.
         for c in self.contacts.iter_mut() {
             if let Some((_, at)) = c.validated_path {
                 if at.elapsed() >= PATH_TTL {
@@ -6941,10 +6881,8 @@ impl PhotonApp {
                 _ => None,
             };
             // Punch candidates, fired alongside the first ping (stale paths were cleared above):
-            // - validated → keepalive: probe just the validated remote to keep its NAT mapping warm; its
-            //   ack refreshes liveness so the path never expires while the contact stays reachable.
-            // - unvalidated → (re)punch: probe all the peer's addresses, best-first, so the first to
-            //   round-trip wins.
+            // - validated → keepalive: probe just the validated remote to keep its NAT mapping warm; its ack refreshes liveness so the path never expires while the contact stays reachable.
+            // - unvalidated → (re)punch: probe all the peer's addresses, best-first, so the first to round-trip wins.
             let mut punch: Vec<std::net::SocketAddr> = match contact.validated_path {
                 Some((remote, _)) => vec![remote],
                 None => crate::network::traverse::gather::gather_peer_candidates(contact)
@@ -7164,11 +7102,7 @@ impl PhotonApp {
         /// ~3 seconds (oscillations) before a mutual peer's silent P2P request falls back to FGTW.
         const AVATAR_P2P_FALLBACK_OSC: i64 = 3 * crate::OSC_PER_SEC;
         enum AvatarPlan {
-            // Cached locally (the common launch case): just kick the local-first background load, which
-            // reads the vault and never touches the network. Keeps the P2P/FGTW escalation from firing a
-            // redundant request every launch when we already hold the avatar. `spawn_avatar_download`'s
-            // worker is cache-first, so this IS the "look local first" path — the caller states intent,
-            // the fetch layer serves it from the vault.
+            // Cached locally (the common launch case): just kick the local-first background load, which reads the vault and never touches the network. Keeps the P2P/FGTW escalation from firing a redundant request every launch when we already hold the avatar. `spawn_avatar_download`'s worker is cache-first, so this IS the "look local first" path — the caller states intent, the fetch layer serves it from the vault.
             LocalCached {
                 handle: String,
             },
@@ -7192,9 +7126,7 @@ impl PhotonApp {
             .filter(|c| c.avatar_pixels.is_none())
             .map(|c| {
                 let handle = c.handle.as_str().to_string();
-                // Local vault first — a cheap `read_addr` (encrypted blob, no decode). If we have it,
-                // the network never runs. This is what stops the every-launch redundant P2P request:
-                // the friend's avatar is already cached, so we don't re-ask them for it.
+                // Local vault first — a cheap `read_addr` (encrypted blob, no decode). If we have it, the network never runs. This is what stops the every-launch redundant P2P request: the friend's avatar is already cached, so we don't re-ask them for it.
                 let cached = self
                     .storage
                     .as_ref()
@@ -7719,8 +7651,7 @@ impl PhotonApp {
                         use crate::types::friendship::derive_msg_hp;
                         let msg_hp = derive_msg_hp(&prev_msg_hp, &plaintext_hash, timestamp);
 
-                        // Update their last_plaintext for next message's salt — the x-text ONLY (must
-                        // match what the sender stored: salt source is text, never the full payload/pad).
+                        // Update their last_plaintext for next message's salt — the x-text ONLY (must match what the sender stored: salt source is text, never the full payload/pad).
                         chains.set_last_plaintext(&from_handle_hash, message_text.clone().into_bytes());
 
                         // Update bidirectional entropy state (derive weave hash from full message context)
@@ -8018,12 +7949,7 @@ impl PhotonApp {
                                 }
                             }
                         } else {
-                            // No pending message matched. Two cases: (a) a DUPLICATE ACK — dual-path
-                            // racing (P3) delivers the same ACK on both the LAN and public path, so
-                            // the second copy arrives after the first already advanced + cleared the
-                            // pending entry; (b) a genuinely UNKNOWN ACK. Tell them apart via the
-                            // outgoing message: if it exists and is already `delivered`, this is the
-                            // benign duplicate — log at DEBUG so it stops reading as a failure.
+                            // No pending message matched. Two cases: (a) a DUPLICATE ACK — dual-path racing (P3) delivers the same ACK on both the LAN and public path, so the second copy arrives after the first already advanced + cleared the pending entry; (b) a genuinely UNKNOWN ACK. Tell them apart via the outgoing message: if it exists and is already `delivered`, this is the benign duplicate — log at DEBUG so it stops reading as a failure.
                             let is_dup = self.contacts.get(contact_idx).is_some_and(|c| {
                                 c.messages.iter().any(|m| {
                                     m.is_outgoing && m.delivered && m.timestamp == acked_eagle_time
@@ -9272,11 +9198,7 @@ impl PhotonApp {
                             .read_addr(&crate::storage::vault_key("avatar", &session.identity_seed))
                         {
                             Ok(Some(avatar_vsf)) => {
-                                // Validate the vault bytes before we device-sign and ship them: an
-                                // error frame or a body that doesn't decode would be signed as a
-                                // "poisoned" avatar the friend then can't decode. Reject an error
-                                // frame outright, and require a full verify+decrypt+decode against
-                                // our own seed before serving.
+                                // Validate the vault bytes before we device-sign and ship them: an error frame or a body that doesn't decode would be signed as a "poisoned" avatar the friend then can't decode. Reject an error frame outright, and require a full verify+decrypt+decode against our own seed before serving.
                                 let servable = fgtw::client::error_frame(&avatar_vsf).is_none()
                                     && crate::ui::avatar::load_avatar_from_bytes_from_seed(
                                         &avatar_vsf,
@@ -9739,15 +9661,6 @@ fn rect_center_dims(r: PixelRect) -> (Coord, Coord, Coord, Coord) {
 }
 
 /// Bounding box of a [`Button`]'s pill rect in pixel coords, returned as `(x0, y0, x1, y1)`. Used by the overlay re-stamp pass for the contacts-page plus button — see the `render` flow where the button paints topmost but its hit stamp gets clobbered by the textbox painting under it.
-fn button_bbox(btn: &Button) -> (isize, isize, isize, isize) {
-    let half_w = btn.width * 0.5;
-    let half_h = btn.height * 0.5;
-    let x0 = (btn.center_x - half_w) as isize;
-    let y0 = (btn.center_y - half_h) as isize;
-    let x1 = (btn.center_x + half_w) as isize;
-    let y1 = (btn.center_y + half_h) as isize;
-    (x0, y0, x1, y1)
-}
 
 /// True if `ip` is a private / non-routable address that must NOT be stored as a contact's public (`ip`) address — it belongs in `local_ip` instead. Covers IPv4 RFC1918 (10/8, 172.16/12, 192.168/16), link-local (169.254/16), loopback; IPv6 loopback, link-local (fe80::/10), unique-local (fc00::/7); and IPv4-mapped IPv6 (`::ffff:a.b.c.d`) by unwrapping to the embedded v4 (the ping/pong path reports LAN sources in exactly this mapped form, e.g. `::ffff:<lan-ip>`).
 fn is_private_addr(ip: &std::net::IpAddr) -> bool {
