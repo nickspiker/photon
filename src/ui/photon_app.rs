@@ -10071,26 +10071,17 @@ impl PhotonApp {
                                                 }
                                             }
                                         } else {
-                                            // CRYPTOGRAPHIC FAILURE - proofs don't match! This should NEVER happen unless:
-                                            // 1. MITM attack
-                                            // 2. Bug in ceremony
-                                            // 3. Corruption
-                                            let our_hex = hex::encode(&our_proof);
-                                            let their_hex = hex::encode(&payload.eggs_proof);
+                                            // Proof mismatch — NEVER panic. The common cause is a CROSSED / SUPERSEDED ceremony round: a fresh offer/KEM arrived after we computed our eggs, so their proof is from a different ceremony instance than ours. It is not an attack signal (a forged proof can't pass the read_verified signature gate that got us here). Reset to Pending so the re-key machinery re-establishes ONE agreed ceremony — identical to the mismatch handling in check_clutch_ceremonies.
                                             crate::log(&format!(
-                                                "CLUTCH PROOF MISMATCH! This is a critical error.\n\
-                                                Our proof:   {}\n\
-                                                Their proof: {}",
-                                                our_hex, their_hex
+                                                "CLUTCH: proof mismatch with {} (likely a crossed/superseded round) — resetting to re-key. ours={}... theirs={}...",
+                                                crate::fp(&contact.handle_proof),
+                                                hex::encode(&our_proof[..8]),
+                                                hex::encode(&payload.eggs_proof[..8])
                                             ));
-                                            panic!(
-                                                "CLUTCH PROOF MISMATCH with {}! \
-                                                This indicates MITM, bug, or corruption. \
-                                                Our: {}... Their: {}...",
-                                                contact.handle,
-                                                &our_hex[..16],
-                                                &their_hex[..16]
-                                            );
+                                            contact.clutch_state = ClutchState::Pending;
+                                            contact.clutch_our_eggs_proof = None;
+                                            contact.clutch_their_eggs_proof = None;
+                                            changed = true;
                                         }
                                     } else {
                                         // Race condition: proof arrived before check_clutch_ceremonies processed our ceremony result. Store theirs for when we're ready.
