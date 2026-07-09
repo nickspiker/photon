@@ -69,6 +69,19 @@ pub fn derive_history_key(friendship_id: &[u8; 32], active_chains_sorted: &[&[u8
     key
 }
 
+/// Domain separation for sibling (own-fleet device) party ids
+const SIBLING_PARTY_DOMAIN: &[u8] = b"PHOTON_SIBLING_PARTY_v0";
+
+/// Derive the CLUTCH party id for a fleet sibling device.
+///
+/// Every derivation in the ceremony/braid stack (PartySlot keying, CeremonyId, FriendshipId, conversation_token, chain indices) operates on opaque sorted 32-byte party ids — for friends that id is the handle_hash. Two devices of the SAME user share one handle, so handle_hash collides at every layer; sibling ceremonies key on this device-derived id instead. The domain prefix separates the id space from handle_hash (BLAKE3 of a VSF x-typed handle), so a sibling pid can never collide with any friend's handle_hash. Device pubkeys are already public in the fleet membership chain, and party ids only reach the wire spaghettified (conversation_token, ceremony_id), so BLAKE3 suffices here.
+pub fn sibling_party_id(device_pubkey: &[u8; 32]) -> [u8; 32] {
+    let mut hasher = Hasher::new();
+    hasher.update(SIBLING_PARTY_DOMAIN);
+    hasher.update(device_pubkey);
+    *hasher.finalize().as_bytes()
+}
+
 /// Domain separator for ceremony instance derivation
 const CEREMONY_INSTANCE_DOMAIN: &[u8] = b"PHOTON_CEREMONY_INSTANCE_v0";
 
@@ -1691,6 +1704,38 @@ mod tests {
     #[test]
     fn test_clutch_ceremony_v1_compatibility_removed() {
         // This test verified v1 sequential clutch (initiator/responder pattern). v3 uses parallel exchange only - see test_parallel_clutch_produces_same_seed. Keeping this stub to document the intentional removal of v1 support.
+    }
+
+    #[test]
+    fn sibling_party_id_deterministic_and_domain_separated() {
+        let device = [7u8; 32];
+        // Deterministic — both sides of a sibling pair derive the same pid for the same device.
+        assert_eq!(sibling_party_id(&device), sibling_party_id(&device));
+        // Distinct per device.
+        assert_ne!(sibling_party_id(&device), sibling_party_id(&[8u8; 32]));
+        // Domain-separated: never a bare BLAKE3 of the pubkey (so a sibling pid can't collide with any hash-of-something-public id space by construction).
+        assert_ne!(sibling_party_id(&device), *blake3::hash(&device).as_bytes());
+    }
+
+    #[test]
+    fn sibling_pair_tokens_symmetric_and_distinct_across_fleet() {
+        // A 3-device fleet has 3 sibling pairs; every pair must derive the SAME conversation token on both sides (order-independent) and a DIFFERENT token from every other pair — this is exactly the collision the shared handle_hash caused before the party-id seam.
+        let pids: Vec<[u8; 32]> = [[1u8; 32], [2u8; 32], [3u8; 32]]
+            .iter()
+            .map(sibling_party_id)
+            .collect();
+        let mut tokens = Vec::new();
+        for i in 0..pids.len() {
+            for j in (i + 1)..pids.len() {
+                let t_ab = derive_conversation_token(&[pids[i], pids[j]]);
+                let t_ba = derive_conversation_token(&[pids[j], pids[i]]);
+                assert_eq!(t_ab, t_ba, "token must be order-independent");
+                tokens.push(t_ab);
+            }
+        }
+        tokens.sort_unstable();
+        tokens.dedup();
+        assert_eq!(tokens.len(), 3, "each sibling pair must get a distinct token");
     }
 
     #[test]

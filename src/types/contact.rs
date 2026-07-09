@@ -218,6 +218,8 @@ pub struct Contact {
     pub history_recovery: Option<HistoryRecovery>,
     /// Runtime-only: when the CLUTCH ceremony last reached Complete (proof verified). Guards a post-completion RE-KEY COOLDOWN: completion zeroizes our ephemeral keypairs, so a peer's offer that was in flight just before they saw our completion arrives with `clutch_our_keypairs == None` and would trip the "peer lost chains, accept re-key" path — a spurious re-key that, when both sides do it near-simultaneously, storms into divergent ceremonies (observed: two devices wedged at 5/8 and 7/8 forever, though they'd already computed matching eggs). The window opens at completion (before the ~1s-later weave), so it's armed HERE, not at weave. Within it we ignore such offers; a GENUINE reset peer keeps sending and re-keys once it passes. `Instant` — never persisted.
     pub clutch_completed_at: Option<std::time::Instant>,
+    /// This "contact" is one of OUR OWN fleet devices (a sibling), not a friend. Siblings run the same full CLUTCH ceremony + braided ratchet as friends — the fleet weave — but key the ceremony on `sibling_party_id(device_pubkey)` (stored in `handle_hash`) instead of the shared handle_hash, which would collide. `handle`/`handle_proof` hold OUR OWN handle so FGTW peer-row address matching works; `public_identity` is the sibling device and `fleet_members` stays EMPTY so `knows_device` answers only that one device (load-bearing for first-match routing). Sibling contacts are excluded from the contacts UI, roster/cloud sync, and friend-history recovery, and persist under the sibling index instead of the contacts index.
+    pub is_sibling: bool,
 }
 
 /// Contact identifier - BLAKE3 hash of the contact's public identity key This provides deterministic, collision-resistant identification
@@ -301,7 +303,21 @@ impl Contact {
             punch_unvalidated_cycles: 0,  // No failed punch cycles yet
             history_recovery: None,       // No history recovery running
             clutch_completed_at: None,         // Ceremony not yet complete
+            is_sibling: false,            // A friend, unless made via new_sibling
         }
+    }
+
+    /// Construct a fleet-sibling contact: one of our OWN devices, discovered from our folded membership chain. Party id (in `handle_hash`) is device-derived so the ceremony machinery can't collide with the self/friend id space; handle fields are OUR handle so `refresh_contact_addrs_from_peers` matches the sibling's FGTW peer row (keyed hp + device pubkey). Trust is implicit — the pubkey came from our own fold.
+    pub fn new_sibling(
+        our_handle: HandleText,
+        our_handle_proof: [u8; 32],
+        sibling_device: DevicePubkey,
+    ) -> Self {
+        let mut c = Self::new(our_handle, our_handle_proof, sibling_device);
+        c.handle_hash = crate::crypto::clutch::sibling_party_id(&c.public_identity.key);
+        c.is_sibling = true;
+        c.trust_level = TrustLevel::Inner;
+        c
     }
 
     pub fn with_ip(mut self, ip: SocketAddr) -> Self {
@@ -518,5 +534,36 @@ mod fold_honour_tests {
         let ans = c.answerable_pubkeys();
         assert_eq!(ans.len(), 3, "first-met + 2 distinct siblings, deduped: {ans:?}");
         assert_eq!(ans[0], [1u8; 32], "first-met device leads");
+    }
+
+    #[test]
+    fn new_sibling_keys_on_device_pid_and_slots_stay_distinct() {
+        let sib_device = [5u8; 32];
+        let sib = Contact::new_sibling(
+            HandleText::new("me"),
+            [0x22; 32],
+            DevicePubkey::from_bytes(sib_device),
+        );
+        assert!(sib.is_sibling);
+        // Party id is device-derived, NOT the handle-derived seed (which every sibling would share).
+        assert_eq!(
+            sib.handle_hash,
+            crate::crypto::clutch::sibling_party_id(&sib_device)
+        );
+        assert_ne!(sib.handle_hash, crate::types::Handle::to_identity_seed("me"));
+        // ContactId is device-keyed — two siblings of one handle never collide.
+        assert_eq!(sib.id, ContactId::from_pubkey(&sib.public_identity));
+        // knows_device answers ONLY that one device (empty fleet_members is load-bearing for first-match routing).
+        assert!(sib.knows_device(&sib_device));
+        assert!(!sib.knows_device(&[6u8; 32]));
+
+        // Slot init with OUR device-derived pid: two distinct sorted slots, both findable — the exact collision the shared handle_hash caused.
+        let our_pid = crate::crypto::clutch::sibling_party_id(&[6u8; 32]);
+        let mut sib = sib;
+        sib.init_clutch_slots(our_pid);
+        assert_eq!(sib.clutch_slots.len(), 2);
+        assert_ne!(sib.clutch_slots[0].handle_hash, sib.clutch_slots[1].handle_hash);
+        assert!(sib.get_slot(&our_pid).is_some());
+        assert!(sib.get_slot(&sib.handle_hash).is_some());
     }
 }

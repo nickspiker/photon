@@ -1286,6 +1286,39 @@ mod tests {
     }
 
     #[test]
+    fn sibling_pids_key_distinct_friendships_and_chains() {
+        // Fleet weave: sibling ceremonies key the braid on device-derived party ids instead of the (shared) handle_hash. The chain machinery is opaque to WHAT the 32 bytes are — prove a 3-device fleet yields 3 distinct friendship ids, and that pid-keyed chains resolve both participants and advance exactly like handle-keyed ones.
+        let pids: Vec<[u8; 32]> = [[1u8; 32], [2u8; 32], [3u8; 32]]
+            .iter()
+            .map(|d| crate::crypto::clutch::sibling_party_id(d))
+            .collect();
+
+        let mut fids = Vec::new();
+        for i in 0..pids.len() {
+            for j in (i + 1)..pids.len() {
+                let f_ab = FriendshipId::derive(&[pids[i], pids[j]]);
+                let f_ba = FriendshipId::derive(&[pids[j], pids[i]]);
+                assert_eq!(f_ab.0, f_ba.0, "friendship id must be order-independent");
+                fids.push(f_ab.0);
+            }
+        }
+        fids.sort_unstable();
+        fids.dedup();
+        assert_eq!(fids.len(), 3, "each sibling pair must get a distinct friendship id");
+
+        // pid-keyed chains: both participants resolve, other_participant round-trips, and an advance moves only the sender's strand.
+        let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
+        let mut chains = FriendshipChains::from_clutch(&[pids[0], pids[1]], &eggs);
+        assert!(chains.current_key(&pids[0]).is_some());
+        assert!(chains.current_key(&pids[1]).is_some());
+        assert_eq!(chains.other_participant(&pids[0]), Some(&pids[1]));
+        let key_b_before = *chains.current_key(&pids[1]).unwrap();
+        let eagle_time = vsf::EagleTime::from_oscillations(vsf::eagle_time_oscillations());
+        assert!(chains.advance(&pids[0], &eagle_time, &[0xAA; 32], &[]));
+        assert_eq!(*chains.current_key(&pids[1]).unwrap(), key_b_before);
+    }
+
+    #[test]
     fn test_friendship_chains_advance() {
         use vsf::EagleTime;
 
