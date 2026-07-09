@@ -2692,9 +2692,18 @@ impl FluorApp for PhotonApp {
                         );
                         y += line_h * 1.35;
                     }
-                    // Name the device being enrolled, so a user pairing several devices can tell on both screens which one these words belong to. Deterministic two-word default from the device PUBLIC key, so the Fleet list on every device shows this same name; the owner-edited override arrives with the devices page.
-                    if let Some(kp) = self.device_keypair.as_ref() {
-                        let name = crate::network::fgtw::fleet::device_name_default(kp.public.as_bytes());
+                    // Name the device being enrolled, so a user pairing several devices can tell on both screens which one these words belong to. Deterministic two-word default from the device PUBLIC key + the fleet's identity seed, so the Fleet list on every device in this fleet shows this same name; the owner-edited override arrives with the devices page. Pre-attest the session isn't set yet, so derive the seed from the handle being joined (`add_join_handle`).
+                    let join_seed = self
+                        .session
+                        .as_ref()
+                        .map(|s| s.identity_seed)
+                        .or_else(|| {
+                            self.add_join_handle
+                                .as_ref()
+                                .map(|h| crate::storage::contacts::derive_identity_seed(h))
+                        });
+                    if let (Some(kp), Some(seed)) = (self.device_keypair.as_ref(), join_seed) {
+                        let name = crate::network::fgtw::fleet::device_name_default(kp.public.as_bytes(), &seed);
                         y += line_h * 0.4;
                         ctx.text.draw_text_center_u32(
                             &mut canvas,
@@ -5192,17 +5201,20 @@ impl PhotonApp {
         }
     }
 
-    /// The fleet device inventory for the Fleet settings page: this device first, then our other devices (sibling contacts). Each entry is `(device_pubkey, is_self, is_online, name)`. Reuses phase-1's sibling reconcile as the live inventory (`current_members(own_hp)` is the authority; reconcile keeps the sibling set == fleet-minus-this-device) — no synchronous network fetch on render. Name = the canonical `device_name_default` (two voca words from the device PUBLIC key), the SAME function the pairing screen uses, so a device shows the same name here, on its own pairing screen, and on every other device's Fleet list.
+    /// The fleet device inventory for the Fleet settings page: this device first, then our other devices (sibling contacts). Each entry is `(device_pubkey, is_self, is_online, name)`. Reuses phase-1's sibling reconcile as the live inventory (`current_members(own_hp)` is the authority; reconcile keeps the sibling set == fleet-minus-this-device) — no synchronous network fetch on render. Name = the canonical `device_name_default` (two voca words from the device PUBLIC key + our identity seed), the SAME function the pairing screen uses, so a device shows the same name here, on its own pairing screen, and on every other device in THIS fleet (a handed-off device gets a fresh name in the new owner's fleet).
     fn fleet_device_rows(&self) -> Vec<([u8; 32], bool, bool, String)> {
         use crate::network::fgtw::fleet::device_name_default;
+        let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else {
+            return Vec::new();
+        };
         let mut rows = Vec::new();
         if let Some(kp) = self.device_keypair.as_ref() {
             let me = *kp.public.as_bytes();
-            rows.push((me, true, true, device_name_default(&me)));
+            rows.push((me, true, true, device_name_default(&me, &seed)));
         }
         for c in self.contacts.iter().filter(|c| c.is_sibling) {
             let pk = c.public_identity.key;
-            rows.push((pk, false, c.is_online, device_name_default(&pk)));
+            rows.push((pk, false, c.is_online, device_name_default(&pk, &seed)));
         }
         rows
     }
