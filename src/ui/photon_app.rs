@@ -187,20 +187,11 @@ fn draw_hourglass(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, angle_deg: f
     }
 }
 
-/// Draw an upward-pointing arrowhead (a filled 4-vertex chevron) centred at (cx, cy), sized to a `size`×`size` box, as a proper fluor `under()` layer — same model as the logo glyphs.
-/// The four vertices: apex (top centre), right wing tip, bottom notch (centre, pulled up so it reads as a chevron with thickness, not a solid triangle), left wing tip. Used for the send button glyph.
-/// `colour` is α+darkness packed. This is a topmost-first `under()` write, so draw it BEFORE the button pill: the arrowhead claims its pixels first (glyph darkness at α = coverage), then the pill fills under it — the same discipline as the button's own text label and the logo body.
-/// Coverage feathers the 1px boundary; `colour`'s α scales the whole glyph so a translucent tint still works.
-/// Pass `hit` = (map, id) so the glyph stamps the same hit id it covers — since the arrowhead is drawn first, it would otherwise block the pill's hit stamp under the glyph, leaving an arrow-shaped hole in the click area. Stamping here fills that hole so the whole pill stays clickable.
-fn draw_up_arrowhead(
-    canvas: &mut Canvas,
-    cx: f32,
-    cy: f32,
-    size: f32,
-    colour: u32,
-    mut hit: Option<(&mut [HitId], HitId)>,
-) {
-    use fluor::pixel::{Blend, BlendMode};
+/// Draw an upward-pointing arrowhead (a filled 4-vertex chevron) centred at (cx, cy), sized to a `size`×`size` box — the send-button glyph, painted OVER the already-drawn pill (the window-controls pattern: fill the button first, draw the symbol after).
+/// The four vertices: apex (top centre), right wing tip, bottom notch (centre, pulled up so it reads as a chevron with thickness, not a solid triangle), left wing tip.
+/// `colour` is α+darkness packed. Composites via source-over onto the existing (opaque pill) pixel, writing the result OPAQUE — so it CAN'T be an under() write (that would be discarded on the opaque pill). Crucially it does NOT touch the hit map: the pill already stamped the full silhouette, so the hover overlay (which wrap-adds a FILL-calibrated delta onto every hit-id pixel) tints only the pill, never the near-white glyph. Stamping the glyph's hit id here cooked the hover — don't.
+/// Coverage feathers the 1px boundary against the actual pill colour; `colour`'s α scales the glyph.
+fn draw_up_arrowhead(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, colour: u32) {
     // Geometry as fractions of the box: apex up top, wings at the bottom corners, notch pulled up so the shape is a chevron (^) with visible thickness.
     let half_w = size * 0.42;
     let top = cy - size * 0.34; // apex
@@ -222,9 +213,13 @@ fn draw_up_arrowhead(
         return;
     }
     canvas.damage.add_bounds(x0, y0, x1, y1);
-    // Glyph darkness (low 24 bits) + its base α — coverage scales this α for the under() write.
-    let glyph_a = ((colour >> 24) & 0xFF) as f32;
-    let glyph_dark = colour & 0x00FF_FFFF;
+    // Glyph darkness channels + its base α; coverage scales α for the source-over onto the pill.
+    let glyph_a = ((colour >> 24) & 0xFF) as f32 / 255.0;
+    let (gr, gg, gb) = (
+        ((colour >> 16) & 0xFF) as f32,
+        ((colour >> 8) & 0xFF) as f32,
+        (colour & 0xFF) as f32,
+    );
 
     // Even-odd inside test + distance-to-nearest-edge for 1px coverage AA.
     let inside = |px: f32, py: f32| -> bool {
@@ -275,23 +270,25 @@ fn draw_up_arrowhead(
             if cov <= 0.0 {
                 continue;
             }
-            // Coverage-scaled α; glyph darkness in the low 24 bits. under() = topmost-first, so this
-            // claims the pixel and the pill (drawn after) fills under it.
-            let a = (cov * glyph_a) as u32;
-            if a == 0 {
+            let a = cov * glyph_a;
+            if a <= 0.0 {
                 continue;
             }
             let idx = row + px;
-            canvas.pixels[idx] = canvas.pixels[idx].under((a << 24) | glyph_dark, BlendMode::Normal);
-            // Stamp the button's hit id where the glyph is solid enough to have claimed the pixel — so the
-            // pill's hit stamp (blocked here because the glyph drew first + opaque) isn't a hole.
-            if a >= 128 {
-                if let Some((map, id)) = hit.as_mut() {
-                    if idx < map.len() {
-                        map[idx] = *id;
-                    }
-                }
-            }
+            let dst = canvas.pixels[idx];
+            // Source-over the glyph darkness onto the pill pixel, keeping the pill's opacity. Feathers the
+            // AA edge against the ACTUAL pill colour (any hover/active state) — no halo. Does NOT touch the
+            // hit map: the pill's silhouette stamp already covers here, so the hover overlay tints only the
+            // pill, never this near-white glyph.
+            let (dr, dg, db) = (
+                ((dst >> 16) & 0xFF) as f32,
+                ((dst >> 8) & 0xFF) as f32,
+                (dst & 0xFF) as f32,
+            );
+            let nr = (gr * a + dr * (1.0 - a)) as u32;
+            let ng = (gg * a + dg * (1.0 - a)) as u32;
+            let nb = (gb * a + db * (1.0 - a)) as u32;
+            canvas.pixels[idx] = (dst & 0xFF00_0000) | (nr << 16) | (ng << 8) | nb;
         }
     }
 }
@@ -2781,6 +2778,13 @@ impl FluorApp for PhotonApp {
                     id,
                 );
             }
+            // Re-win the plus button's hit silhouette after the search textbox clobbered it (only when
+            // the button actually rendered — not during the in-flight hourglass, which isn't clickable).
+            if !self.add_in_flight && plus_visible {
+                if let Some(btn) = self.contacts_plus_btn.as_ref() {
+                    btn.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, btn.hit_id());
+                }
+            }
 
             // Add-friend result text in the hint slot above the search box: green "added {h}", red "not found" / "error: …". Stays until the next search starts (cleared in `submit_add_friend`).
             if let Some((text, colour)) = self.search_status.as_ref() {
@@ -3359,22 +3363,14 @@ impl FluorApp for PhotonApp {
                                     None,
                                 );
                             }
-                            // Under-blend is topmost-FIRST (first opaque writer wins the pixel — colour AND its per-pixel hit stamp).
-                            // Paint the send button BEFORE the textbox: the button claims its exact pill silhouette in both the framebuffer and the hit map, and the textbox drawn under it can't overwrite either (its own stamp is per-opaque-pixel too, so it never touches the button's won pixels).
-                            // No hit re-stamp needed — the draw already produces the correct pill-shaped hit area.
+                            // Send button COLOUR first (its under() blit lands on the noise), then the
+                            // arrowhead over the pill (source-over). The textbox draws after — it sits
+                            // over the button and clobbers the button's hit stamp with its own id — so we
+                            // re-stamp the button's TRUE pill silhouette (fill + stroke, which also covers
+                            // the arrowhead) AFTER the textbox, as the last writer. That's the whole click
+                            // + hover region: shape-accurate, not a bbox rectangle.
                             if let Some(btn) = self.message_send_btn.as_mut() {
                                 let id = btn.hit_id();
-                                // Arrowhead FIRST (topmost, proper under() glyph), stamping the button's
-                                // hit id where it draws so the pill's stamp under it isn't a hole. Then the
-                                // pill renders under it, filling colour + hit around the glyph.
-                                draw_up_arrowhead(
-                                    &mut canvas,
-                                    btn.center_x,
-                                    btn.center_y,
-                                    btn.height * 0.5,
-                                    SEND_ARROW_COLOUR,
-                                    Some((&mut chrome.hit_test_map, id)),
-                                );
                                 btn.render_content_into(
                                     &mut canvas,
                                     0.,
@@ -3383,6 +3379,13 @@ impl FluorApp for PhotonApp {
                                     None,
                                     Some(&mut chrome.hit_test_map),
                                     id,
+                                );
+                                draw_up_arrowhead(
+                                    &mut canvas,
+                                    btn.center_x,
+                                    btn.center_y,
+                                    btn.height * 0.5,
+                                    SEND_ARROW_COLOUR,
                                 );
                             }
                             if let Some(tb) = self.message_textbox.as_mut() {
@@ -3397,6 +3400,10 @@ impl FluorApp for PhotonApp {
                                     Some(&mut chrome.hit_test_map),
                                     id,
                                 );
+                            }
+                            // Re-win the send button's hit silhouette after the textbox clobbered it.
+                            if let Some(btn) = self.message_send_btn.as_ref() {
+                                btn.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, btn.hit_id());
                             }
                         } // end chain-woven compose gate
                     } // end CLUTCH-Complete gate (message list + compose box)
