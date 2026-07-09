@@ -380,19 +380,15 @@ class PhotonConnectionService : Service() {
      *  are per-step durations (ms), amplitudes are 0..255 motor levels — the pair the chirp crate's
      *  haptic_waveform produced. -1 = no repeat. Logged-not-fatal on any failure.
      *
-     *  Two things the raw audio envelope needs before it FEELS right:
-     *  1. Usage attributes — a bare effect is usage=UNKNOWN and the OS drops it. Picking the usage is
-     *     fiddly because each is gated by a DIFFERENT device setting: USAGE_NOTIFICATION is gated by our
-     *     (deliberately silent) notification channel, and USAGE_TOUCH is gated by the touch-feedback
-     *     setting (off by default on Pixel → ignored_for_settings). USAGE_COMMUNICATION_REQUEST is gated
-     *     by none of those — it played on-device (dumpsys: finished, not ignored) when the others didn't
-     *     — so the app-driven chirp haptic fires regardless of the silent channel and touch-feedback off.
-     *  2. A GENTLE floor + slight lift. The audio envelope's reverb tail sits below the motor's felt
-     *     threshold, but flooring aggressively (a high feltFloor + sqrt) flattens the whole thing into
-     *     one constant buzz — the strike/decay dynamics are the "flavor," so they must survive. We use a
-     *     low floor (just enough that a real hit isn't lost) and a mild curve, keeping the punch of the
-     *     attack and letting the tail fall away to nothing. Steps below the floor drop to 0 (silent) so
-     *     the buzz actually stops instead of humming. */
+     *  Usage attributes are load-bearing: a bare effect is usage=UNKNOWN and the OS drops it. Picking the
+     *  usage is fiddly because each is gated by a DIFFERENT device setting: USAGE_NOTIFICATION is gated by
+     *  our (deliberately silent) notification channel, and USAGE_TOUCH is gated by the touch-feedback
+     *  setting (off by default on Pixel → ignored_for_settings). USAGE_COMMUNICATION_REQUEST is gated by
+     *  none of those — it played on-device (dumpsys: finished, not ignored) when the others didn't — so the
+     *  app-driven chirp haptic fires regardless of the silent channel and touch-feedback off.
+     *
+     *  The amplitude curve itself is shaped upstream in the chirp crate (mean-square power per bin,
+     *  peak-normalized to 0..255); we hand it to the motor as-is, no remap. */
     private fun vibrateChirp(timings: LongArray, amplitudes: IntArray) {
         if (timings.isEmpty() || timings.size != amplitudes.size) {
             Log.w(TAG, "vibrateChirp: bad arrays t=${timings.size} a=${amplitudes.size}")
@@ -410,24 +406,9 @@ class PhotonConnectionService : Service() {
                 return
             }
 
-            // Dynamics-preserving remap. Steps below cutoff → 0 (real silence, so the tail lets go and
-            // it doesn't hum). Above cutoff, keep the amplitude nearly linear with a mild lift, so the
-            // attack stays punchy at full scale and the decay actually decays. NOT a high floor + sqrt —
-            // that flattened the envelope into one constant buzz.
-            val cutoff = 40          // ~0.16 of full scale — below this the motor barely renders it; treat as silence
-            val liftFloor = 60       // where an at-cutoff step lands once it clears the gate — audible but not slammed
-            val felt = IntArray(amplitudes.size) { i ->
-                val a = amplitudes[i]
-                if (a < cutoff) 0
-                else {
-                    // Map [cutoff..255] → [liftFloor..255] linearly: preserves the shape, lifts the whole
-                    // audible band up off the motor's dead zone without crushing the peaks together.
-                    val norm = (a - cutoff).toDouble() / (255 - cutoff)
-                    (liftFloor + norm * (255 - liftFloor)).toInt().coerceIn(0, 255)
-                }
-            }
-
-            val effect = VibrationEffect.createWaveform(timings, felt, -1)
+            // The chirp crate already shapes the envelope (mean-square power per bin, peak-normalized to
+            // 0..255) — feed it straight to the motor.
+            val effect = VibrationEffect.createWaveform(timings, amplitudes, -1)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 // USAGE_COMMUNICATION_REQUEST: ungated by the silent notification channel AND by the
                 // touch-feedback setting — the one usage that actually played on-device (see doc above).
@@ -439,7 +420,7 @@ class PhotonConnectionService : Service() {
                 @Suppress("DEPRECATION")
                 vibrator.vibrate(effect)
             }
-            Log.i(TAG, "vibrateChirp: fired ${felt.size} steps, peak=${felt.max()}")
+            Log.i(TAG, "vibrateChirp: fired ${amplitudes.size} steps, peak=${amplitudes.max()}")
         } catch (e: Exception) {
             Log.w(TAG, "vibrateChirp failed", e)
         }

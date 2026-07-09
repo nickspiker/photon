@@ -192,8 +192,13 @@ fn draw_hourglass(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, angle_deg: f
 /// `size`×`size` box, onto the Canvas via under-blend + coverage AA — same model as `draw_hourglass`.
 /// The four vertices: apex (top centre), right wing tip, bottom notch (centre, pulled up so it reads
 /// as a chevron with thickness, not a solid triangle), left wing tip. Used for the send button glyph.
+/// `colour` is α+darkness packed (α = strength of the glyph, darkness in the low 24 bits). Call this
+/// AFTER the button pill is painted: this canvas blends topmost-FIRST via `under()`, which discards any
+/// draw onto an already-opaque pixel — so the arrowhead can't be `under()`-ed onto the opaque pill. It
+/// instead reads the destination (the pill), composites the glyph OVER it by coverage in darkness-space,
+/// and writes the result back OPAQUE. That also feathers the AA edges against the ACTUAL pill colour
+/// (whatever its hover/active state), not the background, so no dark halo.
 fn draw_up_arrowhead(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, colour: u32) {
-    use fluor::pixel::{Blend, BlendMode};
     // Geometry as fractions of the box: apex up top, wings at the bottom corners, notch pulled up so
     // the shape is a chevron (^) with visible thickness.
     let half_w = size * 0.42;
@@ -216,8 +221,13 @@ fn draw_up_arrowhead(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, colour: u
         return;
     }
     canvas.damage.add_bounds(x0, y0, x1, y1);
-    let dark = colour & 0x00FF_FFFF;
-    let base_a = (colour >> 24) & 0xFF;
+    // Glyph darkness (low 24 bits), scaled by the colour's α so a translucent glyph tint still works.
+    let glyph_a = ((colour >> 24) & 0xFF) as f32 / 255.0;
+    let (gr, gg, gb) = (
+        ((colour >> 16) & 0xFF) as f32,
+        ((colour >> 8) & 0xFF) as f32,
+        (colour & 0xFF) as f32,
+    );
 
     // Even-odd inside test + distance-to-nearest-edge for 1px coverage AA.
     let inside = |px: f32, py: f32| -> bool {
@@ -259,22 +269,30 @@ fn draw_up_arrowhead(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, colour: u
             let fx = px as f32 + 0.5;
             let fy = py as f32 + 0.5;
             let d = edge_dist(fx, fy);
+            // Coverage: 1.0 solidly inside; feather ONLY the 1px boundary band. (The old code faded
+            // interior pixels by edge distance too, carving a translucent groove along every inner
+            // edge — the "hollow" look. Interior = fully covered.)
             let cov = if inside(fx, fy) {
-                d.min(1.0)
-            } else if d < 1.0 {
-                1.0 - d
+                (d + 0.5).min(1.0)
             } else {
-                0.0
+                (0.5 - d).clamp(0.0, 1.0)
             };
             if cov <= 0.0 {
                 continue;
             }
-            let alpha = (base_a as f32 * cov) as u32;
-            if alpha == 0 {
-                continue;
-            }
+            let a = cov * glyph_a;
             let idx = row + px;
-            canvas.pixels[idx] = canvas.pixels[idx].under((alpha << 24) | dark, BlendMode::Normal);
+            let dst = canvas.pixels[idx];
+            // Source-over the glyph darkness onto the existing (pill) pixel, keep dst's opacity.
+            let (dr, dg, db) = (
+                ((dst >> 16) & 0xFF) as f32,
+                ((dst >> 8) & 0xFF) as f32,
+                (dst & 0xFF) as f32,
+            );
+            let nr = (gr * a + dr * (1.0 - a)) as u32;
+            let ng = (gg * a + dg * (1.0 - a)) as u32;
+            let nb = (gb * a + db * (1.0 - a)) as u32;
+            canvas.pixels[idx] = (dst & 0xFF00_0000) | (nr << 16) | (ng << 8) | nb;
         }
     }
 }
@@ -3365,17 +3383,6 @@ impl FluorApp for PhotonApp {
                             // hit rect AFTER the textbox to recover click dispatch in the overlap.
                             let send_bbox = if let Some(btn) = self.message_send_btn.as_mut() {
                                 let id = btn.hit_id();
-                                // Under-blend is topmost-FIRST: the arrowhead must be painted BEFORE the
-                                // button pill, or the pill's opaque fill wins the pixel and the arrowhead
-                                // is discarded (exactly how the button draws its own label — glyph cache
-                                // blitted before the pill). Arrowhead first → pill under it.
-                                draw_up_arrowhead(
-                                    &mut canvas,
-                                    btn.center_x,
-                                    btn.center_y,
-                                    btn.height * 0.5,
-                                    SEND_ARROW_COLOUR,
-                                );
                                 btn.render_content_into(
                                     &mut canvas,
                                     0.,
@@ -3384,6 +3391,15 @@ impl FluorApp for PhotonApp {
                                     None,
                                     Some(&mut chrome.hit_test_map),
                                     id,
+                                );
+                                // Arrowhead composited OVER the now-painted pill (reads the pill as its
+                                // dst; see draw_up_arrowhead — it can't be under()-ed onto the opaque pill).
+                                draw_up_arrowhead(
+                                    &mut canvas,
+                                    btn.center_x,
+                                    btn.center_y,
+                                    btn.height * 0.5,
+                                    SEND_ARROW_COLOUR,
                                 );
                                 Some((button_bbox(btn), id))
                             } else {
