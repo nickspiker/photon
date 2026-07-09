@@ -104,6 +104,19 @@ pub struct AvatarResponseSend {
     pub avatar_vsf: Vec<u8>,
 }
 
+/// Request to send a pre-built, signed history frame (hist_req or hist_page). Bytes are built on the
+/// UI thread (which owns device_secret + the vault); this thread just races them down both paths.
+#[derive(Clone)]
+pub struct HistorySendRequest {
+    pub peer_addr: SocketAddr,
+    /// Second candidate raced alongside (same LAN/WAN reasoning as MessageRequest::alt_addr).
+    pub alt_addr: Option<SocketAddr>,
+    /// Recipient's device pubkey (for relay fallback).
+    pub recipient_pubkey: [u8; 32],
+    /// Pre-built + signed hist_req / hist_page VSF bytes.
+    pub vsf_bytes: Vec<u8>,
+}
+
 /// Request to start a PT large transfer (e.g., full CLUTCH offer with all 8 pubkeys)
 #[derive(Clone)]
 pub struct PTSendRequest {
@@ -209,6 +222,26 @@ pub enum StatusUpdate {
         avatar_vsf: Vec<u8>,
         sender_addr: SocketAddr,
     },
+    /// History request received (signature verified; per-contact authorization happens on the UI thread, which owns the contacts + vault).
+    HistoryRequestReceived {
+        conversation_token: [u8; 32],
+        /// Cursor: serve rows strictly older than this (i64::MAX = head page).
+        before_osc: i64,
+        limit: u32,
+        request_id: [u8; 32],
+        /// Header creation time — the UI's staleness check.
+        sent_osc: i64,
+        sender_pubkey: DevicePubkey,
+        sender_addr: SocketAddr,
+    },
+    /// History page received (signature verified; blob is AEAD-sealed — the UI opens it with the friendship history key).
+    HistoryPageReceived {
+        conversation_token: [u8; 32],
+        request_id: [u8; 32],
+        sealed: Vec<u8>,
+        sender_pubkey: DevicePubkey,
+        sender_addr: SocketAddr,
+    },
     /// PT large transfer completed - received data from peer
     PTReceived {
         peer_addr: SocketAddr,
@@ -272,6 +305,7 @@ pub struct StatusChecker {
     ack_sender: Sender<AckRequest>,
     avatar_request_sender: Sender<AvatarRequestSend>,
     avatar_response_sender: Sender<AvatarResponseSend>,
+    history_sender: Sender<HistorySendRequest>,
     pt_sender: Sender<PTSendRequest>,
     offer_sender: Sender<ClutchOfferRequest>,
     kem_response_sender: Sender<ClutchKemResponseRequest>,
@@ -298,6 +332,7 @@ impl StatusChecker {
         let (ack_tx, ack_rx) = channel::<AckRequest>();
         let (avatar_request_tx, avatar_request_rx) = channel::<AvatarRequestSend>();
         let (avatar_response_tx, avatar_response_rx) = channel::<AvatarResponseSend>();
+        let (history_tx, history_rx) = channel::<HistorySendRequest>();
         let (pt_tx, pt_rx) = channel::<PTSendRequest>();
         let (offer_tx, offer_rx) = channel::<ClutchOfferRequest>();
         let (kem_response_tx, kem_response_rx) = channel::<ClutchKemResponseRequest>();
@@ -342,6 +377,7 @@ impl StatusChecker {
                     ack_rx,
                     avatar_request_rx,
                     avatar_response_rx,
+                    history_rx,
                     pt_rx,
                     offer_rx,
                     kem_response_rx,
@@ -379,6 +415,7 @@ impl StatusChecker {
             ack_sender: ack_tx,
             avatar_request_sender: avatar_request_tx,
             avatar_response_sender: avatar_response_tx,
+            history_sender: history_tx,
             pt_sender: pt_tx,
             offer_sender: offer_tx,
             kem_response_sender: kem_response_tx,
@@ -402,6 +439,7 @@ impl StatusChecker {
         let (ack_tx, ack_rx) = channel::<AckRequest>();
         let (avatar_request_tx, avatar_request_rx) = channel::<AvatarRequestSend>();
         let (avatar_response_tx, avatar_response_rx) = channel::<AvatarResponseSend>();
+        let (history_tx, history_rx) = channel::<HistorySendRequest>();
         let (pt_tx, pt_rx) = channel::<PTSendRequest>();
         let (offer_tx, offer_rx) = channel::<ClutchOfferRequest>();
         let (kem_response_tx, kem_response_rx) = channel::<ClutchKemResponseRequest>();
@@ -446,6 +484,7 @@ impl StatusChecker {
                     ack_rx,
                     avatar_request_rx,
                     avatar_response_rx,
+                    history_rx,
                     pt_rx,
                     offer_rx,
                     kem_response_rx,
@@ -483,6 +522,7 @@ impl StatusChecker {
             ack_sender: ack_tx,
             avatar_request_sender: avatar_request_tx,
             avatar_response_sender: avatar_response_tx,
+            history_sender: history_tx,
             pt_sender: pt_tx,
             offer_sender: offer_tx,
             kem_response_sender: kem_response_tx,
@@ -527,6 +567,11 @@ impl StatusChecker {
     /// Send my avatar back to a peer (non-blocking)
     pub fn send_avatar_response(&self, request: AvatarResponseSend) {
         let _ = self.avatar_response_sender.send(request);
+    }
+
+    /// Send a pre-built history frame (hist_req or hist_page) to a peer (non-blocking)
+    pub fn send_history(&self, request: HistorySendRequest) {
+        let _ = self.history_sender.send(request);
     }
 
     /// Start a PT large transfer (non-blocking)
@@ -613,6 +658,7 @@ async fn run_checker(
     ack_rx: Receiver<AckRequest>,
     avatar_request_rx: Receiver<AvatarRequestSend>,
     avatar_response_rx: Receiver<AvatarResponseSend>,
+    history_rx: Receiver<HistorySendRequest>,
     pt_rx: Receiver<PTSendRequest>,
     offer_rx: Receiver<ClutchOfferRequest>,
     kem_response_rx: Receiver<ClutchKemResponseRequest>,
@@ -1325,6 +1371,57 @@ async fn run_checker(
                                             },
                                             &event_proxy_recv,
                                         );
+                                    }
+                                    // Try to parse as history request (hist_req)
+                                    else if let Ok((payload, sender_pubkey)) =
+                                        crate::network::fgtw::protocol::parse_history_request_vsf(
+                                            &data,
+                                        )
+                                    {
+                                        if !is_known_sender_pt(&sender_pubkey) {
+                                            crate::log("PT: hist_req REJECTED - unknown sender");
+                                            continue;
+                                        }
+                                        send_status_update(
+                                            &status_tx_recv,
+                                            StatusUpdate::HistoryRequestReceived {
+                                                conversation_token: payload.conversation_token,
+                                                before_osc: payload.before_osc,
+                                                limit: payload.limit,
+                                                request_id: payload.request_id,
+                                                sent_osc: payload.sent_osc,
+                                                sender_pubkey: DevicePubkey::from_bytes(
+                                                    sender_pubkey,
+                                                ),
+                                                sender_addr: src_addr,
+                                            },
+                                            &event_proxy_recv,
+                                        );
+                                    }
+                                    // Try to parse as history page (hist_page)
+                                    else if let Ok((
+                                        (conversation_token, request_id, sealed),
+                                        sender_pubkey,
+                                    )) = crate::network::fgtw::protocol::parse_history_page_vsf(
+                                        &data,
+                                    ) {
+                                        if !is_known_sender_pt(&sender_pubkey) {
+                                            crate::log("PT: hist_page REJECTED - unknown sender");
+                                            continue;
+                                        }
+                                        send_status_update(
+                                            &status_tx_recv,
+                                            StatusUpdate::HistoryPageReceived {
+                                                conversation_token,
+                                                request_id,
+                                                sealed,
+                                                sender_pubkey: DevicePubkey::from_bytes(
+                                                    sender_pubkey,
+                                                ),
+                                                sender_addr: src_addr,
+                                            },
+                                            &event_proxy_recv,
+                                        );
                                     } else {
                                         // Unknown PT data - emit generic event for debugging
                                         crate::log(&format!(
@@ -1413,6 +1510,61 @@ async fn run_checker(
                                 &event_proxy_recv,
                             );
                             continue;
+                            }
+                            // History request (hist_req, ~200B — always rides this small-frame path).
+                            // MUST packet-ack: it's sent via send_with_pubkey's reliable stop-and-wait
+                            // queue; an un-acked type retransmits forever and head-of-line-blocks chat.
+                            if let Ok((payload, sender_pubkey)) =
+                                crate::network::fgtw::protocol::parse_history_request_vsf(msg_bytes)
+                            {
+                                {
+                                    let ack_bytes = {
+                                        let pt_mgr = pt_recv.lock().unwrap();
+                                        pt_mgr.build_packet_ack(msg_bytes)
+                                    };
+                                    udp::send(&socket_recv, &ack_bytes, src_addr).await;
+                                }
+                                send_status_update(
+                                    &status_tx_recv,
+                                    StatusUpdate::HistoryRequestReceived {
+                                        conversation_token: payload.conversation_token,
+                                        before_osc: payload.before_osc,
+                                        limit: payload.limit,
+                                        request_id: payload.request_id,
+                                        sent_osc: payload.sent_osc,
+                                        sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
+                                        sender_addr: src_addr,
+                                    },
+                                    &event_proxy_recv,
+                                );
+                                continue;
+                            }
+                            // History page (hist_page — small pages ride this path; big ones arrive
+                            // via the PT-transfer-complete branch). Same mandatory packet-ack.
+                            if let Ok((
+                                (conversation_token, request_id, sealed),
+                                sender_pubkey,
+                            )) = crate::network::fgtw::protocol::parse_history_page_vsf(msg_bytes)
+                            {
+                                {
+                                    let ack_bytes = {
+                                        let pt_mgr = pt_recv.lock().unwrap();
+                                        pt_mgr.build_packet_ack(msg_bytes)
+                                    };
+                                    udp::send(&socket_recv, &ack_bytes, src_addr).await;
+                                }
+                                send_status_update(
+                                    &status_tx_recv,
+                                    StatusUpdate::HistoryPageReceived {
+                                        conversation_token,
+                                        request_id,
+                                        sealed,
+                                        sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
+                                        sender_addr: src_addr,
+                                    },
+                                    &event_proxy_recv,
+                                );
+                                continue;
                             }
                         }
                     }
@@ -2107,6 +2259,26 @@ async fn run_checker(
                     if let Some(alt) = request.alt_addr {
                         udp::send(&socket, &pt_bytes, alt).await;
                     }
+                }
+            }
+        }
+
+        // Process history frames (hist_req / hist_page) — pre-built + signed on the UI thread; this
+        // loop just routes them thru PT (UDP → TCP after 1s → relay) and races the alt path with the
+        // SAME wire bytes, exactly like chat. Requester/server both dedup (rid), so redelivery is free.
+        while let Ok(request) = history_rx.try_recv() {
+            let pt_bytes = {
+                let mut pt_mgr = pt.lock().unwrap();
+                pt_mgr.send_with_pubkey(
+                    request.peer_addr,
+                    request.vsf_bytes.clone(),
+                    Some(request.recipient_pubkey),
+                )
+            };
+            if !pt_bytes.is_empty() {
+                udp::send(&socket, &pt_bytes, request.peer_addr).await;
+                if let Some(alt) = request.alt_addr {
+                    udp::send(&socket, &pt_bytes, alt).await;
                 }
             }
         }

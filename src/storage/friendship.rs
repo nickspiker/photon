@@ -42,6 +42,8 @@ fn chains_schema() -> SectionSchema {
         .field("last_plaintext", TypeConstraint::Utf8Text) // x: the message x-text (salt source), one per participant — text-only, valid UTF-8
         // Last received times (v5) - for duplicate detection after restart
         .field("last_received_time", TypeConstraint::Any) // i64 oscillations, one per participant
+        // Friend-history bulk key (v6) — spaghettify-derived at ceremony birth, seals history-recovery pages outside the ratchet. Optional: absent = pre-feature chains (recovery unavailable until re-key).
+        .field("history_key", TypeConstraint::AnyHash)
 }
 
 /// Vault address for a friendship's chain state — `vault_key("chains", friendship_id)`. The conversation id is the scope (already `blake3` of the sorted participant seeds, so 1/2/N participants all resolve here); "chains" names the entry.
@@ -60,7 +62,7 @@ pub fn save_friendship_chains(
     let schema = chains_schema();
     let mut builder = schema
         .build()
-        .set("version", 5u8) // v5: includes last_received_times for duplicate detection after restart
+        .set("version", 6u8) // v6: adds the optional history_key (v5 = last_received_times)
         .map_err(|e| StorageError::Parse(e.to_string()))?
         .set(
             "friendship_id",
@@ -177,6 +179,13 @@ pub fn save_friendship_chains(
                 "last_received_time",
                 vec![VsfType::e(vsf::types::EtType::e6(time_val))],
             )
+            .map_err(|e| StorageError::Parse(e.to_string()))?;
+    }
+
+    // === History key (v6) — optional; absent = pre-feature chains ===
+    if let Some(key) = chains.history_key() {
+        builder = builder
+            .set("history_key", VsfType::hb(key.to_vec()))
             .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
 
@@ -393,8 +402,11 @@ pub fn load_friendship_chains(
         })
         .collect();
 
-    // Reconstruct chains with full v5 state
-    FriendshipChains::from_storage_v5(
+    // === History key (v6) — optional; absent (pre-v6 file) leaves None ===
+    let history_key: Option<[u8; 32]> = section.get_value::<[u8; 32]>("history_key").ok();
+
+    // Reconstruct chains with full v5 state, then install the optional v6 key
+    let mut chains = FriendshipChains::from_storage_v5(
         *friendship_id,
         participants,
         &chain_bytes,
@@ -407,7 +419,9 @@ pub fn load_friendship_chains(
         last_plaintexts,
         last_received_times,
     )
-    .ok_or_else(|| StorageError::Parse("Failed to reconstruct chains".to_string()))
+    .ok_or_else(|| StorageError::Parse("Failed to reconstruct chains".to_string()))?;
+    chains.set_history_key(history_key);
+    Ok(chains)
 }
 
 /// Load all friendships for the given friendship IDs
@@ -476,6 +490,31 @@ mod tests {
         assert_eq!(
             loaded.current_key(&bob).unwrap(),
             chains.current_key(&bob).unwrap()
+        );
+        // v6: the history key derived at ceremony birth must survive the round-trip.
+        assert!(chains.history_key().is_some());
+        assert_eq!(loaded.history_key(), chains.history_key());
+    }
+
+    #[test]
+    fn history_key_deterministic_both_sides() {
+        // The both-sides property: identical participants + eggs (what CLUTCH guarantees at completion) → identical history keys; different eggs → different keys.
+        let alice = [1u8; 32];
+        let bob = [2u8; 32];
+        let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
+        let a_side = FriendshipChains::from_clutch(&[alice, bob], &eggs);
+        let b_side = FriendshipChains::from_clutch(&[bob, alice], &eggs); // reversed order — sorted internally
+        assert_eq!(a_side.history_key(), b_side.history_key());
+        assert!(a_side.history_key().is_some());
+
+        let other_eggs: Vec<[u8; 32]> = (0..8).map(|i| [(i + 100) as u8; 32]).collect();
+        let rekeyed = FriendshipChains::from_clutch(&[alice, bob], &other_eggs);
+        assert_ne!(a_side.history_key(), rekeyed.history_key());
+
+        // And it must differ from the conversation token (domain separation actually separates).
+        assert_ne!(
+            a_side.history_key().unwrap(),
+            &a_side.conversation_token
         );
     }
 }

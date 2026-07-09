@@ -148,6 +148,8 @@ fn contact_state_schema() -> SectionSchema {
         .field("last_seen", TypeConstraint::Any) // f64 Eagle Time
         .field("completed_their_hqc_prefix", TypeConstraint::AnyHash) // Detects stale offers (8 bytes)
         .field("chain_woven", TypeConstraint::AnyUnsigned) // bool: chain proven end-to-end once (double-toggle seal) — persists so an established conversation allows composing (+ the staging queue) across restarts, even to an offline peer
+        .field("hist_oldest", TypeConstraint::Any) // e6 eagle-time cursor: oldest recovered row so far (i64::MAX = head page pending). Absent = history recovery never ran for this contact.
+        .field("hist_complete", TypeConstraint::AnyUnsigned) // bool: friend-history backfill finished (server said no-more, or early-stop). Absent = false.
 }
 
 /// Save contact state (mutable data) with schema validation
@@ -208,6 +210,20 @@ pub fn save_contact_state(contact: &Contact, storage: &FlatStorage) -> Result<()
         builder = builder
             .set("chain_woven", true)
             .map_err(|e| StorageError::Parse(e.to_string()))?;
+    }
+    // History-recovery cursor: persisted whenever recovery has run, so backfill resumes across restarts without waiting for a fresh weave-seal. Absent = feature never touched this contact.
+    if let Some(rec) = &contact.history_recovery {
+        builder = builder
+            .set(
+                "hist_oldest",
+                VsfType::e(vsf::types::EtType::e6(rec.oldest_recovered_osc)),
+            )
+            .map_err(|e| StorageError::Parse(e.to_string()))?;
+        if rec.complete {
+            builder = builder
+                .set("hist_complete", true)
+                .map_err(|e| StorageError::Parse(e.to_string()))?;
+        }
     }
 
     let vsf_bytes = builder
@@ -296,6 +312,19 @@ pub fn load_contact_state(
         contact.probe_sent = true;
         contact.their_probe_seen = true;
         contact.chain_advanced_by_ack = true;
+    }
+    // History-recovery cursor: reconstruct the runtime state machine so an incomplete backfill resumes on the next drive_history_recovery pass (next_request_osc = 0 → immediately eligible; urgent stays false — resume is background work).
+    if let Some(v) = section.get_fields("hist_oldest").first().and_then(|f| f.values.first()) {
+        let oldest = vsf_to_oscillations(v);
+        let complete = section.get_value::<bool>("hist_complete").unwrap_or(false);
+        contact.history_recovery = Some(crate::types::HistoryRecovery {
+            oldest_recovered_osc: oldest,
+            complete,
+            in_flight: None,
+            next_request_osc: 0,
+            urgent: false,
+            was_complete_before: complete,
+        });
     }
 
     Ok(contact)
@@ -504,6 +533,10 @@ pub fn save_messages(contact: &Contact, storage: &FlatStorage) -> Result<(), Sto
         if let Some(ah) = msg.ack_hash {
             rec = rec.set("ack_hash", ah.to_vec());
         }
+        // recovered: friend-attested provenance flag — written only when true (absent = false), matching the contact-state optional-field idiom.
+        if msg.recovered {
+            rec = rec.set("recovered", 1u64);
+        }
         db.put_row_in(&table, Pk::Int(msg.timestamp as u64), &rec)
             .map_err(|e| StorageError::Vault(e.to_string()))?;
     }
@@ -528,10 +561,22 @@ pub fn load_messages(contact: &mut Contact, storage: &FlatStorage) -> Result<(),
         .list_in(&table)
         .map_err(|e| StorageError::Vault(e.to_string()))?;
 
+    // Sort keys numerically — the catalog yields INSERTION order, which matched chronological order
+    // only while rows were appended live. History recovery inserts OLDER rows later, so trusting
+    // insertion order would interleave the conversation. Key = eagle_time, so numeric sort = time sort.
+    let mut keys: Vec<u64> = pks
+        .into_iter()
+        .filter_map(|pk| match pk {
+            Pk::Int(t) => Some(t),
+            _ => None,
+        })
+        .collect();
+    keys.sort_unstable();
+
     contact.messages.clear();
-    for pk in pks {
+    for key in keys {
         let Some(rec) = db
-            .get_row_in(&table, pk.clone())
+            .get_row_in(&table, Pk::Int(key))
             .map_err(|e| StorageError::Vault(e.to_string()))?
         else {
             continue;
@@ -549,6 +594,7 @@ pub fn load_messages(contact: &mut Contact, storage: &FlatStorage) -> Result<(),
             is_outgoing: rec.uint("is_outgoing").unwrap_or(0) != 0,
             delivered: rec.uint("delivered").unwrap_or(0) != 0,
             ack_hash,
+            recovered: rec.uint("recovered").unwrap_or(0) != 0,
         });
     }
 
@@ -560,6 +606,107 @@ pub fn load_messages(contact: &mut Contact, storage: &FlatStorage) -> Result<(),
     ));
 
     Ok(())
+}
+
+/// Persist ONLY the given rows into the conversation table (same field layout as [`save_messages`]).
+/// History recovery lands pages of ~50 rows at a time — rewriting the whole conversation per page
+/// would be O(n) per page; this is O(page).
+pub fn save_messages_page(
+    their_identity_seed: &[u8; 32],
+    msgs: &[ChatMessage],
+    storage: &FlatStorage,
+) -> Result<(), StorageError> {
+    if msgs.is_empty() {
+        return Ok(());
+    }
+    let table = conversation_id(storage.vault_seed(), their_identity_seed);
+    let mut db = Db::open(storage).map_err(|e| StorageError::Vault(e.to_string()))?;
+    for msg in msgs {
+        let content_hash = blake3::hash(msg.content.as_bytes());
+        let mut rec = Record::new()
+            .set("content", msg.content.clone())
+            .set("timestamp", Value::Time(msg.timestamp))
+            .set("is_outgoing", msg.is_outgoing as u64)
+            .set("delivered", msg.delivered as u64)
+            .set("content_hash", content_hash.as_bytes().to_vec());
+        if let Some(ah) = msg.ack_hash {
+            rec = rec.set("ack_hash", ah.to_vec());
+        }
+        if msg.recovered {
+            rec = rec.set("recovered", 1u64);
+        }
+        db.put_row_in(&table, Pk::Int(msg.timestamp as u64), &rec)
+            .map_err(|e| StorageError::Vault(e.to_string()))?;
+    }
+    Ok(())
+}
+
+/// Serve one newest-first history page: the newest `max_rows` rows strictly OLDER than `before_osc`
+/// (pass `i64::MAX` for the head page), bounded by `max_bytes` of summed content. Returns the rows in
+/// ascending time order plus `more` = whether older rows remain below the returned page. The catalog
+/// scan is O(n) in conversation size — fine to ~10⁵ rows; a rārangi range index is a later optimization.
+pub fn load_message_page_before(
+    their_identity_seed: &[u8; 32],
+    before_osc: i64,
+    max_rows: usize,
+    max_bytes: usize,
+    storage: &FlatStorage,
+) -> Result<(Vec<ChatMessage>, bool), StorageError> {
+    let table = conversation_id(storage.vault_seed(), their_identity_seed);
+    let db = Db::open(storage).map_err(|e| StorageError::Vault(e.to_string()))?;
+    let pks = db
+        .list_in(&table)
+        .map_err(|e| StorageError::Vault(e.to_string()))?;
+
+    // All keys strictly older than the cursor, ascending.
+    let before = if before_osc <= 0 { 0u64 } else { before_osc as u64 };
+    let mut keys: Vec<u64> = pks
+        .into_iter()
+        .filter_map(|pk| match pk {
+            Pk::Int(t) if t < before => Some(t),
+            _ => None,
+        })
+        .collect();
+    keys.sort_unstable();
+
+    // Take the NEWEST max_rows of the older set (the tail), walking backwards under the byte budget.
+    let mut page: Vec<ChatMessage> = Vec::new();
+    let mut bytes = 0usize;
+    let mut taken = 0usize;
+    for &key in keys.iter().rev() {
+        if taken >= max_rows || bytes >= max_bytes {
+            break;
+        }
+        let Some(rec) = db
+            .get_row_in(&table, Pk::Int(key))
+            .map_err(|e| StorageError::Vault(e.to_string()))?
+        else {
+            taken += 1; // a missing row still consumes cursor progress
+            continue;
+        };
+        let Some(content) = rec.text("content") else {
+            taken += 1;
+            continue;
+        };
+        bytes += content.len();
+        page.push(ChatMessage {
+            content: content.to_string(),
+            timestamp: rec.time("timestamp").unwrap_or(key as i64),
+            is_outgoing: rec.uint("is_outgoing").unwrap_or(0) != 0,
+            delivered: rec.uint("delivered").unwrap_or(0) != 0,
+            ack_hash: None, // never leaves this device; not part of a served page
+            recovered: rec.uint("recovered").unwrap_or(0) != 0,
+        });
+        taken += 1;
+    }
+    page.reverse(); // collected newest→oldest; return ascending
+
+    // More rows remain iff any key is older than the oldest we returned.
+    let more = match page.first() {
+        Some(oldest) => keys.first().is_some_and(|&k| k < oldest.timestamp as u64),
+        None => false,
+    };
+    Ok((page, more))
 }
 
 #[cfg(test)]
@@ -633,6 +780,7 @@ mod tests {
                 is_outgoing: true,
                 delivered: true,
                 ack_hash: None,
+                recovered: false,
             },
             ChatMessage {
                 content: "hey".to_string(),
@@ -640,6 +788,7 @@ mod tests {
                 is_outgoing: false,
                 delivered: false,
                 ack_hash: Some([0x7Au8; 32]), // received msg: its ACK hash must survive the round-trip
+                recovered: false,
             },
             ChatMessage {
                 content: "👋 unicode".to_string(),
@@ -647,6 +796,7 @@ mod tests {
                 is_outgoing: true,
                 delivered: false,
                 ack_hash: None,
+                recovered: true, // friend-attested provenance must survive the round-trip
             },
         ];
 
@@ -676,6 +826,88 @@ mod tests {
         assert_eq!(loaded.messages[0].ack_hash, None);
         assert_eq!(loaded.messages[2].content, "👋 unicode");
         assert_eq!(loaded.messages[2].ack_hash, None);
+        // Provenance flag round-trip: friend-attested stays flagged, originals stay unflagged (absent field = false, so pre-feature rows load unflagged too).
+        assert!(loaded.messages[2].recovered);
+        assert!(!loaded.messages[0].recovered && !loaded.messages[1].recovered);
+
+        // Clean up the on-disk vault so reruns start fresh.
+        if let Ok([primary, shadow]) = kete::vault_ring_paths(app, &vault_seed, &device_secret) {
+            let _ = std::fs::remove_file(primary);
+            let _ = std::fs::remove_file(shadow);
+        }
+    }
+
+    /// Newest-first cursor pagination over a real vault: head page = the newest rows, the cursor walk
+    /// visits everything exactly once, terminates with more=false — and `load_messages` returns
+    /// time-sorted output even though recovery inserts OLDER rows into the catalog LATER.
+    #[test]
+    fn history_pagination_walk_and_load_sort() {
+        use crate::types::HandleText;
+
+        let device_secret = [31u8; 32];
+        let vault_seed = *ihi::handle_to_hash("me-paging-test").as_bytes();
+        let app = crate::storage::APP;
+        let their_seed = [7u8; 32];
+
+        let storage = FlatStorage::new(app, vault_seed, device_secret).unwrap();
+
+        // Write 120 rows OUT OF CHRONOLOGICAL ORDER (newest batch first — the recovery insertion
+        // pattern), timestamps 1..=120.
+        let make = |t: i64| ChatMessage {
+            content: format!("msg {t}"),
+            timestamp: t,
+            is_outgoing: t % 2 == 0,
+            delivered: t % 2 == 0,
+            ack_hash: None,
+            recovered: t <= 60, // the "older, recovered" half
+        };
+        let newer: Vec<ChatMessage> = (61..=120).map(make).collect();
+        let older: Vec<ChatMessage> = (1..=60).map(make).collect();
+        save_messages_page(&their_seed, &newer, &storage).unwrap();
+        save_messages_page(&their_seed, &older, &storage).unwrap(); // older inserted LATER
+
+        // Head page: the newest 50 (71..=120), ascending, more remaining.
+        let (page1, more1) =
+            load_message_page_before(&their_seed, i64::MAX, 50, usize::MAX, &storage).unwrap();
+        assert_eq!(page1.len(), 50);
+        assert_eq!(page1.first().unwrap().timestamp, 71);
+        assert_eq!(page1.last().unwrap().timestamp, 120);
+        assert!(more1);
+
+        // Cursor walk: everything exactly once, terminating.
+        let mut seen: Vec<i64> = page1.iter().map(|m| m.timestamp).collect();
+        let mut cursor = page1.first().unwrap().timestamp;
+        let mut more = more1;
+        while more {
+            let (page, m) =
+                load_message_page_before(&their_seed, cursor, 50, usize::MAX, &storage).unwrap();
+            assert!(!page.is_empty(), "more=true must yield rows");
+            seen.extend(page.iter().map(|m| m.timestamp));
+            cursor = page.first().unwrap().timestamp;
+            more = m;
+        }
+        seen.sort_unstable();
+        assert_eq!(seen, (1..=120).collect::<Vec<i64>>());
+
+        // Byte budget cuts a page short (each content is ~6 bytes; 30 bytes ≈ 5-6 rows).
+        let (small, small_more) =
+            load_message_page_before(&their_seed, i64::MAX, 50, 30, &storage).unwrap();
+        assert!(small.len() < 50 && !small.is_empty());
+        assert!(small_more);
+
+        // load_messages: full conversation, time-sorted despite out-of-order catalog insertion,
+        // with the recovered flag intact on the older half.
+        let mut contact = Contact::new(
+            HandleText::new("paging-peer"),
+            [9u8; 32],
+            DevicePubkey::from_bytes([0u8; 32]),
+        );
+        contact.handle_hash = their_seed;
+        load_messages(&mut contact, &storage).unwrap();
+        assert_eq!(contact.messages.len(), 120);
+        let times: Vec<i64> = contact.messages.iter().map(|m| m.timestamp).collect();
+        assert_eq!(times, (1..=120).collect::<Vec<i64>>());
+        assert!(contact.messages[0].recovered && !contact.messages[119].recovered);
 
         // Clean up the on-disk vault so reruns start fresh.
         if let Ok([primary, shadow]) = kete::vault_ring_paths(app, &vault_seed, &device_secret) {

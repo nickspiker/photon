@@ -49,6 +49,8 @@ pub struct ChatMessage {
     pub delivered: bool, // true = confirmed delivered to recipient
     /// For RECEIVED messages: the ACK plaintext_hash (blake3 of the full decrypted payload) we sent back when we first processed this message. Stored so a duplicate retransmit (our ACK was lost) can be re-ACKed with the SAME hash instead of being silently dropped — the sender's chain only advances on a matching ACK, so a lost ACK would otherwise stall it forever. `None` for outgoing messages and for received messages stored before this field existed.
     pub ack_hash: Option<[u8; 32]>,
+    /// `true` when this row was RECOVERED from a friend's copy of the conversation (history recovery after a client reset) rather than witnessed by this device as a signed wire frame. Friend-attested provenance: the friend could in principle have altered it. Persisted so phase-2 fleet recovery (self-attested rows) can supersede friend-attested ones, and so a UI cue can exist later. No UI treatment yet.
+    pub recovered: bool,
 }
 
 impl ChatMessage {
@@ -59,6 +61,7 @@ impl ChatMessage {
             is_outgoing,
             delivered: false,
             ack_hash: None,
+            recovered: false,
         }
     }
 
@@ -70,6 +73,7 @@ impl ChatMessage {
             is_outgoing,
             delivered: false,
             ack_hash: None,
+            recovered: false,
         }
     }
 
@@ -78,6 +82,23 @@ impl ChatMessage {
         self.ack_hash = Some(ack_hash);
         self
     }
+}
+
+/// Runtime state machine for friend-assisted history recovery on one conversation. Lives on the Contact (never persisted whole — the durable bits are the `hist_oldest` cursor + `hist_complete` flag in contact state). Newest-first cursor pagination: `oldest_recovered_osc` walks DOWN from `i64::MAX` (head page) as pages land.
+#[derive(Clone, Debug)]
+pub struct HistoryRecovery {
+    /// Cursor: oldest eagle_time we've recovered so far. `i64::MAX` = head page not yet fetched. The next request asks for rows strictly BEFORE this.
+    pub oldest_recovered_osc: i64,
+    /// All pages fetched (server said no-more, or the early-stop rule fired).
+    pub complete: bool,
+    /// Outstanding request: (request id, sent eagle_time, before cursor it asked for). Expired + re-issued after a timeout; pages with a non-matching rid are dropped.
+    pub in_flight: Option<([u8; 32], i64, i64)>,
+    /// Earliest eagle_time the next trickle request may fire (rate limiting).
+    pub next_request_osc: i64,
+    /// Scrollback jump-queue: user is looking at the old edge — fire the next request immediately, ignoring the trickle interval.
+    pub urgent: bool,
+    /// The persisted `hist_complete` value at kickoff. Early-stop rule: if history was complete before this (re-)kickoff and a page contributes zero new rows, the history is still complete — a routine re-key on an intact pair stops after one page instead of re-walking 10 years.
+    pub was_complete_before: bool,
 }
 
 /// A handle name stored as VSF text (normalized Unicode, unambiguous) Wrapper around String that represents a VSF x-type text value
@@ -198,6 +219,8 @@ pub struct Contact {
     pub validated_path: Option<(SocketAddr, std::time::Instant)>,
     /// Runtime-only graceful-failure counter: consecutive ping cycles where an ONLINE contact was punched but never validated a direct path (the symmetric↔symmetric case). Past a small threshold the peer is treated as direct-unreachable — the hook the relay milestone (M2) reads. Reset to 0 on any validation.
     pub punch_unvalidated_cycles: u8,
+    /// Friend-assisted history recovery state machine (newest-first cursor pagination from the friend's copy). `None` = no recovery running/known. Runtime struct; the durable cursor + complete flag persist as `hist_oldest` / `hist_complete` in contact state.
+    pub history_recovery: Option<HistoryRecovery>,
 }
 
 /// Contact identifier - BLAKE3 hash of the contact's public identity key This provides deterministic, collision-resistant identification
@@ -279,6 +302,7 @@ impl Contact {
             chain_advanced_by_ack: false, // Our TX chain not yet ACK-advanced
             validated_path: None,         // No punch-validated direct path yet
             punch_unvalidated_cycles: 0,  // No failed punch cycles yet
+            history_recovery: None,       // No history recovery running
         }
     }
 
