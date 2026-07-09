@@ -2692,9 +2692,9 @@ impl FluorApp for PhotonApp {
                         );
                         y += line_h * 1.35;
                     }
-                    // Name the device being enrolled, so a user pairing several devices can tell on both screens which one these words belong to. Deterministic two-word default from the device secret; the owner-edited override arrives with the devices page.
+                    // Name the device being enrolled, so a user pairing several devices can tell on both screens which one these words belong to. Deterministic two-word default from the device PUBLIC key, so the Fleet list on every device shows this same name; the owner-edited override arrives with the devices page.
                     if let Some(kp) = self.device_keypair.as_ref() {
-                        let name = crate::network::fgtw::fleet::device_name_default(kp.secret.as_bytes());
+                        let name = crate::network::fgtw::fleet::device_name_default(kp.public.as_bytes());
                         y += line_h * 0.4;
                         ctx.text.draw_text_center_u32(
                             &mut canvas,
@@ -5192,20 +5192,17 @@ impl PhotonApp {
         }
     }
 
-    /// The fleet device inventory for the Fleet settings page: this device first, then our other devices (sibling contacts). Each entry is `(device_pubkey, is_self, is_online, name)`. Reuses phase-1's sibling reconcile as the live inventory (`current_members(own_hp)` is the authority; reconcile keeps the sibling set == fleet-minus-this-device) — no synchronous network fetch on render. Name = a short stable voca word from the pubkey prefix (no device-label chain-op exists yet; rename is a deferred follow-up).
+    /// The fleet device inventory for the Fleet settings page: this device first, then our other devices (sibling contacts). Each entry is `(device_pubkey, is_self, is_online, name)`. Reuses phase-1's sibling reconcile as the live inventory (`current_members(own_hp)` is the authority; reconcile keeps the sibling set == fleet-minus-this-device) — no synchronous network fetch on render. Name = the canonical `device_name_default` (two voca words from the device PUBLIC key), the SAME function the pairing screen uses, so a device shows the same name here, on its own pairing screen, and on every other device's Fleet list.
     fn fleet_device_rows(&self) -> Vec<([u8; 32], bool, bool, String)> {
-        fn device_name(pk: &[u8; 32]) -> String {
-            // 5-byte prefix → a short friendly voca word (camelCase). Stable per device.
-            voca::encode(num_bigint::BigUint::from_bytes_be(&pk[..5]))
-        }
+        use crate::network::fgtw::fleet::device_name_default;
         let mut rows = Vec::new();
         if let Some(kp) = self.device_keypair.as_ref() {
             let me = *kp.public.as_bytes();
-            rows.push((me, true, true, device_name(&me)));
+            rows.push((me, true, true, device_name_default(&me)));
         }
         for c in self.contacts.iter().filter(|c| c.is_sibling) {
             let pk = c.public_identity.key;
-            rows.push((pk, false, c.is_online, device_name(&pk)));
+            rows.push((pk, false, c.is_online, device_name_default(&pk)));
         }
         rows
     }
