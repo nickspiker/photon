@@ -470,10 +470,7 @@ impl HandleQuery {
                         Ok(None) => ProbeOutcome::Fresh,
                         Ok(Some(blob)) => {
                             let me = keypair.public.to_bytes();
-                            // Match fold() explicitly: a FoldError must NOT be swallowed into a
-                            // false "Taken" with an unverified genesis compare. An unfoldable chain
-                            // is indeterminate (corrupt / partial / KV read-lag) — surface an error
-                            // and let the next cycle retry, never brand the handle taken.
+                            // Match fold() explicitly: a FoldError must NOT be swallowed into a false "Taken" with an unverified genesis compare. An unfoldable chain is indeterminate (corrupt / partial / KV read-lag) — surface an error and let the next cycle retry, never brand the handle taken.
                             match blob.fold() {
                                 Ok(members) => {
                                     if members.contains(&me) {
@@ -484,9 +481,7 @@ impl HandleQuery {
                                         ProbeOutcome::Taken
                                     }
                                 }
-                                // An EMPTY chain is not corruption — it's "no one holds this handle"
-                                // (a blob with zero ops folds to Empty, e.g. after a wipe left the
-                                // slot allocated but unwritten). Same classification as Ok(None).
+                                // An EMPTY chain is not corruption — it's "no one holds this handle" (a blob with zero ops folds to Empty, e.g. after a wipe left the slot allocated but unwritten). Same classification as Ok(None).
                                 Err(crate::network::fgtw::fleet::FoldError::Empty) => {
                                     ProbeOutcome::Fresh
                                 }
@@ -583,25 +578,15 @@ impl HandleQuery {
                     crate::log(&format!("Network: ERROR - {}", error));
                     QueryResult::Error(error)
                 } else {
-                    // Reaching here means the announce did NOT error, and the announce is
-                    // membership-gated: `ensure_member` already proved this device folds into the
-                    // fleet chain (bootstrap.rs load_bootstrap_peers_inner). Announce success ⇒ ours.
+                    // Reaching here means the announce did NOT error, and the announce is membership-gated: `ensure_member` already proved this device folds into the fleet chain (bootstrap.rs load_bootstrap_peers_inner). Announce success ⇒ ours.
                     //
-                    // The old "taken" verdict was inferred from the UNVERIFIED announce peer echo
-                    // (a non-empty list not echoing our record), which is a false positive: the echo
-                    // is not a fold-verified chain, and a device can be a proven member while absent
-                    // from a given peer-list snapshot (KV lag, list paging, add ordering). A false
-                    // "taken" then made the consumer clear the session. That inference is deleted.
+                    // The old "taken" verdict was inferred from the UNVERIFIED announce peer echo (a non-empty list not echoing our record), which is a false positive: the echo is not a fold-verified chain, and a device can be a proven member while absent from a given peer-list snapshot (KV lag, list paging, add ordering). A false "taken" then made the consumer clear the session. That inference is deleted.
                     //
-                    // "Taken" now comes ONLY from a fold-verified chain naming a DIFFERENT identity,
-                    // computed exactly like the probe: fetch → fold. Since ensure_member just proved
-                    // membership, this normally confirms ours; a fold/parse/transport error is
-                    // INDETERMINATE → QueryResult::Error, NEVER taken, never clear the session.
+                    // "Taken" now comes ONLY from a fold-verified chain naming a DIFFERENT identity, computed exactly like the probe: fetch → fold. Since ensure_member just proved membership, this normally confirms ours; a fold/parse/transport error is INDETERMINATE → QueryResult::Error, NEVER taken, never clear the session.
                     // A resume retries on the next ~30s cycle; a first attest surfaces the error on the launch screen for a manual re-submit (there is no auto-retry loop for FirstAttest).
                     let me = keypair.public.to_bytes();
                     let verdict = match crate::network::fgtw::fleet::fetch(&handle_proof) {
-                        // No chain despite a successful membership-gated announce: treat as ours
-                        // (indeterminate the other way — we were just admitted). Proceed to load.
+                        // No chain despite a successful membership-gated announce: treat as ours (indeterminate the other way — we were just admitted). Proceed to load.
                         Ok(None) => Ok(true),
                         Ok(Some(blob)) => match blob.fold() {
                             Ok(members) => {
@@ -613,12 +598,10 @@ impl HandleQuery {
                                     Ok(false) // fold-verified chain names a DIFFERENT identity — genuinely taken
                                 }
                             }
-                            // An EMPTY chain (zero ops) is "no one holds this handle", not
-                            // corruption — same as Ok(None): we were just admitted, ours.
+                            // An EMPTY chain (zero ops) is "no one holds this handle", not corruption — same as Ok(None): we were just admitted, ours.
                             Err(crate::network::fgtw::fleet::FoldError::Empty) => Ok(true),
                             Err(fold_err) => {
-                                // Dev-log the raw body so a Cloudflare KV read-lag serving a
-                                // pre-wipe chain is visible (gated to the development feature).
+                                // Dev-log the raw body so a Cloudflare KV read-lag serving a pre-wipe chain is visible (gated to the development feature).
                                 #[cfg(feature = "development")]
                                 crate::log(&format!(
                                     "Network: attest verdict fold failed (indeterminate): {fold_err:?}"
@@ -819,16 +802,11 @@ impl HandleQuery {
                             vault_degraded,
                         }))
                     } else {
-                        // Reached only via a FOLD-VERIFIED chain whose genesis identity is NOT ours
-                        // (see verdict above) — a genuine chain-proven takeover. Dev-log the raw
-                        // fetch body (hex) so a Cloudflare KV read-lag serving a pre-wipe chain is
-                        // catchable from the trace.
+                        // Reached only via a FOLD-VERIFIED chain whose genesis identity is NOT ours (see verdict above) — a genuine chain-proven takeover. Dev-log the raw fetch body (hex) so a Cloudflare KV read-lag serving a pre-wipe chain is catchable from the trace.
                         crate::log("Network: Handle is CLAIMED by another device (fold-verified different identity)");
                         #[cfg(feature = "development")]
                         {
-                            // Dump the chain's identity binding so a Cloudflare KV read-lag serving a
-                            // pre-wipe chain is catchable: a stale chain shows the OLD genesis identity
-                            // and op set even though the handle was wiped.
+                            // Dump the chain's identity binding so a Cloudflare KV read-lag serving a pre-wipe chain is catchable: a stale chain shows the OLD genesis identity and op set even though the handle was wiped.
                             if let Ok(Some(blob)) =
                                 crate::network::fgtw::fleet::fetch(&handle_proof)
                             {
@@ -845,9 +823,7 @@ impl HandleQuery {
                             }
                         }
                         // The `AlreadyAttested` payload is a peer record for the consumer's display.
-                        // If the (unverified) peer echo carried one, pass it; if not, the takeover is
-                        // still chain-proven but we have no concrete peer to show — surface as a
-                        // (retryable) error rather than fabricate a record or panic on an empty list.
+                        // If the (unverified) peer echo carried one, pass it; if not, the takeover is still chain-proven but we have no concrete peer to show — surface as a (retryable) error rather than fabricate a record or panic on an empty list.
                         match result.peers.first() {
                             Some(peer) => QueryResult::AlreadyAttested(peer.clone()),
                             None => {

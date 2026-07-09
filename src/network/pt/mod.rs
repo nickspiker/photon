@@ -601,9 +601,7 @@ impl PTManager {
 
             // SPEC retry with exponential backoff
             if transfer.spec_needs_retry() {
-                // After 1s, also try TCP in parallel — but send the WHOLE VSF over TCP exactly
-                // once (not the SPEC shard, and not every retry). TCP is the reliable fallback;
-                // UDP sharding stays preferred and keeps going in parallel until one path ACKs.
+                // After 1s, also try TCP in parallel — but send the WHOLE VSF over TCP exactly once (not the SPEC shard, and not every retry). TCP is the reliable fallback; UDP sharding stays preferred and keeps going in parallel until one path ACKs.
                 let tcp_eligible = transfer.tcp_eligible();
                 let tcp_payload = if tcp_eligible && !transfer.tcp_sent {
                     transfer.set_spec_tcp_fallback();

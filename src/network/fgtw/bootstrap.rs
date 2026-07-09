@@ -5,9 +5,7 @@ use vsf::{schema::FromVsfType, VsfSection};
 
 const FGTW_URL: &str = "https://fgtw.org";
 
-/// Result of a bootstrap query. `peers` carries whatever records parsed successfully; a malformed
-/// record is skipped (not fatal) rather than aborting the whole list, and a transport/decode-level
-/// failure is reported in `error` while still returning any peers already recovered.
+/// Result of a bootstrap query. `peers` carries whatever records parsed successfully; a malformed record is skipped (not fatal) rather than aborting the whole list, and a transport/decode-level failure is reported in `error` while still returning any peers already recovered.
 #[derive(Debug)]
 pub struct BootstrapResult {
     pub peers: Vec<PeerRecord>,
@@ -45,9 +43,7 @@ fn format_http_error_from_bytes(step: &str, status: reqwest::StatusCode, body: &
     }
 }
 
-/// Turn a worker `error`-frame `(reason, detail)` into a short user-facing message. The worker now
-/// answers every failure this way at HTTP 200; the `detail` string is already plain (no web-stack
-/// jargon), so surface it verbatim, keeping the operation `step` for context.
+/// Turn a worker `error`-frame `(reason, detail)` into a short user-facing message. The worker now answers every failure this way at HTTP 200; the `detail` string is already plain (no web-stack jargon), so surface it verbatim, keeping the operation `step` for context.
 fn reason_error(step: &str, reason: &str, detail: &str) -> String {
     if detail.is_empty() {
         format!("FGTW rejected {step} ({reason})")
@@ -182,9 +178,7 @@ async fn load_bootstrap_peers_inner(
         "announce",
     ));
 
-    // App-level failure first: the worker answers every failure with a VSF `error` frame at HTTP 200
-    // (`not_fleet_member`, `bad_signature`, …). Fall back to the legacy VSF-error / transport phrasing
-    // only if it isn't one of the new reason frames.
+    // App-level failure first: the worker answers every failure with a VSF `error` frame at HTTP 200 (`not_fleet_member`, `bad_signature`, …). Fall back to the legacy VSF-error / transport phrasing only if it isn't one of the new reason frames.
     if let Some((reason, detail)) = fgtw::client::error_frame(&response_bytes) {
         return Err(reason_error("announce", &reason, &detail));
     }
@@ -425,9 +419,7 @@ fn parse_peer_list(bytes: &[u8], device_key: &Keypair) -> Result<Vec<PeerRecord>
         .map_err(|e| format!("Parse peers section: {}", e))?;
 
     // 9. Get all peer fields and convert to PeerRecords.
-    // Per-record skip: one malformed record must NOT abort the whole peer list — a single bad entry
-    // used to `?`-bail here, leaving the requester with zero peers (so it never dialled anyone and
-    // presence went one-way). Skip the bad record loudly and keep the rest.
+    // Per-record skip: one malformed record must NOT abort the whole peer list — a single bad entry used to `?`-bail here, leaving the requester with zero peers (so it never dialled anyone and presence went one-way). Skip the bad record loudly and keep the rest.
     let peer_fields = peers_section.get_fields("peer");
     let mut peers = Vec::new();
     for (idx, field) in peer_fields.into_iter().enumerate() {
