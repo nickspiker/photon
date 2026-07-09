@@ -13,7 +13,7 @@ pub const APP: kete::App<'static> = kete::App {
 };
 
 #[cfg(target_os = "android")]
-pub use kete::set_android_vault_dirs;
+pub use kete::{android_vault_dirs, set_android_vault_dirs};
 
 /// The canonical vault address for a logical entry: `blake3_kdf("photon.storage.entry.v0", domain || scope)`.
 ///
