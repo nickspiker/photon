@@ -5043,6 +5043,26 @@ impl PhotonApp {
         let ci = contact_idx;
         let text = text.to_string();
 
+        // Notes-to-self: no peer, no chains, no network — the message is delivered by definition (we already hold it). Insert the bubble + persist to the self conversation table (keyed off handle_hash like every conversation, so fleet history sync later carries it across our devices). Without this branch the send dead-ended at the missing friendship chain while submit_message cleared the box anyway — typed notes vanished. Probes never target self (maybe_send_chain_probe guard), so suppress_bubble can't arrive true here.
+        let is_self = self.session.as_ref().map(|s| s.identity_seed)
+            == self.contacts.get(ci).map(|c| c.handle_hash);
+        if is_self {
+            let Some(contact) = self.contacts.get_mut(ci) else {
+                return false;
+            };
+            let mut msg =
+                ChatMessage::new_with_timestamp(text, true, vsf::eagle_time_oscillations());
+            msg.delivered = true;
+            contact.insert_message_sorted(msg);
+            contact.message_scroll_offset = 0.0;
+            if let Some(storage) = self.storage.as_ref() {
+                if let Err(e) = crate::storage::contacts::save_messages(contact, storage) {
+                    crate::log(&format!("STORAGE: failed to save self-note: {}", e));
+                }
+            }
+            return true;
+        }
+
         // Contact must be CLUTCH-Complete with a friendship chain.
         let (friendship_id, recipient_pubkey, addr_pair, our_handle_hash) = {
             let Some(contact) = self.contacts.get(ci) else {
