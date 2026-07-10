@@ -1,6 +1,6 @@
 // PHOTON SOURCE MAP — one readable line per file. Keep updated when files or major pub items change.
 //
-// lib.rs   — constants (PHOTON_PORT=4383, PHOTON_PORT_FALLBACK=3546, MULTICAST_PORT=4384, OSC_PER_SEC, PEER_EXPIRY_OSC=7d, KBUCKET_STALE_OSC=1h), always-on VSF logging sink (16 MiB + jittered 24–48h caps, name-scrubbed), and helpers: init_logging/log/log_at/clear_log/install_log_bridge, fp(public_id) (non-PII log label), jitter/jitter_dur (anti-thundering-herd 50–100% pad), module re-exports.
+// lib.rs   — constants (PHOTON_PORT=4383, PHOTON_PORT_FALLBACK=3546, MULTICAST_PORT=4384, OSC_PER_SEC, PEER_EXPIRY_OSC=7d, KBUCKET_STALE_OSC=1h), always-on VSF logging sink (16 MiB + jittered 24–48h caps, name-scrubbed), and helpers: init_logging/log/log_at/clear_log/snapshot_log_bytes/install_log_bridge, fp(public_id) (non-PII log label), jitter/jitter_dur (anti-thundering-herd 50–100% pad), module re-exports.
 // main.rs  — winit event loop, window creation, tokio async runtime.
 //
 // crypto/
@@ -118,6 +118,44 @@ pub fn fp(public_id: &[u8]) -> String {
     hex::encode(&public_id[..public_id.len().min(4)])
 }
 
+/// The log-submission encryption key: a ChaCha20-Poly1305 key derived from the identity seed ALONE — deliberately NOT folding in device_secret.
+/// The identity seed is deterministic from the handle, so anyone who knows the handle (the admin, handed one by a peer with a support request) can re-derive this key and open that peer's submitted log — while anyone who merely grabs the R2 ciphertext, not knowing whose it is, cannot. This is the whole "decryptable if you know the identity seed" property: the log is sealed on the client with this key before it ever leaves the device, so no plaintext hits the wire.
+pub fn log_encryption_key(identity_seed: &[u8; 32]) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(identity_seed);
+    hasher.update(b"photon.log.v0");
+    *hasher.finalize().as_bytes()
+}
+
+/// The log RETRIEVAL tag: `spaghettify("photon_log_v1" ‖ identity_seed)`.
+/// A submitted log is stored on FGTW under this tag, and pulled by presenting it — so the tag is a *capability* derived one-way from the identity seed (which is deterministic from the handle). Whoever knows the seed can both FIND (this tag) and DECRYPT ([`log_encryption_key`]) the logs; whoever doesn't sees only opaque tags over ciphertext. spaghettify (not BLAKE3) matches the stack's one-way primitive and keeps the seed unrecoverable from the tag; the tag is what travels to the server, never the seed. Distinct domain tag from the encryption key so the two derivations can't collide.
+pub fn log_retrieval_tag(identity_seed: &[u8; 32]) -> [u8; 32] {
+    let mut input = Vec::with_capacity(13 + 32);
+    input.extend_from_slice(b"photon_log_v1");
+    input.extend_from_slice(identity_seed);
+    ihi::spaghettify(&input)
+}
+
+#[cfg(test)]
+mod log_seal_tests {
+    use super::*;
+
+    #[test]
+    fn seal_roundtrips_no_plaintext_and_rejects_wrong_seed() {
+        let seed = [7u8; 32];
+        let log = b"INFO  FGTW: announce port=4383 ip=redacted".as_slice();
+        let key = log_encryption_key(&seed);
+        let sealed = storage::encrypt_bytes(log, &key).unwrap();
+        // No plaintext on the wire: the ciphertext must not contain the log bytes.
+        assert!(!sealed.windows(log.len()).any(|w| w == log));
+        // The right seed opens it.
+        assert_eq!(storage::decrypt_bytes(&sealed, &key).unwrap(), log);
+        // A different seed derives a different key → AEAD auth failure, never a wrong plaintext.
+        let wrong = log_encryption_key(&[8u8; 32]);
+        assert!(storage::decrypt_bytes(&sealed, &wrong).is_err());
+    }
+}
+
 /// Stochastic pad for ANY periodic timer or age threshold: `base` scaled by a fresh random factor in [0.5, 1.0].
 /// Re-roll on every use. A fixed interval makes every client (and every subsystem) wake on the same tick — a routine timer becomes a synchronised network cascade (the thundering herd), e.g. everyone re-announcing exactly on the hour. Jittering each period spreads the load and makes accidental alignment vanishingly unlikely; the cost is a fuzzy deadline, which time-based housekeeping never needs exact.
 pub fn jitter(base: i64) -> i64 {
@@ -139,6 +177,11 @@ pub fn log_at(_level: LogLevel, _msg: &str) {}
 #[cfg(not(feature = "logging"))]
 #[inline(always)]
 pub fn clear_log() {}
+#[cfg(not(feature = "logging"))]
+#[inline(always)]
+pub fn snapshot_log_bytes() -> Option<Vec<u8>> {
+    None
+}
 
 // The structured VSF log sink: one COMPLETE VSF record per line — {creation_time (Eagle), section "log" {lvl, msg}} — appended to `<photon_config_dir>/photon.log.vsf` on EVERY platform (Android: app filesDir, pullable via `adb pull`; desktop/Windows: the config dir). The log is thus a stream of self-describing, Eagle-time-stamped, vsfinfo-inspectable records; read it with the `photonlog` bin. Opens lazily and RETRIES until the dir is ready — a plain Mutex<Option<File>>, NOT a OnceLock, precisely so a pre-data-dir failure isn't cached forever (the first few JNI lines predate Android's data_dir and land in the console sink only).
 // Known filename (logging is a dev-build feature, so adb-pull discoverability beats filename privacy).
@@ -363,6 +406,14 @@ pub fn clear_log() {
         LOG_BYTES.store(0, std::sync::atomic::Ordering::Relaxed);
         LOG_OLDEST_OSC.store(i64::MAX, std::sync::atomic::Ordering::Relaxed);
     }
+}
+
+/// Reads the current on-disk `photon.log.vsf` as raw bytes for submission (the "Submit" diagnostic action).
+/// A plain file read — records are written unbuffered per line, so the on-disk content is already current; no writer flush needed. `None` if the log hasn't opened yet (pre-data-dir) or can't be read.
+#[cfg(feature = "logging")]
+pub fn snapshot_log_bytes() -> Option<Vec<u8>> {
+    let path = log_dir()?.join("photon.log.vsf");
+    std::fs::read(&path).ok().filter(|b| !b.is_empty())
 }
 
 #[cfg(all(test, feature = "logging"))]

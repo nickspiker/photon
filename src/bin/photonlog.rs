@@ -9,8 +9,12 @@
 //!   -l, --level LEVEL   only records at this severity or higher (TRACE|DEBUG|INFO|WARN|ERROR, or 0..4)
 //!   -g, --grep SUBSTR   only records whose message contains SUBSTR (case-insensitive)
 //!   -f, --follow        keep reading as new records are appended (tail -f); survives the 16 MiB rotation
+//!   -p, --pull          fetch this identity's SUBMITTED logs straight from FGTW (needs --handle or --seed), decrypt, and decode — no manual R2 wrangling. The seed derives both the retrieval tag (to find them) and the key (to open them).
+//!   -H, --handle NAME   the peer's handle. Derives their identity seed on the spot (cheap) — the friendly way to identify whose logs to pull. Use this; --seed is the raw-bytes escape hatch.
+//!   -s, --seed HEX64    the peer's 32-byte identity seed directly (deterministic from their handle). Equivalent to --handle but pre-derived.
+//!   -k, --key  HEX64    like --seed for local decrypt but you already hold the raw 32-byte log key (skips the seed→key derivation; can't --pull).
 //!
-//! Examples: `photonlog -l warn` · `photonlog -f -g FGTW` · `photonlog phone.log.vsf -l error`.
+//! Examples: `photonlog -l warn` · `photonlog --pull --handle alice -l warn` · `photonlog --pull --seed <64hex>` · `photonlog her-blob.vsf --handle alice`.
 
 use std::io::Read;
 use vsf::file_format::{VsfHeader, VsfSection};
@@ -110,16 +114,49 @@ fn read_all(path: &str) -> std::io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
+/// Parse a 64-char hex string into a 32-byte array (identity seed or raw log key).
+fn parse_hex32(s: &str) -> Option<[u8; 32]> {
+    let v = (0..s.len()).step_by(2).map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok()).collect::<Option<Vec<u8>>>()?;
+    v.try_into().ok()
+}
+
 fn main() {
     let mut path: Option<String> = None;
     let mut min_level = 0u64;
     let mut grep: Option<String> = None;
     let mut follow = false;
+    // Decrypt / pull key material. `seed` (the identity seed) drives BOTH the retrieval tag (find) and the log key (decrypt); `raw_key` is the log key alone (decrypt a local blob only, can't pull).
+    let mut seed: Option<[u8; 32]> = None;
+    let mut raw_key: Option<[u8; 32]> = None;
+    let mut pull = false;
 
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
             "-f" | "--follow" => follow = true,
+            "-p" | "--pull" => pull = true,
+            "-H" | "--handle" => match args.next() {
+                // The friendly path: derive the identity seed straight from the handle (cheap — ihi::handle_to_hash, NOT the memory-hard proof), using photon's exact canonicalization so it matches the submitter's seed.
+                Some(h) => seed = Some(photon_messenger::storage::contacts::derive_identity_seed(&h)),
+                None => {
+                    eprintln!("photonlog: --handle needs the handle string");
+                    std::process::exit(2);
+                }
+            },
+            "-s" | "--seed" => match args.next().as_deref().and_then(parse_hex32) {
+                Some(s) => seed = Some(s),
+                None => {
+                    eprintln!("photonlog: --seed needs 64 hex chars (the 32-byte identity seed)");
+                    std::process::exit(2);
+                }
+            },
+            "-k" | "--key" => match args.next().as_deref().and_then(parse_hex32) {
+                Some(k) => raw_key = Some(k),
+                None => {
+                    eprintln!("photonlog: --key needs 64 hex chars (the 32-byte log key)");
+                    std::process::exit(2);
+                }
+            },
             "-l" | "--level" => match args.next().and_then(|v| level_from_arg(&v)) {
                 Some(n) => min_level = n,
                 None => {
@@ -141,8 +178,48 @@ fn main() {
             other => path = Some(other.to_string()),
         }
     }
-    let path = path.unwrap_or_else(|| "photon.log.vsf".to_string());
     let filter = Filter { min_level, grep };
+
+    // Pull mode: fetch this identity's submitted logs straight from FGTW, decrypt, and decode — no manual R2 wrangling. The seed derives the retrieval tag (to find them) and the log key (to open them); knowledge of the seed IS the whole capability.
+    if pull {
+        let Some(seed) = seed else {
+            eprintln!("photonlog: --pull needs --handle <name> (or --seed <64hex>) to identify whose logs to fetch");
+            std::process::exit(2);
+        };
+        let tag = photon_messenger::log_retrieval_tag(&seed);
+        let key = photon_messenger::log_encryption_key(&seed);
+        use photon_messenger::network::fgtw::{log_get_blocking, log_list_blocking};
+        let keys = match log_list_blocking(&tag) {
+            Ok(k) => k,
+            Err(e) => {
+                eprintln!("photonlog: log_list failed: {e}");
+                std::process::exit(1);
+            }
+        };
+        if keys.is_empty() {
+            eprintln!("photonlog: no submitted logs for that identity (tag {})", hex::encode(&tag[..6]));
+            return;
+        }
+        eprintln!("photonlog: {} submitted log(s) for tag {}", keys.len(), hex::encode(&tag[..6]));
+        for k in &keys {
+            match log_get_blocking(k) {
+                Ok(ct) => match photon_messenger::storage::decrypt_bytes(&ct, &key) {
+                    Ok(plain) => {
+                        println!("\n── {k} ──");
+                        print_records(&plain, &filter);
+                    }
+                    Err(e) => eprintln!("photonlog: {k}: decrypt failed ({e})"),
+                },
+                Err(e) => eprintln!("photonlog: {k}: fetch failed ({e})"),
+            }
+        }
+        return;
+    }
+
+    // Decrypt key for a LOCAL sealed blob: the raw log key if given, else derived from the seed.
+    let log_key: Option<[u8; 32]> = raw_key.or_else(|| seed.as_ref().map(photon_messenger::log_encryption_key));
+
+    let path = path.unwrap_or_else(|| "photon.log.vsf".to_string());
 
     let bytes = match read_all(&path) {
         Ok(b) => b,
@@ -151,6 +228,21 @@ fn main() {
             std::process::exit(1);
         }
     };
+
+    // A sealed (submitted) log is ChaCha20-Poly1305 ciphertext, not a VSF record stream — decrypt it to the plaintext log before decoding. Follow mode is meaningless for a static blob, so a decrypt is always a single decode.
+    let bytes = if let Some(key) = log_key {
+        follow = false;
+        match photon_messenger::storage::decrypt_bytes(&bytes, &key) {
+            Ok(plain) => plain,
+            Err(e) => {
+                eprintln!("photonlog: decrypt failed ({e}) — wrong seed/key for this log?");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        bytes
+    };
+
     let mut consumed = print_records(&bytes, &filter);
 
     if !follow {
