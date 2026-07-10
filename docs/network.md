@@ -1,4 +1,4 @@
-# NETWORK.md - Photon Network Architecture
+# network.md - Photon Network Architecture
 
 ## Transport Stack
 

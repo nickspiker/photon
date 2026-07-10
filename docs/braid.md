@@ -5,7 +5,7 @@
 **Status:** Draft — §1–§13 reflect the shipped friend-facing plane (commit 9bf1193). §0.2 + §14 add the fleet-internal multi-writer plane (design, pre-implementation).
 **License:** MIT OR Apache-2.0
 **Date:** June 2026 (supersedes CHAIN v0.0, December 2025)
-**Dependency:** Requires a completed CLUTCH ceremony (see CLUTCH.md)
+**Dependency:** Requires a completed CLUTCH ceremony (see clutch.md)
 **Crypto primitives:** `spaghettify` and `smear_hash` are provided by the `ihi` crate (not defined locally)
 
 ---

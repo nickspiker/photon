@@ -1,4 +1,4 @@
-//! The braid: rolling-chain encryption for messages (post-CLUTCH). See docs/BRAID.md.
+//! The braid: rolling-chain encryption for messages (post-CLUTCH). See docs/braid.md.
 //!
 //! 512-link Chain (16KB):
 //! - Links [0..256) = history (zeros initially, fills as chain advances)
@@ -46,7 +46,7 @@ pub type Result<T> = std::result::Result<T, ChainError>;
 
 // ============================================================================
 
-// // Constants from docs/BRAID.md Appendix A ============================================================================
+// // Constants from docs/braid.md Appendix A ============================================================================
 /// Total links in a chain (512 × 32B = 16KB)
 pub const CHAIN_LINKS: usize = 512;
 
@@ -166,7 +166,7 @@ impl Chain {
 
     /// Advance the chain after ACK confirmation.
     ///
-    /// Algorithm (from docs/BRAID.md §7.1):
+    /// Algorithm (from docs/braid.md §7.1):
     /// 1. Left-shift all links (oldest history at [0] drops off)
     /// 2. Old [256] (oldest active) becomes [255] (newest history)
     /// 3. Derive new link at [511] via spaghettify
