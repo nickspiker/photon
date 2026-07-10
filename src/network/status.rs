@@ -55,7 +55,7 @@ pub struct PingRequest {
     pub punch_candidates: Vec<SocketAddr>,
 }
 
-// NOTE: ClutchRequest and ClutchRequestType REMOVED Full 8-primitive CLUTCH uses ClutchOfferRequest and ClutchKemResponseRequest which are handled via build_clutch_offer_vsf() and build_clutch_kem_response_vsf() See docs/CLUTCH.md Section 4.2 for the slot-based ceremony protocol.
+// NOTE: ClutchRequest and ClutchRequestType REMOVED Full 8-primitive CLUTCH uses ClutchOfferRequest and ClutchKemResponseRequest which are handled via build_clutch_offer_vsf() and build_clutch_kem_response_vsf() See docs/clutch.md Section 4.2 for the slot-based ceremony protocol.
 
 /// Request to send an encrypted message (CHAIN format)
 #[derive(Clone)]
@@ -188,7 +188,7 @@ pub enum StatusUpdate {
         /// Sync records from pong: (conversation_token, last_received_ef6) Tells us which messages the peer has received, for retransmit logic
         sync_records: Vec<SyncRecord>,
     },
-    // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete REMOVED Full 8-primitive CLUTCH uses ClutchOfferReceived and ClutchKemResponseReceived See docs/CLUTCH.md Section 4.2 for the slot-based ceremony protocol.
+    // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete REMOVED Full 8-primitive CLUTCH uses ClutchOfferReceived and ClutchKemResponseReceived See docs/clutch.md Section 4.2 for the slot-based ceremony protocol.
     /// Encrypted chat message received (CHAIN format)
     ChatMessage {
         /// Privacy-preserving conversation token (smear_hash of sorted participant seeds)
@@ -1797,7 +1797,7 @@ async fn run_checker(
                                     );
                                 }
 
-                                // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete handlers REMOVED Full 8-primitive CLUTCH uses TCP with ClutchOfferReceived and ClutchKemResponseReceived See docs/CLUTCH.md Section 4.2 for the slot-based ceremony protocol.
+                                // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete handlers REMOVED Full 8-primitive CLUTCH uses TCP with ClutchOfferReceived and ClutchKemResponseReceived See docs/clutch.md Section 4.2 for the slot-based ceremony protocol.
                                 FgtwMessage::ChatMessage {
                                     timestamp,
                                     conversation_token,

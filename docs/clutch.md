@@ -1,7 +1,7 @@
-# CLUTCH Protocol Specification v3.0
+# Clutch Protocol Specification v3.0
 
-**Protocol:** CLUTCH (Device-Bound Parallel Key Ceremony)
-**Related:** BRAID.md (The Braid — post-CLUTCH rolling-chain encryption)
+**Protocol:** Clutch (Device-Bound Parallel Key Ceremony)
+**Related:** braid.md (The Braid — post-Clutch rolling-chain encryption)
 **Author:** Nick Spiker
 **Status:** Draft
 **License:** MIT OR Apache-2.0
@@ -11,9 +11,9 @@
 
 ## 0. Abstract
 
-CLUTCH is a one-time, device-bound key generation ceremony combining eight independent cryptographic primitives across diverse mathematical foundations into a single 256-byte shared seed. This seed bootstraps the braid (see BRAID.md) for text, voice, and video communication.
+Clutch is a one-time, device-bound key generation ceremony combining eight independent cryptographic primitives across diverse mathematical foundations into a single 256-byte shared seed. This seed bootstraps the braid (see braid.md) for text, voice, and video communication.
 
-CLUTCH is not a handshake protocol. It is a **key generation ceremony** performed once per relationship per device pair. Relationship seeds are encrypted at rest using the device's private key, ensuring seeds are difficult to extract even if storage is compromised. All subsequent communication uses the braid—successful decryption *is* authentication.
+Clutch is not a handshake protocol. It is a **key generation ceremony** performed once per relationship per device pair. Relationship seeds are encrypted at rest using the device's private key, ensuring seeds are difficult to extract even if storage is compromised. All subsequent communication uses the braid—successful decryption *is* authentication.
 
 ---
 
@@ -21,7 +21,7 @@ CLUTCH is not a handshake protocol. It is a **key generation ceremony** performe
 
 ### 1.0 Defense in Parallel
 
-Traditional cryptographic diversity uses fallback schemes—if one breaks, the system is compromised. CLUTCH instead **combines all schemes simultaneously**. An attacker must break every primitive to derive the shared seed. If any single primitive holds, the seed remains secure.
+Traditional cryptographic diversity uses fallback schemes—if one breaks, the system is compromised. Clutch instead **combines all schemes simultaneously**. An attacker must break every primitive to derive the shared seed. If any single primitive holds, the seed remains secure.
 
 ### 1.1 Pre-Shared Secret Integration
 
@@ -29,7 +29,7 @@ All parties know each other's handles before the ceremony. Handles are never tra
 
 ### 1.2 Self-Authenticating Communication
 
-After CLUTCH completes, no further handshakes or identity proofs are required. The braid state is known only to the two participants. Successful decryption proves possession of the chain state, which proves continuous participation since the ceremony. See BRAID.md for rolling encryption details.
+After clutch completes, no further handshakes or identity proofs are required. The braid state is known only to the two participants. Successful decryption proves possession of the chain state, which proves continuous participation since the ceremony. See braid.md for rolling encryption details.
 
 ### 1.3 Pure P2P with Optional Infrastructure
 
@@ -39,9 +39,9 @@ All communication is peer-to-peer UDP by default. No central servers. Optional i
 
 ## 2. Cryptographic Primitives
 
-### 2.0 Eight-Primitive CLUTCH Bundle
+### 2.0 Eight-Primitive Clutch Bundle
 
-CLUTCH employs eight key exchange primitives spanning four mathematical families:
+Clutch employs eight key exchange primitives spanning four mathematical families:
 
 | Family | Primitives | Combined Pubkey Size |
 |--------|------------|---------------------|
@@ -89,7 +89,7 @@ CLUTCH employs eight key exchange primitives spanning four mathematical families
 
 ### 2.5 Rolling Chain Primitives (per-message)
 
-See BRAID.md for full specification. Summary:
+See braid.md for full specification. Summary:
 
 | Primitive | Purpose | Family |
 |-----------|---------|--------|
@@ -99,7 +99,7 @@ See BRAID.md for full specification. Summary:
 | ChaCha20Rng | PRNG salt source 0 | CSPRNG |
 | Pcg64 | PRNG salt source 1 | Fast PRNG |
 
-**Total: 14 cryptographic elements** (8 in CLUTCH + 1 handle PSK + 5 in the braid)
+**Total: 14 cryptographic elements** (8 in clutch + 1 handle PSK + 5 in the braid)
 
 ### 2.6 Hardware-Attested Contextual KDF (HAC-KDF)
 
@@ -168,7 +168,7 @@ if watch.vote_revoke(phone) && car.vote_revoke(phone) {
 
 ### 3.0 Handle Definition
 
-A handle is a human-readable identifier cryptographically bound to a public key bundle containing all eight CLUTCH primitives. Handles are encoded using VSF (Versatile Storage Format).
+A handle is a human-readable identifier cryptographically bound to a public key bundle containing all eight clutch primitives. Handles are encoded using VSF (Versatile Storage Format).
 
 ### 3.1 Handle Properties
 
@@ -179,25 +179,25 @@ A handle is a human-readable identifier cryptographically bound to a public key 
 
 ### 3.2 Handle Identity Terms
 
-CLUTCH distinguishes between three levels of handle identity:
+Clutch distinguishes between three levels of handle identity:
 
 | Term | Formula | Visibility | Purpose |
 |------|---------|------------|---------|
 | **handle** | User-chosen text | Out-of-band only | Human reference |
-| **handle_hash** | `BLAKE3(handle)` | CLUTCH messages only | Private identity seed |
+| **handle_hash** | `BLAKE3(handle)` | clutch messages only | Private identity seed |
 | **handle_proof** | `memory_hard(handle_hash)` | Public (FGTW) | Anti-squatting, verification |
 
 **handle_hash** is the PRIVATE identity seed:
 - Computed instantly: `BLAKE3(VsfType::x(handle).flatten())`
 - Only known to parties who know the plaintext handle
-- Used for ceremony_id derivation and CLUTCH offer matching
-- Sent in CLUTCH messages but only matchable by contacts who know you
+- Used for ceremony_id derivation and clutch offer matching
+- Sent in clutch messages but only matchable by contacts who know you
 
 **handle_proof** is the PUBLIC identity:
 - Expensive to compute (~1 second memory-hard)
 - Announced to FGTW for presence/lookup
 - Anyone can verify by recomputing from handle
-- Not used in CLUTCH messages (too slow, public anyway)
+- Not used in clutch messages (too slow, public anyway)
 
 ### 3.3 Handle Proof Computation
 
@@ -237,7 +237,7 @@ pub fn handle_proof(handle_hash: &blake3::Hash) -> blake3::Hash {
 
 ### 3.4 Ceremony Identity (ceremony_id)
 
-The **ceremony_id** is a deterministic identifier for a specific CLUTCH ceremony between parties.
+The **ceremony_id** is a deterministic identifier for a specific clutch ceremony between parties.
 All parties compute the identical ceremony_id independently, enabling offer matching without
 prior coordination.
 
@@ -265,7 +265,7 @@ pub fn compute_ceremony_id(handle_hashes: &[[u8; 32]]) -> [u8; 32] {
 
 **Properties:**
 - **Deterministic:** Same parties → same ceremony_id (no negotiation needed)
-- **Scalable:** Works for 2+ party ceremonies (future group CLUTCH)
+- **Scalable:** Works for 2+ party ceremonies (future group clutch)
 - **MITM-resistant:** Memory-hard computation prevents brute-force matching
 - **Privacy-preserving:** ceremony_id reveals nothing about handles without prior knowledge
 
@@ -290,11 +290,11 @@ All parties compute identical ceremony_id independently from their shared knowle
 
 ---
 
-## 4. CLUTCH Ceremony
+## 4. Clutch Ceremony
 
 ### 4.0 Prerequisites
 
-Before CLUTCH:
+Before clutch:
 0. Alice knows Bob's handle (obtained out-of-band)
 1. Bob knows Alice's handle (obtained out-of-band)
 2. All parties have computed each other's handle_hash (from known handles)
@@ -302,7 +302,7 @@ Before CLUTCH:
 
 ### 4.1 Slot-Based Ceremony (No Initiator)
 
-There is no "initiator" in CLUTCH. The ceremony has N slots (one per handle_hash in sorted order).
+There is no "initiator" in clutch. The ceremony has N slots (one per handle_hash in sorted order).
 Each party fills their slot when ready. Order of arrival doesn't matter—ceremony completes
 when all slots are filled.
 
@@ -323,7 +323,7 @@ struct PartyMaterial {
 
 ### 4.2 Message Exchange (TCP + PT/UDP)
 
-CLUTCH uses **organic slot-filling** where parties generate and broadcast ephemeral keys
+Clutch uses **organic slot-filling** where parties generate and broadcast ephemeral keys
 whenever ready. No coordination, no initiator, no linear flow. All parties' ephemeral
 pubkeys contribute entropy to the final seed.
 
@@ -370,7 +370,7 @@ or have asymmetric network conditions. The ceremony state is just a set of slots
 VSF-formatted message with Ed25519 signature:
 
 ```rust
-// VSF section: "clutch_full_offer"
+// VSF section: "Clutch_full_offer"
 // Header provenance (hp): ceremony_id
 struct ClutchFullOffer {
     // Sorted list of all handle_hashes in ceremony (1 to N parties)
@@ -398,7 +398,7 @@ A ceremony only proceeds if every party knows every other party's handle.
 After receiving all other parties' offers, encapsulate to each party's public keys:
 
 ```rust
-// VSF section: "clutch_kem_response"
+// VSF section: "Clutch_kem_response"
 // Header provenance (hp): ceremony_id (must match offers)
 struct ClutchKemResponse {
     handle_hashes: Vec<[u8; 32]>,  // v(b'h') - same sorted list
@@ -441,13 +441,13 @@ struct PairwiseSecrets {
     mceliece: [u8; 32],
 }
 
-fn derive_clutch_seed(
+fn derive_Clutch_seed(
     handle_hashes: &[[u8; 32]],           // All parties, sorted
     ephemeral_pubkeys: &[[u8; 32]],       // All X25519 pubkeys, sorted by handle_hash
     pairwise_secrets: &[PairwiseSecrets], // Our secrets with each other party
 ) -> [u8; 256] {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"CLUTCH_v3_nparty");
+    hasher.update(b"Clutch_v3_nparty");
 
     // All handle_hashes (already sorted)
     for hash in handle_hashes {
@@ -509,7 +509,7 @@ know the plaintext handle (the out-of-band shared secret).
 
 ## 5. Post-Ceremony: CHAIN Protocol
 
-After CLUTCH ceremony completes successfully, each party has identical 256-byte seeds. All subsequent communication uses the braid (see **BRAID.md** for full specification).
+After clutch ceremony completes successfully, each party has identical 256-byte seeds. All subsequent communication uses the braid (see **braid.md** for full specification).
 
 **Summary:**
 - Rolling chain state advances with every message (forward secrecy)
@@ -627,7 +627,7 @@ async fn handle_ip_update(req: Request, env: Env) -> Result<Response> {
 **Security properties:**
 - FGTW learns: Which devices are in call, their IPs, timing
 - FGTW cannot: Read content, impersonate devices, link device to user
-- Device pubkeys are ephemeral per-CLUTCH (not persistent identity)
+- Device pubkeys are ephemeral per-Clutch (not persistent identity)
 - User explicitly consents to metadata tradeoff
 - Fallback: If FGTW unavailable, call drops (same as default behavior)
 
@@ -656,7 +656,7 @@ EncryptedMessage (VSF):
 
 An attacker must compromise **ALL** of:
 
-**Layer 0: CLUTCH Seed**
+**Layer 0: Clutch Seed**
 - Break all 8 primitives simultaneously:
   - X25519 (Curve25519 ECDLP)
   - ECDH-P384 (P-384 ECDLP)  
@@ -688,12 +688,12 @@ An attacker must compromise **ALL** of:
 **Layer 4: Network Position**
 - Intercept P2P UDP traffic (no central server to compromise)
 
-**Total: Minimum 3 independent compromises required** (CLUTCH + chain + network position)
+**Total: Minimum 3 independent compromises required** (Clutch + chain + network position)
 
 ### 8.1 Primitives Summary
 
 **Foundation (one-time ceremony):**
-- 8 key exchange primitives (CLUTCH bundle)
+- 8 key exchange primitives (Clutch bundle)
 - Plaintext handles as pre-shared secret (user types "Joe Walker", we hash it)
 
 **Ongoing (per-message):**
@@ -703,7 +703,7 @@ An attacker must compromise **ALL** of:
 - ChaCha20Rng (PRNG salt source 0)
 - Pcg64 (PRNG salt source 1)
 
-**Total: 14 cryptographic elements** (8 CLUTCH + 1 handle PSK + 5 CHAIN)
+**Total: 14 cryptographic elements** (8 clutch + 1 handle PSK + 5 CHAIN)
 
 ### 8.2 Known Limitations
 
@@ -724,7 +724,7 @@ An attacker must compromise **ALL** of:
 
 | Operation | Target | Actual |
 |-----------|--------|--------|
-| CLUTCH ceremony | <500ms | 100-5,000ms |
+| Clutch ceremony | <500ms | 100-5,000ms |
 | Handle proof generation | ~1s | ~1s (17 rounds, 24MB) |
 | L1 scratch generation | <10ms | 1-100ms (3 rounds, 32KB) |
 | Message encryption | =0ms | =0ms (XOR with precomputed pad) |
@@ -738,17 +738,17 @@ An attacker must compromise **ALL** of:
 ## 10. Implementation Status
 
 **Working:**
-- ✅ Full 8-primitive CLUTCH ceremony (all algorithms)
+- ✅ Full 8-primitive clutch ceremony (all algorithms)
 - ✅ ClutchFullOffer VSF messages (~550KB with all pubkeys)
 - ✅ ClutchKemResponse VSF messages (~31KB with ciphertexts)
 - ✅ Contact matching by handle_hash (PRIVATE identity)
 - ✅ PT (Photon Transport) for reliable large transfers
-- ✅ TCP fallback for CLUTCH messages
+- ✅ TCP fallback for clutch messages
 - ✅ Rolling chain encryption (text messages)
 - ✅ L1 memory-hard scratch
 - ✅ P2P UDP communication
 - ✅ One-frame UI load
-- ✅ CLUTCH state persistence (Complete state survives app restart)
+- ✅ Clutch state persistence (Complete state survives app restart)
 - ✅ Keygen race condition guard (prevents parallel keypair generation)
 
 **Needs Migration (wire format uses 2-party lower/higher, should use N-party handle_hashes vector):**
