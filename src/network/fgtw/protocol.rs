@@ -68,10 +68,10 @@ pub enum FgtwMessage {
         /// The source address the responder observed this pong's ping arriving from — i.e. the requester's reflexive (public) address on the live UDP data socket. `None` from legacy peers. This is the peer-echoed STUN primitive: a node learns its own public address from any node whose pong it receives (see the traversal plan, P0), on the exact socket the data flows over — unlike fgtw.org's `cf-connecting-ip`, which only sees the TLS flow and is thus cone-NAT-only.
         observed_addr: Option<SocketAddr>,
     },
-    // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete REMOVED Full 8-primitive CLUTCH uses ClutchOffer and ClutchKemResponse which are handled via build_clutch_offer_vsf() and parse_clutch_offer_vsf() See CLUTCH.md Section 4.2 for the slot-based ceremony protocol.
+    // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete REMOVED Full 8-primitive CLUTCH uses ClutchOffer and ClutchKemResponse which are handled via build_clutch_offer_vsf() and parse_clutch_offer_vsf() See docs/CLUTCH.md Section 4.2 for the slot-based ceremony protocol.
     /// Encrypted chat message
     ///
-    /// Format: section "msg" with encrypted payload per BRAID.md §9 (wire format)
+    /// Format: section "msg" with encrypted payload per docs/BRAID.md §9 (wire format)
     /// - conversation_token: smear_hash(sorted participant identity seeds) - privacy-preserving
     /// - prev_msg_hp: hash chain link to previous message (or first_message_anchor)
     /// - ciphertext: encrypted [x(text), hM(confirm_smear)] section
@@ -86,7 +86,7 @@ pub enum FgtwMessage {
     },
     /// Message acknowledgment
     ///
-    /// Confirms receipt of a message by eagle_time (no sequence numbers). Per BRAID.md §9.2 (ACK):
+    /// Confirms receipt of a message by eagle_time (no sequence numbers). Per docs/BRAID.md §9.2 (ACK):
     /// - acked_eagle_time: which message we're ACKing (i64 oscillations from their header)
     /// - plaintext_hash: proves we decrypted correctly (BLAKE3 of decrypted content)
     MessageAck {
