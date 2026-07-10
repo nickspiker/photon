@@ -275,6 +275,135 @@ pub fn put_blob_blocking(
     Ok(())
 }
 
+/// Submits the on-device diagnostic log to FGTW (the "press log → it lands where the dev can pull it" flow).
+/// Sends POST / with VSF section "log_put": the log bytes + optional note + handle_proof + timestamp, the whole frame canonically signed by the device key (worker verifies via `read_verified`, so the log bytes are authenticated, not just a detached key). Storing on FGTW instead of on-device is deliberate for now — an outbound HTTPS POST is NAT-immune, so it works exactly where the P2P path is failing, and it needs no USB pull. The worker keys each submission by timestamp, so this ADDS to a device's log history rather than overwriting.
+pub fn put_log_blocking(
+    log_bytes: &[u8],
+    note: &str,
+    device_keypair: &Keypair,
+    handle_proof: &[u8; 32],
+    identity_seed: &[u8; 32],
+) -> Result<(), BlobError> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| BlobError::Network(format!("Failed to create HTTP client: {}", e)))?;
+
+    // Seal the log (and note) on the client BEFORE it leaves the device — ChaCha20-Poly1305 under a key derived from the identity seed, so no plaintext ever hits the wire and the R2 blob is opaque to anyone who can't re-derive the key from the handle. The `v'e'` encoding byte marks the value encrypted (VSF-proper); the worker stores the ciphertext verbatim.
+    let key = crate::log_encryption_key(identity_seed);
+    let sealed_log =
+        crate::storage::encrypt_bytes(log_bytes, &key).map_err(|e| BlobError::Network(format!("Log encrypt: {e}")))?;
+    // The retrieval tag is what indexes this log on the server: spaghettify(domain ‖ seed), a one-way capability. The worker stores under it; a puller who knows the seed re-derives it to find the log. The seed itself never leaves the device.
+    let tag = crate::log_retrieval_tag(identity_seed);
+    // Anti-spam gate: an explicit device-key signature over the tag (the worker verifies this, mirroring blob_put's signature-over-key — build_signed_blob_vsf's header signature is provenance-only and not read_verified-checkable).
+    let tag_signature = device_keypair.secret.sign(&tag);
+
+    let mut fields = vec![
+        (
+            "timestamp".to_string(),
+            VsfType::e(vsf::types::EtType::e6(vsf::eagle_time_oscillations())),
+        ),
+        ("handle_proof".to_string(), VsfType::hP(handle_proof.to_vec())),
+        ("tag".to_string(), VsfType::v(b'r', tag.to_vec())),
+        ("signature".to_string(), VsfType::ge(tag_signature.to_bytes().to_vec())),
+        ("data".to_string(), VsfType::v(b'e', sealed_log)),
+    ];
+    // The optional note rides only when the user typed one — a blank field is simply absent (the worker treats a missing note as "").
+    // Sealed under the same key as the log — the note can carry sensitive context too, so it never hits the wire in the clear either.
+    if !note.is_empty() {
+        let sealed_note =
+            crate::storage::encrypt_bytes(note.as_bytes(), &key).map_err(|e| BlobError::Network(format!("Note encrypt: {e}")))?;
+        fields.push(("note".to_string(), VsfType::v(b'e', sealed_note)));
+    }
+
+    let vsf_bytes = build_signed_blob_vsf(device_keypair, "log_put", fields)?;
+
+    let response = client
+        .post(FGTW_URL)
+        .header("Content-Type", "application/octet-stream")
+        .body(vsf_bytes)
+        .send()
+        .map_err(|e| BlobError::Network(format!("log_put request failed: {}", e)))?;
+
+    let status = response.status();
+    let body = response.bytes().unwrap_or_default();
+    if let Some((reason, detail)) = fgtw::client::error_frame(&body) {
+        return Err(BlobError::ServerError(format!("{reason}: {detail}")));
+    }
+    if !status.is_success() {
+        return Err(BlobError::ServerError(format!("transport {}", status)));
+    }
+    crate::log(&format!("FGTW: submitted diagnostic log ({} bytes)", log_bytes.len()));
+    Ok(())
+}
+
+/// List the submitted logs for a retrieval tag (the pull side of the capability).
+/// Sends `log_list { tag }`; the worker enumerates its `photon-logs/<tag>/` prefix and returns the object keys. Unsigned — presenting the tag (which only the seed-holder can derive) IS the capability, so no device signature is required. `tag` = [`crate::log_retrieval_tag`] of the target identity seed.
+pub fn log_list_blocking(tag: &[u8; 32]) -> Result<Vec<String>, BlobError> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| BlobError::Network(format!("Failed to create HTTP client: {}", e)))?;
+
+    let vsf_bytes = vsf::VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .add_section("log_list", vec![("tag".to_string(), VsfType::v(b'r', tag.to_vec()))])
+        .build()
+        .map_err(|e| BlobError::Network(format!("Build VSF: {}", e)))?;
+
+    let response = client
+        .post(FGTW_URL)
+        .header("Content-Type", "application/octet-stream")
+        .body(vsf_bytes)
+        .send()
+        .map_err(|e| BlobError::Network(format!("log_list request failed: {}", e)))?;
+    let bytes = response.bytes().unwrap_or_default();
+    if let Some((reason, detail)) = fgtw::client::error_frame(&bytes) {
+        return Err(BlobError::ServerError(format!("{reason}: {detail}")));
+    }
+    // Schema-validated parse (vsf trust gate): the worker returns the keys newline-joined in one `d` field.
+    let schema = vsf::schema::SectionSchema::new("log_list_ack")
+        .field("keys", vsf::schema::TypeConstraint::DictKey);
+    let section = vsf::schema::SectionBuilder::parse_document(schema, &bytes, None)
+        .map_err(|e| BlobError::Network(format!("Parse log_list_ack: {}", e)))?;
+    let joined = section.get_value::<String>("keys").unwrap_or_default();
+    Ok(joined.lines().filter(|l| !l.is_empty()).map(|l| l.to_string()).collect())
+}
+
+/// Fetch one submitted log blob (still ChaCha20-Poly1305 ciphertext) by its full storage key.
+/// Sends `log_get { key }`; the worker returns the stored bytes. The key contains the tag prefix, so possessing it is the capability. Caller decrypts with [`crate::log_encryption_key`] of the same seed.
+pub fn log_get_blocking(key: &str) -> Result<Vec<u8>, BlobError> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| BlobError::Network(format!("Failed to create HTTP client: {}", e)))?;
+
+    let vsf_bytes = vsf::VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .add_section("log_get", vec![("key".to_string(), VsfType::d(key.to_string()))])
+        .build()
+        .map_err(|e| BlobError::Network(format!("Build VSF: {}", e)))?;
+
+    let response = client
+        .post(FGTW_URL)
+        .header("Content-Type", "application/octet-stream")
+        .body(vsf_bytes)
+        .send()
+        .map_err(|e| BlobError::Network(format!("log_get request failed: {}", e)))?;
+    let bytes = response.bytes().unwrap_or_default();
+    if let Some((reason, detail)) = fgtw::client::error_frame(&bytes) {
+        return Err(BlobError::ServerError(format!("{reason}: {detail}")));
+    }
+    // Schema-validated parse (vsf trust gate): the response is `log_data { data: v'e' ciphertext }`.
+    let schema = vsf::schema::SectionSchema::new("log_data")
+        .field("data", vsf::schema::TypeConstraint::Wrapped(b'e'));
+    let section = vsf::schema::SectionBuilder::parse_document(schema, &bytes, None)
+        .map_err(|e| BlobError::Network(format!("Parse log_data: {}", e)))?;
+    section
+        .get_value::<Vec<u8>>("data")
+        .map_err(|e| BlobError::ServerError(format!("log_get data: {}", e)))
+}
+
 /// Download a blob from FGTW storage (blocking version)
 pub fn get_blob_blocking(storage_key: &str) -> Result<Option<Vec<u8>>, BlobError> {
     let client = reqwest::blocking::Client::builder()
@@ -393,4 +522,30 @@ pub async fn delete_blob(storage_key: &str, device_keypair: &Keypair) -> Result<
     }
     crate::log("FGTW: Deleted blob");
     Ok(())
+}
+
+#[cfg(test)]
+mod log_capability_tests {
+    use super::*;
+
+    // Network smoke test against the LIVE fgtw.org worker: submit a sealed log, then pull it back by the
+    // seed-derived tag and decrypt it. Run explicitly: `cargo test --features development -- --ignored roundtrip`.
+    #[test]
+    #[ignore]
+    fn roundtrip_submit_list_get_decrypt() {
+        let seed = [0x42u8; 32];
+        let kp = super::super::derive_device_keypair(b"photonlog-smoke-fingerprint");
+        let hp = [0x11u8; 32];
+        let payload = b"SMOKE photon.log capability roundtrip payload".to_vec();
+
+        put_log_blocking(&payload, "smoke note", &kp, &hp, &seed).expect("submit");
+
+        let tag = crate::log_retrieval_tag(&seed);
+        let keys = log_list_blocking(&tag).expect("list");
+        assert!(!keys.is_empty(), "no keys listed under the tag after submit");
+
+        let ct = log_get_blocking(&keys[0]).expect("get");
+        let plain = crate::storage::decrypt_bytes(&ct, &crate::log_encryption_key(&seed)).expect("decrypt");
+        assert_eq!(plain, payload, "decrypted log must match what was submitted");
+    }
 }

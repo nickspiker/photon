@@ -611,6 +611,9 @@ pub struct PhotonApp {
     /// Device REMOVE flow: results from the off-thread unbind + rotate (fleet client blocks on HTTP). Mirror of `add_device_rx/tx`.
     remove_device_rx: Option<std::sync::mpsc::Receiver<RemoveDeviceUpdate>>,
     remove_device_tx: Option<std::sync::mpsc::Sender<RemoveDeviceUpdate>>,
+    /// Diagnostics "Submit" flow: result of the off-thread log upload to FGTW (blocking HTTP over up to 16 MiB). `Ok(())` → "Log sent" toast; `Err` → the reason. Drained in tick.
+    log_submit_rx: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
+    log_submit_tx: Option<std::sync::mpsc::Sender<Result<(), String>>>,
     /// Stop flag for the NEW device's join thread — set true when the user cancels join mode so the thread quits re-posting its request (a zombie re-poster would race a later attempt for the inbox slot).
     add_stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Session-long fleet-event subscription (hub WebSocket): receiver of event kinds ("fstate" / "fleet") filtered to OUR identity. Drained in tick — fstate triggers a roster pull (a friend added on a sibling device appears here in ~a second), fleet triggers a key/membership sync. `None` until the first attest/resume succeeds.
@@ -799,6 +802,8 @@ impl PhotonApp {
             add_device_tx: None,
             remove_device_rx: None,
             remove_device_tx: None,
+            log_submit_rx: None,
+            log_submit_tx: None,
             add_stop: None,
             fleet_evt_rx: None,
             fleet_evt_stop: None,
@@ -1702,6 +1707,15 @@ impl FluorApp for PhotonApp {
                     .map(|c| c.hit_at(ctx.cursor_x, ctx.cursor_y))
                     .unwrap_or(HIT_NONE);
 
+                // Permanence interstitial ("Yes — forever"): a press ANYWHERE other than the attest button cancels back to the pre-proof Fresh state. Editing the handle already cancels; this makes a tap on empty space, the field, the orb — anything else — cancel too, so a stray tap can never corner the user into the forever-claim (on Android "click elsewhere" was otherwise swipe-up → home → long-press → switch away). The attest button press itself is the deliberate confirm, so it's excluded; we fall through afterwards so the tap still does its normal thing (focus the field, start a drag, open settings, …).
+                if matches!(self.state, AppState::Launch(LaunchState::Confirm)) {
+                    let attest_hit = self.attest_btn.as_ref().map(|b| b.hit_id()).unwrap_or(HIT_NONE);
+                    if hit_id != attest_hit {
+                        self.clear_launch_error();
+                        ctx.window.request_redraw();
+                    }
+                }
+
                 if hit_id == HIT_NONE {
                     // No widget under the cursor — clear focus, then fall back to resize-edge / title-bar drag. Resize edge takes precedence; clicks anywhere else inside the visible window start a move-drag (which the host promotes to an actual drag once the cursor passes the dead-zone threshold).
                     if self.change_focus(None) {
@@ -1849,6 +1863,29 @@ impl FluorApp for PhotonApp {
                                 // Slot 1 "Remove this device from fleet" (self-removal) is deferred.
                                 self.settings_shred_armed = false;
                                 crate::log("settings-stub: self-fleet-removal deferred");
+                            }
+                        } else if page == SettingsPage::Diagnostics {
+                            if slot == 0 {
+                                // "Clear" → wipe the on-device log; the next line reopens a fresh, empty file.
+                                crate::clear_log();
+                                self.ready_toast = Some("Log cleared".to_string());
+                            } else if slot == 1 {
+                                // "Snapshot" → a peek at the current log size (a cheap "there's something to send" confirmation; the durable copy now lives on FGTW after Submit, not a local freeze).
+                                match crate::snapshot_log_bytes() {
+                                    Some(b) => {
+                                        self.ready_toast =
+                                            Some(format!("Log: {} KiB", (b.len() + 1023) / 1024))
+                                    }
+                                    None => self.ready_toast = Some("Log is empty".to_string()),
+                                }
+                            } else if slot == 2 {
+                                // "Submit" → upload the log + optional note to FGTW (outbound HTTPS, NAT-immune — works where P2P is failing, no USB pull needed).
+                                let note: String = self
+                                    .settings_note_textbox
+                                    .as_ref()
+                                    .map(|tb| tb.chars.iter().collect())
+                                    .unwrap_or_default();
+                                self.spawn_log_submit(note);
                             }
                         } else {
                             crate::log(&format!(
@@ -2645,12 +2682,12 @@ impl FluorApp for PhotonApp {
                 let line_h = (tb_h * 0.45).min(buf_w as f32 / 22.0).max(10.0);
                 let cx = buf_w as f32 * 0.5;
                 let mut y = attest.attest.y1 as f32 + line_h * 1.6;
-                // Ownership binds to the HUMAN, not the hardware: the first person to attest owns the handle forever, while devices stay replaceable thru the fleet chain (remove the first device whenever, as long as another is added first). The warning must not mis-teach "this phone owns it".
+                // What's permanent is the IDENTITY, not the handle: a handle is a mutable label, but attesting mints crypto roots with no password / reset / recovery. Ownership binds to the HUMAN, not the hardware — the first person to attest owns that identity, while devices stay replaceable thru the fleet chain (remove the first device whenever, as long as another is added first). The warning must not mis-teach "this phone owns it" NOR "this name is a life sentence" — it's the identity behind it that can't be undone.
                 let lines: [(&str, u32); 5] = [
-                    ("A handle is a permanent claim.", ERROR_TEXT_COLOUR),
+                    ("This mints a permanent identity.", ERROR_TEXT_COLOUR),
                     ("No password. No reset. No recovery.", STATUS_TEXT_COLOUR),
                     ("The first human to attest owns it.", STATUS_TEXT_COLOUR),
-                    ("Devices can be replaced. The claim can't.", STATUS_TEXT_COLOUR),
+                    ("Devices can be replaced. The identity can't.", STATUS_TEXT_COLOUR),
                     ("Press again if you mean it.", STATUS_TEXT_COLOUR),
                 ];
                 for (line, colour) in lines {
@@ -3946,6 +3983,28 @@ impl FluorApp for PhotonApp {
 
         chrome.flatten_into(target, buf_w, buf_h, None);
 
+        // Development builds wear an amber-CRT skin so a debug build is never mistaken for a release one — text, buttons, chrome, all of it.
+        // A single post-composite pixel pass (direct pixel access, no floaters): every output pixel is remapped to an amber ramp with #FFA000 as the white point — full brightness → (255,160,0), greys → dimmer amber, black stays black.
+        // Scoped to this frame's damage bbox because the ramp isn't idempotent (it must touch each fresh pixel exactly once) and the host only presents that bbox anyway. Runs BEFORE the hit-mask overlay so `[]h`'s per-ID colours stay true.
+        #[cfg(feature = "development")]
+        if !ctx.damage.is_empty() {
+            let bb = ctx.damage.bbox();
+            let x_end = bb.x1.min(buf_w);
+            let y_end = bb.y1.min(buf_h);
+            for y in bb.y0..y_end {
+                let row = y * buf_w;
+                for x in bb.x0..x_end {
+                    let px = target[row + x];
+                    let r = (px >> 16) & 0xFF;
+                    let g = (px >> 8) & 0xFF;
+                    let b = px & 0xFF;
+                    // Rec.601-ish luminance (0..=255), then the amber ramp: R = L, G = L·160/255, B = 0.
+                    let l = (r * 77 + g * 150 + b * 29) >> 8;
+                    target[row + x] = 0xFF00_0000 | (l << 16) | ((l * 160 / 255) << 8);
+                }
+            }
+        }
+
         // Hit-mask overlay (`[]h`): replace every pixel with the opaque random colour for its hit_test_map ID. Drawn LAST over everything (including chrome + chord hint) — hit testing is per-final-pixel anyway, so the overlay shows exactly what `hit_at` would return. `.get` keeps the index lookup safe for any stale stamp at an unregistered high ID.
         if show_hitmask && !self.debug_hit_colours.is_empty() {
             let map = chrome.hit_test_map();
@@ -4195,6 +4254,30 @@ impl PhotonApp {
                     self.settings_remove_armed = None;
                     self.ready_toast = Some(format!("Remove failed: {e}"));
                     crate::log(&format!("FLEET: device remove failed: {e}"));
+                }
+            }
+            needs_redraw = true;
+        }
+
+        // Diagnostics log-submit results (off-thread FGTW upload).
+        let log_submit_updates: Vec<Result<(), String>> = self
+            .log_submit_rx
+            .as_ref()
+            .map(|rx| rx.try_iter().collect())
+            .unwrap_or_default();
+        for update in log_submit_updates {
+            match update {
+                Ok(()) => {
+                    self.ready_toast = Some("Log sent \u{221a}".to_string());
+                    // Clear the note once it's been submitted so the next submit starts blank.
+                    if let Some(tb) = self.settings_note_textbox.as_mut() {
+                        tb.chars.clear();
+                    }
+                    crate::log("DIAG: log submitted to FGTW");
+                }
+                Err(e) => {
+                    self.ready_toast = Some(format!("Send failed: {e}"));
+                    crate::log(&format!("DIAG: log submit failed: {e}"));
                 }
             }
             needs_redraw = true;
@@ -5250,6 +5333,36 @@ impl PhotonApp {
                     Err(e) => RemoveDeviceUpdate::Failed(e),
                 });
             });
+        }
+    }
+
+    /// Off-thread submit of this device's diagnostic log to FGTW (the Diagnostics "Submit" pill).
+    /// The log can be up to 16 MiB and the POST blocks, so it runs on a thread and reports thru `log_submit_rx`. `note` is the user's optional-note textbox text. Snapshots the log bytes on the caller thread first (a plain file read) so a submit captures the log AT press time.
+    fn spawn_log_submit(&mut self, note: String) {
+        use crate::network::fgtw::put_log_blocking;
+        let Some(bytes) = crate::snapshot_log_bytes() else {
+            self.ready_toast = Some("No log to send yet".to_string());
+            return;
+        };
+        if self.log_submit_tx.is_none() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            self.log_submit_rx = Some(rx);
+            self.log_submit_tx = Some(tx);
+        }
+        if let (Some(hp), Some(kp), Some(seed), Some(tx)) = (
+            self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()),
+            self.device_keypair.clone(),
+            self.session.as_ref().map(|s| s.identity_seed),
+            self.log_submit_tx.clone(),
+        ) {
+            let n = bytes.len();
+            crate::log(&format!("DIAG: submitting log ({n} bytes) to FGTW (sealed)"));
+            std::thread::spawn(move || {
+                let r = put_log_blocking(&bytes, &note, &kp, &hp, &seed).map_err(|e| format!("{e}"));
+                let _ = tx.send(r);
+            });
+        } else {
+            self.ready_toast = Some("Can't send: not signed in".to_string());
         }
     }
 
