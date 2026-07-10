@@ -74,7 +74,7 @@ pub struct PTManager {
     /// Inbound transfers (we're receiving) - keyed by (peer, stream_id)
     inbound: Vec<InboundTransfer>,
     /// Reliable small (≤1KB) packets awaiting delivery ack, in FIFO order. Per peer, only the front packet is in flight (stop-and-wait): it retransmits on 1→2→…→60s backoff until the receiver's delivery ack arrives, then it's popped and the next packet for that peer sends.
-    /// Strict ordering per peer; head-of-line blocking is intentional (a stuck packet means the peer isn't answering, so nothing else would get through either).
+    /// Strict ordering per peer; head-of-line blocking is intentional (a stuck packet means the peer isn't answering, so nothing else would get thru either).
     outbound_packets: Vec<OutboundPacket>,
     /// Our keypair for signing
     keypair: Keypair,

@@ -588,7 +588,7 @@ pub fn load_all_contacts(storage: &FlatStorage) -> Vec<Contact> {
     contacts
 }
 
-/// Delete a contact's per-peer entries from the vault. Conversation messages are NOT deleted here — they live in the rārangi conversation DB keyed by `friendship_id` (a conversation can outlive removing one party from contacts), and are reaped through that layer.
+/// Delete a contact's per-peer entries from the vault. Conversation messages are NOT deleted here — they live in the rārangi conversation DB keyed by `friendship_id` (a conversation can outlive removing one party from contacts), and are reaped thru that layer.
 pub fn delete_contact(identity_seed: &[u8; 32], storage: &FlatStorage) -> Result<(), StorageError> {
     storage.delete_addr(&contact_key(identity_seed, "state"))?;
     storage.delete_addr(&contact_key(identity_seed, "keypairs"))?;
@@ -956,7 +956,7 @@ mod tests {
         assert_eq!(derived_seed, expected_seed);
     }
 
-    /// Messages round-trip through `save_messages`/`load_messages` on a REAL encrypted vault: write three, close the vault, reopen from disk, read them back in order. Proves the rārangi conversation-row path end to end, not just in RAM.
+    /// Messages round-trip thru `save_messages`/`load_messages` on a REAL encrypted vault: write three, close the vault, reopen from disk, read them back in order. Proves the rārangi conversation-row path end to end, not just in RAM.
     #[test]
     fn messages_round_trip_on_real_vault() {
         use crate::types::HandleText;
@@ -1034,7 +1034,7 @@ mod tests {
         }
     }
 
-    /// Fleet siblings round-trip through their OWN index on a real vault: `save_contact` routes a sibling to the sibling list (never the contacts index — its handle-string dedup would collapse all siblings into one), state persists under the device-derived pid, `load_all_siblings` rebuilds contact + state across a vault close/reopen, and `delete_sibling` removes both index entry and state.
+    /// Fleet siblings round-trip thru their OWN index on a real vault: `save_contact` routes a sibling to the sibling list (never the contacts index — its handle-string dedup would collapse all siblings into one), state persists under the device-derived pid, `load_all_siblings` rebuilds contact + state across a vault close/reopen, and `delete_sibling` removes both index entry and state.
     #[test]
     fn sibling_round_trip_on_real_vault() {
         use crate::types::{ClutchState, HandleText};

@@ -114,7 +114,7 @@ The triad to write on the wall:
 > **They can't deceive you, they can only deny you, and denial has a fallback.**
 
 - **Integrity survives 41 of 42 liars** — the seal won't open if tampered, the epoch can't be forged higher. Never a forgery.
-- **Availability degrades gracefully** — a withholding majority or an eclipse can deny you the newest (stale-but-valid) or anything, never a lie. Falls through to: your devices *remember the highest epoch seen* (rollback-proof once you've seen fresh; the eclipse only bites a cold-start into a fully-hostile view), then custodians.
+- **Availability degrades gracefully** — a withholding majority or an eclipse can deny you the newest (stale-but-valid) or anything, never a lie. Falls thru to: your devices *remember the highest epoch seen* (rollback-proof once you've seen fresh; the eclipse only bites a cold-start into a fully-hostile view), then custodians.
 
 The more nodes you spray, the more *available* it gets without getting less *trustworthy* — because the seal and epoch carry integrity so the nodes are just shelves.
 Most distributed systems can't separate those two; this one does.
