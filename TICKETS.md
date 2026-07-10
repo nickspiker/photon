@@ -74,7 +74,7 @@ Recent commits (`git log --oneline` for the canonical sequence):
 - `549b330` — full-edge chrome when maximized.
 - `f097130` — Phase 1a: scroll-driven shimmer in background noise.
 - `0f98f24` — zero `scroll_offset` on Launch (shimmer only, no vertical translate).
-- `4689655` — drop the legacy `compositing::draw_background_texture` pass-through.
+- `4689655` — drop the legacy `compositing::draw_background_texture` pass-thru.
 - `9c3216b` — chromatic wave on Launch (port of `draw_spectrum`).
 - `5e5ebb1` — portrait launch window via new `FluorApp::initial_size` hook.
 - `2827580` — launch layout calculator + debug chord system (`[+]` + letter).

@@ -976,7 +976,7 @@ impl FriendshipChains {
         let et = vsf::EagleTime::from_oscillations(eagle_time);
         let ciphertext = encrypt_layers(&plaintext, &our_chain, &scratch, &et);
 
-        // Mirror the receiver's "CHAIN DECRYPT" line so both sides can be diffed: for a given eagle_time the encrypt key+salt here MUST equal the decrypt key+salt on the peer, or the chains have diverged. last_plaintext_len flags the lossy-storage class of bug (a non-empty prev that round-tripped through storage must be byte-identical on both ends).
+        // Mirror the receiver's "CHAIN DECRYPT" line so both sides can be diffed: for a given eagle_time the encrypt key+salt here MUST equal the decrypt key+salt on the peer, or the chains have diverged. last_plaintext_len flags the lossy-storage class of bug (a non-empty prev that round-tripped thru storage must be byte-identical on both ends).
         crate::log(&format!(
             "CHAIN ENCRYPT: our_handle_hash = {}..., key = {}..., salt = {}..., eagle_time = {}, last_plaintext_len = {}, ciphertext_len = {}",
             hex::encode(&our_handle_hash[..4]),

@@ -1352,7 +1352,7 @@ impl FluorApp for PhotonApp {
 
         self.handle_query = Some(hq);
 
-        // Auto-resume from the remembered session roots. If tohu has this login's roots (persisted on a prior, FGTW-confirmed attest), paint Ready IMMEDIATELY from local state — we already own this identity, so there is no reason to block the first frame on the network. The avatar comes from a local cache file (no vault, no network); contacts + peer presence + cloud-merge arrive a beat later via the background `query_resume` and merge in through `on_query_result`. A rejection (handle claimed by another device) bails back to the attest screen; a transient network error leaves the local session on Ready untouched. None (first run / post-logout) falls through to the normal typed-attest flow.
+        // Auto-resume from the remembered session roots. If tohu has this login's roots (persisted on a prior, FGTW-confirmed attest), paint Ready IMMEDIATELY from local state — we already own this identity, so there is no reason to block the first frame on the network. The avatar comes from a local cache file (no vault, no network); contacts + peer presence + cloud-merge arrive a beat later via the background `query_resume` and merge in thru `on_query_result`. A rejection (handle claimed by another device) bails back to the attest screen; a transient network error leaves the local session on Ready untouched. None (first run / post-logout) falls thru to the normal typed-attest flow.
         if let Some(remembered) = tohu::session() {
             self.session = Some(remembered);
             self.hints_dismissed = false; // fresh Ready entry → the avatar prompt gets a chance until first interaction
@@ -1707,7 +1707,7 @@ impl FluorApp for PhotonApp {
                     .map(|c| c.hit_at(ctx.cursor_x, ctx.cursor_y))
                     .unwrap_or(HIT_NONE);
 
-                // Permanence interstitial ("Yes — forever"): a press ANYWHERE other than the attest button cancels back to the pre-proof Fresh state. Editing the handle already cancels; this makes a tap on empty space, the field, the orb — anything else — cancel too, so a stray tap can never corner the user into the forever-claim (on Android "click elsewhere" was otherwise swipe-up → home → long-press → switch away). The attest button press itself is the deliberate confirm, so it's excluded; we fall through afterwards so the tap still does its normal thing (focus the field, start a drag, open settings, …).
+                // Permanence interstitial ("Yes — forever"): a press ANYWHERE other than the attest button cancels back to the pre-proof Fresh state. Editing the handle already cancels; this makes a tap on empty space, the field, the orb — anything else — cancel too, so a stray tap can never corner the user into the forever-claim (on Android "click elsewhere" was otherwise swipe-up → home → long-press → switch away). The attest button press itself is the deliberate confirm, so it's excluded; we fall thru afterwards so the tap still does its normal thing (focus the field, start a drag, open settings, …).
                 if matches!(self.state, AppState::Launch(LaunchState::Confirm)) {
                     let attest_hit = self.attest_btn.as_ref().map(|b| b.hit_id()).unwrap_or(HIT_NONE);
                     if hit_id != attest_hit {
@@ -4785,7 +4785,7 @@ impl PhotonApp {
                 self.state = AppState::Settings(SettingsPage::You);
                 true
             }
-            // Settings / AddDevice / Launch / Conversation fall through: the orb is settings-only, and navigation off those screens is a dedicated control (back button), never the orb.
+            // Settings / AddDevice / Launch / Conversation fall thru: the orb is settings-only, and navigation off those screens is a dedicated control (back button), never the orb.
             _ => false,
         }
     }
@@ -6081,7 +6081,7 @@ impl PhotonApp {
                     // Transient network failure on a resume refresh — the local session is still valid. Stay on Ready; the next presence cycle retries. Do NOT drop the user back to the attest screen.
                     crate::log("UI: background refresh failed (network); staying on local session");
                 } else if e.contains("not in the fleet") && !self.launch_add_mode {
-                    // Safety net for a probe→announce race (device removed from the fleet in the gap): the announce says "not in the fleet". The probe normally routes this to add-this-device UP FRONT, but if it slips through, catch it here too.
+                    // Safety net for a probe→announce race (device removed from the fleet in the gap): the announce says "not in the fleet". The probe normally routes this to add-this-device UP FRONT, but if it slips thru, catch it here too.
                     self.launch_add_mode = true;
                     self.state = AppState::Launch(LaunchState::Fresh);
                     self.add_join_handle = None;

@@ -109,7 +109,7 @@ pub enum LogLevel {
     Error = 4,
 }
 
-/// Retained for the desktop/Windows `main()` call site. The VSF file sink now opens LAZILY on the first log after the platform data dir is known (Android sets it partway through JNI startup), so this is a no-op — kept only so existing callers compile.
+/// Retained for the desktop/Windows `main()` call site. The VSF file sink now opens LAZILY on the first log after the platform data dir is known (Android sets it partway thru JNI startup), so this is a no-op — kept only so existing callers compile.
 pub fn init_logging() {}
 
 /// Short, non-PII label for logs: the first 4 bytes of a PUBLIC id (handle_proof / device pubkey) as hex.

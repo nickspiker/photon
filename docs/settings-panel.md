@@ -28,7 +28,7 @@ The load-bearing page for multi-device with no server.
 - **Device sidecar**: each device keeps its own device-local preferences.
   Split: **device-local** = this device's name, notification volume, appearance, its log.
   **Fleet-wide (synced)** = identity, contacts, avatar, party colours.
-  The device-local sidecar is a device-keyed store that must NOT propagate through the synced vault.
+  The device-local sidecar is a device-keyed store that must NOT propagate thru the synced vault.
 
 ### Security
 Named by **destructiveness** — three distinct actions:

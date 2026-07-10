@@ -684,7 +684,7 @@ pub fn decode_avatar(av1_data: &[u8]) -> Result<(usize, usize, Vec<u8>), String>
         std::ptr::copy_nonoverlapping(av1_data.as_ptr(), data_ptr, av1_data.len());
     }
 
-    // dav1d returns negated errno; EAGAIN means "retry". errno is PLATFORM-SPECIFIC (Linux EAGAIN=11, macOS/BSD EAGAIN=35), and rav1d propagates the host's value (`EAGAIN = libc::EAGAIN`). Hardcoding -11 worked on Linux but on Mac the decoder's EAGAIN (-35) fell through to the error branch, so every AVIF avatar failed with "dav1d_get_picture failed: -35". Compare against libc::EAGAIN.
+    // dav1d returns negated errno; EAGAIN means "retry". errno is PLATFORM-SPECIFIC (Linux EAGAIN=11, macOS/BSD EAGAIN=35), and rav1d propagates the host's value (`EAGAIN = libc::EAGAIN`). Hardcoding -11 worked on Linux but on Mac the decoder's EAGAIN (-35) fell thru to the error branch, so every AVIF avatar failed with "dav1d_get_picture failed: -35". Compare against libc::EAGAIN.
     let eagain = -(libc::EAGAIN as i32);
 
     // Send data to decoder - keep sending until consumed
@@ -1402,7 +1402,7 @@ pub fn upload_avatar_from_seed(
     };
     crate::network::fgtw::fleet::ensure_member(&device_key, handle_proof, identity_seed)?;
 
-    // Go through the ONE VSF conduit (POST / with a named section), same as blob_put / contacts.
+    // Go thru the ONE VSF conduit (POST / with a named section), same as blob_put / contacts.
     // The put carries the signed avatar VSF and is itself device-signed at the header (ke/ge); FGTW checks that signing device against the folded fleet chain.
     let mut section = vsf::VsfSection::new("avatar_put");
     section.add_field("key", VsfType::d(storage_key.clone()));
