@@ -81,6 +81,13 @@ Data model (rides the existing fstate transport, same as the roster):
 Every device's map syncs fleet-wide, so any device can SEE every sibling's settings — which is also what feeds the Fleet management page (view a sibling's config from wherever you are; remote *editing* of another device's map waits for groups).
 The sync payload is the global map plus the N device maps in photon's fstate slot, sealed under the fleet key, bumped and pulled exactly like the roster.
 
+### Fleet page orbs (per-device avatars)
+
+Each device row on the Fleet page gets an orb/avatar the user can set per device, drawn with the online/offline ring the contact rows already use (`is_online` on the sibling contact; the self row is always online).
+Placement in the schema: device orbs live in the **global layer** keyed by device (`device.orb.<pubkey>`), NOT in the device's own map — deliberately, because you set a device's orb from whatever device you're holding, and the per-device maps are single-writer.
+Any device writes any orb key; LWW merges concurrent edits like every other global key.
+Value budget: the orb rides the fstate blob, so keep it small (a compressed thumbnail or a colour/emblem); if orbs outgrow the blob, the value becomes a hash reference into blob storage — the schema doesn't change.
+
 ## What stays outside the vault
 
 Almost nothing — a deliberately thin plain layer for knobs needed before any handle exists:

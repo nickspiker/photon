@@ -174,14 +174,37 @@ pub fn recover_or_establish_fleet_key(
     fgtw::client::recover_or_establish_fleet_key(&PhotonTransport, handle_proof, device_key)
 }
 
-/// Publish the fleet roster: seal under the fleet key (kete) and PUT to the membership-gated slot.
+/// Publish the FULL fleet-shared state (roster + settings layers): seal under the fleet key (kete) and PUT to the membership-gated slot. The settings sync layer calls this with its cached state.
+pub fn push_fstate(
+    handle_proof: &[u8; 32],
+    device_key: &Keypair,
+    fleet_key: &[u8; 32],
+    state: &fgtw::fstate::FleetState,
+) -> Result<(), String> {
+    fgtw::client::push_fstate(&PhotonTransport, &PhotonSealer, handle_proof, device_key, fleet_key, state)
+}
+
+/// Fetch + open the fleet-shared state (None if none published yet; a pre-settings roster-only blob reads as settings-empty).
+pub fn pull_fstate(
+    handle_proof: &[u8; 32],
+    fleet_key: &[u8; 32],
+) -> Result<Option<fgtw::fstate::FleetState>, String> {
+    fgtw::client::pull_fstate(&PhotonTransport, &PhotonSealer, handle_proof, fleet_key)
+}
+
+/// Publish the fleet roster. Roster-shaped wrapper over [`push_fstate`]: pulls the current slot first so the settings layers ride along untouched — a roster re-seal must never clobber synced settings. A pull failure falls back to roster-only (nothing preservable: not_found = empty slot, AEAD failure = stale-epoch blob that this push is re-sealing anyway).
 pub fn push_roster(
     handle_proof: &[u8; 32],
     device_key: &Keypair,
     fleet_key: &[u8; 32],
     entries: &[RosterEntry],
 ) -> Result<(), String> {
-    fgtw::client::push_roster(&PhotonTransport, &PhotonSealer, handle_proof, device_key, fleet_key, entries)
+    let mut state = match pull_fstate(handle_proof, fleet_key) {
+        Ok(Some(s)) => s,
+        _ => fgtw::fstate::FleetState::default(),
+    };
+    state.roster = entries.to_vec();
+    push_fstate(handle_proof, device_key, fleet_key, &state)
 }
 
 /// Fetch + open the fleet roster (None if none published yet).
@@ -189,7 +212,7 @@ pub fn pull_roster(
     handle_proof: &[u8; 32],
     fleet_key: &[u8; 32],
 ) -> Result<Option<Vec<RosterEntry>>, String> {
-    fgtw::client::pull_roster(&PhotonTransport, &PhotonSealer, handle_proof, fleet_key)
+    Ok(pull_fstate(handle_proof, fleet_key)?.map(|s| s.roster))
 }
 
 #[cfg(test)]
