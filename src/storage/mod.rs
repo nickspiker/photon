@@ -1,5 +1,6 @@
 pub mod cloud;
 pub mod contacts;
+pub mod fleet_settings;
 pub mod friendship;
 pub mod settings;
 

@@ -643,7 +643,9 @@ pub struct PhotonApp {
     /// Fleet key received during a JOIN, held until attest sets the vault up so it can be persisted (the new device has no storage during the join thread).
     pending_fleet_key: Option<[u8; 32]>,
     /// In-flight fleet-roster pull; its `Ok` result merges into contacts, its `Err` triggers a retry — both drained in `tick`. `Some` = a pull is running, which also debounces re-spawns.
-    roster_pull_rx: Option<std::sync::mpsc::Receiver<Result<Vec<crate::network::fgtw::fleet::RosterEntry>, String>>>,
+    roster_pull_rx: Option<std::sync::mpsc::Receiver<Result<fgtw::fstate::FleetState, String>>>,
+    /// The linked-settings cache (per-device maps + link-to-global; docs/global-vault.md). Lazily loaded from the vault once storage + device key exist; merged from every fstate pull; every local set persists + pushes.
+    fleet_settings: Option<crate::storage::fleet_settings::FleetSettings>,
     /// Set on each attest/resume: "do one roster pull as soon as the fleet key is available." The key is written by an ASYNC fan-out sync, so an immediate pull races it and loses — this flag makes tick fire the pull the moment `fleet_key_cached()` goes Some, which is the wake-up catch-up that brings a friend added on a sibling device onto this one.
     needs_initial_roster_pull: bool,
     /// Retry budget for the initial roster pull. A fresh device's pairing-recovered key is a PRE-rotation generation (adding a device rotates the fleet key via the fan-out re-key), so the first pull decrypts the current roster with a stale key and fails `aead::Error`. The in-flight `spawn_fleet_key_sync` writes the current key within ~150ms, so on a failed pull we re-arm `needs_initial_roster_pull` and retry — the pull's own ~150ms round-trip naturally spaces attempts, and this budget caps them so a genuinely-undecryptable roster gives up instead of spinning (next fleet event / relaunch re-tries).
@@ -819,6 +821,7 @@ impl PhotonApp {
             add_join_rx: None,
             pending_fleet_key: None,
             roster_pull_rx: None,
+            fleet_settings: None,
             needs_initial_roster_pull: false,
             last_peers: Vec::new(),
             roster_pull_retries_left: 0,
@@ -4283,6 +4286,18 @@ impl PhotonApp {
             needs_redraw = true;
         }
 
+        // The auto-update checkbox is the first linked-settings consumer: a user toggle writes updates.auto (born linked, so the whole fleet follows; unlink comes with the per-setting link affordance). Poll-then-set keeps the borrow simple.
+        let autoupdate_toggle = self
+            .settings_autoupdate_check
+            .as_mut()
+            .map(|cb| (cb.take_toggle(), cb.is_checked()));
+        if let Some((true, checked)) = autoupdate_toggle {
+            if self.settings_set("updates.auto", vec![checked as u8]) {
+                crate::log(&format!("SETTINGS: updates.auto = {checked} (linked write)"));
+            }
+            needs_redraw = true;
+        }
+
         // AddDevice flow: the status line is EVENT-driven, derived from the current text on every edit. No good/bad while a word is still a valid in-progress prefix (blank) — a signal appears only when a word is definitively misspelled (an impossible prefix) or the whole entry is complete (then the network match-check runs). Every keypress re-derives, so a red flag clears the moment the offending word is fixed, and never lingers while typing a now-fine entry.
         if matches!(self.state, AppState::AddDevice) {
             let text: String = self.textbox.as_ref().map(|tb| tb.chars.iter().collect()).unwrap_or_default();
@@ -4465,10 +4480,27 @@ impl PhotonApp {
         }
 
         match self.roster_pull_rx.as_ref().map(|rx| rx.try_recv()) {
-            Some(Ok(Ok(entries))) => {
+            Some(Ok(Ok(state))) => {
                 self.roster_pull_rx = None;
                 self.roster_pull_retries_left = 0;
-                self.merge_roster_entries(entries);
+                // Settings layers fold in first (global LWW + device newest-copy-wins); a change persists and takes effect on the next read of each key — a sibling's toggle lands here.
+                if self.ensure_fleet_settings() {
+                    let changed = self
+                        .fleet_settings
+                        .as_mut()
+                        .unwrap()
+                        .merge_from(state.global_settings, state.device_settings);
+                    if changed {
+                        if let (Some(fs), Some(storage)) = (self.fleet_settings.as_ref(), self.storage.as_ref()) {
+                            if let Err(e) = crate::storage::fleet_settings::save_fleet_settings(fs, storage) {
+                                crate::log(&format!("SETTINGS: persist after merge failed: {e}"));
+                            }
+                        }
+                        self.apply_settings_to_ui();
+                        crate::log("SETTINGS: adopted fleet changes");
+                    }
+                }
+                self.merge_roster_entries(state.roster);
                 needs_redraw = true;
             }
             Some(Ok(Err(_e))) => {
@@ -5214,21 +5246,118 @@ impl PhotonApp {
         let (tx, rx) = std::sync::mpsc::channel();
         self.roster_pull_rx = Some(rx);
         std::thread::spawn(move || {
-            let result = match fleet::pull_roster(&hp, &fleet_key) {
-                Ok(Some(e)) => {
-                    crate::log(&format!("FLEET: roster pulled — {} entr(ies)", e.len()));
-                    Ok(e)
+            let result = match fleet::pull_fstate(&hp, &fleet_key) {
+                Ok(Some(s)) => {
+                    crate::log(&format!(
+                        "FLEET: state pulled — {} roster entr(ies), {} global setting(s), {} device map(s)",
+                        s.roster.len(),
+                        s.global_settings.len(),
+                        s.device_settings.len()
+                    ));
+                    Ok(s)
                 }
                 Ok(None) => {
-                    crate::log("FLEET: roster pull — slot empty");
-                    Ok(Vec::new())
+                    crate::log("FLEET: state pull — slot empty");
+                    Ok(fgtw::fstate::FleetState::default())
                 }
                 Err(e) => {
-                    crate::log(&format!("FLEET: roster pull failed: {e}"));
+                    crate::log(&format!("FLEET: state pull failed: {e}"));
                     Err(e)
                 }
             };
             let _ = tx.send(result);
+        });
+    }
+
+    /// Lazily load the linked-settings cache (needs storage + our device pubkey). Returns whether it's available.
+    fn ensure_fleet_settings(&mut self) -> bool {
+        if self.fleet_settings.is_some() {
+            return true;
+        }
+        let (Some(storage), Some(kp)) = (self.storage.as_ref(), self.device_keypair.as_ref()) else {
+            return false;
+        };
+        self.fleet_settings = Some(crate::storage::fleet_settings::load_fleet_settings(storage, kp.public.to_bytes()));
+        self.apply_settings_to_ui();
+        true
+    }
+
+    /// Mirror the settings layer into the widgets that display it (after a load or an adopted fleet merge). updates.auto defaults ON until a value exists (the compiled default per docs/updates.md).
+    fn apply_settings_to_ui(&mut self) {
+        let auto = self
+            .fleet_settings
+            .as_ref()
+            .and_then(|fs| fs.effective("updates.auto").map(|v| v != [0]))
+            .unwrap_or(true);
+        if let Some(cb) = self.settings_autoupdate_check.as_mut() {
+            cb.set_checked(auto);
+        }
+    }
+
+    /// Set a setting from UI: writes the global (linked, the default) or our device map (unlinked), persists, and pushes to the fleet slot. Returns true if the value actually changed.
+    fn settings_set(&mut self, key: &str, value: Vec<u8>) -> bool {
+        if !self.ensure_fleet_settings() {
+            return false;
+        }
+        let fs = self.fleet_settings.as_mut().unwrap();
+        if !fs.set(key, value, vsf::eagle_time_oscillations()) {
+            return false;
+        }
+        self.persist_and_push_settings();
+        true
+    }
+
+    /// Flip a key's link on this device (unlink = set locally from now on; relink = follow the fleet). Persists + pushes on change.
+    fn settings_set_link(&mut self, key: &str, linked: bool) -> bool {
+        if !self.ensure_fleet_settings() {
+            return false;
+        }
+        let fs = self.fleet_settings.as_mut().unwrap();
+        if !fs.set_link(key, linked, vsf::eagle_time_oscillations()) {
+            return false;
+        }
+        self.persist_and_push_settings();
+        true
+    }
+
+    fn persist_and_push_settings(&mut self) {
+        if let (Some(fs), Some(storage)) = (self.fleet_settings.as_ref(), self.storage.as_ref()) {
+            if let Err(e) = crate::storage::fleet_settings::save_fleet_settings(fs, storage) {
+                crate::log(&format!("SETTINGS: persist failed: {e}"));
+            }
+        }
+        self.spawn_settings_push();
+    }
+
+    /// Push our settings layers to the fleet slot (off-thread, best-effort). Pull-merge-push: the slot's current state folds in first, so a concurrent sibling write converges by CRDT instead of being clobbered — same doctrine as push_roster's roster-preserving pull.
+    fn spawn_settings_push(&self) {
+        use crate::network::fgtw::fleet;
+        let Some(fs) = self.fleet_settings.as_ref() else {
+            return;
+        };
+        let ours = fgtw::fstate::FleetState {
+            roster: Vec::new(),
+            global_settings: fs.global.clone(),
+            device_settings: fs.devices.clone(),
+        };
+        let (Some(hp), Some(kp), Some(fleet_key)) = (
+            self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()),
+            self.device_keypair.clone(),
+            self.fleet_key_cached(),
+        ) else {
+            return;
+        };
+        std::thread::spawn(move || {
+            let slot = match fleet::pull_fstate(&hp, &fleet_key) {
+                Ok(Some(s)) => s,
+                _ => fgtw::fstate::FleetState::default(),
+            };
+            // Empty ours.roster merges to the slot's roster untouched (union) — settings pushes never disturb the roster.
+            let merged = fgtw::fstate::merge_fstate(slot, ours);
+            match fleet::push_fstate(&hp, &kp, &fleet_key, &merged) {
+                Ok(()) => crate::log("SETTINGS: pushed to the fleet slot"),
+                Err(e) => crate::log(&format!("SETTINGS: push failed: {e}")),
+            }
         });
     }
 
