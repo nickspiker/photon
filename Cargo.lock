@@ -2759,6 +2759,7 @@ name = "manifestus"
 version = "0.0.1"
 dependencies = [
  "blake3",
+ "hashbrown 0.15.5",
  "libc",
  "vsf 0.9.1",
 ]
