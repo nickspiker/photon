@@ -5,7 +5,7 @@
 //
 // crypto/
 //   blind.rs        — friend-blinded private identity secret S (RAM-only, never persisted): PrivateS{None,Provisional,Live}, derive_blind_pad (per-device+friend OTP pad), make/open_blind_blob ((S⊕pad)‖check, fail-closed), s_check/s_id (tamper commitment + 4-byte tag epoch), seal/open_sibling_s (kete-AEAD S-transfer to a sibling).
-//   chain.rs        — the braid: rolling-chain encryption (512-link, 16KB; see BRAID.md). Chain, advance() (weaves ≤2 prior peer plaintexts), derive_salt, generate/verify_ack_proof, encrypt/decrypt_layers.
+//   chain.rs        — the braid: rolling-chain encryption (512-link, 16KB; see docs/BRAID.md). Chain, advance() (weaves ≤2 prior peer plaintexts), derive_salt, generate/verify_ack_proof, encrypt/decrypt_layers.
 //   clutch.rs       — 8-algorithm parallel key ceremony: smear_hash, derive_conversation_token, derive_ceremony_instance, spaghettify, sibling_party_id (device-derived fleet-weave party id).
 //   handle_proof.rs — memory-hard handle attestation (~1s); re-exports ihi::handle_proof.
 //   self_verify.rs  — Ed25519 binary signature verification: AUTHOR_PUBKEY, SYSTEM_PUBKEYS, is_system_pubkey, verify_binary_hash.
