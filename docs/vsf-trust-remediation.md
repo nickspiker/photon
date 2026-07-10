@@ -28,7 +28,7 @@ Order matters; each step is a real pub fn.
 // 1. error-frame rejection FIRST (frames pass integrity, so this must precede it)
 if fgtw::client::is_error(&body, "not_found") { return Ok(None); }          // expected absence
 if let Some((reason, detail)) = fgtw::client::error_frame(&body) {
-    return Err(format!("fgtw {op} {reason}: {detail}"));                     // never fall through
+    return Err(format!("fgtw {op} {reason}: {detail}"));                     // never fall thru
 }
 // 2. integrity + version (whole doc): BLAKE3(doc, ge/gp/gr zeroed) == header hp; enforces version window
 vsf::verification::is_original(&body).map_err(...)?;

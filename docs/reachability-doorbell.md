@@ -132,7 +132,7 @@ A build is not "an FCM tenant" — it is a device that publishes *bells*, of whi
 Then an FCM tenant going down is a **degradation, not an outage:**
 
 - **FCM rung dies** for devices on that tenant — they lose the ability to be **woken from deep Doze** via FCM. (Not messaging; not notifications-while-awake — specifically *remote-wake-from-doze*.)
-- **`up:` rung is unaffected** (different infra, no Google, no tenant) → senders **fall through to it** → wake notifications keep working.
+- **`up:` rung is unaffected** (different infra, no Google, no tenant) → senders **fall thru to it** → wake notifications keep working.
 - **TCP-keepalive + foreground-service floor is unaffected** → any scheduled peer still delivers and notifies; deep-dozed single-`fcm`-bell devices simply wait until they next wake on their own.
 
 So the precise failure statement: **if `fcm:<tenant>` is a device's *only* bell and that tenant goes down, that device loses wake-from-doze notifications until the tenant returns.** The defense is redundant bells per device, **not** switchable tenants — which is exactly why bells are a *list*, and why a later "simplification" back to a single bell value would reintroduce the fragility. You (operator of `fgtw-90220`) are a single point of failure for *that rung*; mitigations in order of effort: (1) every build also ships an `up:` fallback, (2) build carries a second backup FCM tenant, (3) the mesh / peers-are-fgtw rungs where the doorbell isn't Google's at all.

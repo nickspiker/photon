@@ -118,7 +118,7 @@ mod tests {
 
     #[test]
     fn punch_probe_codec_roundtrips_full_header() {
-        // The wire format is the risky part — verify a probe (body-less) and an ack (with obs) round-trip through the canonical full-header VSF path, independent of signing.
+        // The wire format is the risky part — verify a probe (body-less) and an ack (with obs) round-trip thru the canonical full-header VSF path, independent of signing.
         let pk = DevicePubkey::from_bytes([7u8; 32]);
         let prov = [9u8; 32];
 

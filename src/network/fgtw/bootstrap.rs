@@ -82,7 +82,7 @@ async fn load_bootstrap_peers_inner(
     let client = crate::network::http::async_client();
 
     // Ensure this device's fleet membership BEFORE announcing — a fresh identity claims its fleet with a first-come, identity-signed genesis, so the membership-gated announce below (and avatar writes) are authorised.
-    // The fleet client uses the blocking HTTP path, so bridge through spawn_blocking rather than calling it from this async context.
+    // The fleet client uses the blocking HTTP path, so bridge thru spawn_blocking rather than calling it from this async context.
     {
         let dk = device_key.clone();
         let seed = *identity_seed;

@@ -6,7 +6,7 @@
 //! 1. **Global IPv6 host** — no NAT in the path at all, so it needs no hole-punch; just works when both ends have v6.
 //! 2. **IPv6 reflexive** — v6 seen from outside (rare; behind a v6 firewall).
 //! 3. **IPv4 LAN host** — same-subnet / hairpin: avoids the router's often-broken hairpin and AP isolation.
-//! 4. **IPv4 reflexive** — the punched-through public v4 address; the common WAN path.
+//! 4. **IPv4 reflexive** — the punched-thru public v4 address; the common WAN path.
 
 use std::net::SocketAddr;
 
