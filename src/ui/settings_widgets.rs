@@ -98,6 +98,11 @@ impl Checkbox {
         self.change_counter = self.change_counter.wrapping_add(1);
     }
 
+    /// Set the state programmatically (mirroring a synced setting into the UI) WITHOUT bumping the change counter — a programmatic set must never re-fire `take_toggle` and echo back into the setting it came from.
+    pub fn set_checked(&mut self, checked: bool) {
+        self.checked = checked;
+    }
+
     pub fn set_focused(&mut self, focused: bool) {
         self.focused = focused;
     }
