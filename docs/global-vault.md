@@ -58,6 +58,29 @@ So the moment the user presses attest:
 The pass/fail doubles as a free local "have I been here before" probe: a decrypting settings entry means this identity has used this device, with no network round-trip and no proof paid.
 In-session, settings changes apply in RAM immediately and persist to the entry behind the interaction — vault storage never gates on-the-fly changes.
 
+## Settings: per-device maps + link-to-global
+
+Settings are NOT split into hardcoded "synced" vs "device-local" categories — that taxonomy is wrong.
+Every setting is per-device, and each setting carries a per-device **link bit** choosing where its value comes from:
+
+- **Linked** (to the global): the device follows the fleet-wide global value for that key, and adjusting the setting from ANY linked device writes the global — the change propagates to every device that has the key linked.
+- **Unlinked**: the knob is set locally on this device; the global stops applying to it until the user re-links.
+
+**Every setting is born linked** — the default is always "go with the fleet"; unlinking is the explicit per-device act for the knob that genuinely differs on this machine (display calibration being the obvious customer).
+The canonical example — and what surfaced this whole design — is the Automatic-updates checkbox from `docs/updates.md`: it is just a settings key like any other, born linked, so flipping it flips the fleet, and a device you want on manual updates gets that key unlinked.
+**Groups come later**: an intermediate layer between device and global (link-to-group), same resolution logic — the link becomes a target (local / group / global) rather than a bit; design the schema so that's an extension, not a rework.
+(**Lock** — preventing adjustment, as distinct from linking — is a separate future concept and deliberately absent from this schema.)
+
+Data model (rides the existing fstate transport, same as the roster):
+
+- **Global layer** — one fleet-wide map `{key → (value, updated, tombstone)}`, merged last-writer-wins per key on the eagle-time stamp (exactly the `RosterEntry` merge shape).
+- **Per-device layer** — one map per device `{key → (value, updated, linked)}`, authored ONLY by that device.
+  Single-writer means no merge conflicts are possible within a device's map — a sibling just adopts the copy with the newest stamp.
+- **Effective value** on device D for key k: `linked ? global[k] (falling back to local if the global is absent) : device[D][k]`.
+
+Every device's map syncs fleet-wide, so any device can SEE every sibling's settings — which is also what feeds the Fleet management page (view a sibling's config from wherever you are; remote *editing* of another device's map waits for groups).
+The sync payload is the global map plus the N device maps in photon's fstate slot, sealed under the fleet key, bumped and pulled exactly like the roster.
+
 ## What stays outside the vault
 
 Almost nothing — a deliberately thin plain layer for knobs needed before any handle exists:
