@@ -2469,6 +2469,9 @@ impl FluorApp for PhotonApp {
                 .unwrap_or(0);
             let n = store_peers + if self.online { 1 } else { 0 };
             format!("{n} peers")
+        } else if matches!(self.state, AppState::Settings(_)) {
+            // The settings screen draws its own "Settings" heading in the header band — a chrome title would double up behind it (portrait showed "‹ Network" bleeding thru the heading).
+            String::new()
         } else {
             "\u{2039} Network".to_string()
         };
@@ -11667,17 +11670,20 @@ fn draw_stub_pill(
     label: &str,
     hit_id: HitId,
 ) {
-    let w = rect.w as isize;
-    let h = rect.h as isize;
-    if w <= 0 || h <= 0 {
+    if rect.w <= 0.0 || rect.h <= 0.0 {
         return;
     }
-    let x0 = rect.x as isize;
-    let y0 = rect.y as isize;
     let font_size = rect.h * 0.5;
-    let stroke = (font_size / 32.0) as isize + 1;
     // Label first (topmost-first): centred in the pill.
     let tw = text.measure_text_width(label, font_size, 400, "Open Sans");
+    // The pill BG always wraps the label: widen the rect (centred) when the measured text + padding exceeds the caller's slot — a long label on a narrow portrait column must never spill past the pill.
+    let need_w = tw + font_size * 1.6;
+    let (px, pw) = if need_w > rect.w { (rect.center_x() - need_w * 0.5, need_w) } else { (rect.x, rect.w) };
+    let w = pw as isize;
+    let h = rect.h as isize;
+    let x0 = px as isize;
+    let y0 = rect.y as isize;
+    let stroke = (font_size / 32.0) as isize + 1;
     text.draw_text_left_u32(
         canvas,
         label,

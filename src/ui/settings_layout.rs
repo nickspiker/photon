@@ -24,8 +24,9 @@ impl SettingsLayout {
         let root = Region::from_viewport(vp);
         let portrait = root.h > root.w;
         if portrait {
+            // Left-inset past the chrome orb (top-left app icon, ~0.10·w) so the title never collides with it; the back affordance keeps the right edge.
             let header_h = root.w * 0.11;
-            let header = Region::new(root.x, root.y, root.w, header_h);
+            let header = Region::new(root.x + root.w * 0.12, root.y, root.w * 0.88, header_h);
             let below = Region::new(root.x, root.y + header_h, root.w, root.h - header_h);
             let [rail, content] = below.split_h([1.0, 2.4]);
             Self { header, rail, content, portrait }
