@@ -3775,8 +3775,8 @@ impl FluorApp for PhotonApp {
                 }
             }
 
-            // --- Header: title + back affordance ---
-            let hspan = layout.header.size(2.2);
+            // --- Header: title + back affordance --- (unit-scaled so the heading zooms with everything else)
+            let hspan = (layout.unit * 1.05).min(layout.header.h * 0.72);
             ctx.text.draw_text_left_u32(
                 &mut canvas, "Settings", layout.header.x + hspan * 0.6,
                 layout.header.center_y(), hspan, 600, CONTACT_NAME_COLOUR, "Oxanium",
@@ -3784,7 +3784,7 @@ impl FluorApp for PhotonApp {
             );
             {
                 let back_text = "‹ Back";
-                let bs = layout.header.size(3.2);
+                let bs = (layout.unit * 0.72).max(9.0);
                 let bx = layout.header.right() - layout.header.size(1.0);
                 let bw = ctx.text.measure_text_width(back_text, bs, 500, "Oxanium");
                 ctx.text.draw_text_left_u32(
@@ -3801,7 +3801,7 @@ impl FluorApp for PhotonApp {
 
             // --- Nav rail: nine page labels; active one highlighted, all hit-stamped ---
             let rows = layout.rail_rows();
-            let rspan = layout.rail.size(20.0).max(9.0);
+            let rspan = (layout.unit * 0.58).max(9.0);
             for (i, p) in SettingsPage::ALL.iter().enumerate() {
                 let r = rows[i];
                 let active = *p == page;
@@ -3834,12 +3834,11 @@ impl FluorApp for PhotonApp {
 
             // --- Selected page body ---
             let body = layout.content_body();
-            // Fold the zoom factor (ru) into fonts + element sizes so they scale with Ctrl/Cmd-zoom, matching the launch screen (which sizes off effective_span = span × ru; bare region sizes ignore zoom). The region divisions stay physical / window-proportional and fixed, as they should; at ru = 1 this is identical to the region-derived sizes.
-            let ru = ctx.viewport.ru;
-            let tspan = body.size(22.0).max(8.0) * ru;
+            // Everything sizes off layout.unit — the ONE span·ru harmonic unit — so text, pills, rows, and controls all scale together with window shape AND zoom. (The old mix — text × ru inside fixed rows, controls off bare region fractions — is what made zoom hit-or-miss.)
+            let tspan = (layout.unit * 0.72).max(8.0);
             let hspan2 = tspan * 0.75;
-            // Stub-pill height as a fraction of its (fixed) row — grows with ru, capped so it never exceeds the row.
-            let pillf = |base: Coord| (base * ru).min(1.0);
+            // Stub-pill height as a fraction of its row — the row is already unit-scaled, so no extra ru factor (that would double-scale).
+            let pillf = |base: Coord| base.min(1.0);
             // Draw a labelled action pill; stamps `settings_btn_base + slot` and returns nothing (stub). `n` rows must match update_widget_layout's split where widgets coexist.
             let btn_base = self.settings_btn_base;
             // Immediate-mode stub pill helper — captured as a closure over the canvas/text/hit-map isn't possible (multiple &mut borrows), so pills are drawn inline per page below via `draw_stub_pill`.
@@ -4583,8 +4582,9 @@ impl PhotonApp {
         if let AppState::Settings(page) = self.state {
             let layout = SettingsLayout::compute(&ctx.viewport);
             let body = layout.content_body();
-            let ctrl_font = (body.size(22.0)).max(8.0);
-            let ctrl_h = body.size(11.0).max(14.0);
+            // Controls ride the same unit as the page text (zoom + shape aware) — these were the "don't change scale" elements.
+            let ctrl_font = (layout.unit * 0.58).max(8.0);
+            let ctrl_h = (layout.unit * 1.00).max(14.0);
             match page {
                 SettingsPage::Appearance => {
                     // Rows: [0]=title [1]=Theme label [2]=Theme dropdown [3]=Party colours [4]=Zoom label [5]=Zoom slider [6]=Calibration.
@@ -11673,10 +11673,16 @@ fn draw_stub_pill(
     if rect.w <= 0.0 || rect.h <= 0.0 {
         return;
     }
-    let font_size = rect.h * 0.5;
+    let mut font_size = rect.h * 0.5;
     // Label first (topmost-first): centred in the pill.
-    let tw = text.measure_text_width(label, font_size, 400, "Open Sans");
-    // The pill BG always wraps the label: widen the rect (centred) when the measured text + padding exceeds the caller's slot — a long label on a narrow portrait column must never spill past the pill.
+    let mut tw = text.measure_text_width(label, font_size, 400, "Open Sans");
+    // Fit order: SHRINK the font toward the slot first (pills sharing a row must not collide with their neighbours), then widen the bg only if the font hit its readability floor — so a long label on a full-width row still gets wrapped rather than truncated.
+    let max_w = rect.w * 0.96;
+    if tw + font_size * 1.6 > max_w {
+        let scaled = font_size * max_w / (tw + font_size * 1.6);
+        font_size = scaled.max(9.0).min(font_size);
+        tw = text.measure_text_width(label, font_size, 400, "Open Sans");
+    }
     let need_w = tw + font_size * 1.6;
     let (px, pw) = if need_w > rect.w { (rect.center_x() - need_w * 0.5, need_w) } else { (rect.x, rect.w) };
     let w = pw as isize;
