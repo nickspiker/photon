@@ -23,7 +23,7 @@ default = ["logging"]  # Structured VSF logging is always-on; it's capped at 16 
 logging = []       # The VSF log sink (photon.log.vsf). Default-on; opt OUT for a truly silent build
 debug-keys = []    # Enable Ctrl+D/H/T debug shortcuts
 verbose-network = []  # Log every ping/pong/broadcast (noisy)
-development = ["logging", "debug-keys"]  # All dev features
+development = ["logging", "debug-keys", "fluor/amber"]  # All dev features + the amber theme (orange bg tint / hairline / title, so a dev build is never mistaken for release)
 
 [lib]
 # cdylib for Android JNI, rlib for desktop linking

@@ -467,6 +467,8 @@ enum TextboxRole {
     LaunchHandle,
     ContactsSearch,
     MessageCompose,
+    /// The Diagnostics optional-note field — in the registry so click-to-focus raises the Android IME + blinkie like every other box.
+    SettingsNote,
 }
 
 /// Photon-desktop as a `FluorApp`. Owns fluor's `DefaultChrome` (window frame), the dense hit-id counter for widget allocation, and an optional event-loop proxy clone for waking from background tasks.
@@ -1724,12 +1726,7 @@ impl FluorApp for PhotonApp {
                     if self.change_focus(None) {
                         ctx.window.request_redraw();
                     }
-                    let edge = chrome::get_resize_edge(
-                        ctx.viewport.width_px,
-                        ctx.viewport.height_px,
-                        ctx.cursor_x,
-                        ctx.cursor_y,
-                    );
+                    let edge = chrome::get_resize_edge(ctx.viewport, ctx.cursor_x, ctx.cursor_y);
                     if edge != ResizeEdge::None {
                         return EventResponse::StartResize(edge);
                     }
@@ -2467,7 +2464,8 @@ impl FluorApp for PhotonApp {
                 .handle_query
                 .as_ref()
                 .and_then(|hq| hq.get_transport())
-                .map(|t| t.lock().map(|s| s.peer_count()).unwrap_or(0))
+                // handle_count, not peer_count: the title counts PEOPLE (unique identities), and the store carries one row per device — a 3-phone friend must read as one peer.
+                .map(|t| t.lock().map(|s| s.handle_count()).unwrap_or(0))
                 .unwrap_or(0);
             let n = store_peers + if self.online { 1 } else { 0 };
             format!("{n} peers")
@@ -3986,27 +3984,7 @@ impl FluorApp for PhotonApp {
 
         chrome.flatten_into(target, buf_w, buf_h, None);
 
-        // Development builds wear an amber-CRT skin so a debug build is never mistaken for a release one — text, buttons, chrome, all of it.
-        // A single post-composite pixel pass (direct pixel access, no floaters): every output pixel is remapped to an amber ramp with #FFA000 as the white point — full brightness → (255,160,0), greys → dimmer amber, black stays black.
-        // Scoped to this frame's damage bbox because the ramp isn't idempotent (it must touch each fresh pixel exactly once) and the host only presents that bbox anyway. Runs BEFORE the hit-mask overlay so `[]h`'s per-ID colours stay true.
-        #[cfg(feature = "development")]
-        if !ctx.damage.is_empty() {
-            let bb = ctx.damage.bbox();
-            let x_end = bb.x1.min(buf_w);
-            let y_end = bb.y1.min(buf_h);
-            for y in bb.y0..y_end {
-                let row = y * buf_w;
-                for x in bb.x0..x_end {
-                    let px = target[row + x];
-                    let r = (px >> 16) & 0xFF;
-                    let g = (px >> 8) & 0xFF;
-                    let b = px & 0xFF;
-                    // Rec.601-ish luminance (0..=255), then the amber ramp: R = L, G = L·160/255, B = 0.
-                    let l = (r * 77 + g * 150 + b * 29) >> 8;
-                    target[row + x] = 0xFF00_0000 | (l << 16) | ((l * 160 / 255) << 8);
-                }
-            }
-        }
+        // Development builds get the amber debug theme (orange bg tint / window hairline / title) via fluor's `amber` feature — pure theme-CONSTANT swaps, zero extra drawing steps. The old post-composite amber wash is gone: it wrote straight-RGB into fluor's α+darkness buffer, which inverted to blue.
 
         // Hit-mask overlay (`[]h`): replace every pixel with the opaque random colour for its hit_test_map ID. Drawn LAST over everything (including chrome + chord hint) — hit testing is per-final-pixel anyway, so the overlay shows exactly what `hit_at` would return. `.get` keeps the index lookup safe for any stale stamp at an unregistered high ID.
         if show_hitmask && !self.debug_hit_colours.is_empty() {
@@ -4101,7 +4079,7 @@ impl FluorApp for PhotonApp {
         if hit == self.back_btn_hit_id && self.back_btn_hit_id != HIT_NONE {
             return CursorIcon::Pointer;
         }
-        match chrome::get_resize_edge(ctx.viewport.width_px, ctx.viewport.height_px, x, y) {
+        match chrome::get_resize_edge(ctx.viewport, x, y) {
             ResizeEdge::Top | ResizeEdge::Bottom => CursorIcon::NsResize,
             ResizeEdge::Left | ResizeEdge::Right => CursorIcon::EwResize,
             ResizeEdge::TopLeft | ResizeEdge::BottomRight => CursorIcon::NwseResize,
@@ -11309,6 +11287,9 @@ impl PhotonApp {
             self.message_textbox
                 .as_mut()
                 .map(|t| (TextboxRole::MessageCompose, t)),
+            self.settings_note_textbox
+                .as_mut()
+                .map(|t| (TextboxRole::SettingsNote, t)),
         ]
         .into_iter()
         .flatten()
