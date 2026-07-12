@@ -1,14 +1,14 @@
 # Sourced, not executed. Build + deploy functions for the Android APK. Source `keystore.sh`
 # and `android-env.sh` before calling these. `android_build` sets `$APK_PATH` for the deployers.
 #
-# Profiles: `dev`     = --release + the `logging` feature (logcat: `adb logcat -s photon`).
-#           `release` = --release, no logging (shippable).
+# Profiles: `dev`     = --release + the `logging` feature + fluor's amber debug theme (orange bg tint / hairline / title — a dev build is never mistaken for release).
+#           `release` = --release, no logging, normal theme (shippable).
 # (Android always uses the release profile — debug builds are too large/slow on device.)
 
 android_build() {
     local profile="$1"
     local features=""
-    [ "$profile" = "dev" ] && features="--features logging"
+    [ "$profile" = "dev" ] && features="--features logging,fluor/amber"
 
     echo "Building Photon for Android (arm64) — $profile..."
     PHOTON_ALLOW_RELEASE=1 cargo build --release --lib --target aarch64-linux-android $features
