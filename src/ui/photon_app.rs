@@ -6323,6 +6323,8 @@ impl PhotonApp {
         let old = self.focused;
         let was_textbox = self.is_textbox(old);
         let is_textbox = self.is_textbox(new);
+        #[cfg(feature = "development")]
+        crate::log(&format!("FOCUS: {old:?} -> {new:?} (textbox {was_textbox} -> {is_textbox})"));
         if was_textbox != is_textbox {
             self.pending_keyboard_request = Some(is_textbox);
         }
