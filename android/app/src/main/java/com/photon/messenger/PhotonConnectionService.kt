@@ -20,7 +20,6 @@ import android.os.VibrationAttributes
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
-import android.util.Log
 import androidx.core.app.NotificationCompat
 
 /**
@@ -99,7 +98,7 @@ class PhotonConnectionService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        Log.d(TAG, "Service created")
+        PhotonLog.d(TAG, "Service created")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -113,10 +112,10 @@ class PhotonConnectionService : Service() {
             networkPtr = nativeNetworkInit(fingerprint, dataDir, shadowDir)
             if (networkPtr != 0L) {
                 devicePubkeyHex = nativeGetDevicePubkey(networkPtr)
-                Log.d(TAG, "Network initialized, device: ${devicePubkeyHex.take(16)}...")
+                PhotonLog.d(TAG, "Network initialized, device: ${devicePubkeyHex.take(16)}...")
                 startNetworkPolling()
             } else {
-                Log.e(TAG, "Failed to initialize network")
+                PhotonLog.e(TAG, "Failed to initialize network")
             }
         }
 
@@ -128,7 +127,7 @@ class PhotonConnectionService : Service() {
     override fun onBind(intent: Intent?): IBinder = binder
 
     override fun onDestroy() {
-        Log.d(TAG, "Service destroying")
+        PhotonLog.d(TAG, "Service destroying")
         stopNetworkPolling()
         if (networkPtr != 0L) {
             nativeNetworkDestroy(networkPtr)
@@ -151,7 +150,7 @@ class PhotonConnectionService : Service() {
      */
     fun clearSessionBroadcast() {
         nativeClearSessionBroadcast(this)
-        Log.d(TAG, "Session broadcast cleared")
+        PhotonLog.d(TAG, "Session broadcast cleared")
     }
 
     /**
@@ -200,7 +199,7 @@ class PhotonConnectionService : Service() {
             wakeLock.acquire(2_000L)  // safety-net timeout; the tick is milliseconds
             nativeServiceTick(ptr)
         } catch (e: Exception) {
-            Log.w(TAG, "requestServiceTick failed", e)
+            PhotonLog.w(TAG, "requestServiceTick failed", e)
         } finally {
             if (wakeLock.isHeld) wakeLock.release()
         }
@@ -233,7 +232,7 @@ class PhotonConnectionService : Service() {
             }
         }
         networkHandler?.post(pollRunnable)
-        Log.d(TAG, "Network polling started")
+        PhotonLog.d(TAG, "Network polling started")
     }
 
     private fun stopNetworkPolling() {
@@ -242,7 +241,7 @@ class PhotonConnectionService : Service() {
         networkThread?.quitSafely()
         networkThread = null
         networkHandler = null
-        Log.d(TAG, "Network polling stopped")
+        PhotonLog.d(TAG, "Network polling stopped")
     }
 
     private fun createNotificationChannel() {
@@ -372,7 +371,7 @@ class PhotonConnectionService : Service() {
             })
             track.play()
         } catch (e: Exception) {
-            Log.w(TAG, "playChirp failed", e)
+            PhotonLog.w(TAG, "playChirp failed", e)
         }
     }
 
@@ -391,7 +390,7 @@ class PhotonConnectionService : Service() {
      *  peak-normalized to 0..255); we hand it to the motor as-is, no remap. */
     private fun vibrateChirp(timings: LongArray, amplitudes: IntArray) {
         if (timings.isEmpty() || timings.size != amplitudes.size) {
-            Log.w(TAG, "vibrateChirp: bad arrays t=${timings.size} a=${amplitudes.size}")
+            PhotonLog.w(TAG, "vibrateChirp: bad arrays t=${timings.size} a=${amplitudes.size}")
             return
         }
         try {
@@ -402,7 +401,7 @@ class PhotonConnectionService : Service() {
                 getSystemService(Vibrator::class.java)
             }
             if (vibrator == null || !vibrator.hasVibrator()) {
-                Log.w(TAG, "vibrateChirp: no vibrator")
+                PhotonLog.w(TAG, "vibrateChirp: no vibrator")
                 return
             }
 
@@ -420,9 +419,9 @@ class PhotonConnectionService : Service() {
                 @Suppress("DEPRECATION")
                 vibrator.vibrate(effect)
             }
-            Log.i(TAG, "vibrateChirp: fired ${amplitudes.size} steps, peak=${amplitudes.max()}")
+            PhotonLog.i(TAG, "vibrateChirp: fired ${amplitudes.size} steps, peak=${amplitudes.max()}")
         } catch (e: Exception) {
-            Log.w(TAG, "vibrateChirp failed", e)
+            PhotonLog.w(TAG, "vibrateChirp failed", e)
         }
     }
 }

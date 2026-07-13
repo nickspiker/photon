@@ -37,8 +37,8 @@ pub enum ClockCheckResult {
 
 /// Spawn the background clock check. Mirrors the avatar / clutch worker shape: own thread, own current-thread tokio runtime (nunc is async), result back over an `mpsc` channel, then wake the event loop so the next frame drains it. Never blocks the UI thread.
 ///
-/// Desktop-only: nunc-time isn't a dependency on Android OR Redox (its roughtime source pulls `ring`, which needs the NDK to cross-compile and doesn't build for Redox — see Cargo.toml's target-gated deps), and the clock check is a desktop-host affordance. The call sites in `photon_app` are `cfg(not(android))`-gated; on Redox they reach the same-signature stub below so they compile without a nunc link.
-#[cfg(not(any(target_os = "android", target_os = "redox")))]
+/// Every platform except Redox (nunc's TLS stack needs `ring`, which has no Redox target — Redox reaches the same-signature stub below so callers compile without a nunc link). On Android the wake handle is `None` — its redraws come thru the JNI/Choreographer path, and `drain_clock_check` runs every tick regardless.
+#[cfg(not(target_os = "redox"))]
 pub fn spawn_clock_check(
     tx: std::sync::mpsc::Sender<ClockCheckResult>,
     #[allow(unused_variables)] event_proxy: ClockWake,
@@ -89,7 +89,7 @@ pub fn spawn_clock_check(
     });
 }
 
-/// Redox stub: `nunc-time` isn't linked here (its roughtime source pulls `ring`, which doesn't cross-compile to Redox), so there's no consensus source to query. Report Unavailable so the caller's channel still receives a result and the UI leaves the clock banner in its prior state — the real check runs only where nunc is a dependency.
+/// Redox stub: `nunc-time` isn't linked here (its TLS stack needs `ring`, which has no Redox target), so there's no consensus source to query. Report Unavailable so the caller's channel still receives a result and the UI leaves the clock banner in its prior state — the real check runs only where nunc is a dependency.
 #[cfg(target_os = "redox")]
 pub fn spawn_clock_check(
     tx: std::sync::mpsc::Sender<ClockCheckResult>,

@@ -14,7 +14,6 @@ pub mod traverse;
 pub mod udp;
 
 pub use clock_check::{ClockCheckResult, ClockJumpDetector, ClockWake};
-#[cfg(not(target_os = "android"))]
 pub use clock_check::spawn_clock_check;
 pub use clutch_jobs::{ClutchCeremonyResult, ClutchKemEncapResult, ClutchKeygenResult};
 pub use handle_query::{HandleQuery, QueryResult};

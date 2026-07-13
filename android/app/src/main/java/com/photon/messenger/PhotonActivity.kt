@@ -17,7 +17,6 @@ import android.hardware.SensorManager
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
-import android.util.Log
 import android.view.Choreographer
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -114,7 +113,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
             val localBinder = binder as PhotonConnectionService.LocalBinder
             connectionService = localBinder.getService()
             serviceBound = true
-            Log.d(TAG, "Bound to PhotonConnectionService")
+            PhotonLog.d(TAG, "Bound to PhotonConnectionService")
             // Try to initialize UI now that service is ready
             initializeNativeIfReady()
         }
@@ -122,7 +121,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         override fun onServiceDisconnected(name: ComponentName?) {
             connectionService = null
             serviceBound = false
-            Log.d(TAG, "Disconnected from PhotonConnectionService")
+            PhotonLog.d(TAG, "Disconnected from PhotonConnectionService")
         }
     }
 
@@ -217,7 +216,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
             if (cs is android.graphics.ColorSpace.Rgb) {
                 nativeSetDisplayColorSpace(cs.transform, cs.primaries)
             } else {
-                Log.w(TAG, "ColorPipeline: display.preferredWideGamutColorSpace is not Rgb (${cs?.javaClass?.simpleName}) — falling back to hardcoded matrices")
+                PhotonLog.w(TAG, "ColorPipeline: display.preferredWideGamutColorSpace is not Rgb (${cs?.javaClass?.simpleName}) — falling back to hardcoded matrices")
             }
         }
         // Initialize gravity sensor — listener fills gravityX/Y/Z and calls updateOrientationFromGravity at ~60Hz (SENSOR_DELAY_UI). gravitySensor may be null on very old devices (TYPE_GRAVITY is a virtual sensor composited from accelerometer + gyro); when null the listener never registers and orientation stays at whatever the OS picks.
@@ -359,7 +358,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
 
             // Bind to service to get network pointer
             bindService(serviceIntent, serviceConnection, Context.BIND_AUTO_CREATE)
-            Log.d(TAG, "Started and binding to PhotonConnectionService")
+            PhotonLog.d(TAG, "Started and binding to PhotonConnectionService")
         }
     }
 
@@ -378,13 +377,13 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
 
         val service = connectionService ?: return
         if (!service.isNetworkReady()) {
-            Log.d(TAG, "Service not ready yet, waiting...")
+            PhotonLog.d(TAG, "Service not ready yet, waiting...")
             return
         }
 
         val networkPtr = service.getNetworkPtr()
         if (networkPtr == 0L) {
-            Log.e(TAG, "Network pointer is null")
+            PhotonLog.e(TAG, "Network pointer is null")
             return
         }
 
@@ -394,14 +393,14 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         val broadcastVsf = service.readSessionBroadcast()
         if (broadcastVsf != null && broadcastVsf.isNotEmpty()) {
             val restored = nativeRestoreSessionFromVsf(broadcastVsf)
-            Log.d(TAG, "Session restore from sticky broadcast: $restored")
+            PhotonLog.d(TAG, "Session restore from sticky broadcast: $restored")
         }
 
         val holder = surfaceView.holder
         // Samsung needs workarounds for Choreographer throttling
         val isSamsung = android.os.Build.MANUFACTURER.equals("samsung", ignoreCase = true)
 
-        Log.d(TAG, "Initializing native UI with network ptr 0x${networkPtr.toString(16)}")
+        PhotonLog.d(TAG, "Initializing native UI with network ptr 0x${networkPtr.toString(16)}")
         nativePtr = nativeInitWithNetwork(
             holder.surfaceFrame.width(),
             holder.surfaceFrame.height(),
@@ -410,7 +409,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         )
 
         if (nativePtr != 0L) {
-            Log.d(TAG, "Native UI initialized at 0x${nativePtr.toString(16)}")
+            PhotonLog.d(TAG, "Native UI initialized at 0x${nativePtr.toString(16)}")
             // Hand the Activity-context ptr to the service so its RX worker can drive a headless
             // protocol tick (nativeServiceTick) while we're backgrounded — the Choreographer stops
             // calling doFrame then, but CLUTCH/chat still needs to advance. The ptr stays valid until
@@ -419,7 +418,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
             // Start render loop
             Choreographer.getInstance().postFrameCallback(this)
         } else {
-            Log.e(TAG, "Failed to initialize native UI")
+            PhotonLog.e(TAG, "Failed to initialize native UI")
         }
     }
 
