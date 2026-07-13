@@ -1,6 +1,6 @@
 // PHOTON SOURCE MAP — one readable line per file. Keep updated when files or major pub items change.
 //
-// lib.rs   — constants (PHOTON_PORT=4383, PHOTON_PORT_FALLBACK=3546, MULTICAST_PORT=4384, OSC_PER_SEC, PEER_EXPIRY_OSC=7d, KBUCKET_STALE_OSC=1h), always-on VSF logging sink (16 MiB + jittered 24–48h caps, name-scrubbed), and helpers: init_logging/log/log_at/clear_log/snapshot_log_bytes/install_log_bridge, fp(public_id) (non-PII log label), jitter/jitter_dur (anti-thundering-herd 50–100% pad), module re-exports.
+// lib.rs   — constants (PHOTON_PORT=4383, PHOTON_PORT_FALLBACK=3546, MULTICAST_PORT=4384, OSC_PER_SEC, PEER_EXPIRY_OSC=7d, KBUCKET_STALE_OSC=1h), always-on VSF logging sink (16 MiB + jittered 24–48h caps, name-scrubbed), and helpers: init_logging/log/log_at/clear_log/snapshot_log_bytes/log_size_bytes/install_log_bridge, fp(public_id) (non-PII log label), jitter/jitter_dur (anti-thundering-herd 50–100% pad), module re-exports.
 // main.rs  — winit event loop, window creation, tokio async runtime.
 //
 // crypto/
@@ -182,6 +182,17 @@ pub fn clear_log() {}
 #[inline(always)]
 pub fn snapshot_log_bytes() -> Option<Vec<u8>> {
     None
+}
+#[cfg(not(feature = "logging"))]
+#[inline(always)]
+pub fn log_size_bytes() -> u64 {
+    0
+}
+
+/// Live size of the open VSF log — the cheap "has anything been logged since?" probe (one atomic load, no I/O). The Diagnostics Submit pill greys while this still equals the size captured at the last successful submit: identical size = identical bytes = a duplicate upload.
+#[cfg(feature = "logging")]
+pub fn log_size_bytes() -> u64 {
+    LOG_BYTES.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 // The structured VSF log sink: one COMPLETE VSF record per line — {creation_time (Eagle), section "log" {lvl, msg}} — appended to `<photon_config_dir>/photon.log.vsf` on EVERY platform (Android: app filesDir, pullable via `adb pull`; desktop/Windows: the config dir). The log is thus a stream of self-describing, Eagle-time-stamped, vsfinfo-inspectable records; read it with the `photonlog` bin. Opens lazily and RETRIES until the dir is ready — a plain Mutex<Option<File>>, NOT a OnceLock, precisely so a pre-data-dir failure isn't cached forever (the first Kotlin/JNI lines predate Android's data_dir; they buffer in LOG_PENDING below and flush when the file opens).
