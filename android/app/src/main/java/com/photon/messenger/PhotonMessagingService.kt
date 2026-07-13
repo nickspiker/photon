@@ -2,7 +2,6 @@ package com.photon.messenger
 
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
-import android.util.Log
 
 /**
  * Firebase Cloud Messaging service for receiving peer update notifications.
@@ -27,7 +26,7 @@ class PhotonMessagingService : FirebaseMessagingService() {
         // Check if this is a peer_update message
         val messageType = remoteMessage.data["type"]
         if (messageType == "peer_update") {
-            Log.d(TAG, "Peer update received from FGTW")
+            PhotonLog.d(TAG, "Peer update received from FGTW")
             // Poke Rust - it will trigger a full peer list refresh
             nativePeerUpdateReceived()
         }
@@ -35,7 +34,7 @@ class PhotonMessagingService : FirebaseMessagingService() {
 
     override fun onNewToken(token: String) {
         super.onNewToken(token)
-        Log.d(TAG, "FCM token refreshed")
+        PhotonLog.d(TAG, "FCM token refreshed")
         // Token is sent to FGTW during /announce - no action needed here
         // The token will be included in the next announce when app is active
     }

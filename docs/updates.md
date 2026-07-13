@@ -18,16 +18,32 @@ A binary is verified on disk with that existing self-verify path BEFORE it is ev
 
 Two properties ride alongside the signature:
 
-- **Monotonic version.** The client refuses any version less than or equal to what it is already running, so a signed-but-old (and possibly vulnerable) build can never be replayed to force a downgrade. Version is compared as an ordered integer, not a string.
+- **Stamp window.** The version integer IS the release stamp `t` — the moment the artefact was signed. The running build's own embedded stamp is the floor, and a fetched artefact is acceptable iff `floor < t ≤ now` (the client's validated clock). Below or at the floor is a replay/downgrade and is discarded permanently. Ahead of `now` is forward-dated and is simply *not yet* — nothing stored, nothing changed, the next poll re-evaluates — so a lagging clock delays an update rather than rejecting it, and no skew tolerance parameter exists. The floor advances only by exec'ing into the new build; it is never mutable stored state.
 - **Provenance stays on the artefact.** The signature covers the whole binary, so a bit-flip in transit or on disk fails the check the same way tampering does — there is no path where a corrupt download runs.
+
+Why the upper bound matters as much as the lower: because every accepted stamp was ≤ now at acceptance, the floor can never run ahead of real time.
+Under monotonic-only, a single maliciously-signed build stamped far in the future installs once and then freezes the client forever — every legitimate release is below the poisoned floor (a version-ceiling bricking attack).
+With the window, a far-future stamp can't be installed, so it can't poison the floor; freezing a client requires continuously re-signing fresher builds, which is live key compromise — a different problem (revocation, transparency log).
+
+The cost is that the client clock enters the security boundary, and the system clock is disciplined by unauthenticated NTP — "your clock" is partly the network's clock.
+Two clock attacks matter, one per direction: clock-back makes every fresh legitimate release look forward-dated (a silent freeze the upper bound itself introduces — the client refuses updates it successfully fetched and verified), and clock-forward combined with a stolen key gets a far-future stamp installed, poisoning the floor in a way that survives key rotation.
+A locally dishonest clock is NOT in the threat model: forward-dated stamps only exist under key compromise, and update security protects the user from third parties, not the binary from its owner.
+
+So the `now` in the stamp window is nunc consensus, not the system clock — folded in at the accept/defer decision point only (never a hard dependency of the app, never the poll cadence).
+The economics: an update check already has the network (a manifest was just fetched), updates are rare so ~1s of `Mode::Fast` is free, and the comparison uses the conservative edge of the confidence interval (`t ≤ consensus_low`).
+No consensus → defer, exactly like forward-dated — "not yet" is already the fail-safe outcome.
+Staged version: system clock on the happy path, nunc invoked as tiebreaker only when the window check fails forward — consult the expensive honest clock exactly when someone claims time travel.
+This requirement is universal: every platform, Android included — most users are Android users, and a system-clock fallback there would hand the majority platform exactly the freeze/poisoning attacks the consensus exists to close.
+nunc is a dependency on every platform except Redox (un-gated 2026-07-12 — the old "ring needs the NDK" desktop-only gating was untested caution; ring cross-compiles fine under the NDK env the Android build already uses).
+Redox is the one real gap (ring has no Redox target); the fix is a pure-Rust rustls CryptoProvider in nunc, ferros-era, and until then Redox defers all updates — fail-safe, not fail-open.
 
 Later hardening (out of scope for v1, noted so it is not forgotten): reproducible builds plus a transparency log, so a maliciously-signed update targeting one user is publicly detectable rather than silent.
 
 ## The version manifest and where the binary comes from
 
 A small VSF document, signed by the release key, published to FGTW/R2 next to the binaries.
-It carries, per platform/arch: the current version (the ordered integer), the artefact URL, and the artefact's expected hash.
-The client polls it, and a manifest whose signature or monotonicity fails is ignored exactly like a bad binary.
+It carries, per platform/arch: the release stamp (the ordered version integer), the artefact URL, and the artefact's expected hash.
+The client polls it, and a manifest whose signature or stamp window fails is ignored exactly like a bad binary.
 The manifest is the only thing the client trusts to learn "a newer version exists"; it never infers freshness from a filename or a directory listing.
 
 For now the artefact URL points at a single dedicated signed executable hosted on fgtw.org (the same R2 the installers already serve from) — one canonical download per platform.
@@ -83,7 +99,7 @@ Exists and is reused:
 
 To build:
 - The signed version manifest format + its publish step in the release scripts.
-- The client poll + verify + monotonic-compare check.
+- The client poll + verify + stamp-window check (`floor < t ≤ now`).
 - The platform-split swap (Unix rename, Windows `.old` dance) + re-exec.
 - In-flight textbox hand-off across the exec.
 - The Android notification → system-installer path.
@@ -91,6 +107,8 @@ To build:
 
 ## Decided
 
+- **Stamp window:** version = release stamp; accept iff `floor < t ≤ now`. No downgrades, no forward-dated stamps — forward-dated means "not yet", re-evaluated on the next poll, with no skew tolerance parameter.
+- **`now` = nunc consensus** at the accept/defer decision, on EVERY platform — no system-clock fallback anywhere (conservative edge of the confidence interval). No consensus → defer, same as forward-dated. nunc-on-Android un-gated 2026-07-12; Redox (no ring target) defers all updates until nunc grows a pure-Rust TLS provider.
 - **Manual affordance:** yes — a "Check for updates" button on the Settings → Updates page, every platform.
 - **Desktop default:** automatic updates ON by default, with an opt-out toggle (disclosed in the operating notes).
 - **Android default:** "notify of updates" ON by default; the notification explains, then requests `REQUEST_INSTALL_PACKAGES`, then hands off to the system installer.

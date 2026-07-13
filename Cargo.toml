@@ -133,6 +133,8 @@ libc = "0.2.178"
 # thread-priority doesn't support Redox yet
 [target.'cfg(not(target_os = "redox"))'.dependencies]
 thread-priority = "1.2"
+# Trustworthy wall-clock via multi-source network consensus. Used as a one-shot startup + on-jump sanity check on the system clock — never a data timestamp source (eagle-time stamps stay on the local monotonic clock); a large offset raises the amber "clock off" banner, never a silent correction. Required on every platform because the update stamp-window check uses nunc consensus as its `now` (docs/updates.md) — a system-clock fallback would hand back the freeze/poisoning attacks the consensus closes. Redox is excluded only because nunc's TLS stack rides rustls's `ring` backend and ring has no Redox target (eventual fix: pure-Rust CryptoProvider in nunc); ring cross-compiles to Android fine under the NDK env (android-env.sh already carries its clang symlinks) — the old desktop-only gating was untested caution.
+nunc-time = { path = "../nunc" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 wgpu = { version = "28", default-features = false, features = ["metal", "wgsl"] }
@@ -177,8 +179,6 @@ arboard = "3.4"
 fluor = { path = "../fluor", default-features = false, features = ["host-winit"] }
 # Per-contact notification chime: deterministic modal bell from spaghettify(their_handle_hash + our_identity_seed). Desktop-only - rodio's playback stack does not belong in the Android/Redox dep graphs (Android will use platform notifications).
 chirp = { path = "../chirp" }
-# Trustworthy wall-clock via multi-source network consensus. Desktop-only (its roughtime source pulls `ring`, which needs the NDK to cross-compile, and the check is a desktop-host affordance anyway). Used ONLY as a one-shot startup + on-jump sanity check on the system clock — never the timestamp source (eagle-time stamps stay on the local monotonic clock); a large offset raises the amber "clock off" banner, never a silent correction.
-nunc-time = { path = "../nunc" }
 
 [dev-dependencies]
 criterion = "0.7.0"

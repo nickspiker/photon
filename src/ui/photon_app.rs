@@ -1323,9 +1323,11 @@ impl FluorApp for PhotonApp {
             self.clock_check_rx = ccrx;
         }
 
-        // One-shot wall-clock sanity check via nunc-time, a few seconds behind attest (off-thread, so the several-seconds consensus query never blocks the UI). Warns via banner if the system clock is grossly wrong — never corrects it. Mid-session re-checks fire from the jump detector in `update`.
+        // One-shot wall-clock sanity check via nunc-time, a few seconds behind attest (off-thread, so the several-seconds consensus query never blocks the UI). Warns via banner if the system clock is grossly wrong — never corrects it. Mid-session re-checks fire from the jump detector in `update`. On Android the wake handle is `None` (redraws come thru the JNI/Choreographer path); the result is drained on a subsequent tick.
         #[cfg(not(target_os = "android"))]
         crate::network::spawn_clock_check(self.clock_check_tx.clone(), Some(proxy.clone()));
+        #[cfg(target_os = "android")]
+        crate::network::spawn_clock_check(self.clock_check_tx.clone(), None);
 
         // Spawn the presence + CLUTCH status checker on HandleQuery's shared socket. Done BEFORE `hq` is moved into the field so we can take its socket. Without this the UDP recv/pong worker never runs — the socket is bound but nothing reads it or replies, so the device is invisible to every peer (no presence, no CLUTCH). The desktop and Android constructors differ only in the wake sender: desktop passes the winit event proxy; Android's redraws come thru the JNI/Choreographer path so its constructor takes none.
         #[cfg(not(target_os = "android"))]
@@ -8228,12 +8230,14 @@ impl PhotonApp {
 
         // Clock sanity: drain any completed nunc verdict, then (if the wall clock has grossly jumped since the last baseline) spawn a fresh re-check. Both are cheap — the jump check is two clock reads and a subtraction; a re-check only spawns on an actual jump.
         self.drain_clock_check();
-        #[cfg(not(target_os = "android"))]
         if self.online && self.clock_jump.check_and_reset() {
+            crate::log("Clock: wall clock jumped — re-verifying via nunc consensus");
+            #[cfg(not(target_os = "android"))]
             if let Some(proxy) = self.event_proxy.clone() {
-                crate::log("Clock: wall clock jumped — re-verifying via nunc consensus");
                 crate::network::spawn_clock_check(self.clock_check_tx.clone(), Some(proxy));
             }
+            #[cfg(target_os = "android")]
+            crate::network::spawn_clock_check(self.clock_check_tx.clone(), None);
         }
         // Avatar acquisition policy (once/session/contact). A MUTUAL contact (CLUTCH Complete, which is impossible unless both added each other) gets a direct P2P AvatarRequest — a friend's avatar comes from the friend. We fall back to FGTW for that friend ONLY if no AvatarResponse has installed an avatar within AVATAR_P2P_FALLBACK_OSC (the friend is offline or avatar-less). A non-mutual contact never gets a direct request — it only ever pulls the public FGTW copy. Never blocks; each branch is dedup'd so the per-tick sweep is cheap.
         /// ~3 seconds (oscillations) before a mutual peer's silent P2P request falls back to FGTW.
