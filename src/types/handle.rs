@@ -29,25 +29,9 @@ impl Handle {
         *ihi::handle_to_hash(&Self::canonical(handle)).as_bytes()
     }
 
-    /// The ONE canonical spelling of a handle, applied before EVERY derivation (proof + identity seed). ihi only does Unicode NFC, so without this the same handle typed with different case, spacing, or camelCase concatenation derives a DIFFERENT identity — the observed "double handle proof": one device attests `FractalDecoder`, another types `fractal decoder`, the probe finds no chain, and a second genesis forks the identity.
-    /// Rules: split on whitespace AND lower→Upper camelCase boundaries, lowercase every word, join with single spaces. `"FractalDecoder"`, `" Fractal  Decoder "`, and `"fractal decoder"` all canonicalize to `"fractal decoder"`.
+    /// The ONE canonical spelling of a handle, applied before EVERY derivation (proof + identity seed). Now lives in `fgtw::keys::canonical_handle` so every TOKEN app folds case/spacing/camelCase identically — a second app hashing the raw typed string would derive a different identity per typo-variant (the "double handle proof" fork). Thin delegate kept for unchanged call sites.
     pub fn canonical(handle: &str) -> String {
-        let mut words: Vec<String> = Vec::new();
-        for token in handle.split_whitespace() {
-            let mut cur = String::new();
-            let mut prev_lower = false;
-            for c in token.chars() {
-                if c.is_uppercase() && prev_lower && !cur.is_empty() {
-                    words.push(std::mem::take(&mut cur));
-                }
-                prev_lower = c.is_lowercase();
-                cur.extend(c.to_lowercase());
-            }
-            if !cur.is_empty() {
-                words.push(cur);
-            }
-        }
-        words.join(" ")
+        fgtw::keys::canonical_handle(handle)
     }
 }
 
