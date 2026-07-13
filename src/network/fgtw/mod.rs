@@ -8,8 +8,8 @@ pub mod protocol;
 pub mod relay;
 
 pub use blob::{
-    delete_blob, get_blob, get_blob_blocking, log_get_blocking, log_list_blocking, put_blob,
-    put_blob_blocking, put_log_blocking, BlobError,
+    delete_blob, get_blob, get_blob_blocking, inbox_drain_blocking, log_get_blocking,
+    log_list_blocking, put_blob, put_blob_blocking, put_log_blocking, BlobError, FleetInboxEvent,
 };
 pub use bootstrap::load_bootstrap_peers;
 #[cfg(not(target_os = "android"))]

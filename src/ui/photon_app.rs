@@ -564,6 +564,9 @@ pub struct PhotonApp {
     clock_off: Option<i64>,
     /// Watches the wall clock against the monotonic clock; a gross unexplained jump (NTP step, long sleep, or an adversary moving the clock after boot) triggers a fresh consensus re-check.
     clock_jump: crate::network::ClockJumpDetector,
+    /// Fleet-inbox drain: a one-shot off-thread pull of this identity's pending worker-observed events (bind-attempt alerts, docs/fleet-inbox.md). `drain_fleet_inbox` reads the result and surfaces a notice. Kicked once per attest/resume.
+    inbox_check_tx: std::sync::mpsc::Sender<Vec<crate::network::fgtw::FleetInboxEvent>>,
+    inbox_check_rx: std::sync::mpsc::Receiver<Vec<crate::network::fgtw::FleetInboxEvent>>,
     /// FGTW connectivity state — flipped by `HandleQuery::try_recv_online`. Drives the top-left chrome orb's colour (red offline / green online). Starts false; the background worker reports the first real status within the first second of launch.
     online: bool,
     /// Contacts-page handle search/add textbox (Ready state). Distinct from `textbox` so content doesn't bleed between Launch (handle being attested) and Ready (handle being added as a contact).
@@ -783,6 +786,11 @@ impl PhotonApp {
             clock_off: None,
             // ~1 hour of unexplained wall-vs-monotonic skew triggers a re-check (loose enough to ignore NTP steps and short sleeps, tight enough to catch a day-scale set or long sleep).
             clock_jump: crate::network::ClockJumpDetector::new(3600),
+            inbox_check_tx: {
+                let (tx, _) = std::sync::mpsc::channel();
+                tx
+            },
+            inbox_check_rx: std::sync::mpsc::channel().1,
             online: false,
             contacts_textbox: None,
             message_textbox: None,
@@ -1324,6 +1332,9 @@ impl FluorApp for PhotonApp {
             let (cctx, ccrx) = std::sync::mpsc::channel();
             self.clock_check_tx = cctx;
             self.clock_check_rx = ccrx;
+            let (ictx, icrx) = std::sync::mpsc::channel();
+            self.inbox_check_tx = ictx;
+            self.inbox_check_rx = icrx;
         }
 
         // One-shot wall-clock sanity check via nunc-time, a few seconds behind attest (off-thread, so the several-seconds consensus query never blocks the UI). Warns via banner if the system clock is grossly wrong — never corrects it. Mid-session re-checks fire from the jump detector in `update`. On Android the wake handle is `None` (redraws come thru the JNI/Choreographer path); the result is drained on a subsequent tick.
@@ -1331,6 +1342,9 @@ impl FluorApp for PhotonApp {
         crate::network::spawn_clock_check(self.clock_check_tx.clone(), Some(proxy.clone()));
         #[cfg(target_os = "android")]
         crate::network::spawn_clock_check(self.clock_check_tx.clone(), None);
+
+        // One-shot fleet-inbox drain: pull any worker-observed alerts (bind attempts on our devices). Off-thread — a blocking HTTPS round trip — with the verdict drained on a later tick.
+        self.spawn_inbox_drain();
 
         // Spawn the presence + CLUTCH status checker on HandleQuery's shared socket. Done BEFORE `hq` is moved into the field so we can take its socket. Without this the UDP recv/pong worker never runs — the socket is bound but nothing reads it or replies, so the device is invisible to every peer (no presence, no CLUTCH). The desktop and Android constructors differ only in the wake sender: desktop passes the winit event proxy; Android's redraws come thru the JNI/Choreographer path so its constructor takes none.
         #[cfg(not(target_os = "android"))]
@@ -6616,6 +6630,64 @@ impl PhotonApp {
         }
     }
 
+    /// Kick a one-shot fleet-inbox drain off-thread (blocking HTTPS). Pulls this identity's pending worker-observed events (bind-attempt alerts) and posts them over `inbox_check_tx`; `drain_fleet_inbox` surfaces them on a later tick. No-op without a handle_proof + device key (not yet attested).
+    fn spawn_inbox_drain(&self) {
+        if let (Some(hp), Some(kp), tx) = (
+            self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()),
+            self.device_keypair.clone(),
+            self.inbox_check_tx.clone(),
+        ) {
+            std::thread::spawn(move || {
+                match crate::network::fgtw::inbox_drain_blocking(&kp, &hp) {
+                    Ok(events) if !events.is_empty() => {
+                        let _ = tx.send(events);
+                    }
+                    Ok(_) => {}
+                    Err(e) => crate::log(&format!("INBOX: drain failed: {e}")),
+                }
+            });
+        }
+    }
+
+    /// Drain any pulled fleet-inbox events and surface them as an event-shown notice (interaction-cleared, never timed). A `bind_attempt` renders "someone tried to enrol one of your devices"; if the attempted-into handle_proof matches a known contact, name it — that's the case that distinguishes an insider or your own fumble from an anonymous thief (docs/fleet-inbox.md).
+    fn drain_fleet_inbox(&mut self) {
+        // Collect first so the rx borrow is released before we touch self.contacts / self.ready_toast.
+        let batches: Vec<Vec<crate::network::fgtw::FleetInboxEvent>> =
+            self.inbox_check_rx.try_iter().collect();
+        for events in batches {
+            let mut bind_attempts = 0usize;
+            let mut named: Option<String> = None;
+            for ev in &events {
+                crate::log(&format!(
+                    "INBOX: {} — device {} attempted-by {}",
+                    ev.kind,
+                    crate::fp(&ev.device),
+                    crate::fp(&ev.attempted_by),
+                ));
+                if ev.kind == "bind_attempt" {
+                    bind_attempts += 1;
+                    if named.is_none() {
+                        named = self
+                            .contacts
+                            .iter()
+                            .find(|c| c.handle_proof == ev.attempted_by)
+                            .map(|c| c.handle.as_str().to_string());
+                    }
+                }
+            }
+            if bind_attempts > 0 {
+                let who = match &named {
+                    Some(name) => format!(" into {name}'s fleet"),
+                    None => String::new(),
+                };
+                let plural = if bind_attempts == 1 { "" } else { "s" };
+                self.ready_toast = Some(format!(
+                    "\u{26a0} {bind_attempts} attempt{plural} to enrol your device{who}"
+                ));
+            }
+        }
+    }
+
     /// Recover the device's OWN avatar from FGTW after a local clear (the vault load returned nothing). Off-thread (blocking FGTW round-trip); the result comes back over avatar_dl_tx with an EMPTY handle, which drain_avatar_downloads routes into device_avatar_pixels. No-op without storage.
     fn spawn_self_avatar_recover(&self, identity_seed: [u8; 32]) {
         let Some(storage) = self.storage.as_ref().map(Arc::clone) else {
@@ -8268,6 +8340,8 @@ impl PhotonApp {
 
         // Clock sanity: drain any completed nunc verdict, then (if the wall clock has grossly jumped since the last baseline) spawn a fresh re-check. Both are cheap — the jump check is two clock reads and a subtraction; a re-check only spawns on an actual jump.
         self.drain_clock_check();
+        // Surface any fleet-inbox alerts pulled since the last tick (bind attempts on our devices).
+        self.drain_fleet_inbox();
         if self.online && self.clock_jump.check_and_reset() {
             crate::log("Clock: wall clock jumped — re-verifying via nunc consensus");
             #[cfg(not(target_os = "android"))]
