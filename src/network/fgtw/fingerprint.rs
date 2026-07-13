@@ -46,14 +46,8 @@ impl Default for FgtwPaths {
     }
 }
 
-/// Derive device keypair from machine fingerprint (deterministic, never stored)
-///
-/// Uses BLAKE3 to hash the fingerprint into a 32-byte Ed25519 seed. The same fingerprint always produces the same keypair.
-pub fn derive_device_keypair(fingerprint: &[u8]) -> Keypair {
-    let hash = blake3::hash(fingerprint);
-    let seed: [u8; 32] = *hash.as_bytes();
-    Keypair::from_seed(&seed)
-}
+// Fingerprint → keypair derivation now lives in the `fgtw` crate too (same crate as `Keypair`), so every TOKEN app derives the same device identity from the same oracle bytes. Re-exported for unchanged call sites.
+pub use fgtw::keys::derive_device_keypair;
 
 /// Machine fingerprint for deterministic key derivation — delegates to tohu's per-platform device oracle so the read logic lives once in the shared crate, not duplicated across every stack app. Desktop only: on Android the keypair is derived from the JNI-fetched oracle (today pushed via `NetworkContext`; `tohu::device` owns the in-Rust fetch once it's device-verified). Source per platform: Linux `/etc/machine-id` · Windows `MachineGuid` · macOS `IOPlatformUUID` · other `/etc/hostid`→`/etc/hostname`.
 #[cfg(not(target_os = "android"))]
