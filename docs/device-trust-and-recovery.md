@@ -1,7 +1,9 @@
 # Device trust, removal, and identity recovery
 
 The consent-only membership model, the friend-side trust override, and custodian-authorized total-loss recovery.
-Status: DESIGN, decided 2026-07-12. This SUPERSEDES the remote-removal model — see "What this replaces" at the end. Not built yet.
+Status: DESIGN, decided 2026-07-12. This replaces the remote-removal model — see "What this replaces" at the end. Not built yet.
+
+Scale note: the remote-removal model this replaces is running on ~5 devices (the author + one friend), not a public release — no userbase, no migration burden. We can rewrite the model in place rather than carry a compatibility path. Caught while the fleet is small, which is the whole point of catching it now.
 
 ## The spine: three rules
 
@@ -78,7 +80,7 @@ When every device is gone, you have no member device to pair a new one and can't
 - **device-lifecycle.md §Remove** (remote `unbind_device`, "any single member may Add and Remove", "remote removal of a LOST device is the point") — superseded by consent-only self-signout. The `unbind_device`-another-device op is retired; `clean_device_for_reuse` (a device shedding ITSELF) is the surviving self-signout pattern.
 - **rekey-threat-model.md §revocation** ("revocation-that-works = remove + rotate", fold-respecting trust dropping a removed device) — superseded by the friend-side override. Fold-respecting trust stays as the *membership* signal, but effective trust gains the `friend_locally_refused` term, and eviction no longer depends on the chain shedding the device.
 
-Both of those describe SHIPPED behavior accurately today; this document is the target state to build toward, at which point those sections get rewritten to match.
+Both describe the behavior currently running on the ~5-device test fleet; this document is the target state to build toward, at which point those sections get rewritten to match. No compat path needed at this scale — the model gets rewritten in place.
 
 ## Build implications
 
