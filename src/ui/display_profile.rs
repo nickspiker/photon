@@ -34,12 +34,12 @@ impl DisplayConverter {
     pub fn new() -> Self {
         if let Some(profile_bytes) = get_display_profile() {
             if let Ok(converter) = Self::from_icc_profile(&profile_bytes) {
-                eprintln!("Display: Using ICC profile from system");
+                crate::log("Display: Using ICC profile from system");
                 return converter;
             }
         }
 
-        eprintln!("Display: Using sRGB fallback");
+        crate::log("Display: Using sRGB fallback");
         Self::srgb_fallback()
     }
 
@@ -291,7 +291,7 @@ fn get_display_profile() -> Option<Vec<u8>> {
     unsafe {
         let display = x11::xlib::XOpenDisplay(ptr::null());
         if display.is_null() {
-            eprintln!("Display: Failed to open X11 display");
+            crate::log("Display: Failed to open X11 display");
             return None;
         }
 
@@ -299,7 +299,7 @@ fn get_display_profile() -> Option<Vec<u8>> {
         let atom = x11::xlib::XInternAtom(display, atom_name.as_ptr(), 0);
         if atom == 0 {
             x11::xlib::XCloseDisplay(display);
-            eprintln!("Display: _ICC_PROFILE atom not found");
+            crate::log("Display: _ICC_PROFILE atom not found");
             return None;
         }
 
@@ -328,7 +328,7 @@ fn get_display_profile() -> Option<Vec<u8>> {
 
         if result != 0 || prop.is_null() || nitems == 0 {
             x11::xlib::XCloseDisplay(display);
-            eprintln!("Display: No _ICC_PROFILE property on root window");
+            crate::log("Display: No _ICC_PROFILE property on root window");
             return None;
         }
 
@@ -338,7 +338,7 @@ fn get_display_profile() -> Option<Vec<u8>> {
         x11::xlib::XFree(prop as *mut _);
         x11::xlib::XCloseDisplay(display);
 
-        eprintln!("Display: Got ICC profile, {} bytes", profile_bytes.len());
+        crate::log(&format!("Display: Got ICC profile, {} bytes", profile_bytes.len()));
         Some(profile_bytes)
     }
 }
@@ -371,7 +371,7 @@ fn get_display_profile() -> Option<Vec<u8>> {
 
         // Convert to string and read file
         let path_str = String::from_utf16_lossy(&path[..size as usize - 1]);
-        eprintln!("Display: ICC profile at {}", path_str);
+        crate::log(&format!("Display: ICC profile at {}", path_str));
         std::fs::read(&path_str).ok()
     }
 }
