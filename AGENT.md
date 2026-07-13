@@ -476,6 +476,7 @@ Compare alternatives:
 - `sqrt(w*h)` (geometric mean) - Smooth, but infinite slope at axes
 - `(w+h)/2` (arithmetic mean) - Doesn't bias toward smaller dimension
 
+
 The harmonic mean is the unique function with all desired properties.
 
 Use these. Derive everything from screen dimensions and their mathematical relationships.

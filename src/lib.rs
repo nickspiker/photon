@@ -16,7 +16,7 @@
 //     protocol.rs   — VSF FGTW+CLUTCH frames: FgtwMessage, PeerRecord (self-signed), hist_req/hist_page (friend-history), blind_put/ack/get/srv (friend-blinded S), av_req/av_resp (P2P avatar), reflect/reflect_resp (STUN reflection); all via canonical sign_file + read_verified.
 //     fleet.rs      — photon's binding to the fgtw crate (the pure logic lives there, shared by every app + the worker): PhotonTransport (pooled reqwest) + PhotonSealer (roster AEAD) injected into fgtw::client wrappers. Crate side: fgtw::fleet (MembershipBlob genesis/add/remove/fold — fold IS the auth rule), fgtw::fanout (fleet-key seal/recover/rotate), fgtw::fstate (roster codec), fgtw::pair (pairing words). Photon wrappers: current_members[_with_ts], bind/unbind_device, rotate_fleet_key, push/pull_roster.
 //     relay.rs      — relay node logic.
-//   clock_check.rs  — one-shot wall-clock sanity check via nunc-time consensus (desktop-only, warn-only): spawn_clock_check, ClockJumpDetector, ClockCheckResult.
+//   clock_check.rs  — one-shot wall-clock sanity check via nunc-time consensus (all platforms except Redox, warn-only): spawn_clock_check, ClockJumpDetector, ClockCheckResult.
 //   handle_query.rs — handle attestation + lookup: HandleQuery (query/query_resume/search + try_recv*), QueryRequest, QueryResult{Success(AttestationData),AlreadyAttested,Error}, AttestationData{handle_proof, identity_seed, contacts, friendships, avatar_pixels, peers}.
 //   history_pages.rs— key-agnostic history-backfill page codec (fleet phase reuses verbatim): seal/open_history_page (VSF + kete ChaCha20-Poly1305), HistoryRow, HistoryPagePlain, MAX_PAGE_ROWS=50, MAX_PAGE_BYTES=24KB.
 //   http.rs         — shared pooled HTTP for FGTW: runtime (one persistent tokio), async_client, blocking.
@@ -184,10 +184,16 @@ pub fn snapshot_log_bytes() -> Option<Vec<u8>> {
     None
 }
 
-// The structured VSF log sink: one COMPLETE VSF record per line — {creation_time (Eagle), section "log" {lvl, msg}} — appended to `<photon_config_dir>/photon.log.vsf` on EVERY platform (Android: app filesDir, pullable via `adb pull`; desktop/Windows: the config dir). The log is thus a stream of self-describing, Eagle-time-stamped, vsfinfo-inspectable records; read it with the `photonlog` bin. Opens lazily and RETRIES until the dir is ready — a plain Mutex<Option<File>>, NOT a OnceLock, precisely so a pre-data-dir failure isn't cached forever (the first few JNI lines predate Android's data_dir and land in the console sink only).
+// The structured VSF log sink: one COMPLETE VSF record per line — {creation_time (Eagle), section "log" {lvl, msg}} — appended to `<photon_config_dir>/photon.log.vsf` on EVERY platform (Android: app filesDir, pullable via `adb pull`; desktop/Windows: the config dir). The log is thus a stream of self-describing, Eagle-time-stamped, vsfinfo-inspectable records; read it with the `photonlog` bin. Opens lazily and RETRIES until the dir is ready — a plain Mutex<Option<File>>, NOT a OnceLock, precisely so a pre-data-dir failure isn't cached forever (the first Kotlin/JNI lines predate Android's data_dir; they buffer in LOG_PENDING below and flush when the file opens).
 // Known filename (logging is a dev-build feature, so adb-pull discoverability beats filename privacy).
 #[cfg(feature = "logging")]
 static LOG_FILE: std::sync::Mutex<Option<std::fs::File>> = std::sync::Mutex::new(None);
+
+// Records that arrive before the sink can open (Android: everything logged before the JNI data dir lands, including the Kotlin bridge's earliest lifecycle lines) — held as already-built VSF record bytes so their creation stamps stay true, drained into the file the moment it opens. Bounded so a never-initializing process can't grow it unbounded; overflow drops the newest record (the earliest lines are the ones worth keeping).
+#[cfg(feature = "logging")]
+static LOG_PENDING: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
+#[cfg(feature = "logging")]
+const LOG_PENDING_CAP: usize = 64 << 10;
 
 // Size cap for the VSF log: once the file passes 16 MiB, drop enough of the OLDEST whole records to bring it back to ~8 MiB.
 // Trimming cuts only on record boundaries (the file is a stream of complete VSF records), so the result stays fully decodable by photonlog.
@@ -235,6 +241,18 @@ fn log_dir() -> Option<std::path::PathBuf> {
 #[cfg(feature = "logging")]
 fn append_log_record(level: LogLevel, msg: &str) {
     use std::io::Write;
+    // Build first so a buffered record carries the stamp of when it was LOGGED, not when the sink finally opened.
+    let record = vsf::VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .provenance_only()
+        .add_section(
+            "log",
+            vec![
+                ("lvl".to_string(), vsf::VsfType::u(level as usize, false)),
+                ("msg".to_string(), vsf::VsfType::x(msg.to_string())),
+            ],
+        )
+        .build();
     let Ok(mut guard) = LOG_FILE.lock() else {
         return;
     };
@@ -242,7 +260,15 @@ fn append_log_record(level: LogLevel, msg: &str) {
         if let Some(dir) = log_dir() {
             let _ = std::fs::create_dir_all(&dir);
             let path = dir.join("photon.log.vsf");
-            if let Ok(f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+                // Drain the pre-dir buffer FIRST so the file stays chronological, then seed the counters (metadata already includes the drained bytes).
+                if let Ok(mut pending) = LOG_PENDING.lock() {
+                    if !pending.is_empty() {
+                        let _ = f.write_all(&pending);
+                        pending.clear();
+                        pending.shrink_to_fit();
+                    }
+                }
                 let sz = f.metadata().map(|m| m.len()).unwrap_or(0);
                 LOG_BYTES.store(sz, std::sync::atomic::Ordering::Relaxed);
                 LOG_OLDEST_OSC.store(
@@ -258,19 +284,14 @@ fn append_log_record(level: LogLevel, msg: &str) {
         }
     }
     let Some(file) = guard.as_mut() else {
+        // No sink yet (Android before the JNI data dir lands): hold the built record so the earliest lines aren't lost.
+        if let (Ok(bytes), Ok(mut pending)) = (&record, LOG_PENDING.lock()) {
+            if pending.len() + bytes.len() <= LOG_PENDING_CAP {
+                pending.extend_from_slice(bytes);
+            }
+        }
         return;
     };
-    let record = vsf::VsfBuilder::new()
-        .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .provenance_only()
-        .add_section(
-            "log",
-            vec![
-                ("lvl".to_string(), vsf::VsfType::u(level as usize, false)),
-                ("msg".to_string(), vsf::VsfType::x(msg.to_string())),
-            ],
-        )
-        .build();
     if let Ok(bytes) = record {
         let _ = file.write_all(&bytes);
         let _ = file.flush();

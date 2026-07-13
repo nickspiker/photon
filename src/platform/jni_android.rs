@@ -512,6 +512,31 @@ pub extern "C" fn Java_com_photon_messenger_PhotonMessagingService_nativePeerUpd
 
 // ============================================================================
 
+/// Kotlin's `PhotonLog` object routes every line the Java layer used to send to logcat into the same structured VSF log as the Rust side (photon.log.vsf) — logcat is retired across the board, ONE durable pullable log. `level` carries photon's `LogLevel` discriminant (1=Debug, 2=Info, 3=Warn, 4=Error); lines logged before the JNI data dir lands buffer in the sink's pending queue and flush when it opens.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonLog_nativeLog(
+    mut env: JNIEnv<'_>,
+    _this: JObject<'_>,
+    level: jint,
+    msg: JString<'_>,
+) {
+    let Ok(m) = env.get_string(&msg) else {
+        return;
+    };
+    let m: String = m.into();
+    let lvl = match level {
+        0 => crate::LogLevel::Trace,
+        1 => crate::LogLevel::Debug,
+        2 => crate::LogLevel::Info,
+        3 => crate::LogLevel::Warn,
+        _ => crate::LogLevel::Error,
+    };
+    crate::log_at(lvl, &m);
+}
+
+// ============================================================================
+
 // PhotonConnectionService - Background Network Stack ============================================================================
 /// Derive device keypair from fingerprint bytes using BLAKE3
 #[cfg(target_os = "android")]
