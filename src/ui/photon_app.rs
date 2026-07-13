@@ -502,8 +502,6 @@ pub struct PhotonApp {
     last_presence_ping: Option<Instant>,
     /// Last time the user interacted with the app (any input event, or window focus-gain). `None` until the first interaction. The presence sweep tapers with idle time — frequent while you're actively using it, sparse when you've walked away — so an unfocused, untouched window isn't hitting the network every few seconds. Reset on interaction, which also triggers an immediate sweep so rings are fresh the instant you look. See `presence_ping_interval`.
     last_interaction: Option<Instant>,
-    /// `true` while a left-mouse-button drag is extending the textbox selection (set on left-press over a focused textbox, cleared on left-release). `CursorMoved` consults this to decide whether to grow the selection toward the cursor — otherwise hover updates are the only thing CursorMoved touches.
-    is_dragging_select: bool,
     /// HandleQuery client — owns the UDP socket, device keypair, and FGTW peer store. Submission calls `handle_query.query(handle)`; `tick()` polls `try_recv()` for results. `None` until init.
     handle_query: Option<HandleQuery>,
     /// Per-contact presence + CLUTCH ceremony driver. Shares HandleQuery's UDP socket; pings contacts, receives pongs (→ `is_online`), and runs the slot-based CLUTCH offer/KEM/complete exchange. `None` until init. Ported from the retired `app.rs` — the fluor migration left this whole subsystem behind, so contacts showed offline and CLUTCH never started.
@@ -616,6 +614,10 @@ pub struct PhotonApp {
     /// Diagnostics "Submit" flow: result of the off-thread log upload to FGTW (blocking HTTP over up to 16 MiB). `Ok(())` → "Log sent" toast; `Err` → the reason. Drained in tick.
     log_submit_rx: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
     log_submit_tx: Option<std::sync::mpsc::Sender<Result<(), String>>>,
+    /// An upload is currently on the worker thread — Submit greys so a second press can't race a duplicate.
+    log_submit_inflight: bool,
+    /// `crate::log_size_bytes()` captured right after the last SUCCESSFUL submit's own log lines landed. While the live size still equals this, the log holds nothing new and Submit stays greyed (a resend would be a byte-identical duplicate); any fresh record — or a Clear — moves the size and re-arms the pill. `None` until a submit succeeds.
+    log_submitted_len: Option<u64>,
     /// Stop flag for the NEW device's join thread — set true when the user cancels join mode so the thread quits re-posting its request (a zombie re-poster would race a later attempt for the inbox slot).
     add_stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Session-long fleet-event subscription (hub WebSocket): receiver of event kinds ("fstate" / "fleet") filtered to OUR identity. Drained in tick — fstate triggers a roster pull (a friend added on a sibling device appears here in ~a second), fleet triggers a key/membership sync. `None` until the first attest/resume succeeds.
@@ -733,7 +735,6 @@ impl PhotonApp {
             blink_timer: BlinkTimer::new(),
             last_presence_ping: None,
             last_interaction: None,
-            is_dragging_select: false,
             handle_query: None,
             status_checker: None,
             contact_pubkeys: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
@@ -808,6 +809,8 @@ impl PhotonApp {
             remove_device_tx: None,
             log_submit_rx: None,
             log_submit_tx: None,
+            log_submit_inflight: false,
+            log_submitted_len: None,
             add_stop: None,
             fleet_evt_rx: None,
             fleet_evt_stop: None,
@@ -1366,7 +1369,8 @@ impl FluorApp for PhotonApp {
                                           // Initialize local storage and load contacts immediately so the contact list is visible before the FGTW round-trip completes.
             if let Some(kp) = &self.device_keypair {
                 let device_secret = *kp.secret.as_bytes();
-                match crate::storage::FlatStorage::new(
+                // open_shared, NEVER new: query_resume below spawns the attest worker, which opens this same vault — a second independent engine racing this one is how the 2026-07-12 vault corruption happened (stale engine committed over the live one's blocks → seal verification failed at every subsequent open).
+                match crate::storage::FlatStorage::open_shared(
                     crate::storage::APP,
                     remembered.vault_seed,
                     device_secret,
@@ -1450,7 +1454,7 @@ impl FluorApp for PhotonApp {
                                 }
                             }
                         }
-                        self.storage = Some(std::sync::Arc::new(s));
+                        self.storage = Some(s);
                         // Load this device's avatar from the vault now that storage exists, and colour-convert it for the Ready screen. The vault read needs the just-built storage handle, so this can't run before storage init like the old filesystem path did.
                         if let Some(storage) = self.storage.as_ref() {
                             self.device_avatar_pixels = crate::ui::avatar::load_avatar_from_seed(
@@ -1500,6 +1504,239 @@ impl FluorApp for PhotonApp {
         self.update_widget_layout(ctx);
     }
 
+    // A clickable element was ACTIVATED — pointer went DOWN on `hit_id` and released over the SAME `hit_id`, no drag-off (press-hold-release, arbitrated by fluor's PointerArbiter). Every ACTION lives here so a mis-touch dragged off before release fires NOTHING. Press-time concerns (focus, textbox cursor, drag-select, window drag) stay in `on_event`'s Pressed arm; the raw press/release still arrive there.
+    fn on_activate(
+        &mut self,
+        hit_id: HitId,
+        x: Coord,
+        y: Coord,
+        mods: fluor::event::ModifiersState,
+        ctx: &mut Context,
+    ) -> EventResponse {
+        // Avatar tap on Ready dispatches to the image picker — not a Widget, just a hit-stamp in chrome.hit_test_map. Drops focus first because the picker overlays the whole UI.
+        if hit_id == self.avatar_hit_id
+            && matches!(self.state, AppState::Ready)
+            && self.avatar_hit_id != HIT_NONE
+        {
+            self.change_focus(None);
+            // Android: a tap opens the system image picker directly (the picker IS the update mechanism — tapping the grey circle is self-evident, so no on-screen prompt). Desktop: no picker — the avatar updates by drag/drop — the tap is swallowed here.
+            #[cfg(target_os = "android")]
+            {
+                self.pending_picker_request = true;
+            }
+            ctx.window.request_redraw();
+            return EventResponse::Handled;
+        }
+
+        // "Start fresh (wipe this device)" on the JOIN words screen — a removed device's self-clean path. Two-tap confirm → full clean (nuke vault + clear session), leaving a blank slate ready to attest fresh or join another fleet.
+        if hit_id == self.join_startfresh_hit_id && self.join_startfresh_hit_id != HIT_NONE {
+            if self.join_startfresh_armed {
+                self.join_startfresh_armed = false;
+                self.end_add_device_flow(); // leave JOIN mode before wiping
+                self.clean_device_for_reuse();
+            } else {
+                self.join_startfresh_armed = true;
+            }
+            ctx.window.request_redraw();
+            return EventResponse::Handled;
+        }
+
+        // Back button — Conversation and Add-device both return to the contact list. Navigation is a dedicated control; the orb is settings-only.
+        if hit_id == self.back_btn_hit_id && self.back_btn_hit_id != HIT_NONE {
+            if matches!(self.state, AppState::Conversation) {
+                self.state = AppState::Ready;
+                self.active_contact = None;
+                ctx.window.request_redraw();
+                return EventResponse::Handled;
+            }
+            if matches!(self.state, AppState::AddDevice) {
+                self.end_add_device_flow();
+                self.state = AppState::Ready;
+                ctx.window.request_redraw();
+                return EventResponse::Handled;
+            }
+            if matches!(self.state, AppState::Settings(_)) {
+                self.change_focus(None);
+                self.state = AppState::Ready;
+                ctx.window.request_redraw();
+                return EventResponse::Handled;
+            }
+        }
+
+        // Settings nav rail + stub action pills — hit-id ranges owned by the panel. Rail rows switch the page; pills are inert stubs (log only), except Fleet's "Add device" pill which opens the pairing-words flow.
+        if let AppState::Settings(page) = self.state {
+            if self.settings_nav_base != HIT_NONE
+                && hit_id >= self.settings_nav_base
+                && hit_id < self.settings_nav_base.wrapping_add(9)
+            {
+                let idx = (hit_id - self.settings_nav_base) as usize;
+                if let Some(p) = SettingsPage::ALL.get(idx) {
+                    self.change_focus(None);
+                    // Leaving a page clears its destructive-action arms (interaction-cleared).
+                    if *p != SettingsPage::Fleet {
+                        self.settings_fleet_selected = None;
+                        self.settings_remove_armed = None;
+                    }
+                    if *p != SettingsPage::Security {
+                        self.settings_shred_armed = false;
+                    }
+                    self.state = AppState::Settings(*p);
+                    ctx.window.request_redraw();
+                }
+                return EventResponse::Handled;
+            }
+            if self.settings_btn_base != HIT_NONE
+                && hit_id >= self.settings_btn_base
+                && hit_id < self.settings_btn_base.wrapping_add(32)
+            {
+                let slot = hit_id - self.settings_btn_base;
+                if page == SettingsPage::Fleet {
+                    if slot == 0 {
+                        // "Add device" pill → the pairing-words flow.
+                        self.settings_remove_armed = None;
+                        self.open_add_device_flow();
+                    } else if slot == 2 {
+                        // "Remove" pill: two-tap confirm on the selected (non-self) device. First tap arms; second tap on the same armed device fires the unbind+rotate.
+                        if let Some(sel) = self.settings_fleet_selected {
+                            if self.settings_remove_armed == Some(sel) {
+                                self.settings_remove_armed = None;
+                                self.spawn_unbind_device(sel);
+                            } else {
+                                self.settings_remove_armed = Some(sel);
+                            }
+                        }
+                    } else if slot >= 16 {
+                        // Device-row tap → select that device (non-self only; self rows aren't stamped). Selecting clears any pending Remove arm.
+                        let idx = (slot - 16) as usize;
+                        let devices = self.fleet_device_rows();
+                        if let Some((pk, is_self, ..)) = devices.get(idx) {
+                            if !is_self {
+                                self.settings_fleet_selected = Some(*pk);
+                            }
+                        }
+                        self.settings_remove_armed = None;
+                    } else {
+                        // "Rename" (slot 1) is still a stub — no device-label chain-op yet.
+                        self.settings_remove_armed = None;
+                        crate::log("settings-stub: Rename (no label op yet)");
+                    }
+                } else if page == SettingsPage::Security {
+                    if slot == 0 {
+                        // "Lock" → clear session only (de-attest); vault kept, re-unlock by re-typing your handle. Works on Android (the -1 broadcast drops Kotlin's sticky session).
+                        self.settings_shred_armed = false;
+                        tohu::clear_session();
+                        self.session = None;
+                        self.private_s = crate::crypto::blind::PrivateS::None;
+                        self.pending_broadcast_signal = -1;
+                        self.state = AppState::Launch(LaunchState::Fresh);
+                        self.refocus_handle_select_all();
+                        crate::log("SECURITY: locked — session cleared, vault kept; re-type handle to unlock");
+                    } else if slot == 2 {
+                        // "Shred (crypto-wipe)" → full clean (nuke vault + clear session). Two-tap confirm (destructive + irreversible).
+                        if self.settings_shred_armed {
+                            self.settings_shred_armed = false;
+                            self.clean_device_for_reuse();
+                        } else {
+                            self.settings_shred_armed = true;
+                        }
+                    } else {
+                        // Slot 1 "Remove this device from fleet" (self-removal) is deferred.
+                        self.settings_shred_armed = false;
+                        crate::log("settings-stub: self-fleet-removal deferred");
+                    }
+                } else if page == SettingsPage::Diagnostics {
+                    if slot == 0 {
+                        // "Clear" → wipe the on-device log; the next line reopens a fresh, empty file.
+                        crate::clear_log();
+                        self.ready_toast = Some("Log cleared".to_string());
+                    } else if slot == 1 {
+                        // "Snapshot" → a peek at the current log size (a cheap "there's something to send" confirmation; the durable copy now lives on FGTW after Submit, not a local freeze).
+                        match crate::snapshot_log_bytes() {
+                            Some(b) => {
+                                self.ready_toast =
+                                    Some(format!("Log: {} KiB", (b.len() + 1023) / 1024))
+                            }
+                            None => self.ready_toast = Some("Log is empty".to_string()),
+                        }
+                    } else if slot == 2 {
+                        // "Submit" → upload the log + optional note to FGTW (outbound HTTPS, NAT-immune — works where P2P is failing, no USB pull needed).
+                        // Greyed guard — the disabled pill stamps no hit id, but the hit map is a frame stale right after a success, so a fast second tap could still dispatch here. Same predicate as the render.
+                        let submit_disabled = self.log_submit_inflight
+                            || self.log_submitted_len == Some(crate::log_size_bytes());
+                        if !submit_disabled {
+                            let note: String = self
+                                .settings_note_textbox
+                                .as_ref()
+                                .map(|tb| tb.chars.iter().collect())
+                                .unwrap_or_default();
+                            self.spawn_log_submit(note);
+                        }
+                    }
+                } else {
+                    crate::log(&format!(
+                        "settings-stub: pill {slot} on {:?} (no behaviour wired)",
+                        page
+                    ));
+                }
+                ctx.window.request_redraw();
+                return EventResponse::Handled;
+            }
+        }
+
+        // Orb tap (chrome app-icon) — a no-op widget, so intercept here. Destined for the settings/about/help panel; until that exists it carries the INTERIM add-device entry on Ready (AddDevice cancel is now the dedicated back button, not the orb). Routed by `on_orb_click`.
+        let orb_id = self.chrome.as_ref().map(|c| c.app_icon_btn.id());
+        if Some(hit_id) == orb_id && hit_id != HIT_NONE && self.on_orb_click() {
+            ctx.window.request_redraw();
+            return EventResponse::Handled;
+        }
+
+        // Contact row tap — hit IDs in [contact_hit_base, contact_hit_base + 255].
+        if matches!(self.state, AppState::Ready)
+            && self.contact_hit_base != HIT_NONE
+            && hit_id >= self.contact_hit_base
+            && hit_id < self.contact_hit_base.wrapping_add(256)
+        {
+            let ci = (hit_id - self.contact_hit_base) as usize;
+            if ci < self.contacts.len() {
+                crate::log(&format!(
+                    "contact-tap: opening conversation with '{}'",
+                    self.contacts[ci].handle.as_str()
+                ));
+                self.active_contact = Some(ci);
+                self.state = AppState::Conversation;
+                self.change_focus(None);
+                // Refresh this contact's presence on conversation-enter so the header reflects reality promptly.
+                self.ping_contact(ci);
+                // Fetch the peer's avatar (once/session) so the conversation header shows it instead of the grey placeholder. Cache-first, network on miss; off-thread.
+                let handle = self.contacts[ci].handle.as_str().to_string();
+                self.spawn_avatar_download(handle);
+                ctx.window.request_redraw();
+                return EventResponse::Handled;
+            }
+        }
+
+        // Focus ONLY a textbox on activation — it's the keyboard target, so a release over it focuses it + raises the soft IME. Buttons are deliberately NOT focused by a pointer tap: focusing a button made it stick in the dark `BUTTON_ACTIVE` tint (and swallow hover) after a drag-off. Keyboard users still Tab to a button to focus it for Enter/Space. Done before `dispatch_release` so focus is set before the textbox places its cursor.
+        let is_textbox = [
+            self.textbox.as_ref(),
+            self.contacts_textbox.as_ref(),
+            self.message_textbox.as_ref(),
+            self.settings_note_textbox.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|tb| tb.hit_id() == hit_id);
+        if is_textbox && self.change_focus(Some(hit_id)) {
+            ctx.window.request_redraw();
+        }
+
+        // Release-activated widgets (textbox cursor placement + attest / + / send Buttons): `dispatch_release` fires only `activate_on_release()` widgets — now including the textbox — so a release over the field places its cursor, and a Button's `Click::on_click` (→ `fire`) runs here; the Released arm's `take_click` polls then submit. A drag-off yields no activation → no fire, so nothing commits on a mis-touch.
+        let response = widget::dispatch_release(self, hit_id, x, y, mods);
+        if matches!(response, EventResponse::Handled) {
+            ctx.window.request_redraw();
+        }
+        response
+    }
+
     fn on_event(&mut self, event: &Event, ctx: &mut Context) -> EventResponse {
         // Any event is user engagement — reset the presence-sweep idle clock so the cadence returns to the active (5s) tier. Cheap (just a timestamp); the immediate-sweep-on-focus is handled in the Focused arm below.
         self.last_interaction = Some(Instant::now());
@@ -1509,18 +1746,6 @@ impl FluorApp for PhotonApp {
         }
         match event {
             Event::CursorMoved { .. } => {
-                // Drag-select extension takes precedence over hover updates. Active iff we're inside a left-press-then-move sequence over the focused textbox; on first move during the drag we set the anchor to the cursor's pre-drag position (the click landed there via Textbox::on_click), then update `cursor` to the character nearest the live cursor X. `cursor_index_from_x` saturates internally — X past text bounds returns the first/last character index — so no clamp here.
-                if self.is_dragging_select {
-                    if let Some(tb) = self.textbox.as_mut() {
-                        if tb.selection_anchor.is_none() {
-                            tb.selection_anchor = Some(tb.cursor);
-                        }
-                        tb.cursor = tb.cursor_index_from_x(ctx.cursor_x);
-                    }
-                    ctx.window.request_redraw();
-                    return EventResponse::Handled;
-                }
-
                 // Hit-test against the shared hit_test_map (chrome stamps its buttons, widgets stamp their pill silhouettes — all into chrome's map). `hit_at` returns the id at the cursor regardless of which widget owns the stamp; we route hover updates to each kind separately. Chrome sets its own hover state; widgets get their `set_hovered` flipped if the hit matches.
                 let new_hit = self
                     .chrome
@@ -1735,253 +1960,15 @@ impl FluorApp for PhotonApp {
                     return EventResponse::StartWindowDrag;
                 }
 
-                // Avatar tap on Ready dispatches to the image picker — not a Widget, just a hit-stamp in chrome.hit_test_map. Intercepted BEFORE `widget::dispatch_click` so the walk doesn't waste a pass looking for a non-existent widget. Drops focus first because the picker overlays the whole UI.
-                if hit_id == self.avatar_hit_id
-                    && matches!(self.state, AppState::Ready)
-                    && self.avatar_hit_id != HIT_NONE
-                {
-                    self.change_focus(None);
-                    // Android: a tap opens the system image picker directly (the picker IS the update mechanism — tapping the grey circle is self-evident, so no on-screen prompt). Desktop: no picker — the avatar updates by drag/drop — the click just dismisses hints (above) and is swallowed here.
-                    #[cfg(target_os = "android")]
-                    {
-                        self.pending_picker_request = true;
-                    }
-                    ctx.window.request_redraw();
-                    return EventResponse::Handled;
-                }
-
-                // "Start fresh (wipe this device)" on the JOIN words screen — a removed device's self-clean path. Two-tap confirm → full clean (nuke vault + clear session), leaving a blank slate ready to attest fresh or join another fleet.
-                if hit_id == self.join_startfresh_hit_id && self.join_startfresh_hit_id != HIT_NONE {
-                    if self.join_startfresh_armed {
-                        self.join_startfresh_armed = false;
-                        self.end_add_device_flow(); // leave JOIN mode before wiping
-                        self.clean_device_for_reuse();
-                    } else {
-                        self.join_startfresh_armed = true;
-                    }
-                    ctx.window.request_redraw();
-                    return EventResponse::Handled;
-                }
-
-                // Back button — Conversation and Add-device both return to the contact list. Navigation is a dedicated control; the orb is settings-only.
-                if hit_id == self.back_btn_hit_id && self.back_btn_hit_id != HIT_NONE {
-                    if matches!(self.state, AppState::Conversation) {
-                        self.state = AppState::Ready;
-                        self.active_contact = None;
-                        ctx.window.request_redraw();
-                        return EventResponse::Handled;
-                    }
-                    if matches!(self.state, AppState::AddDevice) {
-                        self.end_add_device_flow();
-                        self.state = AppState::Ready;
-                        ctx.window.request_redraw();
-                        return EventResponse::Handled;
-                    }
-                    if matches!(self.state, AppState::Settings(_)) {
-                        self.change_focus(None);
-                        self.state = AppState::Ready;
-                        ctx.window.request_redraw();
-                        return EventResponse::Handled;
-                    }
-                }
-
-                // Settings nav rail + stub action pills — hit-id ranges owned by the panel. Rail rows switch the page; pills are inert stubs (log only), except Fleet's "Add device" pill which opens the pairing-words flow.
-                if let AppState::Settings(page) = self.state {
-                    if self.settings_nav_base != HIT_NONE
-                        && hit_id >= self.settings_nav_base
-                        && hit_id < self.settings_nav_base.wrapping_add(9)
-                    {
-                        let idx = (hit_id - self.settings_nav_base) as usize;
-                        if let Some(p) = SettingsPage::ALL.get(idx) {
-                            self.change_focus(None);
-                            // Leaving a page clears its destructive-action arms (interaction-cleared).
-                            if *p != SettingsPage::Fleet {
-                                self.settings_fleet_selected = None;
-                                self.settings_remove_armed = None;
-                            }
-                            if *p != SettingsPage::Security {
-                                self.settings_shred_armed = false;
-                            }
-                            self.state = AppState::Settings(*p);
-                            ctx.window.request_redraw();
-                        }
-                        return EventResponse::Handled;
-                    }
-                    if self.settings_btn_base != HIT_NONE
-                        && hit_id >= self.settings_btn_base
-                        && hit_id < self.settings_btn_base.wrapping_add(32)
-                    {
-                        let slot = hit_id - self.settings_btn_base;
-                        if page == SettingsPage::Fleet {
-                            if slot == 0 {
-                                // "Add device" pill → the pairing-words flow.
-                                self.settings_remove_armed = None;
-                                self.open_add_device_flow();
-                            } else if slot == 2 {
-                                // "Remove" pill: two-tap confirm on the selected (non-self) device. First tap arms; second tap on the same armed device fires the unbind+rotate.
-                                if let Some(sel) = self.settings_fleet_selected {
-                                    if self.settings_remove_armed == Some(sel) {
-                                        self.settings_remove_armed = None;
-                                        self.spawn_unbind_device(sel);
-                                    } else {
-                                        self.settings_remove_armed = Some(sel);
-                                    }
-                                }
-                            } else if slot >= 16 {
-                                // Device-row tap → select that device (non-self only; self rows aren't stamped). Selecting clears any pending Remove arm.
-                                let idx = (slot - 16) as usize;
-                                let devices = self.fleet_device_rows();
-                                if let Some((pk, is_self, ..)) = devices.get(idx) {
-                                    if !is_self {
-                                        self.settings_fleet_selected = Some(*pk);
-                                    }
-                                }
-                                self.settings_remove_armed = None;
-                            } else {
-                                // "Rename" (slot 1) is still a stub — no device-label chain-op yet.
-                                self.settings_remove_armed = None;
-                                crate::log("settings-stub: Rename (no label op yet)");
-                            }
-                        } else if page == SettingsPage::Security {
-                            if slot == 0 {
-                                // "Lock" → clear session only (de-attest); vault kept, re-unlock by re-typing your handle. Works on Android (the -1 broadcast drops Kotlin's sticky session).
-                                self.settings_shred_armed = false;
-                                tohu::clear_session();
-                                self.session = None;
-                                self.private_s = crate::crypto::blind::PrivateS::None;
-                                self.pending_broadcast_signal = -1;
-                                self.state = AppState::Launch(LaunchState::Fresh);
-                                self.refocus_handle_select_all();
-                                crate::log("SECURITY: locked — session cleared, vault kept; re-type handle to unlock");
-                            } else if slot == 2 {
-                                // "Shred (crypto-wipe)" → full clean (nuke vault + clear session). Two-tap confirm (destructive + irreversible).
-                                if self.settings_shred_armed {
-                                    self.settings_shred_armed = false;
-                                    self.clean_device_for_reuse();
-                                } else {
-                                    self.settings_shred_armed = true;
-                                }
-                            } else {
-                                // Slot 1 "Remove this device from fleet" (self-removal) is deferred.
-                                self.settings_shred_armed = false;
-                                crate::log("settings-stub: self-fleet-removal deferred");
-                            }
-                        } else if page == SettingsPage::Diagnostics {
-                            if slot == 0 {
-                                // "Clear" → wipe the on-device log; the next line reopens a fresh, empty file.
-                                crate::clear_log();
-                                self.ready_toast = Some("Log cleared".to_string());
-                            } else if slot == 1 {
-                                // "Snapshot" → a peek at the current log size (a cheap "there's something to send" confirmation; the durable copy now lives on FGTW after Submit, not a local freeze).
-                                match crate::snapshot_log_bytes() {
-                                    Some(b) => {
-                                        self.ready_toast =
-                                            Some(format!("Log: {} KiB", (b.len() + 1023) / 1024))
-                                    }
-                                    None => self.ready_toast = Some("Log is empty".to_string()),
-                                }
-                            } else if slot == 2 {
-                                // "Submit" → upload the log + optional note to FGTW (outbound HTTPS, NAT-immune — works where P2P is failing, no USB pull needed).
-                                let note: String = self
-                                    .settings_note_textbox
-                                    .as_ref()
-                                    .map(|tb| tb.chars.iter().collect())
-                                    .unwrap_or_default();
-                                self.spawn_log_submit(note);
-                            }
-                        } else {
-                            crate::log(&format!(
-                                "settings-stub: pill {slot} on {:?} (no behaviour wired)",
-                                page
-                            ));
-                        }
-                        ctx.window.request_redraw();
-                        return EventResponse::Handled;
-                    }
-                }
-
-                // Orb tap (chrome app-icon) — a no-op widget, so intercept here. Destined for the settings/about/help panel; until that exists it carries the INTERIM add-device entry on Ready (AddDevice cancel is now the dedicated back button, not the orb). Routed by `on_orb_click`.
-                let orb_id = self.chrome.as_ref().map(|c| c.app_icon_btn.id());
-                if Some(hit_id) == orb_id && hit_id != HIT_NONE && self.on_orb_click() {
-                    ctx.window.request_redraw();
-                    return EventResponse::Handled;
-                }
-
-                // Contact row tap — hit IDs in [contact_hit_base, contact_hit_base + 255].
-                if matches!(self.state, AppState::Ready)
-                    && self.contact_hit_base != HIT_NONE
-                    && hit_id >= self.contact_hit_base
-                    && hit_id < self.contact_hit_base.wrapping_add(256)
-                {
-                    let ci = (hit_id - self.contact_hit_base) as usize;
-                    if ci < self.contacts.len() {
-                        crate::log(&format!(
-                            "contact-tap: opening conversation with '{}'",
-                            self.contacts[ci].handle.as_str()
-                        ));
-                        self.active_contact = Some(ci);
-                        self.state = AppState::Conversation;
-                        self.change_focus(None);
-                        // Refresh this contact's presence on conversation-enter so the header reflects reality promptly.
-                        self.ping_contact(ci);
-                        // Fetch the peer's avatar (once/session) so the conversation header shows it instead of the grey placeholder. Cache-first, network on miss; off-thread.
-                        let handle = self.contacts[ci].handle.as_str().to_string();
-                        self.spawn_avatar_download(handle);
-                        ctx.window.request_redraw();
-                        return EventResponse::Handled;
-                    }
-                }
-
-                // Focus follows click for focusable widgets (textbox + attest button). Chrome buttons aren't focusable (their `Widget::focus()` returns None) so a click on close/min/max leaves the prior focus intact — matches GNOME / macOS convention. We can't borrow `self` mutably twice in one walk, so determine "is this id focusable" via a pre-walk, then change_focus before the dispatch.
-                let mut hit_is_focusable = false;
-                self.visit(&mut |w| {
-                    if w.id() == hit_id && w.focus().is_some() {
-                        hit_is_focusable = true;
-                    }
-                });
-                // A busy (frozen) field/button is already invisible to this path: its `focus()` accessor returns `None` (so `hit_is_focusable` is false — no refocus) and its `click()` accessor returns `None` (so `dispatch_click` below no-ops to `Pass`). No explicit launch-locked swallow needed anymore.
-                if hit_is_focusable && self.change_focus(Some(hit_id)) {
-                    ctx.window.request_redraw();
-                }
-
-                // Dispatch the click via the fluor widget helper. Walks the tree once, finds the widget with `hit_id`, calls its `Click::on_click`. Returns `EventResponse::Pass` if the widget has no Click capability — covers chrome's app-icon orb (no action wired yet).
-                let response =
-                    widget::dispatch_click(self, hit_id, ctx.cursor_x, ctx.cursor_y, ctx.modifiers);
-
-                // Arm drag-select if the click landed on the (now-focused) textbox. CursorMoved consults `is_dragging_select` to grow the selection; release clears it. Set AFTER dispatch so Textbox::on_click has placed the cursor at the click position first — drag then extends from there.
-                let textbox_focused = self
-                    .textbox
-                    .as_ref()
-                    .map(|t| Some(t.hit_id()) == self.focused)
-                    .unwrap_or(false);
-                if textbox_focused {
-                    self.is_dragging_select = true;
-                }
-
-                // Fluor's host doesn't auto-redraw on `Handled` (app.rs:712); a click that moved a textbox cursor or armed drag-select needs an explicit redraw or the visual update waits for the next tick (perceived as input lag).
-                if matches!(response, EventResponse::Handled) || textbox_focused {
-                    ctx.window.request_redraw();
-                }
-
-                response
+                // Every item — contacts, pills, nav, orb, back, avatar, start-fresh, the Buttons, AND the textboxes — now activates on RELEASE over the same element (fluor's PointerArbiter → `on_activate`); a drag-off before release cancels. So the press arm does NO activation and NO focus change: focusing on press was what left a button stuck in its dark focused tint after a drag-off (and swallowed hover). The host has already armed the element (held colour); we just consume the press so it doesn't fall through to a window drag.
+                ctx.window.request_redraw();
+                EventResponse::Handled
             }
             Event::MouseInput {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
             } => {
-                // Drag-select end: if the drag never moved (anchor == cursor) the selection range is empty; clear the anchor so subsequent keyboard navigation behaves as "no selection" rather than "0-length selection".
-                if self.is_dragging_select {
-                    self.is_dragging_select = false;
-                    if let Some(tb) = self.textbox.as_mut() {
-                        if tb.selection_anchor == Some(tb.cursor) {
-                            tb.selection_anchor = None;
-                        }
-                    }
-                    self.blink_timer.start(Instant::now());
-                    ctx.window.request_redraw();
-                }
-
                 // Attest button: poll `take_click` AFTER release — Button::on_click increments the counter at press; we observe the rising edge here so submit fires once per press/release pair regardless of how chrome dispatches subsequent events.
                 let clicked = self
                     .attest_btn
@@ -2436,6 +2423,9 @@ impl FluorApp for PhotonApp {
     }
 
     fn render(&mut self, target: &mut [u32], ctx: &mut Context) {
+        // Press-hold-release: sync the "held" visual on every clickable WIDGET (attest / + / send Buttons) to the pointer arbiter's currently-pressed hit id. On desktop the host's overlay pass then paints the held tint from each Button's `tint_delta`; the app's own hit-stamped elements (pills, contact rows, nav rows) read `ctx.pressed_hit` directly further down. Must run before the widget tree is walked for overlay deltas (post-render), so a press lights up the same frame.
+        let pressed_hit = ctx.pressed_hit;
+        widget::apply_pressed(self, pressed_hit);
         // Compute chord-held state BEFORE taking the mutable `chrome` borrow — `brackets_held` reads `&self` and the chrome borrow lives thru the entire render. Update `last_chord_held` here too so the next frame's `damage_rect` knows whether to include the hint bbox for the one-frame clear.
         let held_now = self.brackets_held(Instant::now());
         self.last_chord_held = held_now;
@@ -3154,6 +3144,21 @@ impl FluorApp for PhotonApp {
                 if row_top + row_h <= 0 || row_top >= buf_h as isize {
                     continue; // fully outside the visible content area (rows now scroll up to the top, not just `rows.y0`)
                 }
+                // Held: a finger/pointer is DOWN on this row and a release here opens the conversation (press-hold-release). Paint the held tint FIRST so the avatar + name land on top of it; a drag-off clears `ctx.pressed_hit` and the tint vanishes next frame.
+                if ci < 256 && ctx.pressed_hit != HIT_NONE
+                    && ctx.pressed_hit == self.contact_hit_base.wrapping_add(ci as HitId)
+                {
+                    paint::fill_rect(
+                        &mut canvas,
+                        rows.x0 as isize,
+                        row_top.max(0),
+                        (rows.x1 - rows.x0) as isize,
+                        (row_top + row_h).min(buf_h as isize) - row_top.max(0),
+                        fluor::theme::BUTTON_HELD,
+                        Some(rows_clip),
+                        None,
+                    );
+                }
                 let cy = (row_top + row_h / 2) as f32;
                 let online = self.contacts[ci].is_online;
 
@@ -3777,6 +3782,18 @@ impl FluorApp for PhotonApp {
                 }
             }
 
+            // Status toast ("Sending log (N KiB)…", "Log sent √", "Device removed √", ...) — the Ready screen draws `ready_toast` in its hint slot, but settings is a different AppState, so without this the toasts fired FROM settings pages (log submit, device remove) were invisible. Bottom of the content pane, painted early so under-blend keeps it above the page body; event-shown, cleared on the next interaction via clear_hints, never time-based.
+            if let Some(msg) = &self.ready_toast {
+                let ts = (layout.unit * 0.72).max(9.0);
+                ctx.text.draw_text_center_u32(
+                    &mut canvas, msg,
+                    layout.content.x + layout.content.w * 0.5,
+                    layout.content.bottom() - ts,
+                    ts, 600, SEARCH_FOUND_COLOUR, "Oxanium",
+                    None, None, None,
+                );
+            }
+
             // --- Header: title + back affordance --- (unit-scaled so the heading zooms with everything else)
             let hspan = (layout.unit * 1.05).min(layout.header.h * 0.72);
             ctx.text.draw_text_left_u32(
@@ -3807,8 +3824,16 @@ impl FluorApp for PhotonApp {
             for (i, p) in SettingsPage::ALL.iter().enumerate() {
                 let r = rows[i];
                 let active = *p == page;
-                // Active-row backing bar (faint) so the selected page reads at a glance.
-                if active {
+                let held = ctx.pressed_hit != HIT_NONE
+                    && ctx.pressed_hit == self.settings_nav_base.wrapping_add(i as HitId);
+                // Held (pointer down, release switches to this page) reads brightest; else the active page gets a faint backing bar. Held paints over active so the finger-down row is unmistakable.
+                if held {
+                    paint::fill_rect(
+                        &mut canvas, r.x as isize, r.y as isize,
+                        r.w as isize, r.h as isize, fluor::theme::BUTTON_HELD, None, None,
+                    );
+                } else if active {
+                    // Active-row backing bar (faint) so the selected page reads at a glance.
                     paint::fill_rect(
                         &mut canvas, r.x as isize, r.y as isize,
                         r.w as isize, r.h as isize, SEPARATOR_COLOUR, None, None,
@@ -3850,7 +3875,7 @@ impl FluorApp for PhotonApp {
                     settings_line(&mut canvas, ctx.text, rows[0], "Handle", tspan, CONTACT_NAME_COLOUR, 600);
                     settings_line(&mut canvas, ctx.text, rows[1], "zesty-otter-4383  (double-click to copy)", hspan2, LABEL_COLOUR, 400);
                     settings_line(&mut canvas, ctx.text, rows[2], "Avatar", tspan, CONTACT_NAME_COLOUR, 600);
-                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[3].center_h(pillf(0.5)), "Change avatar…", btn_base.wrapping_add(0));
+                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[3].center_h(pillf(0.5)), "Change avatar…", btn_base.wrapping_add(0), ctx.pressed_hit);
                     settings_line(&mut canvas, ctx.text, rows[4], "Pubkey / handle_proof", tspan, CONTACT_NAME_COLOUR, 600);
                     settings_line(&mut canvas, ctx.text, rows[5], "b3:9f2a…c701  (double-click to copy)", hspan2, LABEL_COLOUR, 400);
                 }
@@ -3897,19 +3922,19 @@ impl FluorApp for PhotonApp {
                         }
                     }
                     let pr = rows[7].split_h([1.0, 1.0, 1.0]);
-                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[0].center_h(0.85), "Add device", btn_base.wrapping_add(0));
-                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[1].center_h(0.85), "Rename", btn_base.wrapping_add(1));
-                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[2].center_h(0.85), "Remove", btn_base.wrapping_add(2));
+                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[0].center_h(0.85), "Add device", btn_base.wrapping_add(0), ctx.pressed_hit);
+                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[1].center_h(0.85), "Rename", btn_base.wrapping_add(1), ctx.pressed_hit);
+                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[2].center_h(0.85), "Remove", btn_base.wrapping_add(2), ctx.pressed_hit);
                 }
                 SettingsPage::Security => {
                     let rows = body.split_v([1.0; 8]);
                     settings_line(&mut canvas, ctx.text, rows[0], "Security", tspan, CONTACT_NAME_COLOUR, 600);
                     settings_line(&mut canvas, ctx.text, rows[1], "Named by destructiveness.", hspan2, LABEL_COLOUR, 400);
                     // Lock (slot 0): clear the session only — de-attest, vault kept, re-unlock by re-typing your handle. Shred (slot 2): full clean — nuke vault + clear session, a blank slate for a new owner (two-tap confirm). Slot 1 ("Sign out & remove") is self-fleet-removal, still deferred.
-                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[2].center_h(pillf(0.55)), "Lock (re-unlock with your handle)", btn_base.wrapping_add(0));
-                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[3].center_h(pillf(0.55)), "Remove this device from fleet", btn_base.wrapping_add(1));
+                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[2].center_h(pillf(0.55)), "Lock (re-unlock with your handle)", btn_base.wrapping_add(0), ctx.pressed_hit);
+                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[3].center_h(pillf(0.55)), "Remove this device from fleet", btn_base.wrapping_add(1), ctx.pressed_hit);
                     let shred_label = if self.settings_shred_armed { "Shred — tap again to confirm" } else { "Shred (crypto-wipe)" };
-                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[4].center_h(pillf(0.55)), shred_label, btn_base.wrapping_add(2));
+                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[4].center_h(pillf(0.55)), shred_label, btn_base.wrapping_add(2), ctx.pressed_hit);
                     if self.settings_shred_armed {
                         settings_line(&mut canvas, ctx.text, rows[5], "Wipes the vault AND identity on this device — irreversible.", hspan2, ERROR_TEXT_COLOUR, 500);
                     }
@@ -3924,7 +3949,7 @@ impl FluorApp for PhotonApp {
                     }
                     settings_line(&mut canvas, ctx.text, rows[4], "Identity backup", hspan2, CONTACT_NAME_COLOUR, 600);
                     settings_line(&mut canvas, ctx.text, rows[5], "Reinstalling won't ask for your handle.", hspan2, LABEL_COLOUR, 400);
-                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[6].center_h(pillf(0.5)), "Back up identity…", btn_base.wrapping_add(0));
+                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[6].center_h(pillf(0.5)), "Back up identity…", btn_base.wrapping_add(0), ctx.pressed_hit);
                 }
                 SettingsPage::Appearance => {
                     let rows = body.split_v([1.0; 8]);
@@ -3964,9 +3989,16 @@ impl FluorApp for PhotonApp {
                     settings_line(&mut canvas, ctx.text, rows[0], "Diagnostics", tspan, CONTACT_NAME_COLOUR, 600);
                     settings_line(&mut canvas, ctx.text, rows[1], "On-device log · 16 MiB · self-expires 24–48h", hspan2, LABEL_COLOUR, 400);
                     let pr = rows[3].split_h([1.0, 1.0, 1.0]);
-                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[0].center_h(0.85), "Clear", btn_base.wrapping_add(0));
-                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[1].center_h(0.85), "Snapshot", btn_base.wrapping_add(1));
-                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[2].center_h(0.85), "Submit", btn_base.wrapping_add(2));
+                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[0].center_h(0.85), "Clear", btn_base.wrapping_add(0), ctx.pressed_hit);
+                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[1].center_h(0.85), "Snapshot", btn_base.wrapping_add(1), ctx.pressed_hit);
+                    // Submit greys while an upload is in flight or the log hasn't grown past the last successful submit — a resend then would be a byte-identical duplicate. Any new record (or Clear) moves the size and re-arms it.
+                    let submit_disabled = self.log_submit_inflight
+                        || self.log_submitted_len == Some(crate::log_size_bytes());
+                    if submit_disabled {
+                        draw_stub_pill_disabled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[2].center_h(0.85), "Submit", btn_base.wrapping_add(2), ctx.pressed_hit);
+                    } else {
+                        draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[2].center_h(0.85), "Submit", btn_base.wrapping_add(2), ctx.pressed_hit);
+                    }
                     settings_line(&mut canvas, ctx.text, rows[6], "Optional note", hspan2, LABEL_COLOUR, 400);
                     if let Some(tb) = self.settings_note_textbox.as_mut() {
                         let id = tb.hit_id();
@@ -4251,14 +4283,17 @@ impl PhotonApp {
             .map(|rx| rx.try_iter().collect())
             .unwrap_or_default();
         for update in log_submit_updates {
+            self.log_submit_inflight = false;
             match update {
                 Ok(()) => {
                     self.ready_toast = Some("Log sent \u{221a}".to_string());
-                    // Clear the note once it's been submitted so the next submit starts blank.
+                    // Clear the note once it's been submitted so the next submit starts blank. MUST be the widget's clear() — wiping `chars` directly leaves cursor/widths stale, and the next cursor paint slices widths[..cursor] out of range → panic → abort (this was the "submit a log → app dies" crash).
                     if let Some(tb) = self.settings_note_textbox.as_mut() {
-                        tb.chars.clear();
+                        tb.clear();
                     }
                     crate::log("DIAG: log submitted to FGTW");
+                    // Baseline AFTER the success line above so the submit flow's own records don't instantly re-arm the pill — Submit greys until something genuinely new lands in the log.
+                    self.log_submitted_len = Some(crate::log_size_bytes());
                 }
                 Err(e) => {
                     self.ready_toast = Some(format!("Send failed: {e}"));
@@ -5468,11 +5503,14 @@ impl PhotonApp {
             self.log_submit_tx.clone(),
         ) {
             let n = bytes.len();
+            // Immediate press feedback — the upload runs seconds on a big log, and silence here read as "the button did nothing". Replaced by "Log sent √" / "Send failed" when the worker thread reports.
+            self.ready_toast = Some(format!("Sending log ({} KiB)\u{2026}", (n + 1023) / 1024));
             crate::log(&format!("DIAG: submitting log ({n} bytes) to FGTW (sealed)"));
             std::thread::spawn(move || {
                 let r = put_log_blocking(&bytes, &note, &kp, &hp, &seed).map_err(|e| format!("{e}"));
                 let _ = tx.send(r);
             });
+            self.log_submit_inflight = true;
         } else {
             self.ready_toast = Some("Can't send: not signed in".to_string());
         }
@@ -6057,16 +6095,16 @@ impl PhotonApp {
                     self.device_avatar_scaled = None;
                     self.device_avatar_scaled_diameter = 0;
                 }
-                // Initialize local encrypted storage from the session's vault_seed + device secret.
+                // Initialize local encrypted storage from the session's vault_seed + device secret. open_shared: on a resume this returns the SAME engine the resume path already opened (and the attest worker holds) — a second independent engine on the live vault is the corruption class, not a refresh.
                 if let Some(session) = &self.session {
                     if let Some(kp) = &self.device_keypair {
                         let device_secret = *kp.secret.as_bytes();
-                        match crate::storage::FlatStorage::new(
+                        match crate::storage::FlatStorage::open_shared(
                             crate::storage::APP,
                             session.vault_seed,
                             device_secret,
                         ) {
-                            Ok(s) => self.storage = Some(std::sync::Arc::new(s)),
+                            Ok(s) => self.storage = Some(s),
                             Err(e) => {
                                 crate::log(&format!("STORAGE: init failed: {}", e));
                                 // Hard vault-open failure → surface the red banner (overrides any `false` from `data.vault_degraded` set just above — a local open failure is worse).
@@ -6180,7 +6218,7 @@ impl PhotonApp {
                     "handle already attested by another device (pubkey {})",
                     voca::encode(BigUint::from_bytes_be(peer.device_pubkey.as_bytes()))
                 );
-                eprintln!("attestation rejected: {msg}");
+                crate::log_at(crate::LogLevel::Error, &format!("attestation rejected: {msg}"));
                 // AlreadyAttested is now sent ONLY on a CHAIN-PROVEN takeover: the worker fold-verified a fleet chain whose genesis identity is not ours (handle_query.rs verdict). This is the genuine takeover case, so clearing the contested roots is correct — an indeterminate result (fold/parse/transport error) arrives as QueryResult::Error below, which does NOT clear the session. Clear so the next launch can't auto-resume into the same rejection, and bail to the attest screen (even from an optimistic Ready).
                 tohu::clear_session();
                 self.session = None;
@@ -6188,7 +6226,7 @@ impl PhotonApp {
                 self.refocus_handle_select_all();
             }
             QueryResult::Error(e) => {
-                eprintln!("attestation error: {e}");
+                crate::log_at(crate::LogLevel::Error, &format!("attestation error: {e}"));
                 if in_app {
                     // Transient network failure on a resume refresh — the local session is still valid. Stay on Ready; the next presence cycle retries. Do NOT drop the user back to the attest screen.
                     crate::log("UI: background refresh failed (network); staying on local session");
@@ -11673,10 +11711,44 @@ fn draw_stub_pill(
     rect: fluor::region::Region,
     label: &str,
     hit_id: HitId,
+    pressed_hit: HitId,
+) {
+    draw_stub_pill_styled(canvas, text, hit_map, buf_w, buf_h, rect, label, hit_id, pressed_hit, true);
+}
+
+/// Greyed, inert variant of [`draw_stub_pill`]: dim label, NO hit stamp — the settings restamp pass has already cleared the region to HIT_NONE, so a click on the pill dispatches nowhere. (Guard the action's handler too: the hit map is one frame stale across an enable→disable transition.)
+fn draw_stub_pill_disabled(
+    canvas: &mut Canvas,
+    text: &mut fluor::text::TextRenderer,
+    hit_map: &mut [HitId],
+    buf_w: usize,
+    buf_h: usize,
+    rect: fluor::region::Region,
+    label: &str,
+    hit_id: HitId,
+    pressed_hit: HitId,
+) {
+    draw_stub_pill_styled(canvas, text, hit_map, buf_w, buf_h, rect, label, hit_id, pressed_hit, false);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_stub_pill_styled(
+    canvas: &mut Canvas,
+    text: &mut fluor::text::TextRenderer,
+    hit_map: &mut [HitId],
+    buf_w: usize,
+    buf_h: usize,
+    rect: fluor::region::Region,
+    label: &str,
+    hit_id: HitId,
+    pressed_hit: HitId,
+    enabled: bool,
 ) {
     if rect.w <= 0.0 || rect.h <= 0.0 {
         return;
     }
+    // Held: a pointer is down on this pill and a release here will fire it (press-hold-release). Only an enabled pill can be held; a drag-off clears `pressed_hit` so the fill drops back to BUTTON_FILL.
+    let held = enabled && hit_id != HIT_NONE && hit_id == pressed_hit;
     let mut font_size = rect.h * 0.5;
     // Label first (topmost-first): centred in the pill.
     let mut tw = text.measure_text_width(label, font_size, 400, "Open Sans");
@@ -11694,6 +11766,12 @@ fn draw_stub_pill(
     let x0 = px as isize;
     let y0 = rect.y as isize;
     let stroke = (font_size / 32.0) as isize + 1;
+    // Disabled label dims to ~half the enabled brightness — same fill and edges, so the pill reads "present but inert" rather than vanished.
+    let label_colour = if enabled {
+        fluor::theme::TEXTBOX_TEXT
+    } else {
+        fluor::theme::dark(fluor::theme::fmt(0x00_70_70_6E))
+    };
     text.draw_text_left_u32(
         canvas,
         label,
@@ -11701,7 +11779,7 @@ fn draw_stub_pill(
         rect.center_y(),
         font_size,
         400,
-        fluor::theme::TEXTBOX_TEXT,
+        label_colour,
         "Open Sans",
         None,
         None,
@@ -11716,7 +11794,7 @@ fn draw_stub_pill(
             y0 + stroke,
             inner_w,
             inner_h,
-            fluor::theme::BUTTON_FILL,
+            if held { fluor::theme::BUTTON_HELD } else { fluor::theme::BUTTON_FILL },
             1.75,
         );
     }
@@ -11733,8 +11811,10 @@ fn draw_stub_pill(
         None,
         0,
     );
-    // Stamp the whole pill bbox so the entire pill is clickable (the two-tone pass only stamps the edge band).
-    restamp_hit_rect(hit_map, buf_w, buf_h, x0, y0, x0 + w, y0 + h, hit_id);
+    // Stamp the whole pill bbox so the entire pill is clickable (the two-tone pass only stamps the edge band). A disabled pill stamps nothing — the region stays HIT_NONE from the settings restamp pass.
+    if enabled {
+        restamp_hit_rect(hit_map, buf_w, buf_h, x0, y0, x0 + w, y0 + h, hit_id);
+    }
 }
 
 /// Stamp `hit_id` over every pixel in `[x0, x1) × [y0, y1)` of `hit_map`. Used to reclaim hit-test coverage for a widget that paints visually on top of another but whose hit stamps were overwritten by the under-blend partner's later stamping pass (the contacts-page plus button overlaid inside the textbox). Bbox over-stamp — corners outside the pill silhouette claim a few extra pixels, which dispatches those clicks to the button. Acceptable UX since the area is tiny and inside the pill anyway.

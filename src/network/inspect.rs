@@ -252,7 +252,7 @@ pub fn vsf_read(path: &Path, label: &str, device_secret: &[u8; 32]) -> std::io::
     {
         let msg = vsf_inspect(&file_bytes, "Disk", "Read", label);
         if !msg.is_empty() {
-            println!("{}", msg);
+            crate::log(&msg);
         }
     }
 
@@ -326,6 +326,6 @@ pub fn vsf_read(path: &Path, label: &str, device_secret: &[u8; 32]) -> std::io::
 pub fn vsf_read_decrypted(decrypted: &[u8], label: &str) {
     let msg = section_inspect(decrypted, "Disk", "Read", &format!("{} (decrypted)", label));
     if !msg.is_empty() {
-        println!("{}", msg);
+        crate::log(&msg);
     }
 }
