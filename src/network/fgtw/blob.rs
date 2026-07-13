@@ -404,6 +404,81 @@ pub fn log_get_blocking(key: &str) -> Result<Vec<u8>, BlobError> {
         .map_err(|e| BlobError::ServerError(format!("log_get data: {}", e)))
 }
 
+/// One drained fleet-inbox event (docs/fleet-inbox.md). `kind` is the ASCII event tag ("bind_attempt"); `device` the device pubkey it concerned; `attempted_by` the handle_proof of whoever triggered it (the fleet a bind was attempted into) — rendered as a contact name if known, opaque otherwise; `t_osc` its eagle-time.
+#[derive(Debug, Clone)]
+pub struct FleetInboxEvent {
+    pub kind: String,
+    pub device: [u8; 32],
+    pub attempted_by: [u8; 32],
+    pub t_osc: i64,
+}
+
+/// Drain (and consume) this identity's pending fleet-inbox events.
+/// Sends `inbox_drain { hp }` signed by the device key; the worker verifies the device is a CURRENT member of that fleet before returning + deleting the events (so only our own devices read/clear our alerts). The response `events` field is concatenated complete VSF docs — each self-delimiting via its header file_length — which we split and parse here.
+pub fn inbox_drain_blocking(
+    device_keypair: &Keypair,
+    handle_proof: &[u8; 32],
+) -> Result<Vec<FleetInboxEvent>, BlobError> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| BlobError::Network(format!("Failed to create HTTP client: {}", e)))?;
+
+    // Canonical whole-file signing (ge over BLAKE3(file, ge zeroed)) — the scheme the worker's verify_file_signature_webcrypto checks (build_signed_blob_vsf's header is provenance-only, which that verify rejects; see log_put's detached-signature note).
+    let unsigned = vsf::VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .signed_only(VsfType::ke(device_keypair.public.as_bytes().to_vec()))
+        .add_section("inbox_drain", vec![("hp".to_string(), VsfType::hP(handle_proof.to_vec()))])
+        .build()
+        .map_err(|e| BlobError::Network(format!("Build VSF: {}", e)))?;
+    let vsf_bytes = vsf::verification::sign_file(unsigned, device_keypair.secret.as_bytes())
+        .map_err(|e| BlobError::Network(format!("Sign inbox_drain: {}", e)))?;
+
+    let response = client
+        .post(FGTW_URL)
+        .header("Content-Type", "application/octet-stream")
+        .body(vsf_bytes)
+        .send()
+        .map_err(|e| BlobError::Network(format!("inbox_drain request failed: {}", e)))?;
+    let bytes = response.bytes().unwrap_or_default();
+    if let Some((reason, detail)) = fgtw::client::error_frame(&bytes) {
+        // not_member on a fresh device that hasn't folded yet is benign — treat as "nothing to drain".
+        if reason == "not_member" {
+            return Ok(Vec::new());
+        }
+        return Err(BlobError::ServerError(format!("{reason}: {detail}")));
+    }
+    // Response is `inbox_drain_ack { events: v'r' concat-of-73-byte-records }` — schema-validated (vsf trust gate).
+    let schema = vsf::schema::SectionSchema::new("inbox_drain_ack")
+        .field("events", vsf::schema::TypeConstraint::Wrapped(b'r'));
+    let section = vsf::schema::SectionBuilder::parse_document(schema, &bytes, None)
+        .map_err(|e| BlobError::Network(format!("Parse inbox_drain_ack: {}", e)))?;
+    let blob = section.get_value::<Vec<u8>>("events").unwrap_or_default();
+    Ok(parse_inbox_events(&blob))
+}
+
+/// 73-byte inbox record: `[kind:u8][dev:32][by:32][t_osc:i64-be:8]` (see the worker's write_inbox_event). Kind 0 = bind_attempt.
+const INBOX_REC_LEN: usize = 73;
+
+/// Split a concatenated stream of fixed 73-byte inbox records into [`FleetInboxEvent`]s.
+/// Raw fixed-layout (not VSF) so this stays plain byte slicing — no hand-rolled VSF read at a trust boundary (the outer drain response was already schema-validated). A trailing partial record is ignored.
+fn parse_inbox_events(blob: &[u8]) -> Vec<FleetInboxEvent> {
+    let mut out = Vec::new();
+    for rec in blob.chunks_exact(INBOX_REC_LEN) {
+        let kind = match rec[0] {
+            0 => "bind_attempt".to_string(),
+            other => format!("kind_{other}"),
+        };
+        let mut device = [0u8; 32];
+        device.copy_from_slice(&rec[1..33]);
+        let mut attempted_by = [0u8; 32];
+        attempted_by.copy_from_slice(&rec[33..65]);
+        let t_osc = i64::from_be_bytes(rec[65..73].try_into().unwrap());
+        out.push(FleetInboxEvent { kind, device, attempted_by, t_osc });
+    }
+    out
+}
+
 /// Download a blob from FGTW storage (blocking version)
 pub fn get_blob_blocking(storage_key: &str) -> Result<Option<Vec<u8>>, BlobError> {
     let client = reqwest::blocking::Client::builder()
