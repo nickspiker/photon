@@ -67,6 +67,8 @@ Per-inbox retention cap + TTL mirror relay's.
 The bind-attempt alert end-to-end: worker drops an event on `device_owned` rejection and on `pair_put` for your handle → inbox drain on resume + hub wake → rendered as an event-shown, interaction-cleared notice (no timers, per the no-time-based-UI rule).
 Proves the mechanism with the smallest consumer; re-key notification and update push follow on the same rails.
 
+**Attempted-by handle (decided 2026-07-12):** the event carries an optional `attempted_by` = the `handle_proof` of the fleet someone tried to enrol your device into. The worker only ever holds the *proof*, never the handle string, so it's opaque by default; the client renders it as a contact name only when the proof matches a known contact — which is exactly the case that matters (an insider, or your own fumble adding the device to a friend's fleet). For an anonymous thief it renders as opaque/omitted. Free to include (the worker already has it), leaks nothing (proofs are public fleet addresses — nothing to seal), and never gates an action: your response to "my device was enrolled elsewhere" is identical whichever handle it was. Informational, not actionable.
+
 ## Open questions
 
 - Retention: cap per inbox (count and bytes) and TTL — relay's numbers, or tighter since alerts age fast?

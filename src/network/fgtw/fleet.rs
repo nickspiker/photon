@@ -335,6 +335,45 @@ mod tests {
         let stranger = Keypair::from_seed(&rand::random::<[u8; 32]>());
         assert!(push_roster(&handle_proof, &stranger, &fleet_key, &entries).is_err());
     }
+
+    /// End-to-end fleet-inbox bind-attempt alert against LIVE fgtw.org: device D belongs to identity A; identity B tries to enrol the SAME device D → worker rejects device_owned and drops a bind_attempt alert into A's inbox; A drains it (member-gated), sees B as the attempted-by, and a second drain is empty (consume semantics). See docs/fleet-inbox.md.
+    #[test]
+    #[ignore = "hits live fgtw.org"]
+    fn live_bind_attempt_alert() {
+        let a_hp: [u8; 32] = rand::random();
+        let a_seed: [u8; 32] = rand::random();
+        let b_hp: [u8; 32] = rand::random();
+        let b_seed: [u8; 32] = rand::random();
+        let device = Keypair::from_seed(&rand::random::<[u8; 32]>());
+
+        // A claims the fleet with device D.
+        ensure_member(&device, &a_hp, &a_seed).expect("A genesis");
+        assert_eq!(current_members(&a_hp).unwrap(), vec![device.public.to_bytes()]);
+
+        // B tries to enrol the SAME device D — rejected (device_owned, wrapped by ensure_member's establish-membership message); B's fleet stays empty.
+        ensure_member(&device, &b_hp, &b_seed).expect_err("B enrol must be rejected");
+        assert!(current_members(&b_hp).unwrap().is_empty(), "B must not have claimed the device");
+
+        // A drains its inbox: a bind_attempt naming B's handle_proof.
+        let events = crate::network::fgtw::inbox_drain_blocking(&device, &a_hp).expect("drain");
+        assert!(
+            events.iter().any(|e| e.kind == "bind_attempt" && e.attempted_by == b_hp),
+            "expected a bind_attempt alert naming B; got {events:?}"
+        );
+
+        // Consume semantics: a second drain is empty.
+        let again = crate::network::fgtw::inbox_drain_blocking(&device, &a_hp).expect("drain2");
+        assert!(again.is_empty(), "inbox should be empty after drain; got {again:?}");
+
+        // A non-member device can't drain A's inbox (member gate).
+        let stranger = Keypair::from_seed(&rand::random::<[u8; 32]>());
+        assert!(
+            crate::network::fgtw::inbox_drain_blocking(&stranger, &a_hp)
+                .map(|v| v.is_empty())
+                .unwrap_or(true),
+            "a non-member must not read A's inbox"
+        );
+    }
 }
 
 #[cfg(test)]
