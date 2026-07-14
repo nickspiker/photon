@@ -47,23 +47,29 @@ impl SettingsLayout {
         }
     }
 
-    /// The nine nav-rail rows, top to bottom, in [`crate::ui::state::SettingsPage::ALL`] order — unit-tall touch bands stacked from the top (capped so nine always fit), leftover rail left empty. Each row is inset slightly so the clickable band doesn't touch the pane edges.
-    pub fn rail_rows(&self) -> [Region; 9] {
-        let inset = self.rail.inset_xy(0.06, 0.0);
-        let row_h = (self.unit * 1.5).min(inset.h / 9.0);
-        let band = Region::new(inset.x, inset.y, inset.w, row_h * 9.0);
-        band.split_v([1.0; 9])
+    /// Natural nav-rail row height — `unit · 1.5`, NO clamp-to-fit. The rail (Back + 9 pages = 10 rows) overflows at high zoom and scrolls instead of compressing (docs: "no clamps"). The render stacks rows from `rail.y − rail_scroll`.
+    pub fn nav_row_h(&self) -> Coord {
+        self.unit * 1.5
     }
 
-    /// The content pane inset to a comfortable reading column, height clamped to ~9.5 line units (top-aligned) — so every render arm's `body.split_v([1.0; N])` yields unit-scaled line rows on ANY aspect and any zoom. This one clamp is what keeps text spans, pills, and checkboxes in step, because they all derive their size from row height.
-    pub fn content_body(&self) -> Region {
-        let inset = self.content.inset_xy(0.06, 0.03);
-        let body_h = (self.unit * 1.25 * 9.5).min(inset.h);
-        Region::new(inset.x, inset.y, inset.w, body_h)
+    /// The inset rail band the nav rows tile (x-inset so the touch band doesn't kiss the pane edge).
+    pub fn rail_inset(&self) -> Region {
+        self.rail.inset_xy(0.06, 0.0)
     }
 
-    /// Stack the content body into `N` top-aligned rows of one "line unit" each, returning each row's region. Rows past what fits still tile the body (they compress) — fine for a stub where every control just needs a slot. `n` is passed as a const generic so the caller gets a fixed-size array back.
-    pub fn content_rows<const N: usize>(&self) -> [Region; N] {
-        self.content_body().split_v([1.0; N])
+    /// Natural content line height — `unit · 1.25`, NO clamp. Page bodies stack `N` rows of this from `content_inset().y − content_scroll`; tall pages overflow and scroll.
+    pub fn content_line_h(&self) -> Coord {
+        self.unit * 1.25
+    }
+
+    /// The VISIBLE content pane (inset reading column) — the clip rect for the scrolled body, and the height the scroll extent is measured against.
+    pub fn content_inset(&self) -> Region {
+        self.content.inset_xy(0.06, 0.03)
+    }
+
+    /// The scrolled, natural-height body for a page of `n` rows: anchored at the content inset, shifted up by `scroll`, `n · content_line_h` tall. `split_v([1.0; n])` on it yields natural-height line rows that scroll (no compression). Clip draws to [`content_inset`].
+    pub fn content_scrolled(&self, n: usize, scroll: Coord) -> Region {
+        let inset = self.content_inset();
+        Region::new(inset.x, inset.y - scroll, inset.w, self.content_line_h() * n as Coord)
     }
 }
