@@ -722,6 +722,8 @@ pub struct PhotonApp {
     settings_fleet_selected: Option<[u8; 32]>,
     /// Security-page "Shred (crypto-wipe)" confirm arm: a first tap arms, a second fires `clean_device_for_reuse` (nuke vault + clear session). Event-shown, interaction-cleared.
     settings_shred_armed: bool,
+    /// About page: false = show the version as dozenal GLYPHS (the default — proper rendered dozenal, never arabic); true = the version tapped, spell it out in voca words. Toggles on each tap of the version row.
+    about_version_spelled: bool,
 
     /// This node's own reflexive (public) address, learned via peer-echoed reflection (see [`crate::network::traverse::reflexive`]). `None` until the first signed pong / `ReflectResponse` echo. Fed forward to candidate gathering and the FGTW announce so our published address is the one seen on the live UDP data socket — not fgtw.org's TLS-flow `cf-connecting-ip`, which is only right for cone NATs.
     our_reflexive: Option<std::net::SocketAddr>,
@@ -877,6 +879,7 @@ impl PhotonApp {
             settings_note_textbox: None,
             settings_fleet_selected: None,
             settings_shred_armed: false,
+            about_version_spelled: false,
         }
     }
 
@@ -1721,6 +1724,11 @@ impl FluorApp for PhotonApp {
                                 .unwrap_or_default();
                             self.spawn_log_submit(note);
                         }
+                    }
+                } else if page == SettingsPage::About {
+                    if slot == 3 {
+                        // Version row tapped → toggle dozenal glyphs ↔ spelled-out voca words.
+                        self.about_version_spelled = !self.about_version_spelled;
                     }
                 } else {
                     crate::log(&format!(
@@ -2663,9 +2671,8 @@ impl FluorApp for PhotonApp {
         let text = &mut *ctx.text;
         // Bg-first compose chain: noise paints opaque, the wave reads it for the `sqrt(c*scale + c_bg²)` blend, then the logo (glow / body / highlight) paints over both via legacy visible-RGB ops. Each step preserves α on the pixels it touches. The wave + logo are Launch-screen chrome — once attested the user shouldn't be staring at the wordmark every time they open the app, so Ready / Searching / Conversation get just the background noise and let their own widgets own the canvas.
         let on_launch = matches!(self.state, AppState::Launch(_));
-        // Version watermark shows on the attest screen (Launch), the contacts screen (Ready), and the conversation screen — not other screens. (Settings, when it lands, spells the version out in words rather than glyphs; that's its own render path.) It's a faint bottom-left watermark painted in the bg pass, so on the conversation screen it sits behind the lifted compose box rather than competing with it.
-        let show_version =
-            on_launch || matches!(self.state, AppState::Ready | AppState::Conversation);
+        // Faint dozenal version watermark shows on the ATTEST screen ONLY (Launch) — a quiet bottom-left mark while you sign in. Ready / Conversation stay clean; the About page carries the version in full (normal-white dozenal glyphs, tap to spell out). Never arabic anywhere.
+        let show_version = on_launch;
         // Swap the noise base colour to BG_BASE_WARNING when the dual-ring vault flagged degraded this session — the noise pass already runs every frame so this changes a colour, not the pass count. None on the happy path keeps fluor's default green-dark BG_BASE.
         let bg_base = if self.vault_degraded {
             Some(BG_BASE_WARNING)
@@ -3839,111 +3846,107 @@ impl FluorApp for PhotonApp {
                 .as_ref()
                 .map(|tb| (tb.center_y, tb.font_size / 0.75))
                 .unwrap_or((buf_h as f32 * 0.45, 40.0));
-            let step = tb_h * 1.1;
+            // ONE vertical RU block: every element is a stacked row of unit `u = tb_h`, positioned by a running top-edge cursor `y` so nothing tramples at any zoom or candidate count. The field/confirm slot stays at the textbox rect (tb_cy); the block is anchored so that slot lands in place, and title/subtitle flow above it, counter/list/status/hint below.
+            let u = tb_h;
+            let gap = u * 0.45;
+            // Two header rows above the field.
             ctx.text.draw_text_center_u32(
-                &mut canvas, "Add a device", cx, tb_cy - step * 2.4,
-                tb_h * 0.9, 600, STATUS_TEXT_COLOUR, "Oxanium", None, None, None,
+                &mut canvas, "Add a device", cx, tb_cy - u * 2.5,
+                u * 0.85, 600, STATUS_TEXT_COLOUR, "Oxanium", None, None, None,
             );
             let subtitle = if self.add_device_bound.is_none() {
                 "Type the words shown on the new device"
             } else if self.add_device_checking {
-                // Words path: bound + auto-rotating; the status line below carries "Adding…".
-                ""
+                "" // Words path: bound + auto-rotating; the status row below carries "Adding…".
             } else {
-                // BLE path only: the line above the confirm is load-bearing (the press releases the fleet key) — the human must check the FAR screen, not this one.
+                // BLE/tap path only: load-bearing — the human must check the FAR (new) device's screen, not this one.
                 "Confirm only once the new device shows it's in"
             };
             ctx.text.draw_text_center_u32(
-                &mut canvas, subtitle, cx, tb_cy - step * 1.3,
-                tb_h * 0.45, 400, STATUS_TEXT_COLOUR, "Oxanium", None, None, None,
+                &mut canvas, subtitle, cx, tb_cy - u * 1.35,
+                u * 0.45, 400, STATUS_TEXT_COLOUR, "Oxanium", None, None, None,
             );
+            // Running cursor for everything BELOW the field slot (top edge of the next row).
+            let mut y = tb_cy + u * 0.85;
             if self.add_device_bound.is_none() {
-                // Words-entry field: the launch textbox instance does double duty (same rect as the attest slot); it stamps its hit id so click-to-focus works.
+                // Words-entry field (the launch textbox instance, at its rect); it stamps its hit id so click-to-focus works.
                 if let Some(tb) = self.textbox.as_mut() {
                     let id = tb.hit_id();
-                    tb.render_content_into(
-                        &mut canvas,
-                        0.,
-                        0.,
-                        ctx.text,
-                        None,
-                        None,
-                        Some(&mut chrome.hit_test_map),
-                        id,
-                    );
+                    tb.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, Some(&mut chrome.hit_test_map), id);
                 }
-                // Live word counter under the field — fixed-width entry means completeness is knowable, so show progress and flip emphasis when full.
+                // Live word counter (n / 23).
                 let typed: String = self.textbox.as_ref().map(|tb| tb.chars.iter().collect()).unwrap_or_default();
                 let count = crate::network::fgtw::fleet::pair_word_tokens(&typed);
                 let full = count == crate::network::fgtw::fleet::PAIR_WORD_COUNT;
                 let counter = format!("{count} / {}", crate::network::fgtw::fleet::PAIR_WORD_COUNT);
                 let counter_colour = if full { SEARCH_FOUND_COLOUR } else { fluor::theme::HINT_COLOUR };
                 ctx.text.draw_text_center_u32(
-                    &mut canvas, &counter, cx, tb_cy + step * 1.2,
-                    tb_h * 0.5, 500, counter_colour, "Oxanium", None, None, None,
+                    &mut canvas, &counter, cx, y + u * 0.25,
+                    u * 0.5, 500, counter_colour, "Oxanium", None, None, None,
                 );
-                // Tappable candidate list — PROXIMITY POPULATION ONLY (docs/pairing-v2.md). Only devices we HEAR over the BLE announce beacon (later: NFC tap) become tap targets, NEVER the raw registry: a remote attacker who holds the handle can flood the (WAN, identity-gated) registry with binding requests, so listing registry entries as tap targets would fill your finger's reach with decoys. The registry is sync only (it carries the consent signature a tap then binds with); proximity is what a remote attacker cannot fake. Devices that are NOT nearby don't appear here — you type their words (reading the words off the physical screen IS the proximity check). Index i here is the position in the HEARD-only subset; the tap dispatch filters identically.
+                y += u * 0.5 + gap;
+                // Tappable candidate list — PROXIMITY POPULATION ONLY (docs/pairing-v2.md): only devices HEARD over the BLE announce beacon (later: NFC tap) become tap targets, NEVER the raw registry — a remote attacker who holds the handle can flood the identity-gated registry, so listing registry entries as taps would fill your finger's reach with decoys. Registry = sync only (the consent a tap binds with); proximity is what a remote attacker can't fake. Not-nearby devices don't appear — you type their words (reading them off the physical screen IS the proximity check). Index i = position in the HEARD-only subset; the tap dispatch filters identically.
                 let nearby: Vec<&AddCandidate> =
                     self.add_device_candidates.iter().filter(|c| c.heard_ble).take(7).collect();
                 if !nearby.is_empty() {
-                    let list_top = tb_cy + step * 1.9;
-                    let row_h = tb_h * 0.85;
                     ctx.text.draw_text_center_u32(
-                        &mut canvas, "or tap the nearby device asking to join:", cx, list_top,
-                        tb_h * 0.4, 400, fluor::theme::HINT_COLOUR, "Oxanium", None, None, None,
+                        &mut canvas, "or tap the nearby device asking to join:", cx, y + u * 0.2,
+                        u * 0.4, 400, fluor::theme::HINT_COLOUR, "Oxanium", None, None, None,
                     );
+                    y += u * 0.4 + gap * 0.5;
+                    let row_h = u * 0.85;
                     for (i, cand) in nearby.iter().enumerate() {
-                        let ry = list_top + row_h * (i as f32 + 1.0);
                         let label = format!("{}   · nearby", cand.name);
                         let held = ctx.pressed_hit != HIT_NONE
                             && ctx.pressed_hit == self.add_candidate_hit_base.wrapping_add(i as HitId);
                         ctx.text.draw_text_center_u32(
-                            &mut canvas, &label, cx, ry,
-                            tb_h * 0.55, if held { 700 } else { 500 }, SEARCH_FOUND_COLOUR, "Oxanium", None, None, None,
+                            &mut canvas, &label, cx, y + row_h * 0.5,
+                            u * 0.55, if held { 700 } else { 500 }, SEARCH_FOUND_COLOUR, "Oxanium", None, None, None,
                         );
                         let half_w = buf_w as f32 * 0.42;
                         restamp_hit_rect(
                             &mut chrome.hit_test_map, buf_w, buf_h,
-                            (cx - half_w) as isize, (ry - row_h * 0.5) as isize,
-                            (cx + half_w) as isize, (ry + row_h * 0.5) as isize,
+                            (cx - half_w) as isize, y as isize,
+                            (cx + half_w) as isize, (y + row_h) as isize,
                             self.add_candidate_hit_base.wrapping_add(i as HitId),
                         );
+                        y += row_h;
                     }
+                    y += gap;
                 }
             } else if !self.add_device_checking {
-                // Green-confirm affordance (two-phase): the press fires the fleet-key rotation. Hit-stamped like the join screen's start-fresh tappable so Android taps land. On the WORDS path the Bound handler auto-fires the rotation (checking = true), so this affordance never renders — it's the BLE transport's gate, kept live for that path. When checking, only the "Adding…" status shows.
-                let confirm_y = tb_cy + step * 1.2;
+                // Green-confirm affordance (two-phase) — sits IN the field slot (tb_cy), the same place the words field would be. On the WORDS path the Bound handler auto-fires the rotation, so this never renders; it's the tap/BLE gate. Hit-stamped so Android taps land.
                 ctx.text.draw_text_center_u32(
-                    &mut canvas, "Yes, it's green \u{2014} finish", cx, confirm_y,
-                    tb_h * 0.7, 600, SEARCH_FOUND_COLOUR, "Oxanium", None, None, None,
+                    &mut canvas, "Yes, it's green \u{2014} finish", cx, tb_cy,
+                    u * 0.7, 600, SEARCH_FOUND_COLOUR, "Oxanium", None, None, None,
                 );
                 let half_w = buf_w as f32 * 0.4;
                 restamp_hit_rect(
                     &mut chrome.hit_test_map, buf_w, buf_h,
-                    (cx - half_w) as isize, (confirm_y - tb_h * 0.7) as isize,
-                    (cx + half_w) as isize, (confirm_y + tb_h * 0.7) as isize,
+                    (cx - half_w) as isize, (tb_cy - u * 0.7) as isize,
+                    (cx + half_w) as isize, (tb_cy + u * 0.7) as isize,
                     self.add_confirm_hit_id,
                 );
             }
+            // Status row.
             if !self.add_device_status.is_empty() {
                 let status_colour = if self.add_device_bound.is_some() {
                     SEARCH_FOUND_COLOUR
                 } else if self.add_device_typo.is_some() {
-                    // Live matcher hit: the status line names the diverging word in red.
-                    ERROR_TEXT_COLOUR
+                    ERROR_TEXT_COLOUR // live matcher hit: names the diverging word in red
                 } else {
                     STATUS_TEXT_COLOUR
                 };
                 ctx.text.draw_text_center_u32(
-                    &mut canvas, &self.add_device_status, cx, tb_cy + step * 2.2,
-                    tb_h * 0.5, 400, status_colour, "Oxanium", None, None, None,
+                    &mut canvas, &self.add_device_status, cx, y + u * 0.28,
+                    u * 0.5, 400, status_colour, "Oxanium", None, None, None,
                 );
+                y += u * 0.56 + gap;
             }
-            // Matching words bind automatically, so the orb's only job here is cancel.
-            let hint = "tap the orb to cancel";
+            // Cancel hint (the orb cancels; matching words bind automatically).
             ctx.text.draw_text_center_u32(
-                &mut canvas, hint, cx, tb_cy + step * 3.2,
-                tb_h * 0.4, 400, STATUS_TEXT_COLOUR, "Oxanium", None, None, None,
+                &mut canvas, "tap the orb to cancel", cx, y + u * 0.22,
+                u * 0.4, 400, STATUS_TEXT_COLOUR, "Oxanium", None, None, None,
             );
         }
 
@@ -3978,10 +3981,10 @@ impl FluorApp for PhotonApp {
                 );
             }
 
-            // --- Header: title + back affordance --- (unit-scaled so the heading zooms with everything else)
+            // --- Header: title (unit-scaled so it zooms with everything else). Centered over the RAIL (the 1/3-width left pane), i.e. directly above the divider, so it caps the nav column rather than floating at the far-left edge. ---
             let hspan = (layout.unit * 1.05).min(layout.header.h * 0.72);
-            ctx.text.draw_text_left_u32(
-                &mut canvas, "Settings", layout.header.x + hspan * 0.6,
+            ctx.text.draw_text_center_u32(
+                &mut canvas, "Settings", layout.rail.center_x(),
                 layout.header.center_y(), hspan, 600, CONTACT_NAME_COLOUR, "Oxanium",
                 None, None, None,
             );
@@ -3997,8 +4000,8 @@ impl FluorApp for PhotonApp {
             {
                 let r = nav_row(0);
                 let back_held = ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == self.back_btn_hit_id;
-                // Faint solid-black fill at 0x20 opacity so the Back row reads distinct from the page rows. The buffer is DARKNESS space (stored = 255 − visible), so visible black is 0xFFFFFF in the RGB bytes; α = 0x20 in the top byte. (A raw 0x40_00_00_00 was visible WHITE — the "bright fill" bug.) Brighter when held.
-                let fill = if back_held { fluor::theme::BUTTON_HELD } else { 0x20_FF_FF_FF };
+                // Solid-black fill at 50% (α = 0x80) so the Back row reads distinct from the page rows. The buffer is DARKNESS space (stored = 255 − visible), so visible black is 0xFFFFFF in the RGB bytes; α = 0x80 in the top byte. Brighter when held.
+                let fill = if back_held { fluor::theme::BUTTON_HELD } else { 0x80_FF_FF_FF };
                 paint::fill_rect(&mut canvas, r.x as isize, r.y as isize, r.w as isize, r.h as isize, fill, Some(rail_clip), None);
                 ctx.text.draw_text_left_u32(
                     &mut canvas, "‹ Back", r.x + rspan * 0.6, r.center_y(),
@@ -4207,7 +4210,19 @@ impl FluorApp for PhotonApp {
                     settings_line(&mut canvas, ctx.text, rows[1], "No password. Your device is your key.", hspan2, CONTACT_NAME_COLOUR, 400);
                     settings_line(&mut canvas, ctx.text, rows[2], "Stay signed in until power-off; reboot → re-enter your handle.", hspan2, LABEL_COLOUR, 400);
                     settings_line(&mut canvas, ctx.text, rows[3], "No servers. No tracking. Your data is yours.", hspan2, LABEL_COLOUR, 400);
-                    settings_line(&mut canvas, ctx.text, rows[5], "Version 0.0.25 (dozenal 21)", hspan2, LABEL_COLOUR, 400);
+                    // Version — dozenal, NEVER arabic. Default: normal-white dozenal glyphs (weight 400 → the Oxanium +glyphs face renders the reserved control-code bytes as dozenal digits). Tap → spell it out in voca words. Whole row is a tap target (btn_base + 3).
+                    let ver = if self.about_version_spelled {
+                        format!("Version {}", voca::encode(num_bigint::BigUint::from(deploy_version())))
+                    } else {
+                        format!("Version {}", dozenal_glyphs(deploy_version()))
+                    };
+                    settings_line(&mut canvas, ctx.text, rows[5], &ver, hspan2, CONTACT_NAME_COLOUR, 400);
+                    restamp_hit_rect(
+                        &mut chrome.hit_test_map, buf_w, buf_h,
+                        rows[5].x as isize, rows[5].y as isize,
+                        (rows[5].x + rows[5].w) as isize, (rows[5].y + rows[5].h) as isize,
+                        btn_base.wrapping_add(3),
+                    );
                     settings_line(&mut canvas, ctx.text, rows[6], "Feedback: fractaldecoder@proton.me", hspan2, LABEL_COLOUR, 400);
                     settings_line(&mut canvas, ctx.text, rows[7], "Built on the TOKEN stack · licences under the hood.", hspan2, LABEL_COLOUR, 400);
                 }
