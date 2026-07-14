@@ -6167,10 +6167,10 @@ impl PhotonApp {
                 // Live fleet propagation: subscribe to hub events for this identity (idempotent across resumes/re-attests in one run).
                 self.spawn_fleet_event_sub();
                 // Pubkey emitted as voca-encoded camelCase so a user reading the log can double-click + paste the value as a single word (matches `Development:` key lines from handle_query.rs). The handle is deliberately NOT logged — Photon never surfaces the plaintext handle.
-                eprintln!(
+                crate::log(&format!(
                     "attestation success: pubkey = {}",
                     voca::encode(BigUint::from_bytes_be(&data.handle_proof))
-                );
+                ));
                 // Adopt the session roots the worker just derived + persisted (register-shaped, no handle string). Shared across the user's TOKEN apps, gone at logout; a close/reopen resumes from these without re-typing or recomputing the proof. Fall back to the roots carried in the attest result if the tohu READ-BACK comes up empty (a persist failure must not leave THIS RUN sessionless — that made the avatar picker report "not attested" seconds after a successful attest). vault_seed == identity_seed mirrors the worker's derivation (handle_query FirstAttest).
                 self.session = tohu::session().or(Some(tohu::SessionIdentity {
                     identity_seed: data.identity_seed,
