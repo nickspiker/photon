@@ -144,9 +144,15 @@ pub enum ClutchState {
 #[derive(Clone, Debug)]
 pub struct Contact {
     pub id: ContactId,
-    pub handle: HandleText, // VSF-style text for unambiguous handle storage
+    /// Local petname — the only name at rest for this contact; user-chosen, synced across OUR fleet via the roster, EMPTY by default (empty renders the keyed voca pseudonym). Never defaulted to the typed handle: the handle string derives the identity seed, so storing it anywhere re-creates the honeypot (docs/identity-profile.md).
+    pub petname: String,
+    /// The friend's published profile name, adopted from their identity-signed profile (stage C). Display fallback after petname; carries zero trust.
+    pub published_name: String,
+    /// The avatar-wall pin, derived at first-met before the seed dropped: AES key (32) ‖ FGTW lookup hash (32). All zeroes = not pinned (siblings and self use the session-seed path).
+    pub avatar_pin: [u8; 64],
     pub handle_proof: [u8; 32], // Cached handle_proof (expensive to compute - ~1 second) - PUBLIC
-    pub handle_hash: [u8; 32], // BLAKE3(handle) - PRIVATE, used for seed derivation
+    /// The PARTY ID: the friend's pinned identity PUBKEY (device-derived pid for siblings). Every ceremony/braid derivation keys on this opaque 32-byte id; it holds no signing power. (Pre-pin-set this was BLAKE3(handle) — the friend's identity SEED.)
+    pub handle_hash: [u8; 32],
     pub public_identity: DevicePubkey,
     /// The friend's CURRENT fleet device set, folded from their public membership chain (`fleet::current_members` by `handle_proof`). A contact is an IDENTITY, not a device: pings/pongs/offers/messages are honoured from ANY member here, not just `public_identity` (which is only the device we happened to meet first). Empty until the first refresh; refreshed on load and on a `fleet` bump for this contact. Now persisted alongside `fleet_folded_once` / `fleet_members_ts` so a restart resumes fold-respecting trust immediately instead of a trust-nobody gap while the re-fold is in flight.
     pub fleet_members: Vec<[u8; 32]>,
@@ -262,15 +268,29 @@ impl ContactId {
 }
 
 impl Contact {
+    /// FIRST-MET constructor: the one moment the handle string exists on this side. Derives the whole pin-set — party id (identity pubkey), avatar-wall key — and lets both the string and the seed drop; nothing with signing power (or that derives it) lands in the row (docs/identity-profile.md).
     pub fn new(handle: HandleText, handle_proof: [u8; 32], public_identity: DevicePubkey) -> Self {
-        // The friend's party id = their identity PUBKEY, pinned at first-met (docs/identity-profile.md): derive the seed from the typed handle, take the Ed25519 public half, and let the seed drop — the contact row must never hold signing power. All ceremony/braid derivations key on this opaque 32-byte id; the SECRET identity binding is the friendship-secret DH, not this value.
-        let handle_hash = crate::crypto::clutch::identity_party_id(&crate::types::Handle::to_identity_seed(handle.as_str()));
+        let seed = crate::types::Handle::to_identity_seed(handle.as_str());
+        let handle_hash = crate::crypto::clutch::identity_party_id(&seed);
+        let avatar_pin = crate::ui::avatar::avatar_pin_from_seed(&seed);
+        Self::from_pin(String::new(), avatar_pin, handle_proof, handle_hash, public_identity)
+    }
 
+    /// PIN-SET constructor: reconstruct a contact from stored/synced material (vault rows, roster entries) — no handle anywhere.
+    pub fn from_pin(
+        petname: String,
+        avatar_pin: [u8; 64],
+        handle_proof: [u8; 32],
+        party_id: [u8; 32],
+        public_identity: DevicePubkey,
+    ) -> Self {
         Self {
             id: ContactId::from_pubkey(&public_identity),
-            handle,
+            petname,
+            published_name: String::new(),
+            avatar_pin,
             handle_proof,
-            handle_hash,
+            handle_hash: party_id,
             public_identity,
             fleet_members: Vec::new(), // Folded from the friend's chain on the first refresh
             fleet_folded_once: false,  // Armed only by a successful adopted fold
@@ -325,17 +345,24 @@ impl Contact {
         }
     }
 
-    /// Construct a fleet-sibling contact: one of our OWN devices, discovered from our folded membership chain. Party id (in `handle_hash`) is device-derived so the ceremony machinery can't collide with the self/friend id space; handle fields are OUR handle so `refresh_contact_addrs_from_peers` matches the sibling's FGTW peer row (keyed hp + device pubkey). Trust is implicit — the pubkey came from our own fold.
-    pub fn new_sibling(
-        our_handle: HandleText,
-        our_handle_proof: [u8; 32],
-        sibling_device: DevicePubkey,
-    ) -> Self {
-        let mut c = Self::new(our_handle, our_handle_proof, sibling_device);
-        c.handle_hash = crate::crypto::clutch::sibling_party_id(&c.public_identity.key);
+    /// Construct a fleet-sibling contact: one of our OWN devices, discovered from our folded membership chain. Party id (in `handle_hash`) is device-derived so the ceremony machinery can't collide with the self/friend id space; `handle_proof` is OUR OWN so `refresh_contact_addrs_from_peers` matches the sibling's FGTW peer row (keyed hp + device pubkey — no handle string needed). Trust is implicit — the pubkey came from our own fold.
+    pub fn new_sibling(our_handle_proof: [u8; 32], sibling_device: DevicePubkey) -> Self {
+        let party_id = crate::crypto::clutch::sibling_party_id(&sibling_device.key);
+        let mut c = Self::from_pin(String::new(), [0u8; 64], our_handle_proof, party_id, sibling_device);
         c.is_sibling = true;
         c.trust_level = TrustLevel::Inner;
         c
+    }
+
+    /// The name this contact renders as everywhere: local petname → their published profile name → the keyed two-word voca pseudonym from the party id. No handle: the string that derives an identity exists at rest nowhere (docs/identity-profile.md). Names carry ZERO trust — the pinned key does.
+    pub fn display_name(&self) -> String {
+        if !self.petname.is_empty() {
+            return self.petname.clone();
+        }
+        if !self.published_name.is_empty() {
+            return self.published_name.clone();
+        }
+        crate::network::fgtw::fleet::keyed_pseudonym(&self.handle_hash)
     }
 
     pub fn with_ip(mut self, ip: SocketAddr) -> Self {
@@ -592,11 +619,7 @@ mod fold_honour_tests {
     #[test]
     fn sibling_never_arms_stays_bootstrap() {
         // A sibling contact never folds a contact-chain, so fleet_folded_once stays false and knows_device answers only the one sibling device (empty fleet_members is load-bearing for first-match routing).
-        let sib = Contact::new_sibling(
-            HandleText::new("me"),
-            [0x22; 32],
-            DevicePubkey::from_bytes([5u8; 32]),
-        );
+        let sib = Contact::new_sibling([0x22; 32], DevicePubkey::from_bytes([5u8; 32]));
         assert!(!sib.fleet_folded_once, "siblings are never armed");
         assert!(sib.knows_device(&[5u8; 32]), "the sibling device is trusted (bootstrap)");
         assert!(!sib.knows_device(&[6u8; 32]), "another device is not");
@@ -605,11 +628,7 @@ mod fold_honour_tests {
     #[test]
     fn new_sibling_keys_on_device_pid_and_slots_stay_distinct() {
         let sib_device = [5u8; 32];
-        let sib = Contact::new_sibling(
-            HandleText::new("me"),
-            [0x22; 32],
-            DevicePubkey::from_bytes(sib_device),
-        );
+        let sib = Contact::new_sibling([0x22; 32], DevicePubkey::from_bytes(sib_device));
         assert!(sib.is_sibling);
         // Party id is device-derived, NOT the handle-derived seed (which every sibling would share).
         assert_eq!(
