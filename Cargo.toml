@@ -156,7 +156,11 @@ windows = { version = "0.58", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_Graphics_Gdi",
     "Win32_UI_ColorSystem",
-    "Win32_System_Console"
+    "Win32_System_Console",
+    # Pairing v2 beacon ADVERTISER (new-device role) — WinRT BluetoothLEAdvertisementPublisher (docs/pairing-v2.md). Win32_System_Com for the CoInitializeEx apartment its activation thread needs.
+    "Devices_Bluetooth_Advertisement",
+    "Foundation_Collections",
+    "Win32_System_Com",
 ] }
 
 [target.'cfg(target_os = "android")'.dependencies]

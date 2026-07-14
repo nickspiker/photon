@@ -245,12 +245,21 @@ mod imp {
 
     static SCAN_STOP: Mutex<Option<Arc<AtomicBool>>> = Mutex::new(None);
 
-    pub(super) fn start_announce(_uuid: [u8; BEACON_UUID_LEN]) {
-        // btleplug is central-only, so the new-device advertiser is native per-OS — CoreBluetooth CBPeripheralManager on macOS, WinRT BluetoothLEAdvertisementPublisher on Windows. The unified service-UUID format is what makes it possible on macOS at all (it's the one payload CoreBluetooth will emit). Lands next; until then, scanning (sponsor role) works and words carry the new-device side.
-        crate::log("BEACON: advertise not wired on this platform yet — scan (sponsor) works, words carry new-device");
+    // btleplug is central-only, so the new-device advertiser is native per-OS. Windows: WinRT BluetoothLEAdvertisementPublisher (wired). macOS: CoreBluetooth CBPeripheralManager (lands next — the unified service-UUID format is what makes it possible there at all, it's the one payload CoreBluetooth will emit).
+    pub(super) fn start_announce(uuid: [u8; BEACON_UUID_LEN]) {
+        #[cfg(target_os = "windows")]
+        win_adv::start(uuid);
+        #[cfg(target_os = "macos")]
+        {
+            let _ = uuid;
+            crate::log("BEACON: macOS advertiser (CoreBluetooth) lands next — scan (sponsor) works, words carry new-device");
+        }
     }
 
-    pub(super) fn stop_announce() {}
+    pub(super) fn stop_announce() {
+        #[cfg(target_os = "windows")]
+        win_adv::stop();
+    }
 
     pub(super) fn start_scan() {
         let stop = Arc::new(AtomicBool::new(false));
@@ -294,6 +303,63 @@ mod imp {
         let _ = central.stop_scan().await;
         crate::log("BEACON: btleplug scan stopped");
         Ok(())
+    }
+
+    // ── Windows advertiser: WinRT BluetoothLEAdvertisementPublisher. ──
+    // Runs on a dedicated thread that owns a COM apartment (WinRT activation requires one) and holds the publisher alive until stopped — dropping the publisher stops the advertisement, so the thread parks on it rather than returning.
+    #[cfg(target_os = "windows")]
+    mod win_adv {
+        use super::*;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        use windows::core::GUID;
+        use windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementPublisher;
+        use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
+
+        static ADV_STOP: Mutex<Option<Arc<AtomicBool>>> = Mutex::new(None);
+
+        pub(in crate::network::pairing_beacon) fn start(uuid: [u8; BEACON_UUID_LEN]) {
+            let stop = Arc::new(AtomicBool::new(false));
+            if let Some(old) = ADV_STOP.lock().unwrap().replace(stop.clone()) {
+                old.store(true, Ordering::Relaxed);
+            }
+            std::thread::spawn(move || {
+                if let Err(e) = run(uuid, stop) {
+                    crate::log(&format!("BEACON: WinRT advertise failed: {e}"));
+                }
+            });
+        }
+
+        pub(in crate::network::pairing_beacon) fn stop() {
+            if let Some(stop) = ADV_STOP.lock().unwrap().take() {
+                stop.store(true, Ordering::Relaxed);
+            }
+        }
+
+        fn run(uuid: [u8; BEACON_UUID_LEN], stop: Arc<AtomicBool>) -> windows::core::Result<()> {
+            // MTA: no message pump needed while the thread parks holding the publisher.
+            unsafe {
+                let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+            }
+            let result = (|| -> windows::core::Result<()> {
+                let publisher = BluetoothLEAdvertisementPublisher::new()?;
+                // Big-endian u128 keeps the GUID's canonical value equal to our UUID bytes (byte 0 = most-significant), so the wire value matches every other courier.
+                let guid = GUID::from_u128(u128::from_be_bytes(uuid));
+                publisher.Advertisement()?.ServiceUuids()?.Append(guid)?;
+                publisher.Start()?;
+                crate::log("BEACON: WinRT advertise started");
+                while !stop.load(Ordering::Relaxed) {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+                publisher.Stop()?;
+                crate::log("BEACON: WinRT advertise stopped");
+                Ok(())
+            })();
+            unsafe {
+                CoUninitialize();
+            }
+            result
+        }
     }
 }
 
