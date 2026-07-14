@@ -502,6 +502,8 @@ pub struct PhotonApp {
     last_presence_ping: Option<Instant>,
     /// Last time the user interacted with the app (any input event, or window focus-gain). `None` until the first interaction. The presence sweep tapers with idle time — frequent while you're actively using it, sparse when you've walked away — so an unfocused, untouched window isn't hitting the network every few seconds. Reset on interaction, which also triggers an immediate sweep so rings are fresh the instant you look. See `presence_ping_interval`.
     last_interaction: Option<Instant>,
+    /// Last time an already-running device re-folded its OWN fleet chain to catch a device add/remove it may have missed. The hub `fleet` event is the fast path but best-effort (a dropped WebSocket = a missed add), so this periodic re-fold is the reliable doorbell: without it, an existing device never learns a newly-added sibling until relaunch — it wouldn't answer the new device's presence pings (→ shows it offline) and its Fleet list would stay stale. `None` until the first poll.
+    last_fleet_refold: Option<Instant>,
     /// HandleQuery client — owns the UDP socket, device keypair, and FGTW peer store. Submission calls `handle_query.query(handle)`; `tick()` polls `try_recv()` for results. `None` until init.
     handle_query: Option<HandleQuery>,
     /// Per-contact presence + CLUTCH ceremony driver. Shares HandleQuery's UDP socket; pings contacts, receives pongs (→ `is_online`), and runs the slot-based CLUTCH offer/KEM/complete exchange. `None` until init. Ported from the retired `app.rs` — the fluor migration left this whole subsystem behind, so contacts showed offline and CLUTCH never started.
@@ -737,6 +739,7 @@ impl PhotonApp {
             blink_timer: BlinkTimer::new(),
             last_presence_ping: None,
             last_interaction: None,
+            last_fleet_refold: None,
             handle_query: None,
             status_checker: None,
             contact_pubkeys: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
@@ -2306,8 +2309,11 @@ impl FluorApp for PhotonApp {
         // Pairing flows: join-words (new device) and add-device matcher/confirm (old device) results arrive on mpsc channels from worker threads, with nothing else guaranteed to drive a tick while the user's hands are off — so poll-drain at 2 Hz while either flow is live. This is channel plumbing, not time-based UI: nothing is shown or cleared on a clock.
         let pairing = (self.add_join_rx.is_some() || self.add_device_rx.is_some())
             .then(|| Instant::now() + std::time::Duration::from_millis(500));
+        // Periodic own-chain re-fold (the fleet-membership doorbell) — scheduled on the screens where a stale fleet view matters, so it fires even while the desktop window sits idle on the Fleet page. 45s matches advance_protocol's cadence.
+        let fleet_refold = matches!(self.state, AppState::Ready | AppState::Conversation | AppState::Settings(_))
+            .then(|| self.last_fleet_refold.map_or_else(Instant::now, |last| last + std::time::Duration::from_secs(45)));
         // Soonest of all scheduled wakeups.
-        [blink, anim, presence, pairing].into_iter().flatten().min()
+        [blink, anim, presence, pairing, fleet_refold].into_iter().flatten().min()
     }
 
     fn tick(&mut self, ctx: &mut Context) -> bool {
@@ -2466,8 +2472,9 @@ impl FluorApp for PhotonApp {
             }
             self.last_ru = ctx.viewport.ru;
         }
-        // Dev-only: the zoom-% readout is a debugging aid, not a shipped affordance.
-        let show_zoom = self.zoom_hint && cfg!(feature = "development");
+        // Dev-only: the zoom-% readout is a debugging aid, not a shipped affordance. Desktop shows it while a zoom modifier is held after a change (`zoom_hint`); Android pinch-zoom has NO keyboard modifier to arm/clear against, so there we show it whenever `ru` sits away from 100% — always accurate, no touch-release event needed (which fluor's multi-touch layer doesn't emit yet).
+        let show_zoom = cfg!(feature = "development")
+            && (self.zoom_hint || (cfg!(target_os = "android") && (ctx.viewport.ru - 1.0).abs() > 0.001));
 
         // Title-bar text by screen, computed BEFORE the chrome borrow (peer count reads `self.handle_query` / `self.session`). Launch/attest shows the "← Network" affordance; once attested (Ready) it shows the peer count — distinct identities in the store EXCLUDING our own: peers are PEOPLE, so the FGTW seed is not a peer (the old `+1` when online) and neither are our own fleet siblings (their records ride the same store for direct routing). `set_title` only re-rasterizes chrome when the string actually changes, so this is cheap to recompute each frame.
         let title_text: String = if matches!(self.state, AppState::Conversation) {
@@ -4191,6 +4198,20 @@ impl PhotonApp {
             if due {
                 self.last_presence_ping = Some(now);
                 self.ping_contacts();
+            }
+        }
+
+        // Periodic OWN-chain re-fold — the reliable doorbell for fleet membership changes (docs/pairing-v2.md). The hub `fleet` event is the instant path but best-effort; this catches a device add/remove that arrived while our WebSocket was down. Reconciling siblings re-seeds the answerable-pubkey set, so a newly-added device starts getting pong answers (stops showing offline) and appears in the Fleet list without a relaunch. 45s: brisk enough that a just-added device goes live within a sweep, slow enough to be a negligible one-fetch background poll.
+        const FLEET_REFOLD_INTERVAL: std::time::Duration = std::time::Duration::from_secs(45);
+        if matches!(self.state, AppState::Ready | AppState::Conversation | AppState::Settings(_)) {
+            let due = self
+                .last_fleet_refold
+                .is_none_or(|last| now.duration_since(last) >= FLEET_REFOLD_INTERVAL);
+            if due {
+                if let Some(our_hp) = self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()) {
+                    self.last_fleet_refold = Some(now);
+                    self.spawn_contact_fleet_refresh(vec![our_hp]);
+                }
             }
         }
 
