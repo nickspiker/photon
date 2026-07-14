@@ -647,87 +647,13 @@ impl FgtwMessage {
         let (header, header_end) =
             VsfHeader::decode(bytes).map_err(|e| format!("Failed to parse VSF header: {}", e))?;
 
-        // Check for empty section (header-only format like ping/pong) Empty sections have no '[' after '>' - the section name is in the header field
-        if header_end >= bytes.len() || bytes[header_end] != b'[' {
-            // No section body - search header fields for message type (ping/pong)
-            let section_name = header
-                .fields
-                .iter()
-                .find(|f| {
-                    f.name == "ping"
-                        || f.name == "pong"
-                        || f.name == "pb_req"
-                        || f.name == "av_req"
-                        || f.name == "reflect"
-                        || f.name == "punch"
-                })
-                .map(|f| f.name.as_str());
-
-            if let Some(section_name) = section_name {
-                let timestamp = extract_header_timestamp(&header)?;
-                let pubkey = extract_header_pubkey(&header)?;
-                let provenance_hash = extract_header_provenance(&header)?;
-                let signature = extract_header_signature(&header)?;
-
-                if section_name == "pb_req" {
-                    // Phonebook request is body-less (empty section), so it lands on this header-only fast path like ping.
-                    return Ok(FgtwMessage::PhonebookRequest {
-                        timestamp,
-                        sender_pubkey: pubkey,
-                        provenance_hash,
-                        signature,
-                    });
-                } else if section_name == "av_req" {
-                    // Avatar request is body-less too — same header-only fast path.
-                    return Ok(FgtwMessage::AvatarRequest {
-                        timestamp,
-                        sender_pubkey: pubkey,
-                        provenance_hash,
-                        signature,
-                    });
-                } else if section_name == "reflect" {
-                    // Address-reflection request is body-less too — header-only fast path like ping.
-                    return Ok(FgtwMessage::Reflect {
-                        timestamp,
-                        sender_pubkey: pubkey,
-                        provenance_hash,
-                        signature,
-                    });
-                } else if section_name == "punch" {
-                    // Hole-punch probe is body-less — header-only fast path like ping.
-                    return Ok(FgtwMessage::PunchProbe {
-                        timestamp,
-                        sender_pubkey: pubkey,
-                        provenance_hash,
-                        signature,
-                    });
-                } else if section_name == "ping" {
-                    return Ok(FgtwMessage::StatusPing {
-                        timestamp,
-                        sender_pubkey: pubkey,
-                        provenance_hash,
-                        signature,
-                    });
-                } else {
-                    // Old header-only pong format - no sync records, no observed_addr (backwards compat)
-                    return Ok(FgtwMessage::StatusPong {
-                        timestamp,
-                        responder_pubkey: pubkey,
-                        provenance_hash,
-                        signature,
-                        sync_records: vec![],
-                        observed_addr: None,
-                    });
-                }
-            }
-            return Err("No section found".to_string());
-        }
-
-        // Parse section using VsfSection::parse()
-        let (section, section_name) = parse_section_after_header(bytes, &header, header_end)
+        // primary_section handles ALL section shapes in one place: anonymous near-form bodies get their name resolved from the header TOC, and HEADER-ONLY messages (ping, legacy pong, pb_req, av_req, reflect, punch — a name-only TOC entry with no body, the minimal-bytes wire form) come back as zero-field sections. This retired the hand-rolled "no '[' means look in the header" fast path and its allowlist — the knowledge lives in the vsf crate now, and every name dispatches thru the arms below regardless of shape.
+        let section = header
+            .primary_section(bytes, header_end)
             .map_err(|e| format!("Failed to parse section: {}", e))?;
+        let section_name = section.name.clone();
 
-        // Handle ping/pong format
+        // Handle ping/pong format (a zero-field pong is the legacy header-only form: extract_sync_records defaults to none, observed_addr to None)
         if section_name == "ping" || section_name == "pong" {
             // Extract from header: timestamp, pubkey, provenance_hash, signature
             let timestamp = extract_header_timestamp(&header)?;
@@ -757,6 +683,36 @@ impl FgtwMessage {
                     observed_addr,
                 });
             }
+        }
+
+        // Address-reflection request: header-only (crypto in the header, the name is the message).
+        if section_name == "reflect" {
+            return Ok(FgtwMessage::Reflect {
+                timestamp: extract_header_timestamp(&header)?,
+                sender_pubkey: extract_header_pubkey(&header)?,
+                provenance_hash: extract_header_provenance(&header)?,
+                signature: extract_header_signature(&header)?,
+            });
+        }
+
+        // Hole-punch probe: header-only, same shape as reflect.
+        if section_name == "punch" {
+            return Ok(FgtwMessage::PunchProbe {
+                timestamp: extract_header_timestamp(&header)?,
+                sender_pubkey: extract_header_pubkey(&header)?,
+                provenance_hash: extract_header_provenance(&header)?,
+                signature: extract_header_signature(&header)?,
+            });
+        }
+
+        // Avatar request: header-only, same shape as reflect.
+        if section_name == "av_req" {
+            return Ok(FgtwMessage::AvatarRequest {
+                timestamp: extract_header_timestamp(&header)?,
+                sender_pubkey: extract_header_pubkey(&header)?,
+                provenance_hash: extract_header_provenance(&header)?,
+                signature: extract_header_signature(&header)?,
+            });
         }
 
         // Address-reflection response: header carries the signed provenance, the `obs` field the observed address.
@@ -1053,19 +1009,11 @@ fn parse_section_after_header(
     header: &vsf::VsfHeader,
     header_end: usize,
 ) -> Result<(vsf::VsfSection, String), String> {
-    let mut ptr = header_end;
-    let mut section = vsf::VsfSection::parse(data, &mut ptr)
+    // Thin shim over the library's primary_section — TOC name resolution AND header-only sections live in the vsf crate now. Kept because ten parse fns share this (section, name) tuple shape.
+    let section = header
+        .primary_section(data, header_end)
         .map_err(|e| format!("Failed to parse section: {}", e))?;
-    let name = if section.name.is_empty() {
-        header
-            .fields
-            .first()
-            .map(|f| f.name.clone())
-            .unwrap_or_default()
-    } else {
-        section.name.clone()
-    };
-    section.name = name.clone();
+    let name = section.name.clone();
     Ok((section, name))
 }
 

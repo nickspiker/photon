@@ -5,6 +5,7 @@ pub mod handle_query;
 pub mod history_pages;
 pub mod http;
 pub mod inspect;
+pub mod pairing_beacon;
 #[cfg(not(target_os = "android"))]
 pub mod peer_updates;
 pub mod pt;
