@@ -1,37 +1,34 @@
-//! Pairing v2 proximity beacon — the transport seam (docs/pairing-v2.md, milestone A: SHADOW MODE).
+//! Pairing v2 proximity beacon — the transport seam (docs/pairing-v2.md).
 //!
-//! One frame format (the `fgtw::pair` beacon codec), per-platform couriers: Android advertises AND scans via the `PhotonBeacon` Kotlin bridge; Linux scans via bluer (BlueZ over D-Bus); everything else stubs with a log line (Linux/Windows/macOS advertisers land in milestone B).
-//! The ceremony never learns which courier ran — frames go out via [`announce_guard`], frames come in thru [`on_frame_heard`], and everything between is plumbing.
-//! Shadow mode means: the v1 words ceremony keeps doing the real binding while this module proves the radio path — heard beacons are logged + stored, and nothing else happens.
-//!
-//! Wire detail: the frame is split across TWO manufacturer-data entries (company ids 0xFFFF then 0xFFFE) because both Android's ScanRecord and BlueZ merge ADV+SCAN_RSP into one map keyed by company id — one id per chunk, concatenated on receive. 0xFFFF/0xFFFE are the Bluetooth SIG's reserved/internal-use ids, correct for a non-shipping protocol.
+//! One frame, one carrier, every platform: a single 128-bit BLE **service UUID** = `[ magic:4 ][ nonce:4 ][ keyed_tag:8 ]` (see [`fgtw::pair::beacon_uuid`]). Service UUID rather than manufacturer data because it's the only advertising payload Apple's CoreBluetooth lets an app emit — so the same beacon works on Linux, Android, Windows AND macOS with no per-platform frame fork.
+//! The ceremony never learns which courier ran: the new device announces thru [`announce_guard`], the sponsor's scanner drops heard UUIDs into [`heard`], and the sponsor's matcher runs [`fgtw::pair::beacon_matches`] against its registry candidates to decide which are in proximity. Everything between is plumbing.
+//! Per-platform couriers: Android advertises AND scans (the `PhotonBeacon` Kotlin bridge); Linux advertises AND scans via bluer (BlueZ over D-Bus); macOS/Windows land next (btleplug scan + native advertise); Redox waits on a ferros radio.
 
 use std::sync::Mutex;
 use std::time::Instant;
 
-/// Max payload bytes in the primary advertising packet's manufacturer-data entry: 31 bytes legacy ADV budget − 3 flags − 4 AD header/company-id. The remainder of a frame rides the scan response (own 31-byte budget, no flags, 27 usable).
-pub const ADV_CHUNK: usize = 24;
+use fgtw::pair::BEACON_UUID_LEN;
 
-/// A candidate heard by the scanner, deduped by device pubkey. `proof` fills in when the candidate's beacon upgrades from announce to proof (milestone B consumes this; shadow mode only logs it).
+/// A beacon UUID the scanner heard (already magic-filtered), deduped by exact UUID. The sponsor's matcher tests each against its registry candidates with [`fgtw::pair::beacon_matches`] — this module never needs the fleet key.
 #[derive(Clone, Debug)]
-pub struct HeardCandidate {
-    pub device_pubkey: [u8; 32],
-    pub proof: Option<[u8; fgtw::pair::WORD_MAC_LEN]>,
+pub struct HeardBeacon {
+    pub uuid: [u8; BEACON_UUID_LEN],
     pub last_seen: Instant,
 }
 
-/// The scan filter: `Some(prefix)` while scanning (frames for other identities are dropped at ingest), `None` when idle.
-static SCAN_PREFIX: Mutex<Option<[u8; 4]>> = Mutex::new(None);
+/// True while a scan session is live — couriers gate their ingest on it so a late callback after `stop_scan` is dropped.
+static SCANNING: Mutex<bool> = Mutex::new(false);
 
-/// Everything heard this scan session, deduped by pubkey. Cleared on scan start.
-static HEARD: Mutex<Vec<HeardCandidate>> = Mutex::new(Vec::new());
+/// Everything heard this scan session, deduped by UUID. Cleared on scan start.
+static HEARD: Mutex<Vec<HeardBeacon>> = Mutex::new(Vec::new());
 
 // ── Announce (new device) ──
 
-/// Advertise `{hp_prefix, device_pubkey}` for as long as the returned guard lives — tie it to the join ceremony's thread scope so every exit path (bind, cancel, error) stops the radio. Shadow mode: v1 keeps binding via the relay while this proves the airwaves.
+/// Advertise this device's join beacon for as long as the returned guard lives — tie it to the join ceremony's thread scope so every exit path (bind, cancel, error) stops the radio. A fresh random nonce is minted here per ceremony so the same device is unlinkable across pairings.
 pub fn announce_guard(handle_proof: &[u8; 32], device_pubkey: &[u8; 32]) -> AnnounceGuard {
-    let frame = fgtw::pair::beacon_announce(handle_proof, device_pubkey);
-    start_announce_frame(&frame);
+    let nonce: [u8; 4] = rand::random();
+    let uuid = fgtw::pair::beacon_uuid(handle_proof, device_pubkey, &nonce);
+    imp::start_announce(uuid);
     AnnounceGuard(())
 }
 
@@ -40,83 +37,49 @@ pub struct AnnounceGuard(());
 
 impl Drop for AnnounceGuard {
     fn drop(&mut self) {
-        stop_announce();
+        imp::stop_announce();
     }
 }
 
-fn start_announce_frame(frame: &[u8]) {
-    let (adv, rsp) = frame.split_at(frame.len().min(ADV_CHUNK));
-    imp::start_announce(adv, rsp);
-}
+// ── Scan (old device / sponsor) ──
 
-fn stop_announce() {
-    imp::stop_announce();
-}
-
-// ── Scan (old device) ──
-
-/// Start scanning for pairing beacons carrying `own_prefix` (this identity's `hp_prefix` — other fleets pairing in the same room are dropped at ingest). Clears the heard list.
-pub fn start_scan(own_prefix: [u8; 4]) {
-    *SCAN_PREFIX.lock().unwrap() = Some(own_prefix);
+/// Start scanning for pairing beacons. The scanner is identity-agnostic — it collects every photon-magic service UUID it hears (foreign fleets included) and the sponsor's matcher rejects non-candidates via the keyed tag. Clears the heard list.
+pub fn start_scan() {
+    *SCANNING.lock().unwrap() = true;
     HEARD.lock().unwrap().clear();
     imp::start_scan();
 }
 
 /// Stop scanning. The heard list survives until the next start so a ceremony screen can still read what it saw.
 pub fn stop_scan() {
-    *SCAN_PREFIX.lock().unwrap() = None;
+    *SCANNING.lock().unwrap() = false;
     imp::stop_scan();
 }
 
-/// The candidates heard this scan session (deduped by pubkey, newest state per device).
-pub fn heard() -> Vec<HeardCandidate> {
+/// The beacon UUIDs heard this scan session (deduped, newest `last_seen`).
+pub fn heard() -> Vec<HeardBeacon> {
     HEARD.lock().unwrap().clone()
 }
 
-/// Shared ingest for every courier: parse, filter on our hp prefix, dedupe-log, store. Called by the bluer task (Linux) and `nativeOnBeaconHeard` (Android). Logs on NEW information only (first sighting, announce→proof upgrade) — beacons repeat at ~10 Hz and the log must not.
-pub fn on_frame_heard(bytes: &[u8]) {
-    let Some(beacon) = fgtw::pair::parse_beacon(bytes) else {
-        return; // scanner noise (someone else's manufacturer data)
-    };
-    let Some(want) = *SCAN_PREFIX.lock().unwrap() else {
+/// Shared ingest for every courier: magic-filter, dedupe, store. Called by the bluer task (Linux) and `nativeOnBeaconHeard` (Android). Logs on FIRST sighting only — beacons repeat at scan rate and the log must not.
+pub fn on_uuid_heard(uuid: [u8; BEACON_UUID_LEN]) {
+    if !fgtw::pair::beacon_is_ours(&uuid) {
+        return; // scanner noise (someone else's service UUID)
+    }
+    if !*SCANNING.lock().unwrap() {
         return; // scan already stopped; late callback
-    };
-    let (prefix, pubkey, proof) = match beacon {
-        fgtw::pair::Beacon::Announce { hp_prefix, device_pubkey } => (hp_prefix, device_pubkey, None),
-        fgtw::pair::Beacon::Proof { hp_prefix, device_pubkey, word_mac } => {
-            (hp_prefix, device_pubkey, Some(word_mac))
-        }
-    };
-    if prefix != want {
-        return; // someone else's fleet
     }
     let mut heard = HEARD.lock().unwrap();
-    match heard.iter_mut().find(|c| c.device_pubkey == pubkey) {
-        Some(c) => {
-            let upgraded = proof.is_some() && c.proof.is_none();
-            c.last_seen = Instant::now();
-            if proof.is_some() {
-                c.proof = proof;
-            }
-            if upgraded {
-                crate::log(&format!(
-                    "BEACON: candidate {} upgraded announce→proof",
-                    hex::encode(&pubkey[..8])
-                ));
-            }
-        }
+    match heard.iter_mut().find(|b| b.uuid == uuid) {
+        Some(b) => b.last_seen = Instant::now(),
         None => {
-            crate::log(&format!(
-                "BEACON: heard {} candidate pk = {}",
-                if proof.is_some() { "proof" } else { "announce" },
-                hex::encode(&pubkey[..8])
-            ));
-            heard.push(HeardCandidate { device_pubkey: pubkey, proof, last_seen: Instant::now() });
+            crate::log(&format!("BEACON: heard candidate {}", hex::encode(&uuid[..8])));
+            heard.push(HeardBeacon { uuid, last_seen: Instant::now() });
         }
     }
 }
 
-// ── Linux courier: bluer (BlueZ) scanner. Advertiser lands in milestone B. ──
+// ── Linux courier: bluer (BlueZ) advertiser + scanner. ──
 
 #[cfg(target_os = "linux")]
 mod imp {
@@ -127,13 +90,51 @@ mod imp {
 
     /// The running scan task's stop flag; replaced on every start (a stale task sees its own flag set and winds down).
     static SCAN_STOP: Mutex<Option<Arc<AtomicBool>>> = Mutex::new(None);
+    /// The running advertise task's stop flag; dropping the held advertisement handle (when this flips) unregisters the beacon with BlueZ.
+    static ADV_STOP: Mutex<Option<Arc<AtomicBool>>> = Mutex::new(None);
 
-    pub(super) fn start_announce(_adv: &[u8], _rsp: &[u8]) {
-        // BlueZ CAN advertise (bluer Advertisement) — deferred to milestone B with the rest of the desktop-as-new-device path.
-        crate::log("BEACON: announce requested — Linux advertiser lands in milestone B, words still carry this ceremony");
+    pub(super) fn start_announce(uuid: [u8; BEACON_UUID_LEN]) {
+        let stop = Arc::new(AtomicBool::new(false));
+        if let Some(old) = ADV_STOP.lock().unwrap().replace(stop.clone()) {
+            old.store(true, Ordering::Relaxed);
+        }
+        crate::network::http::runtime().spawn(async move {
+            if let Err(e) = advertise(uuid, stop).await {
+                crate::log(&format!("BEACON: bluer advertise failed: {e}"));
+            }
+        });
     }
 
-    pub(super) fn stop_announce() {}
+    pub(super) fn stop_announce() {
+        if let Some(stop) = ADV_STOP.lock().unwrap().take() {
+            stop.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Advertise the beacon as a single 128-bit service UUID and hold it until stopped. 16 bytes + header fits the legacy 31-byte ADV with room to spare — no extended-advertising dependency, non-connectable.
+    async fn advertise(uuid: [u8; BEACON_UUID_LEN], stop: Arc<AtomicBool>) -> bluer::Result<()> {
+        let session = bluer::Session::new().await?;
+        let adapter = session.default_adapter().await?;
+        adapter.set_powered(true).await?;
+        let mut service_uuids = std::collections::BTreeSet::new();
+        service_uuids.insert(bluer::Uuid::from_bytes(uuid));
+        let le_adv = bluer::adv::Advertisement {
+            advertisement_type: bluer::adv::Type::Broadcast,
+            service_uuids,
+            discoverable: Some(true),
+            min_interval: Some(std::time::Duration::from_millis(100)),
+            max_interval: Some(std::time::Duration::from_millis(150)),
+            ..Default::default()
+        };
+        // Held for the ceremony's lifetime; its Drop unregisters the advertisement with BlueZ.
+        let _handle = adapter.advertise(le_adv).await?;
+        crate::log("BEACON: bluer advertise started");
+        while !stop.load(Ordering::Relaxed) {
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+        crate::log("BEACON: bluer advertise stopped");
+        Ok(())
+    }
 
     pub(super) fn start_scan() {
         let stop = Arc::new(AtomicBool::new(false));
@@ -153,21 +154,18 @@ mod imp {
         }
     }
 
-    fn ingest_map(md: &std::collections::HashMap<u16, Vec<u8>>) {
-        // Reassemble the two-chunk split: 0xFFFF is the ADV half, 0xFFFE the scan-response half.
-        let Some(a) = md.get(&0xFFFF) else { return };
-        let mut frame = a.clone();
-        if let Some(b) = md.get(&0xFFFE) {
-            frame.extend_from_slice(b);
+    /// Feed every advertised service UUID a device is carrying into the shared ingest (which magic-filters). BlueZ populates `UUIDs` from the advertising data's service-UUID AD fields for non-connectable beacons, so this catches our advertisement without a connection.
+    fn ingest_uuids(uuids: &std::collections::HashSet<bluer::Uuid>) {
+        for u in uuids {
+            super::on_uuid_heard(*u.as_bytes());
         }
-        super::on_frame_heard(&frame);
     }
 
     async fn scan(stop: Arc<AtomicBool>) -> bluer::Result<()> {
         let session = bluer::Session::new().await?;
         let adapter = session.default_adapter().await?;
         adapter.set_powered(true).await?;
-        // duplicate_data: beacons REPEAT (and upgrade announce→proof mid-session) — without it BlueZ caches the first sighting and the proof upgrade never arrives.
+        // duplicate_data so a beacon that appears after we start still surfaces its UUID property.
         let filter = bluer::DiscoveryFilter {
             transport: bluer::DiscoveryTransport::Le,
             duplicate_data: true,
@@ -182,9 +180,8 @@ mod imp {
                     let Some(ev) = ev else { break };
                     if let bluer::AdapterEvent::DeviceAdded(addr) = ev {
                         let Ok(dev) = adapter.device(addr) else { continue };
-                        // Whatever BlueZ already cached for this device, then live property changes (the announce→proof swap arrives as a ManufacturerData change).
-                        if let Ok(Some(md)) = dev.manufacturer_data().await {
-                            ingest_map(&md);
+                        if let Ok(Some(uuids)) = dev.uuids().await {
+                            ingest_uuids(&uuids);
                         }
                         let stop_dev = stop.clone();
                         if let Ok(mut dev_events) = dev.events().await {
@@ -194,17 +191,16 @@ mod imp {
                                         break;
                                     }
                                     if let bluer::DeviceEvent::PropertyChanged(
-                                        bluer::DeviceProperty::ManufacturerData(md),
+                                        bluer::DeviceProperty::Uuids(uuids),
                                     ) = ev
                                     {
-                                        ingest_map(&md);
+                                        ingest_uuids(&uuids);
                                     }
                                 }
                             });
                         }
                     }
                 }
-                // Periodic stop-flag check so a quiet room still winds the task down promptly.
                 _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
             }
         }
@@ -217,8 +213,10 @@ mod imp {
 
 #[cfg(target_os = "android")]
 mod imp {
-    pub(super) fn start_announce(adv: &[u8], rsp: &[u8]) {
-        crate::platform::jni_android::beacon_call_bytes("startAdvertise", adv, rsp);
+    use super::*;
+
+    pub(super) fn start_announce(uuid: [u8; BEACON_UUID_LEN]) {
+        crate::platform::jni_android::beacon_call_bytes("startAdvertise", &uuid);
     }
 
     pub(super) fn stop_announce() {
@@ -234,11 +232,13 @@ mod imp {
     }
 }
 
-// ── Everything else: stub couriers (Windows/macOS scanners land in milestone B via btleplug; Redox when ferros owns a radio). ──
+// ── Everything else: stub couriers (macOS/Windows land next via btleplug scan + native advertise; Redox when ferros owns a radio). ──
 
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
 mod imp {
-    pub(super) fn start_announce(_adv: &[u8], _rsp: &[u8]) {
+    use super::*;
+
+    pub(super) fn start_announce(_uuid: [u8; BEACON_UUID_LEN]) {
         crate::log("BEACON: no advertiser on this platform yet — words carry the ceremony");
     }
 
