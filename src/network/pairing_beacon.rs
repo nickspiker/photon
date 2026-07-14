@@ -232,9 +232,79 @@ mod imp {
     }
 }
 
-// ── Everything else: stub couriers (macOS/Windows land next via btleplug scan + native advertise; Redox when ferros owns a radio). ──
+// ── macOS + Windows courier: btleplug central (CoreBluetooth / WinRT) scanner. The new-device advertiser is native per-OS (below). ──
 
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+mod imp {
+    use super::*;
+    use btleplug::api::{Central, CentralEvent, Manager as _, ScanFilter};
+    use btleplug::platform::Manager;
+    use futures::StreamExt;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    static SCAN_STOP: Mutex<Option<Arc<AtomicBool>>> = Mutex::new(None);
+
+    pub(super) fn start_announce(_uuid: [u8; BEACON_UUID_LEN]) {
+        // btleplug is central-only, so the new-device advertiser is native per-OS — CoreBluetooth CBPeripheralManager on macOS, WinRT BluetoothLEAdvertisementPublisher on Windows. The unified service-UUID format is what makes it possible on macOS at all (it's the one payload CoreBluetooth will emit). Lands next; until then, scanning (sponsor role) works and words carry the new-device side.
+        crate::log("BEACON: advertise not wired on this platform yet — scan (sponsor) works, words carry new-device");
+    }
+
+    pub(super) fn stop_announce() {}
+
+    pub(super) fn start_scan() {
+        let stop = Arc::new(AtomicBool::new(false));
+        if let Some(old) = SCAN_STOP.lock().unwrap().replace(stop.clone()) {
+            old.store(true, Ordering::Relaxed);
+        }
+        crate::network::http::runtime().spawn(async move {
+            if let Err(e) = scan(stop).await {
+                crate::log(&format!("BEACON: btleplug scan failed: {e}"));
+            }
+        });
+    }
+
+    pub(super) fn stop_scan() {
+        if let Some(stop) = SCAN_STOP.lock().unwrap().take() {
+            stop.store(true, Ordering::Relaxed);
+        }
+    }
+
+    async fn scan(stop: Arc<AtomicBool>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let manager = Manager::new().await?;
+        let central =
+            manager.adapters().await?.into_iter().next().ok_or("no BLE adapter")?;
+        let mut events = central.events().await?;
+        // Scan-all: our beacon UUID carries a per-ceremony nonce, so it can't be pre-listed in a ScanFilter — the magic-prefix check in on_uuid_heard does the selection. Foreground scan-all is permitted on macOS/Windows.
+        central.start_scan(ScanFilter::default()).await?;
+        crate::log("BEACON: btleplug scan started");
+        while !stop.load(Ordering::Relaxed) {
+            tokio::select! {
+                ev = events.next() => {
+                    let Some(ev) = ev else { break };
+                    if let CentralEvent::ServicesAdvertisement { services, .. } = ev {
+                        for u in services {
+                            super::on_uuid_heard(*u.as_bytes());
+                        }
+                    }
+                }
+                _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
+            }
+        }
+        let _ = central.stop_scan().await;
+        crate::log("BEACON: btleplug scan stopped");
+        Ok(())
+    }
+}
+
+// ── Everything else: stub couriers (Redox when ferros owns a radio). ──
+
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "macos",
+    target_os = "windows"
+)))]
 mod imp {
     use super::*;
 
