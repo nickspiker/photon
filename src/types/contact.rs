@@ -263,8 +263,8 @@ impl ContactId {
 
 impl Contact {
     pub fn new(handle: HandleText, handle_proof: [u8; 32], public_identity: DevicePubkey) -> Self {
-        // Private handle_hash for local seed derivation (NOT the public handle_proof). Delegates to `ihi::handle_to_hash` — VsfType::x pre-hash + BLAKE3, same canonical answer as handle_to_proof's first stage.
-        let handle_hash = crate::types::Handle::to_identity_seed(handle.as_str());
+        // The friend's party id = their identity PUBKEY, pinned at first-met (docs/identity-profile.md): derive the seed from the typed handle, take the Ed25519 public half, and let the seed drop — the contact row must never hold signing power. All ceremony/braid derivations key on this opaque 32-byte id; the SECRET identity binding is the friendship-secret DH, not this value.
+        let handle_hash = crate::crypto::clutch::identity_party_id(&crate::types::Handle::to_identity_seed(handle.as_str()));
 
         Self {
             id: ContactId::from_pubkey(&public_identity),
