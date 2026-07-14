@@ -54,9 +54,9 @@ const S_ID_DOMAIN: &[u8] = b"PHOTON_S_ID_v0";
 /// The wire/storage size of a blind blob: 32-byte OTP ciphertext + 32-byte check.
 pub const BLIND_BLOB_LEN: usize = 64;
 
-/// Derive the blind pad for (this device, that friend): `spaghettify(domain ‖ device_secret ‖ friend_identity_seed)`.
+/// Derive the blind pad for (this device, that friend): `spaghettify(domain ‖ device_secret ‖ friend_pin)`.
 ///
-/// Per-device AND per-friend: colluding friends can't even correlate their blinds (each is an independent OTP), and a stolen device's pad unblinds nothing once friends refuse it the serve. The friend context is their identity SEED (stable), never a handle string (rename-proofing). Recomputable any session from the fingerprint-deterministic device secret — nothing about the pad is ever stored.
+/// Per-device AND per-friend: colluding friends can't even correlate their blinds (each is an independent OTP), and a stolen device's pad unblinds nothing once friends refuse it the serve. The friend context is their pinned identity PUBKEY (the contact party id — stable, rename-proof, and holdable without signing power; was their identity seed before the pin-set conversion, docs/identity-profile.md). The pad's secrecy comes entirely from `device_secret`; the context only needs stability + per-friend uniqueness. Recomputable any session from the fingerprint-deterministic device secret — nothing about the pad is ever stored.
 pub fn derive_blind_pad(device_secret: &[u8; 32], friend_seed: &[u8; 32]) -> [u8; 32] {
     let mut input = Vec::with_capacity(BLIND_PAD_DOMAIN.len() + 64);
     input.extend_from_slice(BLIND_PAD_DOMAIN);
