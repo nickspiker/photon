@@ -1,6 +1,7 @@
 # Identity profile — names, grants, and the spoken handle
 
-Status: DESIGNED 2026-07-14, not built.
+Status: STAGE A BUILT 2026-07-14 (commit f3ce7e3 "the blinding, stage A") — party ids are pinned identity pubkeys, the friendship-secret egg (static identity x25519, or the shared seed for siblings) replaced mutual-handle-knowledge in CLUTCH, blind pads context on the pin, per-contact state keys on the pin. All 134 tests green. Flag-day: old contact rows fail ceremonies; re-add friends.
+Stages B and C are MAPPED below (## Build state) and not yet built.
 The RosterEntry change rides the roster rework; the NFC invite card rides the pairing-v2 NFC transport work (shared reader plumbing).
 Governing rule: sovereign records — the subject signs, others verify or withhold; pending expires, completed is permanent testimony; ostracism, never erasure (docs/pairing-v2.md carries the full statement).
 
@@ -75,6 +76,23 @@ The card is friend-add by proximity — the exact analog of device-add by proxim
 
 Still: existence probe (type 'alex', see taken, and that's it), addressing (hp), aiming a friend request, deriving your own registers, enrolling your own devices.
 No longer: a display name, a read capability, a stored field anywhere.
+
+## Build state (2026-07-14)
+
+**Stage A — DONE** (commit f3ce7e3): `identity_party_id` + `identity_friendship_secret` in crypto/clutch.rs; 21st egg; `spawn_clutch_ceremony` carries the secret (sibling → identity seed, friend → DH, non-point pin → loud fail); every `session.identity_seed`-as-party-id site swapped to `identity_party_id`; `Contact::new` pins the pubkey; `ContactIdentity::party_id()` keys state loads; blind-pad doc updated.
+
+**Stage B — drop the stored string** (the string still derives the seed, so the honeypot survives until this lands):
+- `Contact.handle: HandleText` field → replace with `petname: String` (default EMPTY, never the typed handle — a defaulted handle re-creates the honeypot) + `published_name: String` (filled by stage C). `display_name()` = petname → published_name → keyed voca pseudonym from party_id (device_name_default pattern).
+- Consumers to swap to `display_name()` (~25 sites, `grep '\.handle\b' src/ui/photon_app.rs`): contact-list rows + search filter (2526/3157 filter on petname+published), conversation title (1715/1723), notification lines (1401/2483/6294/6771), self-row colour sites, roster build (5321), dup-check on add (4708 → compare handle_proof instead), search-result add path (6387-6402: `peer.handle` is the user's TYPED input riding along locally — the legit first-met seam; Contact construction derives + discards), avatar sweep call sites (below), status/log lines (7562 etc.).
+- `ContactIdentity {handle_proof, handle}` → `{handle_proof, party_id}`; contact_list index codec swaps x(handle) → ke(party_id); `identity_seed()` retires.
+- `RosterEntry.handle` (fgtw fstate.rs) → `name` (the petname, synced across OWN fleet under the fleet key) + `party_id` semantics for the existing handle_hash field (value already swapped by stage A construction; rename when touched). cloud.rs codec (56/107/175) mirrors.
+- Avatar: contact decrypt key = seed-derived AES key — split `decrypt_av1_data_from_seed` into seed→key (`avatar_aes_key`) + decrypt-with-key; `Contact.avatar_key: [u8; 32]` pinned at first-met; contact cache keys move to party_id; OWN avatar keeps the session-seed path. Callers: avatar.rs handle-flavoured wrappers (786/830/862/926/974/994/1048/1080) stay for OWN use only.
+- Sibling contacts stop carrying our own handle (matching is hp-keyed already).
+
+**Stage C — profile + names**:
+- Worker: `profile_put` (identity-sig gate against genesis pubkey, mirror bindreq_put; size cap ~256KB for avatar-in-profile later, name-only v1 4KB) + `profile_get` (open — ciphertext) at `profile/<hp>`; DATA_PREFIXES + route table; hub kind "profile" on put.
+- fgtw client: `profile_put/get` riding the identity key (SigningKey::from_bytes(identity_seed)); doc = identity-signed VSF, per-field v'e' ciphertext + version stamps + grant bundles keyed blake3(recipient_party_id ‖ hp ‖ "grant") (recipient-findable, graph-opaque; count leak accepted v1).
+- Photon: Profile settings page (name textbox + "your handle is your identity — you don't have to fill in ANY of this" note; empty name legal); publish on set; fetch contacts' profiles on refresh (contact_fleet_refresh ride-along); adopt into `published_name`; field keys + per-contact grant checkboxes = later (extended card).
 
 ## Migration — audit results (run 2026-07-14)
 
