@@ -686,6 +686,10 @@ pub struct PhotonApp {
     join_startfresh_armed: bool,
     /// Contact-list scroll offset in pixels (Ready screen). 0 = top; grows as the user scrolls down. The user section (avatar/search) stays fixed; only the rows below the separator scroll. Re-clamped to the list extent each render.
     contacts_scroll: isize,
+    /// Settings nav-rail vertical scroll (pixels, ≥0). The rail lists Back + 9 pages at NATURAL (unzoomed-consistent) row height — no clamp-to-fit — so at high zoom they overflow and this scrolls them. Re-clamped to the rail extent each frame.
+    settings_rail_scroll: f32,
+    /// Settings content-pane vertical scroll (pixels, ≥0). Page bodies lay out at natural row height (no compress-to-fit), so tall pages / high zoom overflow and this scrolls them. Reset to 0 on page switch; re-clamped to the page's extent each frame.
+    settings_content_scroll: f32,
     /// `true` once the user has interacted (any click or keystroke) since the last transition into `Ready` — hides the standing avatar prompt. Hints are event-shown and interaction-cleared, never hover- or time-driven; reset to `false` on each `Ready` entry. See [`clear_hints`].
     hints_dismissed: bool,
     /// `true` while the cursor is over the Ready-screen avatar circle. Drives the "drag/drop to update avatar" hover hint.
@@ -852,6 +856,8 @@ impl PhotonApp {
             pending_picker_request: false,
             pending_broadcast_signal: 0,
             contacts_scroll: 0,
+            settings_rail_scroll: 0.0,
+            settings_content_scroll: 0.0,
             hints_dismissed: false,
             avatar_hovered: false,
             settings_nav_base: HIT_NONE,
@@ -1602,6 +1608,8 @@ impl FluorApp for PhotonApp {
                     if *p != SettingsPage::Security {
                         self.settings_shred_armed = false;
                     }
+                    // Fresh page starts at the top — a leftover scroll from a longer page would strand a short one mid-air.
+                    self.settings_content_scroll = 0.0;
                     self.state = AppState::Settings(*p);
                     ctx.window.request_redraw();
                 }
@@ -1906,6 +1914,18 @@ impl FluorApp for PhotonApp {
                     if matches!(self.state, AppState::Ready) {
                         // On the contacts screen the wheel scrolls the WHOLE user section + list as one block. Down-scroll (negative dy) moves the block up (reveals lower contacts), so subtract; the render pass clamps to the full-block extent and re-runs `update_widget_layout` after the clamp so the search box + plus button (whose rects are set off `contacts_scroll`) track the clamped offset.
                         self.contacts_scroll = (self.contacts_scroll - dy).max(0);
+                    } else if matches!(self.state, AppState::Settings(_)) {
+                        // Settings: the wheel scrolls the nav rail when the cursor is over it, else the content pane. Down-scroll (negative dy) reveals lower rows → add. The render pass clamps both to their natural-height extents.
+                        let over_rail = {
+                            let sl = SettingsLayout::compute(&ctx.viewport);
+                            (ctx.cursor_x as f32) < sl.content.x
+                        };
+                        let step = -dy as f32;
+                        if over_rail {
+                            self.settings_rail_scroll = (self.settings_rail_scroll + step).max(0.0);
+                        } else {
+                            self.settings_content_scroll = (self.settings_content_scroll + step).max(0.0);
+                        }
                     } else if matches!(self.state, AppState::Conversation) {
                         // In a conversation the wheel scrolls the message history. The list lays out bottom-up with newest at the bottom; a positive offset pushes messages down (reveals older ones above). Scroll-up (positive dy) shows older → add.
                         if let Some(ci) = self.active_contact {
@@ -2540,6 +2560,17 @@ impl FluorApp for PhotonApp {
         if matches!(self.state, AppState::Settings(_)) {
             self.update_widget_layout(ctx);
         }
+        // Settings scroll: clamp the rail + content offsets to their NATURAL-height extents (no clamp-to-fit in layout → content can overflow → this scroll reveals it, bounded so it can't scroll off the page). Done here, before the `chrome` borrow, so the render arms + update_widget_layout all read the same clamped offsets this frame. Captured into locals for use inside the borrowed render block.
+        let (settings_rail_scroll, settings_content_scroll) = if let AppState::Settings(page) = self.state {
+            let sl = SettingsLayout::compute(&ctx.viewport);
+            let rail_extent = (sl.nav_row_h() * (SettingsPage::ALL.len() as Coord + 1.0) - sl.rail_inset().h).max(0.0);
+            self.settings_rail_scroll = self.settings_rail_scroll.clamp(0.0, rail_extent);
+            let content_extent = (sl.content_line_h() * settings_page_rows(page) as Coord - sl.content_inset().h).max(0.0);
+            self.settings_content_scroll = self.settings_content_scroll.clamp(0.0, content_extent);
+            (self.settings_rail_scroll, self.settings_content_scroll)
+        } else {
+            (0.0, 0.0)
+        };
         // Fleet device inventory, gathered before the long-lived `chrome` borrow (the Fleet render arm can't call the `&self` helper while `chrome` is borrowed mutably). Empty off the Fleet page.
         let fleet_devices = if matches!(self.state, AppState::Settings(SettingsPage::Fleet)) {
             self.fleet_device_rows()
@@ -3865,28 +3896,38 @@ impl FluorApp for PhotonApp {
                 layout.header.center_y(), hspan, 600, CONTACT_NAME_COLOUR, "Oxanium",
                 None, None, None,
             );
+            // --- Nav rail: Back (row 0) + nine page labels, stacked at natural height from the top, scrolled by settings_rail_scroll (no clamp-to-fit; overflows scroll). Back is a list row now, not a floating header button: bolder green ‹ arrow over a faint 0x40-black fill so it reads distinct from the page rows. ---
+            let rail_inset = layout.rail_inset();
+            let nav_h = layout.nav_row_h();
+            let rspan = (layout.unit * 0.58).max(9.0);
+            let rail_clip = layout.rail.to_clip();
+            // Row 0: Back. Rows 1..=9: the pages.
+            let nav_row = |i: usize| -> fluor::region::Region {
+                fluor::region::Region::new(rail_inset.x, rail_inset.y - settings_rail_scroll + i as Coord * nav_h, rail_inset.w, nav_h)
+            };
             {
-                let back_text = "‹ Back";
-                let bs = (layout.unit * 0.72).max(9.0);
-                let bx = layout.header.right() - layout.header.size(1.0);
-                let bw = ctx.text.measure_text_width(back_text, bs, 500, "Oxanium");
+                let r = nav_row(0);
+                let back_held = ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == self.back_btn_hit_id;
+                // Faint 0x40-black fill (mostly transparent) so the Back row is visually distinct from the page rows; brighter when held.
+                let fill = if back_held { fluor::theme::BUTTON_HELD } else { 0x40_00_00_00 };
+                paint::fill_rect(&mut canvas, r.x as isize, r.y as isize, r.w as isize, r.h as isize, fill, Some(rail_clip), None);
                 ctx.text.draw_text_left_u32(
-                    &mut canvas, back_text, bx - bw, layout.header.center_y(), bs, 500,
-                    SEARCH_FOUND_COLOUR, "Oxanium", None, None, None,
+                    &mut canvas, "‹ Back", r.x + rspan * 0.6, r.center_y(),
+                    rspan, 600, SEARCH_FOUND_COLOUR, "Oxanium", Some(rail_clip), None, None,
                 );
                 restamp_hit_rect(
                     &mut chrome.hit_test_map, buf_w, buf_h,
-                    (bx - bw - bs) as isize, (layout.header.center_y() - bs) as isize,
-                    (bx + bs) as isize, (layout.header.center_y() + bs) as isize,
+                    r.x as isize, r.y.max(layout.rail.y) as isize,
+                    r.right() as isize, r.bottom().min(layout.rail.bottom()) as isize,
                     self.back_btn_hit_id,
                 );
             }
-
-            // --- Nav rail: nine page labels; active one highlighted, all hit-stamped ---
-            let rows = layout.rail_rows();
-            let rspan = (layout.unit * 0.58).max(9.0);
             for (i, p) in SettingsPage::ALL.iter().enumerate() {
-                let r = rows[i];
+                let r = nav_row(i + 1);
+                // Skip rows scrolled fully out of the rail (also keeps their hit stamps from claiming off-rail pixels).
+                if r.bottom() <= layout.rail.y || r.y >= layout.rail.bottom() {
+                    continue;
+                }
                 let active = *p == page;
                 let held = ctx.pressed_hit != HIT_NONE
                     && ctx.pressed_hit == self.settings_nav_base.wrapping_add(i as HitId);
@@ -3894,25 +3935,25 @@ impl FluorApp for PhotonApp {
                 if held {
                     paint::fill_rect(
                         &mut canvas, r.x as isize, r.y as isize,
-                        r.w as isize, r.h as isize, fluor::theme::BUTTON_HELD, None, None,
+                        r.w as isize, r.h as isize, fluor::theme::BUTTON_HELD, Some(rail_clip), None,
                     );
                 } else if active {
                     // Active-row backing bar (faint) so the selected page reads at a glance.
                     paint::fill_rect(
                         &mut canvas, r.x as isize, r.y as isize,
-                        r.w as isize, r.h as isize, SEPARATOR_COLOUR, None, None,
+                        r.w as isize, r.h as isize, SEPARATOR_COLOUR, Some(rail_clip), None,
                     );
                 }
                 let colour = if active { CONTACT_NAME_COLOUR } else { LABEL_COLOUR };
                 ctx.text.draw_text_left_u32(
                     &mut canvas, p.label(), r.x + rspan * 0.6, r.center_y(),
                     rspan, if active { 600 } else { 400 }, colour, "Oxanium",
-                    None, None, None,
+                    Some(rail_clip), None, None,
                 );
                 restamp_hit_rect(
                     &mut chrome.hit_test_map, buf_w, buf_h,
-                    r.x as isize, r.y as isize,
-                    r.right() as isize, r.bottom() as isize,
+                    r.x as isize, r.y.max(layout.rail.y) as isize,
+                    r.right() as isize, r.bottom().min(layout.rail.bottom()) as isize,
                     self.settings_nav_base.wrapping_add(i as HitId),
                 );
             }
@@ -3924,7 +3965,7 @@ impl FluorApp for PhotonApp {
             );
 
             // --- Selected page body ---
-            let body = layout.content_body();
+            // (page body is computed per-arm as a scrolled, natural-height region — see `layout.content_scrolled`)
             // Everything sizes off layout.unit — the ONE span·ru harmonic unit — so text, pills, rows, and controls all scale together with window shape AND zoom. (The old mix — text × ru inside fixed rows, controls off bare region fractions — is what made zoom hit-or-miss.)
             let tspan = (layout.unit * 0.72).max(8.0);
             let hspan2 = tspan * 0.75;
@@ -3935,7 +3976,7 @@ impl FluorApp for PhotonApp {
             // Immediate-mode stub pill helper — captured as a closure over the canvas/text/hit-map isn't possible (multiple &mut borrows), so pills are drawn inline per page below via `draw_stub_pill`.
             match page {
                 SettingsPage::You => {
-                    let rows = body.split_v([1.0; 7]);
+                    let rows = layout.content_scrolled(7, settings_content_scroll).split_v([1.0; 7]);
                     settings_line(&mut canvas, ctx.text, rows[0], "Handle", tspan, CONTACT_NAME_COLOUR, 600);
                     settings_line(&mut canvas, ctx.text, rows[1], "zesty-otter-4383  (double-click to copy)", hspan2, LABEL_COLOUR, 400);
                     settings_line(&mut canvas, ctx.text, rows[2], "Avatar", tspan, CONTACT_NAME_COLOUR, 600);
@@ -3946,7 +3987,7 @@ impl FluorApp for PhotonApp {
                 SettingsPage::Fleet => {
                     // Live device inventory (gathered above the chrome borrow): this device + our siblings. Rows 1..=6 hold up to 6 devices (fleets are usually ≤5; a scroll follows if this grows past the row budget). Non-self rows are tap-selectable (hit-stamped btn_base+16+index); the Remove pill acts on the selection with a two-tap confirm.
                     let devices = &fleet_devices;
-                    let rows = body.split_v([1.0; 8]);
+                    let rows = layout.content_scrolled(8, settings_content_scroll).split_v([1.0; 8]);
                     settings_line(&mut canvas, ctx.text, rows[0], "Your devices", tspan, CONTACT_NAME_COLOUR, 600);
                     for (i, (pk, is_self, online, name)) in devices.iter().take(6).enumerate() {
                         let row = rows[1 + i];
@@ -3986,7 +4027,7 @@ impl FluorApp for PhotonApp {
                     draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[1].center_h(0.85), "Rename", btn_base.wrapping_add(1), ctx.pressed_hit);
                 }
                 SettingsPage::Security => {
-                    let rows = body.split_v([1.0; 8]);
+                    let rows = layout.content_scrolled(8, settings_content_scroll).split_v([1.0; 8]);
                     settings_line(&mut canvas, ctx.text, rows[0], "Security", tspan, CONTACT_NAME_COLOUR, 600);
                     settings_line(&mut canvas, ctx.text, rows[1], "Named by destructiveness.", hspan2, LABEL_COLOUR, 400);
                     // Lock (slot 0): clear the session only — de-attest, vault kept, re-unlock by re-typing your handle. Shred (slot 2): full clean — nuke vault + clear session, a blank slate for a new owner (two-tap confirm). Slot 1 ("Sign out & remove") is self-fleet-removal, still deferred.
@@ -4000,7 +4041,7 @@ impl FluorApp for PhotonApp {
                     settings_line(&mut canvas, ctx.text, rows[6], "Security: strong   ·   Recovery: not set up", hspan2, LABEL_COLOUR, 400);
                 }
                 SettingsPage::Recovery => {
-                    let rows = body.split_v([1.0; 8]);
+                    let rows = layout.content_scrolled(8, settings_content_scroll).split_v([1.0; 8]);
                     settings_line(&mut canvas, ctx.text, rows[0], "Recovery", tspan, CONTACT_NAME_COLOUR, 600);
                     settings_line(&mut canvas, ctx.text, rows[1], "Custodians (v1)", hspan2, CONTACT_NAME_COLOUR, 600);
                     if let Some(cb) = self.settings_custodian_check.as_mut() {
@@ -4011,7 +4052,7 @@ impl FluorApp for PhotonApp {
                     draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[6].center_h(pillf(0.5)), "Back up identity…", btn_base.wrapping_add(0), ctx.pressed_hit);
                 }
                 SettingsPage::Appearance => {
-                    let rows = body.split_v([1.0; 8]);
+                    let rows = layout.content_scrolled(8, settings_content_scroll).split_v([1.0; 8]);
                     settings_line(&mut canvas, ctx.text, rows[0], "Appearance", tspan, CONTACT_NAME_COLOUR, 600);
                     settings_line(&mut canvas, ctx.text, rows[1], "Theme", hspan2, LABEL_COLOUR, 400);
                     if let Some(dd) = self.settings_theme_dropdown.as_mut() {
@@ -4025,7 +4066,7 @@ impl FluorApp for PhotonApp {
                     settings_line(&mut canvas, ctx.text, rows[6], "Colour calibration (Android panel)", hspan2, LABEL_COLOUR, 400);
                 }
                 SettingsPage::Notifications => {
-                    let rows = body.split_v([1.0; 8]);
+                    let rows = layout.content_scrolled(8, settings_content_scroll).split_v([1.0; 8]);
                     settings_line(&mut canvas, ctx.text, rows[0], "Notifications", tspan, CONTACT_NAME_COLOUR, 600);
                     if let Some(cb) = self.settings_chime_check.as_mut() {
                         cb.render_content_into(&mut canvas, ctx.text, None, Some(&mut chrome.hit_test_map));
@@ -4036,7 +4077,7 @@ impl FluorApp for PhotonApp {
                     }
                 }
                 SettingsPage::Updates => {
-                    let rows = body.split_v([1.0; 8]);
+                    let rows = layout.content_scrolled(8, settings_content_scroll).split_v([1.0; 8]);
                     settings_line(&mut canvas, ctx.text, rows[0], "Updates", tspan, CONTACT_NAME_COLOUR, 600);
                     settings_line(&mut canvas, ctx.text, rows[1], "Photon 0.0.25 (dozenal 21)", hspan2, LABEL_COLOUR, 400);
                     if let Some(cb) = self.settings_autoupdate_check.as_mut() {
@@ -4044,7 +4085,7 @@ impl FluorApp for PhotonApp {
                     }
                 }
                 SettingsPage::Diagnostics => {
-                    let rows = body.split_v([1.0; 10]);
+                    let rows = layout.content_scrolled(10, settings_content_scroll).split_v([1.0; 10]);
                     settings_line(&mut canvas, ctx.text, rows[0], "Diagnostics", tspan, CONTACT_NAME_COLOUR, 600);
                     settings_line(&mut canvas, ctx.text, rows[1], "On-device log · 16 MiB · self-expires 24–48h", hspan2, LABEL_COLOUR, 400);
                     let pr = rows[3].split_h([1.0, 1.0, 1.0]);
@@ -4065,7 +4106,7 @@ impl FluorApp for PhotonApp {
                     }
                 }
                 SettingsPage::About => {
-                    let rows = body.split_v([1.0; 8]);
+                    let rows = layout.content_scrolled(8, settings_content_scroll).split_v([1.0; 8]);
                     settings_line(&mut canvas, ctx.text, rows[0], "About Photon", tspan, CONTACT_NAME_COLOUR, 600);
                     settings_line(&mut canvas, ctx.text, rows[1], "No password. Your device is your key.", hspan2, CONTACT_NAME_COLOUR, 400);
                     settings_line(&mut canvas, ctx.text, rows[2], "Stay signed in until power-off; reboot → re-enter your handle.", hspan2, LABEL_COLOUR, 400);
@@ -4650,14 +4691,14 @@ impl PhotonApp {
         // Settings panel (STUB): position the stateful widgets on the selected page. Content-body rows give each control a slot; a control's rect is a portion of its row so the label can sit beside / above it. Only the active page's widgets are repositioned — the others keep their placeholder geometry off-screen, and `visit` gates them out anyway.
         if let AppState::Settings(page) = self.state {
             let layout = SettingsLayout::compute(&ctx.viewport);
-            let body = layout.content_body();
+            let settings_content_scroll = self.settings_content_scroll;
             // Controls ride the same unit as the page text (zoom + shape aware) — these were the "don't change scale" elements.
             let ctrl_font = (layout.unit * 0.58).max(8.0);
             let ctrl_h = (layout.unit * 1.00).max(14.0);
             match page {
                 SettingsPage::Appearance => {
                     // Rows: [0]=title [1]=Theme label [2]=Theme dropdown [3]=Party colours [4]=Zoom label [5]=Zoom slider [6]=Calibration.
-                    let rows = body.split_v([1.0; 8]);
+                    let rows = layout.content_scrolled(8, settings_content_scroll).split_v([1.0; 8]);
                     if let Some(dd) = self.settings_theme_dropdown.as_mut() {
                         let r = rows[2].center_h(0.7);
                         dd.set_rect(r.center_x(), r.center_y(), r.w, ctrl_h);
@@ -4669,7 +4710,7 @@ impl PhotonApp {
                     }
                 }
                 SettingsPage::Recovery => {
-                    let rows = body.split_v([1.0; 8]);
+                    let rows = layout.content_scrolled(8, settings_content_scroll).split_v([1.0; 8]);
                     if let Some(cb) = self.settings_custodian_check.as_mut() {
                         let r = rows[2];
                         cb.set_rect(r.x + r.w * 0.45, r.center_y(), r.w * 0.9, ctrl_h);
@@ -4677,7 +4718,7 @@ impl PhotonApp {
                     }
                 }
                 SettingsPage::Notifications => {
-                    let rows = body.split_v([1.0; 8]);
+                    let rows = layout.content_scrolled(8, settings_content_scroll).split_v([1.0; 8]);
                     if let Some(cb) = self.settings_chime_check.as_mut() {
                         let r = rows[1];
                         cb.set_rect(r.x + r.w * 0.45, r.center_y(), r.w * 0.9, ctrl_h);
@@ -4690,7 +4731,7 @@ impl PhotonApp {
                     }
                 }
                 SettingsPage::Updates => {
-                    let rows = body.split_v([1.0; 8]);
+                    let rows = layout.content_scrolled(8, settings_content_scroll).split_v([1.0; 8]);
                     if let Some(cb) = self.settings_autoupdate_check.as_mut() {
                         let r = rows[2];
                         cb.set_rect(r.x + r.w * 0.45, r.center_y(), r.w * 0.9, ctrl_h);
@@ -4698,7 +4739,7 @@ impl PhotonApp {
                     }
                 }
                 SettingsPage::Diagnostics => {
-                    let rows = body.split_v([1.0; 10]);
+                    let rows = layout.content_scrolled(10, settings_content_scroll).split_v([1.0; 10]);
                     if let Some(tb) = self.settings_note_textbox.as_mut() {
                         let r = rows[7].center_h(0.95);
                         tb.set_rect(r.center_x(), r.center_y(), r.w, ctrl_h * 1.2);
@@ -11878,6 +11919,15 @@ fn stamp_hit_circle(
 }
 
 /// Draw one left-aligned settings text line vertically centred in `row`, indented a little from the row's left edge. Used for page titles, field labels, and placeholder read-outs on the settings stub.
+/// Row count each settings page body lays out (must match the `split_v([1.0; N])` in that page's render arm). Drives the content-scroll extent clamp. Keep in sync when a page gains/loses rows.
+fn settings_page_rows(page: SettingsPage) -> usize {
+    match page {
+        SettingsPage::You => 7,
+        SettingsPage::Diagnostics => 10,
+        _ => 8,
+    }
+}
+
 fn settings_line(
     canvas: &mut Canvas,
     text: &mut fluor::text::TextRenderer,
