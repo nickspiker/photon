@@ -1,7 +1,4 @@
-# Sourced, not executed. Sets up the Android NDK + cross-toolchain env for an
-# aarch64-linux-android cargo build. Detects ANDROID_HOME, then derives the NDK from it
-# (was hardcoded + drifted across the old scripts), plus the ring-crate clang symlinks and
-# the host build flags that build.rs needs.
+# Sourced, not executed. Sets up the Android NDK + cross-toolchain env for an aarch64-linux-android cargo build. Detects ANDROID_HOME, then derives the NDK from it (was hardcoded + drifted across the old scripts), plus the ring-crate clang symlinks and the host build flags that build.rs needs.
 
 if [ -d "/home/nick/android-sdk/build-tools" ]; then
     export ANDROID_HOME=/home/nick/android-sdk

@@ -68,8 +68,8 @@ if [ "$OS" = "Darwin" ]; then
     xattr -c "$TMP_BINARY" 2>/dev/null || true
 fi
 
-# Run binary once to self-verify signature
-# (Binary will verify Ed25519 signature on startup and exit if invalid)
+# Run binary once to self-verify signature (Binary will verify Ed25519 signature on startup and exit if invalid)
+
 echo "Verifying signature..."
 if ! "$TMP_BINARY" verify >/dev/null 2>&1; then
     echo "Error: Binary signature verification failed."

@@ -1,11 +1,9 @@
 #!/bin/bash
 set -e
 
-# The Cargo.toml version IS the displayed (dozenal) version, and it's the version we're currently
-# working on. This deploy SHIPS that current version as-is; only on FULL SUCCESS do we bump the patch
-# to the next number and commit. So Cargo.toml is never touched until everything has succeeded (no
-# half-deployed dirty tree), and the number only advances on a successful deploy — never on test or
-# full builds, which just inherit whatever the tree currently says.
+source scripts/lib/github.sh
+
+# The Cargo.toml version IS the displayed (dozenal) version, and it's the version we're currently working on. This deploy SHIPS that current version as-is; only on FULL SUCCESS do we bump the patch to the next number and commit. So Cargo.toml is never touched until everything has succeeded (no half-deployed dirty tree), and the number only advances on a successful deploy — never on test or full builds, which just inherit whatever the tree currently says.
 SHIP_VERSION=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"[0-9]+\.[0-9]+\.([0-9]+)".*/\1/')
 echo "Deploying version: $SHIP_VERSION"
 
@@ -141,6 +139,22 @@ wrangler r2 object put "$R2_BUCKET/$R2_PATH/install-release.ps1" \
 echo ""
 echo "Linux ARM64, Linux x86_64, Windows, Redox, macOS Intel, macOS ARM64, Android binaries deployed to R2"
 echo "  Windows SHA256: $WINDOWS_SHA256"
+
+# Mirror the identical signed artefacts to a GitHub Release `v<n>` (redundant fallback behind R2).
+# Same bytes as R2 — never rebuild per-destination — so the Windows SHA256 patched above holds everywhere.
+GH_TAG="v$SHIP_VERSION"
+echo ""
+echo "Mirroring release to GitHub ($GH_TAG)..."
+ensure_release "$GH_TAG" false
+publish_github "$GH_TAG" "photon-messenger-linux-x86_64-release"  target/release/photon-messenger
+publish_github "$GH_TAG" "photon-messenger-linux-arm64-release"   target/aarch64-unknown-linux-gnu/release/photon-messenger
+publish_github "$GH_TAG" "photon-messenger-windows-release.exe"   target/x86_64-pc-windows-gnu/release/photon-messenger.exe
+publish_github "$GH_TAG" "photon-messenger-redox-release"         target/x86_64-unknown-redox/release/photon-messenger
+publish_github "$GH_TAG" "photon-messenger-macos-intel-release"   target/x86_64-apple-darwin/release/photon-messenger
+publish_github "$GH_TAG" "photon-messenger-macos-arm64-release"   target/aarch64-apple-darwin/release/photon-messenger
+publish_github "$GH_TAG" "photon-messenger-android-release.apk"   android/app/build/outputs/apk/release/app-release.apk
+# Binaries only — no installer scripts on GitHub. The README carries the GitHub-fallback install
+# commands (they fetch these assets by name from the latest release), so the scripts aren't needed here.
 
 # Update website version and date
 WEBSITE_DIR="/mnt/Chiton/MEGA/holdmyoscilloscope/photon"
