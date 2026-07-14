@@ -14,17 +14,21 @@ import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.ParcelUuid
 import androidx.core.content.ContextCompat
+import java.nio.ByteBuffer
+import java.util.UUID
 
 /**
  * Pairing v2 proximity beacon (docs/pairing-v2.md) — the Android courier.
  * Rust drives it thru the JNI bridge (startAdvertise/stopAdvertise/startScan/stopScan called
- * on this object via the global ref cached in nativeInit); heard frames go back down via
- * nativeOnBeaconHeard. The frame is split across two manufacturer-data ids (0xFFFF = ADV
- * chunk, 0xFFFE = scan-response chunk) because ScanRecord merges ADV+SCAN_RSP into one map
- * keyed by company id — reassembly is a concat here, so Rust always sees one whole frame.
- * BLUETOOTH_SCAN/ADVERTISE are runtime permissions on Android 12+: a start call without the
- * grant stashes itself as pending, fires the Activity's request dialog, and re-runs on grant.
+ * on this object via the global ref cached in nativeInit); heard beacons go back down via
+ * nativeOnBeaconHeard. The beacon is a single 128-bit BLE **service UUID** = `[ magic:4 ][ nonce:4 ][ tag:8 ]`
+ * (fgtw::pair::beacon_uuid) — one carrier that works on every platform including macOS, where a
+ * service UUID is the only advertising payload Apple allows. Bytes map big-endian: byte 0 is the
+ * UUID's most-significant byte, matching Rust's uuid::from_bytes / as_bytes, so the 16 bytes round-trip
+ * identically across the wire. BLUETOOTH_SCAN/ADVERTISE are runtime permissions on Android 12+: a start
+ * call without the grant stashes itself as pending, fires the Activity's request dialog, and re-runs on grant.
  */
 object PhotonBeacon {
     private var appContext: Context? = null
@@ -33,8 +37,11 @@ object PhotonBeacon {
     private var advertiseCallback: AdvertiseCallback? = null
     private var scanner: BluetoothLeScanner? = null
     private var scanCallback: ScanCallback? = null
-    private var pendingAdvertise: Pair<ByteArray, ByteArray>? = null
+    private var pendingAdvertise: ByteArray? = null
     private var pendingScan = false
+
+    // The fixed photon-pairing namespace tag (fgtw::pair::BEACON_MAGIC) — the first 4 bytes of every beacon UUID.
+    private val MAGIC = byteArrayOf(0xF0.toByte(), 0x70, 0x0B, 0xEA.toByte())
 
     private external fun nativeInit()
     private external fun nativeOnBeaconHeard(frame: ByteArray)
@@ -48,7 +55,7 @@ object PhotonBeacon {
 
     /** Permission dialog came back positive: re-run whatever start call was waiting on it. */
     fun onPermissionsGranted() {
-        pendingAdvertise?.let { startAdvertise(it.first, it.second) }
+        pendingAdvertise?.let { startAdvertise(it) }
         if (pendingScan) startScan()
     }
 
@@ -59,10 +66,20 @@ object PhotonBeacon {
 
     private fun adapter() = (appContext?.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
 
-    /** Advertise the beacon frame: adv chunk under 0xFFFF, scan-response chunk under 0xFFFE. Non-connectable, low latency, no timeout — Rust's guard decides when it stops. */
-    fun startAdvertise(advChunk: ByteArray, rspChunk: ByteArray) {
+    /** 16 bytes → UUID, big-endian (byte 0 = most-significant), inverse of uuidToBytes. */
+    private fun bytesToUuid(b: ByteArray): UUID {
+        val bb = ByteBuffer.wrap(b)
+        return UUID(bb.long, bb.long)
+    }
+
+    /** UUID → 16 bytes, big-endian, inverse of bytesToUuid. */
+    private fun uuidToBytes(u: UUID): ByteArray =
+        ByteBuffer.allocate(16).putLong(u.mostSignificantBits).putLong(u.leastSignificantBits).array()
+
+    /** Advertise the beacon as one 128-bit service UUID (16 bytes + header fits legacy ADV). Non-connectable, low latency, no timeout — Rust's guard decides when it stops. */
+    fun startAdvertise(uuid: ByteArray) {
         if (Build.VERSION.SDK_INT >= 31 && !hasPerm(Manifest.permission.BLUETOOTH_ADVERTISE)) {
-            pendingAdvertise = Pair(advChunk, rspChunk)
+            pendingAdvertise = uuid
             PhotonLog.i("Beacon", "advertise waiting on permission")
             activity?.requestBlePermissions()
             return
@@ -80,24 +97,18 @@ object PhotonBeacon {
         val data = AdvertiseData.Builder()
             .setIncludeDeviceName(false)
             .setIncludeTxPowerLevel(false)
-            .addManufacturerData(0xFFFF, advChunk)
+            .addServiceUuid(ParcelUuid(bytesToUuid(uuid)))
             .build()
-        val scanRsp = if (rspChunk.isNotEmpty()) {
-            AdvertiseData.Builder()
-                .setIncludeDeviceName(false)
-                .addManufacturerData(0xFFFE, rspChunk)
-                .build()
-        } else null
         val cb = object : AdvertiseCallback() {
             override fun onStartSuccess(settingsInEffect: AdvertiseSettings) {
-                PhotonLog.i("Beacon", "advertising (${advChunk.size}+${rspChunk.size} bytes)")
+                PhotonLog.i("Beacon", "advertising ${uuid.size}-byte service uuid")
             }
             override fun onStartFailure(errorCode: Int) {
                 PhotonLog.e("Beacon", "advertise failed, code $errorCode")
             }
         }
         try {
-            adv.startAdvertising(settings, data, scanRsp, cb)
+            adv.startAdvertising(settings, data, cb)
             advertiser = adv
             advertiseCallback = cb
             pendingAdvertise = null
@@ -115,7 +126,7 @@ object PhotonBeacon {
         advertiseCallback = null
     }
 
-    /** Scan for pairing beacons: filter on manufacturer id 0xFFFF (any payload), reassemble the two chunks, hand the frame to Rust. Rust does the hp-prefix filter and dedup. */
+    /** Scan for pairing beacons: hardware-filter on advertised service UUIDs whose first 4 bytes are the photon magic (a UUID + mask), hand each 16-byte UUID to Rust, which magic-checks + resolves it to a fleet device by keyed tag. */
     fun startScan() {
         if (Build.VERSION.SDK_INT >= 31 && !hasPerm(Manifest.permission.BLUETOOTH_SCAN)) {
             pendingScan = true
@@ -127,8 +138,10 @@ object PhotonBeacon {
         if (!adapter.isEnabled) { PhotonLog.w("Beacon", "bluetooth is off — cannot scan"); return }
         val sc = adapter.bluetoothLeScanner ?: run { PhotonLog.w("Beacon", "no LE scanner"); return }
         stopScan()
+        val magicUuid = bytesToUuid(MAGIC + ByteArray(12))
+        val maskUuid = bytesToUuid(byteArrayOf(-1, -1, -1, -1) + ByteArray(12))
         val filters = listOf(
-            ScanFilter.Builder().setManufacturerData(0xFFFF, byteArrayOf()).build()
+            ScanFilter.Builder().setServiceUuid(ParcelUuid(magicUuid), ParcelUuid(maskUuid)).build()
         )
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
@@ -136,10 +149,10 @@ object PhotonBeacon {
             .build()
         val cb = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult) {
-                val rec = result.scanRecord ?: return
-                val a = rec.getManufacturerSpecificData(0xFFFF) ?: return
-                val b = rec.getManufacturerSpecificData(0xFFFE)
-                nativeOnBeaconHeard(if (b != null) a + b else a)
+                val uuids = result.scanRecord?.serviceUuids ?: return
+                for (pu in uuids) {
+                    nativeOnBeaconHeard(uuidToBytes(pu.uuid))
+                }
             }
             override fun onScanFailed(errorCode: Int) {
                 PhotonLog.e("Beacon", "scan failed, code $errorCode")

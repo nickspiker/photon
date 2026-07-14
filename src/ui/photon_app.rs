@@ -2404,15 +2404,12 @@ impl FluorApp for PhotonApp {
         // Freeze / unfreeze the busy widgets (attest field+button while attesting, search box+plus while adding) before anything else this frame — disabled widgets drop out of dispatch via their fluor accessors.
         self.sync_busy_freeze();
 
-        // Pairing v2 SHADOW-mode beacon scan (docs/pairing-v2.md milestone A): scan exactly while the AddDevice screen is up, diffed per tick so EVERY exit path (back, orb, bind, crash of the check thread) stops the radio without scattered call sites. Heard beacons only log + store; v1 words still carry the ceremony.
+        // Pairing v2 beacon scan (docs/pairing-v2.md): scan exactly while the AddDevice screen is up, diffed per tick so EVERY exit path (back, orb, bind, crash of the check thread) stops the radio without scattered call sites. The scanner is identity-agnostic — it collects photon-magic service UUIDs and the candidate matcher resolves each to a fleet device by keyed tag.
         let want_scan = matches!(self.state, AppState::AddDevice);
         if want_scan != self.beacon_scan_active {
             if want_scan {
-                if let Some(hp) = self.session.as_ref().map(|s| s.handle_proof) {
-                    crate::network::pairing_beacon::start_scan(fgtw::pair::hp_prefix(&hp));
-                    self.beacon_scan_active = true;
-                }
-                // No session → no hp to filter on; stay inactive and re-try next tick (harmless — AddDevice without a session shouldn't exist anyway).
+                crate::network::pairing_beacon::start_scan();
+                self.beacon_scan_active = true;
             } else {
                 crate::network::pairing_beacon::stop_scan();
                 self.beacon_scan_active = false;
@@ -4456,13 +4453,12 @@ impl PhotonApp {
         for update in add_updates {
             match update {
                 AddDeviceUpdate::Candidates(reqs) => {
-                    // Precompute each candidate's expected word tokens + keyed name once per refresh, so the per-keystroke matcher is a plain string walk. Requests were already signature-verified in bindreq_list; the seed is in-session by definition on this screen. `heard_ble` marks candidates whose announce beacon we're hearing right now (proximity).
-                    if let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) {
+                    // Precompute each candidate's expected word tokens + keyed name once per refresh, so the per-keystroke matcher is a plain string walk. Requests were already signature-verified in bindreq_list; the seed is in-session by definition on this screen. `heard_ble` marks candidates whose beacon we're hearing right now (proximity) — resolved by matching each heard service UUID's keyed tag to the candidate's pubkey under our fleet key.
+                    if let Some((seed, hp)) =
+                        self.session.as_ref().map(|s| (s.identity_seed, s.handle_proof))
+                    {
                         use crate::network::fgtw::fleet;
-                        let heard: Vec<[u8; 32]> = crate::network::pairing_beacon::heard()
-                            .into_iter()
-                            .map(|c| c.device_pubkey)
-                            .collect();
+                        let heard = crate::network::pairing_beacon::heard();
                         self.add_device_candidates = reqs
                             .into_iter()
                             .map(|req| {
@@ -4470,7 +4466,9 @@ impl PhotonApp {
                                 AddCandidate {
                                     name: fleet::device_name_default(&req.device_pubkey, &seed),
                                     tokens: fleet::pair_word_list(&words),
-                                    heard_ble: heard.contains(&req.device_pubkey),
+                                    heard_ble: heard.iter().any(|b| {
+                                        fgtw::pair::beacon_matches(&b.uuid, &hp, &req.device_pubkey)
+                                    }),
                                     req,
                                 }
                             })
