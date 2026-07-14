@@ -523,7 +523,7 @@ pub struct PhotonApp {
     avatar_dl_tx: std::sync::mpsc::Sender<crate::ui::avatar::AvatarDownloadResult>,
     avatar_dl_rx: std::sync::mpsc::Receiver<crate::ui::avatar::AvatarDownloadResult>,
     /// Handles we've already kicked an avatar download for this session, so we don't re-spawn a fetch every time a conversation is reopened or the contact list re-renders.
-    avatar_dl_started: std::collections::HashSet<String>,
+    avatar_dl_started: std::collections::HashSet<[u8; 32]>,
     /// Mutual peers we've sent a direct P2P AvatarRequest to, mapped to the eagle-time we sent it. The per-tick sweep asks each mutual peer once, then — if no AvatarResponse has installed an avatar within `AVATAR_P2P_FALLBACK_OSC` — falls back to FGTW. So a friend's avatar comes from the friend first, and FGTW only covers the case where the friend is offline or avatar-less.
     avatar_req_pending: std::collections::HashMap<[u8; 32], i64>,
     /// History-serve rate limiting, keyed by conversation_token: (last-served eagle-time, recent request ids). Dedups replayed hist_req frames (the redundant alt-path copy arrives ~always) and caps the serve cadence per conversation.
@@ -1392,16 +1392,9 @@ impl FluorApp for PhotonApp {
                 ) {
                     Ok(s) => {
                         self.contacts = crate::storage::contacts::load_all_contacts(&s);
-                        // Fleet siblings load from their own index (they never enter the contacts index; the handle string is cosmetic — borrowed from the self-contact when present).
+                        // Fleet siblings load from their own index (they never enter the contacts index).
                         {
-                            let our_handle = self
-                                .contacts
-                                .iter()
-                                .find(|c| c.handle_proof == remembered.handle_proof)
-                                .map(|c| c.handle.as_str().to_string())
-                                .unwrap_or_default();
                             let siblings = crate::storage::contacts::load_all_siblings(
-                                &our_handle,
                                 remembered.handle_proof,
                                 &s,
                             );
@@ -1712,16 +1705,15 @@ impl FluorApp for PhotonApp {
             if ci < self.contacts.len() {
                 crate::log(&format!(
                     "contact-tap: opening conversation with '{}'",
-                    self.contacts[ci].handle.as_str()
+                    self.contacts[ci].display_name()
                 ));
                 self.active_contact = Some(ci);
                 self.state = AppState::Conversation;
                 self.change_focus(None);
                 // Refresh this contact's presence on conversation-enter so the header reflects reality promptly.
                 self.ping_contact(ci);
-                // Fetch the peer's avatar (once/session) so the conversation header shows it instead of the grey placeholder. Cache-first, network on miss; off-thread.
-                let handle = self.contacts[ci].handle.as_str().to_string();
-                self.spawn_avatar_download(handle);
+                // Fetch the peer's avatar (once/session) so the conversation header shows it instead of the grey placeholder. Cache-first, network on miss; off-thread. Keyed by the pin-set (hp + party id + avatar key) — no handle.
+                self.spawn_avatar_download(ci);
                 ctx.window.request_redraw();
                 return EventResponse::Handled;
             }
@@ -2480,7 +2472,7 @@ impl FluorApp for PhotonApp {
         let title_text: String = if matches!(self.state, AppState::Conversation) {
             self.active_contact
                 .and_then(|ci| self.contacts.get(ci))
-                .map(|c| c.handle.as_str().to_string())
+                .map(|c| c.display_name())
                 .unwrap_or_else(|| "Conversation".to_string())
         } else if matches!(self.state, AppState::Ready) {
             let own_hp = self.session.as_ref().map(|s| s.handle_proof);
@@ -2523,7 +2515,7 @@ impl FluorApp for PhotonApp {
                     // Must mirror the render pass's `matching` filter exactly (siblings hidden) or the two clamps disagree within a frame.
                     !c.is_sibling
                         && (filter.is_empty()
-                            || c.handle.as_str().to_lowercase().contains(&filter))
+                            || c.display_name().to_lowercase().contains(&filter))
                 })
                 .count();
             let block_bottom_at_zero = rl.rows.y0 as isize + n_matching as isize * row_h;
@@ -3154,7 +3146,7 @@ impl FluorApp for PhotonApp {
                     // Fleet siblings are infrastructure, not conversations — never listed (device management gets its own page later).
                     !c.is_sibling
                         && (filter.is_empty()
-                            || c.handle.as_str().to_lowercase().contains(&filter))
+                            || c.display_name().to_lowercase().contains(&filter))
                 })
                 .map(|(i, _)| i)
                 .collect();
@@ -3263,7 +3255,7 @@ impl FluorApp for PhotonApp {
                 };
                 ctx.text.draw_text_left_u32(
                     &mut canvas,
-                    self.contacts[ci].handle.as_str(),
+                    &self.contacts[ci].display_name(),
                     text_x,
                     cy,
                     text_size,
@@ -3517,7 +3509,7 @@ impl FluorApp for PhotonApp {
                     let name_y = avatar_y + avatar_r + unit * 1.2;
                     ctx.text.draw_text_center_u32(
                         &mut canvas,
-                        contact.handle.as_str(),
+                        &contact.display_name(),
                         buf_w as f32 * 0.5,
                         name_y,
                         name_size,
@@ -4702,11 +4694,8 @@ impl PhotonApp {
             return;
         }
 
-        if self
-            .contacts
-            .iter()
-            .any(|c| c.handle.as_str().eq_ignore_ascii_case(&handle))
-        {
+        let typed_pid = crate::crypto::clutch::identity_party_id(&crate::types::Handle::to_identity_seed(&handle));
+        if self.contacts.iter().any(|c| c.handle_hash == typed_pid) {
             crate::log("add-friend: handle already in contacts");
             return;
         }
@@ -5152,14 +5141,6 @@ impl PhotonApp {
         let Some(our_hp) = self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()) else {
             return;
         };
-        // Our handle STRING is cosmetic on a sibling contact (hidden from UI, matched by hp/device) and the session stores registers, never the handle — borrow it from the self-contact when one exists, else empty.
-        let our_handle = self
-            .contacts
-            .iter()
-            .find(|c| !c.is_sibling && c.handle_proof == our_hp)
-            .map(|c| c.handle.as_str().to_string())
-            .unwrap_or_default();
-
         let mut changed = false;
 
         // Add newly-folded members.
@@ -5175,7 +5156,6 @@ impl PhotonApp {
                 continue;
             }
             let sib = crate::types::Contact::new_sibling(
-                crate::types::HandleText::new(&our_handle),
                 our_hp,
                 crate::types::DevicePubkey::from_bytes(*device),
             );
@@ -5318,7 +5298,8 @@ impl PhotonApp {
                 handle_proof: c.handle_proof,
                 handle_hash: c.handle_hash,
                 public_identity: *c.public_identity.as_bytes(),
-                handle: c.handle.as_str().to_string(),
+                name: c.petname.clone(),
+                avatar_pin: c.avatar_pin,
                 added: c.added,
                 updated: c.added,
                 tombstone: false,
@@ -5341,9 +5322,8 @@ impl PhotonApp {
             {
                 continue;
             }
-            let handle_text = crate::types::HandleText::new(&e.handle);
             let device_pubkey = crate::types::DevicePubkey::from_bytes(e.public_identity);
-            let contact = crate::types::Contact::new(handle_text, e.handle_proof, device_pubkey);
+            let contact = crate::types::Contact::from_pin(e.name.clone(), e.avatar_pin, e.handle_proof, e.handle_hash, device_pubkey);
             self.contacts.push(contact);
             added += 1;
         }
@@ -6287,14 +6267,7 @@ impl PhotonApp {
                 // Fleet weave: load persisted siblings if this attest path didn't come thru the resume loader (e.g. JOIN-flow first attest, or []u→re-attest), then re-fold OUR OWN chain — the members drain routes our hp to reconcile_fleet_siblings, which creates Pending sibling contacts for any member device we don't hold yet. Fires on every background refresh too, giving a ~30s catch-up cadence for fleet changes we missed.
                 if let Some(storage) = self.storage.as_ref().cloned() {
                     if !self.contacts.iter().any(|c| c.is_sibling) {
-                        let our_handle = self
-                            .contacts
-                            .iter()
-                            .find(|c| !c.is_sibling && c.handle_proof == data.handle_proof)
-                            .map(|c| c.handle.as_str().to_string())
-                            .unwrap_or_default();
                         let siblings = crate::storage::contacts::load_all_siblings(
-                            &our_handle,
                             data.handle_proof,
                             &storage,
                         );
@@ -6384,11 +6357,10 @@ impl PhotonApp {
         self.add_in_flight = false;
         match result {
             SearchResult::Found(peer) => {
+                // peer.handle is the user's TYPED search input riding along locally — the first-met seam. Dedup by the party id it derives, never by a stored string.
                 let handle = peer.handle.as_str().to_string();
-                let already = self
-                    .contacts
-                    .iter()
-                    .any(|c| c.handle.as_str().eq_ignore_ascii_case(&handle));
+                let typed_pid = crate::crypto::clutch::identity_party_id(&crate::types::Handle::to_identity_seed(&handle));
+                let already = self.contacts.iter().any(|c| c.handle_hash == typed_pid);
                 if already {
                     crate::log(&format!(
                         "search-result: '{}' already in contacts — skipping add",
@@ -6602,7 +6574,7 @@ impl PhotonApp {
                         .map(|(_, p)| p);
                     if pixels.is_some() {
                         let _ = tx.send(crate::ui::avatar::AvatarDownloadResult {
-                            handle: String::new(), // empty = self
+                            owner: None, // self
                             pixels,
                         });
                         #[cfg(not(target_os = "android"))]
@@ -6643,21 +6615,26 @@ impl PhotonApp {
     }
 
     /// half of the avatar feature — the self avatar loads from the local vault; peers fetch by handle.
-    fn spawn_avatar_download(&mut self, handle: String) {
-        if self.avatar_dl_started.contains(&handle) {
+    fn spawn_avatar_download(&mut self, ci: usize) {
+        let Some(c) = self.contacts.get(ci) else { return };
+        let (hp, party_id, avatar_pin) = (c.handle_proof, c.handle_hash, c.avatar_pin);
+        if avatar_pin == [0u8; 64] {
+            return; // unpinned (old row / sibling) — nothing to decrypt with
+        }
+        if self.avatar_dl_started.contains(&hp) {
             return;
         }
         let Some(storage) = self.storage.as_ref().map(Arc::clone) else {
             return;
         };
-        self.avatar_dl_started.insert(handle.clone());
+        self.avatar_dl_started.insert(hp);
         let tx = self.avatar_dl_tx.clone();
         #[cfg(not(target_os = "android"))]
         let proxy = self.event_proxy.clone();
         std::thread::spawn(move || {
-            // download_avatar checks the local cache first, only hitting FGTW on a miss.
-            let pixels = crate::ui::avatar::download_avatar(&handle, &storage).map(|(_, p)| p);
-            let _ = tx.send(crate::ui::avatar::AvatarDownloadResult { handle, pixels });
+            // Cache-first, FGTW on a miss — everything keyed off the pin (docs/identity-profile.md).
+            let pixels = crate::ui::avatar::download_avatar_pinned(&party_id, &avatar_pin, &storage).map(|(_, p)| p);
+            let _ = tx.send(crate::ui::avatar::AvatarDownloadResult { owner: Some(hp), pixels });
             #[cfg(not(target_os = "android"))]
             if let Some(p) = proxy.as_ref() {
                 let _ = p.send(crate::ui::PhotonEvent::NetworkUpdate);
@@ -6672,18 +6649,18 @@ impl PhotonApp {
                 continue;
             };
             let display = crate::ui::colour_convert::vsf_rgb_to_bt2020(&vsf_rgb);
-            // Empty handle = our OWN avatar recovered from FGTW (the local vault was cleared). Install it as the device avatar and invalidate the scaled cache so the Ready screen repaints it.
-            if result.handle.is_empty() {
+            // `owner: None` = our OWN avatar recovered from FGTW (the local vault was cleared). Install it as the device avatar and invalidate the scaled cache so the Ready screen repaints it.
+            let Some(owner_hp) = result.owner else {
                 self.device_avatar_pixels = Some(display);
                 self.device_avatar_scaled = None;
                 self.device_avatar_scaled_diameter = 0;
                 crate::log("Avatar: recovered own avatar from FGTW after local clear");
                 continue;
-            }
+            };
             if let Some(contact) = self
                 .contacts
                 .iter_mut()
-                .find(|c| c.handle.as_str() == result.handle)
+                .find(|c| !c.is_sibling && c.handle_proof == owner_hp)
             {
                 contact.avatar_pixels = Some(display);
                 contact.avatar_scaled = None; // force rebuild at the current diameter on next render
@@ -6768,7 +6745,7 @@ impl PhotonApp {
                             .contacts
                             .iter()
                             .find(|c| c.handle_proof == ev.attempted_by)
-                            .map(|c| c.handle.as_str().to_string());
+                            .map(|c| c.display_name());
                     }
                 }
             }
@@ -6798,7 +6775,7 @@ impl PhotonApp {
                 crate::ui::avatar::download_avatar_from_seed(&identity_seed, &storage).map(|(_, p)| p);
             if pixels.is_some() {
                 let _ = tx.send(crate::ui::avatar::AvatarDownloadResult {
-                    handle: String::new(), // empty = self
+                    owner: None, // self
                     pixels,
                 });
                 #[cfg(not(target_os = "android"))]
@@ -7559,7 +7536,7 @@ impl PhotonApp {
 
             // Find the contact and update state
             if let Some(contact) = self.contacts.iter_mut().find(|c| c.id == result.contact_id) {
-                let contact_handle = contact.handle.clone();
+                let contact_handle = contact.display_name();
                 contact.clutch_ceremony_in_progress = false;
                 contact.friendship_id = Some(friendship_id);
 
@@ -7727,7 +7704,7 @@ impl PhotonApp {
         let contact_is_sibling = contact.is_sibling;
         let contact_hp = contact.handle_proof;
         let contact_id = contact.id.clone();
-        let contact_handle = contact.handle.to_string();
+        let contact_handle = contact.display_name();
         let their_device_pub = *contact.public_identity.as_bytes();
 
         // Extract all needed data from slots (cloning to release borrow)
@@ -8478,17 +8455,17 @@ impl PhotonApp {
         enum AvatarPlan {
             // Cached locally (the common launch case): just kick the local-first background load, which reads the vault and never touches the network. Keeps the P2P/FGTW escalation from firing a redundant request every launch when we already hold the avatar. `spawn_avatar_download`'s worker is cache-first, so this IS the "look local first" path — the caller states intent, the fetch layer serves it from the vault.
             LocalCached {
-                handle: String,
+                ci: usize,
             },
             // Complete + addressable, NOT cached: try the peer directly; FGTW only after the timeout.
             P2pThenFgtw {
                 peer_addr: std::net::SocketAddr,
                 recipient_pubkey: [u8; 32],
-                handle: String,
+                ci: usize,
             },
             // Non-mutual (or Complete-but-unaddressable) and not cached: public FGTW copy only.
             FgtwOnly {
-                handle: String,
+                ci: usize,
             },
         }
         // Steady state: every contact already has an avatar → skip the sweep entirely (no timestamp read, no allocation) since this runs every tick. Only do the work when something's missing.
@@ -8497,38 +8474,38 @@ impl PhotonApp {
         let plans: Vec<AvatarPlan> = self
             .contacts
             .iter()
-            .filter(|c| c.avatar_pixels.is_none())
-            .map(|c| {
-                let handle = c.handle.as_str().to_string();
+            .enumerate()
+            .filter(|(_, c)| c.avatar_pixels.is_none())
+            .map(|(ci, c)| {
                 // Local vault first — a cheap `read_addr` (encrypted blob, no decode). If we have it, the network never runs. This is what stops the every-launch redundant P2P request: the friend's avatar is already cached, so we don't re-ask them for it.
                 let cached = self
                     .storage
                     .as_ref()
                     .is_some_and(|s| crate::ui::avatar::has_cached_avatar_from_seed(&c.handle_hash, s));
                 if cached {
-                    return AvatarPlan::LocalCached { handle };
+                    return AvatarPlan::LocalCached { ci };
                 }
                 if c.is_mutual() {
                     if let Some((addr, _alt)) = c.race_addrs() {
                         return AvatarPlan::P2pThenFgtw {
                             peer_addr: addr,
                             recipient_pubkey: *c.public_identity.as_bytes(),
-                            handle,
+                            ci,
                         };
                     }
                 }
-                AvatarPlan::FgtwOnly { handle }
+                AvatarPlan::FgtwOnly { ci }
             })
             .collect();
         for plan in plans {
             match plan {
                 // Cache-first background load; never hits the network for an already-cached avatar.
-                AvatarPlan::LocalCached { handle } => self.spawn_avatar_download(handle),
-                AvatarPlan::FgtwOnly { handle } => self.spawn_avatar_download(handle),
+                AvatarPlan::LocalCached { ci } => self.spawn_avatar_download(ci),
+                AvatarPlan::FgtwOnly { ci } => self.spawn_avatar_download(ci),
                 AvatarPlan::P2pThenFgtw {
                     peer_addr,
                     recipient_pubkey,
-                    handle,
+                    ci,
                 } => match self.avatar_req_pending.get(&recipient_pubkey).copied() {
                     // Never asked this peer — send the P2P request now, record when.
                     None => {
@@ -8536,7 +8513,7 @@ impl PhotonApp {
                     }
                     // Asked, but the peer hasn't answered within the window — fall back to FGTW (dedup'd by avatar_dl_started, so this fires at most once per peer).
                     Some(sent_at) if now.saturating_sub(sent_at) > AVATAR_P2P_FALLBACK_OSC => {
-                        self.spawn_avatar_download(handle);
+                        self.spawn_avatar_download(ci);
                     }
                     // Asked recently — still waiting on the peer; do nothing this tick.
                     Some(_) => {}
@@ -8789,7 +8766,7 @@ impl PhotonApp {
                                         fid,
                                         primary,
                                         alt,
-                                        contact.handle.as_str().to_string(),
+                                        contact.display_name(),
                                         *contact.public_identity.as_bytes(),
                                         last_received,
                                     ));
@@ -8852,7 +8829,7 @@ impl PhotonApp {
                         // Find contact by their handle_hash
                         let contact_info = self.contacts.iter().enumerate().find_map(|(idx, c)| {
                             if c.handle_hash == from_handle_hash {
-                                Some((idx, c.handle.to_string()))
+                                Some((idx, c.display_name()))
                             } else {
                                 None
                             }
@@ -9267,7 +9244,7 @@ impl PhotonApp {
                         // Find contact by their handle_hash
                         let contact_info = self.contacts.iter().enumerate().find_map(|(idx, c)| {
                             if c.handle_hash == from_handle_hash {
-                                Some((idx, c.handle.to_string()))
+                                Some((idx, c.display_name()))
                             } else {
                                 None
                             }
@@ -10694,17 +10671,19 @@ impl PhotonApp {
                             "Avatar: ignoring avatar from a non-mutual peer (not a Complete contact)",
                         ),
                         Some(idx) => {
-                            let their_seed = self.contacts[idx].handle_hash;
-                            // Decode the AVIF-in-VSF to display pixels (same path as an FGTW download).
-                            match crate::ui::avatar::load_avatar_from_bytes_from_seed(
+                            let party_id = self.contacts[idx].handle_hash;
+                            let mut pin_key = [0u8; 32];
+                            pin_key.copy_from_slice(&self.contacts[idx].avatar_pin[..32]);
+                            // Decode the AVIF-in-VSF to display pixels with the PINNED key (same as an FGTW download under the pin-set).
+                            match crate::ui::avatar::load_avatar_from_bytes_with_key(
                                 &avatar_vsf,
-                                &their_seed,
+                                &pin_key,
                             ) {
                                 Some((_, vsf_rgb)) => {
-                                    // Cache it so a restart shows it without another round-trip.
+                                    // Cache it (party-id scope) so a restart shows it without another round-trip.
                                     if let Some(storage) = self.storage.as_ref() {
                                         let _ = crate::ui::avatar::save_avatar_to_cache_from_seed(
-                                            &their_seed,
+                                            &party_id,
                                             &avatar_vsf,
                                             storage,
                                         );

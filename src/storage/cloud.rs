@@ -17,7 +17,7 @@ use vsf::schema::{SectionSchema, TypeConstraint};
 use vsf::{VsfSection, VsfType};
 
 use crate::storage::{decrypt_bytes, encrypt_bytes};
-use crate::types::{Contact, DevicePubkey, HandleText, TrustLevel};
+use crate::types::{Contact, DevicePubkey, TrustLevel};
 
 /// Errors from cloud storage operations
 #[derive(Debug)]
@@ -39,11 +39,16 @@ impl std::fmt::Display for CloudError {
     }
 }
 
-/// Contact data stored in cloud (minimal for recovery)
+/// Contact data stored in cloud (minimal for recovery) — the PIN-SET, never a handle string (docs/identity-profile.md).
 #[derive(Clone, Debug)]
 pub struct CloudContact {
     pub handle_proof: [u8; 32],
-    pub handle: String,
+    /// The pinned identity pubkey (party id).
+    pub party_id: [u8; 32],
+    /// The pinned avatar-wall material: AES key ‖ lookup hash (zero = unpinned).
+    pub avatar_pin: [u8; 64],
+    /// Local petname (may be empty — renders as the keyed pseudonym).
+    pub name: String,
     pub device_pubkey: [u8; 32],
     pub trust_level: u8,
     pub added: i64,
@@ -53,7 +58,9 @@ impl From<&Contact> for CloudContact {
     fn from(c: &Contact) -> Self {
         CloudContact {
             handle_proof: c.handle_proof,
-            handle: c.handle.as_str().to_string(),
+            party_id: c.handle_hash,
+            avatar_pin: c.avatar_pin,
+            name: c.petname.clone(),
             device_pubkey: *c.public_identity.as_bytes(),
             trust_level: trust_level_to_u8(c.trust_level),
             added: c.added,
@@ -104,7 +111,9 @@ pub fn encode_contacts(
                 "contact",
                 vec![
                     VsfType::hP(c.handle_proof.to_vec()),
-                    VsfType::x(c.handle.clone()),
+                    VsfType::ke(c.party_id.to_vec()),
+                    VsfType::ge(c.avatar_pin.to_vec()),
+                    VsfType::x(c.name.clone()),
                     VsfType::ke(c.device_pubkey.to_vec()),
                     VsfType::u3(c.trust_level),
                     VsfType::e(vsf::types::EtType::e6(c.added)),
@@ -133,31 +142,42 @@ pub fn decode_contacts(
 
     let mut contacts = Vec::new();
     for field in section.get_fields("contact") {
-        if field.values.len() >= 5 {
+        // 7-value pin-set rows only; old 5-value handle-bearing rows are flag-day dead (skipped).
+        if field.values.len() >= 7 {
             let handle_proof: [u8; 32] = match &field.values[0] {
                 VsfType::hP(v) if v.len() == 32 => v.as_slice().try_into().unwrap(),
                 _ => continue,
             };
-            let handle = match &field.values[1] {
-                VsfType::x(s) => s.clone(),
-                _ => continue,
-            };
-            let device_pubkey: [u8; 32] = match &field.values[2] {
+            let party_id: [u8; 32] = match &field.values[1] {
                 VsfType::ke(v) if v.len() == 32 => v.as_slice().try_into().unwrap(),
                 _ => continue,
             };
-            let trust_level = match &field.values[3] {
+            let avatar_pin: [u8; 64] = match &field.values[2] {
+                VsfType::ge(v) if v.len() == 64 => v.as_slice().try_into().unwrap(),
+                _ => continue,
+            };
+            let name = match &field.values[3] {
+                VsfType::x(s) => s.clone(),
+                _ => continue,
+            };
+            let device_pubkey: [u8; 32] = match &field.values[4] {
+                VsfType::ke(v) if v.len() == 32 => v.as_slice().try_into().unwrap(),
+                _ => continue,
+            };
+            let trust_level = match &field.values[5] {
                 VsfType::u3(v) => *v,
                 _ => 0,
             };
-            let added = match &field.values[4] {
+            let added = match &field.values[6] {
                 VsfType::e(vsf::types::EtType::e6(osc)) => *osc,
                 _ => 0,
             };
 
             contacts.push(CloudContact {
                 handle_proof,
-                handle,
+                party_id,
+                avatar_pin,
+                name,
                 device_pubkey,
                 trust_level,
                 added,
@@ -171,9 +191,11 @@ pub fn decode_contacts(
 /// Convert CloudContact back to Contact for local storage
 impl CloudContact {
     pub fn to_contact(&self) -> Contact {
-        let mut contact = Contact::new(
-            HandleText::new(&self.handle),
+        let mut contact = Contact::from_pin(
+            self.name.clone(),
+            self.avatar_pin,
             self.handle_proof,
+            self.party_id,
             DevicePubkey::from_bytes(self.device_pubkey),
         );
         contact.trust_level = u8_to_trust_level(self.trust_level);
@@ -395,14 +417,18 @@ mod tests {
         let contacts = vec![
             CloudContact {
                 handle_proof: [1u8; 32],
-                handle: "alice".to_string(),
+                party_id: [0xA1u8; 32],
+                avatar_pin: [0xA2u8; 64],
+                name: "alice".to_string(),
                 device_pubkey: [2u8; 32],
                 trust_level: 1,
                 added: 1234567890,
             },
             CloudContact {
                 handle_proof: [3u8; 32],
-                handle: "bob".to_string(),
+                party_id: [0xB1u8; 32],
+                avatar_pin: [0xB2u8; 64],
+                name: "bob".to_string(),
                 device_pubkey: [4u8; 32],
                 trust_level: 2,
                 added: 1234567891,
@@ -414,9 +440,9 @@ mod tests {
         let decoded = decode_contacts(&encrypted, &key).unwrap();
 
         assert_eq!(decoded.len(), 2);
-        assert_eq!(decoded[0].handle, "alice");
+        assert_eq!(decoded[0].name, "alice");
         assert_eq!(decoded[0].handle_proof, [1u8; 32]);
-        assert_eq!(decoded[1].handle, "bob");
+        assert_eq!(decoded[1].name, "bob");
         assert_eq!(decoded[1].trust_level, 2);
     }
 
@@ -424,7 +450,9 @@ mod tests {
     fn test_wrong_key_fails() {
         let contacts = vec![CloudContact {
             handle_proof: [1u8; 32],
-            handle: "alice".to_string(),
+            party_id: [0xA1u8; 32],
+            avatar_pin: [0xA2u8; 64],
+            name: "alice".to_string(),
             device_pubkey: [2u8; 32],
             trust_level: 1,
             added: 1234567890,

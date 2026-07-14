@@ -821,6 +821,77 @@ pub fn load_cached_avatar_from_seed(
     }
 }
 
+/// Cache-first load for a PINNED contact: vault blob at `vault_key("avatar", party_id)`, decrypted with the pin's AES key. Poisoned-cache eviction mirrors the seed path.
+pub fn load_cached_avatar_pinned(
+    party_id: &[u8; 32],
+    key: &[u8; 32],
+    storage: &std::sync::Arc<crate::storage::FlatStorage>,
+) -> Option<(usize, Vec<u8>)> {
+    let addr = crate::storage::vault_key("avatar", party_id);
+    let vsf_data = match storage.read_addr(&addr) {
+        Ok(Some(data)) => data,
+        Ok(None) => return None,
+        Err(e) => {
+            crate::log(&format!("Avatar: vault read failed: {}", e));
+            return None;
+        }
+    };
+    crate::log("Avatar: Loading from local vault (pinned)");
+    match load_avatar_from_bytes_with_key(&vsf_data, key) {
+        Some(loaded) => Some(loaded),
+        None => {
+            crate::log("Avatar: cached bytes failed to decode, evicting poisoned vault entry");
+            let _ = storage.delete_addr(&addr);
+            None
+        }
+    }
+}
+
+/// Cache-first → FGTW download for a PINNED contact (docs/identity-profile.md): everything keys off the 64-byte pin (AES key ‖ lookup hash) + the party id as the local cache scope — no handle, no seed.
+pub fn download_avatar_pinned(
+    party_id: &[u8; 32],
+    avatar_pin: &[u8; 64],
+    storage: &std::sync::Arc<crate::storage::FlatStorage>,
+) -> Option<(usize, Vec<u8>)> {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&avatar_pin[..32]);
+    if let Some(cached) = load_cached_avatar_pinned(party_id, &key, storage) {
+        return Some(cached);
+    }
+    let storage_key = URL_SAFE_NO_PAD.encode(&avatar_pin[32..]);
+    crate::log(&format!("Avatar: Fetching pinned contact avatar from FGTW ({}...)", &storage_key[..8]));
+    let get_vsf = vsf::VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .add_section(
+            "avatar_get",
+            vec![("key".to_string(), VsfType::d(storage_key.clone()))],
+        )
+        .build()
+        .ok()?;
+    let response = crate::network::http::blocking()
+        .post(FGTW_URL)
+        .timeout(std::time::Duration::from_secs(30))
+        .header("Content-Type", "application/octet-stream")
+        .body(get_vsf)
+        .send()
+        .ok()?;
+    if !response.status().is_success() {
+        crate::log(&format!("Avatar: FGTW fetch failed ({})", response.status()));
+        return None;
+    }
+    let vsf_data = response.bytes().ok()?.to_vec();
+    if fgtw::client::error_frame(&vsf_data).is_some() {
+        return None; // not_found or another error frame — no avatar published
+    }
+    let loaded = load_avatar_from_bytes_with_key(&vsf_data, &key)?;
+    // Validated — cache at the party-id scope so a restart is local-first.
+    if let Err(e) = storage.write_addr(&crate::storage::vault_key("avatar", party_id), &vsf_data) {
+        crate::log(&format!("Avatar: cache write failed: {}", e));
+    }
+    Some(loaded)
+}
+
 /// Save avatar VSF bytes to the local vault by handle.
 fn save_avatar_to_cache(
     handle: &str,
@@ -882,6 +953,14 @@ pub fn load_avatar_from_bytes_from_seed(
     vsf_data: &[u8],
     identity_seed: &[u8; 32],
 ) -> Option<(usize, Vec<u8>)> {
+    load_avatar_from_bytes_with_key(vsf_data, &derive_avatar_encryption_key_from_seed(identity_seed))
+}
+
+/// `load_avatar_from_bytes` with the pinned AES key (a contact under the pin-set).
+pub fn load_avatar_from_bytes_with_key(
+    vsf_data: &[u8],
+    key: &[u8; 32],
+) -> Option<(usize, Vec<u8>)> {
     // Verified parse: hp + (hb | signature) checked before any field is trusted.
     let encrypted = match avatar_encrypted_payload(vsf_data) {
         Ok(payload) => payload,
@@ -892,7 +971,7 @@ pub fn load_avatar_from_bytes_from_seed(
     };
 
     // Decrypt to get raw AV1 data
-    let av1_data = match decrypt_av1_data_from_seed(&encrypted, identity_seed) {
+    let av1_data = match decrypt_av1_data_with_key(&encrypted, key) {
         Ok(data) => data,
         Err(e) => {
             crate::log(&format!("Avatar: Decryption failed: {}", e));
@@ -1090,6 +1169,16 @@ pub fn avatar_storage_key_from_seed(identity_seed: &[u8; 32]) -> String {
     URL_SAFE_NO_PAD.encode(avatar_hash.as_bytes())
 }
 
+/// The 64-byte avatar PIN a contact row carries (docs/identity-profile.md): AES key (32) ‖ FGTW lookup hash (32, pre-base64). Derived at first-met, before the seed drops — everything the avatar wall needs, nothing that signs.
+pub fn avatar_pin_from_seed(identity_seed: &[u8; 32]) -> [u8; 64] {
+    let mut pin = [0u8; 64];
+    pin[..32].copy_from_slice(&derive_avatar_encryption_key_from_seed(identity_seed));
+    let mut salted = identity_seed.to_vec();
+    salted.extend_from_slice(b"avatar");
+    pin[32..].copy_from_slice(blake3::hash(&salted).as_bytes());
+    pin
+}
+
 /// Derive the avatar encryption key from handle
 ///
 /// This key is used to encrypt avatar data so only people who know the handle plaintext can decrypt it. Formula: BLAKE3(BLAKE3(VsfType::x(handle).flatten()) || "avatar-encryption")
@@ -1133,7 +1222,6 @@ pub fn encrypt_av1_data_from_seed(
     // Build v'a' wrapped AV1 data
     let va_wrapped = encode_va_wrapper(av1_data);
 
-    // Derive encryption key from the identity seed
     let key = derive_avatar_encryption_key_from_seed(identity_seed);
     let cipher =
         Aes256Gcm::new_from_slice(&key).map_err(|e| format!("Failed to create cipher: {}", e))?;
@@ -1173,6 +1261,11 @@ pub fn decrypt_av1_data_from_seed(
     encrypted: &[u8],
     identity_seed: &[u8; 32],
 ) -> Result<Vec<u8>, String> {
+    decrypt_av1_data_with_key(encrypted, &derive_avatar_encryption_key_from_seed(identity_seed))
+}
+
+/// `decrypt_av1_data` with an explicit avatar AES key — the pin's first half; how a contact's avatar decrypts once the handle/seed no longer exist on this side.
+pub fn decrypt_av1_data_with_key(encrypted: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {
     use aes_gcm::{aead::Aead, Aes256Gcm, KeyInit};
 
     if encrypted.len() < 12 + 16 {
@@ -1188,10 +1281,8 @@ pub fn decrypt_av1_data_from_seed(
         .map_err(|_| "Failed to extract nonce")?;
     let ciphertext = &encrypted[12..];
 
-    // Derive encryption key from the identity seed
-    let key = derive_avatar_encryption_key_from_seed(identity_seed);
     let cipher =
-        Aes256Gcm::new_from_slice(&key).map_err(|e| format!("Failed to create cipher: {}", e))?;
+        Aes256Gcm::new_from_slice(key).map_err(|e| format!("Failed to create cipher: {}", e))?;
 
     // Decrypt
     let va_wrapped = cipher
@@ -1747,33 +1838,10 @@ pub fn sync_avatar_bidirectional_from_seed(
     }
 }
 
-/// Result of a background avatar download
+/// Result of a background avatar download. `owner` = the contact's handle_proof, or `None` for our OWN device avatar (the FGTW-recovery path).
 pub struct AvatarDownloadResult {
-    pub handle: String,
+    pub owner: Option<[u8; 32]>,
     pub pixels: Option<Vec<u8>>, // 256x256 VSF RGB pixels (None if download/decode failed)
-}
-
-/// Spawn background thread to download avatar from FGTW by handle Results are sent to the provided channel
-///
-/// # Arguments
-/// * `handle` - Peer's handle (storage key is derived from this) * `tx` - Channel to send result * `event_proxy` - Optional EventLoopProxy to wake the event loop when done
-pub fn download_avatar_background(
-    handle: String,
-    storage: std::sync::Arc<crate::storage::FlatStorage>,
-    tx: std::sync::mpsc::Sender<AvatarDownloadResult>,
-    #[allow(unused_variables)] event_proxy: OptionalEventProxy,
-) {
-    std::thread::spawn(move || {
-        let result = download_avatar(&handle, &storage);
-        let pixels = result.map(|(_, p)| p);
-        let _ = tx.send(AvatarDownloadResult { handle, pixels });
-
-        // Wake the event loop on desktop
-        #[cfg(not(target_os = "android"))]
-        if let Some(proxy) = event_proxy {
-            let _ = proxy.send_event(PhotonEvent::NetworkUpdate);
-        }
-    });
 }
 
 /// Spawn background thread to sync avatar bidirectionally with FGTW For user's own avatar - compares timestamps and syncs newest version
@@ -1823,7 +1891,7 @@ pub fn sync_avatar_background(
             }
         };
 
-        let _ = tx.send(AvatarDownloadResult { handle, pixels });
+        let _ = tx.send(AvatarDownloadResult { owner: None, pixels });
 
         // Wake the event loop on desktop
         #[cfg(not(target_os = "android"))]
