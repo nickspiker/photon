@@ -41,6 +41,11 @@ impl ContactIdentity {
     pub fn identity_seed(&self) -> [u8; 32] {
         derive_identity_seed(&self.handle)
     }
+
+    /// The contact's PARTY ID — the pinned identity pubkey `Contact::new` derives, and the key every per-contact state entry is stored under. Must mirror `Contact::new` exactly (docs/identity-profile.md: rows key on the pin, never the seed).
+    pub fn party_id(&self) -> [u8; 32] {
+        crate::crypto::clutch::identity_party_id(&self.identity_seed())
+    }
 }
 
 /// Derive identity_seed from a handle string. Delegates to `ihi::handle_to_hash` — the canonical "handle string → 32 bytes" intermediate (VsfType::x pre-hash + BLAKE3) that `handle_to_proof` uses internally. Matches `Contact::new`'s `handle_hash` field and the avatar key seeds.
@@ -286,7 +291,8 @@ pub fn load_contact_state(
     identity: &ContactIdentity,
     storage: &FlatStorage,
 ) -> Result<Contact, StorageError> {
-    let their_identity_seed = identity.identity_seed();
+    // Keyed by the party id (the pinned pubkey) — mirrors save_contact_state keying off `contact.handle_hash`.
+    let their_identity_seed = identity.party_id();
 
     let vsf_bytes = match storage.read_addr(&contact_key(&their_identity_seed, "state"))? {
         Some(b) => b,

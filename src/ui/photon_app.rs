@@ -1036,7 +1036,7 @@ impl Container for PhotonApp {
             let our_handle_hash = self
                 .session
                 .as_ref()
-                .map(|s| s.identity_seed)
+                .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
                 .unwrap_or([0u8; 32]);
             let compose_ready = self
                 .active_contact
@@ -2435,7 +2435,7 @@ impl FluorApp for PhotonApp {
             let our_handle_hash = self
                 .session
                 .as_ref()
-                .map(|s| s.identity_seed)
+                .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
                 .unwrap_or([0u8; 32]);
             let compose_ready = self
                 .active_contact
@@ -3176,7 +3176,7 @@ impl FluorApp for PhotonApp {
             let our_handle_hash = self
                 .session
                 .as_ref()
-                .map(|s| s.identity_seed)
+                .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
                 .unwrap_or([0u8; 32]);
             for (vis, &ci) in matching.iter().enumerate() {
                 let row_top = rows.y0 as isize + vis as isize * row_h - self.contacts_scroll;
@@ -3502,7 +3502,7 @@ impl FluorApp for PhotonApp {
                     let our_handle_hash = self
                         .session
                         .as_ref()
-                        .map(|s| s.identity_seed)
+                        .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
                         .unwrap_or([0u8; 32]);
                     // Self-as-contact (notes-to-self): there is no other party, so no relationship colour — everything is the neutral anchor.
                     let is_self_contact = contact.handle_hash == our_handle_hash;
@@ -5310,10 +5310,10 @@ impl PhotonApp {
     /// Build the fleet roster from the live contact list — the syncable subset, minus self-contacts (notes-to-self are device-local, not a friend to share) and minus fleet siblings (infrastructure, not friends — a sibling pid leaking into the roster would merge as a bogus contact on every device).
     fn current_roster(&self) -> Vec<crate::network::fgtw::fleet::RosterEntry> {
         use crate::network::fgtw::fleet::RosterEntry;
-        let our_seed = self.session.as_ref().map(|s| s.identity_seed);
+        let our_pid = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
         self.contacts
             .iter()
-            .filter(|c| !c.is_sibling && our_seed != Some(c.handle_hash))
+            .filter(|c| !c.is_sibling && our_pid != Some(c.handle_hash))
             .map(|c| RosterEntry {
                 handle_proof: c.handle_proof,
                 handle_hash: c.handle_hash,
@@ -5841,7 +5841,7 @@ impl PhotonApp {
         let text = text.to_string();
 
         // Notes-to-self: no peer, no chains, no network — the message is delivered by definition (we already hold it). Insert the bubble + persist to the self conversation table (keyed off handle_hash like every conversation, so fleet history sync later carries it across our devices). Without this branch the send dead-ended at the missing friendship chain while submit_message cleared the box anyway — typed notes vanished. Probes never target self (maybe_send_chain_probe guard), so suppress_bubble can't arrive true here.
-        let is_self = self.session.as_ref().map(|s| s.identity_seed)
+        let is_self = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
             == self.contacts.get(ci).map(|c| c.handle_hash);
         if is_self {
             let Some(contact) = self.contacts.get_mut(ci) else {
@@ -6022,7 +6022,7 @@ impl PhotonApp {
                     && c.friendship_id.is_some()
                     && !c.probe_sent
                     // Self-contact has no peer device to answer the probe.
-                    && self.session.as_ref().map(|s| s.identity_seed) != Some(c.handle_hash)
+                    && self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) != Some(c.handle_hash)
             }
             None => false,
         };
@@ -6407,7 +6407,7 @@ impl PhotonApp {
                 .with_local_ip(peer.local_ip, peer.ip.port());
                 // Self-contact: same identity, no key exchange needed.
                 let is_self =
-                    self.session.as_ref().map(|s| s.identity_seed) == Some(contact.handle_hash);
+                    self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) == Some(contact.handle_hash);
                 if is_self {
                     contact.clutch_state = crate::types::ClutchState::Complete;
                 }
@@ -6431,7 +6431,7 @@ impl PhotonApp {
                     let our_handle_hash = self
                         .session
                         .as_ref()
-                        .map(|s| s.identity_seed)
+                        .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
                         .unwrap_or([0u8; 32]);
                     self.spawn_clutch_keygen(contact_id, our_handle_hash, their_handle_hash);
                 }
@@ -6498,12 +6498,12 @@ impl PhotonApp {
             .map(|kp| crate::crypto::clutch::sibling_party_id(kp.public.as_bytes()))
     }
 
-    /// OUR party id in a ceremony with `contact`: the identity seed for friends, the device-derived sibling pid for fleet siblings. Every slot lookup, conversation token, ceremony id, and chain index in a ceremony must use THIS, not `session.identity_seed` directly — the seed would collide with the sibling's own id (same handle).
+    /// OUR party id in a ceremony with `contact`: the identity PUBKEY for friends (the value they pin at first-met — never the seed, which must not travel or be stored anywhere but our own registers), the device-derived sibling pid for fleet siblings. Every slot lookup, conversation token, ceremony id, and chain index in a ceremony must use THIS, not `session.identity_seed` directly.
     fn our_party_id(&self, contact: &crate::types::Contact) -> Option<[u8; 32]> {
         if contact.is_sibling {
             self.our_sibling_pid()
         } else {
-            self.session.as_ref().map(|s| s.identity_seed)
+            self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
         }
     }
 
@@ -6927,6 +6927,7 @@ impl PhotonApp {
         their_handle_hash: [u8; 32],
         our_device_pub: [u8; 32],
         their_device_pub: [u8; 32],
+        friendship_secret: [u8; 32],
         secrets: crate::crypto::clutch::ClutchSharedSecrets,
         ceremony_id: [u8; 32],
         conversation_token: [u8; 32],
@@ -6950,6 +6951,7 @@ impl PhotonApp {
                 &their_device_pub,
                 &our_handle_hash,
                 &their_handle_hash,
+                &friendship_secret,
                 &secrets,
             );
 
@@ -7019,8 +7021,8 @@ impl PhotonApp {
             std::net::SocketAddr,
         )> = None;
 
-        // Get our handle_hash for CLUTCH (PRIVATE identity seed)
-        let our_handle_hash = match self.session.as_ref().map(|s| s.identity_seed) {
+        // Our party id for CLUTCH: the identity pubkey (public; contacts pin it — never the seed).
+        let our_handle_hash = match self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) {
             Some(h) => h,
             None => return changed,
         };
@@ -7375,7 +7377,7 @@ impl PhotonApp {
 
         let mut changed = false;
         let mut ceremony_completions: Vec<usize> = Vec::new();
-        let our_handle_hash = match self.session.as_ref().map(|s| s.identity_seed) {
+        let our_handle_hash = match self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) {
             Some(h) => h,
             None => return changed,
         };
@@ -7490,7 +7492,7 @@ impl PhotonApp {
         use crate::types::ClutchState;
 
         let mut changed = false;
-        let _our_handle_hash = match self.session.as_ref().map(|s| s.identity_seed) {
+        let _our_handle_hash = match self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) {
             Some(h) => h,
             None => return changed,
         };
@@ -7722,6 +7724,8 @@ impl PhotonApp {
 
         // Get their slot (the other party)
         let their_handle_hash = contact.handle_hash;
+        let contact_is_sibling = contact.is_sibling;
+        let contact_hp = contact.handle_proof;
         let contact_id = contact.id.clone();
         let contact_handle = contact.handle.to_string();
         let their_device_pub = *contact.public_identity.as_bytes();
@@ -7854,12 +7858,32 @@ impl PhotonApp {
             .expect("device_keypair set in init")
             .public
             .as_bytes();
+        // The SECRET identity binding for the eggs (docs/identity-profile.md): friends = static identity DH against their pinned identity pubkey (the party id); siblings share the identity seed itself (their party ids aren't curve points). A pin that isn't a valid point is an old-format contact row — flag-day: fail loudly, re-add the friend.
+        let Some(our_seed) = self.session.as_ref().map(|s| s.identity_seed) else {
+            crate::log("CLUTCH: no session — cannot derive friendship secret");
+            return;
+        };
+        let friendship_secret = if contact_is_sibling {
+            our_seed
+        } else {
+            match crate::crypto::clutch::identity_friendship_secret(&our_seed, &their_handle_hash) {
+                Some(fs) => fs,
+                None => {
+                    crate::log(&format!(
+                        "CLUTCH: pinned identity for {} is not a curve point (old-format contact row) — re-add this friend",
+                        crate::fp(&contact_hp)
+                    ));
+                    return;
+                }
+            }
+        };
         self.spawn_clutch_ceremony(
             contact_id,
             our_handle_hash,
             their_handle_hash,
             our_device_pub,
             their_device_pub,
+            friendship_secret,
             secrets,
             ceremony_id,
             conversation_token,
@@ -7917,21 +7941,21 @@ impl PhotonApp {
         }
     }
 
-    /// True if `handle_hash` is our own identity — i.e. this contact is the user's self-contact (notes to self / future multi-device sync). A self-contact shares our single seed, so there is no peer to exchange keys with: CLUTCH must be forced Complete and keygen/offer/ceremony skipped entirely. Without this a self-contact runs a pointless CLUTCH loop against its own device and never settles.
+    /// True if `handle_hash` (a party id) is our own identity — i.e. this contact is the user's self-contact (notes to self / future multi-device sync). A self-contact shares our single identity, so there is no peer to exchange keys with: CLUTCH must be forced Complete and keygen/offer/ceremony skipped entirely. Without this a self-contact runs a pointless CLUTCH loop against its own device and never settles. Party ids are identity PUBKEYS now, so the comparison derives ours.
     fn is_self_contact(&self, handle_hash: &[u8; 32]) -> bool {
         self.session
             .as_ref()
-            .is_some_and(|s| s.identity_seed == *handle_hash)
+            .is_some_and(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed) == *handle_hash)
     }
 
     /// Force every self-contact in the list to CLUTCH-Complete and clear any in-flight CLUTCH work. Applied after contacts load on resume and after cloud/FGTW merges, since those paths build contacts as Pending by default. Returns true if any contact changed.
     fn settle_self_contacts(&mut self) -> bool {
-        let Some(our_seed) = self.session.as_ref().map(|s| s.identity_seed) else {
+        let Some(our_pid) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) else {
             return false;
         };
         let mut changed = false;
         for contact in self.contacts.iter_mut() {
-            if contact.handle_hash == our_seed
+            if contact.handle_hash == our_pid
                 && contact.clutch_state != crate::types::ClutchState::Complete
             {
                 contact.clutch_state = crate::types::ClutchState::Complete;
@@ -8526,13 +8550,13 @@ impl PhotonApp {
             None => return false,
         };
 
-        // Get our handle_hash for CLUTCH (PRIVATE identity seed, used in VSF messages) Formula: BLAKE3(VsfType::x(handle).flatten()) - VSF normalized for Unicode safety SECURITY: This IS sent in CLUTCH offers for contact matching, but only parties who already know our handle can compute it to match us
-        let our_handle_hash = match self.session.as_ref().map(|s| s.identity_seed) {
+        // Our party id for CLUTCH: the identity PUBKEY (the value contacts pin at first-met). It rides CLUTCH offers for contact matching — public by design; the secret identity binding is the friendship-secret egg, never this id. (Was the raw identity seed, which also parked our seed in every peer's contact row — docs/identity-profile.md.)
+        let our_handle_hash = match self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) {
             Some(h) => h,
-            None => return false, // Can't do CLUTCH without our handle_hash
+            None => return false, // Can't do CLUTCH without our party id
         };
 
-        // Also need our_identity_seed alias for keygen spawning (same value)
+        // Alias kept for the keygen-spawn call below (same value — the party id).
         let our_identity_seed = our_handle_hash;
 
         // Our device pubkey, hoisted for the sibling party-id shadow inside the contacts loop (a &self method call there would conflict with the &mut contacts borrow).

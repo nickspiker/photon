@@ -69,6 +69,22 @@ pub fn derive_history_key(friendship_id: &[u8; 32], active_chains_sorted: &[&[u8
     key
 }
 
+/// OUR OWN party id as a FRIEND sees it: the Ed25519 identity pubkey derived from the identity seed — the same value a contact pins at first-met, so both sides sort/slot/derive on identical ids. Public by design (it rides CLUTCH offers for contact matching); the SECRET identity binding moved to [`identity_friendship_secret`]. Supersedes using the raw identity seed as the party id, which parked the friend's SIGNING SEED in every contact row (docs/identity-profile.md).
+pub fn identity_party_id(identity_seed: &[u8; 32]) -> [u8; 32] {
+    ed25519_dalek::SigningKey::from_bytes(identity_seed).verifying_key().to_bytes()
+}
+
+/// The static identity Diffie-Hellman secret for a FRIEND ceremony: x25519 between OUR identity scalar and THEIR pinned identity pubkey's Montgomery form — computable by exactly the two identity holders, from the pin-set alone, no wire exchange. Same Ed25519→X25519 construction as the fgtw fan-out (`to_scalar_bytes` / `to_montgomery` agree on the same point), hashed under a domain so the raw DH point never leaves this function. `None` when the pinned bytes don't decode as a curve point; an old-format row that happens to decode anyway just derives a secret the peer won't match, failing the ceremony at proof verification — the same flag-day outcome, one step later. Fleet siblings don't DH (their party ids aren't curve points): both devices share the identity seed itself, so the caller passes that instead.
+pub fn identity_friendship_secret(our_identity_seed: &[u8; 32], their_identity_pubkey: &[u8; 32]) -> Option<[u8; 32]> {
+    let their_vk = ed25519_dalek::VerifyingKey::from_bytes(their_identity_pubkey).ok()?;
+    let our_x = StaticSecret::from(ed25519_dalek::SigningKey::from_bytes(our_identity_seed).to_scalar_bytes());
+    let shared = our_x.diffie_hellman(&PublicKey::from(their_vk.to_montgomery().to_bytes()));
+    let mut hasher = Hasher::new();
+    hasher.update(b"PHOTON_FRIENDSHIP_DH_v1");
+    hasher.update(shared.as_bytes());
+    Some(*hasher.finalize().as_bytes())
+}
+
 /// Domain separation for sibling (own-fleet device) party ids
 const SIBLING_PARTY_DOMAIN: &[u8] = b"PHOTON_SIBLING_PARTY_v0";
 
@@ -80,6 +96,32 @@ pub fn sibling_party_id(device_pubkey: &[u8; 32]) -> [u8; 32] {
     hasher.update(SIBLING_PARTY_DOMAIN);
     hasher.update(device_pubkey);
     *hasher.finalize().as_bytes()
+}
+
+#[cfg(test)]
+mod identity_binding_tests {
+    use super::*;
+
+    #[test]
+    fn friendship_secret_is_symmetric_and_pairwise_unique() {
+        let seed_a = [1u8; 32];
+        let seed_b = [2u8; 32];
+        let seed_c = [3u8; 32];
+        let (pk_a, pk_b, pk_c) = (identity_party_id(&seed_a), identity_party_id(&seed_b), identity_party_id(&seed_c));
+        // Both identity holders compute the SAME secret from opposite ends — the static DH that replaced mutual-handle-knowledge.
+        let ab = identity_friendship_secret(&seed_a, &pk_b).unwrap();
+        let ba = identity_friendship_secret(&seed_b, &pk_a).unwrap();
+        assert_eq!(ab, ba);
+        // Distinct per pair, and never trivially related to the party ids.
+        let ac = identity_friendship_secret(&seed_a, &pk_c).unwrap();
+        assert_ne!(ab, ac);
+        assert_ne!(ab, pk_a);
+        assert_ne!(ab, pk_b);
+        // (A garbage pin often still decodes as SOME point — the mismatch then surfaces as a CLUTCH proof failure, the same flag-day outcome as an outright None.)
+        // Party id is deterministic and distinct from the seed it derives from.
+        assert_eq!(pk_a, identity_party_id(&seed_a));
+        assert_ne!(pk_a, seed_a);
+    }
 }
 
 /// Domain separator for ceremony instance derivation
@@ -1012,6 +1054,7 @@ pub fn collect_clutch_eggs(
     their_device_pubkey: &[u8; 32],
     our_handle_hash: &[u8; 32],
     their_handle_hash: &[u8; 32],
+    friendship_secret: &[u8; 32],
     low_x25519_shared: &[u8; 32],
     high_x25519_shared: &[u8; 32],
     low_p384_shared: &[u8],
@@ -1039,6 +1082,8 @@ pub fn collect_clutch_eggs(
     eggs.add_egg("high_device_pubkey", high_device);
     eggs.add_egg("low_handle_hash", low_handle);
     eggs.add_egg("high_handle_hash", high_handle);
+    // The SECRET identity binding (docs/identity-profile.md): party ids are now pinned PUBLIC identity pubkeys, so the out-of-band-secret role the private handle_hash used to play moves here — the static identity DH for friends ([`identity_friendship_secret`]), the shared identity seed for fleet siblings. Full-entropy where the old ingredient was only as private as handle guessability.
+    eggs.add_egg("friendship_secret", friendship_secret);
 
     // Class 0: Classical EC - low handle's secrets first, then high
     eggs.add_egg("low_x25519", low_x25519_shared);
@@ -1625,14 +1670,16 @@ pub fn clutch_complete_full(
     their_device_pubkey: &[u8; 32],
     our_handle_hash: &[u8; 32],
     their_handle_hash: &[u8; 32],
+    friendship_secret: &[u8; 32],
     secrets: &ClutchSharedSecrets,
 ) -> ClutchFullResult {
-    // Collect all 20 eggs
+    // Collect the eggs (20 KEM/identity + the friendship-secret egg)
     let eggs = collect_clutch_eggs(
         our_device_pubkey,
         their_device_pubkey,
         our_handle_hash,
         their_handle_hash,
+        friendship_secret,
         &secrets.low_x25519,
         &secrets.high_x25519,
         &secrets.low_p384,
@@ -2005,6 +2052,7 @@ mod tests {
             &bob_device,
             &alice_handle,
             &bob_handle,
+            &[0x5Au8; 32], // friendship secret (symmetric fixture)
             &low_x25519,
             &high_x25519,
             &low_p384,
@@ -2023,8 +2071,8 @@ mod tests {
             &high_p256,
         );
 
-        // 4 identity + 16 shared secrets = 20 eggs
-        assert_eq!(eggs.eggs.len(), 20);
+        // 4 identity + 1 friendship secret + 16 shared secrets = 21 eggs
+        assert_eq!(eggs.eggs.len(), 21);
 
         for egg in &eggs.eggs {
             assert_eq!(egg.len(), 32);
@@ -2049,6 +2097,7 @@ mod tests {
             &bob_device,
             &alice_handle,
             &bob_handle,
+            &[0x5Au8; 32],       // friendship secret (symmetric fixture)
             &shared_32,          // low_x25519
             &shared_32,          // high_x25519
             &shared_48,          // low_p384
@@ -2069,7 +2118,7 @@ mod tests {
 
         // Even with same input bytes, domain separation should produce unique eggs
         let unique_eggs: std::collections::HashSet<[u8; 32]> = eggs.eggs.into_iter().collect();
-        assert_eq!(unique_eggs.len(), 20);
+        assert_eq!(unique_eggs.len(), 21);
     }
 
     #[test]
@@ -2203,6 +2252,7 @@ mod tests {
             &bob_device,
             &alice_handle,
             &bob_handle,
+            &[0x5Au8; 32], // friendship secret — symmetric, same both sides
             &alice_secrets,
         );
 
@@ -2211,6 +2261,7 @@ mod tests {
             &alice_device,
             &bob_handle,
             &alice_handle,
+            &[0x5Au8; 32], // friendship secret — symmetric, same both sides
             &bob_secrets,
         );
 
