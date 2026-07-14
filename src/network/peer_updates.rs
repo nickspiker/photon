@@ -209,21 +209,11 @@ impl PeerUpdateClient {
         use vsf::types::VsfType;
         use vsf::VsfSection;
 
-        // Parse VSF header
+        // Parse VSF header, then the primary section — TOC name resolution lives in the vsf crate now.
         let (header, header_end) = VsfHeader::decode(data).ok()?;
-        let mut ptr = header_end;
+        let section = header.primary_section(data, header_end).ok()?;
 
-        // Parse section using VsfSection::parse()
-        let section = VsfSection::parse(data, &mut ptr).ok()?;
-
-        // Resolve section name (empty for small sections, falls back to header TOC)
-        let section_name = if section.name.is_empty() {
-            header.fields.first().map(|f| f.name.clone())?
-        } else {
-            section.name.clone()
-        };
-
-        if section_name != "peer_update" {
+        if section.name != "peer_update" {
             return None;
         }
 

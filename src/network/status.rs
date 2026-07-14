@@ -2975,16 +2975,9 @@ fn parse_pt_packet(bytes: &[u8]) -> Option<ParsedPtPacket> {
         _ => None,
     };
 
-    // Fall back to section body parsing
-    let mut ptr = header_end;
-    let section = vsf::VsfSection::parse(bytes, &mut ptr).ok()?;
-
-    // Resolve section name (empty for small sections, falls back to header TOC)
-    let section_name = if section.name.is_empty() {
-        header.fields.first().map(|f| f.name.clone())?
-    } else {
-        section.name.clone()
-    };
+    // Fall back to section body parsing — primary_section resolves the near-form name from the header TOC (the knowledge lives in the vsf crate now).
+    let section = header.primary_section(bytes, header_end).ok()?;
+    let section_name = section.name.clone();
 
     let fields: Vec<(String, vsf::VsfType)> = section
         .fields

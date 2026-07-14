@@ -152,6 +152,28 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         }
     }
 
+    // BLE beacon permissions (Android 12+): requested lazily by PhotonBeacon when a start call
+    // finds them missing; on grant the pending advertise/scan re-runs so the pairing screen
+    // doesn't need re-entering.
+    private val blePermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants ->
+        if (grants.values.all { it }) {
+            PhotonBeacon.onPermissionsGranted()
+        } else {
+            PhotonLog.w("Beacon", "BLE permissions denied")
+        }
+    }
+
+    fun requestBlePermissions() {
+        if (Build.VERSION.SDK_INT >= 31) {
+            blePermissionLauncher.launch(arrayOf(
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_ADVERTISE
+            ))
+        }
+    }
+
     // Image picker for avatar selection — passes RAW FILE BYTES to Rust. We do NOT decode in Android because BitmapFactory destroys ICC profiles and mangles colors; Rust handles proper color management via XYZ.
     private val imagePickerLauncher = registerForActivityResult(
         ActivityResultContracts.GetContent()
@@ -176,6 +198,10 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Pairing v2 beacon bridge: cache contexts + register the JNI upcall path before any
+        // screen can ask the radio for anything (docs/pairing-v2.md).
+        PhotonBeacon.init(this)
 
         // Create custom SurfaceView with InputConnection for IME text input
         val container = FrameLayout(this)

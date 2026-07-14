@@ -137,6 +137,23 @@ impl PeerStore {
         count
     }
 
+    /// Distinct fresh identities EXCLUDING `own` — the peers-as-PEOPLE count for the title bar. Our own fleet siblings ride this same store (that's how they get addresses for direct routing), but we are not our own peer: without the exclusion, a 2-device fleet reads "1 peer" to itself.
+    pub fn handle_count_excluding(&self, own: &[u8; 32]) -> usize {
+        let now = vsf::eagle_time_oscillations();
+        let mut count = 0;
+        let mut prev_handle: Option<[u8; 32]> = None;
+
+        for p in &self.peers {
+            if p.handle_proof != *own && now.saturating_sub(p.last_seen) < PEER_EXPIRY_OSC {
+                if prev_handle.map_or(true, |h| h != p.handle_proof) {
+                    count += 1;
+                    prev_handle = Some(p.handle_proof);
+                }
+            }
+        }
+        count
+    }
+
     /// Update last_seen for a specific device
     pub fn update_peer_seen(&mut self, handle_proof: &[u8; 32], device_pubkey: &DevicePubkey) {
         let pos = self.find_position(handle_proof);
@@ -245,5 +262,28 @@ mod tests {
             .peers
             .windows(2)
             .all(|w| w[0].handle_proof <= w[1].handle_proof));
+    }
+
+    #[test]
+    fn handle_count_excluding_subtracts_self_and_dedups_devices() {
+        let now = vsf::eagle_time_oscillations();
+        let mut store = PeerStore::new();
+        // Our own fleet: two sibling devices under OUR handle (handle 1).
+        store.add_peer(rec(1, 1, now));
+        store.add_peer(rec(1, 2, now));
+        // A friend with two devices (handle 2) and a single-device friend (handle 3).
+        store.add_peer(rec(2, 3, now));
+        store.add_peer(rec(2, 4, now));
+        store.add_peer(rec(3, 5, now));
+        // Peers are PEOPLE: multi-device friends dedup to one, and we are not our own peer.
+        assert_eq!(store.handle_count(), 3, "three identities in the store");
+        assert_eq!(store.handle_count_excluding(&[1u8; 32]), 2, "excluding ours leaves the two friends");
+        // Excluding a handle that isn't in the store changes nothing.
+        assert_eq!(store.handle_count_excluding(&[9u8; 32]), 3);
+        // A stale sibling record still doesn't resurrect us, and stale friends age out of the count.
+        let mut stale = PeerStore::new();
+        stale.add_peer(rec(1, 1, now));
+        stale.add_peer(rec(2, 3, now - crate::PEER_EXPIRY_OSC - 1));
+        assert_eq!(stale.handle_count_excluding(&[1u8; 32]), 0, "only a stale friend and ourselves → zero peers");
     }
 }

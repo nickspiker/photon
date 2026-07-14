@@ -486,6 +486,97 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeDestroy(
 }
 
 // ============================================================================
+// Pairing v2 beacon bridge — the PhotonBeacon Kotlin object (BLE advertise + scan).
+// Registered at PhotonBeacon.init (Activity onCreate); Rust threads call up thru the
+// global ref, Kotlin's scan callback calls down via nativeOnBeaconHeard. Shadow mode:
+// heard frames only log + store (docs/pairing-v2.md milestone A).
+// ============================================================================
+
+/// The PhotonBeacon Kotlin object: JavaVM + global ref, registered once at `nativeInit`.
+#[cfg(target_os = "android")]
+static BEACON_BRIDGE: std::sync::OnceLock<(jni::JavaVM, jni::objects::GlobalRef)> =
+    std::sync::OnceLock::new();
+
+/// Kotlin PhotonBeacon.init(activity) → here: cache the (vm, object) pair for Rust-side upcalls. Idempotent — a second Activity onCreate keeps the first ref (the Kotlin object is a process singleton, so it's the same object anyway).
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonBeacon_nativeInit(
+    env: JNIEnv<'_>,
+    this: JObject<'_>,
+) {
+    match (env.get_java_vm(), env.new_global_ref(&this)) {
+        (Ok(vm), Ok(obj)) => {
+            let _ = BEACON_BRIDGE.set((vm, obj));
+            info!("PhotonBeacon: bridge registered");
+        }
+        (vm, obj) => error!(
+            "PhotonBeacon nativeInit failed (vm ok: {}, ref ok: {})",
+            vm.is_ok(),
+            obj.is_ok()
+        ),
+    }
+}
+
+/// Kotlin scan callback → Rust ingest: the reassembled beacon frame (ADV chunk + scan-response chunk already concatenated on the Kotlin side).
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonBeacon_nativeOnBeaconHeard(
+    mut env: JNIEnv<'_>,
+    _this: JObject<'_>,
+    frame: JByteArray<'_>,
+) {
+    let Ok(bytes) = env.convert_byte_array(&frame) else {
+        return;
+    };
+    crate::network::pairing_beacon::on_frame_heard(&bytes);
+}
+
+/// Call a no-arg PhotonBeacon method ("stopAdvertise" / "startScan" / "stopScan") from any Rust thread. No-op with a log if the bridge never registered (Activity not up yet).
+#[cfg(target_os = "android")]
+pub fn beacon_call(method: &str) {
+    let Some((vm, obj)) = BEACON_BRIDGE.get() else {
+        error!("beacon_call({method}): bridge not registered");
+        return;
+    };
+    match vm.attach_current_thread() {
+        Ok(mut env) => {
+            if env.call_method(obj.as_obj(), method, "()V", &[]).is_err() {
+                let _ = env.exception_clear();
+                error!("beacon_call({method}) failed");
+            }
+        }
+        Err(e) => error!("beacon_call({method}): JVM attach failed: {e:?}"),
+    }
+}
+
+/// Call a two-byte-array PhotonBeacon method ("startAdvertise") from any Rust thread.
+#[cfg(target_os = "android")]
+pub fn beacon_call_bytes(method: &str, a: &[u8], b: &[u8]) {
+    let Some((vm, obj)) = BEACON_BRIDGE.get() else {
+        error!("beacon_call_bytes({method}): bridge not registered");
+        return;
+    };
+    match vm.attach_current_thread() {
+        Ok(mut env) => {
+            let (Ok(arr_a), Ok(arr_b)) =
+                (env.byte_array_from_slice(a), env.byte_array_from_slice(b))
+            else {
+                error!("beacon_call_bytes({method}): array alloc failed");
+                return;
+            };
+            if env
+                .call_method(obj.as_obj(), method, "([B[B)V", &[(&arr_a).into(), (&arr_b).into()])
+                .is_err()
+            {
+                let _ = env.exception_clear();
+                error!("beacon_call_bytes({method}) failed");
+            }
+        }
+        Err(e) => error!("beacon_call_bytes({method}): JVM attach failed: {e:?}"),
+    }
+}
+
+// ============================================================================
 
 // FCM Push Notification Support ============================================================================
 use std::sync::atomic::{AtomicBool, Ordering};

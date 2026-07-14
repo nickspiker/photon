@@ -14,6 +14,14 @@
          while the screen is off (background CLUTCH/chat delivery; see docs/background-tick.md) -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
+    <!-- Pairing v2 proximity beacon (docs/pairing-v2.md): BLE advertise (new device) + scan (old device).
+         SCAN/ADVERTISE are runtime permissions on Android 12+; neverForLocation keeps the location
+         permission out of it. The legacy pair covers Android 11 and below. -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+
     <!-- Foreground service for persistent connection -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />

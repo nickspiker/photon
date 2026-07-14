@@ -7,12 +7,14 @@
 pub use fgtw::fanout::{
     fanout_from_bytes, fanout_open, fanout_seal, fanout_to_bytes, new_fleet_key, FanoutWrap,
 };
-pub use fgtw::fleet::{et_to_osc, scheme, Egg, FleetOp, FoldError, MembershipBlob, OpKind};
+pub use fgtw::fleet::{
+    bindreq_signing_bytes, et_to_osc, scheme, BindRequest, Egg, FleetOp, FoldError, MembershipBlob,
+    OpKind, BINDREQ_FRESH_OSC, CONSENT_WINDOW_OSC,
+};
 pub use fgtw::fstate::{merge_rosters, roster_from_bytes, roster_to_bytes, RosterEntry};
 pub use fgtw::pair::{
-    device_name_default, first_bad_pair_word, new_pairing_id, pair_entry_complete,
-    pair_matched_signing_bytes, pair_request_signing_bytes, pair_word_list, pair_word_tokens,
-    pair_words, parse_pair_event, words_to_pair_pubkey, PairRequest, PAIR_WORD_COUNT,
+    device_name_default, first_bad_pair_word, masked_device_words, pair_word_list,
+    pair_word_tokens, pair_words, parse_pair_event, word_mask, PAIR_WORD_COUNT,
 };
 
 use crate::network::fgtw::Keypair;
@@ -79,59 +81,51 @@ pub fn current_members(handle_proof: &[u8; 32]) -> Result<Vec<[u8; 32]>, String>
     fgtw::client::current_members(&PhotonTransport, handle_proof)
 }
 
+/// The current member set for OUR OWN fleet, refusing a chain whose genesis isn't co-signed by `Ed25519(identity_seed)` — the every-fetch genesis check (docs/pairing-v2.md). Use this wherever the fetch feeds a trust decision about our own fleet; `current_members` stays for contact chains.
+pub fn current_members_verified(handle_proof: &[u8; 32], identity_seed: &[u8; 32]) -> Result<Vec<[u8; 32]>, String> {
+    fgtw::client::current_members_verified(&PhotonTransport, handle_proof, identity_seed)
+}
+
 /// The current member set + chain-tip eagle time (monotonic freshness guard for the fold-respecting trust rule).
 pub fn current_members_with_ts(handle_proof: &[u8; 32]) -> Result<(Vec<[u8; 32]>, i64), String> {
     fgtw::client::current_members_with_ts(&PhotonTransport, handle_proof)
 }
 
-/// Existing-device side of device-ADD: add `new_pubkey`, signed by this member device.
+/// Existing-device side of device-ADD: bind the device a verified binding request names, carrying its consent into the Add op.
 pub fn bind_device(
     member_key: &Keypair,
     handle_proof: &[u8; 32],
-    new_pubkey: [u8; 32],
+    req: &BindRequest,
 ) -> Result<(), String> {
-    fgtw::client::bind_device(&PhotonTransport, member_key, handle_proof, new_pubkey)
+    fgtw::client::bind_device(&PhotonTransport, member_key, handle_proof, req)
 }
 
-/// Existing-device side of device removal: remove `target_pubkey`, signed by this member device.
-pub fn unbind_device(
+/// This device's own self-signed departure — the only chain remove that exists. Not yet wired to UI (self-retire arrives with the device-trust bundle).
+pub fn depart_device(device_key: &Keypair, handle_proof: &[u8; 32]) -> Result<(), String> {
+    fgtw::client::depart_device(&PhotonTransport, device_key, handle_proof)
+}
+
+/// NEW device: post (or refresh) its binding request — device-signed + identity-co-signed consent to join.
+pub fn bindreq_put(
+    device_key: &Keypair,
+    identity_seed: &[u8; 32],
+    handle_proof: &[u8; 32],
+) -> Result<(), String> {
+    fgtw::client::bindreq_put(&PhotonTransport, device_key, identity_seed, handle_proof)
+}
+
+/// NEW device: withdraw its own request (on green, or on ceremony cancel). Best-effort — the stamp lapses anyway.
+pub fn bindreq_withdraw(device_key: &Keypair, handle_proof: &[u8; 32]) -> Result<(), String> {
+    fgtw::client::bindreq_withdraw(&PhotonTransport, device_key, handle_proof)
+}
+
+/// EXISTING device: the fresh, signature-verified binding requests for OUR fleet — the matcher's candidate set.
+pub fn bindreq_list(
     member_key: &Keypair,
     handle_proof: &[u8; 32],
-    target_pubkey: [u8; 32],
-) -> Result<(), String> {
-    fgtw::client::unbind_device(&PhotonTransport, member_key, handle_proof, target_pubkey)
-}
-
-/// NEW device: post its pairing request (signed by the pairing key).
-pub fn post_pairing_request(
-    pairing: &Keypair,
-    new_device_pubkey: &[u8; 32],
-    handle_proof: &[u8; 32],
-) -> Result<(), String> {
-    fgtw::client::post_pairing_request(&PhotonTransport, pairing, new_device_pubkey, handle_proof)
-}
-
-/// EXISTING device: fetch the pending pairing request (freshness + ownership-signature checked).
-pub fn fetch_pairing_request(handle_proof: &[u8; 32]) -> Result<Option<PairRequest>, String> {
-    fgtw::client::fetch_pairing_request(&PhotonTransport, handle_proof)
-}
-
-/// EXISTING device: post the signed "matched" flag so the new device's screen flips to ready.
-pub fn post_pair_matched(
-    member_key: &Keypair,
-    handle_proof: &[u8; 32],
-    pairing_pubkey: &[u8; 32],
-) -> Result<(), String> {
-    fgtw::client::post_pair_matched(&PhotonTransport, member_key, handle_proof, pairing_pubkey)
-}
-
-/// NEW device: has an existing member matched OUR words? (Verified against the member set.)
-pub fn poll_pair_matched(
-    handle_proof: &[u8; 32],
-    pairing_pubkey: &[u8; 32],
-    members: &[[u8; 32]],
-) -> Result<bool, String> {
-    fgtw::client::poll_pair_matched(&PhotonTransport, handle_proof, pairing_pubkey, members)
+    identity_seed: &[u8; 32],
+) -> Result<Vec<BindRequest>, String> {
+    fgtw::client::bindreq_list(&PhotonTransport, member_key, handle_proof, identity_seed)
 }
 
 /// Publish a fan-out to the always-online slot (device-signed envelope).
@@ -223,7 +217,7 @@ mod tests {
         k.public.to_bytes()
     }
 
-    /// End-to-end against LIVE fgtw.org: genesis a fresh fleet, run the full v1 device-ADD handshake (words → request → match → matched flag → bind → rotate → recover), and confirm the new device folds in with the fleet key.
+    /// End-to-end against LIVE fgtw.org: genesis a fresh fleet, run the full words-first device-ADD ceremony (binding request → member-gated list → matcher words → consent-carrying bind → rotate → recover → withdraw), and confirm the new device folds in with the fleet key.
     /// Ignored by default (hits the network + leaves ephemeral random-key objects); run with `--ignored`.
     #[test]
     #[ignore = "hits live fgtw.org"]
@@ -238,32 +232,30 @@ mod tests {
         assert_eq!(current_members(&handle_proof).unwrap(), vec![member.public.to_bytes()]);
         let (_, k1) = rotate_fleet_key(&handle_proof, &member, &[member.public.to_bytes()]).expect("establish");
 
-        // New device: mint a pairing identity, display its words, post the signed request.
-        let pairing = new_pairing_id();
-        let words = pair_words(&pairing.public.to_bytes());
-        post_pairing_request(&pairing, &newdev.public.to_bytes(), &handle_proof).expect("post request");
+        // New device: post its binding request (device-signed + identity-co-signed) and display its masked words.
+        bindreq_put(&newdev, &identity_seed, &handle_proof).expect("post request");
+        let shown = masked_device_words(&newdev.public.to_bytes(), &identity_seed);
 
-        // Existing device: the user types the words; decode → fetch → the request matches and its ownership signature verifies.
-        let typed = words_to_pair_pubkey(&words).expect("decode typed words");
-        let req = fetch_pairing_request(&handle_proof).expect("fetch").expect("a pending request");
-        assert_eq!(req.pairing_pubkey, typed);
-        assert_eq!(req.device_pubkey, newdev.public.to_bytes());
+        // Existing device: pull the member-gated candidate set — the request is there, verified, and its expected words match what the new device is showing (the matcher's full-match condition).
+        let reqs = bindreq_list(&member, &handle_proof, &identity_seed).expect("list");
+        let req = reqs.iter().find(|r| r.device_pubkey == newdev.public.to_bytes()).expect("our request in the set");
+        assert_eq!(masked_device_words(&req.device_pubkey, &identity_seed), shown);
 
-        // Existing device posts the matched flag; the new device's ready light verifies it against the member set.
-        post_pair_matched(&member, &handle_proof, &req.pairing_pubkey).expect("post matched");
-        let members = current_members(&handle_proof).unwrap();
-        assert!(poll_pair_matched(&handle_proof, &pairing.public.to_bytes(), &members).unwrap());
-        // A different pairing key sees no match (a stranger can't flip the light).
-        let other = new_pairing_id();
-        assert!(!poll_pair_matched(&handle_proof, &other.public.to_bytes(), &members).unwrap());
-
-        // Bind + rotate: the new device is a member and recovers the NEW epoch key with its own device key.
-        bind_device(&member, &handle_proof, req.device_pubkey).expect("bind");
+        // Bind (carrying the request's consent) + rotate: the new device is a member and recovers the NEW epoch key with its own device key.
+        bind_device(&member, &handle_proof, req).expect("bind");
         let members2 = current_members(&handle_proof).unwrap();
         assert!(members2.contains(&newdev.public.to_bytes()));
         let (_, k2) = rotate_fleet_key(&handle_proof, &member, &members2).expect("rotate");
         assert_ne!(k2, k1);
         assert_eq!(recover_fleet_key(&handle_proof, &newdev).unwrap().unwrap(), k2);
+
+        // The author withdraws its request (the exit act) — the set reads empty afterwards.
+        bindreq_withdraw(&newdev, &handle_proof).expect("withdraw");
+        assert!(bindreq_list(&member, &handle_proof, &identity_seed).unwrap().is_empty());
+
+        // A non-member can't read the registry (the member gate).
+        let stranger = Keypair::from_seed(&rand::random::<[u8; 32]>());
+        assert!(bindreq_list(&stranger, &handle_proof, &identity_seed).is_err());
     }
 
     fn roster_entry(hp: u8, updated: i64, tombstone: bool) -> RosterEntry {
@@ -294,8 +286,11 @@ mod tests {
         // B isn't a member yet → cannot recover.
         assert!(recover_fleet_key(&handle_proof, &b).unwrap().is_none());
 
-        // A adds B, then rotates to [A, B]: a fresh key both can open.
-        bind_device(&a, &handle_proof, pk(&b)).expect("bind B");
+        // A sponsors B (B's request carries its consent), then rotates to [A, B]: a fresh key both can open.
+        bindreq_put(&b, &identity_seed, &handle_proof).expect("B posts request");
+        let reqs = bindreq_list(&a, &handle_proof, &identity_seed).expect("list");
+        let req_b = reqs.iter().find(|r| r.device_pubkey == pk(&b)).expect("B's request");
+        bind_device(&a, &handle_proof, req_b).expect("bind B");
         let members2 = current_members(&handle_proof).unwrap();
         let (e2, k2) = rotate_fleet_key(&handle_proof, &a, &members2).expect("rotate to A,B");
         assert_eq!(e2, 2);
@@ -303,9 +298,10 @@ mod tests {
         assert_eq!(recover_fleet_key(&handle_proof, &a).unwrap().unwrap(), k2);
         assert_eq!(recover_fleet_key(&handle_proof, &b).unwrap().unwrap(), k2);
 
-        // A removes B, rotates to [A]: A gets the new key, B (removed) cannot — removal removes.
-        unbind_device(&a, &handle_proof, pk(&b)).expect("remove B");
+        // B departs (self-signed — the only remove there is); A rotates to [A]: A gets the new key, B cannot — departure + rotation withhold.
+        depart_device(&b, &handle_proof).expect("B departs");
         let members3 = current_members(&handle_proof).unwrap();
+        assert_eq!(members3, vec![pk(&a)]);
         let (e3, k3) = rotate_fleet_key(&handle_proof, &a, &members3).expect("rotate to A");
         assert_eq!(e3, 3);
         assert_eq!(recover_fleet_key(&handle_proof, &a).unwrap().unwrap(), k3);
@@ -376,15 +372,3 @@ mod tests {
     }
 }
 
-#[cfg(test)]
-mod live_smoke {
-    use super::*;
-    #[test]
-    #[ignore = "hits live fgtw.org — run explicitly"]
-    fn pack_put_smoke() {
-        let member = Keypair::from_seed(&[0xEE; 32]);
-        let r = post_pair_matched(&member, &[0xDD; 32], &[0xCC; 32]);
-        eprintln!("pack_put smoke: {r:?}");
-        assert!(r.is_ok(), "{r:?}");
-    }
-}
