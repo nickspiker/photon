@@ -1,11 +1,8 @@
-# Sourced, not executed. Resolves the keys dir and exports the canonical TOKEN APK-signing keystore + password for the Android build (Gradle reads TOKEN_KEYSTORE_PATH / _PASSWORD / TOKEN_KEY_ALIAS; lumis's apksigner reads the same vars).
-# The password comes from the GNOME keyring (secret-tool); first run, store it once with the printed command.
+# Sourced, not executed. Resolves the keys dir and exports the canonical TOKEN APK-signing keystore + password for the Android build (Gradle reads TOKEN_KEYSTORE_PATH / _PASSWORD / TOKEN_KEY_ALIAS; lumis's apksigner reads the same vars). The password comes from the GNOME keyring (secret-tool); first run, store it once with the printed command.
 #
-# This is the ONE keystore-resolution implementation shared across all of Nick's Android apps so they sign with the same key (alias 'token' in TOKEN.p12) and thus share a deterministic per-device ANDROID_ID — TOKEN auth across the whole app family.
-# Keep it app-agnostic: anything app-specific (e.g. photon's google-services.json copy) belongs in the caller, not here.
+# This is the ONE keystore-resolution implementation shared across all of Nick's Android apps so they sign with the same key (alias 'token' in TOKEN.p12) and thus share a deterministic per-device ANDROID_ID — TOKEN auth across the whole app family. Keep it app-agnostic: anything app-specific (e.g. photon's google-services.json copy) belongs in the caller, not here.
 #
-# Callers cd to their repo root before sourcing.
-# On failure this `return`s non-zero (it does NOT `exit`) so a sourcing script can decide how to handle it; check the return value.
+# Callers cd to their repo root before sourcing. On failure this `return`s non-zero (it does NOT `exit`) so a sourcing script can decide how to handle it; check the return value.
 
 if [ -d "/mnt/Octopus/Code/keys" ]; then
     KEYS_DIR="/mnt/Octopus/Code/keys"

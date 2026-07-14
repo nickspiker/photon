@@ -1,17 +1,10 @@
-# Sourced, not executed. The hand-rolled-VSF ratchet: network-facing files may not GROW new raw
-# `VsfHeader::decode` / `VsfSection::parse` call sites. Every read at a trust boundary goes thru
-# `vsf::verification::read_verified` or `SectionBuilder::parse_document` (see
-# docs/vsf-trust-remediation.md) — this gate makes the next violation a build failure instead of a
-# code-review hope. Rules unenforced by tooling demonstrably did not survive (~490 violations).
+# Sourced, not executed. The hand-rolled-VSF ratchet: network-facing files may not GROW new raw `VsfHeader::decode` / `VsfSection::parse` call sites. Every read at a trust boundary goes thru `vsf::verification::read_verified` or `SectionBuilder::parse_document` (see docs/vsf-trust-remediation.md) — this gate makes the next violation a build failure instead of a code-review hope. Rules unenforced by tooling demonstrably did not survive (~490 violations).
 #
-# Baselines are the audited counts at the time the verified-read conversion landed (2026-07-06).
-# Shrink them as files are converted; NEVER raise one without a documented reason — raising a
-# baseline is the moment the disease returns.
+# Baselines are the audited counts at the time the verified-read conversion landed (2026-07-06). Shrink them as files are converted; NEVER raise one without a documented reason — raising a baseline is the moment the disease returns.
 
 vsf_gate() {
     local pattern='VsfHeader::decode|VsfSection::parse'
-    # file=baseline pairs — the audited remaining raw-parse counts (post-AEAD inner sections,
-    # messaging-rework-pending frames, dev-only inspectors).
+    # file=baseline pairs — the audited remaining raw-parse counts (post-AEAD inner sections, messaging-rework-pending frames, dev-only inspectors).
     local baselines=(
         "src/network/peer_updates.rs=3"
         "src/network/inspect.rs=4"
@@ -40,6 +33,7 @@ vsf_gate() {
             echo "  See docs/vsf-trust-remediation.md. Do not raise the baseline in scripts/lib/vsf-gate.sh without a documented reason." >&2
             fail=1
         fi
+
     done < <(find src/network src/ui/avatar.rs -name "*.rs" 2>/dev/null)
 
     if [ "$fail" = "1" ]; then

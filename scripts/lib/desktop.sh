@@ -1,6 +1,4 @@
-# Sourced, not executed. Host-native desktop build → Ed25519-sign → install to ~/.local/bin.
-# Run on whatever desktop OS you're on; it builds for that host. (Cross-target builds + the real
-# version-bumping ship live in deploy.sh, not here.)
+# Sourced, not executed. Host-native desktop build → Ed25519-sign → install to ~/.local/bin. Run on whatever desktop OS you're on; it builds for that host. (Cross-target builds + the real version-bumping ship live in deploy.sh, not here.)
 #
 # Profiles: `dev`     = --features development (debug profile, debug-info).
 #           `release` = --release (PHOTON_ALLOW_RELEASE gate).
@@ -26,10 +24,7 @@ build_sign_install() {
 
     sign_binary "$prof_dir"
 
-    # Install to ~/.local/bin so `photon-messenger` runs the build you just made — same destination
-    # as the user installer, no download. Stage-then-rename (atomic on one filesystem): a running
-    # instance holds the old inode open, so a plain cp fails "Text file busy", but swapping the
-    # directory entry leaves the live process alone and the NEXT launch picks up the new binary.
+    # Install to ~/.local/bin so `photon-messenger` runs the build you just made — same destination as the user installer, no download. Stage-then-rename (atomic on one filesystem): a running instance holds the old inode open, so a plain cp fails "Text file busy", but swapping the directory entry leaves the live process alone and the NEXT launch picks up the new binary.
     local dir="$HOME/.local/bin"
     mkdir -p "$dir"
     install -m755 "target/$prof_dir/photon-messenger" "$dir/photon-messenger.new"

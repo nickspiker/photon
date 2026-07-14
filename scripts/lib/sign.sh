@@ -22,6 +22,7 @@ sign_binary() {
     fi
 
     # The signer is a host tool. Prefer the one this build already produced; otherwise build it once (release).
+
     local signer="target/$profile/photon-signature-signer"
     if [ ! -f "$signer" ]; then
         signer="target/release/photon-signature-signer"

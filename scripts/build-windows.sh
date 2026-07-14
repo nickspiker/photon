@@ -20,8 +20,7 @@ BIN="target/$TARGET/debug/photon-messenger.exe"
 echo "Building Windows dev binary ($TARGET, --features development)..."
 cargo build --features development --target "$TARGET"
 
-# sign_binary knows the windows-gnu .exe layout (see scripts/lib/sign.sh). The signer is a host tool;
-# it builds itself once if this tree hasn't produced one yet.
+# sign_binary knows the windows-gnu .exe layout (see scripts/lib/sign.sh). The signer is a host tool; it builds itself once if this tree hasn't produced one yet.
 sign_binary debug "$TARGET"
 
 echo ""
