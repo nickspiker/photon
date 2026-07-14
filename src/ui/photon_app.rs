@@ -2622,6 +2622,17 @@ impl FluorApp for PhotonApp {
         let bg_scroll = self.bg_scroll;
         let shimmer = bg_scroll as usize;
         let scroll_offset = 0; // Launch only for now.
+        // Background texture origin + per-half scroll. On Settings the noise mirror-axis sits ON the rail|content divider (1/3 width), and each half scrolls with ITS pane — rail-scroll drives the left half, content-scroll the right — so the background tracks the scroll of whatever you're reading. Every other screen keeps the centred origin with both halves locked together (unified scroll).
+        let (bg_split_x, bg_left_scroll, bg_right_scroll) = if matches!(self.state, AppState::Settings(_)) {
+            let sl = SettingsLayout::compute(&ctx.viewport);
+            (
+                Some(sl.content.x as usize),
+                Some(settings_rail_scroll as isize),
+                settings_content_scroll as isize,
+            )
+        } else {
+            (None, None, scroll_offset)
+        };
                                // Launch layout: faithful proportional slicing port from legacy `Layout::new` — spectrum near the top, logo wordmark overlapping its bottom, attest block (textbox + hint + button) below. Compute every frame; cheap and lets resize flow thru without a separate cache.
         let layout = LaunchLayout::compute(buf_w, buf_h, ctx.viewport.ru);
         // Chromatic wave phase has two summands: * Scroll-driven base (`bg_scroll * 1/128 rad/scroll-unit`) — one wheel-notch ≈ 8 units → ~1/16 rad shift; user-tunable by changing the shift exponent.
@@ -2700,7 +2711,7 @@ impl FluorApp for PhotonApp {
                     None,
                 );
             }
-            paint::background_noise(canvas, shimmer, bg_fullscreen, scroll_offset, None, bg_base);
+            paint::background_noise_split(canvas, shimmer, bg_fullscreen, bg_right_scroll, bg_split_x, bg_left_scroll, None, bg_base);
             // Wave then logo — RMW ops that read the now-opaque noise beneath as their base. The chromatic wave quadrature-blends with the bg colour (sqrt-linear-light) so it MUST follow the noise; the logo composites over the wave/noise. (Watermarks above went before the noise so it composes under them.)
             if on_launch {
                 chromatic_wave(canvas, spectrum_rect, phase, period_scale);
@@ -2853,15 +2864,32 @@ impl FluorApp for PhotonApp {
                             None,
                         );
                     }
-                    // "Start fresh (wipe this device)" — a removed device's self-clean path (it can't attest, so it can't reach the Security page). Two-tap confirm. Hit-stamped so a tap on Android works (no chords there). Uses the outer `chrome` borrow (a re-borrow would conflict).
+                    // How-to guidance: the two ways the OTHER (already-in-fleet) device adds this one, plus the confirm. Small + dim so it reads as instructions, not chrome.
                     {
-                        y += line_h * 1.6;
+                        y += line_h * 0.9;
+                        let gsize = line_h * 0.62;
+                        for line in [
+                            "On your other device: Settings \u{2192} Fleet \u{2192} Add",
+                            "Type these words there — or, if it's nearby,",
+                            "just tap this device in the list.",
+                            "You'll confirm the add on that device.",
+                        ] {
+                            ctx.text.draw_text_center_u32(
+                                &mut canvas, line, cx, y, gsize, 400,
+                                fluor::theme::HINT_COLOUR, "Oxanium", None, None, None,
+                            );
+                            y += gsize * 1.5;
+                        }
+                    }
+                    // "Start fresh (wipe this device)" — the secondary escape: a device that was REMOVED from a fleet can't attest (can't reach the Security page), so this is its only self-clean path. Two-tap confirm. Hit-stamped so a tap on Android works (no chords there). Pushed well below the add guidance so it reads as the edge case, not the main action.
+                    {
+                        y += line_h * 1.4;
                         let sf_label = if self.join_startfresh_armed {
                             "Start fresh — tap again to wipe this device"
                         } else {
-                            "Start fresh (wipe this device)"
+                            "Wrong device? Start fresh (wipe this device)"
                         };
-                        let sf_size = line_h * 0.8;
+                        let sf_size = line_h * 0.7;
                         let sf_colour = if self.join_startfresh_armed { ERROR_TEXT_COLOUR } else { fluor::theme::HINT_COLOUR };
                         ctx.text.draw_text_center_u32(
                             &mut canvas, sf_label, cx, y, sf_size, 500, sf_colour, "Oxanium", None, None, None,
@@ -4505,8 +4533,7 @@ impl PhotonApp {
             match update {
                 JoinUpdate::ShowWords(words) => {
                     self.add_join_words = Some(words);
-                    self.add_join_status =
-                        "Type these words into Add-a-device on your other device".to_string();
+                    self.add_join_status = "Add this device from one that's already signed in:".to_string();
                 }
                 JoinUpdate::Joined(fleet_key, session) => {
                     // We're in the fleet now — leaving this screen IS the green the far side confirms. Drop add-mode and run the normal attest (it now passes the fleet gate). Stash any received fleet key to persist once attest sets the vault up.

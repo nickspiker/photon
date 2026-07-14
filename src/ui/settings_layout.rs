@@ -34,15 +34,16 @@ impl SettingsLayout {
         let portrait = root.h > root.w;
         let unit = hm((root.span / 32.0) * vp.ru.max(0.2), root.h / 13.0);
         let header_h = (unit * 2.1).min(root.w * 0.13).min(root.h * 0.15);
+        // The rail|content divider is ALWAYS at 1/3 of the width (split [1.0, 2.0] → rail = 1/3, content = 2/3), portrait and landscape alike — so the background texture origin can sit exactly on it (docs: the bg mirrors left/right around the divider, each half scrolling with its pane).
         if portrait {
             let header = Region::new(root.x + root.w * 0.12, root.y, root.w * 0.88, header_h);
             let below = Region::new(root.x, root.y + header_h, root.w, root.h - header_h);
-            let [rail, content] = below.split_h([1.0, 2.4]);
+            let [rail, content] = below.split_h([1.0, 2.0]);
             Self { header, rail, content, portrait, unit }
         } else {
             let header = Region::new(root.x, root.y, root.w, header_h);
             let below = Region::new(root.x, root.y + header_h, root.w, root.h - header_h);
-            let [rail, content] = below.split_h([1.0, 2.2]);
+            let [rail, content] = below.split_h([1.0, 2.0]);
             Self { header, rail, content, portrait, unit }
         }
     }
