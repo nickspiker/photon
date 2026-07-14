@@ -7,12 +7,16 @@ source scripts/lib/keystore.sh
 source scripts/lib/android-env.sh
 source scripts/lib/android.sh
 source scripts/lib/publish.sh
+source scripts/lib/github.sh
 
 echo "Building Android development APK (logging on)..."
 android_build dev
 
-echo "Uploading to R2..."
+echo "Uploading to R2 (primary)..."
 publish_r2 "photon-messenger-android-development.apk" "$APK_PATH" application/vnd.android.package-archive
+
+echo "Mirroring to GitHub Releases (dev)..."
+publish_github_dev "photon-messenger-android-development.apk" "$APK_PATH"
 
 echo ""
 echo "Android dev published:"

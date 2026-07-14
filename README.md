@@ -65,32 +65,91 @@ Photon is a peer-to-peer messaging application that replaces traditional authent
 
 ## Installation
 
-### Quick Install (Recommended)
+The one-line installer downloads a pre-built, cryptographically signed binary and creates shortcuts.
+These commands mirror the ones on [holdmyoscilloscope.com/photon](https://holdmyoscilloscope.com/photon) exactly.
+If that site is ever down, use the **GitHub fallback** commands further down — they pull the identical signed binaries straight from this repo's Releases, so this page is a complete standalone install source.
 
-Download pre-built, cryptographically signed binaries:
+### Release (Recommended)
 
 **Linux/macOS/Redox:**
 ```bash
-curl -sSfL https://holdmyoscilloscope.com/photon/install.sh | sh
+curl -sSfL https://brobdingnagian.holdmyoscilloscope.com/photon/install-release.sh | sh
 ```
 
 **Windows (PowerShell):**
 ```powershell
-iwr -useb https://holdmyoscilloscope.com/photon/install.ps1 | iex
+powershell -ExecutionPolicy Bypass -c "irm https://brobdingnagian.holdmyoscilloscope.com/photon/install-release.ps1 | iex"
 ```
 
-The installer will:
-0. Download a signed binary from holdmyoscilloscope.com
-1. Install to `~/.local/bin` (Unix) or `%LOCALAPPDATA%\Programs\PhotonMessenger` (Windows)
-2. Create desktop/Start Menu shortcut
-3. Add binary to PATH
+**Android:** [Download APK](https://brobdingnagian.holdmyoscilloscope.com/photon/photon-messenger-android-release.apk) — enable "Install unknown apps" in Settings if prompted.
 
-**Security**: Every binary is Ed25519-signed by Nick Spiker (fractaldecoder@proton.me) and self-verifies on startup. This protects against corruption and tampering. If verification fails, the binary won't run.
+### Development
 
-After installation, launch **Photon Messenger** from your application menu or run:
+Pre-release builds for testing, visually tagged so they're never mistaken for release.
+
+**Linux/macOS/Redox:**
 ```bash
-photon-messenger
+curl -sSfL https://brobdingnagian.holdmyoscilloscope.com/photon/install-development.sh | sh
 ```
+
+**Windows (PowerShell):**
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://brobdingnagian.holdmyoscilloscope.com/photon/install-development.ps1 | iex"
+```
+
+**Android:** [Download APK](https://brobdingnagian.holdmyoscilloscope.com/photon/photon-messenger-android-development.apk)
+
+After install, find **Photon Messenger** in your program list (Start Menu on Windows, app launcher on Linux), or run `photon-messenger` from a terminal.
+
+### GitHub fallback (if holdmyoscilloscope.com is down)
+
+The same signed binaries are mirrored to this repo's [Releases](https://github.com/nickspiker/photon/releases).
+Every binary self-verifies its Ed25519 signature on launch regardless of where it was downloaded, so a GitHub-served binary is exactly as trustworthy as one from the primary site.
+
+**Release** binaries live on the immutable `v<n>` tag — grab the [latest release](https://github.com/nickspiker/photon/releases/latest) and download the asset for your platform:
+
+| Platform | Processor | Asset |
+|----------|-----------|-------|
+| Linux | x86_64 | `photon-messenger-linux-x86_64-release` |
+| Linux | ARM64 (aarch64) | `photon-messenger-linux-arm64-release` |
+| Windows | x86_64 | `photon-messenger-windows-release.exe` |
+| macOS Intel | x86_64 | `photon-messenger-macos-intel-release` |
+| macOS Apple Silicon | ARM64 (aarch64) | `photon-messenger-macos-arm64-release` |
+| Redox | x86_64 | `photon-messenger-redox-release` |
+| Android | ARM64 (aarch64) | `photon-messenger-android-release.apk` |
+
+Then mark it executable and run it (it verifies itself on first launch):
+```bash
+# Linux x86_64 example — swap the asset name for your platform
+curl -sSfL -o photon-messenger \
+  "$(curl -sSfL https://api.github.com/repos/nickspiker/photon/releases/latest \
+     | jq -r '.assets[] | select(.name=="photon-messenger-linux-x86_64-release") | .browser_download_url')"
+chmod +x photon-messenger
+./photon-messenger
+```
+
+**Development** binaries are content-addressed (`...-development-<hash>`) on the rolling [`dev`](https://github.com/nickspiker/photon/releases/tag/dev) prerelease, so every build has a fresh URL that can never be served stale. Resolve the newest one for your platform via the API, using the base name for your platform:
+
+| Platform | Processor | Base name |
+|----------|-----------|-----------|
+| Linux | x86_64 | `photon-messenger-linux-x86_64-development` |
+| Linux | ARM64 (aarch64) | `photon-messenger-linux-arm64-development` |
+| Windows | x86_64 | `photon-messenger-windows-development.exe` |
+| macOS Intel | x86_64 | `photon-messenger-macos-intel-development` |
+| macOS Apple Silicon | ARM64 (aarch64) | `photon-messenger-macos-arm64-development` |
+| Android | ARM64 (aarch64) | `photon-messenger-android-development.apk` |
+
+```bash
+# Set base to your platform's base name from the table above (this example: Linux x86_64)
+base="photon-messenger-linux-x86_64-development"
+url=$(curl -sSfL https://api.github.com/repos/nickspiker/photon/releases/tags/dev \
+      | jq -r "[.assets[] | select(.name | startswith(\"$base-\"))] | sort_by(.created_at) | reverse | .[0].browser_download_url")
+curl -sSfL -o photon-messenger "$url"
+chmod +x photon-messenger
+./photon-messenger
+```
+
+**Security**: every binary is Ed25519-signed by Nick Spiker (fractaldecoder@proton.me) and self-verifies on startup. This protects against corruption and tampering; if verification fails, the binary won't run.
 
 ### Building from Source
 

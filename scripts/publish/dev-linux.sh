@@ -5,6 +5,7 @@ set -e
 cd "$(dirname "$0")/../.."
 source scripts/lib/sign.sh
 source scripts/lib/publish.sh
+source scripts/lib/github.sh
 
 case "$(uname -m)" in
     aarch64 | arm64) arch=arm64 ;;
@@ -15,9 +16,12 @@ echo "Building Linux $arch development binary..."
 cargo build --features development
 sign_binary debug
 
-echo "Uploading to R2..."
+echo "Uploading to R2 (primary)..."
 publish_r2 "photon-messenger-linux-$arch-development" target/debug/photon-messenger
 publish_r2 "install-development.sh" installers/install-development.sh text/plain
+
+echo "Mirroring to GitHub Releases (dev)..."
+publish_github_dev "photon-messenger-linux-$arch-development" target/debug/photon-messenger
 
 echo ""
 echo "Linux $arch dev published:"

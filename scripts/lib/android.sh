@@ -1,5 +1,4 @@
-# Sourced, not executed. Build + deploy functions for the Android APK. Source `keystore.sh`
-# and `android-env.sh` before calling these. `android_build` sets `$APK_PATH` for the deployers.
+# Sourced, not executed. Build + deploy functions for the Android APK. Source `keystore.sh` and `android-env.sh` before calling these. `android_build` sets `$APK_PATH` for the deployers.
 #
 # Profiles: `dev`     = --release + the `logging` feature + fluor's amber debug theme (orange bg tint / hairline / title — a dev build is never mistaken for release).
 #           `release` = --release, no logging, normal theme (shippable).
@@ -24,6 +23,7 @@ android_build() {
     cp "$so" android/app/src/main/jniLibs/arm64-v8a/
 
     # photon-specific: google-services.json (Firebase). The shared keystore lib exports TOKEN_KEYS_DIR but no longer copies this itself (it's app-agnostic now); other apps sharing keystore.sh skip it.
+
     cp "$TOKEN_KEYS_DIR/google-services.json" android/app/
 
     echo "Building APK with Gradle..."
@@ -40,8 +40,7 @@ deploy_adb() {
     echo "ADB install complete."
 }
 
-# Find the phone on the LAN (Termux SSH on port 8022) and install over scp + ssh `pm install`.
-# Order: cached IP -> default gateway (hotspot mode) -> nmap scan of local /8,/16,/24 nets.
+# Find the phone on the LAN (Termux SSH on port 8022) and install over scp + ssh `pm install`. Order: cached IP -> default gateway (hotspot mode) -> nmap scan of local /8,/16,/24 nets.
 deploy_network() {
     local CACHE_FILE="$HOME/.fairphone_ip_cache"
     local IP=""
@@ -69,6 +68,7 @@ deploy_network() {
         else
             local NETWORKS NETWORK
             NETWORKS=$(ip route | grep -E "/(8|16|24)" | grep -v "default" | awk '{print $1}' | grep -E "^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.)")
+
             for NETWORK in $NETWORKS; do
                 echo "Scanning network: $NETWORK"
                 IP=$(nmap -p 8022 --open "$NETWORK" 2>/dev/null | grep "Nmap scan report" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)
@@ -93,8 +93,7 @@ deploy_network() {
     echo "Copying APK to Termux home on $IP..."
     if scp -P 8022 -i ~/.ssh/fairphone_key $SSH_OPTS "$APK_PATH" "$PHONE:/data/data/com.termux/files/home/photon.apk" 2>/dev/null; then
         echo "Installing..."
-        ssh -p 8022 -i ~/.ssh/fairphone_key $SSH_OPTS "$PHONE" \
-            "su -c 'cp /data/data/com.termux/files/home/photon.apk /data/local/tmp/ && pm install -r /data/local/tmp/photon.apk && rm /data/local/tmp/photon.apk /data/data/com.termux/files/home/photon.apk'; exit" 2>/dev/null
+        ssh -p 8022 -i ~/.ssh/fairphone_key $SSH_OPTS "$PHONE" "su -c 'cp /data/data/com.termux/files/home/photon.apk /data/local/tmp/ && pm install -r /data/local/tmp/photon.apk && rm /data/local/tmp/photon.apk /data/data/com.termux/files/home/photon.apk'; exit" 2>/dev/null
         echo "Deployed at $(date '+%Y-%m-%d %H:%M:%S')"
     else
         echo "Failed to copy APK."
