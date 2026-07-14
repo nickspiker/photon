@@ -90,6 +90,25 @@ fn dozenal_glyphs(mut n: u32) -> String {
     digits.iter().rev().collect()
 }
 
+/// The dozenal digit NAMES, digit 0..11 — the same set the `+glyphs` face draws (Zil at 0x10 … Stelor at 0x1b), matching ferros' Zil(0)/Zila(1)/Zilor(2)/Ter(3)… versioning. Used to SPELL OUT a version the glyphs show. Never arabic.
+const DOZENAL_NAMES: [&str; 12] = [
+    "Zil", "Zila", "Zilor", "Ter", "Tera", "Teror", "Lun", "Luna", "Lunor", "Stel", "Stela",
+    "Stelor",
+];
+
+/// Spell `n` in dozenal digit names, most-significant first (e.g. dozenal `21` → "Zilor Zila"). The written-out companion to [`dozenal_glyphs`].
+fn dozenal_spell(mut n: u32) -> String {
+    if n == 0 {
+        return DOZENAL_NAMES[0].to_string();
+    }
+    let mut parts = Vec::new();
+    while n > 0 {
+        parts.push(DOZENAL_NAMES[(n % 12) as usize]);
+        n /= 12;
+    }
+    parts.iter().rev().copied().collect::<Vec<_>>().join(" ")
+}
+
 /// Number of pips in each posture meter (Security / Recovery on the Ready strip): low / medium / high.
 const POSTURE_PIPS: usize = 3;
 /// Filled-pip colours by level — warm orange (low) → amber (mid) → green (high); empty pips use [`POSTURE_OFF_COLOUR`]. α+darkness format (opaque), the space the shape rasterizers expect.
@@ -1961,7 +1980,8 @@ impl FluorApp for PhotonApp {
                             let sl = SettingsLayout::compute(&ctx.viewport);
                             (ctx.cursor_x as f32) < sl.content.x
                         };
-                        let step = -dy as f32;
+                        // Sign matches contacts/OS natural-scroll convention (down-scroll reveals lower rows). The synthetic Android touch wheel is flipped at the source so this one sign serves both.
+                        let step = dy as f32;
                         if over_rail {
                             self.settings_rail_scroll = (self.settings_rail_scroll + step).max(0.0);
                         } else {
@@ -3981,70 +4001,73 @@ impl FluorApp for PhotonApp {
                 );
             }
 
-            // --- Header: title (unit-scaled so it zooms with everything else). Centered over the RAIL (the 1/3-width left pane), i.e. directly above the divider, so it caps the nav column rather than floating at the far-left edge. ---
+            // --- Header: title, centered ON the rail|content divider hairline (1/3 width) — it caps the column split rather than floating at the far-left edge. ---
             let hspan = (layout.unit * 1.05).min(layout.header.h * 0.72);
             ctx.text.draw_text_center_u32(
-                &mut canvas, "Settings", layout.rail.center_x(),
+                &mut canvas, "Settings", layout.content.x,
                 layout.header.center_y(), hspan, 600, CONTACT_NAME_COLOUR, "Oxanium",
                 None, None, None,
             );
-            // --- Nav rail: Back (row 0) + nine page labels, stacked at natural height from the top, scrolled by settings_rail_scroll (no clamp-to-fit; overflows scroll). Back is a list row now, not a floating header button: bolder green ‹ arrow over a faint 0x40-black fill so it reads distinct from the page rows. ---
+            // --- Nav rail: Back is PINNED at the top (never scrolls — you never have to scroll up to go back); the nine page labels scroll BELOW it. Natural row height, no clamp-to-fit. Fills are painted AFTER the label so, under the settings pane's topmost-first (under-blend) compositing, the text sits in FRONT of the fill. ---
             let rail_inset = layout.rail_inset();
             let nav_h = layout.nav_row_h();
             let rspan = (layout.unit * 0.58).max(9.0);
-            let rail_clip = layout.rail.to_clip();
-            // Row 0: Back. Rows 1..=9: the pages.
-            let nav_row = |i: usize| -> fluor::region::Region {
-                fluor::region::Region::new(rail_inset.x, rail_inset.y - settings_rail_scroll + i as Coord * nav_h, rail_inset.w, nav_h)
-            };
+            // Pinned Back row at the very top of the rail.
             {
-                let r = nav_row(0);
+                let r = fluor::region::Region::new(rail_inset.x, rail_inset.y, rail_inset.w, nav_h);
                 let back_held = ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == self.back_btn_hit_id;
-                // Solid-black fill at 50% (α = 0x80) so the Back row reads distinct from the page rows. The buffer is DARKNESS space (stored = 255 − visible), so visible black is 0xFFFFFF in the RGB bytes; α = 0x80 in the top byte. Brighter when held.
-                let fill = if back_held { fluor::theme::BUTTON_HELD } else { 0x80_FF_FF_FF };
-                paint::fill_rect(&mut canvas, r.x as isize, r.y as isize, r.w as isize, r.h as isize, fill, Some(rail_clip), None);
+                // Text FIRST (topmost-first → in front), THEN the fill behind it. 50%-black (α = 0x80) in darkness space is 0x80_FF_FF_FF (visible black is 0xFFFFFF in the RGB bytes); brighter when held.
                 ctx.text.draw_text_left_u32(
                     &mut canvas, "‹ Back", r.x + rspan * 0.6, r.center_y(),
-                    rspan, 600, SEARCH_FOUND_COLOUR, "Oxanium", Some(rail_clip), None, None,
+                    rspan, 600, SEARCH_FOUND_COLOUR, "Oxanium", None, None, None,
                 );
+                let fill = if back_held { fluor::theme::BUTTON_HELD } else { 0x80_FF_FF_FF };
+                paint::fill_rect(&mut canvas, r.x as isize, r.y as isize, r.w as isize, r.h as isize, fill, None, None);
                 restamp_hit_rect(
                     &mut chrome.hit_test_map, buf_w, buf_h,
-                    r.x as isize, r.y.max(layout.rail.y) as isize,
-                    r.right() as isize, r.bottom().min(layout.rail.bottom()) as isize,
+                    r.x as isize, r.y as isize, r.right() as isize, r.bottom() as isize,
                     self.back_btn_hit_id,
                 );
             }
+            // The page rows scroll within the region BELOW the pinned Back row — clipped so a scrolled row never paints over Back.
+            let pages_top = rail_inset.y + nav_h;
+            let pages_clip = fluor::paint::Clip::new(
+                layout.rail.x.max(0.0) as usize,
+                pages_top.max(layout.rail.y).max(0.0) as usize,
+                layout.rail.right().max(0.0) as usize,
+                layout.rail.bottom().max(0.0) as usize,
+            );
             for (i, p) in SettingsPage::ALL.iter().enumerate() {
-                let r = nav_row(i + 1);
-                // Skip rows scrolled fully out of the rail (also keeps their hit stamps from claiming off-rail pixels).
-                if r.bottom() <= layout.rail.y || r.y >= layout.rail.bottom() {
+                let r = fluor::region::Region::new(
+                    rail_inset.x,
+                    pages_top - settings_rail_scroll + i as Coord * nav_h,
+                    rail_inset.w,
+                    nav_h,
+                );
+                // Skip rows scrolled fully out of the page-scroll region.
+                if r.bottom() <= pages_top || r.y >= layout.rail.bottom() {
                     continue;
                 }
                 let active = *p == page;
                 let held = ctx.pressed_hit != HIT_NONE
                     && ctx.pressed_hit == self.settings_nav_base.wrapping_add(i as HitId);
-                // Held (pointer down, release switches to this page) reads brightest; else the active page gets a faint backing bar. Held paints over active so the finger-down row is unmistakable.
-                if held {
-                    paint::fill_rect(
-                        &mut canvas, r.x as isize, r.y as isize,
-                        r.w as isize, r.h as isize, fluor::theme::BUTTON_HELD, Some(rail_clip), None,
-                    );
-                } else if active {
-                    // Active-row backing bar (faint) so the selected page reads at a glance.
-                    paint::fill_rect(
-                        &mut canvas, r.x as isize, r.y as isize,
-                        r.w as isize, r.h as isize, SEPARATOR_COLOUR, Some(rail_clip), None,
-                    );
-                }
                 let colour = if active { CONTACT_NAME_COLOUR } else { LABEL_COLOUR };
+                // Label FIRST (in front), then the highlight fill behind it.
                 ctx.text.draw_text_left_u32(
                     &mut canvas, p.label(), r.x + rspan * 0.6, r.center_y(),
                     rspan, if active { 600 } else { 400 }, colour, "Oxanium",
-                    Some(rail_clip), None, None,
+                    Some(pages_clip), None, None,
                 );
+                if held {
+                    // Held (pointer down, release switches to this page) reads brightest.
+                    paint::fill_rect(&mut canvas, r.x as isize, r.y as isize, r.w as isize, r.h as isize, fluor::theme::BUTTON_HELD, Some(pages_clip), None);
+                } else if active {
+                    // Active-row backing bar (faint) so the selected page reads at a glance.
+                    paint::fill_rect(&mut canvas, r.x as isize, r.y as isize, r.w as isize, r.h as isize, SEPARATOR_COLOUR, Some(pages_clip), None);
+                }
                 restamp_hit_rect(
                     &mut chrome.hit_test_map, buf_w, buf_h,
-                    r.x as isize, r.y.max(layout.rail.y) as isize,
+                    r.x as isize, r.y.max(pages_top) as isize,
                     r.right() as isize, r.bottom().min(layout.rail.bottom()) as isize,
                     self.settings_nav_base.wrapping_add(i as HitId),
                 );
@@ -4212,7 +4235,7 @@ impl FluorApp for PhotonApp {
                     settings_line(&mut canvas, ctx.text, rows[3], "No servers. No tracking. Your data is yours.", hspan2, LABEL_COLOUR, 400);
                     // Version — dozenal, NEVER arabic. Default: normal-white dozenal glyphs (weight 400 → the Oxanium +glyphs face renders the reserved control-code bytes as dozenal digits). Tap → spell it out in voca words. Whole row is a tap target (btn_base + 3).
                     let ver = if self.about_version_spelled {
-                        format!("Version {}", voca::encode(num_bigint::BigUint::from(deploy_version())))
+                        format!("Version {}", dozenal_spell(deploy_version()))
                     } else {
                         format!("Version {}", dozenal_glyphs(deploy_version()))
                     };
