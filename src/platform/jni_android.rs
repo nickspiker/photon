@@ -517,7 +517,7 @@ pub extern "C" fn Java_com_photon_messenger_PhotonBeacon_nativeInit(
     }
 }
 
-/// Kotlin scan callback → Rust ingest: the reassembled beacon frame (ADV chunk + scan-response chunk already concatenated on the Kotlin side).
+/// Kotlin scan callback → Rust ingest: the 16-byte beacon service UUID a scanned device advertised. Non-16-byte payloads are dropped (not a photon beacon).
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonBeacon_nativeOnBeaconHeard(
@@ -528,7 +528,10 @@ pub extern "C" fn Java_com_photon_messenger_PhotonBeacon_nativeOnBeaconHeard(
     let Ok(bytes) = env.convert_byte_array(&frame) else {
         return;
     };
-    crate::network::pairing_beacon::on_frame_heard(&bytes);
+    let Ok(uuid) = <[u8; fgtw::pair::BEACON_UUID_LEN]>::try_from(bytes.as_slice()) else {
+        return;
+    };
+    crate::network::pairing_beacon::on_uuid_heard(uuid);
 }
 
 /// Call a no-arg PhotonBeacon method ("stopAdvertise" / "startScan" / "stopScan") from any Rust thread. No-op with a log if the bridge never registered (Activity not up yet).
@@ -549,25 +552,20 @@ pub fn beacon_call(method: &str) {
     }
 }
 
-/// Call a two-byte-array PhotonBeacon method ("startAdvertise") from any Rust thread.
+/// Call a single-byte-array PhotonBeacon method ("startAdvertise") from any Rust thread — the 16-byte beacon service UUID.
 #[cfg(target_os = "android")]
-pub fn beacon_call_bytes(method: &str, a: &[u8], b: &[u8]) {
+pub fn beacon_call_bytes(method: &str, a: &[u8]) {
     let Some((vm, obj)) = BEACON_BRIDGE.get() else {
         error!("beacon_call_bytes({method}): bridge not registered");
         return;
     };
     match vm.attach_current_thread() {
         Ok(mut env) => {
-            let (Ok(arr_a), Ok(arr_b)) =
-                (env.byte_array_from_slice(a), env.byte_array_from_slice(b))
-            else {
+            let Ok(arr) = env.byte_array_from_slice(a) else {
                 error!("beacon_call_bytes({method}): array alloc failed");
                 return;
             };
-            if env
-                .call_method(obj.as_obj(), method, "([B[B)V", &[(&arr_a).into(), (&arr_b).into()])
-                .is_err()
-            {
+            if env.call_method(obj.as_obj(), method, "([B)V", &[(&arr).into()]).is_err() {
                 let _ = env.exception_clear();
                 error!("beacon_call_bytes({method}) failed");
             }
