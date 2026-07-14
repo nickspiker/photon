@@ -1656,12 +1656,13 @@ impl FluorApp for PhotonApp {
                         // "Add device" pill → the pairing-words flow.
                         self.open_add_device_flow();
                     } else if slot >= 16 {
-                        // Device-row tap → select that device (non-self only; self rows aren't stamped).
+                        // Device-row tap → copy that device's name to the clipboard.
                         let idx = (slot - 16) as usize;
                         let devices = self.fleet_device_rows();
-                        if let Some((pk, is_self, ..)) = devices.get(idx) {
-                            if !is_self {
-                                self.settings_fleet_selected = Some(*pk);
+                        if let Some((_pk, _is_self, _online, name)) = devices.get(idx) {
+                            let name = name.clone();
+                            if self.copy_to_clipboard(&name) {
+                                self.ready_toast = Some(format!("Copied {name}"));
                             }
                         }
                     } else {
@@ -4079,36 +4080,43 @@ impl FluorApp for PhotonApp {
                     let devices = &fleet_devices;
                     let rows = layout.content_scrolled(8, settings_content_scroll).split_v([1.0; 8]);
                     settings_line(&mut canvas, ctx.text, rows[0], "Your devices", tspan, CONTACT_NAME_COLOUR, 600);
-                    for (i, (pk, is_self, online, name)) in devices.iter().take(6).enumerate() {
+                    // "click to copy" — lighter/smaller, right-aligned in the header, over the same (right) side the device NAMES sit on, so it labels the tap-to-copy target.
+                    {
+                        let cc = "click to copy";
+                        let cc_size = hspan2 * 0.82;
+                        let cc_w = ctx.text.measure_text_width(cc, cc_size, 400, "Oxanium");
+                        ctx.text.draw_text_left_u32(
+                            &mut canvas, cc, rows[0].right() - cc_w - hspan2 * 0.3, rows[0].center_y(),
+                            cc_size, 400, LABEL_COLOUR, "Oxanium", None, None, None,
+                        );
+                    }
+                    for (i, (_pk, is_self, online, name)) in devices.iter().take(6).enumerate() {
                         let row = rows[1 + i];
-                        let selected = self.settings_fleet_selected == Some(*pk);
-                        let (label, colour) = if *is_self {
-                            (format!("{name}    (this device)"), LABEL_COLOUR)
+                        // Status on the LEFT (this device / online / offline), device NAME right-aligned so it lines up under "click to copy" — the name is what a tap copies.
+                        let (status, status_colour) = if *is_self {
+                            ("(this device)", LABEL_COLOUR)
                         } else if *online {
-                            (format!("{name}    online"), SEARCH_FOUND_COLOUR)
+                            ("online", SEARCH_FOUND_COLOUR)
                         } else {
-                            (format!("{name}    offline"), LABEL_COLOUR)
+                            ("offline", LABEL_COLOUR)
                         };
-                        // Selection cue: a leading marker + bold weight (no filled-rect machinery needed).
-                        let (label, weight) = if selected {
-                            (format!("\u{25b8} {label}"), 600)
-                        } else {
-                            (label, 400)
-                        };
-                        settings_line(&mut canvas, ctx.text, row, &label, hspan2, colour, weight);
-                        // Only OUR OTHER devices are selectable (self-remove is deferred).
-                        if !is_self {
-                            restamp_hit_rect(
-                                &mut chrome.hit_test_map,
-                                buf_w,
-                                buf_h,
-                                row.x as isize,
-                                row.y as isize,
-                                (row.x + row.w) as isize,
-                                (row.y + row.h) as isize,
-                                btn_base.wrapping_add(16 + i as HitId),
-                            );
-                        }
+                        settings_line(&mut canvas, ctx.text, row, status, hspan2 * 0.85, status_colour, 400);
+                        let name_w = ctx.text.measure_text_width(name, hspan2, 500, "Oxanium");
+                        ctx.text.draw_text_left_u32(
+                            &mut canvas, name, row.right() - name_w - hspan2 * 0.3, row.center_y(),
+                            hspan2, 500, CONTACT_NAME_COLOUR, "Oxanium", None, None, None,
+                        );
+                        // Every row (self included) is a tap-to-copy target for its name.
+                        restamp_hit_rect(
+                            &mut chrome.hit_test_map,
+                            buf_w,
+                            buf_h,
+                            row.x as isize,
+                            row.y as isize,
+                            (row.x + row.w) as isize,
+                            (row.y + row.h) as isize,
+                            btn_base.wrapping_add(16 + i as HitId),
+                        );
                     }
                     // No Remove pill: expulsion is not a verb (sovereign records, 2026-07-13) — a device leaves by its own signed departure, and a LOST device is evicted by withholding (re-key) when the device-trust bundle lands.
                     settings_line(&mut canvas, ctx.text, rows[6], "A device can only remove itself — a lost one gets keyed out, not erased.", hspan2, LABEL_COLOUR, 400);
@@ -4904,6 +4912,22 @@ impl PhotonApp {
             self.add_in_flight = true;
             self.search_status = None;
             self.change_focus(None);
+        }
+    }
+
+    /// Copy `s` to the OS clipboard. Desktop uses arboard; Android has no clipboard JNI yet (returns false — a ClipboardManager bridge is a follow-up), Redox has no arboard backend. Returns true on success.
+    fn copy_to_clipboard(&self, s: &str) -> bool {
+        #[cfg(all(not(target_os = "android"), not(target_os = "redox")))]
+        {
+            return arboard::Clipboard::new()
+                .and_then(|mut clip| clip.set_text(s.to_string()))
+                .is_ok();
+        }
+        #[cfg(any(target_os = "android", target_os = "redox"))]
+        {
+            let _ = s;
+            crate::log("clipboard: copy not wired on this platform yet");
+            false
         }
     }
 
