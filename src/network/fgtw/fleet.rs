@@ -13,8 +13,8 @@ pub use fgtw::fleet::{
 };
 pub use fgtw::fstate::{merge_rosters, roster_from_bytes, roster_to_bytes, RosterEntry};
 pub use fgtw::pair::{
-    device_name_default, first_bad_pair_word, masked_device_words, pair_word_list,
-    pair_word_tokens, pair_words, parse_pair_event, word_mask, PAIR_WORD_COUNT,
+    device_name_default, first_bad_pair_word, keyed_pseudonym, masked_device_words,
+    pair_word_list, pair_word_tokens, pair_words, parse_pair_event, word_mask, PAIR_WORD_COUNT,
 };
 
 use crate::network::fgtw::Keypair;
@@ -263,7 +263,8 @@ mod tests {
             handle_proof: [hp; 32],
             handle_hash: [hp ^ 0xff; 32],
             public_identity: [hp.wrapping_add(1); 32],
-            handle: format!("friend{hp}"),
+            name: format!("friend{hp}"),
+            avatar_pin: [hp ^ 0x55; 64],
             added: 100,
             updated,
             tombstone,
