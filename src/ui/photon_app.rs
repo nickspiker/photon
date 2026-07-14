@@ -950,10 +950,11 @@ impl PhotonApp {
 /// Map a connectivity bool to the chrome orb tint. Offline = red disk, online = green disk. Visible RGB chosen for high contrast in either light or dark chrome themes; brighten=true on the online state for the eventual icon-overlay case (no-icon today just renders as a solid coloured circle).
 fn orb_tint_for(online: bool) -> fluor::host::chrome::OrbTint {
     // Visible RGB(64, 224, 64) green: darkness = (0xBF, 0x1F, 0xBF); packed α=0xFF. Visible RGB(224, 64, 64) red:   darkness = (0x1F, 0xBF, 0xBF); packed α=0xFF.
+    // These are hand-authored in darkness-space (pre-inverted, so no `dark()`), but they STILL need `fmt()` — the platform channel-order pass (identity on desktop, R↔B swap on Android). Every other photon colour rides `fmt`; the orb ring skipping it was the Android "red-blue swapped ring". `fmt` only reorders RGB and preserves the α byte, so it's correct on the already-darkened constants.
     const ORB_ONLINE: u32 = 0xFF_BF_1F_BF;
     const ORB_OFFLINE: u32 = 0xFF_1F_BF_BF;
     fluor::host::chrome::OrbTint::Custom {
-        ring: if online { ORB_ONLINE } else { ORB_OFFLINE },
+        ring: fluor::theme::fmt(if online { ORB_ONLINE } else { ORB_OFFLINE }),
         brighten: online,
     }
 }
@@ -3746,8 +3747,11 @@ impl FluorApp for PhotonApp {
             );
             let subtitle = if self.add_device_bound.is_none() {
                 "Type the words shown on the new device"
+            } else if self.add_device_checking {
+                // Words path: bound + auto-rotating; the status line below carries "Adding…".
+                ""
             } else {
-                // The line above the confirm is load-bearing (the press releases the fleet key): the human must check the FAR screen, not this one.
+                // BLE path only: the line above the confirm is load-bearing (the press releases the fleet key) — the human must check the FAR screen, not this one.
                 "Confirm only once the new device shows it's in"
             };
             ctx.text.draw_text_center_u32(
@@ -3779,8 +3783,8 @@ impl FluorApp for PhotonApp {
                     &mut canvas, &counter, cx, tb_cy + step * 1.2,
                     tb_h * 0.5, 500, counter_colour, "Oxanium", None, None, None,
                 );
-            } else {
-                // Green-confirm affordance (two-phase): the press fires the fleet-key rotation. Hit-stamped like the join screen's start-fresh tappable so Android taps land.
+            } else if !self.add_device_checking {
+                // Green-confirm affordance (two-phase): the press fires the fleet-key rotation. Hit-stamped like the join screen's start-fresh tappable so Android taps land. On the WORDS path the Bound handler auto-fires the rotation (checking = true), so this affordance never renders — it's the BLE transport's gate, kept live for that path. When checking, only the "Adding…" status shows.
                 let confirm_y = tb_cy + step * 1.2;
                 ctx.text.draw_text_center_u32(
                     &mut canvas, "It's in \u{2014} finish", cx, confirm_y,
@@ -4275,14 +4279,15 @@ impl PhotonApp {
                 }
                 AddDeviceUpdate::Bound(pk) => {
                     self.add_device_checking = false;
-                    // Two-phase: the bind is on the chain (keyless), the rotation waits for the human to see the NEW device leave its words screen. The confirm affordance goes live.
                     self.add_device_bound = Some(pk);
+                    // WORDS path: the typed 256-bit match already IS the human confirmation (you can only type the exact words shown on the one device you're holding — there's no wrong candidate to guard against), so release the fleet key immediately. The two-phase human gate stays wired (spawn_confirm_add + the "It's in — finish" affordance) for the BLE transport, where the radio hands you candidates you did NOT type and the green-confirm earns its keep. Auto-firing here means the sponsor never parks on a confirm screen and the new device gets its key seconds after the match — the "stuck after bind" report.
                     let name = self
                         .session
                         .as_ref()
                         .map(|s| crate::network::fgtw::fleet::device_name_default(&pk, &s.identity_seed))
                         .unwrap_or_default();
-                    self.add_device_status = format!("Bound {name} — confirm once it shows it's in");
+                    self.add_device_status = format!("Adding {name}\u{2026}");
+                    self.spawn_confirm_add();
                 }
                 AddDeviceUpdate::Rotated => {
                     self.add_device_checking = false;
@@ -5671,6 +5676,10 @@ impl PhotonApp {
         std::thread::spawn(move || {
             // Derive the COMPLETE session roots once. identity_seed is microseconds; the ~1s memory-hard proof is reused from the probe when the caller passed it (the add-this-device branch already paid it), else computed here. Joined hands them to the attest worker so it never re-derives.
             let identity_seed = crate::storage::contacts::derive_identity_seed(&handle);
+            let me = device_key.public.to_bytes();
+            // SHOW THE WORDS FIRST — they only need identity_seed (microseconds) + the device pubkey, NOT the ~1s memory-hard handle_proof or the radio. Deferring this behind either left the screen on "Preparing…" for the whole proof (and, on Android, behind a blocking BLE-advertise JNI call) — the "stuck on Preparing" report. The words are this device's OWN pubkey masked to the fleet: shoulder-surfing them is inert (nothing binds without the request signature below; the mask makes them noise outside this fleet).
+            let _ = tx.send(JoinUpdate::ShowWords(fleet::masked_device_words(&me, &identity_seed)));
+            // NOW the expensive derivation (reused from the probe when the caller passed it; else the ~1s proof here) — the words are already up, so this cost is invisible.
             let handle_proof = precomputed_proof.unwrap_or_else(|| crate::types::Handle::username_to_handle_proof(&handle));
             let session = tohu::SessionIdentity {
                 identity_seed,
@@ -5678,11 +5687,8 @@ impl PhotonApp {
                 handle_proof,
             };
             let hp = session.handle_proof;
-            let me = device_key.public.to_bytes();
             // Pairing v2 SHADOW-mode announce beacon (docs/pairing-v2.md milestone A): advertise {hp4, device_pk} for the whole ceremony — the guard drops on every exit path below, stopping the radio. The words carry the real ceremony until the BLE transport lands.
             let _beacon = crate::network::pairing_beacon::announce_guard(&hp, &me);
-            // The words are this device's OWN pubkey, masked to the fleet (identity_seed both ends can derive) — shoulder-surfing them is inert: nothing binds without the request signature below, and the mask makes them noise outside this fleet.
-            let _ = tx.send(JoinUpdate::ShowWords(fleet::masked_device_words(&me, &identity_seed)));
             // The binding request: "I consent to join fleet hp", signed by the device key + co-signed by the identity key. THE registry entry the old device's matcher screens candidates from, and the consent egg the Add op will carry.
             if let Err(e) = fleet::bindreq_put(&device_key, &identity_seed, &hp) {
                 let _ = tx.send(JoinUpdate::Failed(format!("request failed: {e}")));
