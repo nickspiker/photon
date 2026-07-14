@@ -619,6 +619,10 @@ pub struct PhotonApp {
     add_device_stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// AddDevice flow: hit id for the green-confirm affordance ("It's in — finish"), stamped only while `add_device_bound` is Some.
     add_confirm_hit_id: HitId,
+    /// AddDevice flow: base hit id for the tappable candidate rows (BLE/tap select). Row `i` stamps `add_candidate_hit_base + i`; up to 8 rows.
+    add_candidate_hit_base: HitId,
+    /// AddDevice flow: the tap-to-bind (BLE/list select) path is in flight, so the Bound result shows the "did it turn green?" confirm instead of auto-rotating (that auto path is words-match only, where the typed key IS the confirmation). Reset when the flow ends.
+    add_device_bind_ble: bool,
     /// Diagnostics "Submit" flow: result of the off-thread log upload to FGTW (blocking HTTP over up to 16 MiB). `Ok(())` → "Log sent" toast; `Err` → the reason. Drained in tick.
     log_submit_rx: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
     log_submit_tx: Option<std::sync::mpsc::Sender<Result<(), String>>>,
@@ -822,6 +826,8 @@ impl PhotonApp {
             add_device_tx: None,
             add_device_stop: None,
             add_confirm_hit_id: HIT_NONE,
+            add_candidate_hit_base: HIT_NONE,
+            add_device_bind_ble: false,
             log_submit_rx: None,
             log_submit_tx: None,
             log_submit_inflight: false,
@@ -973,6 +979,8 @@ struct AddCandidate {
     req: crate::network::fgtw::fleet::BindRequest,
     name: String,
     tokens: Vec<String>,
+    /// This candidate's device pubkey is currently being heard over the BLE announce beacon — proximity confirmation (docs/pairing-v2.md, BLE transport). The candidate list marks these "nearby"; tapping any candidate binds it (BLE/tap select), typing its words still works too.
+    heard_ble: bool,
 }
 
 /// Off-thread results for the AddDevice flow (candidate watch + bind + rotate), drained in `tick`.
@@ -1225,6 +1233,11 @@ impl FluorApp for PhotonApp {
         // Green-confirm tappable on the AddDevice screen ("It's in — finish"): the two-phase press that releases the fleet-key rotation after the human sees the new device enrolled.
         self.hit_counter = self.hit_counter.wrapping_add(1);
         self.add_confirm_hit_id = self.hit_counter;
+
+        // Tappable candidate rows on the AddDevice screen (BLE/list select): 8-id block, row i stamps base + i.
+        self.hit_counter = self.hit_counter.wrapping_add(1);
+        self.add_candidate_hit_base = self.hit_counter;
+        self.hit_counter = self.hit_counter.wrapping_add(7);
 
         // Settings panel (STUB) hit-id blocks + widgets. Reserve a contiguous 9-id block for the nav-rail rows and a 32-id block for the immediate-mode action pills, then construct the stateful fluor widgets (dropdown / slider / textbox) and the custom checkboxes. All get placeholder geometry; `update_widget_layout` repositions the ones on the active page each frame.
         self.hit_counter = self.hit_counter.wrapping_add(1);
@@ -1567,6 +1580,24 @@ impl FluorApp for PhotonApp {
             self.spawn_confirm_add();
             ctx.window.request_redraw();
             return EventResponse::Handled;
+        }
+
+        // Candidate-row tap on the AddDevice screen (BLE / list select): bind the tapped device by its registry request (consent), then wait for the human's "did it turn green?" confirm (two-phase — a list pick isn't a typed-key match, so the key waits on visual confirmation).
+        if self.add_candidate_hit_base != HIT_NONE
+            && matches!(self.state, AppState::AddDevice)
+            && self.add_device_bound.is_none()
+            && !self.add_device_checking
+            && hit_id >= self.add_candidate_hit_base
+            && hit_id < self.add_candidate_hit_base.wrapping_add(7)
+        {
+            let idx = (hit_id - self.add_candidate_hit_base) as usize;
+            if let Some(cand) = self.add_device_candidates.get(idx) {
+                let req = cand.req.clone();
+                self.add_device_bind_ble = true;
+                self.spawn_bind_device(req);
+                ctx.window.request_redraw();
+                return EventResponse::Handled;
+            }
         }
 
         // Back button — Conversation and Add-device both return to the contact list. Navigation is a dedicated control; the orb is settings-only.
@@ -3821,11 +3852,42 @@ impl FluorApp for PhotonApp {
                     &mut canvas, &counter, cx, tb_cy + step * 1.2,
                     tb_h * 0.5, 500, counter_colour, "Oxanium", None, None, None,
                 );
+                // Tappable candidate list (BLE / list select): every device asking to join our fleet, by keyed name, with a "nearby" mark for the ones whose announce beacon we hear. Tap one to bind it (instead of typing its 23 words) — the far device's shown name is what you match against. Up to 7 rows.
+                if !self.add_device_candidates.is_empty() {
+                    let list_top = tb_cy + step * 1.9;
+                    let row_h = tb_h * 0.85;
+                    ctx.text.draw_text_center_u32(
+                        &mut canvas, "or tap the device asking to join:", cx, list_top,
+                        tb_h * 0.4, 400, fluor::theme::HINT_COLOUR, "Oxanium", None, None, None,
+                    );
+                    for (i, cand) in self.add_device_candidates.iter().take(7).enumerate() {
+                        let ry = list_top + row_h * (i as f32 + 1.0);
+                        let label = if cand.heard_ble {
+                            format!("{}   · nearby", cand.name)
+                        } else {
+                            cand.name.clone()
+                        };
+                        let held = ctx.pressed_hit != HIT_NONE
+                            && ctx.pressed_hit == self.add_candidate_hit_base.wrapping_add(i as HitId);
+                        let colour = if cand.heard_ble { SEARCH_FOUND_COLOUR } else { STATUS_TEXT_COLOUR };
+                        ctx.text.draw_text_center_u32(
+                            &mut canvas, &label, cx, ry,
+                            tb_h * 0.55, if held { 700 } else { 500 }, colour, "Oxanium", None, None, None,
+                        );
+                        let half_w = buf_w as f32 * 0.42;
+                        restamp_hit_rect(
+                            &mut chrome.hit_test_map, buf_w, buf_h,
+                            (cx - half_w) as isize, (ry - row_h * 0.5) as isize,
+                            (cx + half_w) as isize, (ry + row_h * 0.5) as isize,
+                            self.add_candidate_hit_base.wrapping_add(i as HitId),
+                        );
+                    }
+                }
             } else if !self.add_device_checking {
                 // Green-confirm affordance (two-phase): the press fires the fleet-key rotation. Hit-stamped like the join screen's start-fresh tappable so Android taps land. On the WORDS path the Bound handler auto-fires the rotation (checking = true), so this affordance never renders — it's the BLE transport's gate, kept live for that path. When checking, only the "Adding…" status shows.
                 let confirm_y = tb_cy + step * 1.2;
                 ctx.text.draw_text_center_u32(
-                    &mut canvas, "It's in \u{2014} finish", cx, confirm_y,
+                    &mut canvas, "Yes, it's green \u{2014} finish", cx, confirm_y,
                     tb_h * 0.7, 600, SEARCH_FOUND_COLOUR, "Oxanium", None, None, None,
                 );
                 let half_w = buf_w as f32 * 0.4;
@@ -3908,8 +3970,8 @@ impl FluorApp for PhotonApp {
             {
                 let r = nav_row(0);
                 let back_held = ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == self.back_btn_hit_id;
-                // Faint 0x40-black fill (mostly transparent) so the Back row is visually distinct from the page rows; brighter when held.
-                let fill = if back_held { fluor::theme::BUTTON_HELD } else { 0x40_00_00_00 };
+                // Faint solid-black fill at 0x20 opacity so the Back row reads distinct from the page rows. The buffer is DARKNESS space (stored = 255 − visible), so visible black is 0xFFFFFF in the RGB bytes; α = 0x20 in the top byte. (A raw 0x40_00_00_00 was visible WHITE — the "bright fill" bug.) Brighter when held.
+                let fill = if back_held { fluor::theme::BUTTON_HELD } else { 0x20_FF_FF_FF };
                 paint::fill_rect(&mut canvas, r.x as isize, r.y as isize, r.w as isize, r.h as isize, fill, Some(rail_clip), None);
                 ctx.text.draw_text_left_u32(
                     &mut canvas, "‹ Back", r.x + rspan * 0.6, r.center_y(),
@@ -4322,9 +4384,13 @@ impl PhotonApp {
         for update in add_updates {
             match update {
                 AddDeviceUpdate::Candidates(reqs) => {
-                    // Precompute each candidate's expected word tokens + keyed name once per refresh, so the per-keystroke matcher is a plain string walk. Requests were already signature-verified in bindreq_list; the seed is in-session by definition on this screen.
+                    // Precompute each candidate's expected word tokens + keyed name once per refresh, so the per-keystroke matcher is a plain string walk. Requests were already signature-verified in bindreq_list; the seed is in-session by definition on this screen. `heard_ble` marks candidates whose announce beacon we're hearing right now (proximity).
                     if let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) {
                         use crate::network::fgtw::fleet;
+                        let heard: Vec<[u8; 32]> = crate::network::pairing_beacon::heard()
+                            .into_iter()
+                            .map(|c| c.device_pubkey)
+                            .collect();
                         self.add_device_candidates = reqs
                             .into_iter()
                             .map(|req| {
@@ -4332,6 +4398,7 @@ impl PhotonApp {
                                 AddCandidate {
                                     name: fleet::device_name_default(&req.device_pubkey, &seed),
                                     tokens: fleet::pair_word_list(&words),
+                                    heard_ble: heard.contains(&req.device_pubkey),
                                     req,
                                 }
                             })
@@ -4342,14 +4409,19 @@ impl PhotonApp {
                 AddDeviceUpdate::Bound(pk) => {
                     self.add_device_checking = false;
                     self.add_device_bound = Some(pk);
-                    // WORDS path: the typed 256-bit match already IS the human confirmation (you can only type the exact words shown on the one device you're holding — there's no wrong candidate to guard against), so release the fleet key immediately. The two-phase human gate stays wired (spawn_confirm_add + the "It's in — finish" affordance) for the BLE transport, where the radio hands you candidates you did NOT type and the green-confirm earns its keep. Auto-firing here means the sponsor never parks on a confirm screen and the new device gets its key seconds after the match — the "stuck after bind" report.
                     let name = self
                         .session
                         .as_ref()
                         .map(|s| crate::network::fgtw::fleet::device_name_default(&pk, &s.identity_seed))
                         .unwrap_or_default();
-                    self.add_device_status = format!("Adding {name}\u{2026}");
-                    self.spawn_confirm_add();
+                    if self.add_device_bind_ble {
+                        // BLE / list-tap select: the candidate was picked by proximity + name, NOT by typing its full 256-bit key — so a wrong pick is possible. Hold the fleet-key rotation behind the human's "did it turn green?" confirm (two-phase); a wrong bind stays a keyless ledger entry.
+                        self.add_device_status = format!("Bound {name} — did it turn green?");
+                    } else {
+                        // WORDS path: the typed 256-bit match already IS the confirmation (you can only type the words shown on the one device in your hand — no wrong candidate), so release the fleet key immediately.
+                        self.add_device_status = format!("Adding {name}\u{2026}");
+                        self.spawn_confirm_add();
+                    }
                 }
                 AddDeviceUpdate::Rotated => {
                     self.add_device_checking = false;
@@ -4914,6 +4986,7 @@ impl PhotonApp {
     fn open_add_device_flow(&mut self) {
         self.add_device_candidates.clear();
         self.add_device_bound = None;
+        self.add_device_bind_ble = false;
         self.add_device_typo = None;
         self.add_device_wordcheck_text.clear();
         self.add_device_checking = false;
@@ -5063,8 +5136,9 @@ impl PhotonApp {
             }
         }
         if let Some(ci) = full_match {
-            // Exact 23-word match against a verified request — the selection is made. Bind (phase one); the fold re-verifies the consent this request carries.
+            // Exact 23-word match against a verified request — the selection is made. Bind (phase one); the fold re-verifies the consent this request carries. WORDS path → auto-rotate (clear any stale BLE-tap flag so the Bound handler doesn't park on the confirm).
             let req = self.add_device_candidates[ci].req.clone();
+            self.add_device_bind_ble = false;
             self.spawn_bind_device(req);
             return;
         }
@@ -5693,6 +5767,7 @@ impl PhotonApp {
         }
         self.add_device_candidates.clear();
         self.add_device_bound = None;
+        self.add_device_bind_ble = false;
         self.add_device_wordcheck_text.clear();
         self.add_device_typo = None;
         self.add_device_checking = false;
