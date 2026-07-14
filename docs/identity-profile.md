@@ -1,7 +1,8 @@
 # Identity profile — names, grants, and the spoken handle
 
-Status: STAGE A BUILT 2026-07-14 (commit f3ce7e3 "the blinding, stage A") — party ids are pinned identity pubkeys, the friendship-secret egg (static identity x25519, or the shared seed for siblings) replaced mutual-handle-knowledge in CLUTCH, blind pads context on the pin, per-contact state keys on the pin. All 134 tests green. Flag-day: old contact rows fail ceremonies; re-add friends.
-Stages B and C are MAPPED below (## Build state) and not yet built.
+Status: STAGES A + B BUILT 2026-07-14 (commits f3ce7e3, 196e435) — THE BLINDING IS DONE: party ids are pinned identity pubkeys, the friendship-secret egg (static identity x25519, or the shared seed for siblings) replaced mutual-handle-knowledge in CLUTCH, blind pads context on the pin, per-contact state keys on the pin, and the handle STRING exists at rest nowhere (Contact/ContactIdentity/RosterEntry/CloudContact are pin-set codecs; the avatar wall rides a 64-byte pin synced fleet-wide; first-met = type → derive → pin → drop). All 134 tests green.
+Flag-day: old contact rows/rosters/indexes read as absent or fail ceremonies — re-add friends, re-CLUTCH world.
+Stage C (profile slot + published names + Profile page) is MAPPED below and NOT built — until it lands, contacts render as keyed voca pseudonyms unless locally petnamed (there is no petname editor yet either; see TODO-later.md).
 The RosterEntry change rides the roster rework; the NFC invite card rides the pairing-v2 NFC transport work (shared reader plumbing).
 Governing rule: sovereign records — the subject signs, others verify or withhold; pending expires, completed is permanent testimony; ostracism, never erasure (docs/pairing-v2.md carries the full statement).
 
@@ -56,10 +57,11 @@ Per-field mechanics:
 
 Names are non-unique, mutable, and carry ZERO trust: collisions are a rendering problem (disambiguate by avatar/colour/attestation lineage), impersonation is dead on arrival because the pinned key and mutual consent carry the trust, and the local petname always beats the published name on your own screen.
 
-## The friendship salt (audit consequence, 2026-07-14)
+## The friendship secret (audit consequence, 2026-07-14 — BUILT as identity DH)
 
-Each side's grant carries a random 32-byte FRIENDSHIP SALT; both salts mix into the friendship's key derivations.
-This replaces the mutual-handle-knowledge secrecy ingredient the CLUTCH stack uses today — and replaces it with something STRICTLY stronger: today's "private" `handle_hash = BLAKE3(handle)` is only as private as handle entropy, so a guessable handle ('alex') makes the ingredient computable by anyone; a grant-carried random salt is per-relationship, full-entropy, and revocable.
+The mutual-handle-knowledge secrecy ingredient the CLUTCH stack used ("private" `handle_hash`, only as private as handle guessability — anyone can compute BLAKE3('alex')) is replaced by the STATIC IDENTITY DIFFIE-HELLMAN: x25519 between our identity scalar and their pinned identity pubkey (`identity_friendship_secret`), mixed in as the 21st CLUTCH egg.
+Computable by exactly the two identity holders from the pin-set alone — full-entropy, no wire exchange, available from first-met; fleet siblings (whose party ids aren't curve points) mix the identity seed both devices share instead.
+A grant-carried random salt can LAYER on top later for per-relationship revocability, but the DH is the permanent base ingredient (it can't be lost or desynced).
 
 ## NFC invite card — the bearer token
 
@@ -81,7 +83,7 @@ No longer: a display name, a read capability, a stored field anywhere.
 
 **Stage A — DONE** (commit f3ce7e3): `identity_party_id` + `identity_friendship_secret` in crypto/clutch.rs; 21st egg; `spawn_clutch_ceremony` carries the secret (sibling → identity seed, friend → DH, non-point pin → loud fail); every `session.identity_seed`-as-party-id site swapped to `identity_party_id`; `Contact::new` pins the pubkey; `ContactIdentity::party_id()` keys state loads; blind-pad doc updated.
 
-**Stage B — drop the stored string** (the string still derives the seed, so the honeypot survives until this lands):
+**Stage B — DONE** (commit 196e435; the mapping below is kept as the record of what moved):
 - `Contact.handle: HandleText` field → replace with `petname: String` (default EMPTY, never the typed handle — a defaulted handle re-creates the honeypot) + `published_name: String` (filled by stage C). `display_name()` = petname → published_name → keyed voca pseudonym from party_id (device_name_default pattern).
 - Consumers to swap to `display_name()` (~25 sites, `grep '\.handle\b' src/ui/photon_app.rs`): contact-list rows + search filter (2526/3157 filter on petname+published), conversation title (1715/1723), notification lines (1401/2483/6294/6771), self-row colour sites, roster build (5321), dup-check on add (4708 → compare handle_proof instead), search-result add path (6387-6402: `peer.handle` is the user's TYPED input riding along locally — the legit first-met seam; Contact construction derives + discards), avatar sweep call sites (below), status/log lines (7562 etc.).
 - `ContactIdentity {handle_proof, handle}` → `{handle_proof, party_id}`; contact_list index codec swaps x(handle) → ke(party_id); `identity_seed()` retires.
