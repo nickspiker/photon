@@ -1591,7 +1591,8 @@ impl FluorApp for PhotonApp {
             && hit_id < self.add_candidate_hit_base.wrapping_add(7)
         {
             let idx = (hit_id - self.add_candidate_hit_base) as usize;
-            if let Some(cand) = self.add_device_candidates.get(idx) {
+            // Filter identically to the render — only proximity-heard candidates are tap targets (a flooded registry never populates a tappable row).
+            if let Some(cand) = self.add_device_candidates.iter().filter(|c| c.heard_ble).nth(idx) {
                 let req = cand.req.clone();
                 self.add_device_bind_ble = true;
                 self.spawn_bind_device(req);
@@ -3881,27 +3882,24 @@ impl FluorApp for PhotonApp {
                     &mut canvas, &counter, cx, tb_cy + step * 1.2,
                     tb_h * 0.5, 500, counter_colour, "Oxanium", None, None, None,
                 );
-                // Tappable candidate list (BLE / list select): every device asking to join our fleet, by keyed name, with a "nearby" mark for the ones whose announce beacon we hear. Tap one to bind it (instead of typing its 23 words) — the far device's shown name is what you match against. Up to 7 rows.
-                if !self.add_device_candidates.is_empty() {
+                // Tappable candidate list — PROXIMITY POPULATION ONLY (docs/pairing-v2.md). Only devices we HEAR over the BLE announce beacon (later: NFC tap) become tap targets, NEVER the raw registry: a remote attacker who holds the handle can flood the (WAN, identity-gated) registry with binding requests, so listing registry entries as tap targets would fill your finger's reach with decoys. The registry is sync only (it carries the consent signature a tap then binds with); proximity is what a remote attacker cannot fake. Devices that are NOT nearby don't appear here — you type their words (reading the words off the physical screen IS the proximity check). Index i here is the position in the HEARD-only subset; the tap dispatch filters identically.
+                let nearby: Vec<&AddCandidate> =
+                    self.add_device_candidates.iter().filter(|c| c.heard_ble).take(7).collect();
+                if !nearby.is_empty() {
                     let list_top = tb_cy + step * 1.9;
                     let row_h = tb_h * 0.85;
                     ctx.text.draw_text_center_u32(
-                        &mut canvas, "or tap the device asking to join:", cx, list_top,
+                        &mut canvas, "or tap the nearby device asking to join:", cx, list_top,
                         tb_h * 0.4, 400, fluor::theme::HINT_COLOUR, "Oxanium", None, None, None,
                     );
-                    for (i, cand) in self.add_device_candidates.iter().take(7).enumerate() {
+                    for (i, cand) in nearby.iter().enumerate() {
                         let ry = list_top + row_h * (i as f32 + 1.0);
-                        let label = if cand.heard_ble {
-                            format!("{}   · nearby", cand.name)
-                        } else {
-                            cand.name.clone()
-                        };
+                        let label = format!("{}   · nearby", cand.name);
                         let held = ctx.pressed_hit != HIT_NONE
                             && ctx.pressed_hit == self.add_candidate_hit_base.wrapping_add(i as HitId);
-                        let colour = if cand.heard_ble { SEARCH_FOUND_COLOUR } else { STATUS_TEXT_COLOUR };
                         ctx.text.draw_text_center_u32(
                             &mut canvas, &label, cx, ry,
-                            tb_h * 0.55, if held { 700 } else { 500 }, colour, "Oxanium", None, None, None,
+                            tb_h * 0.55, if held { 700 } else { 500 }, SEARCH_FOUND_COLOUR, "Oxanium", None, None, None,
                         );
                         let half_w = buf_w as f32 * 0.42;
                         restamp_hit_rect(
