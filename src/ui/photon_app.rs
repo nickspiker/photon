@@ -1011,9 +1011,10 @@ fn dev_gradient_orb() -> fluor::host::icon::Icon {
     .unwrap_or(0xDEAD_BEEF_CAFE_F00D);
     let unit = |s: &mut u64| (splitmix(s) >> 11) as f64 / (1u64 << 53) as f64; // [0,1)
     // Per-channel slopes a,b ∈ [-1,1): red, green, blue each get their own gradient plane.
-    let (r_a, r_b) = (unit(&mut seed) * 2.0 - 1.0, unit(&mut seed) * 2.0 - 1.0);
-    let (g_a, g_b) = (unit(&mut seed) * 2.0 - 1.0, unit(&mut seed) * 2.0 - 1.0);
-    let (b_a, b_b) = (unit(&mut seed) * 2.0 - 1.0, unit(&mut seed) * 2.0 - 1.0);
+    // Slopes CUBED: still [-1,1] (extremes still reach the full [-4pi,4pi] → 4 periods) but concentrated near zero, so most channels are gentle low-frequency gradients — not a busy 4x plaid.
+    let (r_a, r_b) = ((unit(&mut seed) * 2.0 - 1.0).powi(3), (unit(&mut seed) * 2.0 - 1.0).powi(3));
+    let (g_a, g_b) = ((unit(&mut seed) * 2.0 - 1.0).powi(3), (unit(&mut seed) * 2.0 - 1.0).powi(3));
+    let (b_a, b_b) = ((unit(&mut seed) * 2.0 - 1.0).powi(3), (unit(&mut seed) * 2.0 - 1.0).powi(3));
     // Each channel is a sine plane wave: map the disk to [-4pi, 4pi] per axis, z = a*x + b*y (slopes in [-1,1]), then (sin(z)+1)/2 -> [0,1] with NO normalization and NO clipping (sine is bounded). Circle vignette darkens the rim over the top.
     const N: u32 = 256;
     let s = 4.0 * std::f64::consts::PI;
@@ -1042,9 +1043,10 @@ fn gradient_avatar_rgb(mut seed: u64, diam: usize) -> Vec<u8> {
         z ^ (z >> 31)
     }
     let unit = |s: &mut u64| (splitmix(s) >> 11) as f64 / (1u64 << 53) as f64; // [0,1)
-    let (r_a, r_b) = (unit(&mut seed) * 2.0 - 1.0, unit(&mut seed) * 2.0 - 1.0);
-    let (g_a, g_b) = (unit(&mut seed) * 2.0 - 1.0, unit(&mut seed) * 2.0 - 1.0);
-    let (b_a, b_b) = (unit(&mut seed) * 2.0 - 1.0, unit(&mut seed) * 2.0 - 1.0);
+    // Slopes CUBED: still [-1,1] (extremes still reach the full [-4pi,4pi] → 4 periods) but concentrated near zero, so most channels are gentle low-frequency gradients — not a busy 4x plaid.
+    let (r_a, r_b) = ((unit(&mut seed) * 2.0 - 1.0).powi(3), (unit(&mut seed) * 2.0 - 1.0).powi(3));
+    let (g_a, g_b) = ((unit(&mut seed) * 2.0 - 1.0).powi(3), (unit(&mut seed) * 2.0 - 1.0).powi(3));
+    let (b_a, b_b) = ((unit(&mut seed) * 2.0 - 1.0).powi(3), (unit(&mut seed) * 2.0 - 1.0).powi(3));
     // Each channel is a sine plane wave: disk mapped to [-4pi, 4pi] per axis, z = a*x + b*y, then (sin(z)+1)/2 -> [0,1] (bounded, no clip); circle vignette over the top.
     let denom = diam.saturating_sub(1).max(1) as f64;
     let s = 4.0 * std::f64::consts::PI;
@@ -5078,6 +5080,8 @@ impl PhotonApp {
         let typed_pid = crate::crypto::clutch::identity_party_id(&crate::types::Handle::to_identity_seed(&handle));
         if self.contacts.iter().any(|c| c.handle_hash == typed_pid) {
             crate::log("add-friend: handle already in contacts");
+            // Feedback instead of a silent no-op — the whole reason the search "looked broken". Callers request the redraw.
+            self.ready_toast = Some("Already in your contacts".to_string());
             return;
         }
         // Self-contact: if the handle matches our own identity, create the contact directly — FGTW won't return our own record as a search result.
