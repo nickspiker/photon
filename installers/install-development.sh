@@ -161,6 +161,8 @@ if [ "$OS" = "Darwin" ]; then
     <true/>
     <key>NSSupportsAutomaticGraphicsSwitching</key>
     <true/>
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>Photon uses Bluetooth to discover your other devices nearby when adding a device to your fleet.</string>
 </dict>
 </plist>
 PLIST
