@@ -67,6 +67,8 @@ pub enum FgtwMessage {
         sync_records: Vec<SyncRecord>,
         /// The source address the responder observed this pong's ping arriving from — i.e. the requester's reflexive (public) address on the live UDP data socket. `None` from legacy peers. This is the peer-echoed STUN primitive: a node learns its own public address from any node whose pong it receives (see the traversal plan, P0), on the exact socket the data flows over — unlike fgtw.org's `cf-connecting-ip`, which only sees the TLS flow and is thus cone-NAT-only.
         observed_addr: Option<SocketAddr>,
+        /// The responder's chosen display name (the contact-system ALWAYS-GRANTED `name` slot) — riding the pong means a friend's name reaches every peer within one ping cycle of being set/changed, self-healing, no extra message type. Pongs only go to authenticated contacts, so disclosure stays friend-scoped. `None`/empty = unset (receiver keeps its stored value).
+        display_name: Option<String>,
     },
     // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete REMOVED Full 8-primitive CLUTCH uses ClutchOffer and ClutchKemResponse which are handled via build_clutch_offer_vsf() and parse_clutch_offer_vsf() See docs/clutch.md Section 4.2 for the slot-based ceremony protocol.
     /// Encrypted chat message
@@ -415,6 +417,7 @@ impl FgtwMessage {
                 signature,
                 sync_records,
                 observed_addr,
+                display_name,
             } => {
                 // Pong with sync records for efficient resync Format: RÅ< ... ke[pubkey] ge[sig] > [pong (sync_count: N) (sync_0_tok: hb) (sync_0_ef6: f6) (obs: hb)?]
                 let mut fields = vec![(
@@ -434,6 +437,12 @@ impl FgtwMessage {
                 // Peer-echoed reflexive address: the src we saw the ping come from, so the requester learns its own public address on the data socket. Absent → legacy/unknown, parses back to None.
                 if let Some(addr) = observed_addr {
                     fields.push(("obs".to_string(), VsfType::hb(socketaddr_to_bytes(addr))));
+                }
+                // Always-granted display name — only when set (absent parses back to None).
+                if let Some(name) = display_name {
+                    if !name.is_empty() {
+                        fields.push(("name".to_string(), VsfType::x(name.clone())));
+                    }
                 }
                 builder
                     .creation_time_oscillations(*timestamp)
@@ -669,10 +678,14 @@ impl FgtwMessage {
                     signature,
                 });
             } else {
-                // Pong - parse sync records + optional observed_addr from section body
+                // Pong - parse sync records + optional observed_addr + optional display name from section body
                 let fields = section_fields_to_tuples(&section);
                 let sync_records = extract_sync_records(&fields)?;
                 let observed_addr = extract_observed_addr(&fields);
+                let display_name = fields.iter().find_map(|(n, v)| match (n.as_str(), v) {
+                    ("name", VsfType::x(s)) if !s.is_empty() => Some(s.clone()),
+                    _ => None,
+                });
 
                 return Ok(FgtwMessage::StatusPong {
                     timestamp,
@@ -681,6 +694,7 @@ impl FgtwMessage {
                     signature,
                     sync_records,
                     observed_addr,
+                    display_name,
                 });
             }
         }

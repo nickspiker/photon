@@ -141,13 +141,27 @@ pub enum ClutchState {
     Complete,      // Proofs exchanged and verified
 }
 
+/// One fleet device's known addresses + liveness, learned from ITS OWN traffic (pong source, FGTW peer row). Runtime only — never persisted; presence rediscovers every session.
+#[derive(Clone, Debug)]
+pub struct DeviceEndpoint {
+    pub pubkey: [u8; 32],
+    /// Public (WAN) address, from a pong arriving off-LAN or an FGTW peer row.
+    pub public: Option<SocketAddr>,
+    /// LAN address, from a pong arriving from a private source.
+    pub lan: Option<SocketAddr>,
+    /// This device answered its own ping within the timeout window.
+    pub online: bool,
+}
+
 #[derive(Clone, Debug)]
 pub struct Contact {
     pub id: ContactId,
     /// Local petname — the only name at rest for this contact; user-chosen, synced across OUR fleet via the roster, EMPTY by default (empty renders the keyed voca pseudonym). Never defaulted to the typed handle: the handle string derives the identity seed, so storing it anywhere re-creates the honeypot (docs/identity-profile.md).
     pub petname: String,
-    /// The friend's published profile name, adopted from their identity-signed profile (stage C). Display fallback after petname; carries zero trust.
+    /// The friend's published profile name, adopted from their pong's always-granted name slot. Display fallback after petname; carries zero trust.
     pub published_name: String,
+    /// Runtime: `published_name` changed since the last state save — the status drain sets it, the post-drain sweep persists + clears it (persisting inside the drain would fight the contacts borrow).
+    pub published_name_dirty: bool,
     /// The avatar-wall pin, derived at first-met before the seed dropped: AES key (32) ‖ FGTW lookup hash (32). All zeroes = not pinned (siblings and self use the session-seed path).
     pub avatar_pin: [u8; 64],
     pub handle_proof: [u8; 32], // Cached handle_proof (expensive to compute - ~1 second) - PUBLIC
@@ -160,9 +174,13 @@ pub struct Contact {
     pub fleet_folded_once: bool,
     /// The chain-tip eagle time of the last adopted fold — a monotonic guard so we never adopt an OLDER fold over a newer one (guards against an R2 eventual-consistency read serving a stale pre-removal member set over a fresh post-removal one). 0 means no fold adopted yet.
     pub fleet_members_ts: i64,
-    pub ip: Option<SocketAddr>, // Last known IP:port from FGTW or direct (public IP)
-    pub local_ip: Option<Ipv4Addr>, // LAN IP discovered via broadcast (for hairpin NAT workaround)
-    pub local_port: Option<u16>, // LAN port discovered via broadcast
+    pub ip: Option<SocketAddr>, // The ACTIVE device's public IP:port (see `active_device`) — the primary TX target
+    pub local_ip: Option<Ipv4Addr>, // The ACTIVE device's LAN IP (hairpin NAT workaround)
+    pub local_port: Option<u16>, // The ACTIVE device's LAN port
+    /// Per-device address table (runtime only, rediscovered every session): one entry per fleet device we've heard from, keyed by device pubkey. Pongs/peer-rows update the SENDER's entry here — never the contact-level `ip` slot directly — so a friend's three devices each keep their own address and presence instead of thrashing one slot (the flip-flop that broke presence AND cancelled mid-flight CLUTCH offers).
+    pub device_endpoints: Vec<DeviceEndpoint>,
+    /// Which fleet device owns the contact-level `ip`/`local_*` slot: the device we last received DATA from (chat / CLUTCH — the docs/fleet rule: reply-TX to the device in their hand), adopted from the first pong when unset. Only THIS device's address updates move the contact-level slot.
+    pub active_device: Option<[u8; 32]>,
     pub relationship_seed: Option<Seed>,
     pub friendship_id: Option<FriendshipId>, // Links to friendship storage (chains live there)
     pub clutch_state: ClutchState,
@@ -288,6 +306,7 @@ impl Contact {
             id: ContactId::from_pubkey(&public_identity),
             petname,
             published_name: String::new(),
+            published_name_dirty: false,
             avatar_pin,
             handle_proof,
             handle_hash: party_id,
@@ -298,6 +317,8 @@ impl Contact {
             ip: None,
             local_ip: None,   // Discovered via LAN broadcast
             local_port: None, // Discovered via LAN broadcast
+            device_endpoints: Vec::new(),
+            active_device: None,
             relationship_seed: None,
             friendship_id: None, // Set after CLUTCH ceremony completes
             clutch_state: ClutchState::Pending,
@@ -394,6 +415,20 @@ impl Contact {
     }
 
     /// Returns the (primary, alternate) address pair for racing a transfer across the reachable paths. A punch-validated direct path (from NAT traversal) wins as primary when present, with the public/LAN kept as the alternate so PT still races if the validated mapping went stale. Otherwise: primary is the LAN address (preferred — no router hairpin, no AP isolation), alternate is the public address; and when no LAN address is known, primary is the public address and alternate is `None`. PT sends the SPEC to both and locks onto whichever ACKs first (see [`crate::network::pt::PtManager::send_with_pubkey_and_alt`]).
+    /// Upsert the per-device endpoint for `pubkey` and apply `update` to it. Linear scan — fleets are single-digit sized.
+    pub fn endpoint_mut(&mut self, pubkey: &[u8; 32]) -> &mut DeviceEndpoint {
+        if let Some(i) = self.device_endpoints.iter().position(|e| e.pubkey == *pubkey) {
+            return &mut self.device_endpoints[i];
+        }
+        self.device_endpoints.push(DeviceEndpoint { pubkey: *pubkey, public: None, lan: None, online: false });
+        self.device_endpoints.last_mut().unwrap()
+    }
+
+    /// Any device of this contact's fleet currently answering pings. The contact-level online ring shows the IDENTITY reachable, not one particular device.
+    pub fn any_device_online(&self) -> bool {
+        self.device_endpoints.iter().any(|e| e.online)
+    }
+
     pub fn race_addrs(&self) -> Option<(SocketAddr, Option<SocketAddr>)> {
         // A punch-validated direct path wins. Keep a distinct public/LAN address as the alternate so a stale NAT mapping still falls back via PT's race. This also makes a peer reachable when we only learned an address by punching (no phonebook `ip` yet).
         if let Some((validated, _at)) = self.validated_path {
