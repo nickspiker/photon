@@ -246,20 +246,30 @@ mod imp {
 
     static SCAN_STOP: Mutex<Option<Arc<AtomicBool>>> = Mutex::new(None);
 
-    // btleplug is central-only, so the new-device advertiser is native per-OS. Windows: WinRT BluetoothLEAdvertisementPublisher (wired). macOS: CoreBluetooth CBPeripheralManager (lands next — the unified service-UUID format is what makes it possible there at all, it's the one payload CoreBluetooth will emit).
+    // btleplug is central-only, so the new-device advertiser is native per-OS. Windows: WinRT BluetoothLEAdvertisementPublisher (win_adv). macOS: CoreBluetooth CBPeripheralManager via the ObjC shim (macos/photon_ble.m) — the unified service-UUID format is what makes it possible there at all, it's the one payload CoreBluetooth will emit.
+    #[cfg(target_os = "macos")]
+    extern "C" {
+        fn photon_ble_adv_start(bytes: *const u8, len: usize);
+        fn photon_ble_adv_stop();
+    }
+
     pub(super) fn start_announce(uuid: [u8; BEACON_UUID_LEN]) {
         #[cfg(target_os = "windows")]
         win_adv::start(uuid);
         #[cfg(target_os = "macos")]
-        {
-            let _ = uuid;
-            crate::log("BEACON: macOS advertiser (CoreBluetooth) lands next — scan (sponsor) works, words carry new-device");
+        // SAFETY: the shim copies the bytes into an NSData before returning; `uuid` need not outlive the call.
+        unsafe {
+            photon_ble_adv_start(uuid.as_ptr(), uuid.len());
         }
     }
 
     pub(super) fn stop_announce() {
         #[cfg(target_os = "windows")]
         win_adv::stop();
+        #[cfg(target_os = "macos")]
+        unsafe {
+            photon_ble_adv_stop();
+        }
     }
 
     pub(super) fn start_scan() {

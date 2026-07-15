@@ -4001,6 +4001,7 @@ dependencies = [
  "blake3",
  "bluer",
  "btleplug",
+ "cc",
  "chacha20 0.9.1",
  "chacha20poly1305 0.11.0-rc.3",
  "chirp",
