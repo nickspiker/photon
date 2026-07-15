@@ -486,8 +486,122 @@ enum TextboxRole {
     MessageCompose,
     /// The Diagnostics optional-note field — in the registry so click-to-focus raises the Android IME + blinkie like every other box.
     SettingsNote,
-    /// The You-page display-name entry — same registry so click-to-focus raises the IME + blinkie.
-    ProfileName,
+    /// Any You-page profile field (display name, first, email, a custom one, …) or the add-a-field entry — same registry so click-to-focus raises the IME + blinkie. The form treats them all alike; the `field_id` that distinguishes them lives on [`ProfileField`], not here.
+    ProfileField,
+}
+
+/// One editable profile field on the You page: a `field_id` (the VSF dictionary label, also the `profile.<id>` settings key), a human label, its taxonomy tier, and the text box holding the working value. Custom fields are user-added (registered in `profile._custom`) and grouped under a "Custom" header. See docs/contact-system.md "The field taxonomy".
+struct ProfileField {
+    field_id: String,
+    label: String,
+    tier: &'static str,
+    custom: bool,
+    tb: Textbox,
+}
+
+/// The standard profile fields in taxonomy order: (field_id, display label, tier). `name` is the always-granted display-name slot (formerly the lone name box); every other field defaults UNSHARED. Mirrors the table in docs/contact-system.md — keep the two in sync.
+const STD_PROFILE_FIELDS: &[(&str, &str, &str)] = &[
+    ("name", "Display name", "name"),
+    ("first", "First", "name"),
+    ("middle", "Middle", "name"),
+    ("last", "Last", "name"),
+    ("nick", "Nickname", "name"),
+    ("prefix", "Prefix", "name"),
+    ("suffix", "Suffix", "name"),
+    ("maiden", "Maiden", "name"),
+    ("phon", "Pronunciation", "name"),
+    ("email", "Email", "reach"),
+    ("email2", "Email (2nd)", "reach"),
+    ("mobile", "Mobile", "reach"),
+    ("phone", "Phone (landline)", "reach"),
+    ("work_phone", "Work phone", "reach"),
+    ("web", "Website", "reach"),
+    ("alt_msg", "Other messaging", "reach"),
+    ("addr", "Address", "place"),
+    ("addr_work", "Work address", "place"),
+    ("geo", "Lat / lon", "place"),
+    ("tz", "Timezone", "place"),
+    ("dob", "Date of birth", "personal"),
+    ("pronouns", "Pronouns", "personal"),
+    ("gender", "Gender", "personal"),
+    ("lang", "Languages", "personal"),
+    ("bio", "Short bio", "personal"),
+    ("org", "Organisation", "work"),
+    ("title", "Job title", "work"),
+    ("ssn", "National ID / SSN", "sensitive"),
+    ("passport", "Passport", "sensitive"),
+    ("license", "Driver's licence", "sensitive"),
+    ("tax_id", "Tax ID", "sensitive"),
+    ("emergency", "Emergency contact", "sensitive"),
+];
+
+/// Tier display order + header titles. `custom` always sorts last — user-added fields (a second address, etc.).
+const PROFILE_TIERS: &[(&str, &str)] = &[
+    ("name", "Name"),
+    ("reach", "Reach"),
+    ("place", "Place"),
+    ("personal", "Personal"),
+    ("work", "Work"),
+    ("sensitive", "Sensitive — you can't un-give these"),
+    ("custom", "Custom"),
+];
+
+/// One laid-out row of the You page. Render, layout, and scroll-extent passes all build this SAME plan (via [`you_rows_plan`]) so their row counts and positions never drift.
+enum YouRow {
+    /// Category header (tier title).
+    Header(&'static str),
+    /// An editable field — index into `you_fields`. Label left, box right.
+    Field(usize),
+    /// "Add a custom field" sub-header.
+    AddHeader,
+    /// The custom-field-name entry box + "Add" pill.
+    AddInput,
+    /// "Your handle IS your identity" reassurance line.
+    Note,
+    /// "Identity" header.
+    IdentityHeader,
+    /// The identity fingerprint read-out.
+    IdentityFp,
+    /// "Save profile" action pill.
+    SavePill,
+    /// "Change avatar…" action pill.
+    AvatarPill,
+}
+
+/// Build the ordered You-page row plan from the current field set: fields grouped under their tier header (only non-empty tiers get a header), then the add-field affordance, the reassurance note, the identity read-out, and the action pills. Pure over `fields` so render / layout / scroll-extent all agree on the row count and order.
+fn you_rows_plan(fields: &[ProfileField]) -> Vec<YouRow> {
+    let mut rows = Vec::new();
+    for &(tier, title) in PROFILE_TIERS {
+        let mut any = false;
+        for (i, f) in fields.iter().enumerate() {
+            if f.tier == tier {
+                if !any {
+                    rows.push(YouRow::Header(title));
+                    any = true;
+                }
+                rows.push(YouRow::Field(i));
+            }
+        }
+    }
+    rows.push(YouRow::AddHeader);
+    rows.push(YouRow::AddInput);
+    rows.push(YouRow::Note);
+    rows.push(YouRow::IdentityHeader);
+    rows.push(YouRow::IdentityFp);
+    rows.push(YouRow::SavePill);
+    rows.push(YouRow::AvatarPill);
+    rows
+}
+
+/// The Region for the `i`th stacked row of the You page (natural line height, shifted by the content scroll). Shared by render + layout so every box sits exactly where its label draws.
+fn you_row_rect(layout: &SettingsLayout, scroll: Coord, i: usize) -> fluor::region::Region {
+    let inset = layout.content_inset();
+    fluor::region::Region::new(
+        inset.x,
+        inset.y - scroll + i as Coord * layout.content_line_h(),
+        inset.w,
+        layout.content_line_h(),
+    )
 }
 
 /// Photon-desktop as a `FluorApp`. Owns fluor's `DefaultChrome` (window frame), the dense hit-id counter for widget allocation, and an optional event-loop proxy clone for waking from background tasks.
@@ -737,8 +851,12 @@ pub struct PhotonApp {
     settings_autoupdate_check: Option<crate::ui::settings_widgets::Checkbox>,
     /// Diagnostics-page optional-note field — a real fluor `Textbox` (distinct from the launch / contacts / compose boxes so content never bleeds).
     settings_note_textbox: Option<Textbox>,
-    /// You-page display-name entry: type a new name → Save persists it fleet-wide as the `profile.name` setting (contact-system §profile, the always-granted `name` slot). Distinct box, always starts EMPTY (the current name renders as static text above it), so there's no prefill footgun.
-    you_name_textbox: Option<Textbox>,
+    /// You-page profile editor: one box per field (display name, first, email, custom fields, …), grouped by taxonomy tier and prefilled from the fleet `profile.<id>` settings on page-open. "Save profile" writes every changed field in one batched push. HitId is scarce (u16) so this is built ONCE (lazily, on first open) and never rebuilt — custom fields append.
+    you_fields: Vec<ProfileField>,
+    /// The "add a custom field" entry box: type a label (e.g. "Address 2") → Add registers it in `profile._custom` and appends a new field box.
+    you_add_textbox: Option<Textbox>,
+    /// Reset to false on each entry to the You page; the layout pass reloads every field box from the current settings (so a fleet-synced edit shows) and flips it true. Prevents the per-frame reload from clobbering in-progress typing.
+    you_fields_loaded: bool,
     /// Fleet-page device management: the device pubkey the user tapped to select (highlighted row). `None` = nothing selected. Only OUR OTHER devices (siblings) are selectable — never this device. Remove-other retired 2026-07-13 (sovereign records: self-signed departure only; eviction = withholding at the key layer, arriving with the device-trust bundle) — selection currently feeds only the future rename.
     settings_fleet_selected: Option<[u8; 32]>,
     /// Security-page "Shred (crypto-wipe)" confirm arm: a first tap arms, a second fires `clean_device_for_reuse` (nuke vault + clear session). Event-shown, interaction-cleared.
@@ -898,7 +1016,9 @@ impl PhotonApp {
             settings_presence_check: None,
             settings_autoupdate_check: None,
             settings_note_textbox: None,
-            you_name_textbox: None,
+            you_fields: Vec::new(),
+            you_add_textbox: None,
+            you_fields_loaded: false,
             settings_fleet_selected: None,
             settings_shred_armed: false,
             about_version_spelled: false,
@@ -1219,7 +1339,10 @@ impl Container for PhotonApp {
                     }
                 }
                 SettingsPage::You => {
-                    if let Some(tb) = self.you_name_textbox.as_mut() {
+                    for pf in self.you_fields.iter_mut() {
+                        f(&mut pf.tb);
+                    }
+                    if let Some(tb) = self.you_add_textbox.as_mut() {
                         f(tb);
                     }
                 }
@@ -1417,7 +1540,8 @@ impl FluorApp for PhotonApp {
             true,
         ));
         self.settings_note_textbox = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
-        self.you_name_textbox = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
+        self.you_add_textbox = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
+        // The per-field boxes are built lazily on first You-page open (build_you_fields) — HitId is a u16, so we allocate the ~32 field ids only when the page is actually visited.
 
         self.update_widget_layout(ctx);
 
@@ -1762,6 +1886,10 @@ impl FluorApp for PhotonApp {
                     }
                     // Fresh page starts at the top — a leftover scroll from a longer page would strand a short one mid-air.
                     self.settings_content_scroll = 0.0;
+                    // Opening the You page reloads its field boxes from the current settings (fleet-synced state).
+                    if *p == SettingsPage::You {
+                        self.you_fields_loaded = false;
+                    }
                     self.state = AppState::Settings(*p);
                     ctx.window.request_redraw();
                 }
@@ -1816,24 +1944,11 @@ impl FluorApp for PhotonApp {
                     }
                 } else if page == SettingsPage::You {
                     if slot == 0 {
-                        // "Save name" → persist the display name fleet-wide as the `profile.name` setting (contact-system §profile, the always-granted `name` slot), then clear the entry box back to empty.
-                        let name: String = self
-                            .you_name_textbox
-                            .as_ref()
-                            .map(|tb| tb.chars.iter().collect())
-                            .unwrap_or_default();
-                        let name = name.trim().to_string();
-                        let toast = if name.is_empty() {
-                            "Name cleared \u{221a}".to_string()
-                        } else {
-                            "Name saved \u{221a}".to_string()
-                        };
-                        if self.settings_set("profile.name", name.into_bytes()) {
-                            self.ready_toast = Some(toast);
-                        }
-                        if let Some(tb) = self.you_name_textbox.as_mut() {
-                            tb.clear();
-                        }
+                        // "Save profile" → persist every field fleet-wide as `profile.<id>` settings, in ONE batched push (not one push per field).
+                        self.save_you_profile();
+                    } else if slot == 2 {
+                        // "Add" → register the typed label as a custom field (e.g. "Address 2") and append its box.
+                        self.add_custom_field();
                     }
                     // slot 1 = "Change avatar…" — not wired yet
                 } else if page == SettingsPage::Diagnostics {
@@ -1917,11 +2032,12 @@ impl FluorApp for PhotonApp {
             self.contacts_textbox.as_ref(),
             self.message_textbox.as_ref(),
             self.settings_note_textbox.as_ref(),
-            self.you_name_textbox.as_ref(),
+            self.you_add_textbox.as_ref(),
         ]
         .into_iter()
         .flatten()
-        .any(|tb| tb.hit_id() == hit_id);
+        .any(|tb| tb.hit_id() == hit_id)
+            || self.you_fields.iter().any(|pf| pf.tb.hit_id() == hit_id);
         if is_textbox && self.change_focus(Some(hit_id)) {
             ctx.window.request_redraw();
         }
@@ -2744,7 +2860,13 @@ impl FluorApp for PhotonApp {
             let sl = SettingsLayout::compute(&ctx.viewport);
             let rail_extent = (sl.nav_row_h() * (SettingsPage::ALL.len() as Coord + 1.0) - sl.rail_inset().h).max(0.0);
             self.settings_rail_scroll = self.settings_rail_scroll.clamp(0.0, rail_extent);
-            let content_extent = (sl.content_line_h() * settings_page_rows(page) as Coord - sl.content_inset().h).max(0.0);
+            // The You page is a dynamic form — its row count is the field set plus the fixed chrome rows, not a constant.
+            let n_rows = if page == SettingsPage::You {
+                you_rows_plan(&self.you_fields).len()
+            } else {
+                settings_page_rows(page)
+            };
+            let content_extent = (sl.content_line_h() * n_rows as Coord - sl.content_inset().h).max(0.0);
             self.settings_content_scroll = self.settings_content_scroll.clamp(0.0, content_extent);
             (self.settings_rail_scroll, self.settings_content_scroll)
         } else {
@@ -4233,34 +4355,68 @@ impl FluorApp for PhotonApp {
             // Immediate-mode stub pill helper — captured as a closure over the canvas/text/hit-map isn't possible (multiple &mut borrows), so pills are drawn inline per page below via `draw_stub_pill`.
             match page {
                 SettingsPage::You => {
-                    let rows = layout.content_scrolled(7, settings_content_scroll).split_v([1.0; 7]);
-                    // The handle string exists at rest NOWHERE (docs/identity-profile.md) — so this page shows the current NAME (the fleet `profile.name` setting) + the identity FINGERPRINT, never a handle. Empty name is legal: the handle IS the identity.
-                    let current = self
-                        .fleet_settings
-                        .as_ref()
-                        .and_then(|fs| fs.effective("profile.name"))
-                        .map(|v| String::from_utf8_lossy(&v).into_owned())
-                        .filter(|s| !s.is_empty());
-                    let name_line = match &current {
-                        Some(n) => format!("Name — {n}"),
-                        None => "Name — (unset)".to_string(),
-                    };
-                    settings_line(&mut canvas, ctx.text, rows[0], &name_line, tspan, CONTACT_NAME_COLOUR, 600);
-                    // The entry box always starts empty (placeholder-guided "type a new name") — type + Save replaces `profile.name`; Save clears it back to empty, so there is never a prefill to keep in sync.
-                    if let Some(tb) = self.you_name_textbox.as_mut() {
-                        let id = tb.hit_id();
-                        tb.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, Some(&mut chrome.hit_test_map), id);
+                    // A dynamic profile form: standard fields grouped by taxonomy tier, each an editable box prefilled from its `profile.<id>` setting, then an add-a-custom-field row, the identity read-out, and the action pills. Handle strings live at rest NOWHERE (docs/identity-profile.md) — this page shows names + the identity FINGERPRINT, never a handle. All rows are optional: your handle IS your identity.
+                    // Everything clips to the content pane so a scrolled-up row can't bleed into the header band (this page is far taller than the viewport). Rows fully outside the visible band are culled (perf + the pills carry no clip of their own).
+                    let inset = layout.content_inset();
+                    let content_clip = fluor::paint::Clip::new(
+                        inset.x.max(0.0) as usize,
+                        inset.y.max(0.0) as usize,
+                        inset.right().max(0.0) as usize,
+                        inset.bottom().max(0.0) as usize,
+                    );
+                    let content_top = inset.y;
+                    let content_bot = inset.bottom();
+                    let plan = you_rows_plan(&self.you_fields);
+                    for (i, row) in plan.iter().enumerate() {
+                        let r = you_row_rect(&layout, settings_content_scroll, i);
+                        if r.bottom() <= content_top || r.y >= content_bot {
+                            continue;
+                        }
+                        match row {
+                            YouRow::Header(title) => {
+                                ctx.text.draw_text_left_u32(&mut canvas, title, r.x + tspan * 0.3, r.center_y(), tspan, 600, CONTACT_NAME_COLOUR, "Oxanium", Some(content_clip), None, None);
+                            }
+                            YouRow::Field(idx) => {
+                                let cols = r.split_h([0.4, 0.6]);
+                                let label = self.you_fields[*idx].label.clone();
+                                ctx.text.draw_text_left_u32(&mut canvas, &label, cols[0].x + hspan2 * 0.3, cols[0].center_y(), hspan2, 400, LABEL_COLOUR, "Oxanium", Some(content_clip), None, None);
+                                let pf = &mut self.you_fields[*idx];
+                                let id = pf.tb.hit_id();
+                                pf.tb.render_content_into(&mut canvas, 0., 0., ctx.text, Some(content_clip), None, Some(&mut chrome.hit_test_map), id);
+                            }
+                            YouRow::AddHeader => {
+                                ctx.text.draw_text_left_u32(&mut canvas, "Add a custom field", r.x + tspan * 0.3, r.center_y(), tspan, 600, CONTACT_NAME_COLOUR, "Oxanium", Some(content_clip), None, None);
+                            }
+                            YouRow::AddInput => {
+                                let cols = r.split_h([0.62, 0.38]);
+                                if let Some(tb) = self.you_add_textbox.as_mut() {
+                                    let id = tb.hit_id();
+                                    tb.render_content_into(&mut canvas, 0., 0., ctx.text, Some(content_clip), None, Some(&mut chrome.hit_test_map), id);
+                                }
+                                draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, cols[1].center_h(0.72), "Add", btn_base.wrapping_add(2), ctx.pressed_hit);
+                            }
+                            YouRow::Note => {
+                                ctx.text.draw_text_left_u32(&mut canvas, "Your handle IS your identity — you don't have to set any of this.", r.x + hspan2 * 0.3, r.center_y(), hspan2, 400, LABEL_COLOUR, "Oxanium", Some(content_clip), None, None);
+                            }
+                            YouRow::IdentityHeader => {
+                                ctx.text.draw_text_left_u32(&mut canvas, "Identity", r.x + tspan * 0.3, r.center_y(), tspan, 600, CONTACT_NAME_COLOUR, "Oxanium", Some(content_clip), None, None);
+                            }
+                            YouRow::IdentityFp => {
+                                let fp = self
+                                    .session
+                                    .as_ref()
+                                    .map(|s| crate::fp(&crate::crypto::clutch::identity_party_id(&s.identity_seed)))
+                                    .unwrap_or_else(|| "—".to_string());
+                                ctx.text.draw_text_left_u32(&mut canvas, &fp, r.x + hspan2 * 0.3, r.center_y(), hspan2, 400, LABEL_COLOUR, "Oxanium", Some(content_clip), None, None);
+                            }
+                            YouRow::SavePill => {
+                                draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, r.center_h(pillf(0.5)), "Save profile", btn_base.wrapping_add(0), ctx.pressed_hit);
+                            }
+                            YouRow::AvatarPill => {
+                                draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, r.center_h(pillf(0.5)), "Change avatar…", btn_base.wrapping_add(1), ctx.pressed_hit);
+                            }
+                        }
                     }
-                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[2].center_h(pillf(0.4)), "Save name", btn_base.wrapping_add(0), ctx.pressed_hit);
-                    settings_line(&mut canvas, ctx.text, rows[3], "Your handle IS your identity — you don't have to set any of this.", hspan2, LABEL_COLOUR, 400);
-                    settings_line(&mut canvas, ctx.text, rows[4], "Identity", tspan, CONTACT_NAME_COLOUR, 600);
-                    let fp = self
-                        .session
-                        .as_ref()
-                        .map(|s| crate::fp(&crate::crypto::clutch::identity_party_id(&s.identity_seed)))
-                        .unwrap_or_else(|| "—".to_string());
-                    settings_line(&mut canvas, ctx.text, rows[5], &fp, hspan2, LABEL_COLOUR, 400);
-                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[6].center_h(pillf(0.4)), "Change avatar…", btn_base.wrapping_add(1), ctx.pressed_hit);
                 }
                 SettingsPage::Fleet => {
                     // Live device inventory (gathered above the chrome borrow): this device + our siblings. Rows 1..=6 hold up to 6 devices (fleets are usually ≤5; a scroll follows if this grows past the row budget). Non-self rows are tap-selectable (hit-stamped btn_base+16+index); the Remove pill acts on the selection with a two-tap confirm.
@@ -5047,11 +5203,30 @@ impl PhotonApp {
                     }
                 }
                 SettingsPage::You => {
-                    let rows = layout.content_scrolled(7, settings_content_scroll).split_v([1.0; 7]);
-                    if let Some(tb) = self.you_name_textbox.as_mut() {
-                        let r = rows[1].center_h(0.95);
-                        tb.set_rect(r.center_x(), r.center_y(), r.w, ctrl_h * 1.2);
-                        tb.set_font_size(ctrl_font, ctx.text);
+                    // First visit (or a re-entry): build the field boxes if needed + reload each from its stored value, so the form reflects the fleet-synced state.
+                    if !self.you_fields_loaded {
+                        self.load_you_fields(ctx.text);
+                    }
+                    // Position every box using the SAME row plan + row rects the render pass draws through, so a box sits exactly under its label.
+                    let plan = you_rows_plan(&self.you_fields);
+                    for (i, row) in plan.iter().enumerate() {
+                        let r = you_row_rect(&layout, settings_content_scroll, i);
+                        match row {
+                            YouRow::Field(idx) => {
+                                let boxr = r.split_h([0.4, 0.6])[1].center_h(0.92);
+                                let tb = &mut self.you_fields[*idx].tb;
+                                tb.set_rect(boxr.center_x(), boxr.center_y(), boxr.w, ctrl_h * 1.2);
+                                tb.set_font_size(ctrl_font, ctx.text);
+                            }
+                            YouRow::AddInput => {
+                                let boxr = r.split_h([0.62, 0.38])[0].center_h(0.92);
+                                if let Some(tb) = self.you_add_textbox.as_mut() {
+                                    tb.set_rect(boxr.center_x(), boxr.center_y(), boxr.w, ctrl_h * 1.2);
+                                    tb.set_font_size(ctrl_font, ctx.text);
+                                }
+                            }
+                            _ => {}
+                        }
                     }
                 }
                 SettingsPage::Diagnostics => {
@@ -5236,6 +5411,8 @@ impl PhotonApp {
         match self.state {
             AppState::Ready => {
                 self.change_focus(None);
+                // Reload the profile field boxes from settings on open.
+                self.you_fields_loaded = false;
                 self.state = AppState::Settings(SettingsPage::You);
                 true
             }
@@ -5848,6 +6025,144 @@ impl PhotonApp {
         }
         self.persist_and_push_settings();
         true
+    }
+
+    /// Build the You-page field boxes ONCE (HitId is a scarce u16 — never rebuild): the standard taxonomy, then any custom fields registered in `profile._custom` (one `id\tlabel` per line). Idempotent; values are loaded separately by [`Self::load_you_fields`].
+    fn build_you_fields(&mut self) {
+        if !self.you_fields.is_empty() {
+            return;
+        }
+        for &(id, label, tier) in STD_PROFILE_FIELDS {
+            let tb = Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.);
+            self.you_fields.push(ProfileField { field_id: id.to_string(), label: label.to_string(), tier, custom: false, tb });
+        }
+        let custom = self
+            .fleet_settings
+            .as_ref()
+            .and_then(|fs| fs.effective("profile._custom"))
+            .map(|v| String::from_utf8_lossy(&v).into_owned())
+            .unwrap_or_default();
+        for line in custom.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let (id, label) = line.split_once('\t').unwrap_or((line, line));
+            let id = id.trim().to_string();
+            let label = label.trim().to_string();
+            if id.is_empty() || self.you_fields.iter().any(|f| f.field_id == id) {
+                continue;
+            }
+            let tb = Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.);
+            self.you_fields.push(ProfileField { field_id: id, label, tier: "custom", custom: true, tb });
+        }
+    }
+
+    /// Reload each field box from its stored `profile.<id>` value (building the boxes first if needed), so the You page shows the fleet-synced state on open. Only overwrites a box when the stored value differs, so an in-progress edit of the current value survives a stray reload. Flips `you_fields_loaded` so the per-frame layout pass stops reloading.
+    fn load_you_fields(&mut self, text: &mut fluor::text::TextRenderer) {
+        self.ensure_fleet_settings();
+        self.build_you_fields();
+        for f in self.you_fields.iter_mut() {
+            let key = format!("profile.{}", f.field_id);
+            let val = self
+                .fleet_settings
+                .as_ref()
+                .and_then(|fs| fs.effective(&key))
+                .map(|v| String::from_utf8_lossy(&v).into_owned())
+                .unwrap_or_default();
+            let cur: String = f.tb.chars.iter().collect();
+            if cur != val {
+                f.tb.clear();
+                f.tb.insert_str(&val, text);
+            }
+        }
+        self.you_fields_loaded = true;
+    }
+
+    /// "Save profile" → write every field's current text to its `profile.<id>` setting and push the whole batch to the fleet ONCE (not one network push per field). Empty fields are saved as empty (a cleared value, legal). Reports what happened via the status toast.
+    fn save_you_profile(&mut self) {
+        if !self.ensure_fleet_settings() {
+            return;
+        }
+        let now = vsf::eagle_time_oscillations();
+        // Snapshot (key, value) first so we don't hold a you_fields borrow across the fleet_settings mutation.
+        let pairs: Vec<(String, Vec<u8>)> = self
+            .you_fields
+            .iter()
+            .map(|f| {
+                let v: String = f.tb.chars.iter().collect();
+                (format!("profile.{}", f.field_id), v.trim().as_bytes().to_vec())
+            })
+            .collect();
+        let fs = self.fleet_settings.as_mut().unwrap();
+        let mut changed = false;
+        for (key, val) in pairs {
+            // Don't create an empty entry for a field that was never filled and is still blank — only write blanks that CLEAR an existing value.
+            let absent = fs.effective(&key).map_or(true, |c| c.is_empty());
+            if val.is_empty() && absent {
+                continue;
+            }
+            if fs.set(&key, val, now) {
+                changed = true;
+            }
+        }
+        if changed {
+            self.persist_and_push_settings();
+            self.ready_toast = Some("Profile saved \u{221a}".to_string());
+        } else {
+            self.ready_toast = Some("No changes".to_string());
+        }
+    }
+
+    /// "Add" → register the label typed in the add box as a custom field (e.g. "Address 2" → id `address_2`), append its box, and persist the `profile._custom` registry so it reloads next launch. No-op on an empty label or a duplicate id.
+    fn add_custom_field(&mut self) {
+        let raw: String = match self.you_add_textbox.as_ref() {
+            Some(tb) => tb.chars.iter().collect(),
+            None => return,
+        };
+        let label = raw.trim().to_string();
+        if label.is_empty() {
+            return;
+        }
+        // Sanitise the label to a field_id: lowercase ascii-alphanumeric, every other run → a single underscore, trimmed.
+        let mut id = String::new();
+        let mut pending_us = false;
+        for c in label.chars() {
+            if c.is_ascii_alphanumeric() {
+                if pending_us && !id.is_empty() {
+                    id.push('_');
+                }
+                pending_us = false;
+                id.push(c.to_ascii_lowercase());
+            } else {
+                pending_us = true;
+            }
+        }
+        if id.is_empty() {
+            return;
+        }
+        if self.you_fields.iter().any(|f| f.field_id == id) {
+            self.ready_toast = Some("That field already exists".to_string());
+            if let Some(tb) = self.you_add_textbox.as_mut() {
+                tb.clear();
+            }
+            return;
+        }
+        let tb = Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.);
+        self.you_fields.push(ProfileField { field_id: id, label: label.clone(), tier: "custom", custom: true, tb });
+        // Persist the whole custom registry (id\tlabel per line) so the field survives a relaunch.
+        let reg = self
+            .you_fields
+            .iter()
+            .filter(|f| f.custom)
+            .map(|f| format!("{}\t{}", f.field_id, f.label))
+            .collect::<Vec<_>>()
+            .join("\n");
+        self.settings_set("profile._custom", reg.into_bytes());
+        if let Some(tb) = self.you_add_textbox.as_mut() {
+            tb.clear();
+        }
+        self.ready_toast = Some(format!("Added \u{201c}{label}\u{201d}"));
     }
 
     fn persist_and_push_settings(&mut self) {
@@ -11936,12 +12251,17 @@ impl PhotonApp {
             self.settings_note_textbox
                 .as_mut()
                 .map(|t| (TextboxRole::SettingsNote, t)),
-            self.you_name_textbox
+            self.you_add_textbox
                 .as_mut()
-                .map(|t| (TextboxRole::ProfileName, t)),
+                .map(|t| (TextboxRole::ProfileField, t)),
         ]
         .into_iter()
         .flatten()
+        .chain(
+            self.you_fields
+                .iter_mut()
+                .map(|pf| (TextboxRole::ProfileField, &mut pf.tb)),
+        )
     }
 
     /// Drive the disabled state of every textbox + its sibling button off the "query in flight" busy flags, in ONE place. A busy field returns `None` from its fluor capability accessors, so click / key / Tab / hover dispatch skip it for free — replacing the per-screen hand-rolled "swallow the click / force hover off / lock the field" code that used to live scattered across `on_event`. Symmetric across screens: the launch handle field + Attest button freeze while attesting (`!can_edit_handle()`), the contacts search box + plus button freeze while an add-friend search is in flight (`add_in_flight`).
