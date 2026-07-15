@@ -105,12 +105,12 @@ pub fn depart_device(device_key: &Keypair, handle_proof: &[u8; 32]) -> Result<()
     fgtw::client::depart_device(&PhotonTransport, device_key, handle_proof)
 }
 
-/// NEW device: post (or refresh) its binding request — device-signed + identity-co-signed consent to join.
+/// NEW device: post (or refresh) its binding request — device-signed + identity-co-signed consent to join. Returns the published `eagle_time` stamp (oscillations) so the caller can derive the proximity beacon from the exact offer the sponsor reads back.
 pub fn bindreq_put(
     device_key: &Keypair,
     identity_seed: &[u8; 32],
     handle_proof: &[u8; 32],
-) -> Result<(), String> {
+) -> Result<i64, String> {
     fgtw::client::bindreq_put(&PhotonTransport, device_key, identity_seed, handle_proof)
 }
 

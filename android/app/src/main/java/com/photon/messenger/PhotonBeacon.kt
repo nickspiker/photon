@@ -8,7 +8,6 @@ import android.bluetooth.le.AdvertiseSettings
 import android.bluetooth.le.BluetoothLeAdvertiser
 import android.bluetooth.le.BluetoothLeScanner
 import android.bluetooth.le.ScanCallback
-import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
@@ -39,9 +38,6 @@ object PhotonBeacon {
     private var scanCallback: ScanCallback? = null
     private var pendingAdvertise: ByteArray? = null
     private var pendingScan = false
-
-    // The fixed photon-pairing namespace tag (fgtw::pair::BEACON_MAGIC) — the first 4 bytes of every beacon UUID.
-    private val MAGIC = byteArrayOf(0xF0.toByte(), 0x70, 0x0B, 0xEA.toByte())
 
     private external fun nativeInit()
     private external fun nativeOnBeaconHeard(frame: ByteArray)
@@ -126,7 +122,7 @@ object PhotonBeacon {
         advertiseCallback = null
     }
 
-    /** Scan for pairing beacons: hardware-filter on advertised service UUIDs whose first 4 bytes are the photon magic (a UUID + mask), hand each 16-byte UUID to Rust, which magic-checks + resolves it to a fleet device by keyed tag. */
+    /** Scan for pairing beacons: the beacon is an opaque keyed hash with no magic prefix to hardware-filter on, so scan ALL advertised service UUIDs in the foreground and hand each 16-byte UUID to Rust, which matches it against the public candidate list under the fleet key. Brief, foreground-only. */
     fun startScan() {
         if (Build.VERSION.SDK_INT >= 31 && !hasPerm(Manifest.permission.BLUETOOTH_SCAN)) {
             pendingScan = true
@@ -138,11 +134,6 @@ object PhotonBeacon {
         if (!adapter.isEnabled) { PhotonLog.w("Beacon", "bluetooth is off — cannot scan"); return }
         val sc = adapter.bluetoothLeScanner ?: run { PhotonLog.w("Beacon", "no LE scanner"); return }
         stopScan()
-        val magicUuid = bytesToUuid(MAGIC + ByteArray(12))
-        val maskUuid = bytesToUuid(byteArrayOf(-1, -1, -1, -1) + ByteArray(12))
-        val filters = listOf(
-            ScanFilter.Builder().setServiceUuid(ParcelUuid(magicUuid), ParcelUuid(maskUuid)).build()
-        )
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
@@ -159,7 +150,7 @@ object PhotonBeacon {
             }
         }
         try {
-            sc.startScan(filters, settings, cb)
+            sc.startScan(null, settings, cb)
             scanner = sc
             scanCallback = cb
             pendingScan = false

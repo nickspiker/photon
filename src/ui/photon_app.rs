@@ -4466,8 +4466,9 @@ impl PhotonApp {
                                 AddCandidate {
                                     name: fleet::device_name_default(&req.device_pubkey, &seed),
                                     tokens: fleet::pair_word_list(&words),
+                                    // Recompute this candidate's beacon id from its OWN published (pubkey, eagle_time) under our handle key; a heard match = proximity.
                                     heard_ble: heard.iter().any(|b| {
-                                        fgtw::pair::beacon_matches(&b.uuid, &hp, &req.device_pubkey)
+                                        fgtw::pair::beacon_matches(&b.uuid, &hp, &req.device_pubkey, req.t)
                                     }),
                                     req,
                                 }
@@ -5909,13 +5910,16 @@ impl PhotonApp {
                 handle_proof,
             };
             let hp = session.handle_proof;
-            // Pairing v2 SHADOW-mode announce beacon (docs/pairing-v2.md milestone A): advertise {hp4, device_pk} for the whole ceremony — the guard drops on every exit path below, stopping the radio. The words carry the real ceremony until the BLE transport lands.
-            let _beacon = crate::network::pairing_beacon::announce_guard(&hp, &me);
-            // The binding request: "I consent to join fleet hp", signed by the device key + co-signed by the identity key. THE registry entry the old device's matcher screens candidates from, and the consent egg the Add op will carry.
-            if let Err(e) = fleet::bindreq_put(&device_key, &identity_seed, &hp) {
-                let _ = tx.send(JoinUpdate::Failed(format!("request failed: {e}")));
-                return;
-            }
+            // The binding request: "I consent to join fleet hp", signed by the device key + co-signed by the identity key. THE registry entry the old device's matcher screens candidates from, and the consent egg the Add op will carry. Posted FIRST so its published eagle_time exists before we derive the proximity beacon from it.
+            let offer_et = match fleet::bindreq_put(&device_key, &identity_seed, &hp) {
+                Ok(et) => et,
+                Err(e) => {
+                    let _ = tx.send(JoinUpdate::Failed(format!("request failed: {e}")));
+                    return;
+                }
+            };
+            // Pairing v2 proximity beacon (docs/pairing-v2.md): advertise keyed_hash(device_pk ‖ published eagle_time) within the handle for the whole ceremony — the guard drops on every exit path below, stopping the radio. Re-announced on each repost (below) so the aired id tracks the offer's current stamp.
+            let _beacon = crate::network::pairing_beacon::announce_guard(&hp, &me, offer_et);
 
             // Push subscription: the FGTW hub broadcasts `pair_evt` frames on registry changes ("request") and when the chain extends ("fleet"). Each one for OUR identity pokes `wake_tx`, and the poll loop's sleep below is a `recv_timeout` — so the ceremony reacts the moment the other device acts, with the poll cadence as the guarantee when the socket drops (best-effort accelerator, never load-bearing). The task dies with the socket or the stop flag; no reconnect — the poll still covers everything.
             let (wake_tx, wake_rx) = std::sync::mpsc::channel::<()>();
@@ -6000,7 +6004,10 @@ impl PhotonApp {
                     Ok(()) => {} // hub push — loop re-checks membership immediately
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                         if last_repost.elapsed() >= REPOST_EVERY {
-                            let _ = fleet::bindreq_put(&device_key, &identity_seed, &hp);
+                            // Restamp the offer, then re-emit the beacon under the NEW eagle_time so the aired id keeps matching the list entry the sponsor now reads.
+                            if let Ok(et) = fleet::bindreq_put(&device_key, &identity_seed, &hp) {
+                                crate::network::pairing_beacon::reannounce(&hp, &me, et);
+                            }
                             last_repost = std::time::Instant::now();
                         }
                         // else: just loop and re-poll current_members (the fast path)
@@ -6008,7 +6015,10 @@ impl PhotonApp {
                     Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                         std::thread::sleep(crate::jitter_dur(std::time::Duration::from_secs(8)));
                         if last_repost.elapsed() >= REPOST_EVERY {
-                            let _ = fleet::bindreq_put(&device_key, &identity_seed, &hp);
+                            // Restamp the offer, then re-emit the beacon under the NEW eagle_time so the aired id keeps matching the list entry the sponsor now reads.
+                            if let Ok(et) = fleet::bindreq_put(&device_key, &identity_seed, &hp) {
+                                crate::network::pairing_beacon::reannounce(&hp, &me, et);
+                            }
                             last_repost = std::time::Instant::now();
                         }
                     }
