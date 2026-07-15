@@ -182,7 +182,7 @@ fn get_context(ptr: jlong) -> Option<&'static mut PhotonContext> {
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeInitWithNetwork(
-    _env: JNIEnv<'_>,
+    mut env: JNIEnv<'_>,
     _class: JClass<'_>,
     width: jint,
     height: jint,
@@ -199,6 +199,18 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeInitWithNetwork
     if network_ptr == 0 {
         error!("Null NetworkContext pointer");
         return 0;
+    }
+    // Feed Android's user-facing double-tap timing to fluor so the multi-tap gestures (double = word, triple = paragraph) honour the SYSTEM setting instead of the 400 ms default. ViewConfiguration.getDoubleTapTimeout() is static — no Context needed.
+    match env.call_static_method("android/view/ViewConfiguration", "getDoubleTapTimeout", "()I", &[]) {
+        Ok(v) => {
+            if let Ok(ms) = v.i() {
+                if ms > 0 {
+                    fluor::host::os_input::set_double_click_interval(ms as u32);
+                    info!("PhotonActivity: double-tap timeout = {ms} ms (ViewConfiguration)");
+                }
+            }
+        }
+        Err(e) => info!("PhotonActivity: ViewConfiguration.getDoubleTapTimeout unavailable ({e}) — 400 ms default"),
     }
     fluor::host::android::surface::set_samsung_mode(is_samsung != JNI_FALSE);
     let network = unsafe { &*(network_ptr as *const NetworkContext) };

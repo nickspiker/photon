@@ -858,10 +858,13 @@ pub struct PhotonApp {
     hover_hit: HitId,
     /// Whether `hover_hit` is a text-entry widget (drives the I-beam). Set by the hover walk via `Widget::is_text_input`, so it covers every textbox on every screen with no hand-list.
     hover_is_textbox: bool,
-    /// Left button currently held. Gates drag-select in `CursorMoved`.
+    /// Left button currently held. Gates the textbox text-pan in `CursorMoved`.
     pointer_down: bool,
-    /// The textbox hit id a press engaged for drag-select (HIT_NONE if the press wasn't on a textbox). Set on press, cleared on release — the ONE bit of state the drag needs, works for every box via `textbox_by_hit_mut`.
+    /// The textbox hit id a press engaged for the text-pan (HIT_NONE if the press wasn't on a textbox). Set on press, cleared on release — the ONE bit of state the drag needs, works for every box via `textbox_by_hit_mut`. While live, pane-scroll (wheel / touch-drag synth) is suppressed: the finger owns the TEXT, not the page.
     drag_select_hit: HitId,
+    /// Text-pan grab: pointer x and the box's scroll offset at press — the drag pans the text to `grab_scroll + (x − grab_x)`, so the grabbed character (and the caret on it) stays under the finger.
+    pan_grab_x: Coord,
+    pan_grab_scroll: Coord,
     /// Last textbox press (id + time) for multi-click detection — a second/third press on the same box within the OS double-click interval escalates to word / all select.
     last_click_hit: HitId,
     last_click_time: Option<Instant>,
@@ -1053,6 +1056,8 @@ impl PhotonApp {
             hover_is_textbox: false,
             pointer_down: false,
             drag_select_hit: HIT_NONE,
+            pan_grab_x: 0.0,
+            pan_grab_scroll: 0.0,
             last_click_hit: HIT_NONE,
             last_click_time: None,
             click_streak: 0,
@@ -2164,9 +2169,9 @@ impl FluorApp for PhotonApp {
                 if let Some(chrome) = self.chrome.as_mut() {
                     changed |= chrome.set_hover(new_hit);
                 }
-                // Pointer-down over a textbox → this move extends its selection (drag-select), and while dragging the hover doesn't matter. Handled first so a drag reads as a gesture, not a hover.
+                // Pointer-down over a textbox → this move pans its TEXT with the pointer (the caret rides the grabbed character), and while panning the hover doesn't matter. Handled first so a drag reads as a gesture, not a hover.
                 if self.pointer_down && self.drag_select_hit != HIT_NONE {
-                    if self.drag_extend_selection(ctx.cursor_x) {
+                    if self.drag_pan_text(ctx.cursor_x) {
                         changed = true;
                     }
                 }
@@ -2279,6 +2284,10 @@ impl FluorApp for PhotonApp {
                     MouseScrollDelta::Pixels(_, y) => *y as isize,
                 };
                 if dy != 0 {
+                    // A live textbox pan owns the gesture: the finger is carrying the TEXT, so the pane must not also scroll under it (Android's touch-drag synthesizes wheel events alongside the CursorMoved the pan rides).
+                    if self.pointer_down && self.drag_select_hit != HIT_NONE {
+                        return EventResponse::Handled;
+                    }
                     // Rubber-band scrolling on every axis, every platform: past either end the step is asymptotically resisted (never further than `reach` past the bound), and `tick()` eases the overshoot back once the wheel stops. `reach` scales with the window so the give feels the same on a watch and an 8K panel.
                     let reach = ctx.viewport.height_px as f32 / (1 << 3) as f32;
                     if matches!(self.state, AppState::Ready) {
@@ -2821,6 +2830,17 @@ impl FluorApp for PhotonApp {
                     chrome.invalidate_bg();
                     chrome.invalidate_chrome();
                 }
+            }
+            // Textbox TEXT-pan spring: any box carried past its scroll bounds eases home the same way. Skip the box still under the finger (the drag owns it until release). Narrow damage — the box's own text_cache_dirty → damage_rect covers the repaint, so no scene_dirty needed.
+            let panning = if self.pointer_down { self.drag_select_hit } else { HIT_NONE };
+            let mut tb_spring = false;
+            for (_, tb) in self.textboxes_mut() {
+                if tb.hit_id() != panning && tb.spring_scroll(decay) {
+                    tb_spring = true;
+                }
+            }
+            if tb_spring {
+                needs_redraw = true;
             }
         }
 
@@ -12569,11 +12589,11 @@ impl PhotonApp {
             .map(|(_, t)| t)
     }
 
-    /// Pointer press over hit `id`: if it's a textbox, focus it, place the caret (+ drag anchor), and apply the multi-click streak (double → word, triple → all). Returns true if a textbox was engaged (caller consumes the press so it can't start a window drag). Works for ANY textbox on ANY screen.
+    /// Pointer press over hit `id`: if it's a textbox, focus it, place the caret under the pointer, and grab the text for the pan (drag = the text follows the finger — see `drag_pan_text`). Multi-tap streak: double → select word, triple → select paragraph (the whole single-line box). The tap interval comes from the OS (Android's ViewConfiguration double-tap timeout via JNI, X11 XSettings on Linux, 400 ms default). Returns true if a textbox was engaged (caller consumes the press so it can't start a window drag). Works for ANY textbox on ANY screen — the uniform pointer model, every platform.
     fn textbox_press(&mut self, id: HitId, x: Coord) -> bool {
         // A busy-frozen box (`!is_enabled`) takes no pointer input — treat it as "not a textbox" so the press falls through to the normal consume, matching the pre-rework behaviour.
         if self.textbox_by_hit_mut(id).map_or(true, |tb| !tb.is_enabled()) {
-            // Press landed off every (live) textbox — break any multi-click streak so a later click elsewhere-then-back doesn't count as a double.
+            // Press landed off every (live) textbox — break any multi-tap streak so a later tap elsewhere-then-back doesn't count as a double.
             self.last_click_hit = HIT_NONE;
             self.drag_select_hit = HIT_NONE;
             return false;
@@ -12588,7 +12608,10 @@ impl PhotonApp {
         self.click_streak = streak;
         self.drag_select_hit = id;
         self.pointer_down = true;
+        self.pan_grab_x = x;
         self.change_focus(Some(id));
+        let grab_scroll = self.textbox_by_hit_mut(id).unwrap().scroll_offset();
+        self.pan_grab_scroll = grab_scroll;
         let tb = self.textbox_by_hit_mut(id).unwrap();
         match streak {
             2 => {
@@ -12601,27 +12624,23 @@ impl PhotonApp {
         true
     }
 
-    /// Pointer drag while a textbox press is live: extend that box's selection to the cursor column (auto-scrolling). Returns true if the caret moved.
-    fn drag_extend_selection(&mut self, x: Coord) -> bool {
+    /// Pointer drag while a textbox press is live: pan the TEXT with the pointer — `grab_scroll + (x − grab_x)`, unclamped, so the grabbed character (caret riding it) stays under the finger and the text can be carried infinitely either way; `tick()`'s spring pass eases it home after release. A word/paragraph select (streak ≥ 2) doesn't pan. Returns true if the text moved.
+    fn drag_pan_text(&mut self, x: Coord) -> bool {
         let id = self.drag_select_hit;
-        // A word/all select (streak ≥ 2) shouldn't be dragged back to a caret; only a plain press (streak 1) extends.
         if self.click_streak >= 2 {
             return false;
         }
+        let offset = self.pan_grab_scroll + (x - self.pan_grab_x);
         match self.textbox_by_hit_mut(id) {
-            Some(tb) => tb.pointer_drag_to(x),
+            Some(tb) => tb.pan_scroll_to(offset),
             None => false,
         }
     }
 
-    /// Pointer release: clear the drag state and finalize the engaged box's selection (drop a zero-width anchor so a plain click reads as a caret, not an empty selection).
+    /// Pointer release: end the pan (the spring pass in `tick()` takes over easing any overshoot home).
     fn textbox_release(&mut self) {
         self.pointer_down = false;
-        let id = self.drag_select_hit;
         self.drag_select_hit = HIT_NONE;
-        if let Some(tb) = self.textbox_by_hit_mut(id) {
-            tb.pointer_release();
-        }
     }
 
     /// True iff both `[` and `]` are currently held. A bracket is "held" if its press timestamp is more recent than its release timestamp, OR the release was within [`CHORD_RELEASE_GRACE`] — that grace absorbs X11's habit of firing a synthetic Release for a held key the instant another key is pressed.
