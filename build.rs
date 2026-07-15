@@ -54,6 +54,14 @@ fn main() {
         let plist = format!("{}/macos/Info.plist", env::var("CARGO_MANIFEST_DIR").unwrap());
         println!("cargo:rustc-link-arg=-Wl,-sectcreate,__TEXT,__info_plist,{plist}");
         println!("cargo:rerun-if-changed=macos/Info.plist");
+        // CoreBluetooth advertiser shim (pairing-beacon new-device role) — ObjC because CBPeripheralManager needs a delegate + run loop. Compiled with ARC; links CoreBluetooth + Foundation. cc honours CC_<target>, so it rides the osxcross clang wrapper under the cross build.
+        cc::Build::new()
+            .file("macos/photon_ble.m")
+            .flag("-fobjc-arc")
+            .compile("photon_ble");
+        println!("cargo:rustc-link-lib=framework=CoreBluetooth");
+        println!("cargo:rustc-link-lib=framework=Foundation");
+        println!("cargo:rerun-if-changed=macos/photon_ble.m");
     }
 
     // Tell cargo to rerun if icon or version changes
