@@ -5964,9 +5964,20 @@ impl PhotonApp {
                 }
             };
             let mut last_repost = std::time::Instant::now();
+            let ceremony_start = std::time::Instant::now();
+            // Give-up backstop: a real ceremony binds in seconds-to-a-minute. Past this it's a forgotten or backgrounded screen — and Android keeps this raw thread alive after the Activity pauses (onPause emits no focus event), so without a cap it re-posts the registry every 3.5 min forever (observed: a backgrounded phone re-posting for 1.6h). Generous enough that a live pairing never hits it.
+            const MAX_CEREMONY: std::time::Duration = std::time::Duration::from_secs(15 * 60);
             loop {
                 if stop.load(Ordering::Relaxed) {
                     withdraw("cancel");
+                    return;
+                }
+                if ceremony_start.elapsed() >= MAX_CEREMONY {
+                    crate::log("JOIN: ceremony ran too long without binding — stopping re-posts");
+                    withdraw("timeout");
+                    let _ = tx.send(JoinUpdate::Failed(
+                        "timed out waiting to be added — re-enter the handle to try again".into(),
+                    ));
                     return;
                 }
                 // Genesis re-checked on EVERY fetch, not just the probe: a relay that served the real chain once must not be able to swap in a structurally-valid foreign chain mid-ceremony and have this loop adopt its members (the probe-time-only TOCTOU — docs/pairing-v2.md).
