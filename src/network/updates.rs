@@ -1,6 +1,8 @@
 //! Self-update client (docs/updates.md): fetch the signed version manifest, decide currency, download + verify + apply.
 //!
-//! Two channels, two manifests on the same R2 the installers serve from: `manifest-release.vsf` (ONE version, every platform row, written by deploy.sh) and `manifest-dev.vsf` (per-platform rows — dev pushes are ad hoc per platform — each row rewritten by its scripts/publish/dev-*.sh). Both are COMPLETE VSF files signed by the release key ([`crate::crypto::self_verify::AUTHOR_PUBKEY`]); `read_verified(_, Some(AUTHOR_PUBKEY))` is the trust gate — an unsigned or wrong-signer manifest is noise, exactly like a bad binary.
+//! Two channels, two manifests on the same R2 the installers serve from: `manifest-release.vsf` (ONE version, every platform section, written by deploy.sh) and `manifest-dev.vsf` (per-platform sections — dev pushes are ad hoc per platform — each rewritten by its scripts/publish/dev-*.sh). Both are COMPLETE VSF files signed by the release key ([`crate::crypto::self_verify::AUTHOR_PUBKEY`]); `read_verified(_, Some(AUTHOR_PUBKEY))` is the trust gate — an unsigned or wrong-signer manifest is noise, exactly like a bad binary.
+//!
+//! Manifest shape (agreed 2026-07-16): ONE SECTION PER ARTEFACT, each named `manifest.photon.<channel>` (the app + channel scoped in the label itself), fields all NAMED and semantically TYPED — `platform: x`, `arch: x`, `major/minor/patch: z` (native version numbers, no arabic digit strings; `major` omitted while 0, `patch` omitted on releases so its PRESENCE means "dev build"), `commit: hs` (the full 20-byte git SHA-1, raw), `url: nu` (VSF's network-URL type), `hash: hb` (BLAKE3 of the artefact). No positional parsing, no numbered field names.
 //!
 //! The apply path re-uses the binary self-verify: every published binary carries a 64-byte appended Ed25519 signature over BLAKE3(rest), so a download is verified ON DISK (`self_verify::verify_file`) before anything execs — plus the manifest's own BLAKE3 must match first. Desktop then swaps atomically and the app re-execs; Android hands the verified APK to the system installer (the OS owns package installs — that's the second click).
 
@@ -8,31 +10,31 @@ use std::path::PathBuf;
 
 use vsf::VsfType;
 
-/// This build's platform/arch id — the manifest row key. ARM is split per-arch (linux-arm64 ≠ linux-x86_64, mac intel ≠ apple silicon): every row names exactly one artefact.
-pub const fn platform_id() -> &'static str {
+/// This build's platform + arch — the manifest section keys. ARM is split per-arch (linux/arm64 ≠ linux/x86_64, mac intel ≠ apple silicon): every section names exactly one artefact.
+pub const fn our_platform() -> (&'static str, &'static str) {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
-        "linux-x86_64"
+        ("Linux", "x86_64")
     }
     #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
     {
-        "linux-arm64"
+        ("Linux", "arm64")
     }
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     {
-        "windows-x86_64"
+        ("Windows", "x86_64")
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
-        "macos-arm64"
+        ("macOS", "arm64")
     }
     #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
     {
-        "macos-intel"
+        ("macOS", "x86_64")
     }
     #[cfg(target_os = "android")]
     {
-        "android-arm64"
+        ("Android", "arm64")
     }
     #[cfg(not(any(
         all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")),
@@ -41,8 +43,23 @@ pub const fn platform_id() -> &'static str {
         target_os = "android"
     )))]
     {
-        "unsupported"
+        ("unsupported", "unsupported")
     }
+}
+
+/// Human-readable platform id for status lines/logs.
+pub fn platform_id() -> String {
+    let (p, a) = our_platform();
+    format!("{p}/{a}")
+}
+
+/// This build's (major, minor, patch) as numbers.
+pub fn our_version() -> (usize, usize, usize) {
+    (
+        env!("CARGO_PKG_VERSION_MAJOR").parse().unwrap_or(0),
+        env!("CARGO_PKG_VERSION_MINOR").parse().unwrap_or(0),
+        env!("CARGO_PKG_VERSION_PATCH").parse().unwrap_or(0),
+    )
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,16 +81,34 @@ impl Channel {
             Channel::Dev => "dev",
         }
     }
+    /// The per-artefact section name: app + channel scoped in the dictionary label itself.
+    pub fn section_name(self) -> &'static str {
+        match self {
+            Channel::Release => "manifest.photon.release",
+            Channel::Dev => "manifest.photon.development",
+        }
+    }
 }
 
-/// One artefact row from the manifest.
+/// One artefact section from the manifest.
 #[derive(Clone, Debug)]
 pub struct ManifestRow {
     pub platform: String,
-    pub version: String,
-    pub commit: String,
+    pub arch: String,
+    /// (major, minor, patch) — absent fields parse as 0, so a release is (0, Y, 0) until major exists.
+    pub version: (usize, usize, usize),
+    /// Full git commit (20-byte SHA-1), raw.
+    pub commit: Vec<u8>,
     pub url: String,
     pub hash: [u8; 32],
+}
+
+impl ManifestRow {
+    /// Display form of the version: `major.minor.patch` with the same omissions the wire uses.
+    pub fn version_string(&self) -> String {
+        let (maj, min, pat) = self.version;
+        format!("{maj}.{min}.{pat}")
+    }
 }
 
 /// Fetch + verify + parse a channel's manifest. Trust = the file signature verifying against the RELEASE key — never the URL, never a filename.
@@ -91,53 +126,79 @@ pub fn fetch_manifest_blocking(channel: Channel) -> Result<Vec<ManifestRow>, Str
         .bytes()
         .map_err(|e| format!("manifest read: {e}"))?
         .to_vec();
-    parse_manifest(&bytes)
+    parse_manifest(&bytes, channel)
 }
 
-/// Parse + signature-gate manifest bytes (public for the manifest tool's merge path + tests).
-pub fn parse_manifest(bytes: &[u8]) -> Result<Vec<ManifestRow>, String> {
+/// Parse + signature-gate manifest bytes: every section named `manifest.photon.<channel>` is one artefact, fields matched by NAME + TYPE (never position). Public for the manifest tool's merge path + tests.
+pub fn parse_manifest(bytes: &[u8], channel: Channel) -> Result<Vec<ManifestRow>, String> {
     let (header, header_end) =
         vsf::verification::read_verified(bytes, Some(crate::crypto::self_verify::AUTHOR_PUBKEY))
             .map_err(|e| format!("manifest verification: {e}"))?;
-    let section = header
-        .primary_section(bytes, header_end)
-        .map_err(|e| format!("manifest section: {e}"))?;
-    if section.name != "manifest" {
-        return Err(format!("unexpected section {:?}", section.name));
-    }
+    let sections = header
+        .sections(bytes, header_end)
+        .map_err(|e| format!("manifest sections: {e}"))?;
     let mut rows = Vec::new();
-    for field in section.get_fields("artefact") {
-        // Row shape: (x platform, x version, x commit, x url, hb hash) — a native multi-value field, no numbered names.
-        let mut strings: Vec<&String> = Vec::new();
-        let mut hash: Option<[u8; 32]> = None;
-        for v in &field.values {
-            match v {
-                VsfType::x(s) => strings.push(s),
-                VsfType::hb(h) if h.len() == 32 => hash = Some(h.as_slice().try_into().unwrap()),
-                _ => {}
-            }
+    for section in &sections {
+        if section.name != channel.section_name() {
+            continue;
         }
-        if strings.len() >= 4 {
-            if let Some(h) = hash {
-                rows.push(ManifestRow {
-                    platform: strings[0].clone(),
-                    version: strings[1].clone(),
-                    commit: strings[2].clone(),
-                    url: strings[3].clone(),
-                    hash: h,
-                });
-            }
-        }
+        // Named single-value fields; absent numeric = 0 (major while uncounted, patch on releases).
+        let text = |name: &str| -> Option<String> {
+            section.get_fields(name).first().and_then(|f| f.values.first()).and_then(|v| match v {
+                VsfType::x(s) => Some(s.clone()),
+                VsfType::nu(s) => Some(s.clone()),
+                _ => None,
+            })
+        };
+        let num = |name: &str| -> usize {
+            section
+                .get_fields(name)
+                .first()
+                .and_then(|f| f.values.first())
+                .and_then(|v| match v {
+                    VsfType::z(n) => Some(*n),
+                    VsfType::u(n, _) => Some(*n),
+                    _ => None,
+                })
+                .unwrap_or(0)
+        };
+        let hash: Option<[u8; 32]> = section.get_fields("hash").first().and_then(|f| f.values.first()).and_then(|v| match v {
+            VsfType::hb(h) if h.len() == 32 => h.as_slice().try_into().ok(),
+            _ => None,
+        });
+        let commit: Vec<u8> = section
+            .get_fields("commit")
+            .first()
+            .and_then(|f| f.values.first())
+            .and_then(|v| match v {
+                VsfType::hs(c) => Some(c.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        let (Some(platform), Some(arch), Some(url), Some(hash)) =
+            (text("platform"), text("arch"), text("url"), hash)
+        else {
+            continue;
+        };
+        rows.push(ManifestRow {
+            platform,
+            arch,
+            version: (num("major"), num("minor"), num("patch")),
+            commit,
+            url,
+            hash,
+        });
     }
     if rows.is_empty() {
-        return Err("manifest carried no artefact rows".to_string());
+        return Err("manifest carried no artefact sections for this channel".to_string());
     }
     Ok(rows)
 }
 
-/// The row for THIS build's platform, if the manifest carries one.
+/// The section for THIS build's platform + arch, if the manifest carries one.
 pub fn our_row(rows: &[ManifestRow]) -> Option<ManifestRow> {
-    rows.iter().find(|r| r.platform == platform_id()).cloned()
+    let (p, a) = our_platform();
+    rows.iter().find(|r| r.platform == p && r.arch == a).cloned()
 }
 
 /// Download an artefact to `dest`, then gate it twice: BLAKE3 against the signed manifest's hash, and (for desktop binaries) the appended Ed25519 self-signature on disk. Nothing execs unless both pass.
@@ -194,8 +255,8 @@ pub fn apply_desktop_blocking(row: &ManifestRow) -> Result<PathBuf, String> {
         }
     }
     crate::log(&format!(
-        "UPDATE: applied {} {} ({}) — re-exec pending",
-        row.platform, row.version, row.commit
+        "UPDATE: applied {}/{} {} ({}) — re-exec pending",
+        row.platform, row.arch, row.version_string(), hex::encode(&row.commit)
     ));
     Ok(exe)
 }
