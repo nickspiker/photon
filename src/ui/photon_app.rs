@@ -57,6 +57,24 @@ const SEARCH_FOUND_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_40_E0
 const SEARCH_FAIL_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_E0_40_40));
 /// Hourglass tint while the search is in flight (orange). α+darkness.
 const HOURGLASS_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_FF_A5_00));
+
+/// Security-page destructiveness ramp — pill fills `(idle, held)`, least to most destructive: green (Lock: reversible by re-typing the handle) → yellow (fleet self-removal) → orange (Shred: wipe this device) → red (Remove & shred: sign out of the fleet AND wipe). Same luminance discipline as BUTTON_FILL/HELD (dark idle, ~2× brighter held).
+const PILL_GREEN: (u32, u32) = (
+    fluor::theme::dark(fluor::theme::fmt(0x00_14_3C_1C)),
+    fluor::theme::dark(fluor::theme::fmt(0x00_2E_88_40)),
+);
+const PILL_YELLOW: (u32, u32) = (
+    fluor::theme::dark(fluor::theme::fmt(0x00_3E_38_10)),
+    fluor::theme::dark(fluor::theme::fmt(0x00_8C_7E_26)),
+);
+const PILL_ORANGE: (u32, u32) = (
+    fluor::theme::dark(fluor::theme::fmt(0x00_48_2A_0E)),
+    fluor::theme::dark(fluor::theme::fmt(0x00_A0_5E_22)),
+);
+const PILL_RED: (u32, u32) = (
+    fluor::theme::dark(fluor::theme::fmt(0x00_4E_14_14)),
+    fluor::theme::dark(fluor::theme::fmt(0x00_AC_2E_2E)),
+);
 /// Send-button arrowhead glyph — light grey, α+darkness format for under-blend (visible-RGB is not usable on this canvas).
 const SEND_ARROW_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_D0_D0_D0));
 /// Hover fill for the send / plus action buttons — a SUBTLE neutral brightening of BUTTON_FILL (0x1A224E), reproducing the pre-fluor QUERY_BUTTON_HOVER feel rather than the shared BUTTON_HOVER's saturated-blue shift. A small delta also keeps the overlay from cooking the near-white arrowhead.
@@ -876,6 +894,8 @@ pub struct PhotonApp {
     settings_fleet_selected: Option<[u8; 32]>,
     /// Security-page "Shred (crypto-wipe)" confirm arm: a first tap arms, a second fires `clean_device_for_reuse` (nuke vault + clear session). Event-shown, interaction-cleared.
     settings_shred_armed: bool,
+    /// Two-tap confirm armed for the Security page's "Remove & shred" (self-departure from the fleet chain, then crypto-wipe). Mutually exclusive with `settings_shred_armed`; cleared on any page switch, like every destructive arm.
+    settings_removeshred_armed: bool,
     /// About page: false = show the version as dozenal GLYPHS (the default — proper rendered dozenal, never arabic); true = the version tapped, spell it out in voca words. Toggles on each tap of the version row.
     about_version_spelled: bool,
 
@@ -1043,6 +1063,7 @@ impl PhotonApp {
             you_fields_loaded: false,
             settings_fleet_selected: None,
             settings_shred_armed: false,
+            settings_removeshred_armed: false,
             about_version_spelled: false,
         }
     }
@@ -1915,6 +1936,7 @@ impl FluorApp for PhotonApp {
                         self.settings_fleet_selected = None;
                     }
                     if *p != SettingsPage::Security {
+                        self.settings_removeshred_armed = false;
                         self.settings_shred_armed = false;
                     }
                     // Fresh page starts at the top — a leftover scroll from a longer page would strand a short one mid-air.
@@ -1955,6 +1977,7 @@ impl FluorApp for PhotonApp {
                     if slot == 0 {
                         // "Lock" → clear session only (de-attest); vault kept, re-unlock by re-typing your handle. Works on Android (the -1 broadcast drops Kotlin's sticky session).
                         self.settings_shred_armed = false;
+                        self.settings_removeshred_armed = false;
                         tohu::clear_session();
                         self.session = None;
                         self.private_s = crate::crypto::blind::PrivateS::None;
@@ -1963,16 +1986,36 @@ impl FluorApp for PhotonApp {
                         self.refocus_handle_select_all();
                         crate::log("SECURITY: locked — session cleared, vault kept; re-type handle to unlock");
                     } else if slot == 2 {
-                        // "Shred (crypto-wipe)" → full clean (nuke vault + clear session). Two-tap confirm (destructive + irreversible).
+                        // "Shred (crypto-wipe)" → full clean (nuke vault + clear session). Two-tap confirm (destructive + irreversible). Arming disarms the other destructive pill so exactly one confirm is ever live.
                         if self.settings_shred_armed {
                             self.settings_shred_armed = false;
                             self.clean_device_for_reuse();
                         } else {
                             self.settings_shred_armed = true;
+                            self.settings_removeshred_armed = false;
+                        }
+                    } else if slot == 3 {
+                        // "Remove & shred" → UNSIGN (self-departure from the fleet chain — the only chain remove that exists, self-signed + idempotent), then crypto-wipe. Two-tap confirm. Departure is best-effort: offline still wipes (the user is leaving either way; a lost device gets keyed out by the fleet regardless), the outcome is logged.
+                        if self.settings_removeshred_armed {
+                            self.settings_removeshred_armed = false;
+                            let hp = self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof());
+                            if let (Some(hp), Some(kp)) = (hp, self.device_keypair.clone()) {
+                                match crate::network::fgtw::fleet::depart_device(&kp, &hp) {
+                                    Ok(()) => crate::log("SECURITY: departed the fleet chain (self-signed remove)"),
+                                    Err(e) => crate::log(&format!("SECURITY: fleet departure failed ({e}) — wiping anyway")),
+                                }
+                            } else {
+                                crate::log("SECURITY: no session/keypair to depart with — wiping only");
+                            }
+                            self.clean_device_for_reuse();
+                        } else {
+                            self.settings_removeshred_armed = true;
+                            self.settings_shred_armed = false;
                         }
                     } else {
-                        // Slot 1 "Remove this device from fleet" (self-removal) is deferred.
+                        // Slot 1 "Remove this device from fleet" (self-removal WITHOUT the wipe) is deferred.
                         self.settings_shred_armed = false;
+                        self.settings_removeshred_armed = false;
                         crate::log("settings-stub: self-fleet-removal deferred");
                     }
                 } else if page == SettingsPage::You {
@@ -4455,18 +4498,22 @@ impl FluorApp for PhotonApp {
                     draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[1].center_h(0.85), "Rename", btn_base.wrapping_add(1), ctx.pressed_hit);
                 }
                 SettingsPage::Security => {
-                    let rows = layout.content_scrolled(8, settings_content_scroll).split_v([1.0; 8]);
+                    // Destructiveness ramp, least → most, one blank row between each pill so they breathe: Lock (green, reversible) · fleet self-removal (yellow) · Shred (orange, wipe this device) · Remove & shred (red, sign out of the fleet THEN wipe). The two wipers are two-tap confirmed, mutually exclusive.
+                    let rows = layout.content_scrolled(11, settings_content_scroll).split_v([1.0; 11]);
                     settings_line(&mut canvas, ctx.text, rows[0], "Security", tspan, CONTACT_NAME_COLOUR, 600);
                     settings_line(&mut canvas, ctx.text, rows[1], "Named by destructiveness.", hspan2, LABEL_COLOUR, 400);
-                    // Lock (slot 0): clear the session only — de-attest, vault kept, re-unlock by re-typing your handle. Shred (slot 2): full clean — nuke vault + clear session, a blank slate for a new owner (two-tap confirm). Slot 1 ("Sign out & remove") is self-fleet-removal, still deferred.
-                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[2].center_h(pillf(0.55)), "Lock (re-unlock with your handle)", btn_base.wrapping_add(0), ctx.pressed_hit);
-                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[3].center_h(pillf(0.55)), "Remove this device from fleet", btn_base.wrapping_add(1), ctx.pressed_hit);
+                    draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[2].center_h(pillf(0.55)), "Lock (re-unlock with your handle)", btn_base.wrapping_add(0), ctx.pressed_hit, true, Some(PILL_GREEN));
+                    draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[4].center_h(pillf(0.55)), "Remove this device from fleet", btn_base.wrapping_add(1), ctx.pressed_hit, true, Some(PILL_YELLOW));
                     let shred_label = if self.settings_shred_armed { "Shred — tap again to confirm" } else { "Shred (crypto-wipe)" };
-                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[4].center_h(pillf(0.55)), shred_label, btn_base.wrapping_add(2), ctx.pressed_hit);
+                    draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[6].center_h(pillf(0.55)), shred_label, btn_base.wrapping_add(2), ctx.pressed_hit, true, Some(PILL_ORANGE));
+                    let rs_label = if self.settings_removeshred_armed { "Remove & shred — tap again to confirm" } else { "Remove & shred (sign out, then wipe)" };
+                    draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[8].center_h(pillf(0.55)), rs_label, btn_base.wrapping_add(3), ctx.pressed_hit, true, Some(PILL_RED));
                     if self.settings_shred_armed {
-                        settings_line(&mut canvas, ctx.text, rows[5], "Wipes the vault AND identity on this device — irreversible.", hspan2, ERROR_TEXT_COLOUR, 500);
+                        settings_line(&mut canvas, ctx.text, rows[9], "Wipes the vault AND identity on this device — irreversible.", hspan2, ERROR_TEXT_COLOUR, 500);
+                    } else if self.settings_removeshred_armed {
+                        settings_line(&mut canvas, ctx.text, rows[9], "Signs this device out of your fleet, then wipes it — irreversible.", hspan2, ERROR_TEXT_COLOUR, 500);
                     }
-                    settings_line(&mut canvas, ctx.text, rows[6], "Security: strong   ·   Recovery: not set up", hspan2, LABEL_COLOUR, 400);
+                    settings_line(&mut canvas, ctx.text, rows[10], "Security: strong   ·   Recovery: not set up", hspan2, LABEL_COLOUR, 400);
                 }
                 SettingsPage::Recovery => {
                     let rows = layout.content_scrolled(8, settings_content_scroll).split_v([1.0; 8]);
@@ -12765,6 +12812,7 @@ fn settings_page_rows(page: SettingsPage) -> usize {
     match page {
         SettingsPage::You => 7,
         SettingsPage::Diagnostics => 10,
+        SettingsPage::Security => 11,
         _ => 8,
     }
 }
@@ -12836,11 +12884,30 @@ fn draw_stub_pill_styled(
     pressed_hit: HitId,
     enabled: bool,
 ) {
+    draw_stub_pill_filled(canvas, text, hit_map, buf_w, buf_h, rect, label, hit_id, pressed_hit, enabled, None);
+}
+
+/// [`draw_stub_pill_styled`] with an optional custom fill pair `(idle, held)` — the Security page's destructiveness ramp (green → yellow → orange → red). `None` = the standard BUTTON_FILL/HELD navy.
+#[allow(clippy::too_many_arguments)]
+fn draw_stub_pill_filled(
+    canvas: &mut Canvas,
+    text: &mut fluor::text::TextRenderer,
+    hit_map: &mut [HitId],
+    buf_w: usize,
+    buf_h: usize,
+    rect: fluor::region::Region,
+    label: &str,
+    hit_id: HitId,
+    pressed_hit: HitId,
+    enabled: bool,
+    fill: Option<(u32, u32)>,
+) {
     if rect.w <= 0.0 || rect.h <= 0.0 {
         return;
     }
     // Held: a pointer is down on this pill and a release here will fire it (press-hold-release). Only an enabled pill can be held; a drag-off clears `pressed_hit` so the fill drops back to BUTTON_FILL.
     let held = enabled && hit_id != HIT_NONE && hit_id == pressed_hit;
+    let (fill_idle, fill_held) = fill.unwrap_or((fluor::theme::BUTTON_FILL, fluor::theme::BUTTON_HELD));
     let mut font_size = rect.h * 0.5;
     // Label first (topmost-first): centred in the pill.
     let mut tw = text.measure_text_width(label, font_size, 400, "Open Sans");
@@ -12886,7 +12953,7 @@ fn draw_stub_pill_styled(
             y0 + stroke,
             inner_w,
             inner_h,
-            if held { fluor::theme::BUTTON_HELD } else { fluor::theme::BUTTON_FILL },
+            if held { fill_held } else { fill_idle },
             1.75,
         );
     }
