@@ -1980,8 +1980,8 @@ impl FluorApp for PhotonApp {
                             let sl = SettingsLayout::compute(&ctx.viewport);
                             (ctx.cursor_x as f32) < sl.content.x
                         };
-                        // Sign matches contacts/OS natural-scroll convention (down-scroll reveals lower rows). The synthetic Android touch wheel is flipped at the source so this one sign serves both.
-                        let step = dy as f32;
+                        // The foreground panes (rail + content) position rows as `inset.y − scroll`, the OPPOSITE sign to the background texture's `row − scroll` — so with the raw wheel delta they scrolled against the background (the "foreground inverted" report). Negate the delta here so the foreground gesture lands on the OS natural-scroll convention (down-scroll reveals lower rows); the background is handed the negated offsets below so ITS direction is unchanged (it reads correct already). Android touch rides the same `step`, so this one sign serves both.
+                        let step = -(dy as f32);
                         if over_rail {
                             self.settings_rail_scroll = (self.settings_rail_scroll + step).max(0.0);
                         } else {
@@ -2654,8 +2654,9 @@ impl FluorApp for PhotonApp {
             let sl = SettingsLayout::compute(&ctx.viewport);
             (
                 Some(sl.content.x as usize),
-                Some(settings_rail_scroll as isize),
-                settings_content_scroll as isize,
+                // Negated to cancel the foreground gesture flip (see the `step` sign in on_event): the panes and the texture use opposite offset signs, so feeding the texture the negated offset keeps its (already-correct) direction while the foreground gets its inversion fixed.
+                Some(-(settings_rail_scroll as isize)),
+                -(settings_content_scroll as isize),
             )
         } else {
             (None, None, scroll_offset)
