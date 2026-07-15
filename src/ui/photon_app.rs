@@ -582,8 +582,10 @@ enum YouRow {
     IdentityHeader,
     /// The identity fingerprint read-out.
     IdentityFp,
-    /// "Save profile" action pill.
+    /// "Update" action pill.
     SavePill,
+    /// Empty breathing row (between the action pills).
+    Blank,
     /// "Change avatar…" action pill.
     AvatarPill,
 }
@@ -609,6 +611,7 @@ fn you_rows_plan(fields: &[ProfileField]) -> Vec<YouRow> {
     rows.push(YouRow::IdentityHeader);
     rows.push(YouRow::IdentityFp);
     rows.push(YouRow::SavePill);
+    rows.push(YouRow::Blank);
     rows.push(YouRow::AvatarPill);
     rows
 }
@@ -1901,6 +1904,8 @@ impl FluorApp for PhotonApp {
 
         // Back button — Conversation and Add-device both return to the contact list. Navigation is a dedicated control; the orb is settings-only.
         if hit_id == self.back_btn_hit_id && self.back_btn_hit_id != HIT_NONE {
+            // Leaving a screen deselects whatever textbox held focus (clears its glow + selection) — page changes never carry focus across.
+            self.change_focus(None);
             if matches!(self.state, AppState::Conversation) {
                 self.state = AppState::Ready;
                 self.active_contact = None;
@@ -1995,19 +2000,25 @@ impl FluorApp for PhotonApp {
                             self.settings_removeshred_armed = false;
                         }
                     } else if slot == 3 {
-                        // "Remove & shred" → UNSIGN (self-departure from the fleet chain — the only chain remove that exists, self-signed + idempotent), then crypto-wipe. Two-tap confirm. Departure is best-effort: offline still wipes (the user is leaving either way; a lost device gets keyed out by the fleet regardless), the outcome is logged.
+                        // "Remove & shred" → UNSIGN (self-departure from the fleet chain — the only chain remove that exists, self-signed + idempotent), THEN crypto-wipe. Two-tap confirm. The wipe is GATED on the departure landing: if the signed remove can't publish (offline, races exhausted), nothing is wiped — otherwise the fleet would forever list a device whose keys are gone. Plain Shred (orange) remains the wipe-without-departing path.
                         if self.settings_removeshred_armed {
                             self.settings_removeshred_armed = false;
                             let hp = self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof());
                             if let (Some(hp), Some(kp)) = (hp, self.device_keypair.clone()) {
                                 match crate::network::fgtw::fleet::depart_device(&kp, &hp) {
-                                    Ok(()) => crate::log("SECURITY: departed the fleet chain (self-signed remove)"),
-                                    Err(e) => crate::log(&format!("SECURITY: fleet departure failed ({e}) — wiping anyway")),
+                                    Ok(()) => {
+                                        crate::log("SECURITY: departed the fleet chain (self-signed remove) — wiping");
+                                        self.clean_device_for_reuse();
+                                    }
+                                    Err(e) => {
+                                        crate::log(&format!("SECURITY: fleet departure failed ({e}) — NOT wiping"));
+                                        self.ready_toast = Some("Couldn't sign out of the fleet — nothing wiped. Check connection and retry.".to_string());
+                                    }
                                 }
                             } else {
-                                crate::log("SECURITY: no session/keypair to depart with — wiping only");
+                                crate::log("SECURITY: no session/keypair to depart with — NOT wiping");
+                                self.ready_toast = Some("No signed-in identity to remove — use Shred instead.".to_string());
                             }
-                            self.clean_device_for_reuse();
                         } else {
                             self.settings_removeshred_armed = true;
                             self.settings_shred_armed = false;
@@ -2020,13 +2031,23 @@ impl FluorApp for PhotonApp {
                     }
                 } else if page == SettingsPage::You {
                     if slot == 0 {
-                        // "Save profile" → persist every field fleet-wide as `profile.<id>` settings, in ONE batched push (not one push per field).
+                        // "Update" → persist every field fleet-wide as `profile.<id>` settings, in ONE batched push (not one push per field).
                         self.save_you_profile();
+                    } else if slot == 1 {
+                        // "Change avatar…" — Android hands us the system image picker; desktop is drag/drop ONLY (no file-picker), so the pill just tells the user how.
+                        #[cfg(target_os = "android")]
+                        {
+                            self.change_focus(None);
+                            self.pending_picker_request = true;
+                        }
+                        #[cfg(not(target_os = "android"))]
+                        {
+                            self.ready_toast = Some("Drag & drop an image onto the Photon window".to_string());
+                        }
                     } else if slot == 2 {
                         // "Add" → register the typed label as a custom field (e.g. "Address 2") and append its box.
                         self.add_custom_field();
                     }
-                    // slot 1 = "Change avatar…" — not wired yet
                 } else if page == SettingsPage::Diagnostics {
                     if slot == 0 {
                         // "Clear" → wipe the on-device log; the next line reopens a fresh, empty file.
@@ -2651,6 +2672,12 @@ impl FluorApp for PhotonApp {
                     match std::fs::read(path) {
                         Ok(bytes) => {
                             self.set_avatar_from_file(bytes);
+                            // Force a FULL repaint, not just a redraw request: on macOS the drop arrives during the drag-session teardown and the incremental present can get swallowed — the avatar then only appeared after the next click. Invalidate everything so the post-drop frame rebuilds + re-presents the whole window.
+                            self.scene_dirty = true;
+                            if let Some(chrome) = self.chrome.as_mut() {
+                                chrome.invalidate_bg();
+                                chrome.invalidate_chrome();
+                            }
                             ctx.window.request_redraw();
                         }
                         Err(e) => crate::log(&format!("avatar drop: read failed: {e}")),
@@ -2869,11 +2896,7 @@ impl FluorApp for PhotonApp {
             ready_block_version_y =
                 Some((block_bottom_at_zero + row_h - self.contacts_scroll) as f32);
         }
-        // Settings panel (STUB): reposition the active page's widgets each frame so zoom / resize track. Mirrors the Ready branch above; must run before the long-lived `chrome` borrow since it takes `&mut self`.
-        if matches!(self.state, AppState::Settings(_)) {
-            self.update_widget_layout(ctx);
-        }
-        // Settings scroll: clamp the rail + content offsets to their NATURAL-height extents (no clamp-to-fit in layout → content can overflow → this scroll reveals it, bounded so it can't scroll off the page). Done here, before the `chrome` borrow, so the render arms + update_widget_layout all read the same clamped offsets this frame. Captured into locals for use inside the borrowed render block.
+        // Settings scroll: clamp the rail + content offsets to their NATURAL-height extents (no clamp-to-fit in layout → content can overflow → this scroll reveals it, bounded so it can't scroll off the page). MUST run BEFORE update_widget_layout: the wheel handler writes unclamped deltas, and positioning the widgets off the raw value for one frame (then the clamped one next frame) is what made the textboxes rubber-band past the top while the immediate-mode labels (drawn from the clamped locals) hard-stopped. One clamp, then everything this frame reads the same value. Captured into locals for use inside the borrowed render block.
         let (settings_rail_scroll, settings_content_scroll) = if let AppState::Settings(page) = self.state {
             let sl = SettingsLayout::compute(&ctx.viewport);
             let rail_extent = (sl.nav_row_h() * (SettingsPage::ALL.len() as Coord + 1.0) - sl.rail_inset().h).max(0.0);
@@ -2890,6 +2913,10 @@ impl FluorApp for PhotonApp {
         } else {
             (0.0, 0.0)
         };
+        // Settings panel: reposition the active page's widgets each frame so zoom / resize track — AFTER the clamp above (widgets and labels must read the same scroll), before the long-lived `chrome` borrow since it takes `&mut self`.
+        if matches!(self.state, AppState::Settings(_)) {
+            self.update_widget_layout(ctx);
+        }
         // Fleet device inventory, gathered before the long-lived `chrome` borrow (the Fleet render arm can't call the `&self` helper while `chrome` is borrowed mutably). Empty off the Fleet page.
         let fleet_devices = if matches!(self.state, AppState::Settings(SettingsPage::Fleet)) {
             self.fleet_device_rows()
@@ -4395,6 +4422,22 @@ impl FluorApp for PhotonApp {
                     for (i, row) in plan.iter().enumerate() {
                         let r = you_row_rect(&layout, settings_content_scroll, i);
                         if r.bottom() <= content_top || r.y >= content_bot {
+                            // Culled: reset the row's textboxes to never-painted so they report NO damage while hidden — a culled box otherwise keeps dirty-from-birth caches (or a stale prev-rect from before the scroll) and leaks phantom damage every blink frame. The scroll frame that culled it was a full scene repaint, so its old pixels are already gone.
+                            match row {
+                                YouRow::Field(idx) => {
+                                    let pf = &mut self.you_fields[*idx];
+                                    pf.tb.reset_paint_tracking();
+                                    if let Some(tag) = pf.tag_tb.as_mut() {
+                                        tag.reset_paint_tracking();
+                                    }
+                                }
+                                YouRow::AddInput => {
+                                    if let Some(tb) = self.you_add_textbox.as_mut() {
+                                        tb.reset_paint_tracking();
+                                    }
+                                }
+                                _ => {}
+                            }
                             continue;
                         }
                         match row {
@@ -4442,6 +4485,7 @@ impl FluorApp for PhotonApp {
                             YouRow::SavePill => {
                                 draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, r.center_h(pillf(0.5)), "Update", btn_base.wrapping_add(0), ctx.pressed_hit);
                             }
+                            YouRow::Blank => {}
                             YouRow::AvatarPill => {
                                 draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, r.center_h(pillf(0.5)), "Change avatar…", btn_base.wrapping_add(1), ctx.pressed_hit);
                             }
