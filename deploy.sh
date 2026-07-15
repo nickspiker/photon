@@ -3,9 +3,16 @@ set -e
 
 source scripts/lib/github.sh
 
-# The Cargo.toml version IS the displayed (dozenal) version, and it's the version we're currently working on. This deploy SHIPS that current version as-is; only on FULL SUCCESS do we bump the patch to the next number and commit. So Cargo.toml is never touched until everything has succeeded (no half-deployed dirty tree), and the number only advances on a successful deploy — never on test or full builds, which just inherit whatever the tree currently says.
-SHIP_VERSION=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"[0-9]+\.[0-9]+\.([0-9]+)".*/\1/')
-echo "Deploying version: $SHIP_VERSION"
+# Version scheme (2026-07-16): major.minor.patch. deploy.sh ships X.Y.0 and bumps the MINOR on full success (patch 0 is RESERVED for releases; dev publishes bump the patch ≥1). The Cargo.toml version IS the version — never touched until everything succeeds (no half-deployed dirty tree). A deploy REQUIRES a .0 patch: a leftover dev patch means the tree wasn't reset after the last release, so refuse rather than ship a dev-numbered release.
+FULL_VERSION=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/')
+SHIP_VERSION=$(echo "$FULL_VERSION" | cut -d. -f2)   # the MINOR is the deploy counter / dozenal cue
+PATCH=$(echo "$FULL_VERSION" | cut -d. -f3)
+if [ "$PATCH" != "0" ]; then
+    echo "ERROR: version is $FULL_VERSION but a release must be X.Y.0 (patch 0 is reserved for releases)."
+    echo "       Reset the patch to 0 before deploying (a dev publish left it at $PATCH)."
+    exit 1
+fi
+echo "Deploying version: $FULL_VERSION (minor $SHIP_VERSION)"
 
 
 # Convert to dozenal names for display
@@ -138,6 +145,25 @@ wrangler r2 object put "$R2_BUCKET/$R2_PATH/install-release.ps1" \
 
 echo ""
 echo "Linux ARM64, Linux x86_64, Windows, Redox, macOS Intel, macOS ARM64, Android binaries deployed to R2"
+
+# ── Signed update manifest (docs/updates.md): one signed VSF, every platform row, so running clients see this release + one-click update to it. Built with the SAME release key as the binaries. ──
+echo ""
+echo "Building signed release manifest..."
+cargo build --release --bin photon-manifest
+MANIFEST_TOOL=target/release/photon-manifest
+R2_URL="https://brobdingnagian.holdmyoscilloscope.com/$R2_PATH"
+b3() { b3sum "$1" | cut -d' ' -f1; }
+COMMIT=$(git rev-parse --short=12 HEAD)
+"$MANIFEST_TOOL" --channel release --out /tmp/manifest-release.vsf \
+    --artefact linux-x86_64  "$FULL_VERSION" "$COMMIT" "$R2_URL/photon-messenger-linux-x86_64-release"  "$(b3 target/release/photon-messenger)" \
+    --artefact linux-arm64   "$FULL_VERSION" "$COMMIT" "$R2_URL/photon-messenger-linux-arm64-release"   "$(b3 target/aarch64-unknown-linux-gnu/release/photon-messenger)" \
+    --artefact windows-x86_64 "$FULL_VERSION" "$COMMIT" "$R2_URL/photon-messenger-windows-release.exe"  "$(b3 target/x86_64-pc-windows-gnu/release/photon-messenger.exe)" \
+    --artefact macos-intel   "$FULL_VERSION" "$COMMIT" "$R2_URL/photon-messenger-macos-intel-release"   "$(b3 target/x86_64-apple-darwin/release/photon-messenger)" \
+    --artefact macos-arm64   "$FULL_VERSION" "$COMMIT" "$R2_URL/photon-messenger-macos-arm64-release"   "$(b3 target/aarch64-apple-darwin/release/photon-messenger)" \
+    --artefact android-arm64 "$FULL_VERSION" "$COMMIT" "$R2_URL/photon-messenger-android-release.apk"   "$(b3 android/app/build/outputs/apk/release/app-release.apk)"
+wrangler r2 object put "$R2_BUCKET/$R2_PATH/manifest-release.vsf" \
+    --file /tmp/manifest-release.vsf --content-type application/octet-stream --remote
+echo "Release manifest published."
 echo "  Windows SHA256: $WINDOWS_SHA256"
 
 # Mirror the identical signed artefacts to a GitHub Release `v<n>` (redundant fallback behind R2).
@@ -167,11 +193,13 @@ echo ""
 echo "Deploying website..."
 (cd /mnt/Chiton/MEGA/holdmyoscilloscope && ./deploy.sh)
 
-# Everything succeeded — version SHIP_VERSION is now public. Advance Cargo.toml to the next working
-# version and commit, so the tree is ready for the next cycle and `v<n>` marks the just-shipped release.
-NEXT_VERSION=$((SHIP_VERSION + 1))
-sed -i -E "s/^(version = \"[0-9]+\.[0-9]+\.)[0-9]+\"/\1${NEXT_VERSION}\"/" Cargo.toml
-git add Cargo.toml Cargo.lock && git commit -m "v$SHIP_VERSION deployed; working version → $NEXT_VERSION" && git push
+# Everything succeeded — minor SHIP_VERSION is now public. Advance the MINOR (patch stays 0 —
+# reserved for releases; the next dev publish bumps patch to 1), so the tree is ready for the next
+# cycle and `v<minor>` marks the just-shipped release.
+MAJOR=$(echo "$FULL_VERSION" | cut -d. -f1)
+NEXT_MINOR=$((SHIP_VERSION + 1))
+sed -i -E "s/^version = \"[0-9]+\.[0-9]+\.[0-9]+\"/version = \"${MAJOR}.${NEXT_MINOR}.0\"/" Cargo.toml
+git add Cargo.toml Cargo.lock && git commit -m "v$SHIP_VERSION deployed; working version → ${MAJOR}.${NEXT_MINOR}.0" && git push
 
 echo ""
 echo "Install with:"

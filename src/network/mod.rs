@@ -9,6 +9,7 @@ pub mod pairing_beacon;
 #[cfg(not(target_os = "android"))]
 pub mod peer_updates;
 pub mod pt;
+pub mod updates;
 pub mod status;
 pub mod tcp;
 pub mod traverse;

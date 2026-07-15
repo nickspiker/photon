@@ -1,6 +1,6 @@
 [package]
 name = "photon-messenger"
-version = "0.0.34"
+version = "0.34.0"
 edition = "2021"
 authors = ["Nick Spiker <fractaldecoder@proton.me>"]
 license = "MIT OR Apache-2.0"
@@ -45,6 +45,11 @@ path = "src/bin/test-device-key.rs"
 [[bin]]
 name = "photonlog"
 path = "src/bin/photonlog.rs"
+
+# Update-manifest writer (docs/updates.md) — deploy.sh + scripts/publish/dev-*.sh build/merge + sign the channel manifests with the release key.
+[[bin]]
+name = "photon-manifest"
+path = "src/bin/photon-manifest.rs"
 
 [build-dependencies]
 # Compiles the macOS CoreBluetooth advertiser shim (macos/photon_ble.m) in build.rs; unused on other targets.

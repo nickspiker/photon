@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FileProvider scope for the self-update flow: only the app-private files dir (where the verified APK is staged). -->
+<paths>
+    <files-path name="update" path="." />
+</paths>

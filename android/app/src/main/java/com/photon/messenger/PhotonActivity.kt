@@ -138,6 +138,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     private external fun nativePollInputReset(contextPtr: Long): Int  // Per-frame poll: 1=restartInput (clear the IME's stale composing buffer after a send), 0=no change
     private external fun nativePollAvatarPicker(contextPtr: Long): Int  // Per-frame poll for the avatar image-picker request — 1=launch ACTION_GET_CONTENT, 0=no change
     private external fun nativePollSessionBroadcast(contextPtr: Long): Int  // 1=send sticky broadcast, -1=clear, 0=no change
+    private external fun nativePollApkInstall(contextPtr: Long): String?  // Per-frame poll: staged self-update APK path (one-shot) — fire the system installer with it
     private external fun nativeSetDisplayColorSpace(rgbToXyz: FloatArray, primaries: FloatArray)  // Display panel's RGB→XYZ_D50 (9 floats) + chromaticity primaries [Rx,Ry,Gx,Gy,Bx,By] (6 floats)
     private external fun nativeSetAvatarFromFile(contextPtr: Long, fileBytes: ByteArray)  // Raw image file bytes (preserves ICC profile)
     private external fun nativeRestoreSessionFromVsf(vsfBytes: ByteArray): Int  // Restore session from sticky broadcast VSF capsule — call before nativeInitWithNetwork; returns 1 on success
@@ -518,9 +519,29 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
                     1 -> connectionService?.sendSessionBroadcast()
                     -1 -> connectionService?.clearSessionBroadcast()
                 }
+                // Self-update: a hash-verified APK is staged — hand it to the system installer (the OS owns package installs; its prompt is the second click).
+                nativePollApkInstall(nativePtr)?.let { apkPath ->
+                    installApk(apkPath)
+                }
             }
             // Schedule next frame
             Choreographer.getInstance().postFrameCallback(this)
+        }
+    }
+
+    /** Fire the system installer on a staged self-update APK (docs/updates.md, Android path). The file sits in our app-private files dir, so it's exposed via FileProvider; REQUEST_INSTALL_PACKAGES gates the intent. */
+    private fun installApk(path: String) {
+        try {
+            val file = java.io.File(path)
+            val uri = androidx.core.content.FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(intent)
+        } catch (e: Exception) {
+            PhotonLog.e("Update", "installer launch failed: ${e.message}")
         }
     }
 

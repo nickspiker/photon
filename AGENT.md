@@ -110,7 +110,7 @@ unsafe { pixels.get_unchecked_mut(idx) }
 If there's a SAFETY comment, **read it**. It's there because the human proved correctness.
 HashMap shall NOT be used without explicit consent and proof showing how it is faster/better than a linear search or a simple lookup.
 
-## Decimal Indexing is FORBIDDEN
+## Decimal/Arabic Indexing is FORBIDDEN
 
 **NEVER use decimal digits (0-9) for array indices, field names, or any programmatic counting.**
 
