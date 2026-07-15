@@ -88,9 +88,25 @@ const DIVIDER_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_FF_FF_FF))
 /// Dim grey for the compose-box placeholder text. α+darkness.
 const LABEL_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_80_80_80));
 
-/// Deploy version = the crate's patch number from `Cargo.toml`, baked in at compile time. The Cargo version IS the version — `deploy.sh` bumps the patch and ships; local test/release builds inherit whatever the tree currently says, so the displayed number only advances on a real deploy. (Major/minor live in 0.0 today, so the patch is the whole counter; revisit the encoding if minor ever moves.)
+/// Deploy version = the crate's MINOR number, baked in at compile time. The scheme (2026-07-16): `major.minor.patch` where `deploy.sh` bumps the MINOR and ships `X.Y.0` (patch 0 is RESERVED for releases), and every dev publish bumps the PATCH (≥1, reset to 1 after each release). The dozenal display cues off the minor; a dev build appends `.patch` (also dozenal).
 fn deploy_version() -> u32 {
+    env!("CARGO_PKG_VERSION_MINOR").parse().unwrap_or(0)
+}
+
+/// Dev-publish patch counter — 0 on a release build (`X.Y.0`), ≥1 on any published dev build.
+fn dev_patch() -> u32 {
     env!("CARGO_PKG_VERSION_PATCH").parse().unwrap_or(0)
+}
+
+/// The displayed dozenal version: minor in dozenal glyphs, plus `.patch` (dozenal) when this is a dev build (patch ≥ 1 — releases are always X.Y.0 and show bare).
+fn version_dozenal_glyphs() -> String {
+    let mut s = dozenal_glyphs(deploy_version());
+    let p = dev_patch();
+    if p > 0 {
+        s.push('.');
+        s.push_str(&dozenal_glyphs(p));
+    }
+    s
 }
 
 /// Render `n` in dozenal (base 12) as a string of reserved control-code bytes: digit `d` (0..11) maps to codepoint `0x10 + d` (DLE..ESC), which the Oxanium `+glyphs` face draws as the dozenal glyph Zil..Stelor. The result is meant only for that font — the bytes are non-printing control codes everywhere else. Most-significant digit first; `0` renders as a single Zil (0x10).
@@ -898,7 +914,17 @@ pub struct PhotonApp {
     you_fields_loaded: bool,
     /// Fleet-page device management: the device pubkey the user tapped to select (highlighted row). `None` = nothing selected. Only OUR OTHER devices (siblings) are selectable — never this device. Remove-other retired 2026-07-13 (sovereign records: self-signed departure only; eviction = withholding at the key layer, arriving with the device-trust bundle) — selection currently feeds only the future rename.
     settings_fleet_selected: Option<[u8; 32]>,
-    /// Security-page "Shred (crypto-wipe)" confirm arm: a first tap arms, a second fires `clean_device_for_reuse` (nuke vault + clear session). Event-shown, interaction-cleared.
+    /// Self-update state (docs/updates.md): off-thread check/apply results drain here.
+    update_rx: Option<std::sync::mpsc::Receiver<UpdateEvent>>,
+    /// Latest check/apply outcome for the Updates page status line (event-shown, interaction-cleared like every status text).
+    update_status: Option<String>,
+    /// An update op (check or apply) is in flight — the pills grey out.
+    update_busy: bool,
+    /// Desktop: a verified binary swap completed — re-exec into it on the next tick (from the main thread, outside all borrows).
+    update_reexec: Option<std::path::PathBuf>,
+    /// Android: a hash-verified APK is staged — the JNI poll hands this path to Kotlin, which fires the system installer (the second click).
+    #[cfg(target_os = "android")]
+    pub pending_apk_install: Option<String>,
     /// Rubber-band scroll extents, measured by the last render (the extents live in render-side geometry — text metrics, dynamic row counts — so render publishes them and the wheel handler + tick() read last frame's value; geometry is stable frame-to-frame). `tick()` relaxes any out-of-range scroll back to [0, extent] thru these.
     settings_rail_extent: f32,
     settings_content_extent: f32,
@@ -1074,6 +1100,12 @@ impl PhotonApp {
             you_add_textbox: None,
             you_fields_loaded: false,
             settings_fleet_selected: None,
+            update_rx: None,
+            update_status: None,
+            update_busy: false,
+            update_reexec: None,
+            #[cfg(target_os = "android")]
+            pending_apk_install: None,
             settings_rail_extent: 0.0,
             settings_content_extent: 0.0,
             contacts_scroll_extent: 0,
@@ -2060,6 +2092,20 @@ impl FluorApp for PhotonApp {
                         // "Add" → register the typed label as a custom field (e.g. "Address 2") and append its box.
                         self.add_custom_field();
                     }
+                } else if page == SettingsPage::Updates {
+                    use crate::network::updates::Channel;
+                    // This build's own channel: dev builds live on the dev manifest, releases on release.
+                    let own = if cfg!(feature = "development") { Channel::Dev } else { Channel::Release };
+                    if slot == 0 {
+                        // Report-only currency check against our own channel.
+                        self.spawn_update_check(own, false);
+                    } else if slot == 1 {
+                        // Explicit install of the latest RELEASE (one click; channel hop allowed — user intent overrides the auto-path's no-downgrade).
+                        self.spawn_update_check(Channel::Release, true);
+                    } else if slot == 2 {
+                        // Explicit install of the latest DEV build for this platform.
+                        self.spawn_update_check(Channel::Dev, true);
+                    }
                 } else if page == SettingsPage::Diagnostics {
                     if slot == 0 {
                         // "Clear" → wipe the on-device log; the next line reopens a fresh, empty file.
@@ -2854,6 +2900,32 @@ impl FluorApp for PhotonApp {
             }
         }
 
+        // Self-update: drain check/apply results, then re-exec if a verified swap landed. The exec MUST happen here on the main thread, outside every borrow — the process image is replaced in place (unix) or handed off (windows), so nothing after it runs.
+        needs_redraw |= self.drain_update_events();
+        if let Some(exe) = self.update_reexec.take() {
+            crate::log("UPDATE: re-exec into the new binary");
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::CommandExt;
+                let err = std::process::Command::new(&exe)
+                    .args(std::env::args().skip(1))
+                    .exec();
+                // exec only returns on failure.
+                crate::log(&format!("UPDATE: re-exec failed: {err} — keep running the old image"));
+            }
+            #[cfg(windows)]
+            {
+                match std::process::Command::new(&exe).args(std::env::args().skip(1)).spawn() {
+                    Ok(_) => std::process::exit(0),
+                    Err(e) => crate::log(&format!("UPDATE: relaunch failed: {e} — keep running the old image")),
+                }
+            }
+            #[cfg(not(any(unix, windows)))]
+            {
+                let _ = exe;
+            }
+        }
+
         // Everything network/protocol lives in advance_protocol(): presence sweep, channel drains, CLUTCH ceremony + chain advancement, retransmits. It touches NO surface, so it can also run headless from the Android foreground service while the app is backgrounded (screen off ⇒ the Choreographer stops calling tick, but the state is alive — see docs/background-tick.md). The frame-only work (animations above, render below) stays here in tick.
         needs_redraw |= self.advance_protocol(now);
 
@@ -3043,7 +3115,7 @@ impl FluorApp for PhotonApp {
         let attest_for_version = AttestBlockLayout::compute(layout.attest_block);
         let version_size =
             (attest_for_version.hint.y1 - attest_for_version.hint.y0) as f32 * 0.7 * 0.5;
-        let version_glyphs = dozenal_glyphs(deploy_version());
+        let version_glyphs = version_dozenal_glyphs();
         // Bottom-LEFT watermark; the Security/Recovery posture meters sit bottom-right on the Ready strip. Left edge one font-size in from the screen edge, mirroring the posture group's right margin.
         let version_x = version_size;
         // `draw_text_left_u32`'s y is the text BOX CENTRE, not the baseline/bottom. Anchor by the glyph bottom instead: put the text's bottom edge one `version_size` up from the window bottom (mirroring the one-`version_size` left margin), so the version reads as bottom-left-aligned from the corner rather than centre-aligned. line_height = size × 1.2 (the renderer's Metrics::relative ratio), so the centre sits half that above the bottom edge.
@@ -4679,9 +4751,25 @@ impl FluorApp for PhotonApp {
                 SettingsPage::Updates => {
                     let rows = layout.content_scrolled(8, settings_content_scroll).split_v([1.0; 8]);
                     settings_line(&mut canvas, ctx.text, rows[0], "Updates", tspan, CONTACT_NAME_COLOUR, 600);
-                    settings_line(&mut canvas, ctx.text, rows[1], "Photon 0.0.25 (dozenal 21)", hspan2, LABEL_COLOUR, 400);
+                    settings_line(&mut canvas, ctx.text, rows[1], &format!("Photon {} (dozenal {})", env!("CARGO_PKG_VERSION"), version_dozenal_glyphs()), hspan2, LABEL_COLOUR, 400);
                     if let Some(cb) = self.settings_autoupdate_check.as_mut() {
                         cb.render_content_into(&mut canvas, ctx.text, None, Some(&mut chrome.hit_test_map));
+                    }
+                    // Status line: last check/apply outcome (event-shown; a page switch clears it like every status text).
+                    if let Some(status) = &self.update_status {
+                        settings_line(&mut canvas, ctx.text, rows[3], status, hspan2, CONTACT_NAME_COLOUR, 500);
+                    }
+                    // Check = report-only against THIS build's own channel; the two Get pills are the explicit installs — either channel, one click (desktop) / two (Android's system installer prompt).
+                    if self.update_busy {
+                        draw_stub_pill_disabled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[5].center_h(pillf(0.5)), "Check for updates", btn_base.wrapping_add(0), ctx.pressed_hit);
+                        let pr = rows[6].split_h([1.0, 1.0]);
+                        draw_stub_pill_disabled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[0].center_h(0.85), "Get latest release", btn_base.wrapping_add(1), ctx.pressed_hit);
+                        draw_stub_pill_disabled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[1].center_h(0.85), "Get latest dev", btn_base.wrapping_add(2), ctx.pressed_hit);
+                    } else {
+                        draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[5].center_h(pillf(0.5)), "Check for updates", btn_base.wrapping_add(0), ctx.pressed_hit);
+                        let pr = rows[6].split_h([1.0, 1.0]);
+                        draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[0].center_h(0.85), "Get latest release", btn_base.wrapping_add(1), ctx.pressed_hit);
+                        draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[1].center_h(0.85), "Get latest dev", btn_base.wrapping_add(2), ctx.pressed_hit);
                     }
                 }
                 SettingsPage::Diagnostics => {
@@ -4713,9 +4801,9 @@ impl FluorApp for PhotonApp {
                     settings_line(&mut canvas, ctx.text, rows[3], "No servers. No tracking. Your data is yours.", hspan2, LABEL_COLOUR, 400);
                     // Version — dozenal, NEVER arabic. Default: normal-white dozenal glyphs (weight 400 → the Oxanium +glyphs face renders the reserved control-code bytes as dozenal digits). Tap → spell it out in voca words. Whole row is a tap target (btn_base + 3).
                     let ver = if self.about_version_spelled {
-                        format!("Version {}", dozenal_spell(deploy_version()))
+                        format!("Version {}{}", dozenal_spell(deploy_version()), if dev_patch() > 0 { format!(" point {}", dozenal_spell(dev_patch())) } else { String::new() })
                     } else {
-                        format!("Version {}", dozenal_glyphs(deploy_version()))
+                        format!("Version {}", version_dozenal_glyphs())
                     };
                     settings_line(&mut canvas, ctx.text, rows[5], &ver, hspan2, CONTACT_NAME_COLOUR, 400);
                     restamp_hit_rect(
@@ -6153,6 +6241,95 @@ impl PhotonApp {
         self.apply_settings_to_ui();
         self.publish_profile_name();
         true
+    }
+
+    /// Kick an off-thread update check against `channel`'s manifest; `apply` = install on any version DIFFERENCE (the Get-latest buttons — explicit channel hop, downgrade allowed by user intent), else report-only (the Check button). One op at a time.
+    fn spawn_update_check(&mut self, channel: crate::network::updates::Channel, apply: bool) {
+        if self.update_busy {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.update_rx = Some(rx);
+        self.update_busy = true;
+        self.update_status = Some(format!("Checking {}\u{2026}", channel.label()));
+        std::thread::spawn(move || {
+            use crate::network::updates::{fetch_manifest_blocking, our_row};
+            let result = fetch_manifest_blocking(channel).map(|rows| our_row(&rows));
+            match (&result, apply) {
+                (Ok(Some(row)), true) if row.version != env!("CARGO_PKG_VERSION") => {
+                    // One click: straight into download + verify + swap (desktop) / stage-for-installer (Android).
+                    #[cfg(not(target_os = "android"))]
+                    {
+                        match crate::network::updates::apply_desktop_blocking(row) {
+                            Ok(exe) => {
+                                let _ = tx.send(UpdateEvent::Applied(exe));
+                            }
+                            Err(e) => {
+                                let _ = tx.send(UpdateEvent::ApplyFailed(e));
+                            }
+                        }
+                        return;
+                    }
+                    #[cfg(target_os = "android")]
+                    {
+                        match crate::network::updates::download_apk_blocking(row) {
+                            Ok(path) => {
+                                let _ = tx.send(UpdateEvent::ApkReady(path.to_string_lossy().into_owned()));
+                            }
+                            Err(e) => {
+                                let _ = tx.send(UpdateEvent::ApplyFailed(e));
+                            }
+                        }
+                        return;
+                    }
+                }
+                _ => {}
+            }
+            let _ = tx.send(UpdateEvent::Checked(channel, result));
+        });
+    }
+
+    /// Drain the update channel (called from tick): status text, staged-APK hand-off, and the re-exec flag.
+    fn drain_update_events(&mut self) -> bool {
+        let Some(rx) = self.update_rx.as_ref() else {
+            return false;
+        };
+        let mut changed = false;
+        while let Ok(ev) = rx.try_recv() {
+            self.update_busy = false;
+            changed = true;
+            match ev {
+                UpdateEvent::Checked(channel, Ok(Some(row))) => {
+                    if row.version == env!("CARGO_PKG_VERSION") {
+                        self.update_status = Some(format!("Up to date with {} ({})", channel.label(), row.version));
+                    } else {
+                        self.update_status = Some(format!(
+                            "{} has {} (you run {}) — use a Get button to install",
+                            channel.label(), row.version, env!("CARGO_PKG_VERSION")
+                        ));
+                    }
+                }
+                UpdateEvent::Checked(channel, Ok(None)) => {
+                    self.update_status = Some(format!("No {} build published for {}", channel.label(), crate::network::updates::platform_id()));
+                }
+                UpdateEvent::Checked(_, Err(e)) => {
+                    self.update_status = Some(format!("Check failed: {e}"));
+                }
+                UpdateEvent::Applied(exe) => {
+                    self.update_status = Some("Updated \u{221a} restarting\u{2026}".to_string());
+                    self.update_reexec = Some(exe);
+                }
+                #[cfg(target_os = "android")]
+                UpdateEvent::ApkReady(path) => {
+                    self.update_status = Some("Downloaded \u{221a} confirm the install prompt".to_string());
+                    self.pending_apk_install = Some(path);
+                }
+                UpdateEvent::ApplyFailed(e) => {
+                    self.update_status = Some(format!("Update failed (nothing changed): {e}"));
+                }
+            }
+        }
+        changed
     }
 
     /// Push our `profile.name` into the status thread's pong slot, so every friend's next ping cycle carries the current name (the always-granted slot). Called on settings load, on Update, and when a sibling's merged edit lands.
@@ -13051,6 +13228,19 @@ fn stamp_hit_circle(
 
 /// Draw one left-aligned settings text line vertically centred in `row`, indented a little from the row's left edge. Used for page titles, field labels, and placeholder read-outs on the settings stub.
 /// Row count each settings page body lays out (must match the `split_v([1.0; N])` in that page's render arm). Drives the content-scroll extent clamp. Keep in sync when a page gains/loses rows.
+/// Off-thread self-update results (docs/updates.md), drained in tick.
+enum UpdateEvent {
+    /// A manifest check finished: our platform's row (None = manifest has no row for us) or the error.
+    Checked(crate::network::updates::Channel, Result<Option<crate::network::updates::ManifestRow>, String>),
+    /// Desktop: the binary swap completed and verified — re-exec into this path.
+    Applied(std::path::PathBuf),
+    /// Android: the APK downloaded + hash-verified — hand to the system installer.
+    #[cfg(target_os = "android")]
+    ApkReady(String),
+    /// A download/verify/apply step failed; the running version is untouched.
+    ApplyFailed(String),
+}
+
 /// Rubber-band wheel step: full-strength inside `[0, hi]`, asymptotically resisted past either end — the overshoot can never exceed `reach`, and `tick()` eases it back once input stops. The resistance factor `(reach/(reach+over))²` is 1 at the boundary (C¹ join with in-range scrolling — the hard clamp this replaces was a C⁰ kink, banned by the GUI-continuity rule) and falls smoothly toward 0, integrating to a `reach·over/(reach+over)` saturation. `hi = f32::INFINITY` rubber-bands only the 0 end (conversation history).
 fn rubber_step(cur: f32, step: f32, hi: f32, reach: f32) -> f32 {
     let over = if cur < 0.0 {
