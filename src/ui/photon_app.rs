@@ -6256,7 +6256,7 @@ impl PhotonApp {
             use crate::network::updates::{fetch_manifest_blocking, our_row};
             let result = fetch_manifest_blocking(channel).map(|rows| our_row(&rows));
             match (&result, apply) {
-                (Ok(Some(row)), true) if row.version != env!("CARGO_PKG_VERSION") => {
+                (Ok(Some(row)), true) if row.version != crate::network::updates::our_version() => {
                     // One click: straight into download + verify + swap (desktop) / stage-for-installer (Android).
                     #[cfg(not(target_os = "android"))]
                     {
@@ -6300,12 +6300,12 @@ impl PhotonApp {
             changed = true;
             match ev {
                 UpdateEvent::Checked(channel, Ok(Some(row))) => {
-                    if row.version == env!("CARGO_PKG_VERSION") {
-                        self.update_status = Some(format!("Up to date with {} ({})", channel.label(), row.version));
+                    if row.version == crate::network::updates::our_version() {
+                        self.update_status = Some(format!("Up to date with {} ({})", channel.label(), row.version_string()));
                     } else {
                         self.update_status = Some(format!(
                             "{} has {} (you run {}) — use a Get button to install",
-                            channel.label(), row.version, env!("CARGO_PKG_VERSION")
+                            channel.label(), row.version_string(), env!("CARGO_PKG_VERSION")
                         ));
                     }
                 }

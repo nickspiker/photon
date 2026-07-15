@@ -9,8 +9,8 @@ source scripts/lib/publish.sh
 source scripts/lib/github.sh
 source scripts/lib/manifest.sh
 
-# A dev publish bumps the PATCH so the shipped binary is newer + distinct (docs/updates.md). Before the build so build.rs bakes in the new patch + commit.
-manifest_bump_dev_patch
+# Refuse-dirty + patch-bump + commit BEFORE the build, so the binary embeds a clean HEAD whose commit is exactly what the signed manifest claims (docs/updates.md).
+manifest_begin_dev_publish "macos-arm64"
 
 echo "Building macOS ARM64 development binary..."
 CC_aarch64_apple_darwin=/mnt/Octopus/Code/osxcross/target/bin/aarch64-apple-darwin-clang-wrapper \
@@ -23,8 +23,7 @@ echo "Uploading to R2 (primary)..."
 publish_r2 "photon-messenger-macos-arm64-development" target/aarch64-apple-darwin/debug/photon-messenger
 
 echo "Publishing dev manifest row..."
-manifest_publish_dev_row "macos-arm64" "photon-messenger-macos-arm64-development" target/aarch64-apple-darwin/debug/photon-messenger
-git add Cargo.toml Cargo.lock && git commit -q -m "dev: macos-arm64 $(manifest_full_version)" || true
+manifest_publish_dev_row "macOS" "arm64" "photon-messenger-macos-arm64-development" target/aarch64-apple-darwin/debug/photon-messenger
 
 echo "Mirroring to GitHub Releases (dev)..."
 publish_github_dev "photon-messenger-macos-arm64-development" target/aarch64-apple-darwin/debug/photon-messenger
