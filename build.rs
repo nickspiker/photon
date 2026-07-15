@@ -68,4 +68,26 @@ fn main() {
     println!("cargo:rerun-if-changed=assets/photon-messenger.ico");
     println!("cargo:rerun-if-changed=assets/icon-256.png");
     println!("cargo:rerun-if-changed=v");
+
+    // Embed the git commit (short) + dirty marker — the dev-channel update manifest records which commit each published dev binary was built from; a dirty tree gets "+dirty" and never claims currency.
+    let commit = std::process::Command::new("git")
+        .args(["rev-parse", "--short=12", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let dirty = std::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| !o.stdout.is_empty())
+        .unwrap_or(false);
+    println!(
+        "cargo:rustc-env=PHOTON_GIT_COMMIT={}{}",
+        commit,
+        if dirty { "+dirty" } else { "" }
+    );
+    println!("cargo:rerun-if-changed=.git/HEAD");
 }

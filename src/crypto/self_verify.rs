@@ -37,9 +37,13 @@ pub fn verify_binary_hash() -> Result<String, String> {
     // Read our own executable
     let exe_path =
         std::env::current_exe().map_err(|e| format!("Failed to get executable path: {}", e))?;
+    verify_file(&exe_path)
+}
 
+/// Verify an arbitrary ON-DISK binary's appended Ed25519 signature WITHOUT executing it — the update path's gate (docs/updates.md: verify before exec; running a downloaded file to "self-verify" would be executing the very thing being checked).
+pub fn verify_file(exe_path: &std::path::Path) -> Result<String, String> {
     let mut exe_data =
-        std::fs::read(&exe_path).map_err(|e| format!("Failed to read executable: {}", e))?;
+        std::fs::read(exe_path).map_err(|e| format!("Failed to read executable: {}", e))?;
 
     // Check if binary has signature appended (last 64 bytes)
     if exe_data.len() < 64 {

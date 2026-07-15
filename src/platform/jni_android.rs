@@ -344,6 +344,26 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativePollKeyboard(
     ctx.shell.poll_keyboard() as jint
 }
 
+/// Per-frame poll: the staged self-update APK path, or null. Non-null exactly once per staged update — Kotlin fires the system installer intent with it (the update flow's second click). Mirrors take_picker_request's one-shot pattern.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativePollApkInstall<'a>(
+    env: JNIEnv<'a>,
+    _class: JClass<'a>,
+    context_ptr: jlong,
+) -> jni::sys::jstring {
+    let Some(ctx) = get_context(context_ptr) else {
+        return std::ptr::null_mut();
+    };
+    match ctx.shell.app().pending_apk_install.take() {
+        Some(path) => match env.new_string(&path) {
+            Ok(s) => s.into_raw(),
+            Err(_) => std::ptr::null_mut(),
+        },
+        None => std::ptr::null_mut(),
+    }
+}
+
 /// Per-frame poll: `1` when the app just cleared its compose box (a message was sent) and the Activity should `InputMethodManager.restartInput` to drop the IME's stale composing buffer, else `0`. One-shot.
 #[cfg(target_os = "android")]
 #[no_mangle]
