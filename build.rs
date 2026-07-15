@@ -44,6 +44,18 @@ fn main() {
         }
     }
 
+    // macOS: embed an Info.plist section carrying NSBluetoothAlwaysUsageDescription.
+    // The pairing beacon (docs/pairing-v2.md) creates a CoreBluetooth central on the AddDevice screen;
+    // without this key macOS SIGABRTs the process the instant that central powers on. The dev/release
+    // builds ship a bare binary (no .app bundle), so the plist rides a __TEXT,__info_plist Mach-O section
+    // via ld64's -sectcreate (works under both osxcross and a native toolchain), which is the standard way
+    // a command-line tool declares a TCC usage string.
+    if target.contains("apple") {
+        let plist = format!("{}/macos/Info.plist", env::var("CARGO_MANIFEST_DIR").unwrap());
+        println!("cargo:rustc-link-arg=-Wl,-sectcreate,__TEXT,__info_plist,{plist}");
+        println!("cargo:rerun-if-changed=macos/Info.plist");
+    }
+
     // Tell cargo to rerun if icon or version changes
     println!("cargo:rerun-if-changed=assets/photon-messenger.ico");
     println!("cargo:rerun-if-changed=assets/icon-256.png");
