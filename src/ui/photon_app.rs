@@ -497,7 +497,13 @@ struct ProfileField {
     tier: &'static str,
     custom: bool,
     tb: Textbox,
+    /// Companion tag box (phone instances: home / work / custom, free text). Persisted as `profile.<id>_label`. `None` for untagged fields.
+    tag_tb: Option<Textbox>,
 }
+
+/// Multi-instance ("expandable") field bases: filling the LAST instance reveals an empty next one (addr → addr2 → addr3 …), so a second address/email/phone/website is always one keystroke away — and never shown before it's needed. Singletons (SSN, passport, licence, …) are NOT here and never expand. The bool = instances carry a companion tag box (phone: home/work/custom).
+const EXPANDABLE_FIELDS: &[(&str, bool)] =
+    &[("addr", false), ("email", false), ("phone", true), ("web", false), ("alt_msg", false)];
 
 /// The standard profile fields in taxonomy order: (field_id, display label, tier). `name` is the always-granted display-name slot (formerly the lone name box); every other field defaults UNSHARED. Mirrors the table in docs/contact-system.md — keep the two in sync.
 const STD_PROFILE_FIELDS: &[(&str, &str, &str)] = &[
@@ -511,14 +517,10 @@ const STD_PROFILE_FIELDS: &[(&str, &str, &str)] = &[
     ("maiden", "Maiden", "name"),
     ("phon", "Pronunciation", "name"),
     ("email", "Email", "reach"),
-    ("email2", "Email (2nd)", "reach"),
-    ("mobile", "Mobile", "reach"),
-    ("phone", "Phone (landline)", "reach"),
-    ("work_phone", "Work phone", "reach"),
+    ("phone", "Phone", "reach"),
     ("web", "Website", "reach"),
     ("alt_msg", "Other messaging", "reach"),
     ("addr", "Address", "place"),
-    ("addr_work", "Work address", "place"),
     ("geo", "Lat / lon", "place"),
     ("tz", "Timezone", "place"),
     ("dob", "Date of birth", "personal"),
@@ -1372,6 +1374,9 @@ impl PhotonApp {
                 SettingsPage::You => {
                     for pf in self.you_fields.iter_mut() {
                         f(&mut pf.tb);
+                        if let Some(tag) = pf.tag_tb.as_mut() {
+                            f(tag);
+                        }
                     }
                     if let Some(tb) = self.you_add_textbox.as_mut() {
                         f(tb);
@@ -4360,6 +4365,11 @@ impl FluorApp for PhotonApp {
                                 let pf = &mut self.you_fields[*idx];
                                 let id = pf.tb.hit_id();
                                 pf.tb.render_content_into(&mut canvas, 0., 0., ctx.text, Some(glow_clip), None, Some(&mut chrome.hit_test_map), id);
+                                // Companion tag box (phone: home / work / custom) rides the right end of the same row.
+                                if let Some(tag) = pf.tag_tb.as_mut() {
+                                    let tid = tag.hit_id();
+                                    tag.render_content_into(&mut canvas, 0., 0., ctx.text, Some(glow_clip), None, Some(&mut chrome.hit_test_map), tid);
+                                }
                             }
                             YouRow::AddHeader => {
                                 ctx.text.draw_text_left_u32(&mut canvas, "Add a custom field", r.x + tspan * 0.3, r.center_y(), tspan, 600, CONTACT_NAME_COLOUR, "Oxanium", Some(content_clip), None, None);
@@ -5173,16 +5183,30 @@ impl PhotonApp {
                     if !self.you_fields_loaded {
                         self.load_you_fields(ctx.text);
                     }
+                    // Expansion check each frame: filling the last Address/Email/Phone/… reveals its empty successor as you type (event-driven off the box content — no timers).
+                    self.sync_expandable_fields();
                     // Position every box using the SAME row plan + row rects the render pass draws through, so a box sits exactly under its label.
                     let plan = you_rows_plan(&self.you_fields);
                     for (i, row) in plan.iter().enumerate() {
                         let r = you_row_rect(&layout, settings_content_scroll, i);
                         match row {
                             YouRow::Field(idx) => {
-                                let boxr = r.split_h([0.4, 0.6])[1].center_h(0.92);
-                                let tb = &mut self.you_fields[*idx].tb;
-                                tb.set_rect(boxr.center_x(), boxr.center_y(), boxr.w, ctrl_h * 1.2);
-                                tb.set_font_size(ctrl_font, ctx.text);
+                                let pf = &mut self.you_fields[*idx];
+                                let col = r.split_h([0.4, 0.6])[1];
+                                if pf.tag_tb.is_some() {
+                                    // Value + tag share the column: value left ~60%, tag right ~32% (a phone's home/work/custom).
+                                    let boxr = fluor::region::Region::new(col.x + col.w * 0.02, col.y, col.w * 0.60, col.h);
+                                    let tagr = fluor::region::Region::new(col.x + col.w * 0.66, col.y, col.w * 0.32, col.h);
+                                    pf.tb.set_rect(boxr.center_x(), boxr.center_y(), boxr.w, ctrl_h * 1.2);
+                                    pf.tb.set_font_size(ctrl_font, ctx.text);
+                                    let tag = pf.tag_tb.as_mut().unwrap();
+                                    tag.set_rect(tagr.center_x(), tagr.center_y(), tagr.w, ctrl_h * 1.2);
+                                    tag.set_font_size(ctrl_font * 0.9, ctx.text);
+                                } else {
+                                    let boxr = col.center_h(0.92);
+                                    pf.tb.set_rect(boxr.center_x(), boxr.center_y(), boxr.w, ctrl_h * 1.2);
+                                    pf.tb.set_font_size(ctrl_font, ctx.text);
+                                }
                             }
                             YouRow::AddInput => {
                                 let boxr = r.split_h([0.62, 0.38])[0].center_h(0.92);
@@ -5993,14 +6017,16 @@ impl PhotonApp {
         true
     }
 
-    /// Build the You-page field boxes ONCE (HitId is a scarce u16 — never rebuild): the standard taxonomy, then any custom fields registered in `profile._custom` (one `id\tlabel` per line). Idempotent; values are loaded separately by [`Self::load_you_fields`].
+    /// Build the You-page field boxes ONCE (HitId is a scarce u16 — never rebuild): the standard taxonomy, then any custom fields registered in `profile._custom` (one `id\tlabel` per line). Idempotent; values are loaded separately by [`Self::load_you_fields`]; expandable-field instances (addr2, email3, …) are appended by [`Self::sync_expandable_fields`].
     fn build_you_fields(&mut self) {
         if !self.you_fields.is_empty() {
             return;
         }
         for &(id, label, tier) in STD_PROFILE_FIELDS {
+            let tagged = EXPANDABLE_FIELDS.iter().any(|&(b, tag)| b == id && tag);
             let tb = Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.);
-            self.you_fields.push(ProfileField { field_id: id.to_string(), label: label.to_string(), tier, custom: false, tb });
+            let tag_tb = tagged.then(|| Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
+            self.you_fields.push(ProfileField { field_id: id.to_string(), label: label.to_string(), tier, custom: false, tb, tag_tb });
         }
         let custom = self
             .fleet_settings
@@ -6020,46 +6046,149 @@ impl PhotonApp {
                 continue;
             }
             let tb = Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.);
-            self.you_fields.push(ProfileField { field_id: id, label, tier: "custom", custom: true, tb });
+            self.you_fields.push(ProfileField { field_id: id, label, tier: "custom", custom: true, tb, tag_tb: None });
         }
     }
 
-    /// Reload each field box from its stored `profile.<id>` value (building the boxes first if needed), so the You page shows the fleet-synced state on open. Only overwrites a box when the stored value differs, so an in-progress edit of the current value survives a stray reload. Flips `you_fields_loaded` so the per-frame layout pass stops reloading.
+    /// The instances of an expandable base currently in `you_fields`, in order: index of the last one + how many there are. Instance ids are `base`, `base2`, `base3`, … (a bare-digit suffix — so `addr` matches `addr2` but never `addr_work` or a custom `address_notes`).
+    fn expandable_instances(&self, base: &str) -> (Option<usize>, usize) {
+        let mut last = None;
+        let mut count = 0;
+        for (i, f) in self.you_fields.iter().enumerate() {
+            let suffix = match f.field_id.strip_prefix(base) {
+                Some(s) => s,
+                None => continue,
+            };
+            if suffix.is_empty() || (!suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit())) {
+                last = Some(i);
+                count += 1;
+            }
+        }
+        (last, count)
+    }
+
+    /// Keep every expandable base one-empty-instance ahead: whenever the LAST instance of addr/email/phone/… is non-empty, insert a fresh empty next instance right after it (Address 2, Email 3, …). Called from load and from the per-frame You layout pass, so the next slot appears AS you fill the previous — and never before. Singletons (SSN, passport, licence, …) aren't in [`EXPANDABLE_FIELDS`] and never expand. Returns true if a field was added (row plan changed).
+    fn sync_expandable_fields(&mut self) -> bool {
+        let mut added = false;
+        for &(base, tagged) in EXPANDABLE_FIELDS {
+            let (last_idx, count) = self.expandable_instances(base);
+            let Some(li) = last_idx else { continue };
+            if self.you_fields[li].tb.chars.is_empty() {
+                continue;
+            }
+            let n = count + 1;
+            let id = format!("{base}{n}");
+            if self.you_fields.iter().any(|f| f.field_id == id) {
+                continue;
+            }
+            let (base_label, tier) = {
+                let bf = &self.you_fields[li];
+                (
+                    STD_PROFILE_FIELDS
+                        .iter()
+                        .find(|&&(fid, _, _)| fid == base)
+                        .map(|&(_, l, _)| l.to_string())
+                        .unwrap_or_else(|| bf.label.clone()),
+                    bf.tier,
+                )
+            };
+            let tb = Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.);
+            let tag_tb = tagged.then(|| Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
+            self.you_fields.insert(
+                li + 1,
+                ProfileField { field_id: id, label: format!("{base_label} {n}"), tier, custom: false, tb, tag_tb },
+            );
+            added = true;
+        }
+        added
+    }
+
+    /// Reload each field box (and its tag box) from its stored `profile.<id>` / `profile.<id>_label` value (building the boxes first if needed), so the You page shows the fleet-synced state on open. Stored expandable instances (addr2, email3, …) are materialised first so a value saved on a sibling device gets a box here. Only overwrites a box when the stored value differs, so an in-progress edit survives a stray reload. Flips `you_fields_loaded` so the per-frame layout pass stops reloading.
     fn load_you_fields(&mut self, text: &mut fluor::text::TextRenderer) {
         self.ensure_fleet_settings();
         self.build_you_fields();
-        for f in self.you_fields.iter_mut() {
-            let key = format!("profile.{}", f.field_id);
-            let val = self
-                .fleet_settings
-                .as_ref()
-                .and_then(|fs| fs.effective(&key))
-                .map(|v| String::from_utf8_lossy(&v).into_owned())
-                .unwrap_or_default();
+        // Materialise boxes for every STORED instance of each expandable base (up thru the last n with a value — gap-tolerant, a cleared middle instance keeps its box).
+        for &(base, tagged) in EXPANDABLE_FIELDS {
+            let stored_max = (2..=24)
+                .filter(|n| {
+                    self.fleet_settings
+                        .as_ref()
+                        .and_then(|fs| fs.effective(&format!("profile.{base}{n}")))
+                        .is_some_and(|v| !v.is_empty())
+                })
+                .max()
+                .unwrap_or(1);
+            for n in 2..=stored_max {
+                let id = format!("{base}{n}");
+                if self.you_fields.iter().any(|f| f.field_id == id) {
+                    continue;
+                }
+                let (li, _) = self.expandable_instances(base);
+                let Some(li) = li else { continue };
+                let base_label = STD_PROFILE_FIELDS
+                    .iter()
+                    .find(|&&(fid, _, _)| fid == base)
+                    .map(|&(_, l, _)| l.to_string())
+                    .unwrap_or_else(|| base.to_string());
+                let tier = self.you_fields[li].tier;
+                let tb = Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.);
+                let tag_tb = tagged.then(|| Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
+                self.you_fields.insert(
+                    li + 1,
+                    ProfileField { field_id: id, label: format!("{base_label} {n}"), tier, custom: false, tb, tag_tb },
+                );
+            }
+        }
+        // Prefill every box (value + tag) from its stored setting. Gather first — insert_str needs `text` while `fleet_settings` reads borrow self.
+        let stored: Vec<(String, Option<String>)> = self
+            .you_fields
+            .iter()
+            .map(|f| {
+                let get = |key: &str| {
+                    self.fleet_settings
+                        .as_ref()
+                        .and_then(|fs| fs.effective(key))
+                        .map(|v| String::from_utf8_lossy(&v).into_owned())
+                        .unwrap_or_default()
+                };
+                (get(&format!("profile.{}", f.field_id)), f.tag_tb.as_ref().map(|_| get(&format!("profile.{}_label", f.field_id))))
+            })
+            .collect();
+        for (f, (val, tag_val)) in self.you_fields.iter_mut().zip(stored) {
             let cur: String = f.tb.chars.iter().collect();
             if cur != val {
                 f.tb.clear();
                 f.tb.insert_str(&val, text);
             }
+            if let (Some(tag_tb), Some(tv)) = (f.tag_tb.as_mut(), tag_val) {
+                let cur: String = tag_tb.chars.iter().collect();
+                if cur != tv {
+                    tag_tb.clear();
+                    tag_tb.insert_str(&tv, text);
+                }
+            }
         }
+        // A stored last-instance value immediately earns its empty successor.
+        self.sync_expandable_fields();
         self.you_fields_loaded = true;
     }
 
-    /// "Save profile" → write every field's current text to its `profile.<id>` setting and push the whole batch to the fleet ONCE (not one network push per field). Empty fields are saved as empty (a cleared value, legal). Reports what happened via the status toast.
+    /// "Update" → write every field's current text (and tag) to its `profile.<id>` / `profile.<id>_label` setting and push the whole batch to the fleet ONCE (not one network push per field). Empty fields are saved as empty (a cleared value, legal). Reports what happened via the status toast.
     fn save_you_profile(&mut self) {
         if !self.ensure_fleet_settings() {
             return;
         }
         let now = vsf::eagle_time_oscillations();
         // Snapshot (key, value) first so we don't hold a you_fields borrow across the fleet_settings mutation.
-        let pairs: Vec<(String, Vec<u8>)> = self
-            .you_fields
-            .iter()
-            .map(|f| {
-                let v: String = f.tb.chars.iter().collect();
-                (format!("profile.{}", f.field_id), v.trim().as_bytes().to_vec())
-            })
-            .collect();
+        let mut pairs: Vec<(String, Vec<u8>)> = Vec::new();
+        for f in &self.you_fields {
+            let v: String = f.tb.chars.iter().collect();
+            pairs.push((format!("profile.{}", f.field_id), v.trim().as_bytes().to_vec()));
+            if let Some(tag_tb) = &f.tag_tb {
+                let t: String = tag_tb.chars.iter().collect();
+                pairs.push((format!("profile.{}_label", f.field_id), t.trim().as_bytes().to_vec()));
+            }
+        }
         let fs = self.fleet_settings.as_mut().unwrap();
         let mut changed = false;
         for (key, val) in pairs {
@@ -6115,7 +6244,7 @@ impl PhotonApp {
             return;
         }
         let tb = Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.);
-        self.you_fields.push(ProfileField { field_id: id, label: label.clone(), tier: "custom", custom: true, tb });
+        self.you_fields.push(ProfileField { field_id: id, label: label.clone(), tier: "custom", custom: true, tb, tag_tb: None });
         // Persist the whole custom registry (id\tlabel per line) so the field survives a relaunch.
         let reg = self
             .you_fields
@@ -12223,11 +12352,12 @@ impl PhotonApp {
         ]
         .into_iter()
         .flatten()
-        .chain(
-            self.you_fields
-                .iter_mut()
-                .map(|pf| (TextboxRole::ProfileField, &mut pf.tb)),
-        )
+        .chain(self.you_fields.iter_mut().flat_map(|pf| {
+            // Value box, then its optional tag box — both full registry members (tab / IME / blink / gestures).
+            std::iter::once(&mut pf.tb)
+                .chain(pf.tag_tb.as_mut())
+                .map(|t| (TextboxRole::ProfileField, t))
+        }))
     }
 
     /// Drive the disabled state of every textbox + its sibling button off the "query in flight" busy flags, in ONE place. A busy field returns `None` from its fluor capability accessors, so click / key / Tab / hover dispatch skip it for free — replacing the per-screen hand-rolled "swallow the click / force hover off / lock the field" code that used to live scattered across `on_event`. Symmetric across screens: the launch handle field + Attest button freeze while attesting (`!can_edit_handle()`), the contacts search box + plus button freeze while an add-friend search is in flight (`add_in_flight`).
