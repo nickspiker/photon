@@ -166,6 +166,7 @@ fn contact_state_schema() -> SectionSchema {
         .field("chain_woven", TypeConstraint::AnyUnsigned) // bool: chain proven end-to-end once (double-toggle seal) — persists so an established conversation allows composing (+ the staging queue) across restarts, even to an offline peer
         .field("hist_oldest", TypeConstraint::Any) // e6 eagle-time cursor: oldest recovered row so far (i64::MAX = head page pending). Absent = history recovery never ran for this contact.
         .field("hist_complete", TypeConstraint::AnyUnsigned) // bool: friend-history backfill finished (server said no-more, or early-stop). Absent = false.
+        .field("published_name", TypeConstraint::AnyString) // The friend's chosen display name, adopted from their pong (always-granted name slot). Absent = never received.
         .field("sibling", TypeConstraint::AnyUnsigned) // bool: this entry is one of OUR OWN fleet devices (fleet weave), keyed by sibling party id. Absent = false (a friend).
         .field("blind", TypeConstraint::Any) // multi-value per deposited blind: (depositor device ke, 64B blob tensor, deposited-at e6). Friend-side storage of OTP-blinded S blobs; absent = none.
         .field("blind_deposited", TypeConstraint::AnyUnsigned) // bool: OUR blind is disk-confirmed at this friend (their blind_ack arrived). Absent = false.
@@ -247,6 +248,12 @@ pub fn save_contact_state(contact: &Contact, storage: &FlatStorage) -> Result<()
                 .set("hist_complete", true)
                 .map_err(|e| StorageError::Parse(e.to_string()))?;
         }
+    }
+    if !contact.published_name.is_empty() {
+        // The friend's pong-adopted display name — written only when received (absent = never).
+        builder = builder
+            .set("published_name", VsfType::x(contact.published_name.clone()))
+            .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
     if contact.is_sibling {
         // Self-describing sibling marker — written only when true (absent = friend), so old vaults parse unchanged.
@@ -372,6 +379,9 @@ fn apply_contact_state(contact: &mut Contact, vsf_bytes: &[u8]) -> Result<(), St
     // Optional fields
     if let Ok(s) = section.get_value::<String>("ip") {
         contact.ip = s.parse().ok();
+    }
+    if let Ok(name) = section.get_value::<String>("published_name") {
+        contact.published_name = name;
     }
     if let Ok(seed) = section.get_value::<[u8; 32]>("seed") {
         contact.relationship_seed = Some(Seed::from_bytes(seed));
