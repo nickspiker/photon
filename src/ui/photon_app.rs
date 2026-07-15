@@ -5199,6 +5199,9 @@ impl PhotonApp {
                             }
                         }
                         self.apply_settings_to_ui();
+                        // A sibling's profile edit just landed: refresh the You-page boxes from the merged values (reload-on-next-frame) and republish our pong name in case profile.name changed.
+                        self.you_fields_loaded = false;
+                        self.publish_profile_name();
                         crate::log("SETTINGS: adopted fleet changes");
                     }
                 }
@@ -6148,7 +6151,19 @@ impl PhotonApp {
         };
         self.fleet_settings = Some(crate::storage::fleet_settings::load_fleet_settings(storage, kp.public.to_bytes()));
         self.apply_settings_to_ui();
+        self.publish_profile_name();
         true
+    }
+
+    /// Push our `profile.name` into the status thread's pong slot, so every friend's next ping cycle carries the current name (the always-granted slot). Called on settings load, on Update, and when a sibling's merged edit lands.
+    fn publish_profile_name(&self) {
+        let name = self
+            .fleet_settings
+            .as_ref()
+            .and_then(|fs| fs.effective("profile.name"))
+            .map(|v| String::from_utf8_lossy(&v).into_owned())
+            .unwrap_or_default();
+        crate::network::status::set_profile_name(&name);
     }
 
     /// Mirror the settings layer into the widgets that display it (after a load or an adopted fleet merge). updates.auto defaults ON until a value exists (the compiled default per docs/updates.md).
@@ -6375,6 +6390,8 @@ impl PhotonApp {
         }
         if changed {
             self.persist_and_push_settings();
+            // Friends learn the new name on their next ping cycle (the pong carries it).
+            self.publish_profile_name();
             self.ready_toast = Some("Profile saved \u{221a}".to_string());
         } else {
             self.ready_toast = Some("No changes".to_string());
@@ -8881,6 +8898,16 @@ impl PhotonApp {
         // Addresses whose transfers must be cancelled because they went stale (collected here so the checker borrow stays out of the contact-iter loop).
         let mut stale_addrs: Vec<std::net::SocketAddr> = Vec::new();
         for peer in peers {
+            // Seed the per-device endpoint for EVERY matching device row — this is how a friend's OTHER fleet devices become individually pingable (the pong path only updates a device we already ping).
+            for contact in self.contacts.iter_mut() {
+                if contact.handle_proof == peer.handle_proof {
+                    let ep = contact.endpoint_mut(peer.device_pubkey.as_bytes());
+                    ep.public = Some(peer.ip);
+                    if let Some(std::net::IpAddr::V4(v4)) = peer.local_ip {
+                        ep.lan = Some(std::net::SocketAddr::new(std::net::IpAddr::V4(v4), peer.ip.port()));
+                    }
+                }
+            }
             for contact in self.contacts.iter_mut() {
                 if contact.handle_proof == peer.handle_proof
                     && contact.public_identity.as_bytes() == peer.device_pubkey.as_bytes()
@@ -9042,6 +9069,18 @@ impl PhotonApp {
             }
             if sent {
                 pinged += 1;
+            }
+            // PER-DEVICE presence: every OTHER fleet device with a discovered endpoint gets its own ping at ITS OWN address(es), tracked by ITS pubkey — so each device answers for itself and the identity ring is "any device up". (The contact-level pings above already cover the active/first-met device; skip its endpoint to avoid a doubled ping.)
+            for ep in &contact.device_endpoints {
+                if Some(ep.pubkey) == contact.active_device
+                    || ep.pubkey == contact.public_identity.key
+                {
+                    continue;
+                }
+                let dev = crate::types::DevicePubkey::from_bytes(ep.pubkey);
+                for addr in [ep.lan, ep.public].into_iter().flatten() {
+                    checker.ping(addr, dev.clone(), Vec::new());
+                }
             }
         }
         if pinged > 0 {
@@ -9588,6 +9627,7 @@ impl PhotonApp {
                     is_online,
                     peer_addr,
                     sync_records,
+                    display_name,
                 } => {
                     // Stall recovery (runs EVERY ping that carries sync records, not just the offline→online edge): each record is the peer's contiguous tip (last_received_osc = "I have everything in order up to here"). Re-arm any pending message of ours that's newer than that tip AND has exhausted its retransmit attempts — so a gap-filler the sender already gave up on gets resent, and a receiver stuck behind a permanently-lost message un-sticks. collect_due_retransmits (the tick path) then actually sends the revived messages.
                     let now_osc = vsf::eagle_time_oscillations();
@@ -9617,35 +9657,69 @@ impl PhotonApp {
                             };
                             // Note: ceremony_id is now computed from offer_provenances, not ping provenances. Offer provenances are collected when ClutchOfferReceived messages arrive.
 
-                            // Update the address from the ping/pong source — but keep PUBLIC and LAN addresses in their own fields. We now ping both the LAN (`local_ip`) and the public (`ip`) address every cycle, so pongs arrive from BOTH; blindly writing every `src_addr` into `contact.ip` made it flap between the public IPv6 and the `192.168.x` LAN address each cycle, corrupting `race_addrs` (which reads `ip` as the public path). So: a pong from a PUBLIC source refreshes `contact.ip` (the peer's WAN address may have changed); a pong from a PRIVATE/LAN source refreshes `contact.local_ip`/`local_port` instead, never clobbering the public address.
+                            // PER-DEVICE addressing: the pong updates the SENDING device's endpoint (public/LAN split by source privacy), and only the ACTIVE device's pong may move the contact-level `ip`/`local_*` slot. A friend's other devices each keep their own endpoint — the old any-device-writes-the-one-slot rule made three-device fleets flip-flop the slot every cycle, which broke presence (pings chased the last ponger) AND cancelled mid-flight CLUTCH offer transfers ("address changed — cancelling"). First pong with no active device adopts the sender (bootstrap); inbound DATA (chat/CLUTCH) re-elects it (the device in their hand).
                             if let Some(addr) = peer_addr {
-                                if is_private_addr(&addr.ip()) {
-                                    if let std::net::IpAddr::V4(v4) = addr.ip() {
-                                        if contact.local_ip != Some(v4)
-                                            || contact.local_port != Some(addr.port())
-                                        {
-                                            contact.local_ip = Some(v4);
-                                            contact.local_port = Some(addr.port());
-                                        }
+                                let private = is_private_addr(&addr.ip());
+                                {
+                                    let ep = contact.endpoint_mut(&peer_pubkey.key);
+                                    if private {
+                                        ep.lan = Some(addr);
+                                    } else {
+                                        ep.public = Some(addr);
                                     }
-                                } else if contact.ip != Some(addr) {
-                                    crate::log(&format!(
-                                        "Status: Updated {} public IP from ping/pong: {:?} -> {}",
-                                        crate::fp(&contact.handle_proof), contact.ip, addr
-                                    ));
-                                    contact.ip = Some(addr);
+                                }
+                                if contact.active_device.is_none() {
+                                    contact.active_device = Some(peer_pubkey.key);
+                                }
+                                if contact.active_device == Some(peer_pubkey.key) {
+                                    if private {
+                                        if let std::net::IpAddr::V4(v4) = addr.ip() {
+                                            if contact.local_ip != Some(v4)
+                                                || contact.local_port != Some(addr.port())
+                                            {
+                                                contact.local_ip = Some(v4);
+                                                contact.local_port = Some(addr.port());
+                                            }
+                                        }
+                                    } else if contact.ip != Some(addr) {
+                                        crate::log(&format!(
+                                            "Status: Updated {} public IP from active-device pong: {:?} -> {}",
+                                            crate::fp(&contact.handle_proof), contact.ip, addr
+                                        ));
+                                        contact.ip = Some(addr);
+                                    }
                                 }
                             }
 
+                            // Always-granted name slot off the pong: adopt the friend's chosen display name (petname still wins at render — see display_name()). Persisted below via the state-save the name-change marks.
+                            if let Some(name) = display_name.as_ref() {
+                                if !contact.is_sibling && contact.published_name != *name {
+                                    crate::log(&format!(
+                                        "CONTACT: {} published name {:?} -> {:?}",
+                                        crate::fp(&contact.handle_proof), contact.published_name, name
+                                    ));
+                                    contact.published_name = name.clone();
+                                    contact.published_name_dirty = true;
+                                    changed = true;
+                                }
+                            }
+                            // Per-device liveness: this pong/timeout is about the pinged DEVICE. The contact-level ring shows the IDENTITY reachable = any device online.
+                            {
+                                let ep = contact.endpoint_mut(&peer_pubkey.key);
+                                ep.online = is_online;
+                            }
+                            let identity_online = is_online || contact.any_device_online();
                             // True only on the offline→online EDGE, not every online ping/chat. Retransmit-of-pending (below) keys off this — without the edge gate it re-fired on every received chat (now that a chat marks the sender online), resending all pending messages in a storm.
-                            let came_online = is_online && !contact.is_online;
-                            if contact.is_online != is_online {
-                                contact.is_online = is_online;
+                            let came_online = identity_online && !contact.is_online;
+                            if contact.is_online != identity_online {
+                                contact.is_online = identity_online;
                                 changed = true;
                                 crate::log(&format!(
-                                    "Status: {} is now {}",
+                                    "Status: {} is now {} (device {} {})",
                                     crate::fp(&contact.handle_proof),
-                                    if is_online { "ONLINE" } else { "offline" }
+                                    if identity_online { "ONLINE" } else { "offline" },
+                                    hex::encode(&peer_pubkey.key[..4]),
+                                    if is_online { "up" } else { "down" }
                                 ));
                             }
 
@@ -10530,6 +10604,17 @@ impl PhotonApp {
                     for (idx, contact) in self.contacts.iter_mut().enumerate() {
                         if contact.handle_hash == their_handle_hash {
                             contact.ip = Some(sender_addr);
+                            // Inbound DATA elects the sending device ACTIVE (the device in their hand — the fleet reply-TX rule) and seeds its endpoint, so contact-level addressing follows the device actually talking to us instead of whichever sibling ponged last.
+                            contact.active_device = Some(sender_pubkey);
+                            {
+                                let pub_src = !is_private_addr(&sender_addr.ip());
+                                let ep = contact.endpoint_mut(&sender_pubkey);
+                                if pub_src {
+                                    ep.public = Some(sender_addr);
+                                } else {
+                                    ep.lan = Some(sender_addr);
+                                }
+                            }
                             // Authenticated CLUTCH traffic from them ⇒ reachable right now ⇒ show online immediately, don't wait for the next pong.
                             if !contact.is_online {
                                 contact.is_online = true;
@@ -11211,6 +11296,17 @@ impl PhotonApp {
                     for (idx, contact) in self.contacts.iter_mut().enumerate() {
                         if contact.handle_hash == their_handle_hash {
                             contact.ip = Some(sender_addr);
+                            // Inbound DATA elects the sending device ACTIVE (the device in their hand — the fleet reply-TX rule) and seeds its endpoint, so contact-level addressing follows the device actually talking to us instead of whichever sibling ponged last.
+                            contact.active_device = Some(sender_pubkey);
+                            {
+                                let pub_src = !is_private_addr(&sender_addr.ip());
+                                let ep = contact.endpoint_mut(&sender_pubkey);
+                                if pub_src {
+                                    ep.public = Some(sender_addr);
+                                } else {
+                                    ep.lan = Some(sender_addr);
+                                }
+                            }
                             // Authenticated CLUTCH traffic from them ⇒ reachable right now ⇒ show online immediately, don't wait for the next pong.
                             if !contact.is_online {
                                 contact.is_online = true;
@@ -11441,6 +11537,17 @@ impl PhotonApp {
                     for (contact_idx, contact) in self.contacts.iter_mut().enumerate() {
                         if contact.handle_hash == their_handle_hash {
                             contact.ip = Some(sender_addr);
+                            // Inbound DATA elects the sending device ACTIVE (the device in their hand — the fleet reply-TX rule) and seeds its endpoint, so contact-level addressing follows the device actually talking to us instead of whichever sibling ponged last.
+                            contact.active_device = Some(sender_pubkey);
+                            {
+                                let pub_src = !is_private_addr(&sender_addr.ip());
+                                let ep = contact.endpoint_mut(&sender_pubkey);
+                                if pub_src {
+                                    ep.public = Some(sender_addr);
+                                } else {
+                                    ep.lan = Some(sender_addr);
+                                }
+                            }
                             // Authenticated CLUTCH traffic from them ⇒ reachable right now ⇒ show online immediately, don't wait for the next pong.
                             if !contact.is_online {
                                 contact.is_online = true;
@@ -12498,6 +12605,18 @@ impl PhotonApp {
         // Update sync records if any messages were received (for pong responses)
         if need_sync_update {
             self.update_sync_records();
+        }
+
+        // Persist any published-name adoptions from this drain (deferred: saving inside the loop would fight the contacts borrow). Only the per-contact STATE entry carries published_name — the index row's name is the petname.
+        if self.contacts.iter().any(|c| c.published_name_dirty) {
+            if let Some(storage) = self.storage.as_ref() {
+                for contact in self.contacts.iter_mut().filter(|c| c.published_name_dirty) {
+                    contact.published_name_dirty = false;
+                    if let Err(e) = crate::storage::contacts::save_contact_state(contact, storage) {
+                        crate::log(&format!("CONTACT: published-name persist failed: {e}"));
+                    }
+                }
+            }
         }
 
         changed
