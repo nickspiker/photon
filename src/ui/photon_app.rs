@@ -896,6 +896,10 @@ pub struct PhotonApp {
     /// Fleet-page device management: the device pubkey the user tapped to select (highlighted row). `None` = nothing selected. Only OUR OTHER devices (siblings) are selectable — never this device. Remove-other retired 2026-07-13 (sovereign records: self-signed departure only; eviction = withholding at the key layer, arriving with the device-trust bundle) — selection currently feeds only the future rename.
     settings_fleet_selected: Option<[u8; 32]>,
     /// Security-page "Shred (crypto-wipe)" confirm arm: a first tap arms, a second fires `clean_device_for_reuse` (nuke vault + clear session). Event-shown, interaction-cleared.
+    /// Rubber-band scroll extents, measured by the last render (the extents live in render-side geometry — text metrics, dynamic row counts — so render publishes them and the wheel handler + tick() read last frame's value; geometry is stable frame-to-frame). `tick()` relaxes any out-of-range scroll back to [0, extent] thru these.
+    settings_rail_extent: f32,
+    settings_content_extent: f32,
+    contacts_scroll_extent: isize,
     settings_shred_armed: bool,
     /// Two-tap confirm armed for the Security page's "Remove & shred" (self-departure from the fleet chain, then crypto-wipe). Mutually exclusive with `settings_shred_armed`; cleared on any page switch, like every destructive arm.
     settings_removeshred_armed: bool,
@@ -1065,6 +1069,9 @@ impl PhotonApp {
             you_add_textbox: None,
             you_fields_loaded: false,
             settings_fleet_selected: None,
+            settings_rail_extent: 0.0,
+            settings_content_extent: 0.0,
+            contacts_scroll_extent: 0,
             settings_shred_armed: false,
             settings_removeshred_armed: false,
             about_version_spelled: false,
@@ -2272,11 +2279,19 @@ impl FluorApp for PhotonApp {
                     MouseScrollDelta::Pixels(_, y) => *y as isize,
                 };
                 if dy != 0 {
+                    // Rubber-band scrolling on every axis, every platform: past either end the step is asymptotically resisted (never further than `reach` past the bound), and `tick()` eases the overshoot back once the wheel stops. `reach` scales with the window so the give feels the same on a watch and an 8K panel.
+                    let reach = ctx.viewport.height_px as f32 / (1 << 3) as f32;
                     if matches!(self.state, AppState::Ready) {
-                        // On the contacts screen the wheel scrolls the WHOLE user section + list as one block. Down-scroll (negative dy) moves the block up (reveals lower contacts), so subtract; the render pass clamps to the full-block extent and re-runs `update_widget_layout` after the clamp so the search box + plus button (whose rects are set off `contacts_scroll`) track the clamped offset.
-                        self.contacts_scroll = (self.contacts_scroll - dy).max(0);
+                        // On the contacts screen the wheel scrolls the WHOLE user section + list as one block. Down-scroll (negative dy) moves the block up (reveals lower contacts), so subtract; render publishes the block extent (`contacts_scroll_extent`) and re-runs `update_widget_layout` so the search box + plus button (whose rects are set off `contacts_scroll`) track the same offset.
+                        self.contacts_scroll = rubber_step(
+                            self.contacts_scroll as f32,
+                            -(dy as f32),
+                            self.contacts_scroll_extent as f32,
+                            reach,
+                        )
+                        .round() as isize;
                     } else if matches!(self.state, AppState::Settings(_)) {
-                        // Settings: the wheel scrolls the nav rail when the cursor is over it, else the content pane. Down-scroll (negative dy) reveals lower rows → add. The render pass clamps both to their natural-height extents.
+                        // Settings: the wheel scrolls the nav rail when the cursor is over it, else the content pane. Down-scroll (negative dy) reveals lower rows → add.
                         let over_rail = {
                             let sl = SettingsLayout::compute(&ctx.viewport);
                             (ctx.cursor_x as f32) < sl.content.x
@@ -2284,16 +2299,20 @@ impl FluorApp for PhotonApp {
                         // The foreground panes (rail + content) position rows as `inset.y − scroll`, the OPPOSITE sign to the background texture's `row − scroll` — so with the raw wheel delta they scrolled against the background (the "foreground inverted" report). Negate the delta here so the foreground gesture lands on the OS natural-scroll convention (down-scroll reveals lower rows); the background is handed the negated offsets below so ITS direction is unchanged (it reads correct already). Android touch rides the same `step`, so this one sign serves both.
                         let step = -(dy as f32);
                         if over_rail {
-                            self.settings_rail_scroll = (self.settings_rail_scroll + step).max(0.0);
+                            self.settings_rail_scroll = rubber_step(self.settings_rail_scroll, step, self.settings_rail_extent, reach);
                         } else {
-                            self.settings_content_scroll = (self.settings_content_scroll + step).max(0.0);
+                            self.settings_content_scroll = rubber_step(self.settings_content_scroll, step, self.settings_content_extent, reach);
                         }
                     } else if matches!(self.state, AppState::Conversation) {
-                        // In a conversation the wheel scrolls the message history. The list lays out bottom-up with newest at the bottom; a positive offset pushes messages down (reveals older ones above). Scroll-up (positive dy) shows older → add.
+                        // In a conversation the wheel scrolls the message history. The list lays out bottom-up with newest at the bottom; a positive offset pushes messages down (reveals older ones above). Scroll-up (positive dy) shows older → add. Only the 0 end rubber-bands (hi = ∞); the old-history end is backfill-paged, not clamped.
                         if let Some(ci) = self.active_contact {
                             if let Some(contact) = self.contacts.get_mut(ci) {
-                                contact.message_scroll_offset =
-                                    (contact.message_scroll_offset + dy as f32 * 8.0).max(0.0);
+                                contact.message_scroll_offset = rubber_step(
+                                    contact.message_scroll_offset,
+                                    dy as f32 * (1 << 3) as f32,
+                                    f32::INFINITY,
+                                    reach,
+                                );
                                 // Scrollback jumps the history-backfill queue: the user is heading toward the old edge, so the next page request fires on the next tick instead of waiting out the trickle interval.
                                 if dy > 0 {
                                     if let Some(rec) = contact.history_recovery.as_mut() {
@@ -2763,6 +2782,48 @@ impl FluorApp for PhotonApp {
             needs_redraw = true;
         }
 
+        // Rubber-band spring: any scroll axis stretched past its bounds eases back exponentially (overshoot × e^(−8t) — C∞ in time, ~90% recovered in 0.3 s), snapping the final sub-third-pixel so the animation terminates. Runs only while an axis is out of range, so steady-state ticks are free. Scroll moves content (and its hit stamps), so a spring frame is a full scene frame with chrome invalidated — same as the wheel handler's frames.
+        {
+            let decay = (-delta_time * (1 << 3) as f32).exp();
+            let relax = |v: &mut f32, hi: f32| -> bool {
+                let bound = if *v < 0.0 {
+                    0.0
+                } else if *v > hi {
+                    hi
+                } else {
+                    return false;
+                };
+                let over = (*v - bound) * decay;
+                *v = if over.abs() < 0.3 { bound } else { bound + over };
+                true
+            };
+            let mut spring = false;
+            if matches!(self.state, AppState::Settings(_)) {
+                spring |= relax(&mut self.settings_rail_scroll, self.settings_rail_extent);
+                spring |= relax(&mut self.settings_content_scroll, self.settings_content_extent);
+            }
+            if matches!(self.state, AppState::Ready) {
+                let mut c = self.contacts_scroll as f32;
+                if relax(&mut c, self.contacts_scroll_extent as f32) {
+                    self.contacts_scroll = c.round() as isize;
+                    spring = true;
+                }
+            }
+            if matches!(self.state, AppState::Conversation) {
+                if let Some(contact) = self.active_contact.and_then(|ci| self.contacts.get_mut(ci)) {
+                    spring |= relax(&mut contact.message_scroll_offset, f32::INFINITY);
+                }
+            }
+            if spring {
+                self.scene_dirty = true;
+                needs_redraw = true;
+                if let Some(chrome) = self.chrome.as_mut() {
+                    chrome.invalidate_bg();
+                    chrome.invalidate_chrome();
+                }
+            }
+        }
+
         // Drive the blinkey on the focused textbox. `BlinkTimer::poll(now)` returns `true` ONLY on the rising edge of each fire (then schedules the next random 0-300ms interval and returns false the rest of the time). On each fire, toggle the focused textbox's blinkey via `flip_blinkey` — which is a no-op on an unfocused textbox, so we can call it on every textbox without gating. Tracked SEPARATELY from `needs_redraw`: a blinkey flip is fully covered by the textbox's own `damage_rect`, so a pure-blink frame must not raise `scene_dirty` — that's what keeps the idle repaint a teeny cursor-sized rect instead of the whole window.
         let mut blink_redraw = false;
         if self.blink_timer.poll(now) {
@@ -2890,7 +2951,8 @@ impl FluorApp for PhotonApp {
             // The version footer rides the block one row-height past the last row; extend the scroll extent past it (footer gap + a row-height of bottom margin) so the user can scroll the version fully into view instead of the bottom edge swallowing it.
             let block_end = block_bottom_at_zero + row_h * 2;
             let max_scroll = (block_end - buf_h as isize).max(0);
-            self.contacts_scroll = self.contacts_scroll.clamp(0, max_scroll);
+            // Publish the extent — no hard clamp; the wheel resists past-the-end and tick() springs the overshoot back (rubber-band).
+            self.contacts_scroll_extent = max_scroll;
             self.update_widget_layout(ctx);
             // Contacts version watermark rides the scroll block: it sits just past the last contact row (one row-height of breathing room) and scrolls up with everything else, rather than being pinned to the bottom. Stash the scrolled Y for the bg-layer closure below; other screens keep the pinned `version_cy`.
             ready_block_version_y =
@@ -2899,16 +2961,15 @@ impl FluorApp for PhotonApp {
         // Settings scroll: clamp the rail + content offsets to their NATURAL-height extents (no clamp-to-fit in layout → content can overflow → this scroll reveals it, bounded so it can't scroll off the page). MUST run BEFORE update_widget_layout: the wheel handler writes unclamped deltas, and positioning the widgets off the raw value for one frame (then the clamped one next frame) is what made the textboxes rubber-band past the top while the immediate-mode labels (drawn from the clamped locals) hard-stopped. One clamp, then everything this frame reads the same value. Captured into locals for use inside the borrowed render block.
         let (settings_rail_scroll, settings_content_scroll) = if let AppState::Settings(page) = self.state {
             let sl = SettingsLayout::compute(&ctx.viewport);
-            let rail_extent = (sl.nav_row_h() * (SettingsPage::ALL.len() as Coord + 1.0) - sl.rail_inset().h).max(0.0);
-            self.settings_rail_scroll = self.settings_rail_scroll.clamp(0.0, rail_extent);
+            // Publish the extents (rubber-band bounds) — NO hard clamp: the wheel handler resists past-the-end steps and tick() eases the overshoot back, so an out-of-range value here is the rubber-band mid-stretch, rendered as-is. Labels, widgets, and bg all read this same raw value, so the whole pane stretches together.
+            self.settings_rail_extent = (sl.nav_row_h() * (SettingsPage::ALL.len() as Coord + 1.0) - sl.rail_inset().h).max(0.0);
             // The You page is a dynamic form — its row count is the field set plus the fixed chrome rows, not a constant.
             let n_rows = if page == SettingsPage::You {
                 you_rows_plan(&self.you_fields).len()
             } else {
                 settings_page_rows(page)
             };
-            let content_extent = (sl.content_line_h() * n_rows as Coord - sl.content_inset().h).max(0.0);
-            self.settings_content_scroll = self.settings_content_scroll.clamp(0.0, content_extent);
+            self.settings_content_extent = (sl.content_line_h() * n_rows as Coord - sl.content_inset().h).max(0.0);
             (self.settings_rail_scroll, self.settings_content_scroll)
         } else {
             (0.0, 0.0)
@@ -12852,6 +12913,19 @@ fn stamp_hit_circle(
 
 /// Draw one left-aligned settings text line vertically centred in `row`, indented a little from the row's left edge. Used for page titles, field labels, and placeholder read-outs on the settings stub.
 /// Row count each settings page body lays out (must match the `split_v([1.0; N])` in that page's render arm). Drives the content-scroll extent clamp. Keep in sync when a page gains/loses rows.
+/// Rubber-band wheel step: full-strength inside `[0, hi]`, asymptotically resisted past either end — the overshoot can never exceed `reach`, and `tick()` eases it back once input stops. The resistance factor `(reach/(reach+over))²` is 1 at the boundary (C¹ join with in-range scrolling — the hard clamp this replaces was a C⁰ kink, banned by the GUI-continuity rule) and falls smoothly toward 0, integrating to a `reach·over/(reach+over)` saturation. `hi = f32::INFINITY` rubber-bands only the 0 end (conversation history).
+fn rubber_step(cur: f32, step: f32, hi: f32, reach: f32) -> f32 {
+    let over = if cur < 0.0 {
+        -cur
+    } else if cur > hi {
+        cur - hi
+    } else {
+        0.0
+    };
+    let f = (reach / (reach + over)) * (reach / (reach + over));
+    cur + step * f
+}
+
 fn settings_page_rows(page: SettingsPage) -> usize {
     match page {
         SettingsPage::You => 7,
