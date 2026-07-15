@@ -206,6 +206,7 @@ opt-level = 2              # Good optimization, fast compile
 overflow-checks = false    # No panic on overflow (wrapping behavior)
 debug = false              # No debug info (faster builds, use profile.debuggable for F5)
 debug-assertions = false   # No assertions
+strip = true               # Also drop the symbol table — dev builds are debugged via the VSF log, not a backtrace; ~13-18% smaller uploads (Windows 53→43 MiB). Use profile.debuggable when you need symbols.
 lto = false                # Fast linking
 codegen-units = 16         # Parallel codegen (fast builds)
 incremental = true         # Incremental compilation
@@ -214,6 +215,7 @@ incremental = true         # Incremental compilation
 [profile.debuggable]
 inherits = "dev"
 debug = "line-tables-only" # Line info for debugger
+strip = "none"             # Keep symbols + the line tables above (dev's strip=true would otherwise erase them)
 
 
 [patch.crates-io]
