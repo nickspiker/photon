@@ -488,6 +488,8 @@ enum TextboxRole {
     MessageCompose,
     /// The Diagnostics optional-note field — in the registry so click-to-focus raises the Android IME + blinkie like every other box.
     SettingsNote,
+    /// The You-page display-name entry — same registry so click-to-focus raises the IME + blinkie.
+    ProfileName,
 }
 
 /// Photon-desktop as a `FluorApp`. Owns fluor's `DefaultChrome` (window frame), the dense hit-id counter for widget allocation, and an optional event-loop proxy clone for waking from background tasks.
@@ -737,6 +739,8 @@ pub struct PhotonApp {
     settings_autoupdate_check: Option<crate::ui::settings_widgets::Checkbox>,
     /// Diagnostics-page optional-note field — a real fluor `Textbox` (distinct from the launch / contacts / compose boxes so content never bleeds).
     settings_note_textbox: Option<Textbox>,
+    /// You-page display-name entry: type a new name → Save persists it fleet-wide as the `profile.name` setting (contact-system §profile, the always-granted `name` slot). Distinct box, always starts EMPTY (the current name renders as static text above it), so there's no prefill footgun.
+    you_name_textbox: Option<Textbox>,
     /// Fleet-page device management: the device pubkey the user tapped to select (highlighted row). `None` = nothing selected. Only OUR OTHER devices (siblings) are selectable — never this device. Remove-other retired 2026-07-13 (sovereign records: self-signed departure only; eviction = withholding at the key layer, arriving with the device-trust bundle) — selection currently feeds only the future rename.
     settings_fleet_selected: Option<[u8; 32]>,
     /// Security-page "Shred (crypto-wipe)" confirm arm: a first tap arms, a second fires `clean_device_for_reuse` (nuke vault + clear session). Event-shown, interaction-cleared.
@@ -896,6 +900,7 @@ impl PhotonApp {
             settings_presence_check: None,
             settings_autoupdate_check: None,
             settings_note_textbox: None,
+            you_name_textbox: None,
             settings_fleet_selected: None,
             settings_shred_armed: false,
             about_version_spelled: false,
@@ -1130,6 +1135,11 @@ impl Container for PhotonApp {
                         f(tb);
                     }
                 }
+                SettingsPage::You => {
+                    if let Some(tb) = self.you_name_textbox.as_mut() {
+                        f(tb);
+                    }
+                }
                 _ => {}
             }
         }
@@ -1320,6 +1330,7 @@ impl FluorApp for PhotonApp {
             true,
         ));
         self.settings_note_textbox = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
+        self.you_name_textbox = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
 
         self.update_widget_layout(ctx);
 
@@ -1716,6 +1727,28 @@ impl FluorApp for PhotonApp {
                         self.settings_shred_armed = false;
                         crate::log("settings-stub: self-fleet-removal deferred");
                     }
+                } else if page == SettingsPage::You {
+                    if slot == 0 {
+                        // "Save name" → persist the display name fleet-wide as the `profile.name` setting (contact-system §profile, the always-granted `name` slot), then clear the entry box back to empty.
+                        let name: String = self
+                            .you_name_textbox
+                            .as_ref()
+                            .map(|tb| tb.chars.iter().collect())
+                            .unwrap_or_default();
+                        let name = name.trim().to_string();
+                        let toast = if name.is_empty() {
+                            "Name cleared \u{221a}".to_string()
+                        } else {
+                            "Name saved \u{221a}".to_string()
+                        };
+                        if self.settings_set("profile.name", name.into_bytes()) {
+                            self.ready_toast = Some(toast);
+                        }
+                        if let Some(tb) = self.you_name_textbox.as_mut() {
+                            tb.clear();
+                        }
+                    }
+                    // slot 1 = "Change avatar…" — not wired yet
                 } else if page == SettingsPage::Diagnostics {
                     if slot == 0 {
                         // "Clear" → wipe the on-device log; the next line reopens a fresh, empty file.
@@ -1797,6 +1830,7 @@ impl FluorApp for PhotonApp {
             self.contacts_textbox.as_ref(),
             self.message_textbox.as_ref(),
             self.settings_note_textbox.as_ref(),
+            self.you_name_textbox.as_ref(),
         ]
         .into_iter()
         .flatten()
@@ -4090,12 +4124,33 @@ impl FluorApp for PhotonApp {
             match page {
                 SettingsPage::You => {
                     let rows = layout.content_scrolled(7, settings_content_scroll).split_v([1.0; 7]);
-                    settings_line(&mut canvas, ctx.text, rows[0], "Handle", tspan, CONTACT_NAME_COLOUR, 600);
-                    settings_line(&mut canvas, ctx.text, rows[1], "zesty-otter-4383  (double-click to copy)", hspan2, LABEL_COLOUR, 400);
-                    settings_line(&mut canvas, ctx.text, rows[2], "Avatar", tspan, CONTACT_NAME_COLOUR, 600);
-                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[3].center_h(pillf(0.5)), "Change avatar…", btn_base.wrapping_add(0), ctx.pressed_hit);
-                    settings_line(&mut canvas, ctx.text, rows[4], "Pubkey / handle_proof", tspan, CONTACT_NAME_COLOUR, 600);
-                    settings_line(&mut canvas, ctx.text, rows[5], "b3:9f2a…c701  (double-click to copy)", hspan2, LABEL_COLOUR, 400);
+                    // The handle string exists at rest NOWHERE (docs/identity-profile.md) — so this page shows the current NAME (the fleet `profile.name` setting) + the identity FINGERPRINT, never a handle. Empty name is legal: the handle IS the identity.
+                    let current = self
+                        .fleet_settings
+                        .as_ref()
+                        .and_then(|fs| fs.effective("profile.name"))
+                        .map(|v| String::from_utf8_lossy(&v).into_owned())
+                        .filter(|s| !s.is_empty());
+                    let name_line = match &current {
+                        Some(n) => format!("Name — {n}"),
+                        None => "Name — (unset)".to_string(),
+                    };
+                    settings_line(&mut canvas, ctx.text, rows[0], &name_line, tspan, CONTACT_NAME_COLOUR, 600);
+                    // The entry box always starts empty (placeholder-guided "type a new name") — type + Save replaces `profile.name`; Save clears it back to empty, so there is never a prefill to keep in sync.
+                    if let Some(tb) = self.you_name_textbox.as_mut() {
+                        let id = tb.hit_id();
+                        tb.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, Some(&mut chrome.hit_test_map), id);
+                    }
+                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[2].center_h(pillf(0.4)), "Save name", btn_base.wrapping_add(0), ctx.pressed_hit);
+                    settings_line(&mut canvas, ctx.text, rows[3], "Your handle IS your identity — you don't have to set any of this.", hspan2, LABEL_COLOUR, 400);
+                    settings_line(&mut canvas, ctx.text, rows[4], "Identity", tspan, CONTACT_NAME_COLOUR, 600);
+                    let fp = self
+                        .session
+                        .as_ref()
+                        .map(|s| crate::fp(&crate::crypto::clutch::identity_party_id(&s.identity_seed)))
+                        .unwrap_or_else(|| "—".to_string());
+                    settings_line(&mut canvas, ctx.text, rows[5], &fp, hspan2, LABEL_COLOUR, 400);
+                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[6].center_h(pillf(0.4)), "Change avatar…", btn_base.wrapping_add(1), ctx.pressed_hit);
                 }
                 SettingsPage::Fleet => {
                     // Live device inventory (gathered above the chrome borrow): this device + our siblings. Rows 1..=6 hold up to 6 devices (fleets are usually ≤5; a scroll follows if this grows past the row budget). Non-self rows are tap-selectable (hit-stamped btn_base+16+index); the Remove pill acts on the selection with a two-tap confirm.
@@ -4879,6 +4934,14 @@ impl PhotonApp {
                         let r = rows[2];
                         cb.set_rect(r.x + r.w * 0.45, r.center_y(), r.w * 0.9, ctrl_h);
                         cb.set_font_size(ctrl_font);
+                    }
+                }
+                SettingsPage::You => {
+                    let rows = layout.content_scrolled(7, settings_content_scroll).split_v([1.0; 7]);
+                    if let Some(tb) = self.you_name_textbox.as_mut() {
+                        let r = rows[1].center_h(0.95);
+                        tb.set_rect(r.center_x(), r.center_y(), r.w, ctrl_h * 1.2);
+                        tb.set_font_size(ctrl_font, ctx.text);
                     }
                 }
                 SettingsPage::Diagnostics => {
@@ -11761,6 +11824,9 @@ impl PhotonApp {
             self.settings_note_textbox
                 .as_mut()
                 .map(|t| (TextboxRole::SettingsNote, t)),
+            self.you_name_textbox
+                .as_mut()
+                .map(|t| (TextboxRole::ProfileName, t)),
         ]
         .into_iter()
         .flatten()
