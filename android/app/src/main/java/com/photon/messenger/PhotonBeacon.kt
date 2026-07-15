@@ -22,9 +22,10 @@ import java.util.UUID
  * Pairing v2 proximity beacon (docs/pairing-v2.md) — the Android courier.
  * Rust drives it thru the JNI bridge (startAdvertise/stopAdvertise/startScan/stopScan called
  * on this object via the global ref cached in nativeInit); heard beacons go back down via
- * nativeOnBeaconHeard. The beacon is a single 128-bit BLE **service UUID** = `[ magic:4 ][ nonce:4 ][ tag:8 ]`
- * (fgtw::pair::beacon_uuid) — one carrier that works on every platform including macOS, where a
- * service UUID is the only advertising payload Apple allows. Bytes map big-endian: byte 0 is the
+ * nativeOnBeaconHeard. The beacon is 16 opaque bytes = keyed_hash(handle_key, device_pubkey ‖ eagle_time)
+ * (fgtw::pair::beacon_id) with TWO carriers: a 128-bit service UUID (what this advertiser emits — also
+ * mac/Linux; Apple allows nothing else) and manufacturer data under company 0xFFFF (what WINDOWS emits —
+ * its publisher refuses service UUIDs). The scanner ingests both. Bytes map big-endian: byte 0 is the
  * UUID's most-significant byte, matching Rust's uuid::from_bytes / as_bytes, so the 16 bytes round-trip
  * identically across the wire. BLUETOOTH_SCAN/ADVERTISE are runtime permissions on Android 12+: a start
  * call without the grant stashes itself as pending, fires the Activity's request dialog, and re-runs on grant.
@@ -140,9 +141,18 @@ object PhotonBeacon {
             .build()
         val cb = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult) {
-                val uuids = result.scanRecord?.serviceUuids ?: return
-                for (pu in uuids) {
-                    nativeOnBeaconHeard(uuidToBytes(pu.uuid))
+                val record = result.scanRecord ?: return
+                // Carrier 1: 128-bit service UUID (mac/Linux/Android advertisers).
+                record.serviceUuids?.let { uuids ->
+                    for (pu in uuids) {
+                        nativeOnBeaconHeard(uuidToBytes(pu.uuid))
+                    }
+                }
+                // Carrier 2: manufacturer data under company 0xFFFF (the WINDOWS advertiser — its publisher can't emit service UUIDs, the OS only allows manufacturer data). Same 16 bytes.
+                record.getManufacturerSpecificData(0xFFFF)?.let { md ->
+                    if (md.size == 16) {
+                        nativeOnBeaconHeard(md)
+                    }
                 }
             }
             override fun onScanFailed(errorCode: Int) {

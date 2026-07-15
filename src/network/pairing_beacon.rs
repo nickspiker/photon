@@ -1,6 +1,6 @@
 //! Pairing v2 proximity beacon — the transport seam (docs/pairing-v2.md).
 //!
-//! One frame, one carrier, every platform: a single 128-bit BLE **service UUID** = `keyed_hash(handle_key, device_pubkey ‖ eagle_time)` (see [`fgtw::pair::beacon_id`]) — the whole 16 bytes are the hash, no magic, no nonce. Service UUID rather than manufacturer data because it's the only advertising payload Apple's CoreBluetooth lets an app emit — so the same beacon works on Linux, Android, Windows AND macOS with no per-platform frame fork.
+//! One frame, TWO carriers, every platform: the 16 beacon bytes = `keyed_hash(handle_key, device_pubkey ‖ eagle_time)` (see [`fgtw::pair::beacon_id`]) — the whole 16 bytes are the hash, no magic, no nonce. Advertised as a 128-bit BLE **service UUID** where the OS allows it (Apple's CoreBluetooth permits ONLY service UUIDs; Linux/Android too), and as **manufacturer data** under company id 0xFFFF on Windows (whose publisher REFUSES service UUIDs — 0x80070057, the OS owns every AD section except manufacturer data). Same bytes either way; every scanner ingests BOTH carriers, so any platform pair works with no frame fork.
 //! `eagle_time` is the new device's PUBLISHED binding-offer stamp, so the beacon is a function of real, signed, published registry state — not invented entropy. It rolls per repost (unlinkable) and is indistinguishable from any random service UUID at rest.
 //! The ceremony never learns which courier ran: the new device announces thru [`announce_guard`] (re-emitting via [`reannounce`] on each repost), the sponsor's scanner drops every heard UUID into [`heard`], and the sponsor's matcher recomputes [`fgtw::pair::beacon_id`] for each public-list candidate and intersects — the hash-match IS the filter. Everything between is plumbing.
 //! Per-platform couriers: Android advertises AND scans (the `PhotonBeacon` Kotlin bridge); Linux advertises AND scans via bluer (BlueZ over D-Bus); macOS/Windows land next (btleplug scan + native advertise); Redox waits on a ferros radio.
@@ -9,6 +9,9 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use fgtw::pair::BEACON_UUID_LEN;
+
+/// Manufacturer-data company id for the Windows-advertised carrier: 0xFFFF is the Bluetooth SIG internal-use/testing id. Scanners match (this id, 16-byte payload) as an alternate spelling of the service-UUID carrier.
+pub const BEACON_COMPANY_ID: u16 = 0xFFFF;
 
 /// A beacon UUID the scanner heard (already magic-filtered), deduped by exact UUID. The sponsor's matcher tests each against its registry candidates with [`fgtw::pair::beacon_matches`] — this module never needs the fleet key.
 #[derive(Clone, Debug)]
@@ -162,6 +165,17 @@ mod imp {
         }
     }
 
+    /// The Windows-advertised carrier: the same 16 beacon bytes ride manufacturer data under [`super::BEACON_COMPANY_ID`] (Windows publishers can't emit service UUIDs).
+    fn ingest_manufacturer(md: &std::collections::HashMap<u16, Vec<u8>>) {
+        if let Some(data) = md.get(&super::BEACON_COMPANY_ID) {
+            if data.len() == BEACON_UUID_LEN {
+                let mut b = [0u8; BEACON_UUID_LEN];
+                b.copy_from_slice(data);
+                super::on_uuid_heard(b);
+            }
+        }
+    }
+
     async fn scan(stop: Arc<AtomicBool>) -> bluer::Result<()> {
         let session = bluer::Session::new().await?;
         let adapter = session.default_adapter().await?;
@@ -184,6 +198,9 @@ mod imp {
                         if let Ok(Some(uuids)) = dev.uuids().await {
                             ingest_uuids(&uuids);
                         }
+                        if let Ok(Some(md)) = dev.manufacturer_data().await {
+                            ingest_manufacturer(&md);
+                        }
                         let stop_dev = stop.clone();
                         if let Ok(mut dev_events) = dev.events().await {
                             tokio::spawn(async move {
@@ -191,11 +208,14 @@ mod imp {
                                     if stop_dev.load(Ordering::Relaxed) {
                                         break;
                                     }
-                                    if let bluer::DeviceEvent::PropertyChanged(
-                                        bluer::DeviceProperty::Uuids(uuids),
-                                    ) = ev
-                                    {
-                                        ingest_uuids(&uuids);
+                                    match ev {
+                                        bluer::DeviceEvent::PropertyChanged(
+                                            bluer::DeviceProperty::Uuids(uuids),
+                                        ) => ingest_uuids(&uuids),
+                                        bluer::DeviceEvent::PropertyChanged(
+                                            bluer::DeviceProperty::ManufacturerData(md),
+                                        ) => ingest_manufacturer(&md),
+                                        _ => {}
                                     }
                                 }
                             });
@@ -302,10 +322,23 @@ mod imp {
             tokio::select! {
                 ev = events.next() => {
                     let Some(ev) = ev else { break };
-                    if let CentralEvent::ServicesAdvertisement { services, .. } = ev {
-                        for u in services {
-                            super::on_uuid_heard(*u.as_bytes());
+                    match ev {
+                        CentralEvent::ServicesAdvertisement { services, .. } => {
+                            for u in services {
+                                super::on_uuid_heard(*u.as_bytes());
+                            }
                         }
+                        // The Windows-advertised carrier: same 16 bytes as manufacturer data under the beacon company id.
+                        CentralEvent::ManufacturerDataAdvertisement { manufacturer_data, .. } => {
+                            for (company, data) in manufacturer_data {
+                                if company == super::BEACON_COMPANY_ID && data.len() == BEACON_UUID_LEN {
+                                    let mut b = [0u8; BEACON_UUID_LEN];
+                                    b.copy_from_slice(&data);
+                                    super::on_uuid_heard(b);
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
                 _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
@@ -323,8 +356,10 @@ mod imp {
         use super::*;
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Arc;
-        use windows::core::GUID;
-        use windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementPublisher;
+        use windows::Devices::Bluetooth::Advertisement::{
+            BluetoothLEAdvertisementPublisher, BluetoothLEManufacturerData,
+        };
+        use windows::Storage::Streams::DataWriter;
         use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
 
         static ADV_STOP: Mutex<Option<Arc<AtomicBool>>> = Mutex::new(None);
@@ -354,9 +389,13 @@ mod imp {
             }
             let result = (|| -> windows::core::Result<()> {
                 let publisher = BluetoothLEAdvertisementPublisher::new()?;
-                // Big-endian u128 keeps the GUID's canonical value equal to our UUID bytes (byte 0 = most-significant), so the wire value matches every other courier.
-                let guid = GUID::from_u128(u128::from_be_bytes(uuid));
-                publisher.Advertisement()?.ServiceUuids()?.Append(guid)?;
+                // Windows REFUSES service UUIDs from app publishers (ServiceUuids().Append → Start = 0x80070057 E_INVALIDARG, seen in the field): the OS owns every AD section except MANUFACTURER DATA. So this one courier carries the same 16 beacon bytes as manufacturer data under company id 0xFFFF (the Bluetooth SIG internal-use id) — every scanner matches BOTH carriers (UUID from mac/Linux/Android advertisers, this from Windows).
+                let md = BluetoothLEManufacturerData::new()?;
+                md.SetCompanyId(super::super::BEACON_COMPANY_ID)?;
+                let writer = DataWriter::new()?;
+                writer.WriteBytes(&uuid)?;
+                md.SetData(&writer.DetachBuffer()?)?;
+                publisher.Advertisement()?.ManufacturerData()?.Append(&md)?;
                 publisher.Start()?;
                 crate::log("BEACON: WinRT advertise started");
                 while !stop.load(Ordering::Relaxed) {
