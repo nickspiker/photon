@@ -46,6 +46,10 @@ path = "src/bin/test-device-key.rs"
 name = "photonlog"
 path = "src/bin/photonlog.rs"
 
+[build-dependencies]
+# Compiles the macOS CoreBluetooth advertiser shim (macos/photon_ble.m) in build.rs; unused on other targets.
+cc = "1"
+
 [dependencies]
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 
