@@ -989,7 +989,7 @@ impl PhotonApp {
     }
 }
 
-/// DEV-ONLY orb: a per-build random gradient, so a freshly built + uploaded debug build is instantly recognizable (did the upload actually take?). Seeded from a hash of THIS executable's tail — the appended signature is regenerated every build — so it's identical across a run and different across builds. z = a·x + b·y (random horizontal + vertical slopes), normalized over the orb circle to [0,1], lerped between two fully-random RGB endpoints; `draw_app_icon` masks it to the circle.
+/// DEV-ONLY orb: a per-build random gradient, so a freshly built + uploaded debug build is instantly recognizable (did the upload actually take?). Seeded from a hash of THIS executable's tail — the appended signature is regenerated every build — so it's identical across a run and different across builds. Each channel (R, G, B) gets its OWN random plane `z = a·x + b·y` with `a, b ∈ [-1, 1]` over normalized `x, y ∈ [0, 1]`; the raw z, clamped to [0, 1], IS the channel value — NO normalization, so different slopes yield different intensity ranges and every build looks distinct. `draw_app_icon` masks it to the circle.
 #[cfg(feature = "development")]
 fn dev_gradient_orb() -> fluor::host::icon::Icon {
     fn splitmix(state: &mut u64) -> u64 {
@@ -1012,22 +1012,20 @@ fn dev_gradient_orb() -> fluor::host::icon::Icon {
     })()
     .unwrap_or(0xDEAD_BEEF_CAFE_F00D);
     let unit = |s: &mut u64| (splitmix(s) >> 11) as f64 / (1u64 << 53) as f64; // [0,1)
-    let a = unit(&mut seed) * 2.0 - 1.0;
-    let b = unit(&mut seed) * 2.0 - 1.0;
-    let c0 = [unit(&mut seed) * 255.0, unit(&mut seed) * 255.0, unit(&mut seed) * 255.0];
-    let c1 = [unit(&mut seed) * 255.0, unit(&mut seed) * 255.0, unit(&mut seed) * 255.0];
+    // Per-channel slopes a,b ∈ [-1,1): red, green, blue each get their own gradient plane.
+    let (r_a, r_b) = (unit(&mut seed) * 2.0 - 1.0, unit(&mut seed) * 2.0 - 1.0);
+    let (g_a, g_b) = (unit(&mut seed) * 2.0 - 1.0, unit(&mut seed) * 2.0 - 1.0);
+    let (b_a, b_b) = (unit(&mut seed) * 2.0 - 1.0, unit(&mut seed) * 2.0 - 1.0);
     const N: u32 = 256;
-    let r = N as f64 / 2.0;
-    let m = (r * (a * a + b * b).sqrt()).max(1e-6); // max |z| over the circle → maps its diameter to [0,1]
     let mut pixels = Vec::with_capacity((N * N) as usize);
-    for y in 0..N {
-        for x in 0..N {
-            let z = a * (x as f64 - r) + b * (y as f64 - r);
-            let t = (0.5 + z / (2.0 * m)).clamp(0.0, 1.0);
-            let ch = |i: usize| (c0[i] + (c1[i] - c0[i]) * t).round().clamp(0.0, 255.0) as u32;
-            let (rr, gg, bb) = (ch(0), ch(1), ch(2));
+    for py in 0..N {
+        for px in 0..N {
+            let x = px as f64 / (N - 1) as f64; // [0,1]
+            let y = py as f64 / (N - 1) as f64;
+            let ch = |a: f64, b: f64| ((a * x + b * y).clamp(0.0, 1.0) * 255.0) as u32; // raw z, no normalization
+            let (cr, cg, cb) = (ch(r_a, r_b), ch(g_a, g_b), ch(b_a, b_b));
             // Same α+darkness packing as pack_alpha_darkness: opaque, RGB = 255 − visible.
-            pixels.push(0xFF00_0000 | ((255 - rr) << 16) | ((255 - gg) << 8) | (255 - bb));
+            pixels.push(0xFF00_0000 | ((255 - cr) << 16) | ((255 - cg) << 8) | (255 - cb));
         }
     }
     fluor::host::icon::Icon { width: N, height: N, pixels }
