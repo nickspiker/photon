@@ -989,6 +989,50 @@ impl PhotonApp {
     }
 }
 
+/// DEV-ONLY orb: a per-build random gradient, so a freshly built + uploaded debug build is instantly recognizable (did the upload actually take?). Seeded from a hash of THIS executable's tail — the appended signature is regenerated every build — so it's identical across a run and different across builds. z = a·x + b·y (random horizontal + vertical slopes), normalized over the orb circle to [0,1], lerped between two fully-random RGB endpoints; `draw_app_icon` masks it to the circle.
+#[cfg(feature = "development")]
+fn dev_gradient_orb() -> fluor::host::icon::Icon {
+    fn splitmix(state: &mut u64) -> u64 {
+        *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = *state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+    // Per-build seed: hash the executable's tail (its appended 64-byte signature changes every build).
+    let mut seed = (|| -> Option<u64> {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut f = std::fs::File::open(std::env::current_exe().ok()?).ok()?;
+        let len = f.metadata().ok()?.len();
+        let tail = 4096u64.min(len) as usize;
+        f.seek(SeekFrom::End(-(tail as i64))).ok()?;
+        let mut buf = vec![0u8; tail];
+        f.read_exact(&mut buf).ok()?;
+        Some(u64::from_le_bytes(blake3::hash(&buf).as_bytes()[..8].try_into().unwrap()))
+    })()
+    .unwrap_or(0xDEAD_BEEF_CAFE_F00D);
+    let unit = |s: &mut u64| (splitmix(s) >> 11) as f64 / (1u64 << 53) as f64; // [0,1)
+    let a = unit(&mut seed) * 2.0 - 1.0;
+    let b = unit(&mut seed) * 2.0 - 1.0;
+    let c0 = [unit(&mut seed) * 255.0, unit(&mut seed) * 255.0, unit(&mut seed) * 255.0];
+    let c1 = [unit(&mut seed) * 255.0, unit(&mut seed) * 255.0, unit(&mut seed) * 255.0];
+    const N: u32 = 256;
+    let r = N as f64 / 2.0;
+    let m = (r * (a * a + b * b).sqrt()).max(1e-6); // max |z| over the circle → maps its diameter to [0,1]
+    let mut pixels = Vec::with_capacity((N * N) as usize);
+    for y in 0..N {
+        for x in 0..N {
+            let z = a * (x as f64 - r) + b * (y as f64 - r);
+            let t = (0.5 + z / (2.0 * m)).clamp(0.0, 1.0);
+            let ch = |i: usize| (c0[i] + (c1[i] - c0[i]) * t).round().clamp(0.0, 255.0) as u32;
+            let (rr, gg, bb) = (ch(0), ch(1), ch(2));
+            // Same α+darkness packing as pack_alpha_darkness: opaque, RGB = 255 − visible.
+            pixels.push(0xFF00_0000 | ((255 - rr) << 16) | ((255 - gg) << 8) | (255 - bb));
+        }
+    }
+    fluor::host::icon::Icon { width: N, height: N, pixels }
+}
+
 /// Map a connectivity bool to the chrome orb tint. Offline = red disk, online = green disk. Visible RGB chosen for high contrast in either light or dark chrome themes; brighten=true on the online state for the eventual icon-overlay case (no-icon today just renders as a solid coloured circle).
 fn orb_tint_for(online: bool) -> fluor::host::chrome::OrbTint {
     // Visible RGB(64, 224, 64) green: darkness = (0xBF, 0x1F, 0xBF); packed α=0xFF. Visible RGB(224, 64, 64) red:   darkness = (0x1F, 0xBF, 0xBF); packed α=0xFF.
@@ -1194,6 +1238,10 @@ impl FluorApp for PhotonApp {
         db.load_font_data(include_bytes!("../../assets/Oxanium/Oxanium-ExtraBold.ttf").to_vec());
 
         // Chrome owns its own hit-test map sized to the viewport, allocates four hit-ids for its buttons via the threaded counter, and stamps the perimeter + button rasters in `rasterize_chrome`. The Photon orb (chromatic starburst — same brand mark as the OS-level app icon) ships as a VSF image and decodes into the chrome's app_icon slot. Decode the bundled orb (the Photon brand mark, and the app_icon slot that swaps to a peer's avatar in a conversation). A decode failure logs LOUDLY instead of silently falling back to a plain coloured disk — a stale asset against a bumped vsf format is exactly how a blank orb shipped unnoticed, so make the next one scream rather than degrade in silence.
+        // DEV builds get a per-build random gradient orb so a fresh upload is visible at a glance; release ships the real brand mark.
+        #[cfg(feature = "development")]
+        let orb_icon = Some(dev_gradient_orb());
+        #[cfg(not(feature = "development"))]
         let orb_icon = match fluor::host::icon::Icon::from_vsf_bytes(include_bytes!(
             "../../assets/photon-orb.vsf"
         )) {
