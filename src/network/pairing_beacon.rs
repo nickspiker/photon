@@ -120,12 +120,11 @@ mod imp {
         adapter.set_powered(true).await?;
         let mut service_uuids = std::collections::BTreeSet::new();
         service_uuids.insert(bluer::Uuid::from_bytes(uuid));
+        // Peripheral (not Broadcast) + no custom intervals: BlueZ's advertising manager rejects our beacon under Broadcast/with intervals ("Failed to parse advertisement"). A connectable beacon is harmless here — there's no GATT server, so the sponsor reads the advertised service UUID without ever connecting. This is the canonical, universally-accepted bluer advertisement shape.
         let le_adv = bluer::adv::Advertisement {
-            advertisement_type: bluer::adv::Type::Broadcast,
+            advertisement_type: bluer::adv::Type::Peripheral,
             service_uuids,
             discoverable: Some(true),
-            min_interval: Some(std::time::Duration::from_millis(100)),
-            max_interval: Some(std::time::Duration::from_millis(150)),
             ..Default::default()
         };
         // Held for the ceremony's lifetime; its Drop unregisters the advertisement with BlueZ.
