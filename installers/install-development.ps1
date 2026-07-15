@@ -1,6 +1,6 @@
 # Photon Messenger DEVELOPMENT Installer for Windows
 # Run this script in PowerShell
-# This installs the development build with logging enabled
+# This installs the development build (amber theme + debug shortcuts)
 
 # Make errors visible instead of silent BOOP
 $ErrorActionPreference = "Stop"
@@ -17,7 +17,7 @@ trap {
 Write-Host "Photon Messenger DEVELOPMENT Installer" -ForegroundColor Magenta
 Write-Host "=======================================" -ForegroundColor Magenta
 Write-Host ""
-Write-Host "This is a DEVELOPMENT build with logging enabled." -ForegroundColor Yellow
+Write-Host "This is a DEVELOPMENT build (amber theme + debug shortcuts)." -ForegroundColor Yellow
 Write-Host "Logs will be written to: %APPDATA%\photon\photon.log" -ForegroundColor Yellow
 Write-Host ""
 
