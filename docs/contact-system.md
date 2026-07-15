@@ -39,12 +39,13 @@ Standard optional fields — ALL default UNSHARED:
 | label | field | tier |
 |---|---|---|
 | `first` `middle` `last` `nick` `prefix` `suffix` `maiden` `phon` | names + honorifics + pronunciation | name |
-| `email` `email2` `mobile` `phone` `work_phone` `web` `alt_msg` | primary/secondary email, mobile, POTS landline, work, website, other messaging handle | reach |
-| `addr` `addr_work` `geo` `tz` | postal, work address, precise lat/lon, timezone | place |
+| `email` `phone` `web` `alt_msg` | email, phone, website, other messaging handle — all EXPANDABLE (below) | reach |
+| `addr` `geo` `tz` | postal address (expandable), precise lat/lon, timezone | place |
 | `dob` `pronouns` `gender` `lang` `bio` | date of birth, pronouns, gender, languages, short bio | personal |
 | `org` `title` | organization, job title | work |
 | `ssn` `passport` `license` `tax_id` `emergency` | national id, passport, driver's license, tax id, emergency contact | sensitive |
 
+EXPANDABLE fields (`addr` `email` `phone` `web` `alt_msg`) are multi-instance: numbered secondaries are their own canonical dictionary labels (`addr2`, `email3`, …), and the editor reveals the next empty instance the moment the last one is filled — a second address/email/phone is always one keystroke away, never shown before it's needed. `phone` instances carry a companion tag (`<id>_label`: home / work / custom, free text), which subsumes the earlier `mobile` / `work_phone` / `email2` / `addr_work` slots. Singletons (`ssn`, `passport`, `license`, …) never expand.
 The `sensitive` tier is a UI flag, not a crypto difference: those fields get the extra "you can't un-give this — un-share stops updates, it does not claw back" nudge before a first share, and the client won't silently fold them into a default-share set.
 Custom fields ride the SAME per-field key + grant + beacon machinery as any standard field, and render on a recipient's card ONLY when shared — a recipient can neither see nor request a custom field's existence (that would leak that you keep it at all).
 UI note: the universal not-shared list is long, so the card shows shared fields prominently and collapses the rest under a "request more…" affordance — standard slots are always requestable, custom ones are invisible until granted.
