@@ -8,8 +8,8 @@ source scripts/lib/publish.sh
 source scripts/lib/github.sh
 source scripts/lib/manifest.sh
 
-# A dev publish bumps the PATCH so the shipped binary is newer + distinct (docs/updates.md). Before the build so build.rs bakes in the new patch + commit.
-manifest_bump_dev_patch
+# Refuse-dirty + patch-bump + commit BEFORE the build, so the binary embeds a clean HEAD whose commit is exactly what the signed manifest claims (docs/updates.md).
+manifest_begin_dev_publish "windows-x86_64"
 
 echo "Building Windows development binary..."
 cargo build --target x86_64-pc-windows-gnu --features development
@@ -24,8 +24,7 @@ sed "s/\$expectedHash = \"[A-F0-9]*\"/\$expectedHash = \"$sha\"/" installers/ins
 publish_r2 "install-development.ps1" /tmp/install-development.ps1 text/plain
 
 echo "Publishing dev manifest row..."
-manifest_publish_dev_row "windows-x86_64" "photon-messenger-windows-development.exe" target/x86_64-pc-windows-gnu/debug/photon-messenger.exe
-git add Cargo.toml Cargo.lock && git commit -q -m "dev: windows-x86_64 $(manifest_full_version)" || true
+manifest_publish_dev_row "Windows" "x86_64" "photon-messenger-windows-development.exe" target/x86_64-pc-windows-gnu/debug/photon-messenger.exe
 
 echo "Mirroring to GitHub Releases (dev)..."
 # Binary only — no installer script on GitHub. The GitHub fallback path is the README's copy-paste
