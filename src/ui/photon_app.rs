@@ -831,6 +831,19 @@ pub struct PhotonApp {
     hints_dismissed: bool,
     /// `true` while the cursor is over the Ready-screen avatar circle. Drives the "drag/drop to update avatar" hover hint.
     avatar_hovered: bool,
+    /// Hit id currently under the cursor, tracked across `CursorMoved` so hover only re-walks the widgets (and repaints) when it actually changes. Also the source of truth for [`Self::cursor_for`]'s I-beam decision.
+    hover_hit: HitId,
+    /// Whether `hover_hit` is a text-entry widget (drives the I-beam). Set by the hover walk via `Widget::is_text_input`, so it covers every textbox on every screen with no hand-list.
+    hover_is_textbox: bool,
+    /// Left button currently held. Gates drag-select in `CursorMoved`.
+    pointer_down: bool,
+    /// The textbox hit id a press engaged for drag-select (HIT_NONE if the press wasn't on a textbox). Set on press, cleared on release — the ONE bit of state the drag needs, works for every box via `textbox_by_hit_mut`.
+    drag_select_hit: HitId,
+    /// Last textbox press (id + time) for multi-click detection — a second/third press on the same box within the OS double-click interval escalates to word / all select.
+    last_click_hit: HitId,
+    last_click_time: Option<Instant>,
+    /// 1 = single, 2 = double (word), 3 = triple (all). Resets when the streak breaks.
+    click_streak: u8,
 
     // --- Settings panel (STUB) ---
     /// Base hit id for the settings nav-rail rows. Row `i` (page `SettingsPage::ALL[i]`) stamps `settings_nav_base + i`. Allocated in `init`.
@@ -1007,6 +1020,13 @@ impl PhotonApp {
             settings_content_scroll: 0.0,
             hints_dismissed: false,
             avatar_hovered: false,
+            hover_hit: HIT_NONE,
+            hover_is_textbox: false,
+            pointer_down: false,
+            drag_select_hit: HIT_NONE,
+            last_click_hit: HIT_NONE,
+            last_click_time: None,
+            click_streak: 0,
             settings_nav_base: HIT_NONE,
             settings_btn_base: HIT_NONE,
             settings_theme_dropdown: None,
@@ -1244,6 +1264,17 @@ impl Default for PhotonApp {
 /// Walk the widget tree. Screen content yields BEFORE chrome: launch-screen content (textbox → attest button) first, then chrome's four buttons — matching the macOS / GNOME convention where Tab traverses form fields before window-frame controls. `linear_tab_next` reads this order off the visit walk; `dispatch_click` / `dispatch_key` use it to route events by id. The walk gates on `state` so off-screen widgets neither hit-test nor cycle.
 impl Container for PhotonApp {
     fn visit(&mut self, f: &mut dyn FnMut(&mut dyn Widget)) {
+        // Dispatch (click / key / focus / tab), hover, damage-tracking, and the cursor icon ALL walk widgets through here. App widgets first (screen-gated), then chrome. Registering a widget in `visit_app_widgets` is the ONLY place it must be added — everything else iterates that one walk, so a new textbox inherits hover + damage + I-beam + gestures for free. (Hand-maintained per-concern widget lists were the recurring "new box misses hover/damage" bug.)
+        self.visit_app_widgets(f);
+        if let Some(chrome) = self.chrome.as_mut() {
+            chrome.visit(f);
+        }
+    }
+}
+
+impl PhotonApp {
+    /// Every APP widget (NOT chrome) active on the current screen, yielded to `f` — the single per-widget registry (see [`Container::visit`]). Screen-gated: an off-screen widget is neither dispatched to, tab-focusable, hover-lit, nor damage-claimed. An inherent method (not part of `Container`) so hover/damage passes can call it directly.
+    fn visit_app_widgets(&mut self, f: &mut dyn FnMut(&mut dyn Widget)) {
         if matches!(self.state, AppState::Launch(_)) {
             // The attest button is only part of the tree when there's a handle to attest — same reveal as the render gate. An empty field yields just the textbox, so Tab can't land focus on a button that isn't drawn and a hit-test can't dispatch to it. Join words phase (new device displaying its pairing words): no input widgets at all — the screen is display-only until bound or cancelled.
             let join_words_up = self.launch_add_mode && self.add_join_words.is_some();
@@ -1348,9 +1379,6 @@ impl Container for PhotonApp {
                 }
                 _ => {}
             }
-        }
-        if let Some(chrome) = self.chrome.as_mut() {
-            chrome.visit(f);
         }
     }
 }
@@ -2026,23 +2054,13 @@ impl FluorApp for PhotonApp {
             }
         }
 
-        // Focus ONLY a textbox on activation — it's the keyboard target, so a release over it focuses it + raises the soft IME. Buttons are deliberately NOT focused by a pointer tap: focusing a button made it stick in the dark `BUTTON_ACTIVE` tint (and swallow hover) after a drag-off. Keyboard users still Tab to a button to focus it for Enter/Space. Done before `dispatch_release` so focus is set before the textbox places its cursor.
-        let is_textbox = [
-            self.textbox.as_ref(),
-            self.contacts_textbox.as_ref(),
-            self.message_textbox.as_ref(),
-            self.settings_note_textbox.as_ref(),
-            self.you_add_textbox.as_ref(),
-        ]
-        .into_iter()
-        .flatten()
-        .any(|tb| tb.hit_id() == hit_id)
-            || self.you_fields.iter().any(|pf| pf.tb.hit_id() == hit_id);
-        if is_textbox && self.change_focus(Some(hit_id)) {
+        // A textbox release is ALREADY fully handled by the press/drag/release path in `on_event` (focus + caret + selection — see `textbox_press`). So skip `dispatch_release` for it: fluor's on_click would re-place the caret at the release column and wipe a drag selection. `textbox_by_hit_mut` is the single registry — every box (incl. `you_fields`) is covered with no hand-list.
+        if self.textbox_by_hit_mut(hit_id).is_some() {
             ctx.window.request_redraw();
+            return EventResponse::Handled;
         }
 
-        // Release-activated widgets (textbox cursor placement + attest / + / send Buttons): `dispatch_release` fires only `activate_on_release()` widgets — now including the textbox — so a release over the field places its cursor, and a Button's `Click::on_click` (→ `fire`) runs here; the Released arm's `take_click` polls then submit. A drag-off yields no activation → no fire, so nothing commits on a mis-touch.
+        // Release-activated Buttons (attest / + / send): `dispatch_release` fires only `activate_on_release()` widgets — a Button's `Click::on_click` (→ `fire`) runs here; the Released arm's `take_click` polls then submits. A drag-off yields no activation → no fire, so nothing commits on a mis-touch.
         let response = widget::dispatch_release(self, hit_id, x, y, mods);
         if matches!(response, EventResponse::Handled) {
             ctx.window.request_redraw();
@@ -2059,61 +2077,38 @@ impl FluorApp for PhotonApp {
         }
         match event {
             Event::CursorMoved { .. } => {
-                // Hit-test against the shared hit_test_map (chrome stamps its buttons, widgets stamp their pill silhouettes — all into chrome's map). `hit_at` returns the id at the cursor regardless of which widget owns the stamp; we route hover updates to each kind separately. Chrome sets its own hover state; widgets get their `set_hovered` flipped if the hit matches.
+                // Hit-test the shared map (chrome stamps its buttons, widgets stamp their pill silhouettes — all into chrome's map). `hit_at` returns the id under the cursor regardless of owner.
                 let new_hit = self
                     .chrome
                     .as_ref()
                     .map(|c| c.hit_at(ctx.cursor_x, ctx.cursor_y))
                     .unwrap_or(HIT_NONE);
-                // Frozen (busy) widgets are inert under the pointer for free: `set_enabled(false)` clears their hover and `Textbox/Button::set_hovered` is a no-op while disabled, so a cursor passing over a busy field can't re-light it — no per-state gate needed here.
                 let mut changed = false;
+                // Chrome tracks its OWN hover (title-bar controls); the app widgets are flipped in ONE walk below.
                 if let Some(chrome) = self.chrome.as_mut() {
                     changed |= chrome.set_hover(new_hit);
                 }
-                if let Some(tb) = self.textbox.as_mut() {
-                    let want = new_hit == tb.hit_id();
-                    if tb.is_hovered() != want {
-                        tb.set_hovered(want);
+                // Pointer-down over a textbox → this move extends its selection (drag-select), and while dragging the hover doesn't matter. Handled first so a drag reads as a gesture, not a hover.
+                if self.pointer_down && self.drag_select_hit != HIT_NONE {
+                    if self.drag_extend_selection(ctx.cursor_x) {
                         changed = true;
                     }
                 }
-                if let Some(btn) = self.attest_btn.as_mut() {
-                    let want = new_hit == btn.hit_id();
-                    if btn.is_hovered() != want {
-                        btn.set_hovered(want);
-                        changed = true;
-                    }
-                }
-                // Ready-screen search box + plus button. Their hit IDs only land in the map while the contacts screen renders them, so matching `new_hit` is naturally screen-safe — no state gate needed.
-                if let Some(tb) = self.contacts_textbox.as_mut() {
-                    let want = new_hit == tb.hit_id();
-                    if tb.is_hovered() != want {
-                        tb.set_hovered(want);
-                        changed = true;
-                    }
-                }
-                if let Some(btn) = self.contacts_plus_btn.as_mut() {
-                    let want = new_hit == btn.hit_id();
-                    if btn.is_hovered() != want {
-                        btn.set_hovered(want);
-                        changed = true;
-                    }
-                }
-                // Conversation compose box + send button — same screen-safe matching (their ids only land
-                // in the map while the conversation renders them).
-                if let Some(tb) = self.message_textbox.as_mut() {
-                    let want = new_hit == tb.hit_id();
-                    if tb.is_hovered() != want {
-                        tb.set_hovered(want);
-                        changed = true;
-                    }
-                }
-                if let Some(btn) = self.message_send_btn.as_mut() {
-                    let want = new_hit == btn.hit_id();
-                    if btn.is_hovered() != want {
-                        btn.set_hovered(want);
-                        changed = true;
-                    }
+                // Hover only re-walks (and repaints) when the hit under the cursor actually changes — one walk over EVERY active widget, so every textbox/button on every screen inherits hover + the I-beam with no hand-list. Frozen (busy) widgets return `None` from `hover()`, so they stay inert for free.
+                if new_hit != self.hover_hit {
+                    self.hover_hit = new_hit;
+                    let mut is_tb = false;
+                    self.visit_app_widgets(&mut |w| {
+                        let over = new_hit == w.id();
+                        if over && w.is_text_input() {
+                            is_tb = true;
+                        }
+                        if let Some(h) = w.hover() {
+                            h.set_hovered(over);
+                        }
+                    });
+                    self.hover_is_textbox = is_tb;
+                    changed = true;
                 }
                 {
                     let want = self.avatar_hit_id != HIT_NONE && new_hit == self.avatar_hit_id;
@@ -2286,7 +2281,13 @@ impl FluorApp for PhotonApp {
                     return EventResponse::StartWindowDrag;
                 }
 
-                // Every item — contacts, pills, nav, orb, back, avatar, start-fresh, the Buttons, AND the textboxes — now activates on RELEASE over the same element (fluor's PointerArbiter → `on_activate`); a drag-off before release cancels. So the press arm does NO activation and NO focus change: focusing on press was what left a button stuck in its dark focused tint after a drag-off (and swallowed hover). The host has already armed the element (held colour); we just consume the press so it doesn't fall through to a window drag.
+                // Textbox press: photon owns textbox pointer gestures end-to-end — focus + place the caret + drop a drag anchor here (double-click → word, triple → all), extend on drag in `CursorMoved`, finalize on release. `on_activate` therefore SKIPS `dispatch_release` for textboxes, so fluor's on_click can't clobber the selection on release.
+                if self.textbox_press(hit_id, ctx.cursor_x) {
+                    ctx.window.request_redraw();
+                    return EventResponse::Handled;
+                }
+
+                // Every OTHER item — contacts, pills, nav, orb, back, avatar, start-fresh, the Buttons — activates on RELEASE over the same element (fluor's PointerArbiter → `on_activate`); a drag-off before release cancels. So the press arm does NO activation and NO focus change for them: focusing on press left a button stuck in its dark focused tint after a drag-off (and swallowed hover). The host has already armed the element (held colour); we just consume the press so it doesn't fall through to a window drag.
                 ctx.window.request_redraw();
                 EventResponse::Handled
             }
@@ -2295,6 +2296,11 @@ impl FluorApp for PhotonApp {
                 button: MouseButton::Left,
                 ..
             } => {
+                // End any textbox drag-select and finalize the caret/selection (fires on EVERY release, so a drag-off outside the box clears the state too).
+                if self.pointer_down {
+                    self.textbox_release();
+                    ctx.window.request_redraw();
+                }
                 // Attest button: poll `take_click` AFTER release — Button::on_click increments the counter at press; we observe the rising edge here so submit fires once per press/release pair regardless of how chrome dispatches subsequent events.
                 let clicked = self
                     .attest_btn
@@ -2704,7 +2710,7 @@ impl FluorApp for PhotonApp {
         redraw
     }
 
-    fn damage_rect(&self, viewport: Viewport) -> Option<PixelRect> {
+    fn damage_rect(&mut self, viewport: Viewport) -> Option<PixelRect> {
         let vw = viewport.width_px as usize;
         let vh = viewport.height_px as usize;
         // Full viewport whenever immediate-mode content may have moved (`scene_dirty`), and whenever the chord hint is up or just released (stale hint pixels need one covering frame to clear).
@@ -2716,54 +2722,18 @@ impl FluorApp for PhotonApp {
             }
             return Some(combined);
         }
-        // Pure widget frame (blinkey flip, drag-select growth): union each widget's self-reported damage. Gates MUST mirror `visit`'s render gates — claiming a rect for a widget that won't be rendered would clear its pixels to bare background. `None` = nothing changed, host skips the render entirely.
+        // Pure widget frame (blinkey flip, drag-select growth): union each active widget's self-reported damage. This walks the SAME `visit_app_widgets` registry as dispatch/hover/render, so the gate AUTOMATICALLY mirrors what's drawn — a new textbox's blinkey/selection damage is claimed with zero hand-list (the recurring "new box's blinkie stacks / forces full-screen redraws" bug). `None` = nothing changed, host skips the render entirely.
         let mut combined: Option<PixelRect> = None;
-        let mut union_in = |r: Option<PixelRect>| {
-            if let Some(r) = r {
+        if let Some(chrome) = self.chrome.as_ref() {
+            if let Some(r) = chrome.damage_rect() {
                 combined = Some(combined.map_or(r, |c| c.union(r)));
             }
-        };
-        if let Some(chrome) = self.chrome.as_ref() {
-            union_in(chrome.damage_rect());
         }
-        if matches!(self.state, AppState::Launch(_)) {
-            let join_words_up = self.launch_add_mode && self.add_join_words.is_some();
-            if !join_words_up {
-                union_in(self.textbox.as_ref().and_then(|t| t.damage_rect(vw, vh)));
-                let handle_entered =
-                    self.textbox.as_ref().map(|tb| !tb.chars.is_empty()).unwrap_or(false);
-                if handle_entered {
-                    union_in(self.attest_btn.as_ref().and_then(|b| b.damage_rect(vw, vh)));
-                }
+        self.visit_app_widgets(&mut |w| {
+            if let Some(r) = w.damage_rect(vw, vh) {
+                combined = Some(combined.map_or(r, |c| c.union(r)));
             }
-        }
-        if matches!(self.state, AppState::AddDevice) {
-            union_in(self.textbox.as_ref().and_then(|t| t.damage_rect(vw, vh)));
-        }
-        if matches!(self.state, AppState::Ready) {
-            union_in(self.contacts_textbox.as_ref().and_then(|t| t.damage_rect(vw, vh)));
-            union_in(self.contacts_plus_btn.as_ref().and_then(|b| b.damage_rect(vw, vh)));
-        }
-        if matches!(self.state, AppState::Conversation) {
-            // Mirrors the render/focus gates: compose damage only counts once the box is actually shown (chain woven, or self-contact loopback).
-            let our_handle_hash = self
-                .session
-                .as_ref()
-                .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
-                .unwrap_or([0u8; 32]);
-            let compose_ready = self
-                .active_contact
-                .and_then(|ci| self.contacts.get(ci))
-                .map(|c| {
-                    c.clutch_state == crate::types::ClutchState::Complete
-                        && (c.chain_woven || c.handle_hash == our_handle_hash)
-                })
-                .unwrap_or(false);
-            if compose_ready {
-                union_in(self.message_textbox.as_ref().and_then(|t| t.damage_rect(vw, vh)));
-                union_in(self.message_send_btn.as_ref().and_then(|b| b.damage_rect(vw, vh)));
-            }
-        }
+        });
         combined
     }
 
@@ -4364,6 +4334,13 @@ impl FluorApp for PhotonApp {
                         inset.right().max(0.0) as usize,
                         inset.bottom().max(0.0) as usize,
                     );
+                    // Textboxes clip to the FULL content pane, not the reading inset — the focus glow blooms a few px past the pill, so the tighter inset clip was shaving it at the edges. Still bounded to the content pane, so it never bleeds into the rail or header.
+                    let glow_clip = fluor::paint::Clip::new(
+                        layout.content.x.max(0.0) as usize,
+                        layout.content.y.max(0.0) as usize,
+                        layout.content.right().max(0.0) as usize,
+                        layout.content.bottom().max(0.0) as usize,
+                    );
                     let content_top = inset.y;
                     let content_bot = inset.bottom();
                     let plan = you_rows_plan(&self.you_fields);
@@ -4382,7 +4359,7 @@ impl FluorApp for PhotonApp {
                                 ctx.text.draw_text_left_u32(&mut canvas, &label, cols[0].x + hspan2 * 0.3, cols[0].center_y(), hspan2, 400, LABEL_COLOUR, "Oxanium", Some(content_clip), None, None);
                                 let pf = &mut self.you_fields[*idx];
                                 let id = pf.tb.hit_id();
-                                pf.tb.render_content_into(&mut canvas, 0., 0., ctx.text, Some(content_clip), None, Some(&mut chrome.hit_test_map), id);
+                                pf.tb.render_content_into(&mut canvas, 0., 0., ctx.text, Some(glow_clip), None, Some(&mut chrome.hit_test_map), id);
                             }
                             YouRow::AddHeader => {
                                 ctx.text.draw_text_left_u32(&mut canvas, "Add a custom field", r.x + tspan * 0.3, r.center_y(), tspan, 600, CONTACT_NAME_COLOUR, "Oxanium", Some(content_clip), None, None);
@@ -4391,7 +4368,7 @@ impl FluorApp for PhotonApp {
                                 let cols = r.split_h([0.62, 0.38]);
                                 if let Some(tb) = self.you_add_textbox.as_mut() {
                                     let id = tb.hit_id();
-                                    tb.render_content_into(&mut canvas, 0., 0., ctx.text, Some(content_clip), None, Some(&mut chrome.hit_test_map), id);
+                                    tb.render_content_into(&mut canvas, 0., 0., ctx.text, Some(glow_clip), None, Some(&mut chrome.hit_test_map), id);
                                 }
                                 draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, cols[1].center_h(0.72), "Add", btn_base.wrapping_add(2), ctx.pressed_hit);
                             }
@@ -4410,7 +4387,7 @@ impl FluorApp for PhotonApp {
                                 ctx.text.draw_text_left_u32(&mut canvas, &fp, r.x + hspan2 * 0.3, r.center_y(), hspan2, 400, LABEL_COLOUR, "Oxanium", Some(content_clip), None, None);
                             }
                             YouRow::SavePill => {
-                                draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, r.center_h(pillf(0.5)), "Save profile", btn_base.wrapping_add(0), ctx.pressed_hit);
+                                draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, r.center_h(pillf(0.5)), "Update", btn_base.wrapping_add(0), ctx.pressed_hit);
                             }
                             YouRow::AvatarPill => {
                                 draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, r.center_h(pillf(0.5)), "Change avatar…", btn_base.wrapping_add(1), ctx.pressed_hit);
@@ -4643,20 +4620,9 @@ impl FluorApp for PhotonApp {
                 return CursorIcon::Pointer;
             }
         }
-        if let Some(tb) = self.textbox.as_ref() {
-            if tb.hit_id() == hit {
-                return CursorIcon::Text;
-            }
-        }
-        if let Some(tb) = self.contacts_textbox.as_ref() {
-            if tb.hit_id() == hit {
-                return CursorIcon::Text;
-            }
-        }
-        if let Some(tb) = self.message_textbox.as_ref() {
-            if tb.hit_id() == hit {
-                return CursorIcon::Text;
-            }
+        // Any textbox under the cursor → I-beam. `hover_is_textbox` is set by the ONE hover walk (via `Widget::is_text_input`) on every `CursorMoved`, so every box on every screen is covered with no hand-list.
+        if self.hover_is_textbox && hit == self.hover_hit {
+            return CursorIcon::Text;
         }
         // Contact rows and conversation back button — pointer cursor.
         if self.contact_hit_base != HIT_NONE
@@ -12309,6 +12275,71 @@ impl PhotonApp {
         self.textboxes_mut()
             .find(|(_, t)| t.hit_id() == focused)
             .map(|(_, t)| t)
+    }
+
+    /// The textbox whose stamped hit id is `id`, or `None`. Screen-safe: off-screen boxes never stamp under the cursor, so a hit match is always the visible one. The single lookup every pointer-gesture path uses — covers every box (incl. `you_fields`) with no hand-list.
+    fn textbox_by_hit_mut(&mut self, id: HitId) -> Option<&mut Textbox> {
+        if id == HIT_NONE {
+            return None;
+        }
+        self.textboxes_mut()
+            .find(|(_, t)| t.hit_id() == id)
+            .map(|(_, t)| t)
+    }
+
+    /// Pointer press over hit `id`: if it's a textbox, focus it, place the caret (+ drag anchor), and apply the multi-click streak (double → word, triple → all). Returns true if a textbox was engaged (caller consumes the press so it can't start a window drag). Works for ANY textbox on ANY screen.
+    fn textbox_press(&mut self, id: HitId, x: Coord) -> bool {
+        // A busy-frozen box (`!is_enabled`) takes no pointer input — treat it as "not a textbox" so the press falls through to the normal consume, matching the pre-rework behaviour.
+        if self.textbox_by_hit_mut(id).map_or(true, |tb| !tb.is_enabled()) {
+            // Press landed off every (live) textbox — break any multi-click streak so a later click elsewhere-then-back doesn't count as a double.
+            self.last_click_hit = HIT_NONE;
+            self.drag_select_hit = HIT_NONE;
+            return false;
+        }
+        let now = Instant::now();
+        let interval = fluor::host::os_input::double_click_interval();
+        let continues = self.last_click_hit == id
+            && self.last_click_time.map_or(false, |t| now.duration_since(t) <= interval);
+        let streak = if continues { (self.click_streak + 1).min(3) } else { 1 };
+        self.last_click_hit = id;
+        self.last_click_time = Some(now);
+        self.click_streak = streak;
+        self.drag_select_hit = id;
+        self.pointer_down = true;
+        self.change_focus(Some(id));
+        let tb = self.textbox_by_hit_mut(id).unwrap();
+        match streak {
+            2 => {
+                let idx = tb.cursor_index_from_x(x);
+                tb.select_word_at(idx);
+            }
+            3 => tb.select_all(),
+            _ => tb.pointer_press(x),
+        }
+        true
+    }
+
+    /// Pointer drag while a textbox press is live: extend that box's selection to the cursor column (auto-scrolling). Returns true if the caret moved.
+    fn drag_extend_selection(&mut self, x: Coord) -> bool {
+        let id = self.drag_select_hit;
+        // A word/all select (streak ≥ 2) shouldn't be dragged back to a caret; only a plain press (streak 1) extends.
+        if self.click_streak >= 2 {
+            return false;
+        }
+        match self.textbox_by_hit_mut(id) {
+            Some(tb) => tb.pointer_drag_to(x),
+            None => false,
+        }
+    }
+
+    /// Pointer release: clear the drag state and finalize the engaged box's selection (drop a zero-width anchor so a plain click reads as a caret, not an empty selection).
+    fn textbox_release(&mut self) {
+        self.pointer_down = false;
+        let id = self.drag_select_hit;
+        self.drag_select_hit = HIT_NONE;
+        if let Some(tb) = self.textbox_by_hit_mut(id) {
+            tb.pointer_release();
+        }
     }
 
     /// True iff both `[` and `]` are currently held. A bracket is "held" if its press timestamp is more recent than its release timestamp, OR the release was within [`CHORD_RELEASE_GRACE`] — that grace absorbs X11's habit of firing a synthetic Release for a held key the instant another key is pressed.
