@@ -1014,25 +1014,18 @@ fn dev_gradient_orb() -> fluor::host::icon::Icon {
     let (r_a, r_b) = (unit(&mut seed) * 2.0 - 1.0, unit(&mut seed) * 2.0 - 1.0);
     let (g_a, g_b) = (unit(&mut seed) * 2.0 - 1.0, unit(&mut seed) * 2.0 - 1.0);
     let (b_a, b_b) = (unit(&mut seed) * 2.0 - 1.0, unit(&mut seed) * 2.0 - 1.0);
-    // Each channel's z = a·x+b·y is remapped to EXACTLY [0,1] over its own range (deterministic from the slopes) so the plane fills the disk edge-to-edge with no clipping — full contrast, no flat clamped regions.
-    let extent = |a: f64, b: f64| {
-        let lo = a.min(0.0) + b.min(0.0);
-        (lo, (a.max(0.0) + b.max(0.0) - lo).max(1e-6))
-    };
-    let (r_lo, r_sp) = extent(r_a, r_b);
-    let (g_lo, g_sp) = extent(g_a, g_b);
-    let (b_lo, b_sp) = extent(b_a, b_b);
+    // Each channel is a sine plane wave: map the disk to [-4pi, 4pi] per axis, z = a*x + b*y (slopes in [-1,1]), then (sin(z)+1)/2 -> [0,1] with NO normalization and NO clipping (sine is bounded). Circle vignette darkens the rim over the top.
     const N: u32 = 256;
+    let s = 4.0 * std::f64::consts::PI;
     let mut pixels = Vec::with_capacity((N * N) as usize);
     for py in 0..N {
         for px in 0..N {
-            let x = px as f64 / (N - 1) as f64; // [0,1]
-            let y = py as f64 / (N - 1) as f64;
-            let (xc, yc) = (2.0 * x - 1.0, 2.0 * y - 1.0); // centred [-1,1]
-            let dome = (1.0 - xc * xc - yc * yc).max(0.0).sqrt(); // 1 at centre → 0 at the rim (lit sphere)
-            let ch = |lo: f64, sp: f64, a: f64, b: f64| (((a * x + b * y - lo) / sp) * dome * 255.0) as u32; // z→[0,1] × dome, no clip
-            let (cr, cg, cb) = (ch(r_lo, r_sp, r_a, r_b), ch(g_lo, g_sp, g_a, g_b), ch(b_lo, b_sp, b_a, b_b));
-            // Same α+darkness packing as pack_alpha_darkness: opaque, RGB = 255 − visible.
+            let xc = 2.0 * (px as f64 / (N - 1) as f64) - 1.0;
+            let yc = 2.0 * (py as f64 / (N - 1) as f64) - 1.0;
+            let (x, y) = (xc * s, yc * s);
+            let vignette = (1.0 - xc * xc - yc * yc).max(0.0).sqrt();
+            let ch = |a: f64, b: f64| ((((a * x + b * y).sin() + 1.0) / 2.0) * vignette * 255.0) as u32;
+            let (cr, cg, cb) = (ch(r_a, r_b), ch(g_a, g_b), ch(b_a, b_b));
             pixels.push(0xFF00_0000 | ((255 - cr) << 16) | ((255 - cg) << 8) | (255 - cb));
         }
     }
@@ -1052,27 +1045,21 @@ fn gradient_avatar_rgb(mut seed: u64, diam: usize) -> Vec<u8> {
     let (r_a, r_b) = (unit(&mut seed) * 2.0 - 1.0, unit(&mut seed) * 2.0 - 1.0);
     let (g_a, g_b) = (unit(&mut seed) * 2.0 - 1.0, unit(&mut seed) * 2.0 - 1.0);
     let (b_a, b_b) = (unit(&mut seed) * 2.0 - 1.0, unit(&mut seed) * 2.0 - 1.0);
-    // Each channel's z remapped to exactly [0,1] over its own range (from the slopes) → fills the disk, no clipping.
-    let extent = |a: f64, b: f64| {
-        let lo = a.min(0.0) + b.min(0.0);
-        (lo, (a.max(0.0) + b.max(0.0) - lo).max(1e-6))
-    };
-    let (r_lo, r_sp) = extent(r_a, r_b);
-    let (g_lo, g_sp) = extent(g_a, g_b);
-    let (b_lo, b_sp) = extent(b_a, b_b);
+    // Each channel is a sine plane wave: disk mapped to [-4pi, 4pi] per axis, z = a*x + b*y, then (sin(z)+1)/2 -> [0,1] (bounded, no clip); circle vignette over the top.
     let denom = diam.saturating_sub(1).max(1) as f64;
+    let s = 4.0 * std::f64::consts::PI;
     let mut out = vec![0u8; diam * diam * 3];
     for py in 0..diam {
         for px in 0..diam {
-            let x = px as f64 / denom;
-            let y = py as f64 / denom;
-            let (xc, yc) = (2.0 * x - 1.0, 2.0 * y - 1.0);
-            let dome = (1.0 - xc * xc - yc * yc).max(0.0).sqrt();
-            let ch = |lo: f64, sp: f64, a: f64, b: f64| (((a * x + b * y - lo) / sp) * dome * 255.0) as u8;
+            let xc = 2.0 * (px as f64 / denom) - 1.0;
+            let yc = 2.0 * (py as f64 / denom) - 1.0;
+            let (x, y) = (xc * s, yc * s);
+            let vignette = (1.0 - xc * xc - yc * yc).max(0.0).sqrt();
+            let ch = |a: f64, b: f64| ((((a * x + b * y).sin() + 1.0) / 2.0) * vignette * 255.0) as u8;
             let i = (py * diam + px) * 3;
-            out[i] = ch(r_lo, r_sp, r_a, r_b);
-            out[i + 1] = ch(g_lo, g_sp, g_a, g_b);
-            out[i + 2] = ch(b_lo, b_sp, b_a, b_b);
+            out[i] = ch(r_a, r_b);
+            out[i + 1] = ch(g_a, g_b);
+            out[i + 2] = ch(b_a, b_b);
         }
     }
     out
