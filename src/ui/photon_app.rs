@@ -65,8 +65,6 @@ const SEND_BUTTON_HOVER: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_25_2D_5
 /// This is a NOISE-MATH colour (visible-RGB space, like fluor's `BG_BASE`), so `fmt` not `dark`; passed
 /// to `background_noise` in place of its default base.
 const BG_BASE_WARNING: u32 = fluor::theme::fmt(0x00_30_10_00);
-/// Grey placeholder circle for contacts/avatars without a loaded image.
-const AVATAR_PLACEHOLDER: u32 = 0xFF_C5_C5_C5;
 /// Thin white rule between conversation messages. α+darkness.
 const DIVIDER_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_FF_FF_FF));
 /// Dim grey for the compose-box placeholder text. α+darkness.
@@ -1022,13 +1020,51 @@ fn dev_gradient_orb() -> fluor::host::icon::Icon {
         for px in 0..N {
             let x = px as f64 / (N - 1) as f64; // [0,1]
             let y = py as f64 / (N - 1) as f64;
-            let ch = |a: f64, b: f64| ((a * x + b * y).clamp(0.0, 1.0) * 255.0) as u32; // raw z, no normalization
+            let (xc, yc) = (2.0 * x - 1.0, 2.0 * y - 1.0); // centred [-1,1]
+            let dome = (1.0 - xc * xc - yc * yc).max(0.0).sqrt(); // 1 at centre → 0 at the rim (lit sphere)
+            let ch = |a: f64, b: f64| ((a * x + b * y).clamp(0.0, 1.0) * dome * 255.0) as u32; // raw z × dome, no normalization
             let (cr, cg, cb) = (ch(r_a, r_b), ch(g_a, g_b), ch(b_a, b_b));
             // Same α+darkness packing as pack_alpha_darkness: opaque, RGB = 255 − visible.
             pixels.push(0xFF00_0000 | ((255 - cr) << 16) | ((255 - cg) << 8) | (255 - cb));
         }
     }
     fluor::host::icon::Icon { width: N, height: N, pixels }
+}
+
+/// The default UNSET avatar: a deterministic per-identity gradient (seeded from the public proof), spherical-shaded like the dev orb, as a `diam×diam×3` visible-RGB buffer for `draw_avatar`. Replaces the flat grey placeholder — everyone without a set avatar shows a distinct little lit orb keyed to their identity, identical on every device that knows the proof. Each channel is its own plane `z = a·x + b·y` (`a,b ∈ [-1,1]`, raw clamped z, no normalization) × the dome `√(1−x_c²−y_c²)`.
+fn gradient_avatar_rgb(mut seed: u64, diam: usize) -> Vec<u8> {
+    fn splitmix(state: &mut u64) -> u64 {
+        *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = *state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+    let unit = |s: &mut u64| (splitmix(s) >> 11) as f64 / (1u64 << 53) as f64; // [0,1)
+    let (r_a, r_b) = (unit(&mut seed) * 2.0 - 1.0, unit(&mut seed) * 2.0 - 1.0);
+    let (g_a, g_b) = (unit(&mut seed) * 2.0 - 1.0, unit(&mut seed) * 2.0 - 1.0);
+    let (b_a, b_b) = (unit(&mut seed) * 2.0 - 1.0, unit(&mut seed) * 2.0 - 1.0);
+    let denom = diam.saturating_sub(1).max(1) as f64;
+    let mut out = vec![0u8; diam * diam * 3];
+    for py in 0..diam {
+        for px in 0..diam {
+            let x = px as f64 / denom;
+            let y = py as f64 / denom;
+            let (xc, yc) = (2.0 * x - 1.0, 2.0 * y - 1.0);
+            let dome = (1.0 - xc * xc - yc * yc).max(0.0).sqrt();
+            let ch = |a: f64, b: f64| ((a * x + b * y).clamp(0.0, 1.0) * dome * 255.0) as u8;
+            let i = (py * diam + px) * 3;
+            out[i] = ch(r_a, r_b);
+            out[i + 1] = ch(g_a, g_b);
+            out[i + 2] = ch(b_a, b_b);
+        }
+    }
+    out
+}
+
+/// Seed a gradient from a 32-byte public proof (`handle_proof`) — deterministic per identity.
+fn proof_gradient_seed(proof: &[u8; 32]) -> u64 {
+    u64::from_le_bytes(proof[..8].try_into().unwrap())
 }
 
 /// Map a connectivity bool to the chrome orb tint. Offline = red disk, online = green disk. Visible RGB chosen for high contrast in either light or dark chrome themes; brighten=true on the online state for the eventual icon-overlay case (no-icon today just renders as a solid coloured circle).
@@ -3154,7 +3190,22 @@ impl FluorApp for PhotonApp {
                     None,
                 );
             } else {
-                paint::draw_circle(&mut canvas, cx, cy, radius, AVATAR_PLACEHOLDER, None);
+                // Default unset avatar: our deterministic per-identity gradient (public proof) instead of a flat grey disk.
+                let gd = (radius * 2.0).max(1.0) as usize;
+                let seed = self
+                    .session
+                    .as_ref()
+                    .map(|s| proof_gradient_seed(&s.handle_proof))
+                    .unwrap_or(0);
+                crate::ui::avatar_render::draw_avatar(
+                    &mut canvas,
+                    cx,
+                    cy,
+                    radius,
+                    &gradient_avatar_rgb(seed, gd),
+                    gd,
+                    None,
+                );
             }
             // Stamp the avatar circle into the shared hit_test_map so a tap dispatches to the picker. Squared-distance test in the same row-major buffer the renderers use; bbox-clipped against the buffer extent so off-screen circles don't underflow.
             stamp_hit_circle(
@@ -3426,12 +3477,16 @@ impl FluorApp for PhotonApp {
                         Some(rows_clip),
                     );
                 } else {
-                    paint::draw_circle(
+                    // Default unset avatar: the contact's deterministic gradient (their public proof).
+                    let gd = (avatar_r * 2.0).max(1.0) as usize;
+                    let seed = proof_gradient_seed(&self.contacts[ci].handle_proof);
+                    crate::ui::avatar_render::draw_avatar(
                         &mut canvas,
                         avatar_cx,
                         cy,
                         avatar_r,
-                        AVATAR_PLACEHOLDER,
+                        &gradient_avatar_rgb(seed, gd),
+                        gd,
                         Some(rows_clip),
                     );
                 }
@@ -3671,12 +3726,16 @@ impl FluorApp for PhotonApp {
                             None,
                         );
                     } else {
-                        paint::draw_circle(
+                        // Default unset avatar: the contact's deterministic gradient (their public proof).
+                        let gd = (avatar_r * 2.0).max(1.0) as usize;
+                        let seed = proof_gradient_seed(&contact.handle_proof);
+                        crate::ui::avatar_render::draw_avatar(
                             &mut canvas,
                             avatar_cx,
                             avatar_y,
                             avatar_r,
-                            AVATAR_PLACEHOLDER,
+                            &gradient_avatar_rgb(seed, gd),
+                            gd,
                             None,
                         );
                     }
