@@ -4,7 +4,7 @@ set -e
 echo "Photon Messenger DEVELOPMENT Installer"
 echo "======================================="
 echo ""
-echo "This is a DEVELOPMENT build with logging enabled."
+echo "This is a DEVELOPMENT build (amber theme + debug shortcuts)."
 echo ""
 
 # Detect OS and architecture
@@ -264,7 +264,7 @@ echo "=========================================="
 echo "Photon Messenger (DEV) installed!"
 echo "=========================================="
 echo ""
-echo "DEVELOPMENT BUILD - Logging enabled"
+echo "DEVELOPMENT BUILD - amber theme + debug shortcuts"
 
 if [ "$OS" = "Darwin" ]; then
     # macOS-specific instructions
