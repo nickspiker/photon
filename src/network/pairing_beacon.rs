@@ -1,7 +1,8 @@
 //! Pairing v2 proximity beacon — the transport seam (docs/pairing-v2.md).
 //!
-//! One frame, one carrier, every platform: a single 128-bit BLE **service UUID** = `[ magic:4 ][ nonce:4 ][ keyed_tag:8 ]` (see [`fgtw::pair::beacon_uuid`]). Service UUID rather than manufacturer data because it's the only advertising payload Apple's CoreBluetooth lets an app emit — so the same beacon works on Linux, Android, Windows AND macOS with no per-platform frame fork.
-//! The ceremony never learns which courier ran: the new device announces thru [`announce_guard`], the sponsor's scanner drops heard UUIDs into [`heard`], and the sponsor's matcher runs [`fgtw::pair::beacon_matches`] against its registry candidates to decide which are in proximity. Everything between is plumbing.
+//! One frame, one carrier, every platform: a single 128-bit BLE **service UUID** = `keyed_hash(handle_key, device_pubkey ‖ eagle_time)` (see [`fgtw::pair::beacon_id`]) — the whole 16 bytes are the hash, no magic, no nonce. Service UUID rather than manufacturer data because it's the only advertising payload Apple's CoreBluetooth lets an app emit — so the same beacon works on Linux, Android, Windows AND macOS with no per-platform frame fork.
+//! `eagle_time` is the new device's PUBLISHED binding-offer stamp, so the beacon is a function of real, signed, published registry state — not invented entropy. It rolls per repost (unlinkable) and is indistinguishable from any random service UUID at rest.
+//! The ceremony never learns which courier ran: the new device announces thru [`announce_guard`] (re-emitting via [`reannounce`] on each repost), the sponsor's scanner drops every heard UUID into [`heard`], and the sponsor's matcher recomputes [`fgtw::pair::beacon_id`] for each public-list candidate and intersects — the hash-match IS the filter. Everything between is plumbing.
 //! Per-platform couriers: Android advertises AND scans (the `PhotonBeacon` Kotlin bridge); Linux advertises AND scans via bluer (BlueZ over D-Bus); macOS/Windows land next (btleplug scan + native advertise); Redox waits on a ferros radio.
 
 use std::sync::Mutex;
@@ -24,12 +25,19 @@ static HEARD: Mutex<Vec<HeardBeacon>> = Mutex::new(Vec::new());
 
 // ── Announce (new device) ──
 
-/// Advertise this device's join beacon for as long as the returned guard lives — tie it to the join ceremony's thread scope so every exit path (bind, cancel, error) stops the radio. A fresh random nonce is minted here per ceremony so the same device is unlinkable across pairings.
-pub fn announce_guard(handle_proof: &[u8; 32], device_pubkey: &[u8; 32]) -> AnnounceGuard {
-    let nonce: [u8; 4] = rand::random();
-    let uuid = fgtw::pair::beacon_uuid(handle_proof, device_pubkey, &nonce);
-    imp::start_announce(uuid);
+/// Advertise this device's join beacon for as long as the returned guard lives — tie it to the join ceremony's thread scope so every exit path (bind, cancel, error) stops the radio. `eagle_time` is this device's PUBLISHED binding-offer stamp (`BindRequest::t`) — the beacon is derived entirely from published offer state, so post the offer first, then announce with the stamp it returned.
+pub fn announce_guard(handle_proof: &[u8; 32], device_pubkey: &[u8; 32], eagle_time: i64) -> AnnounceGuard {
+    announce(handle_proof, device_pubkey, eagle_time);
     AnnounceGuard(())
+}
+
+/// Re-emit the beacon with the offer's CURRENT published stamp — called on each request repost so the aired id tracks the `eagle_time` the sponsor is now matching against. Replaces the live advertisement in place; the ceremony's single [`AnnounceGuard`] still owns teardown.
+pub fn reannounce(handle_proof: &[u8; 32], device_pubkey: &[u8; 32], eagle_time: i64) {
+    announce(handle_proof, device_pubkey, eagle_time);
+}
+
+fn announce(handle_proof: &[u8; 32], device_pubkey: &[u8; 32], eagle_time: i64) {
+    imp::start_announce(fgtw::pair::beacon_id(handle_proof, device_pubkey, eagle_time));
 }
 
 /// Stops the announce beacon on drop.
@@ -61,21 +69,15 @@ pub fn heard() -> Vec<HeardBeacon> {
     HEARD.lock().unwrap().clone()
 }
 
-/// Shared ingest for every courier: magic-filter, dedupe, store. Called by the bluer task (Linux) and `nativeOnBeaconHeard` (Android). Logs on FIRST sighting only — beacons repeat at scan rate and the log must not.
+/// Shared ingest for every courier: dedupe + store every advertised service UUID heard while scanning. There is no magic prefix to pre-filter on — the beacon is indistinguishable from any random service UUID by design — so the sponsor's matcher does the selection by recomputing each public-list entry's [`fgtw::pair::beacon_id`] and intersecting. Room noise that never matches is simply never looked up. No per-UUID log (without a magic, every fitness tracker in the room would spam it).
 pub fn on_uuid_heard(uuid: [u8; BEACON_UUID_LEN]) {
-    if !fgtw::pair::beacon_is_ours(&uuid) {
-        return; // scanner noise (someone else's service UUID)
-    }
     if !*SCANNING.lock().unwrap() {
         return; // scan already stopped; late callback
     }
     let mut heard = HEARD.lock().unwrap();
     match heard.iter_mut().find(|b| b.uuid == uuid) {
         Some(b) => b.last_seen = Instant::now(),
-        None => {
-            crate::log(&format!("BEACON: heard candidate {}", hex::encode(&uuid[..8])));
-            heard.push(HeardBeacon { uuid, last_seen: Instant::now() });
-        }
+        None => heard.push(HeardBeacon { uuid, last_seen: Instant::now() }),
     }
 }
 
