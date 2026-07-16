@@ -3,16 +3,25 @@ set -e
 
 source scripts/lib/github.sh
 
-# Version scheme (2026-07-16): major.minor.patch. deploy.sh ships X.Y.0 and bumps the MINOR on full success (patch 0 is RESERVED for releases; dev publishes bump the patch ≥1). The Cargo.toml version IS the version — never touched until everything succeeds (no half-deployed dirty tree). A deploy REQUIRES a .0 patch: a leftover dev patch means the tree wasn't reset after the last release, so refuse rather than ship a dev-numbered release.
-FULL_VERSION=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/')
-SHIP_VERSION=$(echo "$FULL_VERSION" | cut -d. -f2)   # the MINOR is the deploy counter / dozenal cue
-PATCH=$(echo "$FULL_VERSION" | cut -d. -f3)
-if [ "$PATCH" != "0" ]; then
-    echo "ERROR: version is $FULL_VERSION but a release must be X.Y.0 (patch 0 is reserved for releases)."
-    echo "       Reset the patch to 0 before deploying (a dev publish left it at $PATCH)."
+# Version scheme (2026-07-16): major.minor.patch. THIS SCRIPT does the release increment: whatever the tree holds (X.Y.0 fresh, or X.Y.P after dev publishes), the release ships X.(Y+1).0 — minor bumped, patch zeroed (patch 0 is RESERVED for releases; dev publishes bump the patch ≥1 and reach clients via the dev manifest).
+# Ordering discipline (same as the dev publishes): refuse a dirty tree, bump, COMMIT THE BUMP FIRST — so every built binary embeds the actual release commit (no "+dirty") and the signed manifest stamps the same HEAD. A failure anywhere rolls that one commit back (trap below), leaving the tree exactly as it started.
+if [ -n "$(git status --porcelain)" ]; then
+    echo "ERROR: working tree is dirty — a release stamps HEAD into every binary + the signed manifest."
+    echo "       Commit (or stash) first."
+    git status --short | head -20
     exit 1
 fi
-echo "Deploying version: $FULL_VERSION (minor $SHIP_VERSION)"
+CURRENT_VERSION=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/')
+MAJOR=$(echo "$CURRENT_VERSION" | cut -d. -f1)
+SHIP_VERSION=$(( $(echo "$CURRENT_VERSION" | cut -d. -f2) + 1 ))   # the MINOR is the deploy counter / dozenal cue
+FULL_VERSION="${MAJOR}.${SHIP_VERSION}.0"
+sed -i -E "s/^version = \"[0-9]+\.[0-9]+\.[0-9]+\"/version = \"${FULL_VERSION}\"/" Cargo.toml
+cargo update --workspace --quiet 2>/dev/null || true
+git add Cargo.toml Cargo.lock
+git commit -q -m "release: v${SHIP_VERSION} (${FULL_VERSION})"
+# Any failure from here rolls the release commit back — the tree returns to its pre-deploy state and the next attempt re-bumps cleanly.
+trap 'echo ""; echo "DEPLOY FAILED — rolling back the release commit."; git reset --hard HEAD~1' ERR
+echo "Deploying version: $FULL_VERSION (was $CURRENT_VERSION)"
 
 
 # Convert to dozenal names for display
@@ -193,13 +202,11 @@ echo ""
 echo "Deploying website..."
 (cd /mnt/Chiton/MEGA/holdmyoscilloscope && ./deploy.sh)
 
-# Everything succeeded — minor SHIP_VERSION is now public. Advance the MINOR (patch stays 0 —
-# reserved for releases; the next dev publish bumps patch to 1), so the tree is ready for the next
-# cycle and `v<minor>` marks the just-shipped release.
-MAJOR=$(echo "$FULL_VERSION" | cut -d. -f1)
-NEXT_MINOR=$((SHIP_VERSION + 1))
-sed -i -E "s/^version = \"[0-9]+\.[0-9]+\.[0-9]+\"/version = \"${MAJOR}.${NEXT_MINOR}.0\"/" Cargo.toml
-git add Cargo.toml Cargo.lock && git commit -m "v$SHIP_VERSION deployed; working version → ${MAJOR}.${NEXT_MINOR}.0" && git push
+# Everything succeeded — release v$SHIP_VERSION ($FULL_VERSION) is public and its commit (made up
+# top, before the builds) is now permanent: disarm the rollback and push. The tree stays at
+# X.Y.0 until the next dev publish bumps the patch or the next deploy bumps the minor.
+trap - ERR
+git push
 
 echo ""
 echo "Install with:"
