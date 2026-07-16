@@ -2101,7 +2101,7 @@ impl FluorApp for PhotonApp {
                         match crate::snapshot_log_bytes() {
                             Some(b) => {
                                 self.ready_toast =
-                                    Some(format!("Log: {} KiB", crate::dozenal_glyphs(((b.len() + 1023) / 1024) as u32)))
+                                    Some(format!("Log: {} KiB", (b.len() + 1023) / 1024))
                             }
                             None => self.ready_toast = Some("Log is empty".to_string()),
                         }
@@ -4715,7 +4715,7 @@ impl FluorApp for PhotonApp {
                     if let Some(dd) = self.settings_theme_dropdown.as_mut() {
                         dd.render_content_into(&mut canvas, 0., 0., ctx.text, None, Some(&mut chrome.hit_test_map));
                     }
-                    settings_line(&mut canvas, ctx.text, rows[3], &format!("Party colours (placeholder → perceptual L≈{}%)", crate::dozenal_glyphs(50)), hspan2, LABEL_COLOUR, 400);
+                    settings_line(&mut canvas, ctx.text, rows[3], "Party colours (placeholder → perceptual L≈50%)", hspan2, LABEL_COLOUR, 400);
                     settings_line(&mut canvas, ctx.text, rows[4], "Zoom / text size", hspan2, LABEL_COLOUR, 400);
                     if let Some(sl) = self.settings_zoom_slider.as_mut() {
                         sl.render_content_into(&mut canvas, Some(&mut chrome.hit_test_map), sl.hit_id());
@@ -4760,7 +4760,7 @@ impl FluorApp for PhotonApp {
                 SettingsPage::Diagnostics => {
                     let rows = layout.content_scrolled(10, settings_content_scroll).split_v([1.0; 10]);
                     settings_line(&mut canvas, ctx.text, rows[0], "Diagnostics", tspan, CONTACT_NAME_COLOUR, 600);
-                    settings_line(&mut canvas, ctx.text, rows[1], &format!("On-device log · {} MiB · self-expires {}–{}h", crate::dozenal_glyphs(16), crate::dozenal_glyphs(24), crate::dozenal_glyphs(48)), hspan2, LABEL_COLOUR, 400);
+                    settings_line(&mut canvas, ctx.text, rows[1], "On-device log · 16 MiB · self-expires 24–48h", hspan2, LABEL_COLOUR, 400);
                     let pr = rows[3].split_h([1.0, 1.0, 1.0]);
                     draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[0].center_h(0.85), "Clear", btn_base.wrapping_add(0), ctx.pressed_hit);
                     draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[1].center_h(0.85), "Snapshot", btn_base.wrapping_add(1), ctx.pressed_hit);
@@ -6761,7 +6761,7 @@ impl PhotonApp {
         ) {
             let n = bytes.len();
             // Immediate press feedback — the upload runs seconds on a big log, and silence here read as "the button did nothing". Replaced by "Log sent √" / "Send failed" when the worker thread reports.
-            self.ready_toast = Some(format!("Sending log ({} KiB)\u{2026}", crate::dozenal_glyphs(((n + 1023) / 1024) as u32)));
+            self.ready_toast = Some(format!("Sending log ({} KiB)\u{2026}", (n + 1023) / 1024));
             crate::log(&format!("DIAG: submitting log ({n} bytes) to FGTW (sealed)"));
             std::thread::spawn(move || {
                 let r = put_log_blocking(&bytes, &note, &kp, &hp, &seed).map_err(|e| format!("{e}"));
