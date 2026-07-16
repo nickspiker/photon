@@ -121,7 +121,7 @@ pub fn load_fleet_settings(storage: &FlatStorage, our_device: [u8; 32]) -> Fleet
                 fs.global = g;
                 fs.devices = d;
             }
-            Err(e) => crate::log(&format!("SETTINGS: stored state unreadable ({e}) — starting empty")),
+            Err(e) => crate::logf!("SETTINGS: stored state unreadable ({}) — starting empty", e),
         }
     }
     fs

@@ -113,10 +113,7 @@ pub fn write_file(path: &Path, data: &[u8], label: &str) -> Result<(), std::io::
     // Ensure parent directory exists
     if let Some(parent) = path.parent() {
         if let Err(e) = fs::create_dir_all(parent) {
-            crate::log(&format!(
-                "STORAGE: Failed to create dir for {}: {}",
-                label, e
-            ));
+            crate::logf!("STORAGE: Failed to create dir for {}: {}", label, e);
             return Err(e);
         }
     }
@@ -132,7 +129,7 @@ pub fn write_file(path: &Path, data: &[u8], label: &str) -> Result<(), std::io::
 
     if let Err(e) = fs::write(&tmp_path, data) {
         let _ = fs::remove_file(&tmp_path);
-        crate::log(&format!("STORAGE: Failed to write {}: {}", label, e));
+        crate::logf!("STORAGE: Failed to write {}: {}", label, e);
         return Err(e);
     }
 
@@ -142,7 +139,7 @@ pub fn write_file(path: &Path, data: &[u8], label: &str) -> Result<(), std::io::
     }
     if let Err(e) = fs::rename(&tmp_path, path) {
         let _ = fs::remove_file(&tmp_path);
-        crate::log(&format!("STORAGE: Failed to rename {}: {}", label, e));
+        crate::logf!("STORAGE: Failed to rename {}: {}", label, e);
         return Err(e);
     }
 
@@ -150,22 +147,14 @@ pub fn write_file(path: &Path, data: &[u8], label: &str) -> Result<(), std::io::
     match fs::read(path) {
         Ok(readback) if readback.len() == data.len() && readback == data => Ok(()),
         Ok(readback) => {
-            crate::log(&format!(
-                "STORAGE: Write verification failed for {} (wrote {} bytes, read back {} bytes)",
-                label,
-                data.len(),
-                readback.len()
-            ));
+            crate::logf!("STORAGE: Write verification failed for {} (wrote {} bytes, read back {} bytes)", label, data.len(), readback.len());
             Err(std::io::Error::new(
                 std::io::ErrorKind::Other,
                 "write verification failed: data mismatch",
             ))
         }
         Err(e) => {
-            crate::log(&format!(
-                "STORAGE: Write verification read-back failed for {}: {}",
-                label, e
-            ));
+            crate::logf!("STORAGE: Write verification read-back failed for {}: {}", label, e);
             Err(e)
         }
     }
@@ -176,7 +165,7 @@ pub fn write_file(path: &Path, data: &[u8], label: &str) -> Result<(), std::io::
 /// Logs a contextual error message on failure and returns the io::Error.
 pub fn read_file(path: &Path, label: &str) -> Result<Vec<u8>, std::io::Error> {
     fs::read(path).map_err(|e| {
-        crate::log(&format!("STORAGE: Failed to read {}: {}", label, e));
+        crate::logf!("STORAGE: Failed to read {}: {}", label, e);
         e
     })
 }

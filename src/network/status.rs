@@ -378,10 +378,7 @@ impl StatusChecker {
         let local_addr = socket
             .local_addr()
             .map_err(|e| format!("Failed to get local addr: {}", e))?;
-        crate::log(&format!(
-            "Status: Using socket on port {}",
-            local_addr.port()
-        ));
+        crate::logf!("Status: Using socket on port {}", local_addr.port());
 
         socket
             .set_nonblocking(true)
@@ -485,10 +482,7 @@ impl StatusChecker {
         let local_addr = socket
             .local_addr()
             .map_err(|e| format!("Failed to get local addr: {}", e))?;
-        crate::log(&format!(
-            "Status: Using socket on port {}",
-            local_addr.port()
-        ));
+        crate::logf!("Status: Using socket on port {}", local_addr.port());
 
         socket
             .set_nonblocking(true)
@@ -669,7 +663,7 @@ fn send_status_update(
     #[cfg(not(target_os = "android"))]
     if let Some(proxy) = event_proxy {
         if let Err(e) = proxy.send(PhotonEvent::NetworkUpdate) {
-            crate::log(&format!("Status: Failed to send wake event: {:?}", e));
+            crate::logf!("Status: Failed to send wake event: {}", format!("{:?}", e));
         }
     }
     // Android has no event-loop proxy — the UI thread's tick is Choreographer-driven and stops when the app backgrounds. So the wake instead pokes the foreground service to run a headless protocol tick (advance_protocol), which drains this very update off the channel and advances the ceremony/chain without the screen being on. No-op while foregrounded (the service defers to the live draw) and when the Activity context isn't registered. See docs/background-tick.md.
@@ -709,7 +703,7 @@ async fn run_checker(
     let cloned = match std_socket.try_clone() {
         Ok(s) => s,
         Err(e) => {
-            crate::log(&format!("Status: Failed to clone socket: {}", e));
+            crate::logf!("Status: Failed to clone socket: {}", e);
             return;
         }
     };
@@ -717,7 +711,7 @@ async fn run_checker(
     let socket = match TokioUdpSocket::from_std(cloned) {
         Ok(s) => Arc::new(s),
         Err(e) => {
-            crate::log(&format!("Status: Failed to convert to tokio socket: {}", e));
+            crate::logf!("Status: Failed to convert to tokio socket: {}", e);
             return;
         }
     };
@@ -736,10 +730,7 @@ async fn run_checker(
         );
         match tokio::net::TcpListener::bind(tcp_addr_v6).await {
             Ok(listener) => {
-                crate::log(&format!(
-                    "Status: TCP listening on [::]:{}  (dual-stack)",
-                    udp_port
-                ));
+                crate::logf!("Status: TCP listening on [::]:{}  (dual-stack)", udp_port);
                 Some(listener)
             }
             Err(_) => {
@@ -747,14 +738,11 @@ async fn run_checker(
                 let tcp_addr_v4 = SocketAddr::new(std::net::IpAddr::V4(local_ip), udp_port);
                 match tokio::net::TcpListener::bind(tcp_addr_v4).await {
                     Ok(listener) => {
-                        crate::log(&format!(
-                            "Status: TCP listening on {} (IPv4 only)",
-                            tcp_addr_v4
-                        ));
+                        crate::logf!("Status: TCP listening on {} (IPv4 only)", tcp_addr_v4);
                         Some(listener)
                     }
                     Err(e) => {
-                        crate::log(&format!("Status: Failed to bind TCP: {}", e));
+                        crate::logf!("Status: Failed to bind TCP: {}", e);
                         None
                     }
                 }
@@ -802,7 +790,7 @@ async fn run_checker(
             let socket = match std::net::UdpSocket::bind(format!("0.0.0.0:{}", multicast_port)) {
                 Ok(s) => s,
                 Err(e) => {
-                    crate::log(&format!("LAN: Could not bind multicast socket: {}", e));
+                    crate::logf!("LAN: Could not bind multicast socket: {}", e);
                     return;
                 }
             };
@@ -812,13 +800,13 @@ async fn run_checker(
 
             // Join multicast group
             if let Err(e) = socket.join_multicast_v4(&multicast_addr, &Ipv4Addr::UNSPECIFIED) {
-                crate::log(&format!("LAN: Failed to join multicast group: {}", e));
+                crate::logf!("LAN: Failed to join multicast group: {}", e);
                 return;
             }
 
             // Set non-blocking for async
             if let Err(e) = socket.set_nonblocking(true) {
-                crate::log(&format!("LAN: Failed to set non-blocking: {}", e));
+                crate::logf!("LAN: Failed to set non-blocking: {}", e);
                 return;
             }
 
@@ -826,32 +814,23 @@ async fn run_checker(
             let socket = match tokio::net::UdpSocket::from_std(socket) {
                 Ok(s) => s,
                 Err(e) => {
-                    crate::log(&format!("LAN: Failed to convert socket: {}", e));
+                    crate::logf!("LAN: Failed to convert socket: {}", e);
                     return;
                 }
             };
 
-            crate::log(&format!(
-                "LAN: Multicast listener on {}:{}",
-                multicast_addr, multicast_port
-            ));
+            crate::logf!("LAN: Multicast listener on {}:{}", multicast_addr, multicast_port);
 
             // 64 KiB so a sync-record-laden datagram is never silently truncated (a short recv drops the tail → parse error → one-way presence).
             let mut buf = [0u8; 65536];
             loop {
                 match socket.recv_from(&mut buf).await {
                     Ok((len, src_addr)) => {
-                        crate::log(&format!(
-                            "LAN: Multicast RX {} bytes from {}",
-                            len, src_addr
-                        ));
+                        crate::logf!("LAN: Multicast RX {} bytes from {}", len, src_addr);
                         let packet = &buf[..len];
                         // Only process pt_disc packets (LAN discovery)
                         if let Some(lan_update) = parse_lan_discovery(packet, src_addr, &our_device_pk) {
-                            crate::log(&format!(
-                                "LAN: Discovered peer via multicast: {}",
-                                src_addr
-                            ));
+                            crate::logf!("LAN: Discovered peer via multicast: {}", src_addr);
                             send_status_update(&status_tx_mcast, lan_update, &event_proxy_mcast);
                         }
                     }
@@ -860,7 +839,7 @@ async fn run_checker(
                         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                     }
                     Err(e) => {
-                        crate::log(&format!("LAN: Multicast recv error: {}", e));
+                        crate::logf!("LAN: Multicast recv error: {}", e);
                         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                     }
                 }
@@ -945,10 +924,7 @@ async fn run_checker(
                 };
                 if ret < 0 {
                     let err = std::io::Error::last_os_error();
-                    crate::log(&format!(
-                        "LAN: Could not bind IPv6 multicast socket: {}",
-                        err
-                    ));
+                    crate::logf!("LAN: Could not bind IPv6 multicast socket: {}", err);
                     unsafe { libc::close(fd) };
                     return;
                 }
@@ -960,50 +936,41 @@ async fn run_checker(
             let socket = match std::net::UdpSocket::bind(format!("[::]:{}", multicast_port)) {
                 Ok(s) => s,
                 Err(e) => {
-                    crate::log(&format!("LAN: Could not bind IPv6 multicast socket: {}", e));
+                    crate::logf!("LAN: Could not bind IPv6 multicast socket: {}", e);
                     return;
                 }
             };
 
             // Join multicast group (interface 0 = default)
             if let Err(e) = socket.join_multicast_v6(&multicast_addr, 0) {
-                crate::log(&format!("LAN: Failed to join IPv6 multicast group: {}", e));
+                crate::logf!("LAN: Failed to join IPv6 multicast group: {}", e);
                 return;
             }
 
             if let Err(e) = socket.set_nonblocking(true) {
-                crate::log(&format!("LAN: Failed to set non-blocking: {}", e));
+                crate::logf!("LAN: Failed to set non-blocking: {}", e);
                 return;
             }
 
             let socket = match tokio::net::UdpSocket::from_std(socket) {
                 Ok(s) => s,
                 Err(e) => {
-                    crate::log(&format!("LAN: Failed to convert IPv6 socket: {}", e));
+                    crate::logf!("LAN: Failed to convert IPv6 socket: {}", e);
                     return;
                 }
             };
 
-            crate::log(&format!(
-                "LAN: IPv6 multicast listener on [{}]:{}",
-                multicast_addr, multicast_port
-            ));
+            crate::logf!("LAN: IPv6 multicast listener on [{}]:{}", multicast_addr, multicast_port);
 
             // 64 KiB so a sync-record-laden datagram is never silently truncated.
             let mut buf = [0u8; 65536];
             loop {
                 match socket.recv_from(&mut buf).await {
                     Ok((len, src_addr)) => {
-                        crate::log(&format!(
-                            "LAN: IPv6 Multicast RX {} bytes from {}",
-                            len, src_addr
-                        ));
+                        crate::logf!("LAN: IPv6 Multicast RX {} bytes from {}", len, src_addr);
                         let packet = &buf[..len];
                         if let Some(lan_update) = parse_lan_discovery(packet, src_addr, &our_device_pk) {
-                            crate::log(&format!(
-                                "LAN: Discovered peer via IPv6 multicast: {}",
-                                src_addr
-                            ));
+                            crate::logf!("LAN: Discovered peer via IPv6 multicast: {}", src_addr);
                             send_status_update(&status_tx_mcast6, lan_update, &event_proxy_mcast6);
                         }
                     }
@@ -1011,7 +978,7 @@ async fn run_checker(
                         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                     }
                     Err(e) => {
-                        crate::log(&format!("LAN: IPv6 multicast recv error: {}", e));
+                        crate::logf!("LAN: IPv6 multicast recv error: {}", e);
                         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                     }
                 }
@@ -1030,7 +997,7 @@ async fn run_checker(
                 // Async accept - sleeps until connection arrives (no polling)
                 match listener.accept().await {
                     Ok((stream, src_addr)) => {
-                        crate::log(&format!("Status: TCP connection from {}", src_addr));
+                        crate::logf!("Status: TCP connection from {}", src_addr);
                         // Convert to std TcpStream for tcp::recv (uses VSF L field for framing)
                         let std_stream = stream.into_std();
                         match std_stream {
@@ -1038,21 +1005,14 @@ async fn run_checker(
                                 // Read payload using VSF L field
                                 match crate::network::tcp::recv(&mut std_stream) {
                                     Ok(data) => {
-                                        crate::log(&format!(
-                                            "Status: Received {} bytes via TCP from {}",
-                                            data.len(),
-                                            src_addr
-                                        ));
+                                        crate::logf!("Status: Received {} bytes via TCP from {}", data.len(), src_addr);
 
                                         // VSF inspection for development builds
                                         #[cfg(feature = "development")]
                                         {
                                             if let Ok(inspection) = vsf::inspect::inspect_vsf(&data)
                                             {
-                                                crate::log(&format!(
-                                                    "Status: Received TCP VSF:\n{}",
-                                                    inspection
-                                                ));
+                                                crate::logf!("Status: Received TCP VSF:\n{}", inspection);
                                             }
                                         }
 
@@ -1082,10 +1042,7 @@ async fn run_checker(
                                                 vsf::verification::extract_signer_pubkey(&data)
                                             {
                                                 if !is_known_sender(&signer) {
-                                                    crate::log(&format!(
-                                                        "TCP: CLUTCH message REJECTED before parse - sender not in contacts (pubkey: {})",
-                                                        hex::encode(&signer[..signer.len().min(8)])
-                                                    ));
+                                                    crate::logf!("TCP: CLUTCH message REJECTED before parse - sender not in contacts (pubkey: {})", hex::encode(&signer[..signer.len().min(8)]));
                                                     continue;
                                                 }
                                             }
@@ -1096,11 +1053,7 @@ async fn run_checker(
                                             {
                                                 // SECURITY: Only accept from known contacts
                                                 if !is_known_sender(&sender_pubkey) {
-                                                    crate::log(&format!(
-                                                        "TCP: ClutchOffer REJECTED from {} - sender not in contacts (pubkey: {})",
-                                                        src_addr,
-                                                        hex::encode(&sender_pubkey[..8])
-                                                    ));
+                                                    crate::logf!("TCP: ClutchOffer REJECTED from {} - sender not in contacts (pubkey: {})", src_addr, hex::encode(&sender_pubkey[..8]));
                                                     continue;
                                                 }
                                                 crate::log("Status: Received ClutchOffer via TCP (VSF verified)");
@@ -1122,11 +1075,7 @@ async fn run_checker(
                                             {
                                                 // SECURITY: Only accept from known contacts
                                                 if !is_known_sender(&sender_pubkey) {
-                                                    crate::log(&format!(
-                                                        "TCP: ClutchKemResponse REJECTED from {} - sender not in contacts (pubkey: {})",
-                                                        src_addr,
-                                                        hex::encode(&sender_pubkey[..8])
-                                                    ));
+                                                    crate::logf!("TCP: ClutchKemResponse REJECTED from {} - sender not in contacts (pubkey: {})", src_addr, hex::encode(&sender_pubkey[..8]));
                                                     continue;
                                                 }
                                                 crate::log("Status: Received ClutchKemResponse via TCP (VSF verified)");
@@ -1148,11 +1097,7 @@ async fn run_checker(
                                             {
                                                 // SECURITY: Only accept from known contacts
                                                 if !is_known_sender(&sender_pubkey) {
-                                                    crate::log(&format!(
-                                                        "TCP: ClutchComplete REJECTED from {} - sender not in contacts (pubkey: {})",
-                                                        src_addr,
-                                                        hex::encode(&sender_pubkey[..8])
-                                                    ));
+                                                    crate::logf!("TCP: ClutchComplete REJECTED from {} - sender not in contacts (pubkey: {})", src_addr, hex::encode(&sender_pubkey[..8]));
                                                     continue;
                                                 }
                                                 crate::log("Status: Received ClutchComplete via TCP (VSF verified)");
@@ -1172,25 +1117,21 @@ async fn run_checker(
                                                 crate::log("Status: Failed to parse TCP VSF as CLUTCH message");
                                             }
                                         } else {
-                                            crate::log(&format!(
-                                                "Status: TCP payload is not VSF format (len={}, magic={:02x?})",
-                                                data.len(),
-                                                if data.len() >= 4 { &data[0..4] } else { &data[..] }
-                                            ));
+                                            crate::logf!("Status: TCP payload is not VSF format (len={}, magic={})", data.len(), format!("{:02x?}", if data.len() >= 4 { &data[0..4] } else { &data[..] }));
                                         }
                                     }
                                     Err(e) => {
-                                        crate::log(&format!("Status: TCP recv error: {}", e));
+                                        crate::logf!("Status: TCP recv error: {}", e);
                                     }
                                 }
                             }
                             Err(e) => {
-                                crate::log(&format!("Status: Failed to convert TCP stream: {}", e));
+                                crate::logf!("Status: Failed to convert TCP stream: {}", e);
                             }
                         }
                     }
                     Err(e) => {
-                        crate::log(&format!("Status: TCP accept error: {}", e));
+                        crate::logf!("Status: TCP accept error: {}", e);
                     }
                 }
             }
@@ -1254,35 +1195,16 @@ async fn run_checker(
                                         } else {
                                             format!("{:.0} kbps", thruput_kbps)
                                         };
-                                        crate::log(&format!(
-                                            "PT: ← {} OK | {} | {:.1}s | {} pkts | {:.0}% util ({} dups)",
-                                            src_addr,
-                                            thruput_str,
-                                            duration_ms as f64 / 1000.0,
-                                            packets,
-                                            utilization,
-                                            duplicates,
-                                        ));
+                                        crate::logf!("PT: ← {} OK | {} | {:.1}s | {} pkts | {:.0}% util ({} dups)", src_addr, thruput_str, duration_ms as f64 / 1000.0, packets, utilization, duplicates);
                                     } else {
-                                        crate::log(&format!(
-                                            "PT: ← {} OK | {} bytes",
-                                            src_addr,
-                                            data.len()
-                                        ));
+                                        crate::logf!("PT: ← {} OK | {} bytes", src_addr, data.len());
                                     }
 
                                     // Inspect completed PT data with VSF inspector
                                     if let Ok(inspection) = vsf::inspect::inspect_vsf(&data) {
-                                        crate::log(&format!(
-                                            "PT: Received VSF ({} bytes):\n{}",
-                                            data.len(),
-                                            inspection
-                                        ));
+                                        crate::logf!("PT: Received VSF ({} bytes):\n{}", data.len(), inspection);
                                     } else {
-                                        crate::log(&format!(
-                                            "PT: Received {} bytes - NOT valid VSF",
-                                            data.len()
-                                        ));
+                                        crate::logf!("PT: Received {} bytes - NOT valid VSF", data.len());
                                     }
 
                                     // Parse PT data as CLUTCH message and emit appropriate event
@@ -1304,10 +1226,7 @@ async fn run_checker(
                                         vsf::verification::extract_signer_pubkey(&data)
                                     {
                                         if !is_known_sender_pt(&signer) {
-                                            crate::log(&format!(
-                                                "PT: CLUTCH message REJECTED before parse - sender not in contacts (pubkey: {})",
-                                                hex::encode(&signer[..signer.len().min(8)])
-                                            ));
+                                            crate::logf!("PT: CLUTCH message REJECTED before parse - sender not in contacts (pubkey: {})", hex::encode(&signer[..signer.len().min(8)]));
                                             continue;
                                         }
                                     }
@@ -1322,10 +1241,7 @@ async fn run_checker(
                                     {
                                         // Defense-in-depth: verify sender again
                                         if !is_known_sender_pt(&sender_pubkey) {
-                                            crate::log(&format!(
-                                                "PT: ClutchOffer REJECTED (defense-in-depth) - pubkey: {}",
-                                                hex::encode(&sender_pubkey[..8])
-                                            ));
+                                            crate::logf!("PT: ClutchOffer REJECTED (defense-in-depth) - pubkey: {}", hex::encode(&sender_pubkey[..8]));
                                             continue;
                                         }
                                         crate::log("PT: Parsed as ClutchOffer (VSF verified)");
@@ -1352,10 +1268,7 @@ async fn run_checker(
                                     {
                                         // Defense-in-depth: verify sender again
                                         if !is_known_sender_pt(&sender_pubkey) {
-                                            crate::log(&format!(
-                                                "PT: ClutchKemResponse REJECTED (defense-in-depth) - pubkey: {}",
-                                                hex::encode(&sender_pubkey[..8])
-                                            ));
+                                            crate::logf!("PT: ClutchKemResponse REJECTED (defense-in-depth) - pubkey: {}", hex::encode(&sender_pubkey[..8]));
                                             continue;
                                         }
                                         crate::log(
@@ -1384,10 +1297,7 @@ async fn run_checker(
                                     {
                                         // Defense-in-depth: verify sender again
                                         if !is_known_sender_pt(&sender_pubkey) {
-                                            crate::log(&format!(
-                                                "PT: ClutchComplete REJECTED (defense-in-depth) - pubkey: {}",
-                                                hex::encode(&sender_pubkey[..8])
-                                            ));
+                                            crate::logf!("PT: ClutchComplete REJECTED (defense-in-depth) - pubkey: {}", hex::encode(&sender_pubkey[..8]));
                                             continue;
                                         }
                                         crate::log("PT: Parsed as ClutchComplete (VSF verified)");
@@ -1482,10 +1392,7 @@ async fn run_checker(
                                         );
                                     } else {
                                         // Unknown PT data - emit generic event for debugging
-                                        crate::log(&format!(
-                                            "PT: Failed to parse {} bytes as CLUTCH message",
-                                            data.len()
-                                        ));
+                                        crate::logf!("PT: Failed to parse {} bytes as CLUTCH message", data.len());
                                         send_status_update(
                                             &status_tx_recv,
                                             StatusUpdate::PTReceived {
@@ -1790,7 +1697,7 @@ async fn run_checker(
                                             *responder_pubkey.as_bytes(),
                                             true,
                                         ) {
-                                            crate::log(&format!("TRAVERSE: reflexive learned = {}", addr));
+                                            crate::logf!("TRAVERSE: reflexive learned = {}", addr);
                                             send_status_update(
                                                 &status_tx_recv,
                                                 StatusUpdate::ReflexiveLearned { addr },
@@ -1886,10 +1793,7 @@ async fn run_checker(
                                     sender_pubkey,
                                     signature,
                                 } => {
-                                    crate::log(&format!(
-                                        "Status: MESSAGE_ACK received from {} (eagle_time {})",
-                                        src_addr, acked_eagle_time
-                                    ));
+                                    crate::logf!("Status: MESSAGE_ACK received from {} (eagle_time {})", src_addr, acked_eagle_time);
 
                                     // Verify signature (CHAIN format provenance)
                                     let provenance = compute_ack_provenance_v2(
@@ -1923,10 +1827,7 @@ async fn run_checker(
                                     provenance_hash,
                                     signature,
                                 } => {
-                                    crate::log(&format!(
-                                        "Status: AVATAR_REQUEST received from {}",
-                                        src_addr
-                                    ));
+                                    crate::logf!("Status: AVATAR_REQUEST received from {}", src_addr);
 
                                     // Verify provenance binds sender_pubkey + timestamp, then the signature
                                     let provenance: [u8; 32] = blake3::hash(
@@ -1965,11 +1866,7 @@ async fn run_checker(
                                     signature,
                                     avatar_vsf,
                                 } => {
-                                    crate::log(&format!(
-                                        "Status: AVATAR_RESPONSE received from {} ({} bytes avatar)",
-                                        src_addr,
-                                        avatar_vsf.len()
-                                    ));
+                                    crate::logf!("Status: AVATAR_RESPONSE received from {} ({} bytes avatar)", src_addr, avatar_vsf.len());
 
                                     // Verify provenance is the avatar bytes' hash, then the signature
                                     let provenance: [u8; 32] = blake3::hash(&avatar_vsf).into();
@@ -2045,7 +1942,7 @@ async fn run_checker(
                                         *responder_pubkey.as_bytes(),
                                         false,
                                     ) {
-                                        crate::log(&format!("TRAVERSE: reflexive learned = {}", addr));
+                                        crate::logf!("TRAVERSE: reflexive learned = {}", addr);
                                         send_status_update(
                                             &status_tx_recv,
                                             StatusUpdate::ReflexiveLearned { addr },
@@ -2113,7 +2010,7 @@ async fn run_checker(
                                         *responder_pubkey.as_bytes(),
                                         true,
                                     ) {
-                                        crate::log(&format!("TRAVERSE: reflexive learned = {}", addr));
+                                        crate::logf!("TRAVERSE: reflexive learned = {}", addr);
                                         send_status_update(
                                             &status_tx_recv,
                                             StatusUpdate::ReflexiveLearned { addr },
@@ -2125,10 +2022,7 @@ async fn run_checker(
                                         pending_probes_recv.lock().unwrap().resolve(&provenance_hash)
                                     };
                                     if let Some((peer, target)) = resolved {
-                                        crate::log(&format!(
-                                            "TRAVERSE: ACK from {} — path validated {}",
-                                            src_addr, target
-                                        ));
+                                        crate::logf!("TRAVERSE: ACK from {} — path validated {}", src_addr, target);
                                         send_status_update(
                                             &status_tx_recv,
                                             StatusUpdate::PathValidated {
@@ -2152,12 +2046,7 @@ async fn run_checker(
                                 .map(|b| format!("{:02x}", b))
                                 .collect::<Vec<_>>()
                                 .join(" ");
-                            crate::log(&format!(
-                                "Status: Parse error: {} (len={}, hex: {})",
-                                e,
-                                msg_bytes.len(),
-                                preview
-                            ));
+                            crate::logf!("Status: Parse error: {} (len={}, hex: {})", e, msg_bytes.len(), preview);
                         }
                     }
                 }
@@ -2187,10 +2076,7 @@ async fn run_checker(
 
                 let msg_bytes = ping.to_vsf_bytes();
                 if msg_bytes.is_empty() {
-                    crate::log(&format!(
-                        "Status: PING build failed for {}",
-                        request.peer_addr
-                    ));
+                    crate::logf!("Status: PING build failed for {}", request.peer_addr);
                     continue;
                 }
 
@@ -2267,11 +2153,7 @@ async fn run_checker(
 
                 if count >= OFFLINE_THRESHOLD {
                     // Enough consecutive failures - mark offline
-                    crate::log(&format!(
-                        "Status: TIMEOUT ({} consecutive) - {} marked offline",
-                        count,
-                        hex::encode(&pubkey_bytes[..8])
-                    ));
+                    crate::logf!("Status: TIMEOUT ({} consecutive) - {} marked offline", count, hex::encode(&pubkey_bytes[..8]));
                     send_status_update(
                         &status_tx,
                         StatusUpdate::Online {
@@ -2286,12 +2168,7 @@ async fn run_checker(
                     // Reset counter after marking offline (so we can detect coming back online)
                     failures.retain(|(k, _)| *k != pubkey_bytes);
                 } else {
-                    crate::log(&format!(
-                        "Status: TIMEOUT ({}/{}) - {} (waiting for more failures before offline)",
-                        count,
-                        OFFLINE_THRESHOLD,
-                        hex::encode(&pubkey_bytes[..8])
-                    ));
+                    crate::logf!("Status: TIMEOUT ({}/{}) - {} (waiting for more failures before offline)", count, OFFLINE_THRESHOLD, hex::encode(&pubkey_bytes[..8]));
                 }
             }
 
@@ -2312,11 +2189,7 @@ async fn run_checker(
             let mut sig_bytes = [0u8; 64];
             sig_bytes.copy_from_slice(&sig.to_bytes());
 
-            crate::log(&format!(
-                "Status: Sending CHAT_MESSAGE to {} (tok {}...) via PT",
-                request.peer_addr,
-                hex::encode(&request.conversation_token[..4])
-            ));
+            crate::logf!("Status: Sending CHAT_MESSAGE to {} (tok {}...) via PT", request.peer_addr, hex::encode(&request.conversation_token[..4]));
 
             let msg = FgtwMessage::ChatMessage {
                 timestamp,
@@ -2381,10 +2254,7 @@ async fn run_checker(
             let mut sig_bytes = [0u8; 64];
             sig_bytes.copy_from_slice(&sig.to_bytes());
 
-            crate::log(&format!(
-                "Status: Sending MESSAGE_ACK to {} (eagle_time {}) via PT",
-                request.peer_addr, request.acked_eagle_time
-            ));
+            crate::logf!("Status: Sending MESSAGE_ACK to {} (eagle_time {}) via PT", request.peer_addr, request.acked_eagle_time);
 
             let msg = FgtwMessage::MessageAck {
                 timestamp,
@@ -2425,10 +2295,7 @@ async fn run_checker(
             let mut sig_bytes = [0u8; 64];
             sig_bytes.copy_from_slice(&sig.to_bytes());
 
-            crate::log(&format!(
-                "Status: Sending AVATAR_REQUEST to {} via PT",
-                request.peer_addr
-            ));
+            crate::logf!("Status: Sending AVATAR_REQUEST to {} via PT", request.peer_addr);
 
             let msg = FgtwMessage::AvatarRequest {
                 timestamp,
@@ -2459,10 +2326,7 @@ async fn run_checker(
         while let Ok(request) = avatar_response_rx.try_recv() {
             // Defence-in-depth: never device-sign and ship an FGTW error frame as an avatar (the caller validates+decodes first, but a poisoned frame reaching here would be signed as a real avatar the friend can't decode). The full decode needs the seed, so here we reject only the cheap-to-detect error frame; the seed-gated decode happens upstream.
             if let Some((reason, detail)) = fgtw::client::error_frame(&request.avatar_vsf) {
-                crate::log(&format!(
-                    "Status: refusing to serve avatar error frame {}: {}",
-                    reason, detail
-                ));
+                crate::logf!("Status: refusing to serve avatar error frame {}: {}", reason, detail);
                 continue;
             }
             let timestamp = eagle_time_now();
@@ -2473,11 +2337,7 @@ async fn run_checker(
             let mut sig_bytes = [0u8; 64];
             sig_bytes.copy_from_slice(&sig.to_bytes());
 
-            crate::log(&format!(
-                "Status: Sending AVATAR_RESPONSE to {} ({} bytes avatar) via PT",
-                request.peer_addr,
-                request.avatar_vsf.len()
-            ));
+            crate::logf!("Status: Sending AVATAR_RESPONSE to {} ({} bytes avatar) via PT", request.peer_addr, request.avatar_vsf.len());
 
             let msg = FgtwMessage::AvatarResponse {
                 timestamp,
@@ -2507,11 +2367,7 @@ async fn run_checker(
 
         // Process PT send requests (large transfers)
         while let Ok(request) = pt_rx.try_recv() {
-            crate::log(&format!(
-                "PT: Starting outbound transfer to {} ({} bytes)",
-                request.peer_addr,
-                request.data.len()
-            ));
+            crate::logf!("PT: Starting outbound transfer to {} ({} bytes)", request.peer_addr, request.data.len());
             let bytes_to_send = {
                 let mut pt_mgr = pt.lock().unwrap();
                 pt_mgr.send(request.peer_addr, request.data)
@@ -2524,17 +2380,13 @@ async fn run_checker(
             // VSF bytes already built by caller (to capture offer_provenance)
             let vsf_bytes = request.vsf_bytes;
 
-            crate::log(&format!(
-                "Status: Sending ClutchOffer to {} ({} bytes VSF) via PT/UDP",
-                request.peer_addr,
-                vsf_bytes.len()
-            ));
+            crate::logf!("Status: Sending ClutchOffer to {} ({} bytes VSF) via PT/UDP", request.peer_addr, vsf_bytes.len());
 
             // VSF inspection for development builds
             #[cfg(feature = "development")]
             {
                 if let Ok(inspection) = vsf::inspect::inspect_vsf(&vsf_bytes) {
-                    crate::log(&format!("Status: ClutchOffer VSF:\n{}", inspection));
+                    crate::logf!("Status: ClutchOffer VSF:\n{}", inspection);
                 }
             }
 
@@ -2567,20 +2419,16 @@ async fn run_checker(
             ) {
                 Ok(bytes) => bytes,
                 Err(e) => {
-                    crate::log(&format!("Status: Failed to build ClutchKemResponse: {}", e));
+                    crate::logf!("Status: Failed to build ClutchKemResponse: {}", e);
                     continue;
                 }
             };
 
-            crate::log(&format!(
-                "Status: Sending ClutchKemResponse to {} ({} bytes)",
-                request.peer_addr,
-                vsf_bytes.len()
-            ));
+            crate::logf!("Status: Sending ClutchKemResponse to {} ({} bytes)", request.peer_addr, vsf_bytes.len());
 
             #[cfg(feature = "development")]
             if let Ok(inspection) = vsf::inspect::inspect_vsf(&vsf_bytes) {
-                crate::log(&format!("Status: ClutchKemResponse VSF:\n{}", inspection));
+                crate::logf!("Status: ClutchKemResponse VSF:\n{}", inspection);
             }
 
             // Send via PT - handles retries/fallback internally. Races LAN vs WAN if alt given.
@@ -2612,20 +2460,16 @@ async fn run_checker(
             ) {
                 Ok(bytes) => bytes,
                 Err(e) => {
-                    crate::log(&format!("Status: Failed to build ClutchComplete: {}", e));
+                    crate::logf!("Status: Failed to build ClutchComplete: {}", e);
                     continue;
                 }
             };
 
-            crate::log(&format!(
-                "Status: Sending ClutchComplete to {} ({} bytes)",
-                request.peer_addr,
-                vsf_bytes.len()
-            ));
+            crate::logf!("Status: Sending ClutchComplete to {} ({} bytes)", request.peer_addr, vsf_bytes.len());
 
             #[cfg(feature = "development")]
             if let Ok(inspection) = vsf::inspect::inspect_vsf(&vsf_bytes) {
-                crate::log(&format!("Status: ClutchComplete VSF:\n{}", inspection));
+                crate::logf!("Status: ClutchComplete VSF:\n{}", inspection);
             }
 
             // Send via PT - handles retries/fallback internally. Races LAN vs WAN if alt given. (Complete proof is small and sent directly, so racing here is just dual UDP send.)
@@ -2666,21 +2510,13 @@ async fn run_checker(
             if let Ok(mcast_sock) = UdpSocket::bind("0.0.0.0:0") {
                 let _ = mcast_sock.set_multicast_ttl_v4(1);
                 let _ = udp::send_sync(&mcast_sock, &packet, mcast_v4);
-                crate::log(&format!(
-                    "LAN: Multicast {} bytes to {}",
-                    packet.len(),
-                    mcast_v4
-                ));
+                crate::logf!("LAN: Multicast {} bytes to {}", packet.len(), mcast_v4);
             }
 
             // Send to IPv6 multicast (hop limit is 1 by default for link-local)
             if let Ok(mcast_sock) = UdpSocket::bind("[::]:0") {
                 let _ = udp::send_sync(&mcast_sock, &packet, mcast_v6);
-                crate::log(&format!(
-                    "LAN: Multicast {} bytes to {}",
-                    packet.len(),
-                    mcast_v6
-                ));
+                crate::logf!("LAN: Multicast {} bytes to {}", packet.len(), mcast_v6);
             }
 
             // Also send to subnet broadcast as fallback (many routers block multicast)
@@ -2690,12 +2526,7 @@ async fn run_checker(
                 if let Ok(bcast_sock) = UdpSocket::bind("0.0.0.0:0") {
                     let _ = bcast_sock.set_broadcast(true);
                     let _ = udp::send_sync(&bcast_sock, &packet, bcast_addr);
-                    crate::log(&format!(
-                        "LAN: Broadcast {} bytes to {} (from {})",
-                        packet.len(),
-                        bcast_addr,
-                        local_ip
-                    ));
+                    crate::logf!("LAN: Broadcast {} bytes to {} (from {})", packet.len(), bcast_addr, local_ip);
                 }
             }
         }
@@ -2721,16 +2552,13 @@ async fn run_checker(
                 if let Some(tcp_payload) = &tick.tcp_payload {
                     if let Err(e) = crate::network::tcp::send_tcp(tcp_payload, tick.peer_addr).await
                     {
-                        crate::log(&format!("PT: TCP send failed to {}: {}", tick.peer_addr, e));
+                        crate::logf!("PT: TCP send failed to {}: {}", tick.peer_addr, e);
                     }
                 }
 
                 // If both UDP and TCP exhausted, try relay via /conduit
                 if let Some(relay_info) = tick.relay {
-                    crate::log(&format!(
-                        "PT: Relaying to {} via /conduit",
-                        hex::encode(&relay_info.recipient_pubkey[..4])
-                    ));
+                    crate::logf!("PT: Relaying to {} via /conduit", hex::encode(&relay_info.recipient_pubkey[..4]));
                     match crate::network::fgtw::relay::send_via_relay(
                         &keypair_for_relay,
                         &relay_info.recipient_pubkey,
@@ -2742,7 +2570,7 @@ async fn run_checker(
                             crate::log("PT: Relay send succeeded");
                         }
                         Err(e) => {
-                            crate::log(&format!("PT: Relay send failed: {}", e));
+                            crate::logf!("PT: Relay send failed: {}", e);
                         }
                     }
                 }
@@ -2854,7 +2682,7 @@ async fn handle_pt_vsf_packet(
                     if let Some(complete) = PTComplete::from_vsf_header(provenance_hash, &values) {
                         // Log completion (success or failure)
                         if !complete.success {
-                            crate::log(&format!("PT: Transfer FAILED from {}", src_addr));
+                            crate::logf!("PT: Transfer FAILED from {}", src_addr);
                         }
                         // Handle completion - state transitions happen in handle_complete Completion check and cleanup handled by main loop via transfer_id
                         {
@@ -2887,21 +2715,14 @@ async fn handle_pt_vsf_packet(
                     };
 
                     if !is_known_contact {
-                        crate::log(&format!(
-                            "PT: SPEC REJECTED from {} - sender not in contacts (pubkey: {})",
-                            src_addr,
-                            sender_pubkey
+                        crate::logf!("PT: SPEC REJECTED from {} - sender not in contacts (pubkey: {})", src_addr, sender_pubkey
                                 .map(|p| hex::encode(&p[..8]))
-                                .unwrap_or_else(|| "none".to_string())
-                        ));
+                                .unwrap_or_else(|| "none".to_string()));
                         // Silent drop - don't send ACK, don't accept transfer
                         return Some(true);
                     }
 
-                    crate::log(&format!(
-                        "PT: SPEC accepted from {} - {} packets, {} bytes",
-                        src_addr, spec.total_packets, spec.total_size
-                    ));
+                    crate::logf!("PT: SPEC accepted from {} - {} packets, {} bytes", src_addr, spec.total_packets, spec.total_size);
                     let spec_ack = {
                         let mut pt_mgr = pt.lock().unwrap();
                         pt_mgr.handle_spec(src_addr, spec)
@@ -2929,12 +2750,7 @@ fn parse_lan_discovery(
         None if udp::get_local_ip() == Some(local_ip) => return None,
         _ => {}
     }
-    crate::log(&format!(
-        "LAN: Received discovery from {} (handle_proof: {}..., port: {})",
-        src_addr,
-        hex::encode(&handle_proof[..4]),
-        port
-    ));
+    crate::logf!("LAN: Received discovery from {} (handle_proof: {}..., port: {})", src_addr, hex::encode(&handle_proof[..4]), port);
     Some(StatusUpdate::LanPeerDiscovered {
         handle_proof,
         local_ip,

@@ -80,7 +80,7 @@ fn print_records(buf: &[u8], filter: &Filter) -> usize {
             .and_then(|f| f.values.first())
             .and_then(u64_of)
             .unwrap_or(u64::MAX);
-        let msg = section
+        let template = section
             .get_field("msg")
             .and_then(|f| f.values.first())
             .and_then(|v| match v {
@@ -88,6 +88,36 @@ fn print_records(buf: &[u8], filter: &Filter) -> usize {
                 _ => None,
             })
             .unwrap_or_default();
+        // Structured records: typed `val` fields substitute into the template's slots at READ time — the record stored numbers binary; this terminal render picks the base (current mixed arabic per the display doctrine).
+        let vals: Vec<photon_messenger::LogValue> = section
+            .get_fields("val")
+            .iter()
+            .filter_map(|f| f.values.first())
+            .map(|v| match v {
+                VsfType::u(n, _) => photon_messenger::LogValue::U(*n as u128),
+                VsfType::i6(n) => photon_messenger::LogValue::I(*n as i128),
+                VsfType::f6(n) => photon_messenger::LogValue::F(*n),
+                VsfType::x(s) => photon_messenger::LogValue::T(s.clone()),
+                VsfType::v_u3(vec) if vec.data.len() == 6 || vec.data.len() == 18 => {
+                    let (ip_bytes, port_bytes) = vec.data.split_at(vec.data.len() - 2);
+                    let port = u16::from_le_bytes([port_bytes[0], port_bytes[1]]);
+                    let ip: std::net::IpAddr = if ip_bytes.len() == 4 {
+                        std::net::Ipv4Addr::new(ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3]).into()
+                    } else {
+                        let mut o = [0u8; 16];
+                        o.copy_from_slice(ip_bytes);
+                        std::net::Ipv6Addr::from(o).into()
+                    };
+                    photon_messenger::LogValue::Addr(std::net::SocketAddr::new(ip, port))
+                }
+                other => photon_messenger::LogValue::T(format!("{other:?}")),
+            })
+            .collect();
+        let msg = if vals.is_empty() {
+            template
+        } else {
+            photon_messenger::render_log_line(&template, &vals)
+        };
 
         let pass_level = lvl >= filter.min_level;
         let pass_grep = match &filter.grep {

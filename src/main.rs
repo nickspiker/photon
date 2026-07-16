@@ -24,12 +24,12 @@ fn main() {
             "unknown location".to_string()
         };
 
-        photon_messenger::log(&format!("PANIC at {}: {}", location, msg));
+        photon_messenger::logf!("PANIC at {}: {}", location, msg);
 
         // Also print backtrace if available
         let backtrace = std::backtrace::Backtrace::capture();
         if backtrace.status() == std::backtrace::BacktraceStatus::Captured {
-            photon_messenger::log(&format!("Backtrace:\n{}", backtrace));
+            photon_messenger::logf!("Backtrace:\n{}", backtrace);
         }
     }));
 
@@ -46,7 +46,7 @@ fn main() {
     let signature_hex = match self_verify::verify_binary_hash() {
         Ok(sig) => sig,
         Err(e) => {
-            photon_messenger::log(&format!("BINARY INTEGRITY CHECK FAILED: {}", e));
+            photon_messenger::logf!("BINARY INTEGRITY CHECK FAILED: {}", e);
             photon_messenger::log("");
             photon_messenger::log("This usually means:");
             photon_messenger::log("  - Download was corrupted or incomplete");
@@ -81,17 +81,14 @@ fn main() {
         }
     };
 
-    photon_messenger::log(&format!("SIGNATURE CHECK PASSED"));
-    photon_messenger::log(&format!("Ed25519 signature: {}", signature_hex));
+    photon_messenger::logf!("SIGNATURE CHECK PASSED");
+    photon_messenger::logf!("Ed25519 signature: {}", signature_hex);
     photon_messenger::log("");
 
     // Load user settings (creates settings.vsf with defaults on first run) and apply the log-display knobs to vsf's inspector BEFORE any VSF gets dumped, so the very first packet logged is elided.
     let settings = photon_messenger::storage::settings::Settings::load_or_create();
     settings.apply();
-    photon_messenger::log(&format!(
-        "Settings: log hex elision head = {} tail = {} bytes",
-        settings.hex_head, settings.hex_tail
-    ));
+    photon_messenger::logf!("Settings: log hex elision head = {} tail = {} bytes", settings.hex_head, settings.hex_tail);
 
     // Startup message
     photon_messenger::log("Photon Messenger - Distilled to what messaging actually requires, for true data sovereignty");

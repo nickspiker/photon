@@ -309,19 +309,36 @@ fn log_dir() -> Option<std::path::PathBuf> {
 }
 
 #[cfg(feature = "logging")]
-fn append_log_record(level: LogLevel, msg: &str) {
+fn append_log_record(level: LogLevel, msg: &str, vals: &[LogValue]) {
     use std::io::Write;
-    // Build first so a buffered record carries the stamp of when it was LOGGED, not when the sink finally opened.
+    // Build first so a buffered record carries the stamp of when it was LOGGED, not when the sink finally opened. `msg` is the pure-text template; each captured value rides as its own TYPED `val` field, in slot order — a number never stringifies into the record (numbers-binary-at-rest).
+    let mut section = vsf::VsfSection::new("log");
+    section.add_field_multi("lvl", vec![vsf::VsfType::u(level as usize, false)]);
+    section.add_field_multi("msg", vec![vsf::VsfType::x(msg.to_string())]);
+    for v in vals {
+        let t = match v {
+            LogValue::U(n) => vsf::VsfType::u(*n as usize, false),
+            LogValue::I(n) => vsf::VsfType::i6(*n as i64),
+            LogValue::F(n) => vsf::VsfType::f6(*n),
+            LogValue::B(b) => vsf::VsfType::u(*b as usize, false),
+            LogValue::T(s) => vsf::VsfType::x(s.clone()),
+            LogValue::Addr(a) => vsf::VsfType::v_u3(vsf::types::Vector {
+                data: {
+                    let mut b = match a.ip() {
+                        std::net::IpAddr::V4(v4) => v4.octets().to_vec(),
+                        std::net::IpAddr::V6(v6) => v6.octets().to_vec(),
+                    };
+                    b.extend_from_slice(&a.port().to_le_bytes());
+                    b
+                },
+            }),
+        };
+        section.add_field_multi("val", vec![t]);
+    }
     let record = vsf::VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
         .provenance_only()
-        .add_section(
-            "log",
-            vec![
-                ("lvl".to_string(), vsf::VsfType::u(level as usize, false)),
-                ("msg".to_string(), vsf::VsfType::x(msg.to_string())),
-            ],
-        )
+        .add_section_direct(section)
         .build();
     let Ok(mut guard) = LOG_FILE.lock() else {
         return;
@@ -607,7 +624,130 @@ pub fn log(msg: &str) {
 
 #[cfg(feature = "logging")]
 pub fn log_at(level: LogLevel, msg: &str) {
-    append_log_record(level, msg);
+    append_log_record(level, msg, &[]);
+}
+
+// ── Structured logging (numbers-binary-at-rest, 2026-07-16): the record stores the message TEMPLATE as pure text and every interpolated value as a TYPED `val` field beside it — a number never stringifies into storage; photonlog/vsfinfo choose the display base at READ time. Use `logf!`/`logf_at!` (format!-shaped) instead of `log(&format!(...))`. ──
+
+/// One captured log value, typed — becomes a native VSF field in the record.
+pub enum LogValue {
+    U(u128),
+    I(i128),
+    F(f64),
+    B(bool),
+    T(String),
+    Addr(std::net::SocketAddr),
+}
+
+/// Capture wrapper for `logf!` args. Inherent impls (numerics, bools, addresses) outrank the [`CapDisplay`] blanket at method resolution, so typed capture is automatic and everything else degrades to text — the autoref-free inherent-priority specialization.
+pub struct Cap<T>(pub T);
+
+/// Lowest-priority capture: anything Display becomes text (prose, hex labels, hashes — nouns). Implemented on `&Cap<T>` so the typed inherent impls on `Cap<X>` win the method probe without ambiguity (autoref specialization); the macro's `Cap(&arg)` form means args are only ever borrowed.
+pub trait CapDisplay {
+    fn cap(self) -> LogValue;
+}
+impl<T: std::fmt::Display> CapDisplay for &Cap<T> {
+    fn cap(self) -> LogValue {
+        LogValue::T(self.0.to_string())
+    }
+}
+
+/// Primitive-typed capture — one impl per primitive, unified under ONE generic inherent impl on [`Cap`] so integer-literal inference resolves (a per-type inherent zoo made `{integer}` ambiguous).
+pub trait CapPrim: Copy {
+    fn to_log(self) -> LogValue;
+}
+macro_rules! cap_prim {
+    ($($t:ty => $variant:ident as $conv:ty),* $(,)?) => {
+        $(impl CapPrim for $t {
+            fn to_log(self) -> LogValue { LogValue::$variant(self as $conv) }
+        })*
+    };
+}
+cap_prim! {
+    u8 => U as u128, u16 => U as u128, u32 => U as u128, u64 => U as u128, u128 => U as u128, usize => U as u128,
+    i8 => I as i128, i16 => I as i128, i32 => I as i128, i64 => I as i128, i128 => I as i128, isize => I as i128,
+    f32 => F as f64, f64 => F as f64,
+}
+impl CapPrim for bool {
+    fn to_log(self) -> LogValue {
+        LogValue::B(self)
+    }
+}
+impl CapPrim for std::net::SocketAddr {
+    fn to_log(self) -> LogValue {
+        LogValue::Addr(self)
+    }
+}
+impl<T: CapPrim> Cap<&T> {
+    pub fn cap(self) -> LogValue {
+        (*self.0).to_log()
+    }
+}
+/// Render a template + captured values for a TERMINAL/console surface (photonlog shares the same walk). Slots `{}`/`{spec}` substitute values in order (spec is a rendering hint only); numbers render in current mixed arabic units per the display doctrine — the point is they were STORED binary. `{{`/`}}` are literal braces.
+pub fn render_log_line(template: &str, vals: &[LogValue]) -> String {
+    let mut out = String::with_capacity(template.len() + vals.len() * 8);
+    let mut chars = template.chars().peekable();
+    let mut next = 0usize;
+    while let Some(c) = chars.next() {
+        match c {
+            '{' if chars.peek() == Some(&'{') => {
+                chars.next();
+                out.push('{');
+            }
+            '}' if chars.peek() == Some(&'}') => {
+                chars.next();
+                out.push('}');
+            }
+            '{' => {
+                // Consume to the closing brace (spec ignored at render).
+                for s in chars.by_ref() {
+                    if s == '}' {
+                        break;
+                    }
+                }
+                if let Some(v) = vals.get(next) {
+                    match v {
+                        LogValue::U(n) => out.push_str(&n.to_string()),
+                        LogValue::I(n) => out.push_str(&n.to_string()),
+                        LogValue::F(n) => out.push_str(&n.to_string()),
+                        LogValue::B(b) => out.push_str(if *b { "true" } else { "false" }),
+                        LogValue::T(s) => out.push_str(s),
+                        LogValue::Addr(a) => out.push_str(&a.to_string()),
+                    }
+                }
+                next += 1;
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+#[cfg(feature = "logging")]
+pub fn log_structured(level: LogLevel, template: &str, vals: Vec<LogValue>) {
+    append_log_record(level, template, &vals);
+}
+#[cfg(not(feature = "logging"))]
+pub fn log_structured(_level: LogLevel, _template: &str, _vals: Vec<LogValue>) {}
+
+/// format!-shaped structured log at Info: `logf!("RX {} bytes from {}", n, addr)` — the template stores as pure text, `n`/`addr` as typed fields.
+#[macro_export]
+macro_rules! logf {
+    ($fmt:expr $(, $arg:expr)* $(,)?) => {{
+        #[allow(unused_imports)]
+        use $crate::CapDisplay as _;
+        $crate::log_structured($crate::LogLevel::Info, $fmt, vec![$($crate::Cap(&$arg).cap()),*]);
+    }};
+}
+
+/// [`logf!`] with an explicit level.
+#[macro_export]
+macro_rules! logf_at {
+    ($level:expr, $fmt:expr $(, $arg:expr)* $(,)?) => {{
+        #[allow(unused_imports)]
+        use $crate::CapDisplay as _;
+        $crate::log_structured($level, $fmt, vec![$($crate::Cap(&$arg).cap()),*]);
+    }};
 }
 
 // Bridge the `log` crate into the VSF sink, so records from every dependency that uses log macros (fluor, tohu, the JNI platform layer, reqwest, ...) land in photon.log.vsf alongside `crate::log` lines — ONE durable, pullable, user-submittable log, no logcat/stdout fork.
@@ -637,7 +777,7 @@ impl log::Log for VsfLogBridge {
             log::Level::Debug => LogLevel::Debug,
             log::Level::Trace => LogLevel::Trace,
         };
-        append_log_record(lvl, &format!("{}: {}", record.target(), record.args()));
+        append_log_record(lvl, &format!("{}: {}", record.target(), record.args()), &[]);
     }
     fn flush(&self) {}
 }

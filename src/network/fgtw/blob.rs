@@ -122,7 +122,7 @@ pub async fn put_blob(
     if !status.is_success() {
         return Err(BlobError::ServerError(format!("transport {}", status)));
     }
-    crate::log(&format!("FGTW: Uploaded blob ({} bytes)", data.len()));
+    crate::logf!("FGTW: Uploaded blob ({} bytes)", data.len());
     Ok(())
 }
 
@@ -189,7 +189,7 @@ pub async fn get_blob(storage_key: &str) -> Result<Option<Vec<u8>>, BlobError> {
 
     match blob_data {
         Some(data) => {
-            crate::log(&format!("FGTW: Downloaded blob ({} bytes)", data.len()));
+            crate::logf!("FGTW: Downloaded blob ({} bytes)", data.len());
             Ok(Some(data))
         }
         None => Ok(None),
@@ -243,9 +243,7 @@ pub fn put_blob_blocking(
     )?;
 
     #[cfg(feature = "development")]
-    crate::log(&format!(
-        "Cloud: put_blob_blocking: sending blob_put VSF..."
-    ));
+    crate::logf!("Cloud: put_blob_blocking: sending blob_put VSF...");
 
     let response = client
         .post(FGTW_URL)
@@ -255,10 +253,7 @@ pub fn put_blob_blocking(
         .map_err(|e| BlobError::Network(format!("PUT request failed: {}", e)))?;
 
     #[cfg(feature = "development")]
-    crate::log(&format!(
-        "Cloud: put_blob_blocking: response status {}",
-        response.status()
-    ));
+    crate::logf!("Cloud: put_blob_blocking: response status {}", response.status());
 
     let status = response.status();
     let body = response.bytes().unwrap_or_default();
@@ -271,7 +266,7 @@ pub fn put_blob_blocking(
     if !status.is_success() {
         return Err(BlobError::ServerError(format!("transport {}", status)));
     }
-    crate::log(&format!("FGTW: Uploaded blob ({} bytes)", data.len()));
+    crate::logf!("FGTW: Uploaded blob ({} bytes)", data.len());
     Ok(())
 }
 
@@ -333,7 +328,7 @@ pub fn put_log_blocking(
     if !status.is_success() {
         return Err(BlobError::ServerError(format!("transport {}", status)));
     }
-    crate::log(&format!("FGTW: submitted diagnostic log ({} bytes)", log_bytes.len()));
+    crate::logf!("FGTW: submitted diagnostic log ({} bytes)", log_bytes.len());
     Ok(())
 }
 
@@ -535,7 +530,7 @@ pub fn get_blob_blocking(storage_key: &str) -> Result<Option<Vec<u8>>, BlobError
 
     match blob_data {
         Some(data) => {
-            crate::log(&format!("FGTW: Downloaded blob ({} bytes)", data.len()));
+            crate::logf!("FGTW: Downloaded blob ({} bytes)", data.len());
             Ok(Some(data))
         }
         None => Ok(None),

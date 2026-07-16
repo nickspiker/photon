@@ -105,7 +105,7 @@ mod imp {
         }
         crate::network::http::runtime().spawn(async move {
             if let Err(e) = advertise(uuid, stop).await {
-                crate::log(&format!("BEACON: bluer advertise failed: {e}"));
+                crate::logf!("BEACON: bluer advertise failed: {}", e);
             }
         });
     }
@@ -147,7 +147,7 @@ mod imp {
         }
         crate::network::http::runtime().spawn(async move {
             if let Err(e) = scan(stop).await {
-                crate::log(&format!("BEACON: bluer scan failed: {e}"));
+                crate::logf!("BEACON: bluer scan failed: {}", e);
             }
         });
     }
@@ -299,7 +299,7 @@ mod imp {
         }
         crate::network::http::runtime().spawn(async move {
             if let Err(e) = scan(stop).await {
-                crate::log(&format!("BEACON: btleplug scan failed: {e}"));
+                crate::logf!("BEACON: btleplug scan failed: {}", e);
             }
         });
     }
@@ -371,7 +371,7 @@ mod imp {
             }
             std::thread::spawn(move || {
                 if let Err(e) = run(uuid, stop) {
-                    crate::log(&format!("BEACON: WinRT advertise failed: {e}"));
+                    crate::logf!("BEACON: WinRT advertise failed: {}", e);
                 }
             });
         }
