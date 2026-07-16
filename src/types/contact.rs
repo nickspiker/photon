@@ -386,6 +386,20 @@ impl Contact {
         crate::network::fgtw::fleet::keyed_pseudonym(&self.handle_hash)
     }
 
+    /// True once we have a REAL name — a petname we set or the name they published. Until then the only "name" is the deterministic voca pseudonym, which reads like a real name (PotatoOctopus) then jarringly flips to the actual name once it arrives.
+    pub fn has_real_name(&self) -> bool {
+        !self.petname.is_empty() || !self.published_name.is_empty()
+    }
+
+    /// Name for the VISUAL surfaces (contact row, conversation header): the real name if we have one, else "Pending…" — never the pseudonym. The deterministic gradient avatar (hash-computed) carries the visual identity meanwhile. `display_name` still returns the pseudonym for stable non-visual uses (search filters, log labels).
+    pub fn display_name_or_pending(&self) -> String {
+        if self.has_real_name() {
+            self.display_name()
+        } else {
+            "Pending\u{2026}".to_string()
+        }
+    }
+
     pub fn with_ip(mut self, ip: SocketAddr) -> Self {
         self.ip = Some(ip);
         self
