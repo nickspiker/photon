@@ -82,9 +82,23 @@ fn main() {
     }
     rows.sort_by(|a, b| (&a.platform, &a.arch).cmp(&(&b.platform, &b.arch)));
 
-    // Signing key: $PHOTON_SIGNING_KEY (the release key file, same as photon-signature-signer).
-    let key_path = std::env::var("PHOTON_SIGNING_KEY")
-        .unwrap_or_else(|_| fail("PHOTON_SIGNING_KEY env var required (release signing key file)"));
+    // Signing key: $PHOTON_SIGNING_KEY first, then the same known-locations ladder photon-signature-signer walks — the two tools must find the ONE release key identically or a publish half-succeeds (binary signed, manifest not; happened 2026-07-16).
+    let key_path = std::env::var("PHOTON_SIGNING_KEY").ok().or_else(|| {
+        let home = std::env::var("HOME").unwrap_or_default();
+        [
+            "/mnt/Octopus/Code/keys/photon-signing-key".to_string(),
+            "/mnt/Chiton/MEGA/Code/keys/photon-signing-key".to_string(),
+            "/home/nick/MEGA/code/keys/photon-signing-key".to_string(),
+            format!("{home}/MEGA/Code/keys/photon-signing-key"),
+            format!("{home}/Code/keys/photon-signing-key"),
+            format!("{home}/Library/Application Support/photon/photon-signing-key"),
+        ]
+        .into_iter()
+        .find(|p| std::path::Path::new(p).exists())
+    });
+    let key_path = key_path.unwrap_or_else(|| {
+        fail("release signing key not found — set PHOTON_SIGNING_KEY or place it in a known location (see photon-signature-signer)")
+    });
     let key_bytes = std::fs::read(&key_path).unwrap_or_else(|e| fail(&format!("key read: {e}")));
     let key: [u8; 32] = match key_bytes.as_slice().try_into() {
         Ok(k) => k,
