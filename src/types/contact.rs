@@ -544,7 +544,10 @@ impl Contact {
 
     /// Where the CLUTCH ceremony actually is, as `step/total · what's happening (which eggs)` — for the conversation status line and asymmetric-completion debugging. The fraction is monotonic toward `secured`; the label names the crypto in flight (the egg families) instead of a flat "pending".
     pub fn clutch_status_detail(&self) -> String {
-        let n = Self::CLUTCH_STEPS;
+        // Dozenal glyphs thruout — the contact row draws in the Oxanium +glyphs face; arabic never reaches the UI.
+        let g = |v: u32| crate::dozenal_glyphs(v);
+        let n = g(Self::CLUTCH_STEPS as u32);
+        let eggs = g(Self::CLUTCH_EGGS as u32);
         match self.clutch_state {
             ClutchState::Complete => {
                 if self.chain_woven {
@@ -557,7 +560,7 @@ impl Contact {
                 if self.clutch_their_eggs_proof.is_some() {
                     format!("{n}/{n} · verifying proof")
                 } else {
-                    format!("7/{n} · braided · awaiting their proof")
+                    format!("{}/{n} · braided · awaiting their proof", g(7))
                 }
             }
             ClutchState::Pending => {
@@ -565,20 +568,20 @@ impl Contact {
                 let all_kem = self.all_slots_complete();
                 // Walk the milestones in order; report the earliest one not yet reached.
                 if self.clutch_ceremony_in_progress {
-                    format!("6/{n} · braiding {} eggs", Self::CLUTCH_EGGS)
+                    format!("{}/{n} · braiding {eggs} eggs", g(6))
                 } else if self.clutch_our_keypairs.is_none() {
                     // Keygen (McEliece dominates the ~1-2s) — name the egg families being forged.
-                    format!("1/{n} · forging {} eggs (4 EC · 2 lattice · 2 code)", Self::CLUTCH_EGGS)
+                    format!("{}/{n} · forging {eggs} eggs ({} EC · {} lattice · {} code)", g(1), g(4), g(2), g(2))
                 } else if self.clutch_kem_encap_in_progress {
-                    format!("4/{n} · sealing KEMs (McEliece·HQC·Frodo·NTRU)")
+                    format!("{}/{n} · sealing KEMs (McEliece·HQC·Frodo·NTRU)", g(4))
                 } else if all_kem {
-                    format!("6/{n} · braiding {} eggs", Self::CLUTCH_EGGS)
+                    format!("{}/{n} · braiding {eggs} eggs", g(6))
                 } else if their_offer || self.clutch_pending_kem.is_some() {
-                    format!("5/{n} · awaiting their KEMs")
+                    format!("{}/{n} · awaiting their KEMs", g(5))
                 } else if self.clutch_offer_sent {
-                    format!("3/{n} · awaiting their eggs")
+                    format!("{}/{n} · awaiting their eggs", g(3))
                 } else {
-                    format!("2/{n} · sending offer")
+                    format!("{}/{n} · sending offer", g(2))
                 }
             }
         }
