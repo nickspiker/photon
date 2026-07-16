@@ -6252,6 +6252,7 @@ impl PhotonApp {
         self.update_rx = Some(rx);
         self.update_busy = true;
         self.update_status = Some(format!("Checking {}\u{2026}", channel.label()));
+        crate::log(&format!("UPDATE: checking {} manifest (apply={apply})", channel.label()));
         std::thread::spawn(move || {
             use crate::network::updates::{fetch_manifest_blocking, our_row};
             let result = fetch_manifest_blocking(channel).map(|rows| our_row(&rows));
@@ -6298,7 +6299,7 @@ impl PhotonApp {
         while let Ok(ev) = rx.try_recv() {
             self.update_busy = false;
             changed = true;
-            match ev {
+            match &ev {
                 UpdateEvent::Checked(channel, Ok(Some(row))) => {
                     if row.version == crate::network::updates::our_version() {
                         self.update_status = Some(format!("Up to date with {} ({})", channel.label(), row.version_string()));
@@ -6317,16 +6318,20 @@ impl PhotonApp {
                 }
                 UpdateEvent::Applied(exe) => {
                     self.update_status = Some("Updated \u{221a} restarting\u{2026}".to_string());
-                    self.update_reexec = Some(exe);
+                    self.update_reexec = Some(exe.clone());
                 }
                 #[cfg(target_os = "android")]
                 UpdateEvent::ApkReady(path) => {
                     self.update_status = Some("Downloaded \u{221a} confirm the install prompt".to_string());
-                    self.pending_apk_install = Some(path);
+                    self.pending_apk_install = Some(path.clone());
                 }
                 UpdateEvent::ApplyFailed(e) => {
                     self.update_status = Some(format!("Update failed (nothing changed): {e}"));
                 }
+            }
+            // Every outcome is diagnosable from a snapped log, not just the on-screen status line (the 2026-07-16 check failure left no trace).
+            if let Some(status) = &self.update_status {
+                crate::log(&format!("UPDATE: {status}"));
             }
         }
         changed
