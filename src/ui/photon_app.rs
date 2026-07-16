@@ -98,49 +98,34 @@ fn dev_patch() -> u32 {
     env!("CARGO_PKG_VERSION_PATCH").parse().unwrap_or(0)
 }
 
-/// The displayed dozenal version: minor in dozenal glyphs, plus `.patch` (dozenal) when this is a dev build (patch ≥ 1 — releases are always X.Y.0 and show bare).
-fn version_dozenal_glyphs() -> String {
-    let mut s = dozenal_glyphs(deploy_version());
-    let p = dev_patch();
-    if p > 0 {
+/// A manifest version tuple in dozenal glyphs: major omitted while 0, `.patch` only when ≥1 — the same omissions the wire uses.
+fn dozenal_version_tuple(v: (usize, usize, usize)) -> String {
+    let (maj, min, pat) = v;
+    let mut s = String::new();
+    if maj > 0 {
+        s.push_str(&crate::dozenal_glyphs(maj as u32));
         s.push('.');
-        s.push_str(&dozenal_glyphs(p));
+    }
+    s.push_str(&crate::dozenal_glyphs(min as u32));
+    if pat > 0 {
+        s.push('.');
+        s.push_str(&crate::dozenal_glyphs(pat as u32));
     }
     s
 }
 
-/// Render `n` in dozenal (base 12) as a string of reserved control-code bytes: digit `d` (0..11) maps to codepoint `0x10 + d` (DLE..ESC), which the Oxanium `+glyphs` face draws as the dozenal glyph Zil..Stelor. The result is meant only for that font — the bytes are non-printing control codes everywhere else. Most-significant digit first; `0` renders as a single Zil (0x10).
-fn dozenal_glyphs(mut n: u32) -> String {
-    if n == 0 {
-        return char::from(0x10).to_string();
+/// The displayed dozenal version: minor in dozenal glyphs, plus `.patch` (dozenal) when this is a dev build (patch ≥ 1 — releases are always X.Y.0 and show bare).
+fn version_dozenal_glyphs() -> String {
+    let mut s = crate::dozenal_glyphs(deploy_version());
+    let p = dev_patch();
+    if p > 0 {
+        s.push('.');
+        s.push_str(&crate::dozenal_glyphs(p));
     }
-    let mut digits = Vec::new();
-    while n > 0 {
-        digits.push(char::from(0x10 + (n % 12) as u8));
-        n /= 12;
-    }
-    digits.iter().rev().collect()
+    s
 }
-
-/// The dozenal digit NAMES, digit 0..11 — the same set the `+glyphs` face draws (Zil at 0x10 … Stelor at 0x1b), matching ferros' Zil(0)/Zila(1)/Zilor(2)/Ter(3)… versioning. Used to SPELL OUT a version the glyphs show. Never arabic.
-const DOZENAL_NAMES: [&str; 12] = [
-    "Zil", "Zila", "Zilor", "Ter", "Tera", "Teror", "Lun", "Luna", "Lunor", "Stel", "Stela",
-    "Stelor",
-];
 
 /// Spell `n` in dozenal digit names, most-significant first (e.g. dozenal `21` → "Zilor Zila"). The written-out companion to [`dozenal_glyphs`].
-fn dozenal_spell(mut n: u32) -> String {
-    if n == 0 {
-        return DOZENAL_NAMES[0].to_string();
-    }
-    let mut parts = Vec::new();
-    while n > 0 {
-        parts.push(DOZENAL_NAMES[(n % 12) as usize]);
-        n /= 12;
-    }
-    parts.iter().rev().copied().collect::<Vec<_>>().join(" ")
-}
-
 /// Number of pips in each posture meter (Security / Recovery on the Ready strip): low / medium / high.
 const POSTURE_PIPS: usize = 3;
 /// Filled-pip colours by level — warm orange (low) → amber (mid) → green (high); empty pips use [`POSTURE_OFF_COLOUR`]. α+darkness format (opaque), the space the shape rasterizers expect.
@@ -2116,7 +2101,7 @@ impl FluorApp for PhotonApp {
                         match crate::snapshot_log_bytes() {
                             Some(b) => {
                                 self.ready_toast =
-                                    Some(format!("Log: {} KiB", (b.len() + 1023) / 1024))
+                                    Some(format!("Log: {} KiB", crate::dozenal_glyphs(((b.len() + 1023) / 1024) as u32)))
                             }
                             None => self.ready_toast = Some("Log is empty".to_string()),
                         }
@@ -4715,7 +4700,7 @@ impl FluorApp for PhotonApp {
                 SettingsPage::Recovery => {
                     let rows = layout.content_scrolled(8, settings_content_scroll).split_v([1.0; 8]);
                     settings_line(&mut canvas, ctx.text, rows[0], "Recovery", tspan, CONTACT_NAME_COLOUR, 600);
-                    settings_line(&mut canvas, ctx.text, rows[1], "Custodians (v1)", hspan2, CONTACT_NAME_COLOUR, 600);
+                    settings_line(&mut canvas, ctx.text, rows[1], &format!("Custodians (v{})", crate::dozenal_glyphs(1)), hspan2, CONTACT_NAME_COLOUR, 600);
                     if let Some(cb) = self.settings_custodian_check.as_mut() {
                         cb.render_content_into(&mut canvas, ctx.text, None, Some(&mut chrome.hit_test_map));
                     }
@@ -4730,7 +4715,7 @@ impl FluorApp for PhotonApp {
                     if let Some(dd) = self.settings_theme_dropdown.as_mut() {
                         dd.render_content_into(&mut canvas, 0., 0., ctx.text, None, Some(&mut chrome.hit_test_map));
                     }
-                    settings_line(&mut canvas, ctx.text, rows[3], "Party colours (placeholder → perceptual L≈50%)", hspan2, LABEL_COLOUR, 400);
+                    settings_line(&mut canvas, ctx.text, rows[3], &format!("Party colours (placeholder → perceptual L≈{}%)", crate::dozenal_glyphs(50)), hspan2, LABEL_COLOUR, 400);
                     settings_line(&mut canvas, ctx.text, rows[4], "Zoom / text size", hspan2, LABEL_COLOUR, 400);
                     if let Some(sl) = self.settings_zoom_slider.as_mut() {
                         sl.render_content_into(&mut canvas, Some(&mut chrome.hit_test_map), sl.hit_id());
@@ -4775,7 +4760,7 @@ impl FluorApp for PhotonApp {
                 SettingsPage::Diagnostics => {
                     let rows = layout.content_scrolled(10, settings_content_scroll).split_v([1.0; 10]);
                     settings_line(&mut canvas, ctx.text, rows[0], "Diagnostics", tspan, CONTACT_NAME_COLOUR, 600);
-                    settings_line(&mut canvas, ctx.text, rows[1], "On-device log · 16 MiB · self-expires 24–48h", hspan2, LABEL_COLOUR, 400);
+                    settings_line(&mut canvas, ctx.text, rows[1], &format!("On-device log · {} MiB · self-expires {}–{}h", crate::dozenal_glyphs(16), crate::dozenal_glyphs(24), crate::dozenal_glyphs(48)), hspan2, LABEL_COLOUR, 400);
                     let pr = rows[3].split_h([1.0, 1.0, 1.0]);
                     draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[0].center_h(0.85), "Clear", btn_base.wrapping_add(0), ctx.pressed_hit);
                     draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[1].center_h(0.85), "Snapshot", btn_base.wrapping_add(1), ctx.pressed_hit);
@@ -4801,7 +4786,7 @@ impl FluorApp for PhotonApp {
                     settings_line(&mut canvas, ctx.text, rows[3], "No servers. No tracking. Your data is yours.", hspan2, LABEL_COLOUR, 400);
                     // Version — dozenal, NEVER arabic. Default: normal-white dozenal glyphs (weight 400 → the Oxanium +glyphs face renders the reserved control-code bytes as dozenal digits). Tap → spell it out in voca words. Whole row is a tap target (btn_base + 3).
                     let ver = if self.about_version_spelled {
-                        format!("Version {}{}", dozenal_spell(deploy_version()), if dev_patch() > 0 { format!(" point {}", dozenal_spell(dev_patch())) } else { String::new() })
+                        format!("Version {}{}", crate::dozenal_spell(deploy_version()), if dev_patch() > 0 { format!(" point {}", crate::dozenal_spell(dev_patch())) } else { String::new() })
                     } else {
                         format!("Version {}", version_dozenal_glyphs())
                     };
@@ -6302,11 +6287,11 @@ impl PhotonApp {
             match &ev {
                 UpdateEvent::Checked(channel, Ok(Some(row))) => {
                     if row.version == crate::network::updates::our_version() {
-                        self.update_status = Some(format!("Up to date with {} ({})", channel.label(), row.version_string()));
+                        self.update_status = Some(format!("Up to date with {} ({})", channel.label(), dozenal_version_tuple(row.version)));
                     } else {
                         self.update_status = Some(format!(
                             "{} has {} (you run {}) — use a Get button to install",
-                            channel.label(), row.version_string(), env!("CARGO_PKG_VERSION")
+                            channel.label(), dozenal_version_tuple(row.version), version_dozenal_glyphs()
                         ));
                     }
                 }
@@ -6331,7 +6316,7 @@ impl PhotonApp {
             }
             // Every outcome is diagnosable from a snapped log, not just the on-screen status line (the 2026-07-16 check failure left no trace).
             if let Some(status) = &self.update_status {
-                crate::log(&format!("UPDATE: {status}"));
+                crate::log(&format!("UPDATE: {}", crate::deglyph_for_log(status)));
             }
         }
         changed
@@ -6776,7 +6761,7 @@ impl PhotonApp {
         ) {
             let n = bytes.len();
             // Immediate press feedback — the upload runs seconds on a big log, and silence here read as "the button did nothing". Replaced by "Log sent √" / "Send failed" when the worker thread reports.
-            self.ready_toast = Some(format!("Sending log ({} KiB)\u{2026}", (n + 1023) / 1024));
+            self.ready_toast = Some(format!("Sending log ({} KiB)\u{2026}", crate::dozenal_glyphs(((n + 1023) / 1024) as u32)));
             crate::log(&format!("DIAG: submitting log ({n} bytes) to FGTW (sealed)"));
             std::thread::spawn(move || {
                 let r = put_log_blocking(&bytes, &note, &kp, &hp, &seed).map_err(|e| format!("{e}"));

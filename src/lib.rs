@@ -1,6 +1,6 @@
 // PHOTON SOURCE MAP — one readable line per file. Keep updated when files or major pub items change.
 //
-// lib.rs   — constants (PHOTON_PORT=4383, PHOTON_PORT_FALLBACK=3546, MULTICAST_PORT=4384, OSC_PER_SEC, PEER_EXPIRY_OSC=7d, KBUCKET_STALE_OSC=1h), always-on VSF logging sink (16 MiB + jittered 24–48h caps, name-scrubbed), and helpers: init_logging/log/log_at/clear_log/snapshot_log_bytes/log_size_bytes/install_log_bridge, fp(public_id) (non-PII log label), jitter/jitter_dur (anti-thundering-herd 50–100% pad), module re-exports.
+// lib.rs   — constants (PHOTON_PORT=4383, PHOTON_PORT_FALLBACK=3546, MULTICAST_PORT=4384, OSC_PER_SEC, PEER_EXPIRY_OSC=7d, KBUCKET_STALE_OSC=1h), always-on VSF logging sink (16 MiB + jittered 24–48h caps, name-scrubbed), and helpers: init_logging/log/log_at/clear_log/snapshot_log_bytes/log_size_bytes/install_log_bridge, fp(public_id) (non-PII log label), dozenal helpers (DOZENAL_NAMES, dozenal_glyphs UI / dozenal_spell read-aloud / dozenal_words camelCase log form, deglyph_for_log), jitter/jitter_dur (anti-thundering-herd 50–100% pad), module re-exports.
 // main.rs  — winit event loop, window creation, tokio async runtime.
 //
 // crypto/
@@ -8,7 +8,7 @@
 //   chain.rs        — the braid: rolling-chain encryption (512-link, 16KB; see docs/braid.md). Chain, advance() (weaves ≤2 prior peer plaintexts), derive_salt, generate/verify_ack_proof, encrypt/decrypt_layers.
 //   clutch.rs       — 8-algorithm parallel key ceremony: smear_hash, derive_conversation_token, derive_ceremony_instance, spaghettify, sibling_party_id (device-derived fleet-weave party id).
 //   handle_proof.rs — memory-hard handle attestation (~1s); re-exports ihi::handle_proof.
-//   self_verify.rs  — Ed25519 binary signature verification: AUTHOR_PUBKEY, SYSTEM_PUBKEYS, is_system_pubkey, verify_binary_hash.
+//   self_verify.rs  — Ed25519 binary signature verification: AUTHOR_PUBKEY, SYSTEM_PUBKEYS, is_system_pubkey, verify_binary_hash, verify_file (update downloads — verify BEFORE exec).
 //   shards.rs       — social recovery key sharding (TODO).
 //
 // network/
@@ -116,6 +116,64 @@ pub fn init_logging() {}
 
 /// Short, non-PII label for logs: the first 4 bytes of a PUBLIC id (handle_proof / device pubkey) as hex.
 /// Log this instead of a plaintext handle — the durable log then carries pseudonymous identifiers, never names, so it stays diagnostic (you can correlate a fingerprint across a run) without leaking who anyone is.
+/// The dozenal digit NAMES, digit 0..11 — Zil(0)/Zila(1)/Zilor(2)/Ter(3)/Tera(4)/Teror(5)/Lun(6)/Luna(7)/Lunor(8)/Stel(9)/Stela(10)/Stelor(11); the same set the Oxanium `+glyphs` face draws at 0x10..0x1B. UI shows the GLYPHS, logs/read-aloud show these WORDS. Never arabic.
+pub const DOZENAL_NAMES: [&str; 12] = [
+    "Zil", "Zila", "Zilor", "Ter", "Tera", "Teror", "Lun", "Luna", "Lunor", "Stel", "Stela", "Stelor",
+];
+
+/// Render `n` in dozenal as reserved control-code bytes 0x10+digit — the Oxanium `+glyphs` face draws them as the dozenal digits. UI-only: terminals show garbage, so LOG paths use [`dozenal_words`] instead.
+pub fn dozenal_glyphs(mut n: u32) -> String {
+    if n == 0 {
+        return char::from(0x10).to_string();
+    }
+    let mut digits = Vec::new();
+    while n > 0 {
+        digits.push(char::from(0x10 + (n % 12) as u8));
+        n /= 12;
+    }
+    digits.iter().rev().collect()
+}
+
+/// Spell `n` in dozenal digit words, space-separated ("Zilor Stela") — the read-aloud form.
+pub fn dozenal_spell(mut n: u32) -> String {
+    if n == 0 {
+        return DOZENAL_NAMES[0].to_string();
+    }
+    let mut parts = Vec::new();
+    while n > 0 {
+        parts.push(DOZENAL_NAMES[(n % 12) as usize]);
+        n /= 12;
+    }
+    parts.iter().rev().copied().collect::<Vec<_>>().join(" ")
+}
+
+/// Spell `n` in dozenal digit words, camelCase-concatenated ("ZilorStela") — the LOG/copy-paste form (double-click selects the whole value; terminals can't draw the glyph control codes).
+pub fn dozenal_words(mut n: u32) -> String {
+    if n == 0 {
+        return DOZENAL_NAMES[0].to_string();
+    }
+    let mut parts = Vec::new();
+    while n > 0 {
+        parts.push(DOZENAL_NAMES[(n % 12) as usize]);
+        n /= 12;
+    }
+    parts.iter().rev().copied().collect::<Vec<_>>().concat()
+}
+
+/// Transliterate any dozenal GLYPH control codes (0x10..0x1B) in a UI string into their camelCase digit words, for log emission — one string builder serves both surfaces.
+pub fn deglyph_for_log(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        let cp = c as u32;
+        if (0x10..=0x1B).contains(&cp) {
+            out.push_str(DOZENAL_NAMES[(cp - 0x10) as usize]);
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 pub fn fp(public_id: &[u8]) -> String {
     hex::encode(&public_id[..public_id.len().min(4)])
 }
