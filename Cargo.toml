@@ -1,6 +1,6 @@
 [package]
 name = "photon-messenger"
-version = "0.34.1"
+version = "0.34.2"
 edition = "2021"
 authors = ["Nick Spiker <fractaldecoder@proton.me>"]
 license = "MIT OR Apache-2.0"
