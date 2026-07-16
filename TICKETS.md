@@ -150,6 +150,7 @@ Notes:
 - `Textbox::clear` / consume-on-submit.
 - `ScrollContainer<W>` for the conversation message list.
 - Android multi-touch (`Touch` event) — gates pinch-zoom and the two-finger zoom-hint.
+- **Italic text** (wanted: pending-contact label in italic). Not wired anywhere: fluor's `TextRenderer::draw_text_*` family (~12 fns in `../fluor/src/text.rs`) takes only `(size, weight, colour, font)` — no style axis — and the shaper builds `Attrs::new().weight(Weight(w))` without `.style(...)`. fluor also compiles in only Regular + Bold faces (`include_bytes!` of `OpenSans-{Regular,Bold}.ttf`); the Italic TTFs live in photon's `assets/Open_Sans/static/` but are excluded from the package (`assets/Open_Sans/static/*Italic*` in Cargo.toml `exclude`). Scope: bundle `OpenSans-Italic.ttf` (+ BoldItalic) into fluor, thread a `style`/`italic` param through the `draw_text_*` API + call sites (or add `_italic` variants), set `cosmic_text::Style::Italic` on the Attrs. Cheaper faux-italic alt: a per-glyph x-shear in the bitmap blit (fluor already has a `rotation` glyph transform to model it on), no font needed, but rougher and still needs a param threaded. Consumer waiting: `Contact::display_name_or_pending()` "Pending…" label.
 
 ## Non-obvious / open questions
 
