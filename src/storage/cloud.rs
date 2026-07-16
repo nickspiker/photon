@@ -261,11 +261,7 @@ pub fn sync_contacts_to_cloud(
     // Encode and encrypt
     let encrypted = encode_contacts(&cloud_contacts, &encryption_key)?;
 
-    crate::log(&format!(
-        "Cloud: Uploading {} contacts ({} bytes encrypted)",
-        contacts.len(),
-        encrypted.len()
-    ));
+    crate::logf!("Cloud: Uploading {} contacts ({} bytes encrypted)", contacts.len(), encrypted.len());
 
     #[cfg(feature = "development")]
     crate::log("Cloud: About to call put_blob_blocking...");
@@ -314,14 +310,11 @@ pub fn load_contacts_from_cloud(
         }
     };
 
-    crate::log(&format!(
-        "Cloud: Downloaded contacts blob ({} bytes)",
-        encrypted.len()
-    ));
+    crate::logf!("Cloud: Downloaded contacts blob ({} bytes)", encrypted.len());
 
     // Decrypt and decode
     let contacts = decode_contacts(&encrypted, &encryption_key)?;
-    crate::log(&format!("Cloud: Decoded {} contacts", contacts.len()));
+    crate::logf!("Cloud: Decoded {} contacts", contacts.len());
     Ok(Some(contacts))
 }
 

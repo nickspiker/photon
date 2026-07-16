@@ -189,7 +189,7 @@ pub struct SyncRecord {
 /// Convert SocketAddr to binary format for VSF Format:
 /// - IPv4: 4 bytes (address) + 2 bytes (port big-endian) = 6 bytes
 /// - IPv6: 16 bytes (address) + 2 bytes (port big-endian) = 18 bytes
-fn socketaddr_to_bytes(addr: &SocketAddr) -> Vec<u8> {
+pub(crate) fn socketaddr_to_bytes(addr: &SocketAddr) -> Vec<u8> {
     let mut bytes = Vec::new();
 
     // Add IP address bytes
@@ -209,7 +209,7 @@ fn socketaddr_to_bytes(addr: &SocketAddr) -> Vec<u8> {
 }
 
 /// Convert binary format back to SocketAddr Returns None if the format is invalid
-fn bytes_to_socketaddr(bytes: &[u8]) -> Option<SocketAddr> {
+pub(crate) fn bytes_to_socketaddr(bytes: &[u8]) -> Option<SocketAddr> {
     if bytes.len() == 6 {
         // IPv4: 4 bytes address + 2 bytes port
         let ip = IpAddr::V4(std::net::Ipv4Addr::new(
@@ -250,41 +250,15 @@ impl FgtwMessage {
                 device_pubkey,
                 peers,
             } => {
-                let mut fields = vec![
-                    ("msg_type".to_string(), VsfType::u3(1)),
-                    ("device_pubkey".to_string(), device_pubkey.to_vsf()),
-                    ("peer_count".to_string(), VsfType::u(peers.len(), false)),
-                ];
-
-                // Add each peer as separate fields
-                for (i, peer) in peers.iter().enumerate() {
-                    let prefix = format!("peer_{}", i);
-                    fields.push((
-                        format!("{}_handle_proof", prefix),
-                        VsfType::hP(peer.handle_proof.to_vec()),
-                    ));
-                    fields.push((
-                        format!("{}_device_pubkey", prefix),
-                        peer.device_pubkey.to_vsf(),
-                    ));
-                    fields.push((
-                        format!("{}_ip", prefix),
-                        VsfType::v_u3(Vector {
-                            data: socketaddr_to_bytes(&peer.ip),
-                        }),
-                    ));
-                    fields.push((
-                        format!("{}_last_seen", prefix),
-                        VsfType::e(vsf::types::EtType::e6(peer.last_seen)),
-                    ));
-                    // Self-signature (ge) — see PeerRecord. Carried so the receiver can verify the record without trusting this relay. extract_peer_list reads it back at {prefix}_sig.
-                    fields.push((
-                        format!("{}_sig", prefix),
-                        VsfType::ge(peer.signature.to_vec()),
-                    ));
+                // One native multi-value `peer` row per record (encode_peer_field — same row shape the phonebook + worker use). No counts, no numbered names.
+                let mut section = vsf::VsfSection::new("fgtw");
+                section.add_field_multi("msg_type", vec![VsfType::u3(1)]);
+                section.add_field_multi("device_pubkey", vec![device_pubkey.to_vsf()]);
+                for peer in peers {
+                    let (_, values) = encode_peer_field(peer);
+                    section.add_field_multi("peer", values);
                 }
-
-                builder.add_section("fgtw", fields).build()
+                builder.add_section_direct(section).build()
             }
             FgtwMessage::FindNode {
                 handle_proof,
@@ -303,34 +277,14 @@ impl FgtwMessage {
                 )
                 .build(),
             FgtwMessage::FoundNodes { devices } => {
-                let mut fields = vec![
-                    ("msg_type".to_string(), VsfType::u3(3)),
-                    ("device_count".to_string(), VsfType::u(devices.len(), false)),
-                ];
-
-                for (i, device) in devices.iter().enumerate() {
-                    let prefix = format!("device_{}", i);
-                    fields.push((
-                        format!("{}_handle_proof", prefix),
-                        VsfType::hP(device.handle_proof.to_vec()),
-                    ));
-                    fields.push((
-                        format!("{}_device_pubkey", prefix),
-                        device.device_pubkey.to_vsf(),
-                    ));
-                    fields.push((
-                        format!("{}_ip", prefix),
-                        VsfType::v_u3(Vector {
-                            data: socketaddr_to_bytes(&device.ip),
-                        }),
-                    ));
-                    fields.push((
-                        format!("{}_last_seen", prefix),
-                        VsfType::e(vsf::types::EtType::e6(device.last_seen)),
-                    ));
+                // One native multi-value `device` row per record (the full encode_peer_field row — this path now carries local_ip + sig too, which the prefixed form dropped).
+                let mut section = vsf::VsfSection::new("fgtw");
+                section.add_field_multi("msg_type", vec![VsfType::u3(3)]);
+                for device in devices {
+                    let (_, values) = encode_peer_field(device);
+                    section.add_field_multi("device", values);
                 }
-
-                builder.add_section("fgtw", fields).build()
+                builder.add_section_direct(section).build()
             }
             FgtwMessage::Announce {
                 handle_proof,
@@ -367,34 +321,14 @@ impl FgtwMessage {
                 )
                 .build(),
             FgtwMessage::QueryResponse { devices } => {
-                let mut fields = vec![
-                    ("msg_type".to_string(), VsfType::u3(6)),
-                    ("device_count".to_string(), VsfType::u(devices.len(), false)),
-                ];
-
-                for (i, device) in devices.iter().enumerate() {
-                    let prefix = format!("device_{}", i);
-                    fields.push((
-                        format!("{}_handle_proof", prefix),
-                        VsfType::hP(device.handle_proof.to_vec()),
-                    ));
-                    fields.push((
-                        format!("{}_device_pubkey", prefix),
-                        device.device_pubkey.to_vsf(),
-                    ));
-                    fields.push((
-                        format!("{}_ip", prefix),
-                        VsfType::v_u3(Vector {
-                            data: socketaddr_to_bytes(&device.ip),
-                        }),
-                    ));
-                    fields.push((
-                        format!("{}_last_seen", prefix),
-                        VsfType::e(vsf::types::EtType::e6(device.last_seen)),
-                    ));
+                // One native multi-value `device` row per record.
+                let mut section = vsf::VsfSection::new("fgtw");
+                section.add_field_multi("msg_type", vec![VsfType::u3(6)]);
+                for device in devices {
+                    let (_, values) = encode_peer_field(device);
+                    section.add_field_multi("device", values);
                 }
-
-                builder.add_section("fgtw", fields).build()
+                builder.add_section_direct(section).build()
             }
             FgtwMessage::StatusPing {
                 timestamp,
@@ -419,36 +353,32 @@ impl FgtwMessage {
                 observed_addr,
                 display_name,
             } => {
-                // Pong with sync records for efficient resync Format: RÅ< ... ke[pubkey] ge[sig] > [pong (sync_count: N) (sync_0_tok: hb) (sync_0_ef6: f6) (obs: hb)?]
-                let mut fields = vec![(
-                    "sync_count".to_string(),
-                    VsfType::u(sync_records.len(), false),
-                )];
-                for (i, record) in sync_records.iter().enumerate() {
-                    fields.push((
-                        format!("sync_{}_tok", i),
-                        VsfType::hb(record.conversation_token.to_vec()),
-                    ));
-                    fields.push((
-                        format!("sync_{}_osc", i),
-                        VsfType::e(vsf::types::EtType::e6(record.last_received_osc)),
-                    ));
+                // Pong: one native multi-value `sync` row per conversation record — (hb token, e6 last_received). No counts, no numbered names.
+                let mut section = vsf::VsfSection::new("pong");
+                for record in sync_records {
+                    section.add_field_multi(
+                        "sync",
+                        vec![
+                            VsfType::hb(record.conversation_token.to_vec()),
+                            VsfType::e(vsf::types::EtType::e6(record.last_received_osc)),
+                        ],
+                    );
                 }
                 // Peer-echoed reflexive address: the src we saw the ping come from, so the requester learns its own public address on the data socket. Absent → legacy/unknown, parses back to None.
                 if let Some(addr) = observed_addr {
-                    fields.push(("obs".to_string(), VsfType::hb(socketaddr_to_bytes(addr))));
+                    section.add_field_multi("obs", vec![VsfType::hb(socketaddr_to_bytes(addr))]);
                 }
                 // Always-granted display name — only when set (absent parses back to None).
                 if let Some(name) = display_name {
                     if !name.is_empty() {
-                        fields.push(("name".to_string(), VsfType::x(name.clone())));
+                        section.add_field_multi("name", vec![VsfType::x(name.clone())]);
                     }
                 }
                 builder
                     .creation_time_oscillations(*timestamp)
                     .provenance_hash(*provenance_hash)
                     .signature_ed25519(*responder_pubkey.as_bytes(), *signature)
-                    .add_section("pong", fields)
+                    .add_section_direct(section)
                     .build()
             }
             // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete serialization REMOVED Full CLUTCH uses build_clutch_offer_vsf() and build_clutch_kem_response_vsf()
@@ -634,7 +564,7 @@ impl FgtwMessage {
         };
 
         result.unwrap_or_else(|e| {
-            crate::log(&format!("FGTW: Failed to build VSF message: {}", e));
+            crate::logf!("FGTW: Failed to build VSF message: {}", e);
             Vec::new()
         })
     }
@@ -680,7 +610,7 @@ impl FgtwMessage {
             } else {
                 // Pong - parse sync records + optional observed_addr + optional display name from section body
                 let fields = section_fields_to_tuples(&section);
-                let sync_records = extract_sync_records(&fields)?;
+                let sync_records = extract_sync_records(&section)?;
                 let observed_addr = extract_observed_addr(&fields);
                 let display_name = fields.iter().find_map(|(n, v)| match (n.as_str(), v) {
                     ("name", VsfType::x(s)) if !s.is_empty() => Some(s.clone()),
@@ -883,7 +813,7 @@ impl FgtwMessage {
             1 => {
                 // Pong
                 let device_pubkey = extract_pubkey(&fields, "device_pubkey")?;
-                let peers = extract_peer_list(&fields, "peer")?;
+                let peers = peer_rows(&section, "peer");
                 Ok(FgtwMessage::Pong {
                     device_pubkey,
                     peers,
@@ -900,7 +830,7 @@ impl FgtwMessage {
             }
             3 => {
                 // FoundNodes
-                let devices = extract_peer_list(&fields, "device")?;
+                let devices = peer_rows(&section, "device");
                 Ok(FgtwMessage::FoundNodes { devices })
             }
             4 => {
@@ -930,7 +860,7 @@ impl FgtwMessage {
             }
             6 => {
                 // QueryResponse
-                let devices = extract_peer_list(&fields, "device")?;
+                let devices = peer_rows(&section, "device");
                 Ok(FgtwMessage::QueryResponse { devices })
             }
             _ => Err(format!("Unknown message type: {}", msg_type)),
@@ -1110,98 +1040,37 @@ fn extract_data(fields: &[(String, VsfType)], key: &str) -> Result<Vec<u8>, Stri
     }
 }
 
-fn extract_peer_list(
-    fields: &[(String, VsfType)],
-    prefix: &str,
-) -> Result<Vec<PeerRecord>, String> {
-    let count_key = format!("{}_count", prefix);
-    let count = match get_field(fields, &count_key) {
-        Some(vsf_val) => {
-            usize::from_vsf_type(vsf_val).map_err(|e| format!("Invalid {}_count: {}", prefix, e))?
-        }
-        None => return Err(format!("Missing {}_count", prefix)),
-    };
-
-    let mut peers = Vec::with_capacity(count);
-    for i in 0..count {
-        let peer_prefix = format!("{}_{}", prefix, i);
-
-        let handle_proof = extract_hash(fields, &format!("{}_handle_proof", peer_prefix))?;
-        let device_pubkey = extract_pubkey(fields, &format!("{}_device_pubkey", peer_prefix))?;
-
-        let ip_key = format!("{}_ip", peer_prefix);
-        let ip_bytes = match get_field(fields, &ip_key) {
-            Some(VsfType::v_u3(vec)) => &vec.data,
-            _ => return Err(format!("Missing or invalid {}", ip_key)),
-        };
-        let ip = bytes_to_socketaddr(ip_bytes)
-            .ok_or_else(|| format!("Invalid IP bytes for {}", ip_key))?;
-
-        let last_seen_key = format!("{}_last_seen", peer_prefix);
-        let last_seen = match get_field(fields, &last_seen_key) {
-            Some(VsfType::e(vsf::types::EtType::e6(osc))) => *osc,
-            _ => return Err(format!("Missing or invalid {}", last_seen_key)),
-        };
-
-        // local_ip (v_u3): 4 bytes = v4, 16 = v6, empty = None. Must be decoded (not hardcoded None) so the signature — which covers local_ip — verifies.
-        let local_ip = match get_field(fields, &format!("{}_local_ip", peer_prefix)) {
-            Some(VsfType::v_u3(v)) if v.data.len() == 4 => Some(IpAddr::V4(std::net::Ipv4Addr::new(
-                v.data[0], v.data[1], v.data[2], v.data[3],
-            ))),
-            Some(VsfType::v_u3(v)) if v.data.len() == 16 => {
-                let mut o = [0u8; 16];
-                o.copy_from_slice(&v.data);
-                Some(IpAddr::V6(std::net::Ipv6Addr::from(o)))
-            }
-            _ => None,
-        };
-
-        let sig_key = format!("{}_sig", peer_prefix);
-        let signature = match get_field(fields, &sig_key) {
-            Some(VsfType::ge(s)) if s.len() == 64 => s.as_slice().try_into().unwrap(),
-            // Legacy / unsigned record (this DHT FoundNodes path predates self-signed records). Left as [0;64]; merge_peer's verify() will reject it, which is the safe default — only signed records propagate thru gossip.
-            _ => [0u8; 64],
-        };
-        peers.push(PeerRecord {
-            handle_proof,
-            device_pubkey,
-            ip,
-            local_ip,
-            last_seen,
-            signature,
-        });
-    }
-
-    Ok(peers)
+/// Parse every native multi-value `name` row into a [`PeerRecord`] (the encode_peer_field shape, shared with the phonebook + worker). Unparseable rows drop individually — one bad record never poisons the list.
+fn peer_rows(section: &vsf::VsfSection, name: &str) -> Vec<PeerRecord> {
+    section
+        .get_fields(name)
+        .iter()
+        .filter_map(|f| crate::network::fgtw::bootstrap::parse_peer_from_field(f).ok())
+        .collect()
 }
 
 /// Extract sync records from pong message fields Format: sync_count, sync_0_tok, sync_0_ef6, sync_1_tok, sync_1_ef6, ...
-fn extract_sync_records(fields: &[(String, VsfType)]) -> Result<Vec<SyncRecord>, String> {
-    // Get count (optional for backwards compat - default to 0)
-    let count = match get_field(fields, "sync_count") {
-        Some(vsf_val) => {
-            usize::from_vsf_type(vsf_val).map_err(|e| format!("Invalid sync_count: {}", e))?
+fn extract_sync_records(section: &vsf::VsfSection) -> Result<Vec<SyncRecord>, String> {
+    // One `sync` multi-value row per record: (hb conversation_token, e6 last_received). Values matched by TYPE MARKER within the row — no counts, no positions across rows. Zero rows = no records (a pong from a peer with no conversations).
+    let mut records = Vec::new();
+    for field in section.get_fields("sync") {
+        let mut token: Option<[u8; 32]> = None;
+        let mut osc: Option<i64> = None;
+        for v in &field.values {
+            match v {
+                VsfType::hb(h) if h.len() == 32 => token = h.as_slice().try_into().ok(),
+                VsfType::e(vsf::types::EtType::e6(t)) => osc = Some(*t),
+                _ => {}
+            }
         }
-        None => return Ok(vec![]), // No sync records (old format)
-    };
-
-    let mut records = Vec::with_capacity(count);
-    for i in 0..count {
-        let tok_key = format!("sync_{}_tok", i);
-        let osc_key = format!("sync_{}_osc", i);
-
-        let conversation_token = extract_hash(fields, &tok_key)?;
-        let last_received_osc = match get_field(fields, &osc_key) {
-            Some(VsfType::e(vsf::types::EtType::e6(v))) => *v,
-            _ => return Err(format!("Missing or invalid {}", osc_key)),
-        };
-
-        records.push(SyncRecord {
-            conversation_token,
-            last_received_osc,
-        });
+        match (token, osc) {
+            (Some(conversation_token), Some(last_received_osc)) => records.push(SyncRecord {
+                conversation_token,
+                last_received_osc,
+            }),
+            _ => return Err("sync row missing token or timestamp".to_string()),
+        }
     }
-
     Ok(records)
 }
 
@@ -1517,27 +1386,10 @@ pub fn parse_clutch_offer_vsf(
             .take(8)
             .map(|b| format!("{:02x}", b))
             .collect();
-        crate::log(&format!(
-            "CLUTCH: Received offer ({} bytes) offer_provenance={}... (key-based)",
-            vsf_bytes.len(),
-            prov_hex
-        ));
-        crate::log(&format!(
-            "CLUTCH: Offer pubkeys (X25519: {}B, P-384: {}B, secp256k1: {}B, P-256: {}B, Frodo: {}B, NTRU: {}B, McEliece: {}B, HQC: {}B)",
-            payload.x25519_public.len(),
-            payload.p384_public.len(),
-            payload.secp256k1_public.len(),
-            payload.p256_public.len(),
-            payload.frodo976_public.len(),
-            payload.ntru701_public.len(),
-            payload.mceliece_public.len(),
-            payload.hqc256_public.len()
-        ));
-        crate::log(&format!(
-            "CLUTCH: Parsed offer HQC pub[..8]={}",
-            // `.min(8)` guards a short (forged / truncated) field — a bare `[..8]` panics the whole receiver task.
-            hex::encode(&payload.hqc256_public[..payload.hqc256_public.len().min(8)])
-        ));
+        crate::logf!("CLUTCH: Received offer ({} bytes) offer_provenance={}... (key-based)", vsf_bytes.len(), prov_hex);
+        crate::logf!("CLUTCH: Offer pubkeys (X25519: {}B, P-384: {}B, secp256k1: {}B, P-256: {}B, Frodo: {}B, NTRU: {}B, McEliece: {}B, HQC: {}B)", payload.x25519_public.len(), payload.p384_public.len(), payload.secp256k1_public.len(), payload.p256_public.len(), payload.frodo976_public.len(), payload.ntru701_public.len(), payload.mceliece_public.len(), payload.hqc256_public.len());
+        crate::logf!("CLUTCH: Parsed offer HQC pub[..8]={}", // `.min(8)` guards a short (forged / truncated) field — a bare `[..8]` panics the whole receiver task.
+            hex::encode(&payload.hqc256_public[..payload.hqc256_public.len().min(8)]));
     }
 
     Ok((payload, sender_pubkey, offer_provenance, conversation_token))
@@ -1803,25 +1655,10 @@ pub fn parse_clutch_kem_response_vsf(
             .take(8)
             .map(|b| format!("{:02x}", b))
             .collect();
-        crate::log(&format!(
-            "CLUTCH: Received KEM response ({} bytes) ceremony_id={}...",
-            vsf_bytes.len(),
-            hp_hex
-        ));
-        crate::log(&format!(
-            "CLUTCH: KEM ciphertexts (Frodo: {}B, NTRU: {}B, McEliece: {}B, HQC: {}B)",
-            payload.frodo976_ciphertext.len(),
-            payload.ntru701_ciphertext.len(),
-            payload.mceliece_ciphertext.len(),
-            payload.hqc256_ciphertext.len()
-        ));
-        crate::log(&format!(
-            "CLUTCH: Parsed KEM response HQC ct[..8]={}, EC ephemerals: X25519 {}B, P384 {}B",
-            // `.min(8)` guards a short field so a truncated/forged ciphertext can't panic the receiver.
-            hex::encode(&payload.hqc256_ciphertext[..payload.hqc256_ciphertext.len().min(8)]),
-            payload.x25519_ephemeral.len(),
-            payload.p384_ephemeral.len()
-        ));
+        crate::logf!("CLUTCH: Received KEM response ({} bytes) ceremony_id={}...", vsf_bytes.len(), hp_hex);
+        crate::logf!("CLUTCH: KEM ciphertexts (Frodo: {}B, NTRU: {}B, McEliece: {}B, HQC: {}B)", payload.frodo976_ciphertext.len(), payload.ntru701_ciphertext.len(), payload.mceliece_ciphertext.len(), payload.hqc256_ciphertext.len());
+        crate::logf!("CLUTCH: Parsed KEM response HQC ct[..8]={}, EC ephemerals: X25519 {}B, P384 {}B", // `.min(8)` guards a short field so a truncated/forged ciphertext can't panic the receiver.
+            hex::encode(&payload.hqc256_ciphertext[..payload.hqc256_ciphertext.len().min(8)]), payload.x25519_ephemeral.len(), payload.p384_ephemeral.len());
     }
 
     Ok((payload, sender_pubkey, ceremony_id, conversation_token))
@@ -1963,12 +1800,8 @@ pub fn parse_clutch_offer_vsf_without_recipient_check(
     };
 
     #[cfg(feature = "development")]
-    crate::log(&format!(
-        "CLUTCH: Parsed offer (no recipient check) HQC pub[..8]={} provenance={}...",
-        // `.min(8)` guards a short field so a truncated/forged public key can't panic the receiver (offer_provenance is a fixed [u8;32], so its slice is always in-bounds).
-        hex::encode(&payload.hqc256_public[..payload.hqc256_public.len().min(8)]),
-        hex::encode(&offer_provenance[..8])
-    ));
+    crate::logf!("CLUTCH: Parsed offer (no recipient check) HQC pub[..8]={} provenance={}...", // `.min(8)` guards a short field so a truncated/forged public key can't panic the receiver (offer_provenance is a fixed [u8;32], so its slice is always in-bounds).
+        hex::encode(&payload.hqc256_public[..payload.hqc256_public.len().min(8)]), hex::encode(&offer_provenance[..8]));
 
     Ok((payload, sender_pubkey, offer_provenance, conversation_token))
 }
@@ -2159,12 +1992,8 @@ pub fn parse_clutch_kem_response_vsf_without_recipient_check(
     };
 
     #[cfg(feature = "development")]
-    crate::log(&format!(
-        "CLUTCH: Parsed KEM response (no recipient check) HQC ct[..8]={} target_hqc[..8]={} EC ephemerals present",
-        // `.min(8)` guards a short field so a truncated/forged ciphertext can't panic the receiver.
-        hex::encode(&payload.hqc256_ciphertext[..payload.hqc256_ciphertext.len().min(8)]),
-        hex::encode(&payload.target_hqc_pub_prefix)
-    ));
+    crate::logf!("CLUTCH: Parsed KEM response (no recipient check) HQC ct[..8]={} target_hqc[..8]={} EC ephemerals present", // `.min(8)` guards a short field so a truncated/forged ciphertext can't panic the receiver.
+        hex::encode(&payload.hqc256_ciphertext[..payload.hqc256_ciphertext.len().min(8)]), hex::encode(&payload.target_hqc_pub_prefix));
 
     Ok((payload, sender_pubkey, ceremony_id, conversation_token))
 }
@@ -2331,12 +2160,7 @@ pub fn parse_clutch_complete_vsf(
             .take(8)
             .map(|b| format!("{:02x}", b))
             .collect();
-        crate::log(&format!(
-            "CLUTCH: Received complete proof ({} bytes) ceremony_id={}... proof={}...",
-            vsf_bytes.len(),
-            id_hex,
-            hex::encode(&payload.eggs_proof[..8])
-        ));
+        crate::logf!("CLUTCH: Received complete proof ({} bytes) ceremony_id={}... proof={}...", vsf_bytes.len(), id_hex, hex::encode(&payload.eggs_proof[..8]));
     }
 
     Ok((payload, sender_pubkey, ceremony_id, conversation_token))
@@ -2383,10 +2207,7 @@ pub fn parse_clutch_complete_vsf_without_recipient_check(
     let payload = ClutchCompletePayload { eggs_proof };
 
     #[cfg(feature = "development")]
-    crate::log(&format!(
-        "CLUTCH: Parsed complete proof (no recipient check) proof={}...",
-        hex::encode(&payload.eggs_proof[..8])
-    ));
+    crate::logf!("CLUTCH: Parsed complete proof (no recipient check) proof={}...", hex::encode(&payload.eggs_proof[..8]));
 
     Ok((payload, sender_pubkey, ceremony_id, conversation_token))
 }

@@ -338,7 +338,7 @@ fn get_display_profile() -> Option<Vec<u8>> {
         x11::xlib::XFree(prop as *mut _);
         x11::xlib::XCloseDisplay(display);
 
-        crate::log(&format!("Display: Got ICC profile, {} bytes", profile_bytes.len()));
+        crate::logf!("Display: Got ICC profile, {} bytes", profile_bytes.len());
         Some(profile_bytes)
     }
 }
@@ -371,7 +371,7 @@ fn get_display_profile() -> Option<Vec<u8>> {
 
         // Convert to string and read file
         let path_str = String::from_utf16_lossy(&path[..size as usize - 1]);
-        crate::log(&format!("Display: ICC profile at {}", path_str));
+        crate::logf!("Display: ICC profile at {}", path_str);
         std::fs::read(&path_str).ok()
     }
 }

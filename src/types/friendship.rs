@@ -977,15 +977,7 @@ impl FriendshipChains {
         let ciphertext = encrypt_layers(&plaintext, &our_chain, &scratch, &et);
 
         // Mirror the receiver's "CHAIN DECRYPT" line so both sides can be diffed: for a given eagle_time the encrypt key+salt here MUST equal the decrypt key+salt on the peer, or the chains have diverged. last_plaintext_len flags the lossy-storage class of bug (a non-empty prev that round-tripped thru storage must be byte-identical on both ends).
-        crate::log(&format!(
-            "CHAIN ENCRYPT: our_handle_hash = {}..., key = {}..., salt = {}..., eagle_time = {}, last_plaintext_len = {}, ciphertext_len = {}",
-            hex::encode(&our_handle_hash[..4]),
-            hex::encode(&our_chain.current_key()[..4]),
-            hex::encode(&salt[..4]),
-            eagle_time,
-            self.last_plaintexts[our_idx].len(),
-            ciphertext.len()
-        ));
+        crate::logf!("CHAIN ENCRYPT: our_handle_hash = {}..., key = {}..., salt = {}..., eagle_time = {}, last_plaintext_len = {}, ciphertext_len = {}", hex::encode(&our_handle_hash[..4]), hex::encode(&our_chain.current_key()[..4]), hex::encode(&salt[..4]), eagle_time, self.last_plaintexts[our_idx].len(), ciphertext.len());
 
         // First message uses our anchor as prev_msg_hp (matches get_expected_prev_hp on the receiver).
         let prev_msg_hp = self

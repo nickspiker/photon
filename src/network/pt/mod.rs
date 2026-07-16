@@ -195,14 +195,7 @@ impl PTManager {
         // Mark SPEC as sent for retry tracking
         transfer.mark_spec_sent();
 
-        crate::log(&format!(
-            "PT: Starting outbound transfer #{} to {} ({} bytes, stream '{}', relay={})",
-            transfer_id,
-            peer_addr,
-            transfer.send_buffer.total_size(),
-            stream_id as char,
-            recipient_pubkey.is_some(),
-        ));
+        crate::logf!("PT: Starting outbound transfer #{} to {} ({} bytes, stream '{}', relay={})", transfer_id, peer_addr, transfer.send_buffer.total_size(), stream_id as char, recipient_pubkey.is_some());
 
         // Push to vec - allows multiple concurrent transfers to same peer
         self.outbound.push(transfer);
@@ -212,14 +205,7 @@ impl PTManager {
 
     /// Handle received SPEC (start receiving)
     pub fn handle_spec(&mut self, peer_addr: SocketAddr, spec: PTSpec) -> Vec<u8> {
-        crate::log(&format!(
-            "PT: Received SPEC from {} - stream '{}', {} packets, {} bytes, hash {}",
-            peer_addr,
-            spec.stream_id as char,
-            spec.total_packets,
-            spec.total_size,
-            hex::encode(&spec.data_hash[..4])
-        ));
+        crate::logf!("PT: Received SPEC from {} - stream '{}', {} packets, {} bytes, hash {}", peer_addr, spec.stream_id as char, spec.total_packets, spec.total_size, hex::encode(&spec.data_hash[..4]));
 
         let stream_id = spec.stream_id;
 
@@ -254,10 +240,7 @@ impl PTManager {
             t.stream_id == stream_id && (same_addr(t.peer_addr, peer_addr) || t.alt_addr.map_or(false, |a| same_addr(a, peer_addr)))
         }) {
             if !same_addr(transfer.peer_addr, peer_addr) {
-                crate::log(&format!(
-                    "PT: SPEC ACK arrived on alternate path {} (was {}) for stream '{}' - locking onto it",
-                    peer_addr, transfer.peer_addr, stream_id as char
-                ));
+                crate::logf!("PT: SPEC ACK arrived on alternate path {} (was {}) for stream '{}' - locking onto it", peer_addr, transfer.peer_addr, stream_id as char);
                 transfer.peer_addr = peer_addr;
             }
             transfer.alt_addr = None;
@@ -265,22 +248,14 @@ impl PTManager {
             transfer.state = TransferState::Transferring;
             transfer.last_activity = Instant::now();
 
-            crate::log(&format!(
-                "PT: SPEC ACK received from {} for stream '{}', starting DATA transfer",
-                peer_addr, stream_id as char
-            ));
+            crate::logf!("PT: SPEC ACK received from {} for stream '{}', starting DATA transfer", peer_addr, stream_id as char);
 
             // Send initial window of DATA packets
             for data in transfer.packets_to_send() {
                 packets.push(data.to_bytes());
             }
         } else {
-            crate::log(&format!(
-                "PT: SPEC ACK from {} for unknown stream '{}' (hash {})",
-                peer_addr,
-                stream_id as char,
-                hex::encode(&data_hash[..4])
-            ));
+            crate::logf!("PT: SPEC ACK from {} for unknown stream '{}' (hash {})", peer_addr, stream_id as char, hex::encode(&data_hash[..4]));
         }
 
         packets
@@ -346,10 +321,7 @@ impl PTManager {
                 let (recv, total) = transfer.progress();
                 // Log at milestones: every 50 packets (but not 0) or completion
                 if recv == total || (recv > 0 && recv % 50 == 0) {
-                    crate::log(&format!(
-                        "PT: Received {}/{} from {} stream '{}'",
-                        recv, total, peer_addr, data.stream_id as char
-                    ));
+                    crate::logf!("PT: Received {}/{} from {} stream '{}'", recv, total, peer_addr, data.stream_id as char);
                 }
 
                 return Some(ack.to_vsf_bytes(&self.keypair));
@@ -387,15 +359,9 @@ impl PTManager {
             // Only log progress at milestones (every 100 packets or completion) Avoids spamming logs with per-ACK updates
             let (acked, total) = transfer.send_buffer.progress();
             if acked == total {
-                crate::log(&format!(
-                    "PT: All {}/{} ACK'd to {} stream '{}'",
-                    acked, total, peer_addr, ack.stream_id as char
-                ));
+                crate::logf!("PT: All {}/{} ACK'd to {} stream '{}'", acked, total, peer_addr, ack.stream_id as char);
             } else if acked > 0 && acked % 100 == 0 {
-                crate::log(&format!(
-                    "PT: Progress {}/{} to {} stream '{}'",
-                    acked, total, peer_addr, ack.stream_id as char
-                ));
+                crate::logf!("PT: Progress {}/{} to {} stream '{}'", acked, total, peer_addr, ack.stream_id as char);
             }
 
             // Send more packets (pipelining phase sends packets_per_ack new packets)
@@ -416,11 +382,7 @@ impl PTManager {
             .iter_mut()
             .find(|t| same_addr(t.peer_addr, peer_addr) && t.state == TransferState::Transferring)
         {
-            crate::log(&format!(
-                "PT: NAK received from {} - retransmitting {} packets",
-                peer_addr,
-                nak.missing_sequences.len()
-            ));
+            crate::logf!("PT: NAK received from {} - retransmitting {} packets", peer_addr, nak.missing_sequences.len());
 
             for data in transfer.handle_nak(&nak) {
                 packets.push(data.to_bytes());
@@ -434,16 +396,16 @@ impl PTManager {
     pub fn handle_control(&mut self, peer_addr: SocketAddr, control: PTControl) {
         match control.command {
             ControlCommand::Abort => {
-                crate::log(&format!("PT: Peer {} aborted transfer", peer_addr));
+                crate::logf!("PT: Peer {} aborted transfer", peer_addr);
                 self.outbound.retain(|t| !same_addr(t.peer_addr, peer_addr));
                 self.inbound.retain(|t| !same_addr(t.peer_addr, peer_addr));
             }
             ControlCommand::Pause => {
                 // Could pause sending, but for now just log
-                crate::log(&format!("PT: Peer {} requested pause", peer_addr));
+                crate::logf!("PT: Peer {} requested pause", peer_addr);
             }
             ControlCommand::Resume => {
-                crate::log(&format!("PT: Peer {} requested resume", peer_addr));
+                crate::logf!("PT: Peer {} requested resume", peer_addr);
             }
             ControlCommand::SlowDown => {
                 if let Some(transfer) = self
@@ -452,7 +414,7 @@ impl PTManager {
                     .find(|t| same_addr(t.peer_addr, peer_addr) && t.state == TransferState::Transferring)
                 {
                     transfer.window.on_loss(); // Treat SlowDown like loss - backs off send ratio
-                    crate::log(&format!("PT: Slowing down to {}", peer_addr));
+                    crate::logf!("PT: Slowing down to {}", peer_addr);
                 }
             }
         }
@@ -489,22 +451,9 @@ impl PTManager {
                     format!("{:.0} kbps", thruput_kbps)
                 };
 
-                crate::log(&format!(
-                    "PT: → {} OK | {} | {:.1}s | {}B pkt | win {} | RTT {}ms | {:.0}% util ({} retx)",
-                    peer_addr,
-                    thruput_str,
-                    duration_ms as f64 / 1000.0,
-                    packet_size,
-                    max_window,
-                    rtt_ms,
-                    utilization,
-                    retransmits,
-                ));
+                crate::logf!("PT: → {} OK | {} | {:.1}s | {}B pkt | win {} | RTT {}ms | {:.0}% util ({} retx)", peer_addr, thruput_str, duration_ms as f64 / 1000.0, packet_size, max_window, rtt_ms, utilization, retransmits);
             } else {
-                crate::log(&format!(
-                    "PT: → {} FAILED verification ({} packets, {} bytes)",
-                    peer_addr, packets, bytes
-                ));
+                crate::logf!("PT: → {} FAILED verification ({} packets, {} bytes)", peer_addr, packets, bytes);
             }
         }
     }
@@ -574,10 +523,7 @@ impl PTManager {
         self.outbound.retain(|t| t.peer_addr != *peer_addr);
         let removed = before - self.outbound.len();
         if removed > 0 {
-            crate::log(&format!(
-                "PT: Cleared {} outbound transfers to {} (forced)",
-                removed, peer_addr
-            ));
+            crate::logf!("PT: Cleared {} outbound transfers to {} (forced)", removed, peer_addr);
         }
     }
 
@@ -591,10 +537,7 @@ impl PTManager {
         // Check outbound transfers
         for transfer in &mut self.outbound {
             if transfer.is_stale(self.stale_timeout) {
-                crate::log(&format!(
-                    "PT: Outbound transfer to {} timed out",
-                    transfer.peer_addr
-                ));
+                crate::logf!("PT: Outbound transfer to {} timed out", transfer.peer_addr);
                 transfer.state = TransferState::Failed;
                 continue;
             }
@@ -606,10 +549,7 @@ impl PTManager {
                 let tcp_payload = if tcp_eligible && !transfer.tcp_sent {
                     transfer.set_spec_tcp_fallback();
                     transfer.tcp_sent = true;
-                    crate::log(&format!(
-                        "PT: SPEC for stream '{}' to {} - sending whole payload over TCP (fallback, once)",
-                        transfer.stream_id as char, transfer.peer_addr
-                    ));
+                    crate::logf!("PT: SPEC for stream '{}' to {} - sending whole payload over TCP (fallback, once)", transfer.stream_id as char, transfer.peer_addr);
                     transfer.original_payload.clone()
                 } else {
                     None
@@ -629,31 +569,19 @@ impl PTManager {
                         transfer.original_payload.as_ref(),
                     ) {
                         (Some(pubkey), Some(payload)) => {
-                            crate::log(&format!(
-                                "PT: SPEC stream '{}' to {} - falling back to relay",
-                                transfer.stream_id as char, transfer.peer_addr
-                            ));
+                            crate::logf!("PT: SPEC stream '{}' to {} - falling back to relay", transfer.stream_id as char, transfer.peer_addr);
                             Some(RelayInfo {
                                 recipient_pubkey: pubkey,
                                 payload: payload.clone(),
                             })
                         }
                         _ => {
-                            crate::log(&format!(
-                                "PT: SPEC stream '{}' to {} - relay needed but no pubkey/payload",
-                                transfer.stream_id as char, transfer.peer_addr
-                            ));
+                            crate::logf!("PT: SPEC stream '{}' to {} - relay needed but no pubkey/payload", transfer.stream_id as char, transfer.peer_addr);
                             None
                         }
                     }
                 } else {
-                    crate::log(&format!(
-                        "PT: Retrying SPEC stream '{}' to {} (attempt {}, tcp={})",
-                        transfer.stream_id as char,
-                        transfer.peer_addr,
-                        transfer.spec_retry_count,
-                        transfer.spec_tcp_fallback
-                    ));
+                    crate::logf!("PT: Retrying SPEC stream '{}' to {} (attempt {}, tcp={})", transfer.stream_id as char, transfer.peer_addr, transfer.spec_retry_count, transfer.spec_tcp_fallback);
                     None
                 };
 
@@ -692,10 +620,7 @@ impl PTManager {
         let mut advanced_peers: Vec<SocketAddr> = Vec::new();
         self.outbound_packets.retain(|pkt| {
             if pkt.in_flight && pkt.retry_count >= Self::MAX_PACKET_RETRIES {
-                crate::log(&format!(
-                    "PT: giving up on undeliverable packet to {} after {} retries — advancing the queue",
-                    pkt.peer_addr, pkt.retry_count
-                ));
+                crate::logf!("PT: giving up on undeliverable packet to {} after {} retries — advancing the queue", pkt.peer_addr, pkt.retry_count);
                 advanced_peers.push(pkt.peer_addr);
                 false
             } else {
@@ -729,12 +654,7 @@ impl PTManager {
         for pkt in self.outbound_packets.iter_mut() {
             if pkt.in_flight && pkt.needs_retransmit() {
                 pkt.mark_retransmit();
-                crate::log(&format!(
-                    "PT: Retransmitting packet to {} (attempt {}, next backoff {}s)",
-                    pkt.peer_addr,
-                    pkt.retry_count,
-                    pkt.next_delay.as_secs()
-                ));
+                crate::logf!("PT: Retransmitting packet to {} (attempt {}, next backoff {}s)", pkt.peer_addr, pkt.retry_count, pkt.next_delay.as_secs());
                 to_send.push(TickSend {
                     peer_addr: pkt.peer_addr,
                     wire_bytes: pkt.payload.clone(),
@@ -755,10 +675,7 @@ impl PTManager {
         // Check inbound timeouts
         for transfer in &mut self.inbound {
             if transfer.is_stale(self.stale_timeout) {
-                crate::log(&format!(
-                    "PT: Inbound transfer from {} timed out",
-                    transfer.peer_addr
-                ));
+                crate::logf!("PT: Inbound transfer from {} timed out", transfer.peer_addr);
                 transfer.state = TransferState::Failed;
             }
         }

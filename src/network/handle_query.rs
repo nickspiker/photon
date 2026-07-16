@@ -108,22 +108,22 @@ fn bind_photon_socket() -> (UdpSocket, u16) {
             Ok(udp) => {
                 // Enable broadcast receive (needed for LAN discovery)
                 if let Err(e) = udp.set_broadcast(true) {
-                    crate::log(&format!("Network: Failed to enable broadcast: {}", e));
+                    crate::logf!("Network: Failed to enable broadcast: {}", e);
                 }
                 // Check TCP is also free
                 match std::net::TcpListener::bind(format!("[::]:{}", port)) {
                     Ok(_tcp) => {
                         // Both free! TCP listener dropped, status.rs will create its own
-                        crate::log(&format!("Network: Bound to port {} (UDP+TCP)", port));
+                        crate::logf!("Network: Bound to port {} (UDP+TCP)", port);
                         return (udp, port);
                     }
                     Err(e) => {
-                        crate::log(&format!("Network: Port {} TCP busy: {}", port, e));
+                        crate::logf!("Network: Port {} TCP busy: {}", port, e);
                     }
                 }
             }
             Err(e) => {
-                crate::log(&format!("Network: Port {} UDP busy: {}", port, e));
+                crate::logf!("Network: Port {} UDP busy: {}", port, e);
             }
         }
     }
@@ -174,10 +174,7 @@ impl HandleQuery {
 
         // Bind UDP socket - tries 4383 → 3546 → ephemeral
         let (initial_socket, initial_port) = bind_photon_socket();
-        crate::log(&format!(
-            "Network: Using port {} for all traffic",
-            initial_port
-        ));
+        crate::logf!("Network: Using port {} for all traffic", initial_port);
         let socket = Arc::new(Mutex::new(Arc::new(initial_socket)));
         let port = Arc::new(Mutex::new(initial_port));
 
@@ -249,10 +246,7 @@ impl HandleQuery {
 
         // Bind UDP socket - tries 4383 → 3546 → ephemeral
         let (initial_socket, initial_port) = bind_photon_socket();
-        crate::log(&format!(
-            "Network: Using port {} for all traffic",
-            initial_port
-        ));
+        crate::logf!("Network: Using port {} for all traffic", initial_port);
         let socket = Arc::new(Mutex::new(Arc::new(initial_socket)));
         let port = Arc::new(Mutex::new(initial_port));
 
@@ -367,10 +361,7 @@ impl HandleQuery {
                 let online = check_connectivity(&client);
 
                 if first_check || online != prev_online {
-                    crate::log(&format!(
-                        "Connectivity: FGTW {} (GET /status)",
-                        if online { "ONLINE" } else { "offline" }
-                    ));
+                    crate::logf!("Connectivity: FGTW {} (GET /status)", if online { "ONLINE" } else { "offline" });
                     let _ = online_tx.send(online);
                     if let Some(ref proxy) = event_proxy {
                         let _ = proxy.send(PhotonEvent::ConnectivityChanged(online));
@@ -398,7 +389,7 @@ impl HandleQuery {
             {
                 Ok(c) => Some(c),
                 Err(e) => {
-                    crate::log(&format!("Network: Failed to create HTTP client: {}", e));
+                    crate::logf!("Network: Failed to create HTTP client: {}", e);
                     None
                 }
             };
@@ -412,17 +403,13 @@ impl HandleQuery {
                         Ok(r) => {
                             let success = r.status().is_success();
                             if first_check {
-                                crate::log(&format!(
-                                    "Network: FGTW status check: {} ({})",
-                                    r.status(),
-                                    if success { "online" } else { "offline" }
-                                ));
+                                crate::logf!("Network: FGTW status check: {} ({})", r.status(), if success { "online" } else { "offline" });
                             }
                             success
                         }
                         Err(e) => {
                             if first_check || prev_online {
-                                crate::log(&format!("Network: FGTW status check failed: {}", e));
+                                crate::logf!("Network: FGTW status check failed: {}", e);
                             }
                             false
                         }
@@ -486,9 +473,7 @@ impl HandleQuery {
                                     ProbeOutcome::Fresh
                                 }
                                 Err(fold_err) => {
-                                    crate::log(&format!(
-                                        "Network: probe fold failed (indeterminate, not taken): {fold_err:?}"
-                                    ));
+                                    crate::logf!("Network: probe fold failed (indeterminate, not taken): {}", format!("{:?}", fold_err));
                                     let _ = tx.send(QueryResult::Error(format!(
                                         "chain unverifiable: {fold_err:?}"
                                     )));
@@ -498,13 +483,13 @@ impl HandleQuery {
                         }
                         Err(e) => {
                             // Network unreachable — can't classify. Surface as an error; claiming needs the network anyway.
-                            crate::log(&format!("Network: probe fetch failed: {e}"));
+                            crate::logf!("Network: probe fetch failed: {}", e);
                             // `e` is already a short, plain message from the fleet client (e.g. "No connection to FGTW"). Surface it verbatim — no "can't reach the network to check:" prefix stacking web-stack context the user can't use.
                             let _ = tx.send(QueryResult::Error(e));
                             continue;
                         }
                     };
-                    crate::log(&format!("Network: probe → {outcome:?}"));
+                    crate::logf!("Network: probe → {}", format!("{:?}", outcome));
                     let _ = tx.send(QueryResult::Probe { outcome, session });
                     continue;
                 }
@@ -567,15 +552,12 @@ impl HandleQuery {
                     for peer in &other_peers {
                         store.add_peer(peer.clone());
                     }
-                    crate::log(&format!(
-                        "Network: Added {} peer(s) to store",
-                        other_peers.len()
-                    ));
+                    crate::logf!("Network: Added {} peer(s) to store", other_peers.len());
                 }
 
                 // Check result
                 let query_result = if let Some(error) = result.error {
-                    crate::log(&format!("Network: ERROR - {}", error));
+                    crate::logf!("Network: ERROR - {}", error);
                     QueryResult::Error(error)
                 } else {
                     // Reaching here means the announce did NOT error, and the announce is membership-gated: `ensure_member` already proved this device folds into the fleet chain (bootstrap.rs load_bootstrap_peers_inner). Announce success ⇒ ours.
@@ -603,9 +585,7 @@ impl HandleQuery {
                             Err(fold_err) => {
                                 // Dev-log the raw body so a Cloudflare KV read-lag serving a pre-wipe chain is visible (gated to the development feature).
                                 #[cfg(feature = "development")]
-                                crate::log(&format!(
-                                    "Network: attest verdict fold failed (indeterminate): {fold_err:?}"
-                                ));
+                                crate::logf!("Network: attest verdict fold failed (indeterminate): {}", format!("{:?}", fold_err));
                                 Err(format!("chain unverifiable: {fold_err:?}"))
                             }
                         },
@@ -616,9 +596,7 @@ impl HandleQuery {
                         Ok(ours) => ours,
                         Err(e) => {
                             // Indeterminate — never taken, never clear the session; retry next cycle.
-                            crate::log(&format!(
-                                "Network: attest verdict indeterminate (keeping session): {e}"
-                            ));
+                            crate::logf!("Network: attest verdict indeterminate (keeping session): {}", e);
                             let _ = tx.send(QueryResult::Error(e));
                             continue;
                         }
@@ -637,9 +615,7 @@ impl HandleQuery {
                                 vault_seed,
                                 handle_proof,
                             }) {
-                                crate::log(&format!(
-                                    "Network: session persist FAILED (resume will not survive restart): {e}"
-                                ));
+                                crate::logf!("Network: session persist FAILED (resume will not survive restart): {}", e);
                             }
                         }
 
@@ -651,12 +627,7 @@ impl HandleQuery {
                         {
                             use num_bigint::BigUint;
                             let handle_seed = vault_seed;
-                            crate::log(&format!(
-                                "Development: identity_seed = {}  handle_seed = {}  device_secret = {}",
-                                voca::encode(BigUint::from_bytes_be(&identity_seed)),
-                                voca::encode(BigUint::from_bytes_be(&handle_seed)),
-                                voca::encode(BigUint::from_bytes_be(&device_secret_bytes)),
-                            ));
+                            crate::logf!("Development: identity_seed = {}  handle_seed = {}  device_secret = {}", voca::encode(BigUint::from_bytes_be(&identity_seed)), voca::encode(BigUint::from_bytes_be(&handle_seed)), voca::encode(BigUint::from_bytes_be(&device_secret_bytes)));
                         }
 
                         // Initialize FlatStorage for this session. A bare `return` here would silently strand the UI on the Attesting spinner because the result channel never gets a verdict — the worker has already proven FGTW says the handle is ours, but with no local vault we can't reach Ready. Surface the failure as a QueryResult::Error so the Launch screen flips to its error state and the user sees what happened.
@@ -669,7 +640,7 @@ impl HandleQuery {
                             Ok(s) => s,
                             Err(e) => {
                                 let msg = format!("storage init failed: {}", e);
-                                crate::log(&format!("Network: {}", msg));
+                                crate::logf!("Network: {}", msg);
                                 let _ = tx.send(QueryResult::Error(msg));
                                 return;
                             }
@@ -685,11 +656,7 @@ impl HandleQuery {
                             if let Err(e) =
                                 crate::storage::contacts::load_messages(contact, &storage)
                             {
-                                crate::log(&format!(
-                                    "Network: Failed to load messages for {}: {}",
-                                    crate::fp(&contact.handle_proof).as_str(),
-                                    e
-                                ));
+                                crate::logf!("Network: Failed to load messages for {}: {}", crate::fp(&contact.handle_proof).as_str(), e);
                             }
 
                             // Load CLUTCH state if ceremony incomplete
@@ -727,7 +694,7 @@ impl HandleQuery {
                                 }
                             }
                         }
-                        crate::log(&format!("Network: Loaded {} contacts", contacts.len()));
+                        crate::logf!("Network: Loaded {} contacts", contacts.len());
 
                         // Load friendship chains from disk (by friendship_id stored in each contact)
                         crate::log("Network: Loading friendship chains...");
@@ -737,10 +704,7 @@ impl HandleQuery {
                             &friendship_ids,
                             &storage,
                         );
-                        crate::log(&format!(
-                            "Network: Loaded {} friendships",
-                            friendships.len()
-                        ));
+                        crate::logf!("Network: Loaded {} friendships", friendships.len());
 
                         // Load local avatar
                         let avatar_pixels =
@@ -816,11 +780,7 @@ impl HandleQuery {
                                     .first()
                                     .map(|op| hex::encode(op.identity_pubkey))
                                     .unwrap_or_else(|| "<no ops>".to_string());
-                                crate::log(&format!(
-                                    "Development: attest-taken chain = {} op(s), genesis identity_pubkey = {}",
-                                    blob.ops.len(),
-                                    genesis_ident
-                                ));
+                                crate::logf!("Development: attest-taken chain = {} op(s), genesis identity_pubkey = {}", blob.ops.len(), genesis_ident);
                             }
                         }
                         // The `AlreadyAttested` payload is a peer record for the consumer's display.
@@ -919,10 +879,7 @@ impl HandleQuery {
             None => return SearchResult::NotFound,
         };
 
-        crate::log(&format!(
-            "Network: '{}' not in local store — refreshing peer list from FGTW",
-            handle
-        ));
+        crate::logf!("Network: '{}' not in local store — refreshing peer list from FGTW", handle);
         let refresh = crate::network::http::runtime().block_on(
             crate::network::fgtw::bootstrap::load_bootstrap_peers(
                 keypair,

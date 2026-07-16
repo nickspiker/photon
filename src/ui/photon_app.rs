@@ -1128,14 +1128,11 @@ impl PhotonApp {
                 return;
             }
         };
-        crate::log(&format!(
-            "avatar picker: processing {} bytes",
-            image_bytes.len()
-        ));
+        crate::logf!("avatar picker: processing {} bytes", image_bytes.len());
         let av1_data = match crate::ui::avatar::encode_avatar_from_image(&image_bytes) {
             Ok(d) => d,
             Err(e) => {
-                crate::log(&format!("avatar picker: encode failed: {e}"));
+                crate::logf!("avatar picker: encode failed: {}", e);
                 return;
             }
         };
@@ -1149,7 +1146,7 @@ impl PhotonApp {
         if let Err(e) =
             crate::ui::avatar::save_avatar_from_seed(&av1_data, &identity_seed, &storage)
         {
-            crate::log(&format!("avatar picker: save failed: {e}"));
+            crate::logf!("avatar picker: save failed: {}", e);
             return;
         }
         let Some((_, vsf_rgb)) = crate::ui::avatar::load_avatar_from_seed(&identity_seed, &storage)
@@ -1174,7 +1171,7 @@ impl PhotonApp {
                     &storage,
                 ) {
                     Ok(_) => crate::log("avatar picker: FGTW upload ok"),
-                    Err(e) => crate::log(&format!("avatar picker: FGTW upload failed: {e}")),
+                    Err(e) => crate::logf!("avatar picker: FGTW upload failed: {}", e),
                 }
             }
             _ => crate::log("avatar picker: skipping FGTW upload — keypair / proof unavailable"),
@@ -1495,9 +1492,7 @@ impl FluorApp for PhotonApp {
         )) {
             Ok(icon) => Some(icon),
             Err(e) => {
-                crate::log(&format!(
-                    "ORB: bundled photon-orb.vsf failed to decode ({e:?}) — orb falls back to a plain disk; the asset is likely stale against the current vsf format"
-                ));
+                crate::logf!("ORB: bundled photon-orb.vsf failed to decode ({}) — orb falls back to a plain disk; the asset is likely stale against the current vsf format", format!("{:?}", e));
                 None
             }
         };
@@ -1725,7 +1720,7 @@ impl FluorApp for PhotonApp {
                 self.status_checker = Some(c);
                 crate::log("UI: status checker started (presence + CLUTCH)");
             }
-            Err(e) => crate::log(&format!("UI: status checker failed to start: {e}")),
+            Err(e) => crate::logf!("UI: status checker failed to start: {}", e),
         }
 
         self.handle_query = Some(hq);
@@ -1752,27 +1747,17 @@ impl FluorApp for PhotonApp {
                                 &s,
                             );
                             if !siblings.is_empty() {
-                                crate::log(&format!(
-                                    "SIBLING: loaded {} sibling(s) from local vault on resume",
-                                    siblings.len()
-                                ));
+                                crate::logf!("SIBLING: loaded {} sibling(s) from local vault on resume", siblings.len());
                             }
                             self.contacts.extend(siblings);
                         }
                         // Load each contact's conversation history too — load_all_contacts only loads per-peer contact STATE from the vault, not the messages (those live in the rārangi DB, loaded separately). Without this the resume frame paints contacts with empty message lists, and the later query_resume result can't fix it: on_query_result merges by handle_proof and SKIPS already-loaded contacts as duplicates, so the message-bearing copy is discarded → history looks wiped until the next app launch. Loading here makes resume show full history at once.
                         for contact in &mut self.contacts {
                             if let Err(e) = crate::storage::contacts::load_messages(contact, &s) {
-                                crate::log(&format!(
-                                    "UI: resume failed to load messages for {}: {}",
-                                    crate::fp(&contact.handle_proof).as_str(),
-                                    e
-                                ));
+                                crate::logf!("UI: resume failed to load messages for {}: {}", crate::fp(&contact.handle_proof).as_str(), e);
                             }
                         }
-                        crate::log(&format!(
-                            "UI: loaded {} contact(s) from local vault on resume",
-                            self.contacts.len()
-                        ));
+                        crate::logf!("UI: loaded {} contact(s) from local vault on resume", self.contacts.len());
                         // Load friendship chains NOW too, not just contacts. Resume paints Ready and the status checker starts answering immediately, but chains used to arrive only later via query_resume — so any chat that landed in that window hit "No friendship found for conversation_token" and was DROPPED (no chain = no decrypt, no buffer). Loading chains here closes that gap so a peer messaging us the instant we come back online doesn't lose messages. query_resume still merges (and won't clobber these — it only adds ids we don't already hold).
                         let friendship_ids: Vec<crate::types::FriendshipId> =
                             self.contacts.iter().filter_map(|c| c.friendship_id).collect();
@@ -1808,10 +1793,7 @@ impl FluorApp for PhotonApp {
                                         contact.clutch_our_keypairs = Some(keypairs);
                                     }
                                     Ok(None) => {}
-                                    Err(e) => crate::log(&format!(
-                                        "CLUTCH: failed to rehydrate keypairs for {}: {}",
-                                        crate::fp(&contact.handle_proof), e
-                                    )),
+                                    Err(e) => crate::logf!("CLUTCH: failed to rehydrate keypairs for {}: {}", crate::fp(&contact.handle_proof), e),
                                 }
                             }
                         }
@@ -1836,7 +1818,7 @@ impl FluorApp for PhotonApp {
                         self.spawn_next_pending_keygen();
                     }
                     Err(e) => {
-                        crate::log(&format!("STORAGE: init failed on resume: {}", e));
+                        crate::logf!("STORAGE: init failed on resume: {}", e);
                         // A hard vault-open failure (e.g. seal verification failed) is the WORST storage state — no contacts load and nothing persists — yet it previously showed no warning, while a mere recoverable mirror-divergence (`degraded()`) did. Flag it so the red "storage degraded" banner surfaces a fully-broken vault too.
                         self.vault_degraded = true;
                     }
@@ -2040,7 +2022,7 @@ impl FluorApp for PhotonApp {
                                         self.clean_device_for_reuse();
                                     }
                                     Err(e) => {
-                                        crate::log(&format!("SECURITY: fleet departure failed ({e}) — NOT wiping"));
+                                        crate::logf!("SECURITY: fleet departure failed ({}) — NOT wiping", e);
                                         self.ready_toast = Some("Couldn't sign out of the fleet — nothing wiped. Check connection and retry.".to_string());
                                     }
                                 }
@@ -2125,10 +2107,7 @@ impl FluorApp for PhotonApp {
                         self.about_version_spelled = !self.about_version_spelled;
                     }
                 } else {
-                    crate::log(&format!(
-                        "settings-stub: pill {slot} on {:?} (no behaviour wired)",
-                        page
-                    ));
+                    crate::logf!("settings-stub: pill {} on {} (no behaviour wired)", slot, format!("{:?}", page));
                 }
                 ctx.window.request_redraw();
                 return EventResponse::Handled;
@@ -2150,10 +2129,7 @@ impl FluorApp for PhotonApp {
         {
             let ci = (hit_id - self.contact_hit_base) as usize;
             if ci < self.contacts.len() {
-                crate::log(&format!(
-                    "contact-tap: opening conversation with '{}'",
-                    self.contacts[ci].display_name()
-                ));
+                crate::logf!("contact-tap: opening conversation with '{}'", self.contacts[ci].display_name());
                 self.active_contact = Some(ci);
                 self.state = AppState::Conversation;
                 self.change_focus(None);
@@ -2739,7 +2715,7 @@ impl FluorApp for PhotonApp {
                             }
                             ctx.window.request_redraw();
                         }
-                        Err(e) => crate::log(&format!("avatar drop: read failed: {e}")),
+                        Err(e) => crate::logf!("avatar drop: read failed: {}", e),
                     }
                 }
                 EventResponse::Handled
@@ -2896,13 +2872,13 @@ impl FluorApp for PhotonApp {
                     .args(std::env::args().skip(1))
                     .exec();
                 // exec only returns on failure.
-                crate::log(&format!("UPDATE: re-exec failed: {err} — keep running the old image"));
+                crate::logf!("UPDATE: re-exec failed: {} — keep running the old image", err);
             }
             #[cfg(windows)]
             {
                 match std::process::Command::new(&exe).args(std::env::args().skip(1)).spawn() {
                     Ok(_) => std::process::exit(0),
-                    Err(e) => crate::log(&format!("UPDATE: relaunch failed: {e} — keep running the old image")),
+                    Err(e) => crate::logf!("UPDATE: relaunch failed: {} — keep running the old image", e),
                 }
             }
             #[cfg(not(any(unix, windows)))]
@@ -4937,7 +4913,7 @@ impl PhotonApp {
                 let __r = $body;
                 let __ms = __t.elapsed().as_millis();
                 if __ms > 50 {
-                    crate::log(&format!("PERF: {} took {}ms (UI thread)", $label, __ms));
+                    crate::logf!("PERF: {} took {}ms (UI thread)", $label, __ms);
                 }
                 __r
             }};
@@ -5081,7 +5057,7 @@ impl PhotonApp {
                 }
                 Err(e) => {
                     self.ready_toast = Some(format!("Send failed: {e}"));
-                    crate::log(&format!("DIAG: log submit failed: {e}"));
+                    crate::logf!("DIAG: log submit failed: {}", e);
                 }
             }
             needs_redraw = true;
@@ -5094,7 +5070,7 @@ impl PhotonApp {
             .map(|cb| (cb.take_toggle(), cb.is_checked()));
         if let Some((true, checked)) = autoupdate_toggle {
             if self.settings_set("updates.auto", vec![checked as u8]) {
-                crate::log(&format!("SETTINGS: updates.auto = {checked} (linked write)"));
+                crate::logf!("SETTINGS: updates.auto = {} (linked write)", checked);
             }
             needs_redraw = true;
         }
@@ -5219,7 +5195,7 @@ impl PhotonApp {
                 };
                 // Monotonic freshness gate FIRST, before any mutation: never adopt a fold whose tip is older than the last one we adopted (an R2 eventual-consistency read serving a stale pre-removal set must not overwrite a fresh post-removal one). A first fold (fleet_members_ts == 0) always passes since real eagle times are positive.
                 if c.fleet_folded_once && tip_ts < c.fleet_members_ts {
-                    crate::log(&format!("FLEET: ignoring stale fold for {} (tip {} < adopted {})", crate::fp(&hp), tip_ts, c.fleet_members_ts));
+                    crate::logf!("FLEET: ignoring stale fold for {} (tip {} < adopted {})", crate::fp(&hp), tip_ts, c.fleet_members_ts);
                     continue;
                 }
                 let shrank = c.fleet_folded_once && c.fleet_members.iter().any(|m| !members.contains(m));
@@ -5232,7 +5208,7 @@ impl PhotonApp {
                     changed = changed || set_changed || arming;
                     to_persist.push(idx);
                     if shrank {
-                        crate::log(&format!("FLEET: device revoked from {}'s fleet — dropping it from the answerable set", crate::fp(&hp)));
+                        crate::logf!("FLEET: device revoked from {}'s fleet — dropping it from the answerable set", crate::fp(&hp));
                     }
                 }
             }
@@ -5247,7 +5223,7 @@ impl PhotonApp {
                     to_persist.dedup();
                     for idx in to_persist {
                         if let Err(e) = crate::storage::contacts::save_contact(&self.contacts[idx], &storage) {
-                            crate::log(&format!("FLEET: persist folded set failed: {e}"));
+                            crate::logf!("FLEET: persist folded set failed: {}", e);
                         }
                     }
                 }
@@ -5268,7 +5244,7 @@ impl PhotonApp {
                     if changed {
                         if let (Some(fs), Some(storage)) = (self.fleet_settings.as_ref(), self.storage.as_ref()) {
                             if let Err(e) = crate::storage::fleet_settings::save_fleet_settings(fs, storage) {
-                                crate::log(&format!("SETTINGS: persist after merge failed: {e}"));
+                                crate::logf!("SETTINGS: persist after merge failed: {}", e);
                             }
                         }
                         self.apply_settings_to_ui();
@@ -5287,10 +5263,7 @@ impl PhotonApp {
                 if self.roster_pull_retries_left > 0 {
                     self.roster_pull_retries_left -= 1;
                     self.needs_initial_roster_pull = true;
-                    crate::log(&format!(
-                        "FLEET: roster pull failed — retrying once the current fleet key lands ({} attempt(s) left)",
-                        self.roster_pull_retries_left
-                    ));
+                    crate::logf!("FLEET: roster pull failed — retrying once the current fleet key lands ({} attempt(s) left)", self.roster_pull_retries_left);
                 } else {
                     crate::log("FLEET: roster pull retries exhausted — will re-try on the next fleet event or relaunch");
                 }
@@ -5517,7 +5490,7 @@ impl PhotonApp {
                 if let Some(storage) = self.storage.as_ref() {
                     if let Some(c) = self.contacts.last() {
                         if let Err(e) = crate::storage::contacts::save_contact(c, storage) {
-                            crate::log(&format!("Failed to save contact: {}", e));
+                            crate::logf!("Failed to save contact: {}", e);
                         }
                     }
                 }
@@ -5738,7 +5711,7 @@ impl PhotonApp {
                     Ok(reqs) => {
                         let _ = tx.send(AddDeviceUpdate::Candidates(reqs));
                     }
-                    Err(e) => crate::log(&format!("FLEET: bindreq list failed: {e}")),
+                    Err(e) => crate::logf!("FLEET: bindreq list failed: {}", e),
                 }
                 match wake_rx.recv_timeout(crate::jitter_dur(std::time::Duration::from_secs(8))) {
                     Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
@@ -5938,10 +5911,7 @@ impl PhotonApp {
                             return; // app dropped the receiver
                         }
                     }
-                    Err(e) => crate::log(&format!(
-                        "FLEET: contact fleet refresh failed for {}: {e}",
-                        crate::fp(&hp)
-                    )),
+                    Err(e) => crate::logf!("FLEET: contact fleet refresh failed for {}: {}", crate::fp(&hp), e),
                 }
             }
             if let Some(w) = wake.as_ref() {
@@ -5977,13 +5947,10 @@ impl PhotonApp {
                 our_hp,
                 crate::types::DevicePubkey::from_bytes(*device),
             );
-            crate::log(&format!(
-                "SIBLING: reconciled +1 (device {}) — fleet weave pending",
-                hex::encode(&device[..4])
-            ));
+            crate::logf!("SIBLING: reconciled +1 (device {}) — fleet weave pending", hex::encode(&device[..4]));
             if let Some(storage) = self.storage.as_ref() {
                 if let Err(e) = crate::storage::contacts::save_contact(&sib, storage) {
-                    crate::log(&format!("SIBLING: failed to persist sibling: {}", e));
+                    crate::logf!("SIBLING: failed to persist sibling: {}", e);
                 }
             }
             self.contacts.push(sib);
@@ -6001,23 +5968,20 @@ impl PhotonApp {
             }
         });
         for c in &removed {
-            crate::log(&format!(
-                "SIBLING: reconciled -1 (device {} left the fold)",
-                hex::encode(&c.public_identity.key[..4])
-            ));
+            crate::logf!("SIBLING: reconciled -1 (device {} left the fold)", hex::encode(&c.public_identity.key[..4]));
             changed = true;
             if let Some(storage) = self.storage.as_ref() {
                 if let Err(e) =
                     crate::storage::contacts::delete_sibling(&c.public_identity.key, storage)
                 {
-                    crate::log(&format!("SIBLING: failed to delete sibling state: {}", e));
+                    crate::logf!("SIBLING: failed to delete sibling state: {}", e);
                 }
                 if let Some(fid) = c.friendship_id {
                     self.friendship_chains.retain(|(id, _)| *id != fid);
                     if let Err(e) =
                         crate::storage::friendship::delete_friendship_chains(&fid, storage)
                     {
-                        crate::log(&format!("SIBLING: failed to delete sibling chains: {}", e));
+                        crate::logf!("SIBLING: failed to delete sibling chains: {}", e);
                     }
                 }
             }
@@ -6049,13 +6013,13 @@ impl PhotonApp {
             move || match fleet::recover_or_establish_fleet_key(&hp, &device_key) {
                 Ok(Some(k)) => {
                     if let Err(e) = storage.write_addr(&addr, &k) {
-                        crate::log(&format!("FLEET: fleet key cache failed: {e}"));
+                        crate::logf!("FLEET: fleet key cache failed: {}", e);
                     } else {
                         crate::log("FLEET: fleet key synced from fan-out");
                     }
                 }
                 Ok(None) => {}
-                Err(e) => crate::log(&format!("FLEET: fleet key sync failed: {e}")),
+                Err(e) => crate::logf!("FLEET: fleet key sync failed: {}", e),
             },
         );
     }
@@ -6076,22 +6040,19 @@ impl PhotonApp {
         std::thread::spawn(move || match fleet::recover_or_establish_fleet_key(&hp, &kp) {
             Ok(Some(k)) => {
                 if let Err(e) = storage.write_addr(&addr, &k) {
-                    crate::log(&format!("FLEET: fleet key cache failed: {e}"));
+                    crate::logf!("FLEET: fleet key cache failed: {}", e);
                 }
                 crate::log("FLEET: fleet key synced from fan-out (post-bind)");
                 if entries.is_empty() {
                     return; // no contacts to share, but the key is now current for the roster PULL
                 }
                 match fleet::push_roster(&hp, &kp, &k, &entries) {
-                    Ok(()) => crate::log(&format!(
-                        "FLEET: roster re-pushed under rotated epoch ({} entr(ies))",
-                        entries.len()
-                    )),
-                    Err(e) => crate::log(&format!("FLEET: roster re-push failed: {e}")),
+                    Ok(()) => crate::logf!("FLEET: roster re-pushed under rotated epoch ({} entr(ies))", entries.len()),
+                    Err(e) => crate::logf!("FLEET: roster re-push failed: {}", e),
                 }
             }
             Ok(None) => {}
-            Err(e) => crate::log(&format!("FLEET: post-bind key sync failed: {e}")),
+            Err(e) => crate::logf!("FLEET: post-bind key sync failed: {}", e),
         });
     }
 
@@ -6100,7 +6061,7 @@ impl PhotonApp {
         if let (Some(storage), Some(session)) = (self.storage.as_ref(), self.session.as_ref()) {
             let addr = crate::storage::vault_key("fleet_key", &session.vault_seed);
             if let Err(e) = storage.write_addr(&addr, key) {
-                crate::log(&format!("FLEET: fleet key store failed: {e}"));
+                crate::logf!("FLEET: fleet key store failed: {}", e);
             }
         }
     }
@@ -6148,10 +6109,7 @@ impl PhotonApp {
         if added == 0 {
             return;
         }
-        crate::log(&format!(
-            "FLEET: merged {added} contact(s) from fleet roster (total: {})",
-            self.contacts.len()
-        ));
+        crate::logf!("FLEET: merged {} contact(s) from fleet roster (total: {})", added, self.contacts.len());
         self.reseed_contact_pubkeys();
         // Re-fold every contact's fleet after a roster merge (newly-merged contacts have no members yet).
         let mut hps: Vec<[u8; 32]> = self
@@ -6169,7 +6127,7 @@ impl PhotonApp {
         if let Some(storage) = self.storage.as_ref().cloned() {
             for c in &self.contacts[start..] {
                 if let Err(e) = crate::storage::contacts::save_contact(c, &storage) {
-                    crate::log(&format!("FLEET: save merged contact failed: {e}"));
+                    crate::logf!("FLEET: save merged contact failed: {}", e);
                 }
             }
         }
@@ -6193,12 +6151,7 @@ impl PhotonApp {
         std::thread::spawn(move || {
             let result = match fleet::pull_fstate(&hp, &fleet_key) {
                 Ok(Some(s)) => {
-                    crate::log(&format!(
-                        "FLEET: state pulled — {} roster entr(ies), {} global setting(s), {} device map(s)",
-                        s.roster.len(),
-                        s.global_settings.len(),
-                        s.device_settings.len()
-                    ));
+                    crate::logf!("FLEET: state pulled — {} roster entr(ies), {} global setting(s), {} device map(s)", s.roster.len(), s.global_settings.len(), s.device_settings.len());
                     Ok(s)
                 }
                 Ok(None) => {
@@ -6206,7 +6159,7 @@ impl PhotonApp {
                     Ok(fgtw::fstate::FleetState::default())
                 }
                 Err(e) => {
-                    crate::log(&format!("FLEET: state pull failed: {e}"));
+                    crate::logf!("FLEET: state pull failed: {}", e);
                     Err(e)
                 }
             };
@@ -6237,7 +6190,7 @@ impl PhotonApp {
         self.update_rx = Some(rx);
         self.update_busy = true;
         self.update_status = Some(format!("Checking {}\u{2026}", channel.label()));
-        crate::log(&format!("UPDATE: checking {} manifest (apply={apply})", channel.label()));
+        crate::logf!("UPDATE: checking {} manifest (apply={})", channel.label(), apply);
         std::thread::spawn(move || {
             use crate::network::updates::{fetch_manifest_blocking, our_row};
             let result = fetch_manifest_blocking(channel).map(|rows| our_row(&rows));
@@ -6316,7 +6269,7 @@ impl PhotonApp {
             }
             // Every outcome is diagnosable from a snapped log, not just the on-screen status line (the 2026-07-16 check failure left no trace).
             if let Some(status) = &self.update_status {
-                crate::log(&format!("UPDATE: {}", crate::deglyph_for_log(status)));
+                crate::logf!("UPDATE: {}", crate::deglyph_for_log(status));
             }
         }
         changed
@@ -6619,7 +6572,7 @@ impl PhotonApp {
     fn persist_and_push_settings(&mut self) {
         if let (Some(fs), Some(storage)) = (self.fleet_settings.as_ref(), self.storage.as_ref()) {
             if let Err(e) = crate::storage::fleet_settings::save_fleet_settings(fs, storage) {
-                crate::log(&format!("SETTINGS: persist failed: {e}"));
+                crate::logf!("SETTINGS: persist failed: {}", e);
             }
         }
         self.spawn_settings_push();
@@ -6652,7 +6605,7 @@ impl PhotonApp {
             let merged = fgtw::fstate::merge_fstate(slot, ours);
             match fleet::push_fstate(&hp, &kp, &fleet_key, &merged) {
                 Ok(()) => crate::log("SETTINGS: pushed to the fleet slot"),
-                Err(e) => crate::log(&format!("SETTINGS: push failed: {e}")),
+                Err(e) => crate::logf!("SETTINGS: push failed: {}", e),
             }
         });
     }
@@ -6673,7 +6626,7 @@ impl PhotonApp {
         };
         std::thread::spawn(move || {
             if let Err(e) = fleet::push_roster(&hp, &kp, &fleet_key, &entries) {
-                crate::log(&format!("FLEET: roster push failed: {e}"));
+                crate::logf!("FLEET: roster push failed: {}", e);
             }
         });
     }
@@ -6762,7 +6715,7 @@ impl PhotonApp {
             let n = bytes.len();
             // Immediate press feedback — the upload runs seconds on a big log, and silence here read as "the button did nothing". Replaced by "Log sent √" / "Send failed" when the worker thread reports.
             self.ready_toast = Some(format!("Sending log ({} KiB)\u{2026}", (n + 1023) / 1024));
-            crate::log(&format!("DIAG: submitting log ({n} bytes) to FGTW (sealed)"));
+            crate::logf!("DIAG: submitting log ({} bytes) to FGTW (sealed)", n);
             std::thread::spawn(move || {
                 let r = put_log_blocking(&bytes, &note, &kp, &hp, &seed).map_err(|e| format!("{e}"));
                 let _ = tx.send(r);
@@ -6901,7 +6854,7 @@ impl PhotonApp {
             // PUSH-DRIVEN, no deadline, no poll cadence. The hub events (request / fleet) wake each check instantly; the ONLY timers are the ones the protocol/transport demand — the binding request's 5-minute freshness (re-post at ~3.5min when no event arrives sooner) and a degraded-transport fallback cadence when the socket is dead. The user standing at the screen is the timeout: the ceremony ends when the bind lands, when they tap the orb (the stop flag), or on a hard network error. The request is WITHDRAWN by this device (its author) on every exit — green, cancel, or wrong-fleet — and lapses by stamp if the thread dies unclean.
             let withdraw = |why: &str| {
                 if let Err(e) = fleet::bindreq_withdraw(&device_key, &hp) {
-                    crate::log(&format!("JOIN: request withdraw ({why}) failed (lapses anyway): {e}"));
+                    crate::logf!("JOIN: request withdraw ({}) failed (lapses anyway): {}", why, e);
                 }
             };
             let mut last_repost = std::time::Instant::now();
@@ -6928,10 +6881,7 @@ impl PhotonApp {
                         crate::log("JOIN: bound — this device is in the fleet chain");
                         withdraw("green");
                         let fleet_key = fleet::recover_fleet_key(&hp, &device_key).ok().flatten();
-                        crate::log(&format!(
-                            "JOIN: fleet key {} — attesting",
-                            if fleet_key.is_some() { "recovered from fan-out" } else { "follows the sponsor's confirm (event-synced)" }
-                        ));
+                        crate::logf!("JOIN: fleet key {} — attesting", if fleet_key.is_some() { "recovered from fan-out" } else { "follows the sponsor's confirm (event-synced)" });
                         let _ = tx.send(JoinUpdate::Joined(fleet_key, session));
                         return;
                     }
@@ -6945,7 +6895,7 @@ impl PhotonApp {
                     }
                     Err(e) => {
                         // A transient fetch failure (laptop sleep/wake, dropped wifi, a server blip) must NOT kill the ceremony — the user is still standing at the words screen, and a dead thread strands it there forever (observed: macbook stuck on its words after one failed fetch). Log, back off, retry; the stop flag (orb cancel) is the only exit.
-                        crate::log(&format!("JOIN: membership fetch failed ({e}) — retrying"));
+                        crate::logf!("JOIN: membership fetch failed ({}) — retrying", e);
                         std::thread::sleep(crate::jitter_dur(std::time::Duration::from_secs(15)));
                         continue;
                     }
@@ -7025,7 +6975,7 @@ impl PhotonApp {
             contact.message_scroll_offset = 0.0;
             if let Some(storage) = self.storage.as_ref() {
                 if let Err(e) = crate::storage::contacts::save_messages(contact, storage) {
-                    crate::log(&format!("STORAGE: failed to save self-note: {}", e));
+                    crate::logf!("STORAGE: failed to save self-note: {}", e);
                 }
             }
             return true;
@@ -7147,7 +7097,7 @@ impl PhotonApp {
             {
                 if let Err(e) = crate::storage::friendship::save_friendship_chains(chains, storage)
                 {
-                    crate::log(&format!("STORAGE CRITICAL: save chains before send: {}", e));
+                    crate::logf!("STORAGE CRITICAL: save chains before send: {}", e);
                 }
             }
         }
@@ -7163,10 +7113,7 @@ impl PhotonApp {
                 ciphertext,
                 eagle_time,
             });
-            crate::log(&format!(
-                "CHAT: sent message ({} chars) to contact",
-                text.len()
-            ));
+            crate::logf!("CHAT: sent message ({} chars) to contact", text.len());
         }
 
         // Append the outgoing bubble (delivered=false until the ACK lands) and persist — unless this is a suppressed send (the hidden chain-weave probe: it must ride the chain but show no UI).
@@ -7177,7 +7124,7 @@ impl PhotonApp {
                 contact.message_scroll_offset = 0.0;
                 if let Some(storage) = self.storage.as_ref() {
                     if let Err(e) = crate::storage::contacts::save_messages(contact, storage) {
-                        crate::log(&format!("STORAGE: failed to save messages: {}", e));
+                        crate::logf!("STORAGE: failed to save messages: {}", e);
                     }
                 }
             }
@@ -7246,7 +7193,7 @@ impl PhotonApp {
         }
         if let Some(storage) = self.storage.as_ref() {
             if let Err(e) = crate::storage::contacts::save_contact(c, storage) {
-                crate::log(&format!("CHAIN-PROBE: failed to persist woven contact: {}", e));
+                crate::logf!("CHAIN-PROBE: failed to persist woven contact: {}", e);
             }
         }
     }
@@ -7358,10 +7305,7 @@ impl PhotonApp {
                 // Live fleet propagation: subscribe to hub events for this identity (idempotent across resumes/re-attests in one run).
                 self.spawn_fleet_event_sub();
                 // Pubkey emitted as voca-encoded camelCase so a user reading the log can double-click + paste the value as a single word (matches `Development:` key lines from handle_query.rs). The handle is deliberately NOT logged — Photon never surfaces the plaintext handle.
-                crate::log(&format!(
-                    "attestation success: pubkey = {}",
-                    voca::encode(BigUint::from_bytes_be(&data.handle_proof))
-                ));
+                crate::logf!("attestation success: pubkey = {}", voca::encode(BigUint::from_bytes_be(&data.handle_proof)));
                 // Adopt the session roots the worker just derived + persisted (register-shaped, no handle string). Shared across the user's TOKEN apps, gone at logout; a close/reopen resumes from these without re-typing or recomputing the proof. Fall back to the roots carried in the attest result if the tohu READ-BACK comes up empty (a persist failure must not leave THIS RUN sessionless — that made the avatar picker report "not attested" seconds after a successful attest). vault_seed == identity_seed mirrors the worker's derivation (handle_query FirstAttest).
                 self.session = tohu::session().or(Some(tohu::SessionIdentity {
                     identity_seed: data.identity_seed,
@@ -7388,7 +7332,7 @@ impl PhotonApp {
                         ) {
                             Ok(s) => self.storage = Some(s),
                             Err(e) => {
-                                crate::log(&format!("STORAGE: init failed: {}", e));
+                                crate::logf!("STORAGE: init failed: {}", e);
                                 // Hard vault-open failure → surface the red banner (overrides any `false` from `data.vault_degraded` set just above — a local open failure is worse).
                                 self.vault_degraded = true;
                             }
@@ -7424,11 +7368,7 @@ impl PhotonApp {
                     }
                 }
                 if added > 0 {
-                    crate::log(&format!(
-                        "UI: merged {} new contact(s) from FGTW (total: {})",
-                        added,
-                        self.contacts.len()
-                    ));
+                    crate::logf!("UI: merged {} new contact(s) from FGTW (total: {})", added, self.contacts.len());
                     // Register the merged contacts' pubkeys so the checker answers their pings, and kick CLUTCH keygen for any that arrived Pending without keypairs. The resume path (load_all_contacts) already does this for locally-stored contacts, but cloud/FGTW-merged contacts land here AFTER that ran — without this they sit Pending forever with no keypairs, no offer, no connection (exactly what broke after a []n nuke wiped the local vault and contacts came back only via cloud).
                     self.reseed_contact_pubkeys();
                     // A merged self-contact (notes-to-self) needs no key exchange — force it Complete so it's skipped by the keygen filter below.
@@ -7445,11 +7385,7 @@ impl PhotonApp {
                     }
                 }
                 if merged_chains > 0 {
-                    crate::log(&format!(
-                        "UI: merged {} friendship chain(s) from disk (total: {})",
-                        merged_chains,
-                        self.friendship_chains.len()
-                    ));
+                    crate::logf!("UI: merged {} friendship chain(s) from disk (total: {})", merged_chains, self.friendship_chains.len());
                     self.update_sync_records();
                 }
                 // Refresh existing contacts' WAN + LAN addresses from the FGTW peer list. FGTW reports both a public and a same-LAN address per device; pulling the LAN address in lets the offer/KEM send race the LAN path against the WAN path right away, instead of waiting for LAN multicast (which routers often drop) or a pong. This is what unblocks a same-router peer whose stored WAN IPv6 says "No route to host" — the case where m never received an offer. Retain the echo so a sibling contact created LATER (by the async fleet fold below) can be addressed from the same rows.
@@ -7463,10 +7399,7 @@ impl PhotonApp {
                             &storage,
                         );
                         if !siblings.is_empty() {
-                            crate::log(&format!(
-                                "SIBLING: loaded {} sibling(s) from local vault on attest",
-                                siblings.len()
-                            ));
+                            crate::logf!("SIBLING: loaded {} sibling(s) from local vault on attest", siblings.len());
                             let fids: Vec<crate::types::FriendshipId> =
                                 siblings.iter().filter_map(|c| c.friendship_id).collect();
                             for (fid, chains) in
@@ -7553,10 +7486,7 @@ impl PhotonApp {
                 let typed_pid = crate::crypto::clutch::identity_party_id(&crate::types::Handle::to_identity_seed(&handle));
                 let already = self.contacts.iter().any(|c| c.handle_hash == typed_pid);
                 if already {
-                    crate::log(&format!(
-                        "search-result: '{}' already in contacts — skipping add",
-                        handle
-                    ));
+                    crate::logf!("search-result: '{}' already in contacts — skipping add", handle);
                     self.search_status =
                         Some((format!("{handle} already added"), SEARCH_FOUND_COLOUR));
                     return;
@@ -7581,11 +7511,7 @@ impl PhotonApp {
                 if !is_self {
                     contact.clutch_keygen_in_progress = true;
                 }
-                crate::log(&format!(
-                    "search-result: added contact '{}' (total: {})",
-                    crate::fp(&contact.handle_proof).as_str(),
-                    self.contacts.len() + 1
-                ));
+                crate::logf!("search-result: added contact '{}' (total: {})", crate::fp(&contact.handle_proof).as_str(), self.contacts.len() + 1);
                 self.contacts.push(contact);
                 // Register the new contact (and its fleet, once refreshed) so the checker answers pings/offers from any of its devices, and kick CLUTCH keypair generation so the contact becomes offer-ready when it comes online.
                 self.reseed_contact_pubkeys();
@@ -7601,7 +7527,7 @@ impl PhotonApp {
                 if let Some(storage) = self.storage.as_ref() {
                     if let Some(c) = self.contacts.last() {
                         if let Err(e) = crate::storage::contacts::save_contact(c, storage) {
-                            crate::log(&format!("Failed to save contact: {}", e));
+                            crate::logf!("Failed to save contact: {}", e);
                         }
                     }
                 }
@@ -7618,7 +7544,7 @@ impl PhotonApp {
                 self.refocus_contacts_select_all();
             }
             SearchResult::Error(e) => {
-                crate::log(&format!("search-result: error '{}'", e));
+                crate::logf!("search-result: error '{}'", e);
                 self.search_status = Some((format!("error: {e}"), SEARCH_FAIL_COLOUR));
                 self.refocus_contacts_select_all();
             }
@@ -7641,7 +7567,7 @@ impl PhotonApp {
         let was_textbox = self.is_textbox(old);
         let is_textbox = self.is_textbox(new);
         #[cfg(feature = "development")]
-        crate::log(&format!("FOCUS: {old:?} -> {new:?} (textbox {was_textbox} -> {is_textbox})"));
+        crate::logf!("FOCUS: {} -> {} (textbox {} -> {})", format!("{:?}", old), format!("{:?}", new), was_textbox, is_textbox);
         if was_textbox != is_textbox {
             self.pending_keyboard_request = Some(is_textbox);
         }
@@ -7782,7 +7708,7 @@ impl PhotonApp {
                     crate::log("Avatar: nothing to sync (startup)")
                 }
                 AvatarSyncResult::Error(e) => {
-                    crate::log(&format!("Avatar: startup FGTW sync skipped/failed: {e}"))
+                    crate::logf!("Avatar: startup FGTW sync skipped/failed: {}", e)
                 }
             }
         });
@@ -7856,7 +7782,7 @@ impl PhotonApp {
                 contact.avatar_pixels = Some(display);
                 contact.avatar_scaled = None; // force rebuild at the current diameter on next render
                 contact.avatar_scaled_diameter = 0;
-                crate::log(&format!("Avatar: installed peer avatar for {}", crate::fp(&contact.handle_proof)));
+                crate::logf!("Avatar: installed peer avatar for {}", crate::fp(&contact.handle_proof));
             }
         }
     }
@@ -7874,22 +7800,16 @@ impl PhotonApp {
                     sources_used,
                     sources_queried,
                 } => {
-                    crate::log(&format!(
-                        "Clock: nunc consensus offset = {}s (±{}s, {}/{} sources)",
-                        offset_secs, confidence_secs, sources_used, sources_queried
-                    ));
+                    crate::logf!("Clock: nunc consensus offset = {}s (±{}s, {}/{} sources)", offset_secs, confidence_secs, sources_used, sources_queried);
                     self.clock_off = if offset_secs.abs() > CLOCK_OFF_THRESHOLD_SECS {
-                        crate::log(&format!(
-                            "Clock: system clock off by {}s — raising banner (warn only, not corrected)",
-                            offset_secs
-                        ));
+                        crate::logf!("Clock: system clock off by {}s — raising banner (warn only, not corrected)", offset_secs);
                         Some(offset_secs)
                     } else {
                         None
                     };
                 }
                 crate::network::ClockCheckResult::Unavailable(why) => {
-                    crate::log(&format!("Clock: consensus unavailable ({why}) — banner unchanged"));
+                    crate::logf!("Clock: consensus unavailable ({}) — banner unchanged", why);
                 }
             }
         }
@@ -7908,7 +7828,7 @@ impl PhotonApp {
                         let _ = tx.send(events);
                     }
                     Ok(_) => {}
-                    Err(e) => crate::log(&format!("INBOX: drain failed: {e}")),
+                    Err(e) => crate::logf!("INBOX: drain failed: {}", e),
                 }
             });
         }
@@ -7923,12 +7843,7 @@ impl PhotonApp {
             let mut bind_attempts = 0usize;
             let mut named: Option<String> = None;
             for ev in &events {
-                crate::log(&format!(
-                    "INBOX: {} — device {} attempted-by {}",
-                    ev.kind,
-                    crate::fp(&ev.device),
-                    crate::fp(&ev.attempted_by),
-                ));
+                crate::logf!("INBOX: {} — device {} attempted-by {}", ev.kind, crate::fp(&ev.device), crate::fp(&ev.attempted_by));
                 if ev.kind == "bind_attempt" {
                     bind_attempts += 1;
                     if named.is_none() {
@@ -8209,10 +8124,7 @@ impl PhotonApp {
 
         while let Ok(result) = self.clutch_keygen_rx.try_recv() {
             let result_id_hex = hex::encode(&result.contact_id.as_bytes()[..4]);
-            crate::log(&format!(
-                "CLUTCH: Processing keygen result for contact_id {}...",
-                result_id_hex,
-            ));
+            crate::logf!("CLUTCH: Processing keygen result for contact_id {}...", result_id_hex);
 
             let mut found = false;
             for (idx, contact) in self.contacts.iter_mut().enumerate() {
@@ -8242,10 +8154,7 @@ impl PhotonApp {
                             &contact.handle_hash,
                             storage,
                         ) {
-                            crate::log(&format!(
-                                "CLUTCH: Failed to save keypairs for {}: {}",
-                                crate::fp(&contact.handle_proof), e
-                            ));
+                            crate::logf!("CLUTCH: Failed to save keypairs for {}: {}", crate::fp(&contact.handle_proof), e);
                         }
                     }
 
@@ -8265,15 +8174,9 @@ impl PhotonApp {
                         let our_offer = ClutchOfferPayload::from_keypairs(keypairs);
                         if let Some(local_slot) = contact.get_slot_mut(&our_handle_hash) {
                             local_slot.offer = Some(our_offer);
-                            crate::log(&format!(
-                                "CLUTCH: Stored local offer in local slot for {}",
-                                crate::fp(&contact.handle_proof)
-                            ));
+                            crate::logf!("CLUTCH: Stored local offer in local slot for {}", crate::fp(&contact.handle_proof));
                         } else {
-                            crate::log(&format!(
-                                "CLUTCH: Could not find local slot for {} - handle_hash mismatch?",
-                                crate::fp(&contact.handle_proof)
-                            ));
+                            crate::logf!("CLUTCH: Could not find local slot for {} - handle_hash mismatch?", crate::fp(&contact.handle_proof));
                         }
                     }
 
@@ -8316,10 +8219,7 @@ impl PhotonApp {
                                                     storage,
                                                 )
                                             {
-                                                crate::log(&format!(
-                                                    "Failed to persist CLUTCH provenance: {}",
-                                                    e
-                                                ));
+                                                crate::logf!("Failed to persist CLUTCH provenance: {}", e);
                                             }
                                         }
 
@@ -8332,18 +8232,11 @@ impl PhotonApp {
                                                 vsf_bytes,
                                             });
                                             contact.clutch_offer_sent = true;
-                                            crate::log(&format!(
-                                                "CLUTCH: Sent offer to {} (prov={}...)",
-                                                crate::fp(&contact.handle_proof),
-                                                hex::encode(&our_offer_provenance[..4])
-                                            ));
+                                            crate::logf!("CLUTCH: Sent offer to {} (prov={}...)", crate::fp(&contact.handle_proof), hex::encode(&our_offer_provenance[..4]));
                                         }
                                     }
                                     Err(e) => {
-                                        crate::log(&format!(
-                                            "CLUTCH: Failed to build offer VSF for {}: {}",
-                                            crate::fp(&contact.handle_proof), e
-                                        ));
+                                        crate::logf!("CLUTCH: Failed to build offer VSF for {}: {}", crate::fp(&contact.handle_proof), e);
                                     }
                                 }
                             }
@@ -8361,11 +8254,7 @@ impl PhotonApp {
                         )
                         .as_bytes();
                         contact.ceremony_id = Some(ceremony_id);
-                        crate::log(&format!(
-                            "CLUTCH: Computed ceremony_id for {} from {} offer provenances",
-                            crate::fp(&contact.handle_proof),
-                            contact.offer_provenances.len()
-                        ));
+                        crate::logf!("CLUTCH: Computed ceremony_id for {} from {} offer provenances", crate::fp(&contact.handle_proof), contact.offer_provenances.len());
                     }
 
                     // Send KEM response if we have ceremony_id and their offer
@@ -8396,18 +8285,11 @@ impl PhotonApp {
                                             conv_token,
                                             ip,
                                         ));
-                                        crate::log(&format!(
-                                            "CLUTCH: Will spawn KEM encapsulation for {} (post-keygen)",
-                                            crate::fp(&contact.handle_proof)
-                                        ));
+                                        crate::logf!("CLUTCH: Will spawn KEM encapsulation for {} (post-keygen)", crate::fp(&contact.handle_proof));
                                     }
                                 }
                             } else {
-                                crate::log(&format!(
-                                    "CLUTCH: Keypairs ready for {} - need ceremony_id for KEM response (have {} offer provenances)",
-                                    crate::fp(&contact.handle_proof),
-                                    contact.offer_provenances.len()
-                                ));
+                                crate::logf!("CLUTCH: Keypairs ready for {} - need ceremony_id for KEM response (have {} offer provenances)", crate::fp(&contact.handle_proof), contact.offer_provenances.len());
                             }
                         }
                     }
@@ -8421,18 +8303,12 @@ impl PhotonApp {
                             )
                             .as_bytes();
                             contact.ceremony_id = Some(ceremony_id);
-                            crate::log(&format!(
-                                "CLUTCH: Computed ceremony_id for {} while draining queued KEM",
-                                crate::fp(&contact.handle_proof)
-                            ));
+                            crate::logf!("CLUTCH: Computed ceremony_id for {} while draining queued KEM", crate::fp(&contact.handle_proof));
                         }
                     }
 
                     if let Some(pending_kem) = contact.clutch_pending_kem.take() {
-                        crate::log(&format!(
-                            "CLUTCH: Processing queued KEM response from {}",
-                            crate::fp(&contact.handle_proof)
-                        ));
+                        crate::logf!("CLUTCH: Processing queued KEM response from {}", crate::fp(&contact.handle_proof));
                         // Decapsulate remote KEM (remote encapsulated to local pubkeys)
                         if let Some(ref local_keys) = contact.clutch_our_keypairs {
                             let remote_secrets = ClutchKemSharedSecrets::decapsulate_from_peer(
@@ -8443,10 +8319,7 @@ impl PhotonApp {
                             let remote_hash = contact.handle_hash;
                             if let Some(remote_slot) = contact.get_slot_mut(&remote_hash) {
                                 remote_slot.kem_secrets_from_them = Some(remote_secrets);
-                                crate::log(&format!(
-                                    "CLUTCH: Decapsulated queued KEM from {} - stored in slot",
-                                    crate::fp(&contact.handle_proof)
-                                ));
+                                crate::logf!("CLUTCH: Decapsulated queued KEM from {} - stored in slot", crate::fp(&contact.handle_proof));
                             }
 
                             // If we haven't sent our own KEM encap yet, do it now. This covers the case where their KEM arrived before we had ceremony_id, so the normal encap-trigger was skipped.
@@ -8476,10 +8349,7 @@ impl PhotonApp {
                                                 conv_token,
                                                 ip,
                                             ));
-                                            crate::log(&format!(
-                                                "CLUTCH: Spawning KEM encap for {} after draining queued KEM",
-                                                crate::fp(&contact.handle_proof)
-                                            ));
+                                            crate::logf!("CLUTCH: Spawning KEM encap for {} after draining queued KEM", crate::fp(&contact.handle_proof));
                                         }
                                     }
                                 }
@@ -8494,10 +8364,7 @@ impl PhotonApp {
                                     &contact.handle_hash,
                                     storage,
                                 ) {
-                                    crate::log(&format!(
-                                        "CLUTCH: Failed to save slots for {}: {}",
-                                        crate::fp(&contact.handle_proof), e
-                                    ));
+                                    crate::logf!("CLUTCH: Failed to save slots for {}: {}", crate::fp(&contact.handle_proof), e);
                                 }
                             }
                         }
@@ -8505,10 +8372,7 @@ impl PhotonApp {
 
                     // Check if ceremony can complete
                     if contact.all_slots_complete() {
-                        crate::log(&format!(
-                            "CLUTCH: All slots complete for {} after keygen - triggering ceremony completion",
-                            crate::fp(&contact.handle_proof)
-                        ));
+                        crate::logf!("CLUTCH: All slots complete for {} after keygen - triggering ceremony completion", crate::fp(&contact.handle_proof));
                         ceremony_completions.push(idx);
                     }
 
@@ -8517,10 +8381,7 @@ impl PhotonApp {
             }
 
             if !found {
-                crate::log(&format!(
-                    "CLUTCH: Keygen result contact_id {}... not found in contacts!",
-                    result_id_hex
-                ));
+                crate::logf!("CLUTCH: Keygen result contact_id {}... not found in contacts!", result_id_hex);
             }
         }
 
@@ -8564,10 +8425,7 @@ impl PhotonApp {
 
         while let Ok(result) = self.clutch_kem_encap_rx.try_recv() {
             let result_id_hex = hex::encode(&result.contact_id.as_bytes()[..4]);
-            crate::log(&format!(
-                "CLUTCH: Processing KEM encap result for contact_id {}...",
-                result_id_hex,
-            ));
+            crate::logf!("CLUTCH: Processing KEM encap result for contact_id {}...", result_id_hex);
 
             // Find the contact and update state
             let mut found_idx = None;
@@ -8598,10 +8456,7 @@ impl PhotonApp {
                             &contact.handle_hash,
                             storage,
                         ) {
-                            crate::log(&format!(
-                                "CLUTCH: Failed to save slots for {}: {}",
-                                crate::fp(&contact.handle_proof), e
-                            ));
+                            crate::logf!("CLUTCH: Failed to save slots for {}: {}", crate::fp(&contact.handle_proof), e);
                         }
                     }
 
@@ -8618,15 +8473,12 @@ impl PhotonApp {
                             device_pubkey,
                             device_secret,
                         });
-                        crate::log(&format!("CLUTCH: Sent KEM response to {}", crate::fp(&contact.handle_proof)));
+                        crate::logf!("CLUTCH: Sent KEM response to {}", crate::fp(&contact.handle_proof));
                     }
 
                     // Check if all slots are complete after storing our KEM encap secrets
                     if contact.all_slots_complete() {
-                        crate::log(&format!(
-                            "CLUTCH: All slots complete for {} after KEM encap - triggering ceremony",
-                            crate::fp(&contact.handle_proof)
-                        ));
+                        crate::logf!("CLUTCH: All slots complete for {} after KEM encap - triggering ceremony", crate::fp(&contact.handle_proof));
                         ceremony_completions.push(idx);
                     }
 
@@ -8636,10 +8488,7 @@ impl PhotonApp {
             }
 
             if found_idx.is_none() {
-                crate::log(&format!(
-                    "CLUTCH: KEM encap result contact_id {}... not found in contacts!",
-                    result_id_hex
-                ));
+                crate::logf!("CLUTCH: KEM encap result contact_id {}... not found in contacts!", result_id_hex);
             }
         }
 
@@ -8679,24 +8528,18 @@ impl PhotonApp {
 
         while let Ok(result) = self.clutch_ceremony_rx.try_recv() {
             let result_id_hex = hex::encode(&result.contact_id.as_bytes()[..4]);
-            crate::log(&format!(
-                "CLUTCH: Processing ceremony result for contact_id {}...",
-                result_id_hex,
-            ));
+            crate::logf!("CLUTCH: Processing ceremony result for contact_id {}...", result_id_hex);
 
             let friendship_id = *result.friendship_chains.id();
 
             // Save chains to disk first
             if let Some(storage) = self.storage.as_ref() {
-                crate::log(&format!(
-                    "CLUTCH: Saving friendship chains to disk (fid={}...)",
-                    hex::encode(&friendship_id.as_bytes()[..8])
-                ));
+                crate::logf!("CLUTCH: Saving friendship chains to disk (fid={}...)", hex::encode(&friendship_id.as_bytes()[..8]));
                 if let Err(e) = crate::storage::friendship::save_friendship_chains(
                     &result.friendship_chains,
                     storage,
                 ) {
-                    crate::log(&format!("Failed to save friendship chains: {}", e));
+                    crate::logf!("Failed to save friendship chains: {}", e);
                 } else {
                     #[cfg(feature = "development")]
                     #[cfg(feature = "development")]
@@ -8731,11 +8574,7 @@ impl PhotonApp {
                 contact.clutch_ceremony_in_progress = false;
                 contact.friendship_id = Some(friendship_id);
 
-                crate::log(&format!(
-                    "CLUTCH: Eggs computed with {}! (proof: {}...)",
-                    contact_handle,
-                    hex::encode(&result.eggs_proof[..8])
-                ));
+                crate::logf!("CLUTCH: Eggs computed with {}! (proof: {}...)", contact_handle, hex::encode(&result.eggs_proof[..8]));
 
                 // Store our proof for later verification
                 contact.clutch_our_eggs_proof = Some(result.eggs_proof);
@@ -8762,21 +8601,14 @@ impl PhotonApp {
                         device_secret,
                     });
 
-                    crate::log(&format!(
-                        "CLUTCH: Sent proof to {} via status checker",
-                        contact_handle
-                    ));
+                    crate::logf!("CLUTCH: Sent proof to {} via status checker", contact_handle);
                 }
 
                 // Check if they already sent us their proof
                 if let Some(their_proof) = their_early_proof {
                     if their_proof == result.eggs_proof {
                         // SUCCESS! Both parties computed same eggs
-                        crate::log(&format!(
-                            "CLUTCH: Early proof verified with {}! ✓ proof={}...",
-                            contact_handle,
-                            hex::encode(&result.eggs_proof[..8])
-                        ));
+                        crate::logf!("CLUTCH: Early proof verified with {}! ✓ proof={}...", contact_handle, hex::encode(&result.eggs_proof[..8]));
                         contact.clutch_state = ClutchState::Complete;
                         contact.clutch_completed_at = Some(std::time::Instant::now()); // arm the post-completion re-key cooldown (before the ~1s-later weave)
                         // A FRESH ceremony just completed = a brand-new chain — any prior weave seal is void. Reset the double-toggle state so the hidden probe REFIRES for this chain. Without this, a peer that client-reset and re-CLUTCHed hits a deadlock: our persisted chain_woven=true (load latches all probe flags true) suppresses our probe, the reset peer waits forever for it ("weaving the chain"), and we dismiss their re-sent proofs as woven-duplicates. First-ceremony case: flags already false, no-op.
@@ -8792,12 +8624,7 @@ impl PhotonApp {
                         // CRYPTOGRAPHIC FAILURE!
                         let our_hex = hex::encode(&result.eggs_proof);
                         let their_hex = hex::encode(&their_proof);
-                        crate::log(&format!(
-                            "CLUTCH: ⚠ PROOF MISMATCH with {}! ours={}... theirs={}...",
-                            contact_handle,
-                            &our_hex[..16],
-                            &their_hex[..16]
-                        ));
+                        crate::logf!("CLUTCH: ⚠ PROOF MISMATCH with {}! ours={}... theirs={}...", contact_handle, &our_hex[..16], &their_hex[..16]);
                         // Reset to Pending to allow re-keying
                         contact.clutch_state = ClutchState::Pending;
                         contact.clutch_our_eggs_proof = None;
@@ -8806,20 +8633,17 @@ impl PhotonApp {
                 } else {
                     // Set state to AwaitingProof - wait for their proof
                     contact.clutch_state = ClutchState::AwaitingProof;
-                    crate::log(&format!(
-                        "CLUTCH: Awaiting proof from {} (we sent ours)",
-                        contact_handle
-                    ));
+                    crate::logf!("CLUTCH: Awaiting proof from {} (we sent ours)", contact_handle);
                 }
 
                 // Save contact to persist friendship_id and clutch_state
                 if let Some(storage) = self.storage.as_ref() {
                     if let Err(e) = crate::storage::contacts::save_contact(contact, storage) {
-                        crate::log(&format!("Failed to save contact after CLUTCH: {}", e));
+                        crate::logf!("Failed to save contact after CLUTCH: {}", e);
                     } else {
                         #[cfg(feature = "development")]
                         #[cfg(feature = "development")]
-                        crate::log(&format!("CLUTCH: Saved {} state to disk", contact_handle));
+                        crate::logf!("CLUTCH: Saved {} state to disk", contact_handle);
                     }
 
                     // Delete slots file - ceremony is complete, slots no longer needed
@@ -8827,15 +8651,12 @@ impl PhotonApp {
                         &contact.handle_hash,
                         storage,
                     ) {
-                        crate::log(&format!("Failed to delete CLUTCH slots: {}", e));
+                        crate::logf!("Failed to delete CLUTCH slots: {}", e);
                     }
                 }
                 changed = true;
             } else {
-                crate::log(&format!(
-                    "CLUTCH: Ceremony result contact_id {}... not found in contacts!",
-                    result_id_hex
-                ));
+                crate::logf!("CLUTCH: Ceremony result contact_id {}... not found in contacts!", result_id_hex);
             }
 
             // If the early-proof branch just took this contact to Complete, fire the hidden chain-weave probe (once). Done after the mutable-borrow block above releases.
@@ -8883,10 +8704,7 @@ impl PhotonApp {
 
         // Check if ceremony already in progress
         if contact.clutch_ceremony_in_progress {
-            crate::log(&format!(
-                "CLUTCH: Ceremony already in progress for {}",
-                crate::fp(&contact.handle_proof)
-            ));
+            crate::logf!("CLUTCH: Ceremony already in progress for {}", crate::fp(&contact.handle_proof));
             return;
         }
 
@@ -8952,7 +8770,7 @@ impl PhotonApp {
             None => {
                 #[cfg(feature = "development")]
                 #[cfg(feature = "development")]
-                crate::log(&format!("CLUTCH: No IP for {}", crate::fp(&contact.handle_proof)));
+                crate::logf!("CLUTCH: No IP for {}", crate::fp(&contact.handle_proof));
                 return;
             }
         };
@@ -8961,17 +8779,14 @@ impl PhotonApp {
             None => {
                 #[cfg(feature = "development")]
                 #[cfg(feature = "development")]
-                crate::log(&format!("CLUTCH: No ceremony_id for {}", crate::fp(&contact.handle_proof)));
+                crate::logf!("CLUTCH: No ceremony_id for {}", crate::fp(&contact.handle_proof));
                 return;
             }
         };
 
         let conversation_token = derive_conversation_token(&[our_handle_hash, their_handle_hash]);
 
-        crate::log(&format!(
-            "CLUTCH: Spawning ceremony completion for {}",
-            contact_handle
-        ));
+        crate::logf!("CLUTCH: Spawning ceremony completion for {}", contact_handle);
 
         // Determine low/high ordering by handle hash
         let we_are_low = our_handle_hash < their_handle_hash;
@@ -9037,10 +8852,7 @@ impl PhotonApp {
             match crate::crypto::clutch::identity_friendship_secret(&our_seed, &their_handle_hash) {
                 Some(fs) => fs,
                 None => {
-                    crate::log(&format!(
-                        "CLUTCH: pinned identity for {} is not a curve point (old-format contact row) — re-add this friend",
-                        crate::fp(&contact_hp)
-                    ));
+                    crate::logf!("CLUTCH: pinned identity for {} is not a curve point (old-format contact row) — re-add this friend", crate::fp(&contact_hp));
                     return;
                 }
             }
@@ -9085,13 +8897,7 @@ impl PhotonApp {
                     if let Some(std::net::IpAddr::V4(v4)) = peer.local_ip {
                         contact.local_ip = Some(v4);
                         contact.local_port = Some(peer.ip.port());
-                        crate::log(&format!(
-                            "UI: refreshed {} addrs from FGTW — WAN {} / LAN {}:{}",
-                            crate::fp(&contact.handle_proof),
-                            peer.ip,
-                            v4,
-                            peer.ip.port()
-                        ));
+                        crate::logf!("UI: refreshed {} addrs from FGTW — WAN {} / LAN {}:{}", crate::fp(&contact.handle_proof), peer.ip, v4, peer.ip.port());
                     }
                     // If the address actually moved while a CLUTCH offer was already sent, that offer is in flight to a now-dead address (the "No route to host" retries we kept hammering). Cancel the stale transfer and reset clutch_offer_sent so the contact's next online pong re-sends the offer to the fresh address, with the LAN path now raced alongside. Without this the one-shot flag blocks re-send and the ceremony stalls forever on the dead path.
                     let addr_changed = old_ip != contact.ip || old_local != contact.local_ip;
@@ -9103,10 +8909,7 @@ impl PhotonApp {
                             stale_addrs.push(stale);
                         }
                         contact.clutch_offer_sent = false;
-                        crate::log(&format!(
-                            "CLUTCH: {} address changed — cancelling stale offer transfer, will re-send to fresh address",
-                            crate::fp(&contact.handle_proof)
-                        ));
+                        crate::logf!("CLUTCH: {} address changed — cancelling stale offer transfer, will re-send to fresh address", crate::fp(&contact.handle_proof));
                     }
                     break;
                 }
@@ -9139,10 +8942,7 @@ impl PhotonApp {
                 contact.clutch_state = crate::types::ClutchState::Complete;
                 contact.clutch_keygen_in_progress = false;
                 changed = true;
-                crate::log(&format!(
-                    "CLUTCH: self-contact '{}' auto-completed (no key exchange with self)",
-                    crate::fp(&contact.handle_proof)
-                ));
+                crate::logf!("CLUTCH: self-contact '{}' auto-completed (no key exchange with self)", crate::fp(&contact.handle_proof));
                 if let Some(storage) = self.storage.as_ref() {
                     let _ = crate::storage::contacts::save_contact(contact, storage);
                 }
@@ -9182,11 +8982,7 @@ impl PhotonApp {
             if c.is_online && c.validated_path.is_none() {
                 c.punch_unvalidated_cycles = c.punch_unvalidated_cycles.saturating_add(1);
                 if c.punch_unvalidated_cycles == PUNCH_UNREACHABLE_THRESHOLD {
-                    crate::log(&format!(
-                        "TRAVERSE: {} online but no direct path after {} cycles — pending relay (M2)",
-                        crate::fp(&c.handle_proof).as_str(),
-                        PUNCH_UNREACHABLE_THRESHOLD
-                    ));
+                    crate::logf!("TRAVERSE: {} online but no direct path after {} cycles — pending relay (M2)", crate::fp(&c.handle_proof).as_str(), PUNCH_UNREACHABLE_THRESHOLD);
                 }
             }
         }
@@ -9251,7 +9047,7 @@ impl PhotonApp {
             }
         }
         if pinged > 0 {
-            crate::log(&format!("Status: pinged {pinged} contact(s)"));
+            crate::logf!("Status: pinged {} contact(s)", pinged);
         }
         // LAN broadcast for same-network local-IP discovery (hairpin-NAT workaround).
         if let (Some(session), Some(hq)) = (self.session.as_ref(), self.handle_query.as_ref()) {
@@ -9322,10 +9118,7 @@ impl PhotonApp {
                 device_secret,
             });
             contact.clutch_proof_resends_left -= 1;
-            crate::log(&format!(
-                "CLUTCH: Retransmitted proof to {} ({} resends left)",
-                crate::fp(&contact.handle_proof), contact.clutch_proof_resends_left
-            ));
+            crate::logf!("CLUTCH: Retransmitted proof to {} ({} resends left)", crate::fp(&contact.handle_proof), contact.clutch_proof_resends_left);
             // Budget exhausted — stop holding the proof.
             if contact.clutch_proof_resends_left == 0
                 && contact.clutch_state == crate::types::ClutchState::Complete
@@ -9376,15 +9169,9 @@ impl PhotonApp {
                     eagle_time,
                 });
                 if exhausted {
-                    crate::log(&format!(
-                        "CHAT: retransmit GAVE UP on msg eagle_time {} after {} attempts (undelivered)",
-                        eagle_time, attempts
-                    ));
+                    crate::logf!("CHAT: retransmit GAVE UP on msg eagle_time {} after {} attempts (undelivered)", eagle_time, attempts);
                 } else {
-                    crate::log(&format!(
-                        "CHAT: retransmit msg eagle_time {} (attempt {})",
-                        eagle_time, attempts
-                    ));
+                    crate::logf!("CHAT: retransmit msg eagle_time {} (attempt {})", eagle_time, attempts);
                 }
             }
         }
@@ -9465,11 +9252,7 @@ impl PhotonApp {
                     rec.in_flight = Some((rid, now_osc, before));
                     rec.next_request_osc = now_osc + HIST_TRICKLE_OSC;
                     rec.urgent = false;
-                    crate::log(&format!(
-                        "HISTORY: requesting page before {} from {}",
-                        if before == i64::MAX { "HEAD".to_string() } else { before.to_string() },
-                        primary
-                    ));
+                    crate::logf!("HISTORY: requesting page before {} from {}", if before == i64::MAX { "HEAD".to_string() } else { before.to_string() }, primary);
                     checker.send_history(crate::network::status::HistorySendRequest {
                         peer_addr: primary,
                         alt_addr: alt,
@@ -9477,7 +9260,7 @@ impl PhotonApp {
                         vsf_bytes,
                     });
                 }
-                Err(e) => crate::log(&format!("HISTORY: request build failed: {e}")),
+                Err(e) => crate::logf!("HISTORY: request build failed: {}", e),
             }
         }
     }
@@ -9557,15 +9340,11 @@ impl PhotonApp {
             match built {
                 Ok(vsf_bytes) => {
                     contact.blind_in_flight = Some((rid, now_osc, want_probe));
-                    crate::log(&format!(
-                        "BLIND: {} {}",
-                        if want_probe {
+                    crate::logf!("BLIND: {} {}", if want_probe {
                             "probing for our deposit at"
                         } else {
                             "depositing our blind with"
-                        },
-                        crate::fp(&contact.handle_proof)
-                    ));
+                        }, crate::fp(&contact.handle_proof));
                     checker.send_history(crate::network::status::HistorySendRequest {
                         peer_addr: primary,
                         alt_addr: alt,
@@ -9573,7 +9352,7 @@ impl PhotonApp {
                         vsf_bytes,
                     });
                 }
-                Err(e) => crate::log(&format!("BLIND: frame build failed: {e}")),
+                Err(e) => crate::logf!("BLIND: frame build failed: {}", e),
             }
         }
     }
@@ -9806,10 +9585,7 @@ impl PhotonApp {
                         {
                             let n = chains.rearm_pending_after(record.last_received_osc, now_osc);
                             if n > 0 {
-                                crate::log(&format!(
-                                    "CHAT: re-armed {} given-up pending msg(s) past peer tip {} (stall recovery)",
-                                    n, record.last_received_osc
-                                ));
+                                crate::logf!("CHAT: re-armed {} given-up pending msg(s) past peer tip {} (stall recovery)", n, record.last_received_osc);
                             }
                         }
                     }
@@ -9849,10 +9625,7 @@ impl PhotonApp {
                                             }
                                         }
                                     } else if contact.ip != Some(addr) {
-                                        crate::log(&format!(
-                                            "Status: Updated {} public IP from active-device pong: {:?} -> {}",
-                                            crate::fp(&contact.handle_proof), contact.ip, addr
-                                        ));
+                                        crate::logf!("Status: Updated {} public IP from active-device pong: {} -> {}", crate::fp(&contact.handle_proof), format!("{:?}", contact.ip), addr);
                                         contact.ip = Some(addr);
                                     }
                                 }
@@ -9861,10 +9634,7 @@ impl PhotonApp {
                             // Always-granted name slot off the pong: adopt the friend's chosen display name (petname still wins at render — see display_name()). Persisted below via the state-save the name-change marks.
                             if let Some(name) = display_name.as_ref() {
                                 if !contact.is_sibling && contact.published_name != *name {
-                                    crate::log(&format!(
-                                        "CONTACT: {} published name {:?} -> {:?}",
-                                        crate::fp(&contact.handle_proof), contact.published_name, name
-                                    ));
+                                    crate::logf!("CONTACT: {} published name {} -> {}", crate::fp(&contact.handle_proof), format!("{:?}", contact.published_name), format!("{:?}", name));
                                     contact.published_name = name.clone();
                                     contact.published_name_dirty = true;
                                     changed = true;
@@ -9881,13 +9651,7 @@ impl PhotonApp {
                             if contact.is_online != identity_online {
                                 contact.is_online = identity_online;
                                 changed = true;
-                                crate::log(&format!(
-                                    "Status: {} is now {} (device {} {})",
-                                    crate::fp(&contact.handle_proof),
-                                    if identity_online { "ONLINE" } else { "offline" },
-                                    hex::encode(&peer_pubkey.key[..4]),
-                                    if is_online { "up" } else { "down" }
-                                ));
+                                crate::logf!("Status: {} is now {} (device {} {})", crate::fp(&contact.handle_proof), if identity_online { "ONLINE" } else { "offline" }, hex::encode(&peer_pubkey.key[..4]), if is_online { "up" } else { "down" });
                             }
 
                             // Deadlock recovery: a queued KEM with no offer means their offer never arrived (lost in transit — their KEM landed but the larger offer transfer didn't). We can't derive ceremony_id or complete our slot without it, and there's no timeout on the queue, so this hangs Pending forever (only a restart, which forces a fresh offer exchange, recovers it). Self-heal: when we see a still-queued KEM on a pong AND we've already sent our offer (so we're genuinely stuck, not mid-initial-exchange), reset clutch_offer_sent so the offer-send block below re-fires this pong — our re-sent offer prompts them to re-send theirs (the same path a restart takes). Pong cadence rate-limits the re-request to one per pong. Only the "their offer was lost" case is recoverable here; if a peer genuinely never sends an offer, nothing we do fixes it.
@@ -9896,10 +9660,7 @@ impl PhotonApp {
                                 && contact.clutch_pending_kem.is_some()
                                 && contact.clutch_offer_sent
                             {
-                                crate::log(&format!(
-                                    "CLUTCH: still waiting for offer from {} (their KEM is queued) — re-requesting by re-sending our offer",
-                                    crate::fp(&contact.handle_proof)
-                                ));
+                                crate::logf!("CLUTCH: still waiting for offer from {} (their KEM is queued) — re-requesting by re-sending our offer", crate::fp(&contact.handle_proof));
                                 contact.clutch_offer_sent = false;
                             }
 
@@ -9937,11 +9698,7 @@ impl PhotonApp {
                                                 .as_bytes(),
                                         ) {
                                             Ok((vsf_bytes, our_offer_provenance)) => {
-                                                crate::log(&format!(
-                                                    "CLUTCH: Sending full offer to {} (prov={}...)",
-                                                    crate::fp(&contact.handle_proof),
-                                                    hex::encode(&our_offer_provenance[..4])
-                                                ));
+                                                crate::logf!("CLUTCH: Sending full offer to {} (prov={}...)", crate::fp(&contact.handle_proof), hex::encode(&our_offer_provenance[..4]));
 
                                                 // Store our offer provenance (for ceremony_id derivation)
                                                 if !contact
@@ -9964,10 +9721,7 @@ impl PhotonApp {
                                                             storage,
                                                         )
                                                     {
-                                                        crate::log(&format!(
-                                                            "Failed to persist CLUTCH provenance: {}",
-                                                            e
-                                                        ));
+                                                        crate::logf!("Failed to persist CLUTCH provenance: {}", e);
                                                     }
                                                 }
 
@@ -9982,10 +9736,7 @@ impl PhotonApp {
                                                 changed = true;
                                             }
                                             Err(e) => {
-                                                crate::log(&format!(
-                                                    "CLUTCH: Failed to build offer VSF: {}",
-                                                    e
-                                                ));
+                                                crate::logf!("CLUTCH: Failed to build offer VSF: {}", e);
                                             }
                                         }
                                     }
@@ -10086,10 +9837,7 @@ impl PhotonApp {
                         let (contact_idx, handle) = match contact_info {
                             Some((idx, h)) => (idx, h),
                             None => {
-                                crate::log(&format!(
-                                    "CHAT: Contact not found for handle_hash {}...",
-                                    hex::encode(&from_handle_hash[..8])
-                                ));
+                                crate::logf!("CHAT: Contact not found for handle_hash {}...", hex::encode(&from_handle_hash[..8]));
                                 continue;
                             }
                         };
@@ -10114,16 +9862,10 @@ impl PhotonApp {
                                         acked_eagle_time: timestamp,
                                         plaintext_hash: ph,
                                     });
-                                    crate::log(&format!(
-                                        "CHAT: Re-ACKed duplicate from {} (eagle_time {}) — our earlier ACK was likely lost",
-                                        handle, timestamp
-                                    ));
+                                    crate::logf!("CHAT: Re-ACKed duplicate from {} (eagle_time {}) — our earlier ACK was likely lost", handle, timestamp);
                                 }
                             } else {
-                                crate::log(&format!(
-                                    "CHAT: Skipping duplicate from {} (eagle_time {}) — no stored ack_hash (pre-fix message or outgoing)",
-                                    handle, timestamp
-                                ));
+                                crate::logf!("CHAT: Skipping duplicate from {} (eagle_time {}) — no stored ack_hash (pre-fix message or outgoing)", handle, timestamp);
                             }
                             continue;
                         }
@@ -10132,12 +9874,7 @@ impl PhotonApp {
                         if let Err(expected) =
                             chains.verify_chain_link(&from_handle_hash, &prev_msg_hp)
                         {
-                            crate::log(&format!(
-                                "CHAT: Hash chain gap from {} - expected prev {}..., got {}... — buffering (ahead of us)",
-                                handle,
-                                hex::encode(&expected[..8]),
-                                hex::encode(&prev_msg_hp[..8])
-                            ));
+                            crate::logf!("CHAT: Hash chain gap from {} - expected prev {}..., got {}... — buffering (ahead of us)", handle, hex::encode(&expected[..8]), hex::encode(&prev_msg_hp[..8]));
                             chains.buffer_for_gap(
                                 prev_msg_hp,
                                 from_handle_hash,
@@ -10148,12 +9885,7 @@ impl PhotonApp {
                             continue;
                         }
 
-                        crate::log(&format!(
-                            "CHAT: Received message from {} (eagle_time {}), {} bytes ciphertext",
-                            handle,
-                            timestamp,
-                            ciphertext.len()
-                        ));
+                        crate::logf!("CHAT: Received message from {} (eagle_time {}), {} bytes ciphertext", handle, timestamp, ciphertext.len());
 
                         use crate::crypto::chain::{
                             decrypt_layers, derive_salt, generate_scratch, CURRENT_KEY_INDEX,
@@ -10182,14 +9914,7 @@ impl PhotonApp {
                         let eagle_time = vsf::EagleTime::from_oscillations(timestamp);
 
                         // DEBUG: Log decryption parameters
-                        crate::log(&format!(
-                            "CHAIN DECRYPT: sender_handle_hash={}..., key={}..., salt={}..., eagle_time={}, ciphertext_len={}",
-                            hex::encode(&from_handle_hash[..4]),
-                            hex::encode(&sender_chain.current_key()[..4]),
-                            hex::encode(&salt[..4]),
-                            timestamp,
-                            ciphertext.len()
-                        ));
+                        crate::logf!("CHAIN DECRYPT: sender_handle_hash={}..., key={}..., salt={}..., eagle_time={}, ciphertext_len={}", hex::encode(&from_handle_hash[..4]), hex::encode(&sender_chain.current_key()[..4]), hex::encode(&salt[..4]), timestamp, ciphertext.len());
 
                         // Decrypt using sender's chain
                         let plaintext = decrypt_layers(
@@ -10201,10 +9926,7 @@ impl PhotonApp {
                         );
 
                         // DEBUG: Log raw decrypted bytes
-                        crate::log(&format!(
-                            "CHAIN DECRYPT: raw plaintext bytes = {:?}",
-                            &plaintext
-                        ));
+                        crate::logf!("CHAIN DECRYPT: raw plaintext bytes = {}", format!("{:?}", &plaintext));
 
                         // Parse VSF field: (d{message}:x{text},hp{inc_hp},hR{pad}) Uses VsfField::parse() per AGENT.md
                         let mut ptr = 0usize;
@@ -10216,16 +9938,13 @@ impl PhotonApp {
                         let field = match vsf::file_format::VsfField::parse(&plaintext, &mut ptr) {
                             Ok(f) => f,
                             Err(e) => {
-                                crate::log(&format!("CHAT: VsfField parse error: {}", e));
+                                crate::logf!("CHAT: VsfField parse error: {}", e);
                                 continue;
                             }
                         };
 
                         if field.name != "message" {
-                            crate::log(&format!(
-                                "CHAT: Expected field name 'message', got '{}'",
-                                field.name
-                            ));
+                            crate::logf!("CHAT: Expected field name 'message', got '{}'", field.name);
                             continue;
                         }
 
@@ -10244,10 +9963,7 @@ impl PhotonApp {
                                 },
                                 vsf::VsfType::hR(_) => {} // Random padding - ignore
                                 other => {
-                                    crate::log(&format!(
-                                        "CHAT: Unexpected type in message: {:?}",
-                                        other
-                                    ));
+                                    crate::logf!("CHAT: Unexpected type in message: {}", format!("{:?}", other));
                                 }
                             }
                         }
@@ -10260,12 +9976,7 @@ impl PhotonApp {
                         // Hidden chain-weave probe: a reserved-marker message that proves the ratchet works but must show NO chat bubble. Everything else on the receive path (chain advance, set_last_plaintext, mark_received, ACK send) still runs so the sender's chain advances and dedup works — only the UI is suppressed.
                         let is_chain_probe = message_text == crate::types::CHAIN_PROBE_MARKER;
 
-                        crate::log(&format!(
-                            "CHAT: Decrypted message from {}: \"{}\" (incorporated_hp={}...)",
-                            handle,
-                            if is_chain_probe { "<chain-weave probe>" } else { &message_text },
-                            hex::encode(&incorporated_hp[..8])
-                        ));
+                        crate::logf!("CHAT: Decrypted message from {}: \"{}\" (incorporated_hp={}...)", handle, if is_chain_probe { "<chain-weave probe>" } else { &message_text }, hex::encode(&incorporated_hp[..8]));
 
                         // Compute plaintext hash for ACK
                         let plaintext_hash = *blake3::hash(&plaintext).as_bytes();
@@ -10293,10 +10004,7 @@ impl PhotonApp {
                                 {
                                     strands.push(m.content.as_bytes().to_vec());
                                 } else {
-                                    crate::log(&format!(
-                                        "CHAT: braid strand miss — no outgoing message at eagle_time {}",
-                                        t
-                                    ));
+                                    crate::logf!("CHAT: braid strand miss — no outgoing message at eagle_time {}", t);
                                 }
                             }
                             strands
@@ -10319,20 +10027,12 @@ impl PhotonApp {
 
                         // Update hash chain state for next message verification
                         chains.update_received_hash(&from_handle_hash, msg_hp);
-                        crate::log(&format!(
-                            "CHAT: Updated hash chain for {} - msg_hp={}...",
-                            handle,
-                            hex::encode(&msg_hp[..8])
-                        ));
+                        crate::logf!("CHAT: Updated hash chain for {} - msg_hp={}...", handle, hex::encode(&msg_hp[..8]));
 
                         // Layer 1 gap-buffer drain: this message's msg_hp is now our last_received_hash, so any buffered message that was waiting on THIS as its predecessor is now contiguous. Replay them (front of the queue) so they're processed in order immediately — and each can cascade to fill the next gap when IT advances.
                         let ready = chains.take_buffered_for(&msg_hp);
                         if !ready.is_empty() {
-                            crate::log(&format!(
-                                "CHAT: gap filled — replaying {} buffered message(s) after msg_hp={}...",
-                                ready.len(),
-                                hex::encode(&msg_hp[..8])
-                            ));
+                            crate::logf!("CHAT: gap filled — replaying {} buffered message(s) after msg_hp={}...", ready.len(), hex::encode(&msg_hp[..8]));
                             for buf in ready {
                                 replay_queue.push_back(StatusUpdate::ChatMessage {
                                     conversation_token,
@@ -10350,10 +10050,7 @@ impl PhotonApp {
                             if let Err(e) =
                                 crate::storage::friendship::save_friendship_chains(chains, storage)
                             {
-                                crate::log(&format!(
-                                    "STORAGE CRITICAL: Failed to save chains after recv, skipping ACK: {}",
-                                    e
-                                ));
+                                crate::logf!("STORAGE CRITICAL: Failed to save chains after recv, skipping ACK: {}", e);
                                 continue;
                             }
                             // Flag to update sync records after borrow ends
@@ -10388,7 +10085,7 @@ impl PhotonApp {
                                 if let Err(e) =
                                     crate::storage::contacts::save_messages(contact, storage)
                                 {
-                                    crate::log(&format!("STORAGE: Failed to save messages: {}", e));
+                                    crate::logf!("STORAGE: Failed to save messages: {}", e);
                                 }
                             }
 
@@ -10397,7 +10094,7 @@ impl PhotonApp {
                             {
                                 let digest = relationship_digest(&from_handle_hash, &our_handle_hash);
                                 std::thread::spawn(move || {
-                                    chirp::Chirp::from_hash(digest).play_blocking().unwrap_or_else(|e| crate::log(&format!("CHIME: {e}")));
+                                    chirp::Chirp::from_hash(digest).play_blocking().unwrap_or_else(|e| crate::logf!("CHIME: {}", e));
                                 });
                             }
                             // A real inbound message proves both directions once ACKed, but even the RX half alone can seal if our TX was already ACK-confirmed.
@@ -10419,19 +10116,11 @@ impl PhotonApp {
                                 acked_eagle_time: timestamp,
                                 plaintext_hash,
                             });
-                            crate::log(&format!(
-                                "CHAT: Sent ACK to {} (eagle_time {}, hash {}...)",
-                                handle,
-                                timestamp,
-                                hex::encode(&plaintext_hash[..8])
-                            ));
+                            crate::logf!("CHAT: Sent ACK to {} (eagle_time {}, hash {}...)", handle, timestamp, hex::encode(&plaintext_hash[..8]));
                         }
                         let _ = fid; // We looked up by token, fid is available if needed
                     } else {
-                        crate::log(&format!(
-                            "CHAT: No friendship found for conversation_token {}...",
-                            hex::encode(&conversation_token[..8])
-                        ));
+                        crate::logf!("CHAT: No friendship found for conversation_token {}...", hex::encode(&conversation_token[..8]));
                     }
 
                     // Defer the chain-weave seal until after the loop (the outer `checker` borrow blocks `&mut self` here). No-op later unless both directions are proven.
@@ -10501,27 +10190,16 @@ impl PhotonApp {
                         let (contact_idx, handle) = match contact_info {
                             Some((idx, h)) => (idx, h),
                             None => {
-                                crate::log(&format!(
-                                    "CHAT: Contact not found for ACK from handle_hash {}...",
-                                    hex::encode(&from_handle_hash[..8])
-                                ));
+                                crate::logf!("CHAT: Contact not found for ACK from handle_hash {}...", hex::encode(&from_handle_hash[..8]));
                                 continue;
                             }
                         };
 
-                        crate::log(&format!(
-                            "CHAT: ACK received from {} for eagle_time {} (hash: {}...)",
-                            handle,
-                            acked_eagle_time,
-                            hex::encode(&plaintext_hash[..8])
-                        ));
+                        crate::logf!("CHAT: ACK received from {} for eagle_time {} (hash: {}...)", handle, acked_eagle_time, hex::encode(&plaintext_hash[..8]));
 
                         // Process ACK: advance our chain and remove pending message
                         if chains.process_ack(&our_handle_hash, acked_eagle_time, &plaintext_hash) {
-                            crate::log(&format!(
-                                "CHAT: Chain advanced for {} (ACK verified)",
-                                handle
-                            ));
+                            crate::logf!("CHAT: Chain advanced for {} (ACK verified)", handle);
 
                             // Our TX chain just advanced on a matching ACK — their RX is proven. Record it so the chain-weave can seal (sealing itself happens after the `chains` borrow ends, below). This is the "our TX / their RX" half of woven.
                             if let Some(contact) = self.contacts.get_mut(contact_idx) {
@@ -10533,10 +10211,7 @@ impl PhotonApp {
                             if let Some(contact) = self.contacts.get_mut(contact_idx) {
                                 if contact.clutch_our_keypairs.is_some() {
                                     let their_identity_seed = contact.handle_hash;
-                                    crate::log(&format!(
-                                        "CLUTCH: First ACK from {} - zeroizing ephemeral keypairs",
-                                        crate::fp(&contact.handle_proof)
-                                    ));
+                                    crate::logf!("CLUTCH: First ACK from {} - zeroizing ephemeral keypairs", crate::fp(&contact.handle_proof));
                                     if let Some(ref mut keys) = contact.clutch_our_keypairs {
                                         keys.zeroize();
                                     }
@@ -10561,11 +10236,7 @@ impl PhotonApp {
                                                 storage,
                                             )
                                         {
-                                            crate::log(&format!(
-                                                "CLUTCH: Failed to delete keypairs file for seed {}: {}",
-                                                hex::encode(&their_identity_seed[..4]),
-                                                e
-                                            ));
+                                            crate::logf!("CLUTCH: Failed to delete keypairs file for seed {}: {}", hex::encode(&their_identity_seed[..4]), e);
                                         }
                                     }
                                 }
@@ -10576,10 +10247,7 @@ impl PhotonApp {
                                 if let Err(e) = crate::storage::friendship::save_friendship_chains(
                                     chains, storage,
                                 ) {
-                                    crate::log(&format!(
-                                        "STORAGE CRITICAL: Failed to save chains after ACK: {}",
-                                        e
-                                    ));
+                                    crate::logf!("STORAGE CRITICAL: Failed to save chains after ACK: {}", e);
                                 }
                             }
                         } else {
@@ -10598,10 +10266,7 @@ impl PhotonApp {
                                     ),
                                 );
                             } else {
-                                crate::log(&format!(
-                                    "CHAT: ACK verification failed for {} (no matching pending message)",
-                                    handle
-                                ));
+                                crate::logf!("CHAT: ACK verification failed for {} (no matching pending message)", handle);
                             }
                         }
 
@@ -10627,19 +10292,13 @@ impl PhotonApp {
                                     if let Err(e) =
                                         crate::storage::contacts::save_messages(contact, storage)
                                     {
-                                        crate::log(&format!(
-                                            "STORAGE: Failed to save delivered status: {}",
-                                            e
-                                        ));
+                                        crate::logf!("STORAGE: Failed to save delivered status: {}", e);
                                     }
                                 }
                             }
                         }
                     } else {
-                        crate::log(&format!(
-                            "CHAT: No friendship found for ACK conversation_token {}...",
-                            hex::encode(&conversation_token[..8])
-                        ));
+                        crate::logf!("CHAT: No friendship found for ACK conversation_token {}...", hex::encode(&conversation_token[..8]));
                     }
 
                     // Defer the chain-weave seal until after the loop (outer `checker` borrow blocks `&mut self` here). No-op later unless both directions are proven.
@@ -10650,16 +10309,12 @@ impl PhotonApp {
 
                 // PT large transfer received (fallback - normally parsed in status.rs) This only fires if the PT data wasn't recognized as CLUTCH message
                 StatusUpdate::PTReceived { peer_addr, data } => {
-                    crate::log(&format!(
-                        "PT: Received unknown {} bytes from {} (not CLUTCH)",
-                        data.len(),
-                        peer_addr
-                    ));
+                    crate::logf!("PT: Received unknown {} bytes from {} (not CLUTCH)", data.len(), peer_addr);
                 }
 
                 // PT outbound transfer completed
                 StatusUpdate::PTSendComplete { peer_addr } => {
-                    crate::log(&format!("PT: Outbound transfer to {} completed", peer_addr));
+                    crate::logf!("PT: Outbound transfer to {} completed", peer_addr);
                     // TODO: Track completion for full CLUTCH flow
                 }
 
@@ -10677,11 +10332,7 @@ impl PhotonApp {
                     use crate::network::status::ClutchOfferRequest;
                     use crate::types::ClutchState;
 
-                    crate::log(&format!(
-                        "CLUTCH: Processing ClutchOfferReceived from {} (contacts={})",
-                        raw_sender_addr,
-                        self.contacts.len()
-                    ));
+                    crate::logf!("CLUTCH: Processing ClutchOfferReceived from {} (contacts={})", raw_sender_addr, self.contacts.len());
 
                     // Normalize to port 4383 (TCP source port is ephemeral)
                     let sender_addr =
@@ -10715,19 +10366,12 @@ impl PhotonApp {
                         }) {
                         Some(pair) => pair,
                         None => {
-                            crate::log(&format!(
-                                "CLUTCH: Received offer with unknown conversation_token {}",
-                                hex::encode(&conversation_token[..8])
-                            ));
+                            crate::logf!("CLUTCH: Received offer with unknown conversation_token {}", hex::encode(&conversation_token[..8]));
                             continue;
                         }
                     };
 
-                    crate::log(&format!(
-                        "CLUTCH: Received full offer (VSF verified) from {} tok={}...",
-                        sender_addr,
-                        hex::encode(&conversation_token[..8])
-                    ));
+                    crate::logf!("CLUTCH: Received full offer (VSF verified) from {} tok={}...", sender_addr, hex::encode(&conversation_token[..8]));
 
                     // Gate: the sender must be a CURRENTLY-TRUSTED device of this contact (fold-respecting `knows_device`). Post-fold this widens to ANY current fleet member (a friend's 2nd device can now CLUTCH — was pinned to first-met only) AND revokes a removed device (it fails membership); pre-fold + siblings pin to the one known device exactly as before.
                     let sender_known = self
@@ -10743,11 +10387,7 @@ impl PhotonApp {
                             continue;
                         }
                         Some(false) => {
-                            crate::log(&format!(
-                                "CLUTCH: offer from untrusted/removed device {} for {} — dropping",
-                                hex::encode(&sender_pubkey[..8]),
-                                hex::encode(&their_handle_hash[..8])
-                            ));
+                            crate::logf!("CLUTCH: offer from untrusted/removed device {} for {} — dropping", hex::encode(&sender_pubkey[..8]), hex::encode(&their_handle_hash[..8]));
                             continue;
                         }
                         Some(true) => {} // Trusted current device — proceed
@@ -10786,10 +10426,7 @@ impl PhotonApp {
                             if !contact.is_online {
                                 contact.is_online = true;
                                 changed = true;
-                                crate::log(&format!(
-                                    "Status: {} is now ONLINE (CLUTCH)",
-                                    crate::fp(&contact.handle_proof)
-                                ));
+                                crate::logf!("Status: {} is now ONLINE (CLUTCH)", crate::fp(&contact.handle_proof));
                             }
 
                             // Simple re-key logic: if stored keys don't match received keys, re-key. Same keys = duplicate/stale (ignore). Different/no keys = accept.
@@ -10808,10 +10445,7 @@ impl PhotonApp {
 
                                     if already_sent_kem {
                                         // We already sent KEM response but peer resent offer They didn't receive it - trigger re-send
-                                        crate::log(&format!(
-                                            "CLUTCH: Re-sending KEM response to {} (peer resent same offer)",
-                                            crate::fp(&contact.handle_proof)
-                                        ));
+                                        crate::logf!("CLUTCH: Re-sending KEM response to {} (peer resent same offer)", crate::fp(&contact.handle_proof));
                                         // The missing half of the deadlock recovery. The peer re-sending their offer means they're stuck, and the usual cause is that OUR offer never reached them — its one send may have gone to an address not yet confirmed reachable (e.g. their LAN IPv4 before their public/IPv6 was known) and been lost. Re-sending only our KEM can't help: they can't answer an offer they never received, so they keep re-sending theirs and queuing our KEMs forever. Re-arm our offer so the online/pong handler re-transmits it via race_addrs — now to the address their packets are actually arriving from. (Their side re-sends THEIR offer via the pending-KEM branch above; this is the symmetric OUR-offer resend.)
                                         if contact.clutch_state == ClutchState::Pending {
                                             contact.clutch_offer_sent = false;
@@ -10819,10 +10453,7 @@ impl PhotonApp {
                                         // Don't continue - fall thru to re-send KEM below
                                     } else {
                                         // Same keys but no KEM sent yet - truly duplicate, ignore
-                                        crate::log(&format!(
-                                            "CLUTCH: Ignoring duplicate offer from {} (same keys, no KEM sent yet)",
-                                            crate::fp(&contact.handle_proof)
-                                        ));
+                                        crate::logf!("CLUTCH: Ignoring duplicate offer from {} (same keys, no KEM sent yet)", crate::fp(&contact.handle_proof));
                                         continue;
                                     }
                                 } else {
@@ -10839,10 +10470,7 @@ impl PhotonApp {
                                             .try_into()
                                             .unwrap_or_default();
                                         if contact.completed_their_hqc_prefix == Some(their_prefix) {
-                                            crate::log(&format!(
-                                                "CLUTCH: Ignoring offer from {} — matches the key we already completed with (no re-key)",
-                                                crate::fp(&contact.handle_proof)
-                                            ));
+                                            crate::logf!("CLUTCH: Ignoring offer from {} — matches the key we already completed with (no re-key)", crate::fp(&contact.handle_proof));
                                             continue;
                                         }
                                         // Post-weave cooldown (see the twin guard in the no-keypairs branch below): a different-keyed offer arriving right after we wove is a crossed pre-completion re-offer from the peer's own racing ceremony, not a deliberate reset. Ignore it briefly so we don't nuke a just-woven chain into a divergent re-key. A genuine reset persists past the window.
@@ -10852,17 +10480,10 @@ impl PhotonApp {
                                             .clutch_completed_at
                                             .is_some_and(|t| t.elapsed() < REKEY_COOLDOWN)
                                         {
-                                            crate::log(&format!(
-                                                "CLUTCH: Ignoring different-keyed offer from {} — completed {}ms ago (post-completion re-key cooldown)",
-                                                crate::fp(&contact.handle_proof),
-                                                contact.clutch_completed_at.map(|t| t.elapsed().as_millis()).unwrap_or(0)
-                                            ));
+                                            crate::logf!("CLUTCH: Ignoring different-keyed offer from {} — completed {}ms ago (post-completion re-key cooldown)", crate::fp(&contact.handle_proof), contact.clutch_completed_at.map(|t| t.elapsed().as_millis()).unwrap_or(0));
                                             continue;
                                         }
-                                        crate::log(&format!(
-                                            "CLUTCH: Re-key from {} - we're Complete, they have new keys, nuking for fresh ceremony",
-                                            crate::fp(&contact.handle_proof)
-                                        ));
+                                        crate::logf!("CLUTCH: Re-key from {} - we're Complete, they have new keys, nuking for fresh ceremony", crate::fp(&contact.handle_proof));
                                         // Full re-key: nuke everything
                                         contact.clutch_our_keypairs = None;
                                         contact.clutch_slots.clear();
@@ -10875,20 +10496,14 @@ impl PhotonApp {
                                         if let Some(old_friendship_id) =
                                             contact.friendship_id.take()
                                         {
-                                            crate::log(&format!(
-                                                "CLUTCH: Invalidating old chains for {}",
-                                                crate::fp(&contact.handle_proof)
-                                            ));
+                                            crate::logf!("CLUTCH: Invalidating old chains for {}", crate::fp(&contact.handle_proof));
                                             chains_to_remove.push(old_friendship_id);
                                         }
                                         rekey_request =
                                             Some((contact.id.clone(), contact.handle_hash));
                                     } else {
                                         // Not Complete - just update their offer, don't regenerate our keys
-                                        crate::log(&format!(
-                                            "CLUTCH: {} sent new keys but we're mid-ceremony (state={:?}) - updating their offer, keeping our keys",
-                                            crate::fp(&contact.handle_proof), contact.clutch_state
-                                        ));
+                                        crate::logf!("CLUTCH: {} sent new keys but we're mid-ceremony (state={}) - updating their offer, keeping our keys", crate::fp(&contact.handle_proof), format!("{:?}", contact.clutch_state));
                                         // Clear their old offer data so we use the new one
                                         if let Some(slot) = contact.get_slot_mut(&their_handle_hash)
                                         {
@@ -10921,10 +10536,7 @@ impl PhotonApp {
                             // Store their offer in their slot
                             if let Some(slot) = contact.get_slot_mut(&their_handle_hash) {
                                 slot.offer = Some(their_offer.clone());
-                                crate::log(&format!(
-                                    "CLUTCH: Stored offer from {} in slot",
-                                    crate::fp(&contact.handle_proof)
-                                ));
+                                crate::logf!("CLUTCH: Stored offer from {} in slot", crate::fp(&contact.handle_proof));
                             }
 
                             // Store OUR offer in OUR slot too — every slot needs offer + a KEM contribution to be complete (PartySlot::is_complete). When their offer arrives first and we go straight to the KEM-response path, our own slot would otherwise keep offer=None forever, so all_slots_complete never fires and the ceremony never runs (the one-sided-nuke re-key stall: we have keys + sent a KEM, but our local offer was never recorded).
@@ -10949,11 +10561,7 @@ impl PhotonApp {
                             // Store their offer_provenance for ceremony_id derivation
                             if !contact.offer_provenances.contains(&offer_provenance) {
                                 contact.offer_provenances.push(offer_provenance);
-                                crate::log(&format!(
-                                    "CLUTCH: Stored offer_provenance from {} (now have {})",
-                                    crate::fp(&contact.handle_proof),
-                                    contact.offer_provenances.len()
-                                ));
+                                crate::logf!("CLUTCH: Stored offer_provenance from {} (now have {})", crate::fp(&contact.handle_proof), contact.offer_provenances.len());
                             }
 
                             // Compute ceremony_id if we have all provenances (2 for DM)
@@ -10968,18 +10576,11 @@ impl PhotonApp {
                                 )
                                 .as_bytes();
                                 contact.ceremony_id = Some(ceremony_id);
-                                crate::log(&format!(
-                                    "CLUTCH: Derived ceremony_id={}... from {} offer_provenances",
-                                    hex::encode(&ceremony_id[..4]),
-                                    contact.offer_provenances.len()
-                                ));
+                                crate::logf!("CLUTCH: Derived ceremony_id={}... from {} offer_provenances", hex::encode(&ceremony_id[..4]), contact.offer_provenances.len());
 
                                 // Process any pending KEM response that arrived before ceremony_id
                                 if let Some(pending_kem) = contact.clutch_pending_kem.take() {
-                                    crate::log(&format!(
-                                        "CLUTCH: Processing queued KEM response from {} (ceremony_id now available)",
-                                        crate::fp(&contact.handle_proof)
-                                    ));
+                                    crate::logf!("CLUTCH: Processing queued KEM response from {} (ceremony_id now available)", crate::fp(&contact.handle_proof));
                                     // Decapsulate remote KEM (remote encapsulated to local pubkeys)
                                     if let Some(ref local_keys) = contact.clutch_our_keypairs {
                                         let remote_secrets =
@@ -10993,10 +10594,7 @@ impl PhotonApp {
                                         {
                                             remote_slot.kem_secrets_from_them =
                                                 Some(remote_secrets);
-                                            crate::log(&format!(
-                                                "CLUTCH: Decapsulated queued KEM from {} - stored in slot",
-                                                crate::fp(&contact.handle_proof)
-                                            ));
+                                            crate::logf!("CLUTCH: Decapsulated queued KEM from {} - stored in slot", crate::fp(&contact.handle_proof));
                                         }
                                     }
                                 }
@@ -11011,10 +10609,7 @@ impl PhotonApp {
                                     &contact.handle_hash,
                                     storage,
                                 ) {
-                                    crate::log(&format!(
-                                        "CLUTCH: Failed to save slots for {}: {}",
-                                        crate::fp(&contact.handle_proof), e
-                                    ));
+                                    crate::logf!("CLUTCH: Failed to save slots for {}: {}", crate::fp(&contact.handle_proof), e);
                                 }
                             }
 
@@ -11075,11 +10670,7 @@ impl PhotonApp {
                                             {
                                                 local_slot.offer = Some(our_offer);
                                             }
-                                            crate::log(&format!(
-                                                "CLUTCH: Sent full offer to {} (prov={}...)",
-                                                crate::fp(&contact.handle_proof),
-                                                hex::encode(&our_offer_provenance[..4])
-                                            ));
+                                            crate::logf!("CLUTCH: Sent full offer to {} (prov={}...)", crate::fp(&contact.handle_proof), hex::encode(&our_offer_provenance[..4]));
 
                                             // Compute ceremony_id now that we have both provenances
                                             if contact.ceremony_id.is_none()
@@ -11093,10 +10684,7 @@ impl PhotonApp {
                                                 )
                                                 .as_bytes();
                                                 contact.ceremony_id = Some(ceremony_id);
-                                                crate::log(&format!(
-                                                    "CLUTCH: Derived ceremony_id={}... after sending offer",
-                                                    hex::encode(&ceremony_id[..4])
-                                                ));
+                                                crate::logf!("CLUTCH: Derived ceremony_id={}... after sending offer", hex::encode(&ceremony_id[..4]));
                                             }
 
                                             // Persist provenance/ceremony_id immediately
@@ -11110,18 +10698,12 @@ impl PhotonApp {
                                                         storage,
                                                     )
                                                 {
-                                                    crate::log(&format!(
-                                                        "Failed to persist CLUTCH provenance: {}",
-                                                        e
-                                                    ));
+                                                    crate::logf!("Failed to persist CLUTCH provenance: {}", e);
                                                 }
                                             }
                                         }
                                         Err(e) => {
-                                            crate::log(&format!(
-                                                "CLUTCH: Failed to build offer VSF: {}",
-                                                e
-                                            ));
+                                            crate::logf!("CLUTCH: Failed to build offer VSF: {}", e);
                                         }
                                     }
                                 }
@@ -11165,10 +10747,7 @@ impl PhotonApp {
                                                 .secret
                                                 .as_bytes(),
                                         });
-                                        crate::log(&format!(
-                                            "CLUTCH: Re-sent KEM response to {}",
-                                            crate::fp(&contact.handle_proof)
-                                        ));
+                                        crate::logf!("CLUTCH: Re-sent KEM response to {}", crate::fp(&contact.handle_proof));
                                     }
                                 } else if !already_sent_kem && !contact.clutch_kem_encap_in_progress
                                 {
@@ -11182,16 +10761,10 @@ impl PhotonApp {
                                             conv_token,
                                             sender_addr,
                                         ));
-                                        crate::log(&format!(
-                                            "CLUTCH: Will spawn KEM encapsulation for {}",
-                                            crate::fp(&contact.handle_proof)
-                                        ));
+                                        crate::logf!("CLUTCH: Will spawn KEM encapsulation for {}", crate::fp(&contact.handle_proof));
                                         changed = true;
                                     } else {
-                                        crate::log(&format!(
-                                            "CLUTCH: Deferring KEM response to {} - waiting for ceremony_id",
-                                            crate::fp(&contact.handle_proof)
-                                        ));
+                                        crate::logf!("CLUTCH: Deferring KEM response to {} - waiting for ceremony_id", crate::fp(&contact.handle_proof));
                                     }
                                 }
 
@@ -11203,10 +10776,7 @@ impl PhotonApp {
                             } else if contact.clutch_our_keypairs.is_none() {
                                 if contact.clutch_keygen_in_progress {
                                     // Keygen already running - don't spawn another
-                                    crate::log(&format!(
-                                        "CLUTCH: Received offer from {} but keygen already in progress - waiting",
-                                        crate::fp(&contact.handle_proof)
-                                    ));
+                                    crate::logf!("CLUTCH: Received offer from {} but keygen already in progress - waiting", crate::fp(&contact.handle_proof));
                                 } else {
                                     // No keypairs - need to respond (whether Complete or not) If Complete: peer lost their chains, accept re-key If not Complete: restart mid-ceremony or fresh re-key
                                     if contact.clutch_state == ClutchState::Complete {
@@ -11217,11 +10787,7 @@ impl PhotonApp {
                                             .clutch_completed_at
                                             .is_some_and(|t| t.elapsed() < REKEY_COOLDOWN)
                                         {
-                                            crate::log(&format!(
-                                                "CLUTCH: Ignoring offer from {} — completed {}ms ago (post-completion re-key cooldown; likely a crossed pre-completion offer, not a reset)",
-                                                crate::fp(&contact.handle_proof),
-                                                contact.clutch_completed_at.map(|t| t.elapsed().as_millis()).unwrap_or(0)
-                                            ));
+                                            crate::logf!("CLUTCH: Ignoring offer from {} — completed {}ms ago (post-completion re-key cooldown; likely a crossed pre-completion offer, not a reset)", crate::fp(&contact.handle_proof), contact.clutch_completed_at.map(|t| t.elapsed().as_millis()).unwrap_or(0));
                                             continue;
                                         }
                                         // Peer is sending an offer while we think we're Complete. This means either:
@@ -11231,10 +10797,7 @@ impl PhotonApp {
                                         // Since we have NO keypairs here (we're in the is_none branch), we can't re-respond even to the same offer. Accept as re-key.
                                         //
                                         // Note: If peer keeps re-sending same offer, both sides will eventually converge on a fresh ceremony (peer will regenerate keys after timeout).
-                                        crate::log(&format!(
-                                            "CLUTCH: Received offer from {} while Complete - peer lost chains, accepting re-key",
-                                            crate::fp(&contact.handle_proof)
-                                        ));
+                                        crate::logf!("CLUTCH: Received offer from {} while Complete - peer lost chains, accepting re-key", crate::fp(&contact.handle_proof));
                                         // Delete our old chains - they're useless now
                                         if let Some(fid) = contact.friendship_id {
                                             chains_to_remove.push(fid);
@@ -11273,10 +10836,7 @@ impl PhotonApp {
                                                     storage,
                                                 )
                                             {
-                                                crate::log(&format!(
-                                                    "Failed to persist re-key CLUTCH state: {}",
-                                                    e
-                                                ));
+                                                crate::logf!("Failed to persist re-key CLUTCH state: {}", e);
                                             }
                                         }
 
@@ -11295,18 +10855,12 @@ impl PhotonApp {
                                             .unwrap_or(false);
 
                                         if is_same_keys {
-                                            crate::log(&format!(
-                                                "CLUTCH: Ignoring retransmit from {} (already AwaitingProof)",
-                                                crate::fp(&contact.handle_proof)
-                                            ));
+                                            crate::logf!("CLUTCH: Ignoring retransmit from {} (already AwaitingProof)", crate::fp(&contact.handle_proof));
                                             break;
                                         }
 
                                         // Different keys = peer reset. Clear their slot and reset to Pending.
-                                        crate::log(&format!(
-                                            "CLUTCH: Peer {} reset while we were AwaitingProof - resetting",
-                                            crate::fp(&contact.handle_proof)
-                                        ));
+                                        crate::logf!("CLUTCH: Peer {} reset while we were AwaitingProof - resetting", crate::fp(&contact.handle_proof));
                                         if let Some(slot) = contact.get_slot_mut(&their_handle_hash)
                                         {
                                             slot.offer = None;
@@ -11323,10 +10877,7 @@ impl PhotonApp {
                                             .retain(|p| p != &offer_provenance);
                                         // Fall thru - normal flow will store new offer and trigger keygen
                                     } else {
-                                        crate::log(&format!(
-                                            "CLUTCH: Received offer from {} but no keypairs (state={:?}) - triggering keygen",
-                                            crate::fp(&contact.handle_proof), contact.clutch_state
-                                        ));
+                                        crate::logf!("CLUTCH: Received offer from {} but no keypairs (state={}) - triggering keygen", crate::fp(&contact.handle_proof), format!("{:?}", contact.clutch_state));
                                         contact.clutch_keygen_in_progress = true;
                                         rekey_request =
                                             Some((contact.id.clone(), contact.handle_hash));
@@ -11351,7 +10902,7 @@ impl PhotonApp {
                             if let Err(e) = crate::storage::friendship::delete_friendship_chains(
                                 &old_id, storage,
                             ) {
-                                crate::log(&format!("CLUTCH: Failed to delete old chains: {}", e));
+                                crate::logf!("CLUTCH: Failed to delete old chains: {}", e);
                             }
                         }
                     }
@@ -11419,19 +10970,12 @@ impl PhotonApp {
                         }) {
                         Some(pair) => pair,
                         None => {
-                            crate::log(&format!(
-                                "CLUTCH: Received KEM response with unknown conversation_token {}",
-                                hex::encode(&conversation_token[..8])
-                            ));
+                            crate::logf!("CLUTCH: Received KEM response with unknown conversation_token {}", hex::encode(&conversation_token[..8]));
                             continue;
                         }
                     };
 
-                    crate::log(&format!(
-                        "CLUTCH: Received KEM response (VSF verified) from {} tok={}...",
-                        sender_addr,
-                        hex::encode(&conversation_token[..8])
-                    ));
+                    crate::logf!("CLUTCH: Received KEM response (VSF verified) from {} tok={}...", sender_addr, hex::encode(&conversation_token[..8]));
 
                     // Gate: sender must be a currently-trusted device of this contact (fold-respecting). See the offer gate for the widen/revoke rationale.
                     let sender_known = self
@@ -11447,10 +10991,7 @@ impl PhotonApp {
                             continue;
                         }
                         Some(false) => {
-                            crate::log(&format!(
-                                "CLUTCH: KEM from untrusted/removed device {} — dropping",
-                                hex::encode(&sender_pubkey[..8])
-                            ));
+                            crate::logf!("CLUTCH: KEM from untrusted/removed device {} — dropping", hex::encode(&sender_pubkey[..8]));
                             continue;
                         }
                         Some(true) => {}
@@ -11478,20 +11019,13 @@ impl PhotonApp {
                             if !contact.is_online {
                                 contact.is_online = true;
                                 changed = true;
-                                crate::log(&format!(
-                                    "Status: {} is now ONLINE (CLUTCH)",
-                                    crate::fp(&contact.handle_proof)
-                                ));
+                                crate::logf!("Status: {} is now ONLINE (CLUTCH)", crate::fp(&contact.handle_proof));
                             }
 
                             // Verify ceremony_id matches (if we have one)
                             if let Some(our_ceremony_id) = contact.ceremony_id {
                                 if received_ceremony_id != our_ceremony_id {
-                                    crate::log(&format!(
-                                        "CLUTCH: ceremony_id mismatch! Received {:02x}{:02x}..., expected {:02x}{:02x}...",
-                                        received_ceremony_id[0], received_ceremony_id[1],
-                                        our_ceremony_id[0], our_ceremony_id[1]
-                                    ));
+                                    crate::logf!("CLUTCH: ceremony_id mismatch! Received {:02x}{:02x}..., expected {:02x}{:02x}...", received_ceremony_id[0], received_ceremony_id[1], our_ceremony_id[0], our_ceremony_id[1]);
                                     continue;
                                 }
                             } else {
@@ -11504,27 +11038,17 @@ impl PhotonApp {
                                         && their_kem.target_hqc_pub_prefix != our_hqc_prefix
                                     {
                                         // KEM targets different keys - truly stale, discard
-                                        crate::log(&format!(
-                                            "CLUTCH: KEM response from {} targets old keys (HQC {}) - discarding",
-                                            crate::fp(&contact.handle_proof),
-                                            hex::encode(&their_kem.target_hqc_pub_prefix)
-                                        ));
+                                        crate::logf!("CLUTCH: KEM response from {} targets old keys (HQC {}) - discarding", crate::fp(&contact.handle_proof), hex::encode(&their_kem.target_hqc_pub_prefix));
                                         break;
                                     }
                                     // KEM targets our current keys but we don't have ceremony_id yet — which means we haven't processed THEIR offer yet (ceremony_id derives from both offers). We can't complete without their offer (no offer → can't encapsulate our KEM → our slot never completes). QUEUE the KEM and wait for their offer to arrive; the ClutchOfferReceived path drains clutch_pending_kem once both offers are in and ceremony_id is derived. Their offer is a reliable PT stream now, so it WILL arrive — no deadlock. (The old "adopt ceremony_id + decapsulate + break" shortcut left our own slot incomplete and hung CLUTCH Pending forever.)
                                     let _ = (our_keys_cloned, received_ceremony_id);
-                                    crate::log(&format!(
-                                        "CLUTCH: KEM from {} arrived before their offer/ceremony_id - queuing until offer arrives",
-                                        crate::fp(&contact.handle_proof)
-                                    ));
+                                    crate::logf!("CLUTCH: KEM from {} arrived before their offer/ceremony_id - queuing until offer arrives", crate::fp(&contact.handle_proof));
                                     contact.clutch_pending_kem = Some(their_kem.clone());
                                     break;
                                 } else {
                                     // No keypairs at all - stale KEM encrypted to unknown keys
-                                    crate::log(&format!(
-                                        "CLUTCH: KEM response from {} arrived before keygen - discarding (encrypted to old keys)",
-                                        crate::fp(&contact.handle_proof)
-                                    ));
+                                    crate::logf!("CLUTCH: KEM response from {} arrived before keygen - discarding (encrypted to old keys)", crate::fp(&contact.handle_proof));
                                     break;
                                 }
                             }
@@ -11540,12 +11064,7 @@ impl PhotonApp {
                                     our_keys.hqc256_public[..8].try_into().unwrap();
                                 let all_zeros = their_kem.target_hqc_pub_prefix == [0u8; 8];
                                 if !all_zeros && their_kem.target_hqc_pub_prefix != our_hqc_prefix {
-                                    crate::log(&format!(
-                                        "CLUTCH: Stale KEM response from {} - target HQC {} != our HQC {} (discarding)",
-                                        crate::fp(&contact.handle_proof),
-                                        hex::encode(&their_kem.target_hqc_pub_prefix),
-                                        hex::encode(&our_hqc_prefix)
-                                    ));
+                                    crate::logf!("CLUTCH: Stale KEM response from {} - target HQC {} != our HQC {} (discarding)", crate::fp(&contact.handle_proof), hex::encode(&their_kem.target_hqc_pub_prefix), hex::encode(&our_hqc_prefix));
                                     break;
                                 }
                             }
@@ -11559,10 +11078,7 @@ impl PhotonApp {
                                 // Store in remote slot (secrets from remote to local)
                                 if let Some(slot) = contact.get_slot_mut(&their_handle_hash) {
                                     slot.kem_secrets_from_them = Some(remote_secrets);
-                                    crate::log(&format!(
-                                        "CLUTCH: Decapsulated KEM from {} - stored in slot",
-                                        crate::fp(&contact.handle_proof)
-                                    ));
+                                    crate::logf!("CLUTCH: Decapsulated KEM from {} - stored in slot", crate::fp(&contact.handle_proof));
                                 }
 
                                 // Backfill OUR offer in OUR slot if missing — guarantees all_slots_complete can fire here. Covers the stall where our own offer was never recorded (offer arrived before our keygen, or the offer-received path didn't store it), leaving our slot offer=None forever even though we have keys + KEM secrets.
@@ -11591,10 +11107,7 @@ impl PhotonApp {
                                         &contact.handle_hash,
                                         storage,
                                     ) {
-                                        crate::log(&format!(
-                                            "CLUTCH: Failed to save slots for {}: {}",
-                                            crate::fp(&contact.handle_proof), e
-                                        ));
+                                        crate::logf!("CLUTCH: Failed to save slots for {}: {}", crate::fp(&contact.handle_proof), e);
                                     }
                                 }
                                 changed = true;
@@ -11605,25 +11118,13 @@ impl PhotonApp {
                                     changed = true;
                                 } else {
                                     // Debug: why isn't ceremony complete after KEM response?
-                                    crate::log(&format!(
-                                        "CLUTCH: Slots not complete after KEM response for {} - checking state:",
-                                        crate::fp(&contact.handle_proof)
-                                    ));
+                                    crate::logf!("CLUTCH: Slots not complete after KEM response for {} - checking state:", crate::fp(&contact.handle_proof));
                                     for (i, slot) in contact.clutch_slots.iter().enumerate() {
-                                        crate::log(&format!(
-                                            "  Slot {}: offer={} from_them={} to_them={}",
-                                            i,
-                                            slot.offer.is_some(),
-                                            slot.kem_secrets_from_them.is_some(),
-                                            slot.kem_secrets_to_them.is_some()
-                                        ));
+                                        crate::logf!("  Slot {}: offer={} from_them={} to_them={}", i, slot.offer.is_some(), slot.kem_secrets_from_them.is_some(), slot.kem_secrets_to_them.is_some());
                                     }
                                 }
                             } else {
-                                crate::log(&format!(
-                                    "CLUTCH: Received KEM response but no keypairs for {}",
-                                    crate::fp(&contact.handle_proof)
-                                ));
+                                crate::logf!("CLUTCH: Received KEM response but no keypairs for {}", crate::fp(&contact.handle_proof));
                             }
                             break;
                         }
@@ -11645,11 +11146,7 @@ impl PhotonApp {
                     let sender_addr =
                         std::net::SocketAddr::new(raw_sender_addr.ip(), crate::PHOTON_PORT);
 
-                    crate::log(&format!(
-                        "CLUTCH: Received complete proof (VSF verified) from {} proof={}...",
-                        sender_addr,
-                        hex::encode(&payload.eggs_proof[..8])
-                    ));
+                    crate::logf!("CLUTCH: Received complete proof (VSF verified) from {} proof={}...", sender_addr, hex::encode(&payload.eggs_proof[..8]));
 
                     // Find contact by conversation_token. Party-id seam: sibling candidates token with the device-derived pid pair. (Our id isn't needed downstream — completion derives it internally — so it's discarded.)
                     let our_sibling_pid = self.our_sibling_pid();
@@ -11668,10 +11165,7 @@ impl PhotonApp {
                         }) {
                         Some(pair) => pair,
                         None => {
-                            crate::log(&format!(
-                                "CLUTCH: Received complete proof with unknown conversation_token {}",
-                                hex::encode(&conversation_token[..8])
-                            ));
+                            crate::logf!("CLUTCH: Received complete proof with unknown conversation_token {}", hex::encode(&conversation_token[..8]));
                             continue;
                         }
                     };
@@ -11690,10 +11184,7 @@ impl PhotonApp {
                             continue;
                         }
                         Some(false) => {
-                            crate::log(&format!(
-                                "CLUTCH: proof from untrusted/removed device {} — dropping",
-                                hex::encode(&sender_pubkey[..8])
-                            ));
+                            crate::logf!("CLUTCH: proof from untrusted/removed device {} — dropping", hex::encode(&sender_pubkey[..8]));
                             continue;
                         }
                         Some(true) => {}
@@ -11719,19 +11210,13 @@ impl PhotonApp {
                             if !contact.is_online {
                                 contact.is_online = true;
                                 changed = true;
-                                crate::log(&format!(
-                                    "Status: {} is now ONLINE (CLUTCH)",
-                                    crate::fp(&contact.handle_proof)
-                                ));
+                                crate::logf!("Status: {} is now ONLINE (CLUTCH)", crate::fp(&contact.handle_proof));
                             }
                             // We just received + VSF-verified an authenticated message from them — they're reachable NOW, so reflect online immediately instead of waiting for the next pong (fixes "CLUTCH completed but still shows offline").
                             if !contact.is_online {
                                 contact.is_online = true;
                                 changed = true;
-                                crate::log(&format!(
-                                    "Status: {} is now ONLINE (CLUTCH complete)",
-                                    crate::fp(&contact.handle_proof)
-                                ));
+                                crate::logf!("Status: {} is now ONLINE (CLUTCH complete)", crate::fp(&contact.handle_proof));
                             }
 
                             match contact.clutch_state {
@@ -11740,11 +11225,7 @@ impl PhotonApp {
                                     if let Some(our_proof) = contact.clutch_our_eggs_proof {
                                         if payload.eggs_proof == our_proof {
                                             // SUCCESS! Both parties computed same eggs
-                                            crate::log(&format!(
-                                                "CLUTCH: Proof verified with {}! ✓ proof={}...",
-                                                crate::fp(&contact.handle_proof),
-                                                hex::encode(&our_proof[..8])
-                                            ));
+                                            crate::logf!("CLUTCH: Proof verified with {}! ✓ proof={}...", crate::fp(&contact.handle_proof), hex::encode(&our_proof[..8]));
                                             contact.clutch_state = ClutchState::Complete;
                                             contact.clutch_completed_at = Some(std::time::Instant::now()); // arm the post-completion re-key cooldown (before the ~1s-later weave)
                                             // Fresh ceremony = fresh chain: void any prior weave seal so the probe refires (see the twin reset at the Early-proof-verified site for the full deadlock story).
@@ -11779,25 +11260,14 @@ impl PhotonApp {
                                                         contact, storage,
                                                     )
                                                 {
-                                                    crate::log(&format!(
-                                                        "Failed to save Complete state: {}",
-                                                        e
-                                                    ));
+                                                    crate::logf!("Failed to save Complete state: {}", e);
                                                 } else {
-                                                    crate::log(&format!(
-                                                        "CLUTCH: Saved {} Complete state to disk",
-                                                        crate::fp(&contact.handle_proof)
-                                                    ));
+                                                    crate::logf!("CLUTCH: Saved {} Complete state to disk", crate::fp(&contact.handle_proof));
                                                 }
                                             }
                                         } else {
                                             // Proof mismatch — NEVER panic. The common cause is a CROSSED / SUPERSEDED ceremony round: a fresh offer/KEM arrived after we computed our eggs, so their proof is from a different ceremony instance than ours. It is not an attack signal (a forged proof can't pass the read_verified signature gate that got us here). Reset to Pending so the re-key machinery re-establishes ONE agreed ceremony — identical to the mismatch handling in check_clutch_ceremonies.
-                                            crate::log(&format!(
-                                                "CLUTCH: proof mismatch with {} (likely a crossed/superseded round) — resetting to re-key. ours={}... theirs={}...",
-                                                crate::fp(&contact.handle_proof),
-                                                hex::encode(&our_proof[..8]),
-                                                hex::encode(&payload.eggs_proof[..8])
-                                            ));
+                                            crate::logf!("CLUTCH: proof mismatch with {} (likely a crossed/superseded round) — resetting to re-key. ours={}... theirs={}...", crate::fp(&contact.handle_proof), hex::encode(&our_proof[..8]), hex::encode(&payload.eggs_proof[..8]));
                                             contact.clutch_state = ClutchState::Pending;
                                             contact.clutch_our_eggs_proof = None;
                                             contact.clutch_their_eggs_proof = None;
@@ -11805,20 +11275,14 @@ impl PhotonApp {
                                         }
                                     } else {
                                         // Race condition: proof arrived before check_clutch_ceremonies processed our ceremony result. Store theirs for when we're ready.
-                                        crate::log(&format!(
-                                            "CLUTCH: Storing early proof from {} (AwaitingProof but our result not processed yet)",
-                                            crate::fp(&contact.handle_proof)
-                                        ));
+                                        crate::logf!("CLUTCH: Storing early proof from {} (AwaitingProof but our result not processed yet)", crate::fp(&contact.handle_proof));
                                         contact.clutch_their_eggs_proof = Some(payload.eggs_proof);
                                         changed = true;
                                     }
                                 }
                                 ClutchState::Pending => {
                                     // We haven't computed our proof yet - store theirs for later
-                                    crate::log(&format!(
-                                        "CLUTCH: Storing early proof from {} (we're still in Pending)",
-                                        crate::fp(&contact.handle_proof)
-                                    ));
+                                    crate::logf!("CLUTCH: Storing early proof from {} (we're still in Pending)", crate::fp(&contact.handle_proof));
                                     contact.clutch_their_eggs_proof = Some(payload.eggs_proof);
                                     changed = true;
                                 }
@@ -11826,24 +11290,15 @@ impl PhotonApp {
                                     // We're Complete but the peer is STILL sending its proof — that means our ClutchComplete never reached them (a dropped proof strands them in AwaitingProof forever, since we'd otherwise ignore the duplicate). Treat the duplicate as an implicit re-request: re-arm our proof-resend budget so the next ping cycle re-sends our ClutchComplete. This is the recovery half of the asymmetric-completion bug (the other half is the AwaitingProof side re-sending its proof while the peer is online).
                                     if contact.chain_woven {
                                         // The chain is proven end-to-end (probe exchanged + ACKed), so a duplicate proof is just late network echo — stop rebroadcasting.
-                                        crate::log(&format!(
-                                            "CLUTCH: Ignoring duplicate proof from {} — chain already woven, rebroadcast retired",
-                                            crate::fp(&contact.handle_proof)
-                                        ));
+                                        crate::logf!("CLUTCH: Ignoring duplicate proof from {} — chain already woven, rebroadcast retired", crate::fp(&contact.handle_proof));
                                     } else if contact.clutch_our_eggs_proof.is_some()
                                         && contact.ceremony_id.is_some()
                                     {
                                         contact.clutch_proof_resends_left = 5;
                                         changed = true;
-                                        crate::log(&format!(
-                                            "CLUTCH: Re-arming proof resend to {} — they re-sent their proof (our ClutchComplete was likely lost)",
-                                            crate::fp(&contact.handle_proof)
-                                        ));
+                                        crate::logf!("CLUTCH: Re-arming proof resend to {} — they re-sent their proof (our ClutchComplete was likely lost)", crate::fp(&contact.handle_proof));
                                     } else {
-                                        crate::log(&format!(
-                                            "CLUTCH: Duplicate proof from {} but our proof/ceremony cleared — cannot re-send",
-                                            crate::fp(&contact.handle_proof)
-                                        ));
+                                        crate::logf!("CLUTCH: Duplicate proof from {} but our proof/ceremony cleared — cannot re-send", crate::fp(&contact.handle_proof));
                                     }
                                 }
                             }
@@ -11873,10 +11328,7 @@ impl PhotonApp {
                             contact.local_ip = Some(local_ip);
                             contact.local_port = Some(port);
                             if old_local != Some(local_ip) || old_port != Some(port) {
-                                crate::log(&format!(
-                                    "LAN: Discovered {} at local {}:{}",
-                                    crate::fp(&contact.handle_proof), local_ip, port
-                                ));
+                                crate::logf!("LAN: Discovered {} at local {}:{}", crate::fp(&contact.handle_proof), local_ip, port);
                                 // Ping immediately so we don't wait for next scheduled cycle
                                 lan_ping_indices.push(idx);
                                 changed = true;
@@ -11920,10 +11372,7 @@ impl PhotonApp {
                                         "Avatar: local avatar bytes failed to validate, not serving to peer",
                                     );
                                 } else {
-                                    crate::log(&format!(
-                                        "Avatar: sending our avatar to mutual peer ({} bytes)",
-                                        avatar_vsf.len()
-                                    ));
+                                    crate::logf!("Avatar: sending our avatar to mutual peer ({} bytes)", avatar_vsf.len());
                                     checker.send_avatar_response(
                                         crate::network::status::AvatarResponseSend {
                                             peer_addr: sender_addr,
@@ -12099,12 +11548,7 @@ impl PhotonApp {
                                         )
                                     }) {
                                         Ok(vsf_bytes) => {
-                                            crate::log(&format!(
-                                                "HISTORY: serving page ({} rows, more={}) to {}",
-                                                page.rows.len(),
-                                                page.more,
-                                                sender_addr
-                                            ));
+                                            crate::logf!("HISTORY: serving page ({} rows, more={}) to {}", page.rows.len(), page.more, sender_addr);
                                             checker.send_history(
                                                 crate::network::status::HistorySendRequest {
                                                     peer_addr: sender_addr,
@@ -12114,13 +11558,11 @@ impl PhotonApp {
                                                 },
                                             );
                                         }
-                                        Err(e) => crate::log(&format!(
-                                            "HISTORY: page build failed: {e}"
-                                        )),
+                                        Err(e) => crate::logf!("HISTORY: page build failed: {}", e),
                                     }
                                 }
                                 Err(e) => {
-                                    crate::log(&format!("HISTORY: page read failed: {e}"))
+                                    crate::logf!("HISTORY: page read failed: {}", e)
                                 }
                             }
                         } else {
@@ -12210,16 +11652,10 @@ impl PhotonApp {
                                             rec.complete = true;
                                         }
                                     }
-                                    crate::log(&format!(
-                                        "HISTORY: merged page ({} new of {} rows, more={}, complete={})",
-                                        fresh.len(),
-                                        page.rows.len(),
-                                        page.more,
-                                        contact
+                                    crate::logf!("HISTORY: merged page ({} new of {} rows, more={}, complete={})", fresh.len(), page.rows.len(), page.more, contact
                                             .history_recovery
                                             .as_ref()
-                                            .is_some_and(|r| r.complete)
-                                    ));
+                                            .is_some_and(|r| r.complete));
 
                                     // Persist the new rows + the cursor (AGENT.md: every change hits disk).
                                     if let Some(storage) = self.storage.as_ref() {
@@ -12229,24 +11665,20 @@ impl PhotonApp {
                                                 &fresh,
                                                 storage,
                                             ) {
-                                                crate::log(&format!(
-                                                    "HISTORY: page persist failed: {e}"
-                                                ));
+                                                crate::logf!("HISTORY: page persist failed: {}", e);
                                             }
                                         }
                                         let contact_ref = &self.contacts[idx];
                                         if let Err(e) =
                                             crate::storage::contacts::save_contact(contact_ref, storage)
                                         {
-                                            crate::log(&format!(
-                                                "HISTORY: cursor persist failed: {e}"
-                                            ));
+                                            crate::logf!("HISTORY: cursor persist failed: {}", e);
                                         }
                                     }
                                     changed = true;
                                 }
                                 Err(e) => {
-                                    crate::log(&format!("HISTORY: page open failed ({e}) — dropped"))
+                                    crate::logf!("HISTORY: page open failed ({}) — dropped", e)
                                 }
                             }
                         }
@@ -12339,13 +11771,9 @@ impl PhotonApp {
                                                     vsf_bytes,
                                                 },
                                             );
-                                            crate::log(&format!(
-                                                "BLIND: served {} to sibling device {}",
-                                                if blob_opt.is_some() { "sealed S" } else { "found=0 (no live S)" },
-                                                hex::encode(&sender_pubkey.key[..4])
-                                            ));
+                                            crate::logf!("BLIND: served {} to sibling device {}", if blob_opt.is_some() { "sealed S" } else { "found=0 (no live S)" }, hex::encode(&sender_pubkey.key[..4]));
                                         }
-                                        Err(e) => crate::log(&format!("BLIND: sibling srv build failed: {e}")),
+                                        Err(e) => crate::logf!("BLIND: sibling srv build failed: {}", e),
                                     }
                                 }
                                 continue;
@@ -12376,7 +11804,7 @@ impl PhotonApp {
                                     ) {
                                         Ok(()) => true,
                                         Err(e) => {
-                                            crate::log(&format!("BLIND: deposit persist failed: {e}"));
+                                            crate::logf!("BLIND: deposit persist failed: {}", e);
                                             false
                                         }
                                     },
@@ -12404,13 +11832,9 @@ impl PhotonApp {
                                                         vsf_bytes,
                                                     },
                                                 );
-                                                crate::log(&format!(
-                                                    "BLIND: stored deposit from {} device {} — acked (disk-committed)",
-                                                    crate::fp(&self.contacts[idx].handle_proof),
-                                                    hex::encode(&sender_pubkey.key[..4])
-                                                ));
+                                                crate::logf!("BLIND: stored deposit from {} device {} — acked (disk-committed)", crate::fp(&self.contacts[idx].handle_proof), hex::encode(&sender_pubkey.key[..4]));
                                             }
-                                            Err(e) => crate::log(&format!("BLIND: ack build failed: {e}")),
+                                            Err(e) => crate::logf!("BLIND: ack build failed: {}", e),
                                         }
                                     }
                                 }
@@ -12443,14 +11867,9 @@ impl PhotonApp {
                                                     vsf_bytes,
                                                 },
                                             );
-                                            crate::log(&format!(
-                                                "BLIND: served {} to {} device {}",
-                                                if blob_opt.is_some() { "deposit" } else { "found=0 (no deposit)" },
-                                                crate::fp(&self.contacts[idx].handle_proof),
-                                                hex::encode(&sender_pubkey.key[..4])
-                                            ));
+                                            crate::logf!("BLIND: served {} to {} device {}", if blob_opt.is_some() { "deposit" } else { "found=0 (no deposit)" }, crate::fp(&self.contacts[idx].handle_proof), hex::encode(&sender_pubkey.key[..4]));
                                         }
-                                        Err(e) => crate::log(&format!("BLIND: srv build failed: {e}")),
+                                        Err(e) => crate::logf!("BLIND: srv build failed: {}", e),
                                     }
                                 }
                             }
@@ -12471,20 +11890,17 @@ impl PhotonApp {
                                     &self.contacts[idx],
                                     storage,
                                 ) {
-                                    crate::log(&format!("BLIND: deposited-flag persist failed: {e}"));
+                                    crate::logf!("BLIND: deposited-flag persist failed: {}", e);
                                 }
                             }
-                            crate::log(&format!(
-                                "BLIND: deposit confirmed at {}",
-                                crate::fp(&self.contacts[idx].handle_proof)
-                            ));
+                            crate::logf!("BLIND: deposit confirmed at {}", crate::fp(&self.contacts[idx].handle_proof));
                             // First confirmation flips Provisional → Live: from here S may author tags, because at least one friend durably holds the recovery blind.
                             if matches!(self.private_s, crate::crypto::blind::PrivateS::Provisional(_)) {
                                 if let crate::crypto::blind::PrivateS::Provisional(s) =
                                     std::mem::take(&mut self.private_s)
                                 {
                                     let sid = crate::crypto::blind::s_id(&s);
-                                    crate::log(&format!("S: live (s_id={})", hex::encode(sid)));
+                                    crate::logf!("S: live (s_id={})", hex::encode(sid));
                                     self.private_s =
                                         crate::crypto::blind::PrivateS::Live { s, s_id: sid };
                                 }
@@ -12521,11 +11937,7 @@ impl PhotonApp {
                                                 if *s_id != sid =>
                                             {
                                                 if sid < *s_id {
-                                                    crate::log(&format!(
-                                                        "S: CRITICAL — divergent epochs across the fleet; ADOPTING the lower ({} < {}) and redepositing everywhere",
-                                                        hex::encode(sid),
-                                                        hex::encode(s_id)
-                                                    ));
+                                                    crate::logf!("S: CRITICAL — divergent epochs across the fleet; ADOPTING the lower ({} < {}) and redepositing everywhere", hex::encode(sid), hex::encode(s_id));
                                                     self.private_s =
                                                         crate::crypto::blind::PrivateS::Live {
                                                             s,
@@ -12537,21 +11949,14 @@ impl PhotonApp {
                                                         }
                                                     }
                                                 } else {
-                                                    crate::log(&format!(
-                                                        "S: CRITICAL — divergent epochs across the fleet; keeping the lower ({} < {}), sibling converges on its next probe",
-                                                        hex::encode(s_id),
-                                                        hex::encode(sid)
-                                                    ));
+                                                    crate::logf!("S: CRITICAL — divergent epochs across the fleet; keeping the lower ({} < {}), sibling converges on its next probe", hex::encode(s_id), hex::encode(sid));
                                                 }
                                             }
                                             crate::crypto::blind::PrivateS::Live { .. } => {
                                                 crate::log("S: sibling cross-check OK (same epoch)");
                                             }
                                             _ => {
-                                                crate::log(&format!(
-                                                    "S: adopted from fleet sibling (check OK, s_id={})",
-                                                    hex::encode(sid)
-                                                ));
+                                                crate::logf!("S: adopted from fleet sibling (check OK, s_id={})", hex::encode(sid));
                                                 self.private_s =
                                                     crate::crypto::blind::PrivateS::Live {
                                                         s,
@@ -12586,22 +11991,14 @@ impl PhotonApp {
                                                 if *s_id != sid =>
                                             {
                                                 // Split-brain: a friend holds a DIFFERENT epoch than the S we're running. Keep ours (it has live confirmations); the redeposit driver will overwrite theirs.
-                                                crate::log(&format!(
-                                                    "BLIND: CRITICAL — divergent S epoch from {} (theirs {}, ours {}); keeping ours + redepositing",
-                                                    crate::fp(&self.contacts[idx].handle_proof),
-                                                    hex::encode(sid),
-                                                    hex::encode(s_id)
-                                                ));
+                                                crate::logf!("BLIND: CRITICAL — divergent S epoch from {} (theirs {}, ours {}); keeping ours + redepositing", crate::fp(&self.contacts[idx].handle_proof), hex::encode(sid), hex::encode(s_id));
                                                 self.contacts[idx].blind_deposited = false;
                                             }
                                             crate::crypto::blind::PrivateS::Live { .. } => {
                                                 crate::log("BLIND: cross-check OK (same S epoch)");
                                             }
                                             _ => {
-                                                crate::log(&format!(
-                                                    "S: reconstituted from friend blind (check OK, s_id={})",
-                                                    hex::encode(sid)
-                                                ));
+                                                crate::logf!("S: reconstituted from friend blind (check OK, s_id={})", hex::encode(sid));
                                                 self.private_s = crate::crypto::blind::PrivateS::Live {
                                                     s,
                                                     s_id: sid,
@@ -12619,19 +12016,13 @@ impl PhotonApp {
                                     }
                                     None => {
                                         // Tampered blob or a foreign device's deposit under our key — treat as a miss for THIS friend, loudly (a valid deposit at another friend must still win over genesis).
-                                        crate::log(&format!(
-                                            "BLIND: CRITICAL — served blob failed the check from {} (tampered?); treating as miss",
-                                            crate::fp(&self.contacts[idx].handle_proof)
-                                        ));
+                                        crate::logf!("BLIND: CRITICAL — served blob failed the check from {} (tampered?); treating as miss", crate::fp(&self.contacts[idx].handle_proof));
                                         self.contacts[idx].blind_probe_missed = true;
                                         check_s_genesis = true;
                                     }
                                 }
                             } else {
-                                crate::log(&format!(
-                                    "BLIND: no deposit at {} (found=0)",
-                                    crate::fp(&self.contacts[idx].handle_proof)
-                                ));
+                                crate::logf!("BLIND: no deposit at {} (found=0)", crate::fp(&self.contacts[idx].handle_proof));
                                 self.contacts[idx].blind_probe_missed = true;
                                 check_s_genesis = true;
                             }
@@ -12643,7 +12034,7 @@ impl PhotonApp {
                     // Our own public address, learned via peer-echoed reflection on the live UDP data socket. Store it for candidate gathering and the announce to publish (so our `PeerRecord.ip` is the real data-socket address, not fgtw.org's cone-only TLS view).
                     if self.our_reflexive != Some(addr) {
                         self.our_reflexive = Some(addr);
-                        crate::log(&format!("TRAVERSE: our reflexive address = {}", addr));
+                        crate::logf!("TRAVERSE: our reflexive address = {}", addr);
                     }
                 }
 
@@ -12658,11 +12049,7 @@ impl PhotonApp {
                         contact.punch_unvalidated_cycles = 0;
                         match contact.validated_path {
                             None => {
-                                crate::log(&format!(
-                                    "TRAVERSE: path validated to {} = {}",
-                                    crate::fp(&contact.handle_proof).as_str(),
-                                    remote
-                                ));
+                                crate::logf!("TRAVERSE: path validated to {} = {}", crate::fp(&contact.handle_proof).as_str(), remote);
                                 contact.validated_path = Some((remote, now));
                             }
                             Some((existing, _)) if existing == remote => {
@@ -12719,13 +12106,7 @@ impl PhotonApp {
                         .collect();
 
                     if !to_retransmit.is_empty() {
-                        crate::log(&format!(
-                            "CHAT: Retransmitting {} of {} pending message(s) to {} (came online, last_received={:?})",
-                            to_retransmit.len(),
-                            pending.len(),
-                            handle,
-                            last_received_ef6
-                        ));
+                        crate::logf!("CHAT: Retransmitting {} of {} pending message(s) to {} (came online, last_received={})", to_retransmit.len(), pending.len(), handle, format!("{:?}", last_received_ef6));
                         let conversation_token = chains.conversation_token;
                         for msg in to_retransmit {
                             if let Some(ref checker) = self.status_checker {
@@ -12738,17 +12119,11 @@ impl PhotonApp {
                                     ciphertext: msg.ciphertext.clone(),
                                     eagle_time: msg.eagle_time,
                                 });
-                                crate::log(&format!(
-                                    "CHAT: Retransmitted msg with eagle_time {} to {}",
-                                    msg.eagle_time, handle
-                                ));
+                                crate::logf!("CHAT: Retransmitted msg with eagle_time {} to {}", msg.eagle_time, handle);
                             }
                         }
                     } else if !pending.is_empty() {
-                        crate::log(&format!(
-                            "CHAT: {} pending messages but peer already has them (last_received={:?})",
-                            pending.len(), last_received_ef6
-                        ));
+                        crate::logf!("CHAT: {} pending messages but peer already has them (last_received={})", pending.len(), format!("{:?}", last_received_ef6));
                     }
                 }
             }
@@ -12780,7 +12155,7 @@ impl PhotonApp {
                 for contact in self.contacts.iter_mut().filter(|c| c.published_name_dirty) {
                     contact.published_name_dirty = false;
                     if let Err(e) = crate::storage::contacts::save_contact_state(contact, storage) {
-                        crate::log(&format!("CONTACT: published-name persist failed: {e}"));
+                        crate::logf!("CONTACT: published-name persist failed: {}", e);
                     }
                 }
             }
@@ -13002,9 +12377,7 @@ impl PhotonApp {
         self.pending_broadcast_signal = -1; // Android: drop the sticky session broadcast
         self.state = AppState::Launch(LaunchState::Fresh);
         self.refocus_handle_select_all();
-        crate::log(&format!(
-            "CLEAN: wiped {count} vault file(s) + cleared session — device is a blank slate, ready to attest fresh or join another fleet"
-        ));
+        crate::logf!("CLEAN: wiped {} vault file(s) + cleared session — device is a blank slate, ready to attest fresh or join another fleet", count);
     }
 
     /// Dispatch a chord action character (`a`, `h`, `p`, etc.) that was pressed while both brackets are held. Returns true if anything happened (caller should request a redraw); false for unknown letters (no-op fallthrough — no whitelist so new bindings only add to dispatch, not gating).

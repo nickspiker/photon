@@ -196,7 +196,7 @@ async fn load_bootstrap_peers_inner(
     // Parse peer list
     let peers = parse_peer_list(&response_bytes, device_key)?;
 
-    crate::log(&format!("FGTW: Received {} peer(s)", peers.len()));
+    crate::logf!("FGTW: Received {} peer(s)", peers.len());
 
     Ok(peers)
 }
@@ -425,10 +425,7 @@ fn parse_peer_list(bytes: &[u8], device_key: &Keypair) -> Result<Vec<PeerRecord>
     for (idx, field) in peer_fields.into_iter().enumerate() {
         match parse_peer_from_field(field) {
             Ok(peer) => peers.push(peer),
-            Err(e) => crate::log(&format!(
-                "Bootstrap: skipping malformed peer record at index {} = {}",
-                idx, e
-            )),
+            Err(e) => crate::logf!("Bootstrap: skipping malformed peer record at index {} = {}", idx, e),
         }
     }
 

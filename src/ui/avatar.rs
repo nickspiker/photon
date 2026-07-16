@@ -805,7 +805,7 @@ pub fn load_cached_avatar_from_seed(
         Ok(Some(data)) => data,
         Ok(None) => return None,
         Err(e) => {
-            crate::log(&format!("Avatar: vault read failed: {}", e));
+            crate::logf!("Avatar: vault read failed: {}", e);
             return None;
         }
     };
@@ -832,7 +832,7 @@ pub fn load_cached_avatar_pinned(
         Ok(Some(data)) => data,
         Ok(None) => return None,
         Err(e) => {
-            crate::log(&format!("Avatar: vault read failed: {}", e));
+            crate::logf!("Avatar: vault read failed: {}", e);
             return None;
         }
     };
@@ -860,7 +860,7 @@ pub fn download_avatar_pinned(
         return Some(cached);
     }
     let storage_key = URL_SAFE_NO_PAD.encode(&avatar_pin[32..]);
-    crate::log(&format!("Avatar: Fetching pinned contact avatar from FGTW ({}...)", &storage_key[..8]));
+    crate::logf!("Avatar: Fetching pinned contact avatar from FGTW ({}...)", &storage_key[..8]);
     let get_vsf = vsf::VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
         .add_section(
@@ -877,7 +877,7 @@ pub fn download_avatar_pinned(
         .send()
         .ok()?;
     if !response.status().is_success() {
-        crate::log(&format!("Avatar: FGTW fetch failed ({})", response.status()));
+        crate::logf!("Avatar: FGTW fetch failed ({})", response.status());
         return None;
     }
     let vsf_data = response.bytes().ok()?.to_vec();
@@ -887,7 +887,7 @@ pub fn download_avatar_pinned(
     let loaded = load_avatar_from_bytes_with_key(&vsf_data, &key)?;
     // Validated — cache at the party-id scope so a restart is local-first.
     if let Err(e) = storage.write_addr(&crate::storage::vault_key("avatar", party_id), &vsf_data) {
-        crate::log(&format!("Avatar: cache write failed: {}", e));
+        crate::logf!("Avatar: cache write failed: {}", e);
     }
     Some(loaded)
 }
@@ -965,7 +965,7 @@ pub fn load_avatar_from_bytes_with_key(
     let encrypted = match avatar_encrypted_payload(vsf_data) {
         Ok(payload) => payload,
         Err(e) => {
-            crate::log(&format!("Avatar: {}", e));
+            crate::logf!("Avatar: {}", e);
             return None;
         }
     };
@@ -974,7 +974,7 @@ pub fn load_avatar_from_bytes_with_key(
     let av1_data = match decrypt_av1_data_with_key(&encrypted, key) {
         Ok(data) => data,
         Err(e) => {
-            crate::log(&format!("Avatar: Decryption failed: {}", e));
+            crate::logf!("Avatar: Decryption failed: {}", e);
             return None;
         }
     };
@@ -983,7 +983,7 @@ pub fn load_avatar_from_bytes_with_key(
     let (width, height, pixels) = match decode_avatar(&av1_data) {
         Ok(result) => result,
         Err(e) => {
-            crate::log(&format!("Avatar: decode_avatar failed: {}", e));
+            crate::logf!("Avatar: decode_avatar failed: {}", e);
             return None;
         }
     };
@@ -1092,7 +1092,7 @@ pub fn get_local_avatar_timestamp_from_seed(
         }
         Err(_e) => {
             #[cfg(feature = "development")]
-            crate::log(&format!("Avatar: vault read failed: {}", _e));
+            crate::logf!("Avatar: vault read failed: {}", _e);
             return None;
         }
     };
@@ -1103,7 +1103,7 @@ pub fn get_local_avatar_timestamp_from_seed(
         Some(VsfType::e(et)) => {
             let ts = EagleTime::new(et).oscillations();
             #[cfg(feature = "development")]
-            crate::log(&format!("Avatar: Local timestamp = {:?}", ts));
+            crate::logf!("Avatar: Local timestamp = {}", format!("{:?}", ts));
             ts
         }
         _ => None,
@@ -1530,10 +1530,7 @@ pub fn upload_avatar_from_seed(
         return Err(format!("Avatar upload rejected by FGTW {}: {}", reason, detail));
     }
 
-    crate::log(&format!(
-        "Avatar: Uploaded to FGTW (key: {}...)",
-        &storage_key[..8]
-    ));
+    crate::logf!("Avatar: Uploaded to FGTW (key: {}...)", &storage_key[..8]);
     Ok(storage_key)
 }
 
@@ -1556,10 +1553,8 @@ pub fn download_avatar(
 
     // Not cached locally, fetch from FGTW
     let storage_key = avatar_storage_key(handle);
-    crate::log(&format!(
-        "Avatar: Fetching from FGTW ({}...)", // storage_key is the public lookup id; the handle is not logged
-        &storage_key[..8]
-    ));
+    crate::logf!("Avatar: Fetching from FGTW ({}...)", // storage_key is the public lookup id; the handle is not logged
+        &storage_key[..8]);
 
     // Same VSF conduit as everything else: POST / with an `avatar_get` section (server route at route_vsf_request -> handle_avatar_get). The old GET /avatar/{key} had no router arm → 404.
     let get_vsf = vsf::VsfBuilder::new()
@@ -1580,7 +1575,7 @@ pub fn download_avatar(
         .ok()?;
 
     if !response.status().is_success() {
-        crate::log(&format!("Avatar: FGTW returned {}", response.status()));
+        crate::logf!("Avatar: FGTW returned {}", response.status());
         return None;
     }
 
@@ -1600,7 +1595,7 @@ pub fn download_avatar(
         return None;
     }
     if let Some((reason, detail)) = fgtw::client::error_frame(&vsf_data) {
-        crate::log(&format!("Avatar: FGTW error frame {}: {}", reason, detail));
+        crate::logf!("Avatar: FGTW error frame {}: {}", reason, detail);
         return None;
     }
 
@@ -1624,10 +1619,7 @@ pub fn download_avatar_from_seed(
     }
 
     let storage_key = avatar_storage_key_from_seed(identity_seed);
-    crate::log(&format!(
-        "Avatar: Fetching own avatar from FGTW ({}...)",
-        &storage_key[..8]
-    ));
+    crate::logf!("Avatar: Fetching own avatar from FGTW ({}...)", &storage_key[..8]);
 
     let get_vsf = vsf::VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
@@ -1647,7 +1639,7 @@ pub fn download_avatar_from_seed(
         .ok()?;
 
     if !response.status().is_success() {
-        crate::log(&format!("Avatar: FGTW returned {} for own avatar", response.status()));
+        crate::logf!("Avatar: FGTW returned {} for own avatar", response.status());
         return None;
     }
 
@@ -1658,7 +1650,7 @@ pub fn download_avatar_from_seed(
         return None;
     }
     if let Some((reason, detail)) = fgtw::client::error_frame(&vsf_data) {
-        crate::log(&format!("Avatar: FGTW error frame {}: {}", reason, detail));
+        crate::logf!("Avatar: FGTW error frame {}: {}", reason, detail);
         return None;
     }
 
@@ -1712,14 +1704,14 @@ pub fn sync_avatar_bidirectional_from_seed(
     let upload = |label: &str| -> AvatarSyncResult {
         match handle_proof {
             Some(hp) => {
-                crate::log(&format!("Avatar sync: {}, uploading local", label));
+                crate::logf!("Avatar sync: {}, uploading local", label);
                 match upload_avatar_from_seed(device_secret, identity_seed, hp, storage) {
                     Ok(_) => AvatarSyncResult::LocalNewer,
                     Err(e) => AvatarSyncResult::Error(format!("Upload failed: {}", e)),
                 }
             }
             None => {
-                crate::log(&format!("Avatar sync: {}, but no handle_proof for upload", label));
+                crate::logf!("Avatar sync: {}, but no handle_proof for upload", label);
                 AvatarSyncResult::Error("No handle_proof for upload".to_string())
             }
         }
@@ -1816,10 +1808,7 @@ pub fn sync_avatar_bidirectional_from_seed(
             } else if server > local {
                 // Adopt the server copy only if it validates — never overwrite a good local avatar with a body that fails to decode.
                 if load_avatar_from_bytes_from_seed(&vsf_data, identity_seed).is_some() {
-                    crate::log(&format!(
-                        "Avatar sync: Server newer ({} > {}), caching",
-                        server, local
-                    ));
+                    crate::logf!("Avatar sync: Server newer ({} > {}), caching", server, local);
                     let _ = save_avatar_to_cache_from_seed(identity_seed, &vsf_data, storage);
                     AvatarSyncResult::ServerNewer
                 } else {
@@ -1886,7 +1875,7 @@ pub fn sync_avatar_background(
                 None
             }
             AvatarSyncResult::Error(e) => {
-                crate::log(&format!("Avatar sync error: {}", e));
+                crate::logf!("Avatar sync error: {}", e);
                 None
             }
         };
