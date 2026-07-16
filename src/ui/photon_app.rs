@@ -3801,7 +3801,7 @@ impl FluorApp for PhotonApp {
                 };
                 ctx.text.draw_text_left_u32(
                     &mut canvas,
-                    &self.contacts[ci].display_name(),
+                    &self.contacts[ci].display_name_or_pending(),
                     text_x,
                     cy,
                     text_size,
@@ -4059,7 +4059,7 @@ impl FluorApp for PhotonApp {
                     let name_y = avatar_y + avatar_r + unit * 1.2;
                     ctx.text.draw_text_center_u32(
                         &mut canvas,
-                        &contact.display_name(),
+                        &contact.display_name_or_pending(),
                         buf_w as f32 * 0.5,
                         name_y,
                         name_size,
@@ -10339,7 +10339,7 @@ impl PhotonApp {
                         std::net::SocketAddr::new(raw_sender_addr.ip(), crate::PHOTON_PORT);
 
                     // Get our handle_hash
-                    let our_handle_hash = match self.session.as_ref().map(|s| s.identity_seed) {
+                    let our_handle_hash = match self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) {  // PARTY ID (not raw seed): the conversation token + slots key on party ids on the SEND side; the receive path must match or every friend ceremony stalls at "unknown conversation_token" (2026-07-16).
                         Some(h) => h,
                         None => {
                             #[cfg(feature = "development")]
@@ -10943,7 +10943,7 @@ impl PhotonApp {
                         std::net::SocketAddr::new(raw_sender_addr.ip(), crate::PHOTON_PORT);
 
                     // Get our handle_hash
-                    let our_handle_hash = match self.session.as_ref().map(|s| s.identity_seed) {
+                    let our_handle_hash = match self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) {  // PARTY ID (not raw seed): the conversation token + slots key on party ids on the SEND side; the receive path must match or every friend ceremony stalls at "unknown conversation_token" (2026-07-16).
                         Some(h) => h,
                         None => {
                             #[cfg(feature = "development")]
@@ -11148,8 +11148,13 @@ impl PhotonApp {
 
                     crate::logf!("CLUTCH: Received complete proof (VSF verified) from {} proof={}...", sender_addr, hex::encode(&payload.eggs_proof[..8]));
 
-                    // Find contact by conversation_token. Party-id seam: sibling candidates token with the device-derived pid pair. (Our id isn't needed downstream — completion derives it internally — so it's discarded.)
+                    // Find contact by conversation_token. Party-id seam: BOTH participants token on their PARTY IDS (send derives ours via identity_party_id; matching on the raw seed here was the "unknown conversation_token" stall). Sibling candidates token with the device-derived pid pair. (Our id isn't needed downstream — completion derives it internally — so it's discarded.)
                     let our_sibling_pid = self.our_sibling_pid();
+                    let our_handle_hash =
+                        match self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) {
+                            Some(h) => h,
+                            None => continue,
+                        };
                     let (their_handle_hash, _our_handle_hash) = match self
                         .contacts
                         .iter()
