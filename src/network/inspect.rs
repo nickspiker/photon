@@ -192,7 +192,7 @@ pub fn vsf_write(
     device_secret: &[u8; 32],
 ) -> std::io::Result<()> {
     #[cfg(feature = "development")]
-    crate::log(&format!("STORAGE: vsf_write: start {}", label));
+    crate::logf!("STORAGE: vsf_write: start {}", label);
 
     // Derive device pubkey
     let signing_key = SigningKey::from_bytes(device_secret);
@@ -223,14 +223,10 @@ pub fn vsf_write(
     crate::log("STORAGE: vsf_write: signed");
 
     #[cfg(feature = "development")]
-    crate::log(&format!(
-        "STORAGE: vsf_write: {} file_len={}",
-        label,
-        vsf_file.len()
-    ));
+    crate::logf!("STORAGE: vsf_write: {} file_len={}", label, vsf_file.len());
 
     #[cfg(feature = "development")]
-    crate::log(&format!("STORAGE: vsf_write: writing to {:?}", path));
+    crate::logf!("STORAGE: vsf_write: writing to {}", format!("{:?}", path));
 
     crate::storage::write_file(path, &vsf_file, label)?;
 
@@ -303,11 +299,7 @@ pub fn vsf_read(path: &Path, label: &str, device_secret: &[u8; 32]) -> std::io::
         if field.name == "payload" {
             if let Some(VsfType::v(b'e', data)) = field.values.first() {
                 #[cfg(feature = "development")]
-                crate::log(&format!(
-                    "STORAGE: vsf_read: {} verified, payload_len={}",
-                    label,
-                    data.len()
-                ));
+                crate::logf!("STORAGE: vsf_read: {} verified, payload_len={}", label, data.len());
                 return Ok(data.clone());
             }
         }

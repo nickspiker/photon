@@ -75,10 +75,7 @@ pub async fn send_via_relay(
     if !status.is_success() {
         return Err(format!("Relay failed (transport {})", status));
     }
-    crate::log(&format!(
-        "RELAY: Stored message for {}...",
-        hex::encode(&recipient_pubkey[..4])
-    ));
+    crate::logf!("RELAY: Stored message for {}...", hex::encode(&recipient_pubkey[..4]));
     Ok(())
 }
 
@@ -143,7 +140,7 @@ pub async fn fetch_relay_messages(keypair: &Keypair) -> Result<Vec<u8>, String> 
         .unwrap_or_default();
 
     if !messages.is_empty() {
-        crate::log(&format!("RELAY: Fetched {} bytes", messages.len()));
+        crate::logf!("RELAY: Fetched {} bytes", messages.len());
     }
 
     Ok(messages)
@@ -191,10 +188,7 @@ pub fn send_via_relay_sync(
     if !status.is_success() {
         return Err(format!("Relay failed (transport {})", status));
     }
-    crate::log(&format!(
-        "RELAY: Stored message for {}...",
-        hex::encode(&recipient_pubkey[..4])
-    ));
+    crate::logf!("RELAY: Stored message for {}...", hex::encode(&recipient_pubkey[..4]));
     Ok(())
 }
 
@@ -250,7 +244,7 @@ pub fn fetch_relay_messages_sync(keypair: &Keypair) -> Result<Vec<u8>, String> {
         .unwrap_or_default();
 
     if !messages.is_empty() {
-        crate::log(&format!("RELAY: Fetched {} bytes", messages.len()));
+        crate::logf!("RELAY: Fetched {} bytes", messages.len());
     }
 
     Ok(messages)

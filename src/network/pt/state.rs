@@ -461,11 +461,7 @@ impl InboundTransfer {
         if success {
             crate::log("PT: Transfer verified successfully");
         } else {
-            crate::log(&format!(
-                "PT: Hash mismatch - expected {:?}, got {:?}",
-                hex::encode(&self.receive_buffer.expected_hash()[..8]),
-                hex::encode(&final_hash[..8])
-            ));
+            crate::logf!("PT: Hash mismatch - expected {}, got {}", format!("{:?}", hex::encode(&self.receive_buffer.expected_hash()[..8])), format!("{:?}", hex::encode(&final_hash[..8])));
         }
 
         PTComplete {

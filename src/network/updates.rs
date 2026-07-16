@@ -254,10 +254,7 @@ pub fn apply_desktop_blocking(row: &ManifestRow) -> Result<PathBuf, String> {
             return Err(format!("swap: {e}"));
         }
     }
-    crate::log(&format!(
-        "UPDATE: applied {}/{} {} ({}) — re-exec pending",
-        row.platform, row.arch, row.version_string(), hex::encode(&row.commit)
-    ));
+    crate::logf!("UPDATE: applied {}/{} {} ({}) — re-exec pending", row.platform, row.arch, row.version_string(), hex::encode(&row.commit));
     Ok(exe)
 }
 

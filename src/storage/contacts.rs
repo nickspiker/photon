@@ -158,7 +158,7 @@ fn contact_state_schema() -> SectionSchema {
         .field("added", TypeConstraint::Any) // Eagle Time
         .field("id", TypeConstraint::AnyHash)
         // Optional fields
-        .field("ip", TypeConstraint::AnyString)
+        .field("ip", TypeConstraint::Any) // binary socketaddr bytes (6 = v4, 18 = v6) — an address is a NUMBER, never digit text (numbers-binary-at-rest, 2026-07-16)
         .field("seed", TypeConstraint::AnyHash)
         .field("friendship_id", TypeConstraint::AnyHash) // Links to friendship storage
         .field("last_seen", TypeConstraint::Any) // f64 Eagle Time
@@ -200,7 +200,10 @@ pub fn save_contact_state(contact: &Contact, storage: &FlatStorage) -> Result<()
     // Optional fields
     if let Some(ip) = &contact.ip {
         builder = builder
-            .set("ip", ip.to_string())
+            .set(
+                "ip",
+                VsfType::v_u3(vsf::types::Vector { data: crate::network::fgtw::protocol::socketaddr_to_bytes(ip) }),
+            )
             .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
     if let Some(seed) = &contact.relationship_seed {
@@ -377,8 +380,8 @@ fn apply_contact_state(contact: &mut Contact, vsf_bytes: &[u8]) -> Result<(), St
     contact.added = added;
 
     // Optional fields
-    if let Ok(s) = section.get_value::<String>("ip") {
-        contact.ip = s.parse().ok();
+    if let Some(VsfType::v_u3(v)) = section.get_fields("ip").first().and_then(|f| f.values.first()) {
+        contact.ip = crate::network::fgtw::protocol::bytes_to_socketaddr(&v.data);
     }
     if let Ok(name) = section.get_value::<String>("published_name") {
         contact.published_name = name;
@@ -511,7 +514,7 @@ pub fn load_all_siblings(
     let devices = match load_sibling_list(storage) {
         Ok(d) => d,
         Err(e) => {
-            crate::log(&format!("Failed to load sibling list: {}", e));
+            crate::logf!("Failed to load sibling list: {}", e);
             return Vec::new();
         }
     };
@@ -522,20 +525,12 @@ pub fn load_all_siblings(
         match storage.read_addr(&contact_key(&c.handle_hash, "state")) {
             Ok(Some(vsf_bytes)) => {
                 if let Err(e) = apply_contact_state(&mut c, &vsf_bytes) {
-                    crate::log(&format!(
-                        "Failed to parse sibling state for device {}: {}",
-                        hex::encode(&device[..4]),
-                        e
-                    ));
+                    crate::logf!("Failed to parse sibling state for device {}: {}", hex::encode(&device[..4]), e);
                 }
             }
             Ok(None) => {} // Fresh Pending sibling — ceremony re-runs
             Err(e) => {
-                crate::log(&format!(
-                    "Failed to read sibling state for device {}: {}",
-                    hex::encode(&device[..4]),
-                    e
-                ));
+                crate::logf!("Failed to read sibling state for device {}: {}", hex::encode(&device[..4]), e);
             }
         }
         // The applied state's stored pubkey/id equal the index-derived ones by construction; the sibling flag is authoritative from new_sibling, not the blob.
@@ -604,7 +599,7 @@ pub fn load_all_contacts(storage: &FlatStorage) -> Vec<Contact> {
     let identities = match load_contact_list(storage) {
         Ok(list) => list,
         Err(e) => {
-            crate::log(&format!("Failed to load contact list: {}", e));
+            crate::logf!("Failed to load contact list: {}", e);
             return Vec::new();
         }
     };
@@ -614,10 +609,7 @@ pub fn load_all_contacts(storage: &FlatStorage) -> Vec<Contact> {
         match load_contact_state(&identity, storage) {
             Ok(contact) => contacts.push(contact),
             Err(e) => {
-                crate::log(&format!(
-                    "Failed to load contact state for '{}': {}",
-                    identity.name, e
-                ));
+                crate::logf!("Failed to load contact state for '{}': {}", identity.name, e);
             }
         }
     }
@@ -782,11 +774,7 @@ pub fn save_messages(contact: &Contact, storage: &FlatStorage) -> Result<(), Sto
     }
 
     #[cfg(feature = "development")]
-    crate::log(&format!(
-        "STORAGE: Saved {} messages for seed {}",
-        contact.messages.len(),
-        hex::encode(&contact.handle_hash[..4])
-    ));
+    crate::logf!("STORAGE: Saved {} messages for seed {}", contact.messages.len(), hex::encode(&contact.handle_hash[..4]));
 
     Ok(())
 }
@@ -837,11 +825,7 @@ pub fn load_messages(contact: &mut Contact, storage: &FlatStorage) -> Result<(),
     }
 
     #[cfg(feature = "development")]
-    crate::log(&format!(
-        "STORAGE: Loaded {} messages for seed {}",
-        contact.messages.len(),
-        hex::encode(&contact.handle_hash[..4])
-    ));
+    crate::logf!("STORAGE: Loaded {} messages for seed {}", contact.messages.len(), hex::encode(&contact.handle_hash[..4]));
 
     Ok(())
 }

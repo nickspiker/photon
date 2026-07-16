@@ -437,11 +437,7 @@ pub fn load_all_friendships(
                 result.push((*friendship_id, chains));
             }
             Err(e) => {
-                crate::log(&format!(
-                    "Failed to load friendship {}: {}",
-                    hex::encode(&friendship_id.as_bytes()[..8]),
-                    e
-                ));
+                crate::logf!("Failed to load friendship {}: {}", hex::encode(&friendship_id.as_bytes()[..8]), e);
             }
         }
     }
