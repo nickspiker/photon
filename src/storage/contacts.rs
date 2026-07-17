@@ -173,6 +173,7 @@ fn contact_state_schema() -> SectionSchema {
         .field("fleet_member", TypeConstraint::Ed25519Key) // multi-value: one folded member device pubkey. Absent = empty folded set (bootstrap).
         .field("fleet_folded_once", TypeConstraint::AnyUnsigned) // bool: chain folded ≥1 time (arms members-only trust). Absent = false (bootstrap).
         .field("fleet_members_ts", TypeConstraint::Any) // e6: chain-tip eagle time of last adopted fold (monotonic floor). Absent = 0.
+        .field("roster_updated", TypeConstraint::Any) // e6: roster LWW clock — last change to the synced identity fields (petname/avatar_pin). Absent = `added` (pre-feature contacts).
 }
 
 /// Save contact state (mutable data) with schema validation
@@ -301,6 +302,15 @@ pub fn save_contact_state(contact: &Contact, storage: &FlatStorage) -> Result<()
             )
             .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
+    if contact.roster_updated != contact.added {
+        // Only a real post-creation bump is worth a field — absent reads back as `added`.
+        builder = builder
+            .set(
+                "roster_updated",
+                VsfType::e(vsf::types::EtType::e6(contact.roster_updated)),
+            )
+            .map_err(|e| StorageError::Parse(e.to_string()))?;
+    }
 
     let vsf_bytes = builder
         .encode()
@@ -378,6 +388,8 @@ fn apply_contact_state(contact: &mut Contact, vsf_bytes: &[u8]) -> Result<(), St
     contact.clutch_state = u8_to_clutch_state(clutch_u8);
     contact.trust_level = u8_to_trust_level(trust_u8);
     contact.added = added;
+    // The roster LWW clock floors at `added`; the explicit field below (if present) then raises it.
+    contact.roster_updated = added;
 
     // Optional fields
     if let Some(VsfType::v_u3(v)) = section.get_fields("ip").first().and_then(|f| f.values.first()) {
@@ -456,6 +468,10 @@ fn apply_contact_state(contact: &mut Contact, vsf_bytes: &[u8]) -> Result<(), St
     }
     if let Some(v) = section.get_fields("fleet_members_ts").first().and_then(|f| f.values.first()) {
         contact.fleet_members_ts = vsf_to_oscillations(v);
+    }
+    // Roster LWW clock: absent = never bumped past creation, so `added` (set by the index-row load) stands.
+    if let Some(v) = section.get_fields("roster_updated").first().and_then(|f| f.values.first()) {
+        contact.roster_updated = vsf_to_oscillations(v);
     }
 
     Ok(())

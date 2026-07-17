@@ -217,6 +217,8 @@ pub struct Contact {
 
     pub trust_level: TrustLevel,
     pub added: i64,
+    /// Roster LWW clock: eagle time of the last change to this contact's SYNCED identity fields (petname / avatar_pin). The fleet roster entry carries it as `updated`; a pulled entry newer than this overwrites those fields, an older one loses. Starts equal to `added`.
+    pub roster_updated: i64,
     pub last_seen: Option<i64>,
     pub is_online: bool, // True when we have confirmed bidirectional comms
     pub messages: Vec<ChatMessage>, // Conversation history
@@ -341,6 +343,7 @@ impl Contact {
             offer_provenances: Vec::new(), // Collected offer provenances for ceremony nonce
             trust_level: TrustLevel::Stranger,
             added: vsf::eagle_time_oscillations(),
+            roster_updated: vsf::eagle_time_oscillations(),
             last_seen: None,
             is_online: false,           // Starts offline until we confirm comms
             messages: Vec::new(),       // No messages yet
