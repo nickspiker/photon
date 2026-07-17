@@ -571,6 +571,47 @@ fn you_row_rect(layout: &SettingsLayout, scroll: Coord, i: usize) -> fluor::regi
     )
 }
 
+/// Parse one line of ANSI truecolor terminal output (vsf::inspect_vsf's format) into coloured text spans for in-app drawing. Handles `ESC[38;2;r;g;bm` (fg truecolor), `ESC[0m` (reset), and the bold/basic forms the inspector emits (`1;37` etc. → near-white); anything unrecognized resets. Colours land in fluor α+darkness via the platform pass.
+fn ansi_line_to_spans(line: &str, default_colour: u32) -> Vec<(String, u32)> {
+    let mut spans: Vec<(String, u32)> = Vec::new();
+    let mut cur = String::new();
+    let mut colour = default_colour;
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            cur.push(c);
+            continue;
+        }
+        // Escape sequence: expect '[' params 'm'; anything else is dropped.
+        if chars.peek() != Some(&'[') {
+            continue;
+        }
+        chars.next();
+        let mut params = String::new();
+        for pc in chars.by_ref() {
+            if pc == 'm' {
+                break;
+            }
+            params.push(pc);
+        }
+        if !cur.is_empty() {
+            spans.push((std::mem::take(&mut cur), colour));
+        }
+        let parts: Vec<u32> = params.split(';').filter_map(|p| p.parse().ok()).collect();
+        colour = match parts.as_slice() {
+            [38, 2, r, g, b] => fluor::theme::dark(fluor::theme::fmt((r << 16) | (g << 8) | b)),
+            [] | [0] => default_colour,
+            // Bold/basic whites the inspector uses for emphasis.
+            p if p.contains(&37) || p.contains(&97) => theme::CONTACT_NAME_COLOUR,
+            _ => default_colour,
+        };
+    }
+    if !cur.is_empty() {
+        spans.push((cur, colour));
+    }
+    spans
+}
+
 /// Viewer cap: the newest 2^15 decoded records. A capped 16 MiB log holds more than anyone scrolls thru in-app; `photonlog` serves the full-file cases.
 const DIAG_LOG_MAX_ROWS: usize = 1 << 15;
 
@@ -874,6 +915,8 @@ pub struct PhotonApp {
     diag_log_follow: bool,
     /// Earliest eagle time the next tail-follow poll may run (the on-disk size probe is an atomic, but the seek+decode shouldn't run every frame).
     diag_log_next_poll_osc: i64,
+    /// INSPECT drill-down: a tapped record's index + its pretty-printed VSF as coloured span-lines (parsed once from `vsf::inspect_vsf`'s ANSI output). `None` = the text list. Back returns to the list.
+    diag_log_inspect: Option<(usize, Vec<Vec<(String, u32)>>)>,
     /// Diagnostics-page optional-note field — a real fluor `Textbox` (distinct from the launch / contacts / compose boxes so content never bleeds).
     settings_note_textbox: Option<Textbox>,
     /// You-page profile editor: one box per field (display name, first, email, custom fields, …), grouped by taxonomy tier and prefilled from the fleet `profile.<id>` settings on page-open. "Save profile" writes every changed field in one batched push. HitId is scarce (u16) so this is built ONCE (lazily, on first open) and never rebuilt — custom fields append.
@@ -1091,6 +1134,7 @@ impl PhotonApp {
             diag_log_rx: None,
             diag_log_follow: true,
             diag_log_next_poll_osc: 0,
+            diag_log_inspect: None,
             settings_note_textbox: None,
             you_fields: Vec::new(),
             you_add_textbox: None,
@@ -2173,12 +2217,16 @@ impl FluorApp for PhotonApp {
                     }
                 } else if page == SettingsPage::Diagnostics {
                     if slot == 3 {
-                        // "View"/"Back" → toggle the in-app log viewer (the page body becomes the scrollable decoded-record list).
-                        if self.diag_log_view {
+                        // "View"/"Back" → in the record inspector, back to the list; else toggle the whole viewer.
+                        if self.diag_log_inspect.is_some() {
+                            self.diag_log_inspect = None;
+                            self.diag_log_follow = true; // return pinned to the newest record
+                        } else if self.diag_log_view {
                             self.diag_log_close();
                         } else {
                             self.diag_log_open();
                         }
+                        self.scene_dirty = true;
                     } else if self.diag_log_view {
                         // The viewer replaces the Clear/Snapshot/Submit pills — their hit stamps can outlive a frame, and a stale tap must not clear or submit invisibly.
                     } else if slot == 0 {
@@ -2548,6 +2596,46 @@ impl FluorApp for PhotonApp {
                     }
                     self.clear_launch_error();
                     ctx.window.request_redraw();
+                }
+
+                // Log-viewer row tap → the VSF inspector for that record (the same coloured structural view vsfinfo prints, parsed from vsf::inspect_vsf's ANSI). Geometric — rows carry no hit ids; the maths mirrors the render/culling exactly.
+                if hit_id == HIT_NONE
+                    && self.diag_log_view
+                    && self.diag_log_inspect.is_none()
+                    && matches!(self.state, AppState::Settings(SettingsPage::Diagnostics))
+                {
+                    let sl = SettingsLayout::compute(&ctx.viewport);
+                    let inset = sl.content_inset();
+                    let line = sl.content_line_h();
+                    let band_top = inset.y + 2. * line;
+                    if ctx.cursor_x >= inset.x
+                        && ctx.cursor_x <= inset.x + inset.w
+                        && ctx.cursor_y >= band_top
+                        && ctx.cursor_y <= inset.y + inset.h
+                    {
+                        let row_h = line * 0.5;
+                        let idx = ((ctx.cursor_y - band_top + self.settings_content_scroll) / row_h).floor();
+                        if idx >= 0.0 {
+                            let idx = idx as usize;
+                            if let Some(rec) = self.diag_log_rows.get(idx) {
+                                let text = match vsf::inspect::inspect_vsf(&rec.raw) {
+                                    Ok(t) => t,
+                                    Err(e) => format!("inspect failed: {e}"),
+                                };
+                                let lines: Vec<Vec<(String, u32)>> = text
+                                    .lines()
+                                    .map(|l| ansi_line_to_spans(l, theme::LABEL_COLOUR))
+                                    .collect();
+                                crate::logf!("LOGVIEW: inspecting record {} ({} line(s))", idx, lines.len());
+                                self.diag_log_inspect = Some((idx, lines));
+                                self.diag_log_follow = false;
+                                self.settings_content_scroll = 0.0; // inspector opens at the TOP of the record
+                                self.scene_dirty = true;
+                                ctx.window.request_redraw();
+                                return EventResponse::Handled;
+                            }
+                        }
+                    }
                 }
 
                 if hit_id == HIT_NONE {
@@ -3207,7 +3295,11 @@ impl FluorApp for PhotonApp {
             let content_rows_h = if page == SettingsPage::You {
                 sl.content_line_h() * you_rows_plan(&self.you_fields).len() as Coord
             } else if page == SettingsPage::Diagnostics && self.diag_log_view {
-                sl.content_line_h() * (2.5 + self.diag_log_rows.len() as Coord * 0.5)
+                let n = match &self.diag_log_inspect {
+                    Some((_, lines)) => lines.len(),
+                    None => self.diag_log_rows.len(),
+                };
+                sl.content_line_h() * (2.5 + n as Coord * 0.5)
             } else {
                 sl.content_line_h() * settings_page_rows(page) as Coord
             };
@@ -5007,13 +5099,26 @@ impl FluorApp for PhotonApp {
                     let hr = header[0].split_h([2.0, 1.0]);
                     settings_line(&mut canvas, ctx.text, hr[0], "Log", tspan, theme::CONTACT_NAME_COLOUR, 600);
                     draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, hr[1].center_h(0.85), "Back", btn_base.wrapping_add(3), ctx.pressed_hit);
-                    let meta = if self.diag_log_rx.is_some() {
+                    let meta = if let Some((idx, lines)) = &self.diag_log_inspect {
+                        let ts = self
+                            .diag_log_rows
+                            .get(*idx)
+                            .filter(|r| r.osc != 0)
+                            .map(|r| {
+                                vsf::types::EagleTime::from_oscillations(r.osc)
+                                    .to_datetime()
+                                    .format("%m-%d %H:%M:%S%.3f")
+                                    .to_string()
+                            })
+                            .unwrap_or_default();
+                        format!("Record VSF · {} · {} line(s) · tap Back for the list", ts, lines.len())
+                    } else if self.diag_log_rx.is_some() {
                         "Decoding log\u{2026}".to_string()
                     } else if self.diag_log_rows.is_empty() {
                         "Log is empty".to_string()
                     } else {
                         format!(
-                            "{} record(s) · {} KiB · newest at the bottom{}",
+                            "{} record(s) · {} KiB · newest at the bottom · tap a row for its VSF{}",
                             self.diag_log_rows.len(),
                             (crate::log_size_bytes() + 1023) / 1024,
                             if self.diag_log_rows.len() >= DIAG_LOG_MAX_ROWS { " · oldest trimmed" } else { "" },
@@ -5022,6 +5127,27 @@ impl FluorApp for PhotonApp {
                     settings_line(&mut canvas, ctx.text, header[1], &meta, hspan2, theme::LABEL_COLOUR, 400);
 
                     let row_h = line * 0.5;
+                    // INSPECTOR: the tapped record's coloured VSF pretty-print, span by span (the same output vsfinfo pipes to a terminal, ANSI parsed to fluor colours). Same culling/extent math as the list — one branch, then done.
+                    if let Some((_, ins_lines)) = &self.diag_log_inspect {
+                        let first = ((settings_content_scroll / row_h).floor().max(0.)) as usize;
+                        let visible = (inset.h / row_h).ceil() as usize + 2;
+                        let size = row_h * 0.62;
+                        for i in first..(first + visible).min(ins_lines.len()) {
+                            let r = diag_log_row_rect(&layout, settings_content_scroll, i);
+                            if r.y > inset.y + inset.h {
+                                break;
+                            }
+                            let mut x = r.x;
+                            for (span, colour) in &ins_lines[i] {
+                                ctx.text.draw_text_left_u32(
+                                    &mut canvas, span, x, r.center_y(), size, 400, *colour, "Oxanium",
+                                    Some(content_clip), None, None,
+                                );
+                                x += ctx.text.measure_text_width(span, size, 400, "Oxanium");
+                            }
+                        }
+                        // The list rendering below is the OTHER mode.
+                    } else {
                     // First visible record: the band's top scrolls as inset.y + 2·line − scroll, the clip top sits at inset.y + 2·line, so the first index is simply scroll/row_h. +2 rows of slack covers the fractional edges.
                     let first = ((settings_content_scroll / row_h).floor().max(0.)) as usize;
                     let visible = (inset.h / row_h).ceil() as usize + 2;
@@ -5062,6 +5188,7 @@ impl FluorApp for PhotonApp {
                             None,
                             None,
                         );
+                    }
                     }
                 }
                 SettingsPage::Diagnostics => {
@@ -7495,6 +7622,7 @@ impl PhotonApp {
         self.diag_log_view = false;
         self.diag_log_rows = Vec::new();
         self.diag_log_rx = None;
+        self.diag_log_inspect = None;
     }
 
     /// Log-viewer driver (tick): drain the off-thread initial decode, then tail-follow the live file — the size probe is one atomic load; the seek+decode runs at most twice a second and only for appended bytes. A shrink (16 MiB rotation or Clear) re-syncs from zero. Returns whether the view changed.
