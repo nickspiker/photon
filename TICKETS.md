@@ -6,9 +6,18 @@ Item format: what's wrong / what's wanted, then any scoping notes worth keeping.
 
 ---
 
+## Identity / device lifecycle — see [docs/lifecycle.md](docs/lifecycle.md) (the canonical flow tree, screen names, conventions; DESIGNED 2026-07-17)
+
+Punch list from the doc, in order:
+1. Redeploy the fgtw.org worker (one-owner-per-device gate + index are in source but the live worker predates them — this is what let one device double-attest two handles). Verify with a scratch two-handle genesis.
+2. Device-binding marker + Launch DEVICE BUSY line (client-side one-handle-per-device gate, fires BEFORE the proof is spent).
+3. KnownHandle screen (the collision flow): "This name is already claimed" with both readings — pick-another-name first, it's-mine → pairing words; no bind request posted until "It's mine".
+4. LastRites red-flood interstitial: last-member detection on Depart + Remove & shred; allowed but ceremonial ("End it — forever"); name-release checkbox = future worker work.
+5. JoinerSelected green flood + sponsor-confirm hold (same flood mechanism as 4).
+6. Collision counter + notifications toggle on Panel→Fleet (bind_attempt alerts already flow).
+
 ## Messaging / protocol
 
-- **Device-pairing green "Selected!" flow** (user-requested, designed in conversation 2026-07-16): choosing a device from the sponsor's list should turn the NEW device's whole screen green (green orb too, big "Selected!" text — same mechanism as the amber dev theme) and HOLD there; the sponsor confirms "yes, it turned green"; only then the new device signs in and lands on contacts. Today `JoinUpdate::Joined(None, …)` (bound, confirm pending) signs in immediately. The sponsor-side confirm affordance already exists; the gap is the joiner-side green hold + the sponsor-selection signal reaching the joiner (candidates: registry marker the joiner polls, or the existing pair_evt hub push).
 - **Friend consent gate**: `on_search_result(Found)` auto-adds + auto-CLUTCHes — search IS befriend. Needs a pending/accept state so a stranger can't complete a ceremony + deliver a message just because someone searched a handle (observed live 2026-07-16: "an attacker just got this message"). Mutual-consent design notes in the peers-are-fgtw plan.
 - **CLUTCH sibling-race**: a peer's sibling device initiating CLUTCH before we fold it into the contact's fleet gets rejected by the PT gate and gives up before the fold lands (~20 min stall observed). Fix = re-initiate after fold, or queue the offer until the fold verdict.
 - **Blind ops (private identity S) E2E**: the party-id token seam is fixed (2026-07-16, tokens now derive from party ids on both ends) but the full S lifecycle (probe → generate → deposit → ack → recover) hasn't run E2E across real devices since.
