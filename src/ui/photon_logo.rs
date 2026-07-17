@@ -51,7 +51,7 @@ pub fn paint_photon_logo(canvas: &mut Canvas, text: &mut TextRenderer, rect: Pix
 
     // Glow scratch — single rasterization at LOGO_GLOW_GRAY, then horizontal (factor 3/4) + vertical (factor 1/2) blurs. Soft outer halo source.
     let mut scratch_glow = vec![0_u8; scratch_size];
-    text.draw_text_center(
+    text.draw_text_center_legacy(
         &mut scratch_glow,
         buf_w as u32,
         virtual_height as u32,
@@ -69,7 +69,7 @@ pub fn paint_photon_logo(canvas: &mut Canvas, text: &mut TextRenderer, rect: Pix
 
     // Body scratch — "Photon" at full coverage (255). The coverage byte at each pixel is the α-weight used by `composite_body_black` (an all-dark under() layer) to drive the bg toward pure black; AA edges get partial coverage so the rasterized body inherits cosmic-text's hinted antialiasing.
     let mut scratch_body = vec![0_u8; scratch_size];
-    text.draw_text_center(
+    text.draw_text_center_legacy(
         &mut scratch_body,
         buf_w as u32,
         virtual_height as u32,
@@ -89,7 +89,7 @@ pub fn paint_photon_logo(canvas: &mut Canvas, text: &mut TextRenderer, rect: Pix
     //   3. "Photon" at black offset 1px down → carves the bottom edge.
     // The carves leave the highlight as a thin top-left rim; the subsequent sharp horizontal blur fades it right-to-left.
     let mut scratch_highlight = vec![0_u8; scratch_size];
-    text.draw_text_center(
+    text.draw_text_center_legacy(
         &mut scratch_highlight,
         buf_w as u32,
         virtual_height as u32,
@@ -102,7 +102,7 @@ pub fn paint_photon_logo(canvas: &mut Canvas, text: &mut TextRenderer, rect: Pix
         0,
         FONT,
     );
-    text.draw_text_center(
+    text.draw_text_center_legacy(
         &mut scratch_highlight,
         buf_w as u32,
         virtual_height as u32,
@@ -115,7 +115,7 @@ pub fn paint_photon_logo(canvas: &mut Canvas, text: &mut TextRenderer, rect: Pix
         0,
         FONT,
     );
-    text.draw_text_center(
+    text.draw_text_center_legacy(
         &mut scratch_highlight,
         buf_w as u32,
         virtual_height as u32,
