@@ -75,6 +75,15 @@ const PILL_RED: (u32, u32) = (
     fluor::theme::dark(fluor::theme::fmt(0x00_4E_14_14)),
     fluor::theme::dark(fluor::theme::fmt(0x00_AC_2E_2E)),
 );
+/// Updates page: amber (latest dev — matches the dev build's amber theme) + inert dark grey ("already on this version" — present but not an action).
+const PILL_AMBER: (u32, u32) = (
+    fluor::theme::dark(fluor::theme::fmt(0x00_44_30_08)),
+    fluor::theme::dark(fluor::theme::fmt(0x00_C0_88_18)),
+);
+const PILL_GREY: (u32, u32) = (
+    fluor::theme::dark(fluor::theme::fmt(0x00_24_24_28)),
+    fluor::theme::dark(fluor::theme::fmt(0x00_24_24_28)),
+);
 /// Send-button arrowhead glyph — light grey, α+darkness format for under-blend (visible-RGB is not usable on this canvas).
 const SEND_ARROW_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_D0_D0_D0));
 /// Hover fill for the send / plus action buttons — a SUBTLE neutral brightening of BUTTON_FILL (0x1A224E), reproducing the pre-fluor QUERY_BUTTON_HOVER feel rather than the shared BUTTON_HOVER's saturated-blue shift. A small delta also keeps the overlay from cooking the near-white arrowhead.
@@ -899,11 +908,17 @@ pub struct PhotonApp {
     you_fields_loaded: bool,
     /// Fleet-page device management: the device pubkey the user tapped to select (highlighted row). `None` = nothing selected. Only OUR OTHER devices (siblings) are selectable — never this device. Remove-other retired 2026-07-13 (sovereign records: self-signed departure only; eviction = withholding at the key layer, arriving with the device-trust bundle) — selection currently feeds only the future rename.
     settings_fleet_selected: Option<[u8; 32]>,
-    /// Self-update state (docs/updates.md): off-thread check/apply results drain here.
+    /// Self-update state (docs/updates.md): off-thread check/apply results drain here. tx kept so both channel checks + an apply share ONE receiver.
     update_rx: Option<std::sync::mpsc::Receiver<UpdateEvent>>,
-    /// Latest check/apply outcome for the Updates page status line (event-shown, interaction-cleared like every status text).
+    update_tx: Option<std::sync::mpsc::Sender<UpdateEvent>>,
+    /// Per-channel manifest state, populated by the auto-check on each Updates-page open — drives each button's label (target version, dozenal), colour, and enabled-ness.
+    update_release: ChannelCheck,
+    update_dev: ChannelCheck,
+    /// True once the current Updates-page visit kicked its auto-check (reset on page-enter, like `you_fields_loaded`).
+    update_checked: bool,
+    /// Latest APPLY outcome (download/install) for the status line — event-shown, interaction-cleared.
     update_status: Option<String>,
-    /// An update op (check or apply) is in flight — the pills grey out.
+    /// An APPLY (install) is in flight — both buttons freeze.
     update_busy: bool,
     /// Desktop: a verified binary swap completed — re-exec into it on the next tick (from the main thread, outside all borrows).
     update_reexec: Option<std::path::PathBuf>,
@@ -1086,6 +1101,10 @@ impl PhotonApp {
             you_fields_loaded: false,
             settings_fleet_selected: None,
             update_rx: None,
+            update_tx: None,
+            update_release: ChannelCheck::Idle,
+            update_dev: ChannelCheck::Idle,
+            update_checked: false,
             update_status: None,
             update_busy: false,
             update_reexec: None,
@@ -1961,6 +1980,13 @@ impl FluorApp for PhotonApp {
                     if *p == SettingsPage::You {
                         self.you_fields_loaded = false;
                     }
+                    // Opening the Updates page auto-checks BOTH channels so each button shows its target version + colour.
+                    if *p == SettingsPage::Updates {
+                        self.update_checked = false;
+                        self.update_release = ChannelCheck::Idle;
+                        self.update_dev = ChannelCheck::Idle;
+                        self.check_update_channels();
+                    }
                     self.state = AppState::Settings(*p);
                     ctx.window.request_redraw();
                 }
@@ -2061,17 +2087,11 @@ impl FluorApp for PhotonApp {
                     }
                 } else if page == SettingsPage::Updates {
                     use crate::network::updates::Channel;
-                    // This build's own channel: dev builds live on the dev manifest, releases on release.
-                    let own = if cfg!(feature = "development") { Channel::Dev } else { Channel::Release };
-                    if slot == 0 {
-                        // Report-only currency check against our own channel.
-                        self.spawn_update_check(own, false);
-                    } else if slot == 1 {
-                        // Explicit install of the latest RELEASE (one click; channel hop allowed — user intent overrides the auto-path's no-downgrade).
-                        self.spawn_update_check(Channel::Release, true);
+                    // The two channel buttons install the version they already show (from the page-open auto-check). An "Already on …" button is inert — spawn_update_apply no-ops when the row equals ours.
+                    if slot == 1 {
+                        self.spawn_update_apply(Channel::Release);
                     } else if slot == 2 {
-                        // Explicit install of the latest DEV build for this platform.
-                        self.spawn_update_check(Channel::Dev, true);
+                        self.spawn_update_apply(Channel::Dev);
                     }
                 } else if page == SettingsPage::Diagnostics {
                     if slot == 0 {
@@ -4710,27 +4730,30 @@ impl FluorApp for PhotonApp {
                     }
                 }
                 SettingsPage::Updates => {
+                    // Rows (blanks between the pills for vertical breathing room): 0 title · 1 current version · 2 blank · 3 release pill · 4 blank · 5 dev pill · 6 blank · 7 status.
                     let rows = layout.content_scrolled(8, settings_content_scroll).split_v([1.0; 8]);
                     settings_line(&mut canvas, ctx.text, rows[0], "Updates", tspan, CONTACT_NAME_COLOUR, 600);
-                    settings_line(&mut canvas, ctx.text, rows[1], &format!("Photon {} (dozenal {})", env!("CARGO_PKG_VERSION"), version_dozenal_glyphs()), hspan2, LABEL_COLOUR, 400);
+                    settings_line(&mut canvas, ctx.text, rows[1], &format!("Photon {}", version_dozenal_glyphs()), hspan2, CONTACT_NAME_COLOUR, 500);
                     if let Some(cb) = self.settings_autoupdate_check.as_mut() {
                         cb.render_content_into(&mut canvas, ctx.text, None, Some(&mut chrome.hit_test_map));
                     }
-                    // Status line: last check/apply outcome (event-shown; a page switch clears it like every status text).
+                    // One channel button: label + colour driven by the auto-check state. Release = green when an update is available, Dev = amber; either goes inert dark grey ("Already on …") when the remote version equals ours. Disabled while an install is in flight.
+                    let ours = crate::network::updates::our_version();
+                    let button = |canvas: &mut Canvas, text: &mut fluor::text::TextRenderer, hit_map: &mut [HitId], rect: fluor::region::Region, slot: HitId, kind: &str, avail_fill: (u32, u32), state: &ChannelCheck, busy: bool| {
+                        let (label, fill, enabled) = match state {
+                            ChannelCheck::Idle | ChannelCheck::Checking => (format!("Checking {kind}\u{2026}"), PILL_GREY, false),
+                            ChannelCheck::Failed(_) => (format!("{kind} unavailable"), PILL_GREY, false),
+                            ChannelCheck::Ready(None) => (format!("No {kind} build for this device"), PILL_GREY, false),
+                            ChannelCheck::Ready(Some(row)) if row.version == ours => (format!("Already on {kind} {}", dozenal_version_tuple(row.version)), PILL_GREY, false),
+                            ChannelCheck::Ready(Some(row)) => (format!("Get {kind} {}", dozenal_version_tuple(row.version)), avail_fill, !busy),
+                        };
+                        draw_stub_pill_filled(canvas, text, hit_map, buf_w, buf_h, rect, &label, slot, ctx.pressed_hit, enabled, Some(fill));
+                    };
+                    button(&mut canvas, ctx.text, &mut chrome.hit_test_map, rows[3].center_h(pillf(0.7)), btn_base.wrapping_add(1), "release", PILL_GREEN, &self.update_release, self.update_busy);
+                    button(&mut canvas, ctx.text, &mut chrome.hit_test_map, rows[5].center_h(pillf(0.7)), btn_base.wrapping_add(2), "dev", PILL_AMBER, &self.update_dev, self.update_busy);
+                    // Status line: last APPLY outcome (installing / failed / restarting).
                     if let Some(status) = &self.update_status {
-                        settings_line(&mut canvas, ctx.text, rows[3], status, hspan2, CONTACT_NAME_COLOUR, 500);
-                    }
-                    // Check = report-only against THIS build's own channel; the two Get pills are the explicit installs — either channel, one click (desktop) / two (Android's system installer prompt).
-                    if self.update_busy {
-                        draw_stub_pill_disabled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[5].center_h(pillf(0.5)), "Check for updates", btn_base.wrapping_add(0), ctx.pressed_hit);
-                        let pr = rows[6].split_h([1.0, 1.0]);
-                        draw_stub_pill_disabled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[0].center_h(0.85), "Get latest release", btn_base.wrapping_add(1), ctx.pressed_hit);
-                        draw_stub_pill_disabled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[1].center_h(0.85), "Get latest dev", btn_base.wrapping_add(2), ctx.pressed_hit);
-                    } else {
-                        draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[5].center_h(pillf(0.5)), "Check for updates", btn_base.wrapping_add(0), ctx.pressed_hit);
-                        let pr = rows[6].split_h([1.0, 1.0]);
-                        draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[0].center_h(0.85), "Get latest release", btn_base.wrapping_add(1), ctx.pressed_hit);
-                        draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[1].center_h(0.85), "Get latest dev", btn_base.wrapping_add(2), ctx.pressed_hit);
+                        settings_line(&mut canvas, ctx.text, rows[7], status, hspan2, CONTACT_NAME_COLOUR, 500);
                     }
                 }
                 SettingsPage::Diagnostics => {
@@ -6182,94 +6205,117 @@ impl PhotonApp {
     }
 
     /// Kick an off-thread update check against `channel`'s manifest; `apply` = install on any version DIFFERENCE (the Get-latest buttons — explicit channel hop, downgrade allowed by user intent), else report-only (the Check button). One op at a time.
-    fn spawn_update_check(&mut self, channel: crate::network::updates::Channel, apply: bool) {
+    /// Ensure the shared update channel exists; return a fresh Sender clone for a worker thread.
+    fn update_sender(&mut self) -> std::sync::mpsc::Sender<UpdateEvent> {
+        if self.update_tx.is_none() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            self.update_tx = Some(tx);
+            self.update_rx = Some(rx);
+        }
+        self.update_tx.as_ref().unwrap().clone()
+    }
+
+    /// On Updates-page open: fetch BOTH channel manifests (report-only) so each button can show its target version + colour. Idempotent per visit via `update_checked`.
+    fn check_update_channels(&mut self) {
+        use crate::network::updates::Channel;
+        self.update_checked = true;
+        for channel in [Channel::Release, Channel::Dev] {
+            let slot = match channel {
+                Channel::Release => &mut self.update_release,
+                Channel::Dev => &mut self.update_dev,
+            };
+            *slot = ChannelCheck::Checking;
+            let tx = self.update_sender();
+            std::thread::spawn(move || {
+                use crate::network::updates::{fetch_manifest_blocking, our_row};
+                let result = fetch_manifest_blocking(channel).map(|rows| our_row(&rows));
+                let _ = tx.send(UpdateEvent::Checked(channel, result));
+            });
+        }
+    }
+
+    /// Button click: install the KNOWN row for `channel` (download → verify → swap/stage). No-op if that channel isn't Ready with an installable row, or an apply is already in flight.
+    fn spawn_update_apply(&mut self, channel: crate::network::updates::Channel) {
         if self.update_busy {
             return;
         }
-        let (tx, rx) = std::sync::mpsc::channel();
-        self.update_rx = Some(rx);
+        let row = match channel {
+            crate::network::updates::Channel::Release => &self.update_release,
+            crate::network::updates::Channel::Dev => &self.update_dev,
+        };
+        let ChannelCheck::Ready(Some(row)) = row else {
+            return;
+        };
+        if row.version == crate::network::updates::our_version() {
+            return; // already on it — the button is inert ("Already on …")
+        }
+        let row = row.clone();
         self.update_busy = true;
-        self.update_status = Some(format!("Checking {}\u{2026}", channel.label()));
-        crate::logf!("UPDATE: checking {} manifest (apply={})", channel.label(), apply);
+        self.update_status = Some(format!("Installing {} {}\u{2026}", channel.label(), dozenal_version_tuple(row.version)));
+        crate::logf!("UPDATE: applying {} {}", channel.label(), row.version_string());
+        let tx = self.update_sender();
         std::thread::spawn(move || {
-            use crate::network::updates::{fetch_manifest_blocking, our_row};
-            let result = fetch_manifest_blocking(channel).map(|rows| our_row(&rows));
-            match (&result, apply) {
-                (Ok(Some(row)), true) if row.version != crate::network::updates::our_version() => {
-                    // One click: straight into download + verify + swap (desktop) / stage-for-installer (Android).
-                    #[cfg(not(target_os = "android"))]
-                    {
-                        match crate::network::updates::apply_desktop_blocking(row) {
-                            Ok(exe) => {
-                                let _ = tx.send(UpdateEvent::Applied(exe));
-                            }
-                            Err(e) => {
-                                let _ = tx.send(UpdateEvent::ApplyFailed(e));
-                            }
-                        }
-                        return;
+            #[cfg(not(target_os = "android"))]
+            {
+                match crate::network::updates::apply_desktop_blocking(&row) {
+                    Ok(exe) => {
+                        let _ = tx.send(UpdateEvent::Applied(exe));
                     }
-                    #[cfg(target_os = "android")]
-                    {
-                        match crate::network::updates::download_apk_blocking(row) {
-                            Ok(path) => {
-                                let _ = tx.send(UpdateEvent::ApkReady(path.to_string_lossy().into_owned()));
-                            }
-                            Err(e) => {
-                                let _ = tx.send(UpdateEvent::ApplyFailed(e));
-                            }
-                        }
-                        return;
+                    Err(e) => {
+                        let _ = tx.send(UpdateEvent::ApplyFailed(e));
                     }
                 }
-                _ => {}
             }
-            let _ = tx.send(UpdateEvent::Checked(channel, result));
+            #[cfg(target_os = "android")]
+            {
+                match crate::network::updates::download_apk_blocking(&row) {
+                    Ok(path) => {
+                        let _ = tx.send(UpdateEvent::ApkReady(path.to_string_lossy().into_owned()));
+                    }
+                    Err(e) => {
+                        let _ = tx.send(UpdateEvent::ApplyFailed(e));
+                    }
+                }
+            }
         });
     }
 
-    /// Drain the update channel (called from tick): status text, staged-APK hand-off, and the re-exec flag.
+    /// Drain the update channel (called from tick): per-channel version state, apply status, staged-APK hand-off, re-exec flag.
     fn drain_update_events(&mut self) -> bool {
         let Some(rx) = self.update_rx.as_ref() else {
             return false;
         };
         let mut changed = false;
         while let Ok(ev) = rx.try_recv() {
-            self.update_busy = false;
             changed = true;
-            match &ev {
-                UpdateEvent::Checked(channel, Ok(Some(row))) => {
-                    if row.version == crate::network::updates::our_version() {
-                        self.update_status = Some(format!("Up to date with {} ({})", channel.label(), dozenal_version_tuple(row.version)));
-                    } else {
-                        self.update_status = Some(format!(
-                            "{} has {} (you run {}) — use a Get button to install",
-                            channel.label(), dozenal_version_tuple(row.version), version_dozenal_glyphs()
-                        ));
+            match ev {
+                UpdateEvent::Checked(channel, result) => {
+                    let state = match result {
+                        Ok(row) => ChannelCheck::Ready(row),
+                        Err(e) => ChannelCheck::Failed(e),
+                    };
+                    match channel {
+                        crate::network::updates::Channel::Release => self.update_release = state,
+                        crate::network::updates::Channel::Dev => self.update_dev = state,
                     }
-                }
-                UpdateEvent::Checked(channel, Ok(None)) => {
-                    self.update_status = Some(format!("No {} build published for {}", channel.label(), crate::network::updates::platform_id()));
-                }
-                UpdateEvent::Checked(_, Err(e)) => {
-                    self.update_status = Some(format!("Check failed: {e}"));
+                    crate::logf!("UPDATE: {} check settled", channel.label());
                 }
                 UpdateEvent::Applied(exe) => {
+                    self.update_busy = false;
                     self.update_status = Some("Updated \u{221a} restarting\u{2026}".to_string());
-                    self.update_reexec = Some(exe.clone());
+                    self.update_reexec = Some(exe);
                 }
                 #[cfg(target_os = "android")]
                 UpdateEvent::ApkReady(path) => {
+                    self.update_busy = false;
                     self.update_status = Some("Downloaded \u{221a} confirm the install prompt".to_string());
-                    self.pending_apk_install = Some(path.clone());
+                    self.pending_apk_install = Some(path);
                 }
                 UpdateEvent::ApplyFailed(e) => {
+                    self.update_busy = false;
                     self.update_status = Some(format!("Update failed (nothing changed): {e}"));
+                    crate::logf!("UPDATE: apply failed: {}", e);
                 }
-            }
-            // Every outcome is diagnosable from a snapped log, not just the on-screen status line (the 2026-07-16 check failure left no trace).
-            if let Some(status) = &self.update_status {
-                crate::logf!("UPDATE: {}", crate::deglyph_for_log(status));
             }
         }
         changed
@@ -12596,6 +12642,19 @@ fn stamp_hit_circle(
 
 /// Draw one left-aligned settings text line vertically centred in `row`, indented a little from the row's left edge. Used for page titles, field labels, and placeholder read-outs on the settings stub.
 /// Row count each settings page body lays out (must match the `split_v([1.0; N])` in that page's render arm). Drives the content-scroll extent clamp. Keep in sync when a page gains/loses rows.
+/// Per-channel manifest-check state for the Updates page (one each for release + dev). Drives the button label + colour.
+#[derive(Clone)]
+enum ChannelCheck {
+    /// Not checked this page-visit yet.
+    Idle,
+    /// Manifest fetch in flight.
+    Checking,
+    /// Fetched: the row for our platform (`None` = manifest carries no build for us).
+    Ready(Option<crate::network::updates::ManifestRow>),
+    /// Fetch/verify failed.
+    Failed(String),
+}
+
 /// Off-thread self-update results (docs/updates.md), drained in tick.
 enum UpdateEvent {
     /// A manifest check finished: our platform's row (None = manifest has no row for us) or the error.
