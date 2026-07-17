@@ -1043,6 +1043,27 @@ fn extract_av1_data_from_seed(
     decrypt_av1_data_from_seed(&encrypted, identity_seed)
 }
 
+/// Extract AV1 from a verified avatar VSF decrypting under an EXPLICIT key (the pin's key half) — the wire form a friend / a fleet sibling fetched.
+fn extract_av1_data_with_key(vsf_bytes: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {
+    let encrypted = avatar_encrypted_payload(vsf_bytes)?;
+    decrypt_av1_data_with_key(&encrypted, key)
+}
+
+/// Validate a downloaded server avatar (PIN-encrypted wire form) and re-cache it LOCALLY in the owner's SEED form (kete-protected, owner-only). Bridges the wire's pin encryption to the local cache's seed encryption so a later local load decrypts correctly. Returns true iff it decoded + cached.
+fn adopt_server_avatar(
+    vsf_data: &[u8],
+    identity_seed: &[u8; 32],
+    avatar_pin: &[u8; 64],
+    storage: &std::sync::Arc<crate::storage::FlatStorage>,
+) -> bool {
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&avatar_pin[..32]);
+    match extract_av1_data_with_key(vsf_data, &key) {
+        Ok(av1) => save_avatar_from_seed(&av1, identity_seed, storage).is_ok(),
+        Err(_) => false,
+    }
+}
+
 /// Get avatar's provenance hash by handle (if cached locally) Used to include in ping/pong messages for avatar sync
 pub fn get_avatar_provenance_hash(
     handle: &str,
@@ -1216,15 +1237,19 @@ pub fn encrypt_av1_data_from_seed(
     av1_data: &[u8],
     identity_seed: &[u8; 32],
 ) -> Result<Vec<u8>, String> {
+    encrypt_av1_data_with_key(av1_data, &derive_avatar_encryption_key_from_seed(identity_seed))
+}
+
+/// Encrypt AV1 data under an EXPLICIT key — the avatar-pin's key half. The friend-gated upload path: neither this key nor the FGTW lookup is derivable from the handle, so possession of the handle no longer decrypts the avatar (docs/identity-profile.md). Format: `[nonce:12][ciphertext+tag]`.
+pub fn encrypt_av1_data_with_key(av1_data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {
     use aes_gcm::{aead::Aead, Aes256Gcm, KeyInit};
     use rand::RngCore;
 
     // Build v'a' wrapped AV1 data
     let va_wrapped = encode_va_wrapper(av1_data);
 
-    let key = derive_avatar_encryption_key_from_seed(identity_seed);
     let cipher =
-        Aes256Gcm::new_from_slice(&key).map_err(|e| format!("Failed to create cipher: {}", e))?;
+        Aes256Gcm::new_from_slice(key).map_err(|e| format!("Failed to create cipher: {}", e))?;
 
     // Generate random nonce
     let mut nonce_bytes = [0u8; 12];
@@ -1409,10 +1434,25 @@ pub fn build_signed_avatar_vsf(
     avatar_signing_key: &SigningKey,
     avatar_verifying_key: &VerifyingKey,
 ) -> Result<Vec<u8>, String> {
+    build_signed_avatar_vsf_keyed(
+        av1_data,
+        &derive_avatar_encryption_key_from_seed(identity_seed),
+        avatar_signing_key,
+        avatar_verifying_key,
+    )
+}
+
+/// [`build_signed_avatar_vsf`] encrypting under an EXPLICIT key (the avatar pin's key half) rather than a handle-derived one — the friend-gated upload.
+pub fn build_signed_avatar_vsf_keyed(
+    av1_data: &[u8],
+    enc_key: &[u8; 32],
+    avatar_signing_key: &SigningKey,
+    avatar_verifying_key: &VerifyingKey,
+) -> Result<Vec<u8>, String> {
     use vsf::{VsfBuilder, VsfType};
 
-    // Encrypt AV1 data (wraps in v'a' then encrypts)
-    let encrypted = encrypt_av1_data_from_seed(av1_data, identity_seed)?;
+    // Encrypt AV1 data (wraps in v'a' then encrypts) under the explicit pin key.
+    let encrypted = encrypt_av1_data_with_key(av1_data, enc_key)?;
 
     // Build the unsigned VSF (ke set, hp/ge placeholders) — "image" section with "pixels" v'e' field for the encrypted data.
     let unsigned = VsfBuilder::new()
@@ -1435,46 +1475,47 @@ pub fn build_signed_avatar_vsf(
 ///
 /// # Returns
 /// The avatar storage key on success (for sharing with peers)
-pub fn upload_avatar(
+#[allow(dead_code)]
+fn _upload_avatar_removed(
     device_secret: &SigningKey,
-    handle: &str,
+    _handle: &str,
     handle_proof: &[u8; 32],
     storage: &std::sync::Arc<crate::storage::FlatStorage>,
 ) -> Result<String, String> {
-    upload_avatar_from_seed(
-        device_secret,
-        &crate::types::Handle::to_identity_seed(handle),
-        handle_proof,
-        storage,
-    )
+    let _ = (device_secret, handle_proof, storage);
+    Err("upload_avatar (handle wrapper) removed — avatar upload is pin-based now".to_string())
 }
 
 /// `upload_avatar` from the already-derived `identity_seed`. String-free owner path.
 pub fn upload_avatar_from_seed(
     device_secret: &SigningKey,
     identity_seed: &[u8; 32],
+    avatar_pin: &[u8; 64],
     handle_proof: &[u8; 32],
     storage: &std::sync::Arc<crate::storage::FlatStorage>,
 ) -> Result<String, String> {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
     // Read the locally stored avatar VSF from the vault.
     let local_vsf = storage
         .read_addr(&crate::storage::vault_key("avatar", identity_seed))
         .map_err(|e| format!("Failed to read avatar from vault: {}", e))?
         .ok_or_else(|| "No local avatar to upload".to_string())?;
 
-    // The FGTW network locator (public wire address peers compute from a handle) is still the base64url storage key.
-    let storage_key = avatar_storage_key_from_seed(identity_seed);
+    // FGTW lookup = base64url of the pin's lookup half — RANDOM, not handle-derived, so a handle-knower can't even locate the blob (docs/identity-profile.md).
+    let storage_key = URL_SAFE_NO_PAD.encode(&avatar_pin[32..]);
 
     // Extract AV1 data from local avatar VSF (verified parse + decrypt) — read_verified inside subsumes the old standalone is_original check.
     let av1_data = extract_av1_data_from_seed(&local_vsf, identity_seed)?;
 
-    // Derive avatar keypair
+    // Derive avatar keypair (content-integrity signing — stays keyed off the identity; only CONFIDENTIALITY moves to the pin).
     let (avatar_signing, avatar_verifying) =
         derive_avatar_keypair_from_seed(device_secret, identity_seed);
 
-    // Build signed VSF for upload (re-encrypts the AV1 data)
+    // Build signed VSF for upload, re-encrypting the AV1 under the pin's KEY half (friend-gated — decryptable only by someone we handed the pin to over an authenticated pong).
+    let mut enc_key = [0u8; 32];
+    enc_key.copy_from_slice(&avatar_pin[..32]);
     let signed_vsf =
-        build_signed_avatar_vsf(&av1_data, identity_seed, &avatar_signing, &avatar_verifying)?;
+        build_signed_avatar_vsf_keyed(&av1_data, &enc_key, &avatar_signing, &avatar_verifying)?;
 
     #[cfg(feature = "development")]
     crate::log(&crate::network::inspect::vsf_inspect(
@@ -1692,10 +1733,13 @@ fn avatar_vsf_timestamp(vsf_data: &[u8]) -> Option<i64> {
 pub fn sync_avatar_bidirectional_from_seed(
     device_secret: &SigningKey,
     identity_seed: &[u8; 32],
+    avatar_pin: &[u8; 64],
     handle_proof: Option<&[u8; 32]>,
     storage: &std::sync::Arc<crate::storage::FlatStorage>,
 ) -> AvatarSyncResult {
-    let storage_key = avatar_storage_key_from_seed(identity_seed);
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    // The server copy lives under the pin's RANDOM lookup, not a handle-derived one.
+    let storage_key = URL_SAFE_NO_PAD.encode(&avatar_pin[32..]);
 
     // Local timestamp (if we have a cached avatar).
     let local_ts = get_local_avatar_timestamp_from_seed(identity_seed, storage);
@@ -1705,7 +1749,7 @@ pub fn sync_avatar_bidirectional_from_seed(
         match handle_proof {
             Some(hp) => {
                 crate::logf!("Avatar sync: {}, uploading local", label);
-                match upload_avatar_from_seed(device_secret, identity_seed, hp, storage) {
+                match upload_avatar_from_seed(device_secret, identity_seed, avatar_pin, hp, storage) {
                     Ok(_) => AvatarSyncResult::LocalNewer,
                     Err(e) => AvatarSyncResult::Error(format!("Upload failed: {}", e)),
                 }
@@ -1794,9 +1838,8 @@ pub fn sync_avatar_bidirectional_from_seed(
         (None, _) => {
             // No local copy — adopt the server's, but only if it actually verifies+decrypts+decodes.
             // Caching before validating would poison the vault with a frame we can't decode later.
-            if load_avatar_from_bytes_from_seed(&vsf_data, identity_seed).is_some() {
+            if adopt_server_avatar(&vsf_data, identity_seed, avatar_pin, storage) {
                 crate::log("Avatar sync: No local avatar, caching server copy");
-                let _ = save_avatar_to_cache_from_seed(identity_seed, &vsf_data, storage);
                 AvatarSyncResult::ServerNewer
             } else {
                 AvatarSyncResult::Error("Server copy failed to decode, not caching".to_string())
@@ -1807,9 +1850,8 @@ pub fn sync_avatar_bidirectional_from_seed(
                 upload(&format!("Local newer ({} > {})", local, server))
             } else if server > local {
                 // Adopt the server copy only if it validates — never overwrite a good local avatar with a body that fails to decode.
-                if load_avatar_from_bytes_from_seed(&vsf_data, identity_seed).is_some() {
+                if adopt_server_avatar(&vsf_data, identity_seed, avatar_pin, storage) {
                     crate::logf!("Avatar sync: Server newer ({} > {}), caching", server, local);
-                    let _ = save_avatar_to_cache_from_seed(identity_seed, &vsf_data, storage);
                     AvatarSyncResult::ServerNewer
                 } else {
                     AvatarSyncResult::Error(
@@ -1849,9 +1891,12 @@ pub fn sync_avatar_background(
         let device_secret = SigningKey::from_bytes(&device_secret_bytes);
         // Hash the handle to a seed ONCE here at the thread boundary; the seed (never the handle) flows into the sync logic and the cache lookup below.
         let identity_seed = *ihi::handle_to_hash(&handle).as_bytes();
+        // Dead path (no callers) — a handle-derived pin here is harmless since nothing invokes it; the LIVE sync passes the random fleet pin.
+        let legacy_pin = avatar_pin_from_seed(&identity_seed);
         let result = sync_avatar_bidirectional_from_seed(
             &device_secret,
             &identity_seed,
+            &legacy_pin,
             handle_proof.as_ref(),
             &storage,
         );

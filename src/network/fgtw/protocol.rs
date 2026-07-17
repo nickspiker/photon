@@ -69,6 +69,8 @@ pub enum FgtwMessage {
         observed_addr: Option<SocketAddr>,
         /// The responder's chosen display name (the contact-system ALWAYS-GRANTED `name` slot) — riding the pong means a friend's name reaches every peer within one ping cycle of being set/changed, self-healing, no extra message type. Pongs only go to authenticated contacts, so disclosure stays friend-scoped. `None`/empty = unset (receiver keeps its stored value).
         display_name: Option<String>,
+        /// The responder's avatar PIN (64 = random AES key ‖ FGTW lookup): the friend-gated capability to fetch + decrypt the avatar blob. Rides the pong for the SAME reason as the name — only authenticated contacts get pongs, so only they receive the pin. Neither half is handle-derivable, so knowing the handle no longer yields the avatar. `None` = unset (no avatar / receiver keeps its stored pin).
+        avatar_pin: Option<[u8; 64]>,
     },
     // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete REMOVED Full 8-primitive CLUTCH uses ClutchOffer and ClutchKemResponse which are handled via build_clutch_offer_vsf() and parse_clutch_offer_vsf() See docs/clutch.md Section 4.2 for the slot-based ceremony protocol.
     /// Encrypted chat message
@@ -352,6 +354,7 @@ impl FgtwMessage {
                 sync_records,
                 observed_addr,
                 display_name,
+                avatar_pin,
             } => {
                 // Pong: one native multi-value `sync` row per conversation record — (hb token, e6 last_received). No counts, no numbered names.
                 let mut section = vsf::VsfSection::new("pong");
@@ -373,6 +376,10 @@ impl FgtwMessage {
                     if !name.is_empty() {
                         section.add_field_multi("name", vec![VsfType::x(name.clone())]);
                     }
+                }
+                // Always-granted avatar pin (random key ‖ lookup, 64 bytes) — only when set.
+                if let Some(pin) = avatar_pin {
+                    section.add_field_multi("apin", vec![VsfType::hR(pin.to_vec())]);
                 }
                 builder
                     .creation_time_oscillations(*timestamp)
@@ -616,6 +623,14 @@ impl FgtwMessage {
                     ("name", VsfType::x(s)) if !s.is_empty() => Some(s.clone()),
                     _ => None,
                 });
+                let avatar_pin = fields.iter().find_map(|(n, v)| match (n.as_str(), v) {
+                    ("apin", VsfType::hR(b)) if b.len() == 64 => {
+                        let mut p = [0u8; 64];
+                        p.copy_from_slice(b);
+                        Some(p)
+                    }
+                    _ => None,
+                });
 
                 return Ok(FgtwMessage::StatusPong {
                     timestamp,
@@ -625,6 +640,7 @@ impl FgtwMessage {
                     sync_records,
                     observed_addr,
                     display_name,
+                    avatar_pin,
                 });
             }
         }

@@ -62,6 +62,20 @@ fn profile_name() -> Option<String> {
     PROFILE_NAME.lock().ok().map(|n| n.clone()).filter(|n| !n.is_empty())
 }
 
+/// Our avatar pin (random key ‖ lookup) as sent in pongs — the friend-gated avatar capability. Written by the UI thread on avatar set / settings load; read by the status thread per pong. Zero = unset (no avatar).
+static AVATAR_PIN: std::sync::Mutex<[u8; 64]> = std::sync::Mutex::new([0u8; 64]);
+
+/// Publish our avatar pin for outgoing pongs. Zero = unset (the pong omits it).
+pub fn set_avatar_pin(pin: &[u8; 64]) {
+    if let Ok(mut p) = AVATAR_PIN.lock() {
+        *p = *pin;
+    }
+}
+
+fn avatar_pin() -> Option<[u8; 64]> {
+    AVATAR_PIN.lock().ok().and_then(|p| if *p == [0u8; 64] { None } else { Some(*p) })
+}
+
 /// Request to ping a contact
 #[derive(Clone)]
 pub struct PingRequest {
@@ -205,6 +219,8 @@ pub enum StatusUpdate {
         sync_records: Vec<SyncRecord>,
         /// The peer's chosen display name from the pong (always-granted name slot). None on pings/timeouts/legacy pongs — receiver keeps its stored value.
         display_name: Option<String>,
+        /// The peer's avatar pin from the pong (friend-gated key ‖ lookup). None on pings/timeouts/legacy pongs.
+        avatar_pin: Option<[u8; 64]>,
     },
     // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete REMOVED Full 8-primitive CLUTCH uses ClutchOfferReceived and ClutchKemResponseReceived See docs/clutch.md Section 4.2 for the slot-based ceremony protocol.
     /// Encrypted chat message received (CHAIN format)
@@ -1617,6 +1633,7 @@ async fn run_checker(
                                             peer_addr: Some(src_addr),
                                             sync_records: vec![],
                                             display_name: None,
+                                            avatar_pin: None,
                                         },
                                         &event_proxy_recv,
                                     );
@@ -1641,6 +1658,7 @@ async fn run_checker(
                                         sync_records,
                                         observed_addr: Some(udp::canon_socketaddr(src_addr)),
                                         display_name: profile_name(),
+                                        avatar_pin: avatar_pin(),
                                     };
 
                                     let pong_bytes = pong.to_vsf_bytes();
@@ -1657,6 +1675,7 @@ async fn run_checker(
                                     sync_records,
                                     observed_addr,
                                     display_name,
+                                    avatar_pin,
                                 } => {
                                     // Find and remove matching pending ping
                                     let pending_ping = {
@@ -1721,6 +1740,7 @@ async fn run_checker(
                                             peer_addr: Some(src_addr),
                                             sync_records,
                                             display_name,
+                                            avatar_pin,
                                         },
                                         &event_proxy_recv,
                                     );
@@ -1763,6 +1783,7 @@ async fn run_checker(
                                             peer_addr: Some(src_addr),
                                             sync_records: vec![],
                                             display_name: None,
+                                            avatar_pin: None,
                                         },
                                         &event_proxy_recv,
                                     );
@@ -2162,6 +2183,7 @@ async fn run_checker(
                             peer_addr: None,      // No address for offline
                             sync_records: vec![], // No sync for offline
                             display_name: None,
+                            avatar_pin: None,
                         },
                         &event_proxy,
                     );
