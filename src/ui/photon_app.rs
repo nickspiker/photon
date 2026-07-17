@@ -3469,6 +3469,8 @@ impl FluorApp for PhotonApp {
         });
         // Window-perimeter hairline FIRST — painted straight into `target` (not the chrome group) and carves the window-shape clip_mask. fluor is under-blend only, so whatever lands in `target` first wins at shared edge pixels; drawing the hairline before any content makes it survive over full-bleed screens (Ready/Conversation) whose content reaches the window edge. The chrome group (buttons / orb / strip / title) still composites UNDER content via `flatten_into` below. The clip_mask carve here is the SOLE source of the single window-shape alpha-trim done at the OS boundary in finalize.
         chrome.rasterize_perimeter(target, buf_w, buf_h, ctx.clip_mask);
+        // Orb press glow lives IN the chrome layer now (drawn after the orb+ring, so under() blooms it beneath them): feed the pressed state each frame; the setter no-ops when unchanged and re-rasters chrome on the press/release edges.
+        chrome.set_orb_pressed(ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == chrome.app_icon_btn.id());
         chrome.rasterize_chrome(ctx.damage, ctx.text, ctx.clip_mask);
 
         // Chord hint — painted INTO `target` BEFORE `flatten_into` so the hint glyphs sit at the TOP of the under-blend chain (chrome composes UNDER them).
@@ -5071,56 +5073,6 @@ impl FluorApp for PhotonApp {
         }
 
         chrome.flatten_into(target, buf_w, buf_h, None);
-
-        // Orb press glow — the SAME pipeline as the text halos (the analytic radial ring looked wrong next to them, 2026-07-17): rasterize the disk into a full-width coverage scratch at the glow grey, run the wordmark's exact horizontal + vertical soft blurs, then composite. Two adaptations for living post-flatten: the chrome layer is opaque here so under() would no-op — the composite applies under()-of-white's per-channel arithmetic directly — and the disk INTERIOR is skipped so the halo blooms around the orb without washing the icon art (the text case hides its under-glyph glow behind the topmost glyphs; the orb is already beneath us).
-        if ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == chrome.app_icon_btn.id() {
-            if let Some((ocx, ocy, orb_r)) = chrome.orb_geometry() {
-                let r_out = orb_r * 2;
-                let band_top = (ocy - r_out).max(0) as usize;
-                let band_bot = (((ocy + r_out + 1).max(0)) as usize).min(buf_h);
-                let band_h = band_bot.saturating_sub(band_top);
-                if band_h >= 2 {
-                    let mut scratch = vec![0u8; buf_w * band_h];
-                    let rim2 = orb_r * orb_r;
-                    for y in band_top..band_bot {
-                        let dy = y as isize - ocy;
-                        let row = (y - band_top) * buf_w;
-                        let x0 = (ocx - orb_r).max(0) as usize;
-                        let x1 = (((ocx + orb_r + 1).max(0)) as usize).min(buf_w);
-                        for x in x0..x1 {
-                            let dx = x as isize - ocx;
-                            if dx * dx + dy * dy <= rim2 {
-                                scratch[row + x] = 0xB0;
-                            }
-                        }
-                    }
-                    crate::ui::photon_logo::blur_horizontal_soft(&mut scratch);
-                    crate::ui::photon_logo::blur_vertical_soft(&mut scratch, buf_w, band_h);
-                    let inner2 = (orb_r - 1) * (orb_r - 1);
-                    for y in band_top..band_bot {
-                        let dy = y as isize - ocy;
-                        let row = (y - band_top) * buf_w;
-                        for x in 0..buf_w {
-                            let a = scratch[row + x] as u32;
-                            if a == 0 {
-                                continue;
-                            }
-                            let dx = x as isize - ocx;
-                            if dx * dx + dy * dy <= inner2 {
-                                continue; // the orb face stays the orb's
-                            }
-                            let idx = y * buf_w + x;
-                            let p = target[idx];
-                            let inv = 255 - a;
-                            let dr = ((p >> 16) & 0xFF) * inv / 255;
-                            let dg = ((p >> 8) & 0xFF) * inv / 255;
-                            let db = (p & 0xFF) * inv / 255;
-                            target[idx] = (p & 0xFF00_0000) | (dr << 16) | (dg << 8) | db;
-                        }
-                    }
-                }
-            }
-        }
 
         // Development builds get the amber debug theme (orange bg tint / window hairline / title) via fluor's `amber` feature — pure theme-CONSTANT swaps, zero extra drawing steps. The old post-composite amber wash is gone: it wrote straight-RGB into fluor's α+darkness buffer, which inverted to blue.
 
