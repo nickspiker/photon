@@ -186,7 +186,7 @@ pub fn pull_fstate(
     fgtw::client::pull_fstate(&PhotonTransport, &PhotonSealer, handle_proof, fleet_key)
 }
 
-/// Publish the fleet roster. Roster-shaped wrapper over [`push_fstate`]: pulls the current slot first so the settings layers ride along untouched — a roster re-seal must never clobber synced settings. A pull failure falls back to roster-only (nothing preservable: not_found = empty slot, AEAD failure = stale-epoch blob that this push is re-sealing anyway).
+/// Publish the fleet roster. Roster-shaped wrapper over [`push_fstate`]: pulls the current slot first so the settings layers ride along untouched AND the roster converges by CRDT — union by handle_proof, per-entry LWW on `updated`, sticky tombstones — instead of last-pusher-wins clobbering a sibling's concurrent add (or resurrecting a removal we never held locally). A pull failure falls back to our-entries-only (nothing preservable: not_found = empty slot, AEAD failure = stale-epoch blob that this push is re-sealing anyway).
 pub fn push_roster(
     handle_proof: &[u8; 32],
     device_key: &Keypair,
@@ -197,7 +197,7 @@ pub fn push_roster(
         Ok(Some(s)) => s,
         _ => fgtw::fstate::FleetState::default(),
     };
-    state.roster = entries.to_vec();
+    state.roster = fgtw::fstate::merge_rosters(std::mem::take(&mut state.roster), entries.to_vec());
     push_fstate(handle_proof, device_key, fleet_key, &state)
 }
 

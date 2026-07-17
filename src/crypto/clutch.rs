@@ -27,18 +27,7 @@ pub fn derive_conversation_token(participant_seeds: &[[u8; 32]]) -> [u8; 32] {
         input.extend_from_slice(seed);
     }
 
-    // DEBUG: Print input to spaghettify for cross-platform comparison
-    crate::logf!("CONV_TOKEN: input_len={}, input_hash={}, sorted_seeds={}", input.len(), hex::encode(&blake3::hash(&input).as_bytes()[..8]), sorted_seeds
-            .iter()
-            .map(|s| hex::encode(&s[..8]))
-            .collect::<Vec<_>>()
-            .join(","));
-
-    let result = spaghettify(&input);
-
-    crate::logf!("CONV_TOKEN: spaghettify_result={}", hex::encode(&result[..8]));
-
-    result
+    spaghettify(&input)
 }
 
 /// Domain separation for the friend-history bulk key
