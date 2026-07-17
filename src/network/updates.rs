@@ -117,8 +117,11 @@ pub fn fetch_manifest_blocking(channel: Channel) -> Result<Vec<ManifestRow>, Str
         .timeout(std::time::Duration::from_secs(20))
         .build()
         .map_err(|e| format!("http client: {e}"))?;
+    // Cache-bust the manifest too: it's re-signed on every publish under a fixed url, so a stale CDN edge would hide a fresh release. A random query + no-cache forces a revalidated fetch; the signature is re-verified regardless, so a bad edge can only ever mean "not yet", never "wrong".
+    let url = format!("{}?v={}", channel.manifest_url(), rand::random::<u64>());
     let bytes = client
-        .get(channel.manifest_url())
+        .get(&url)
+        .header(reqwest::header::CACHE_CONTROL, "no-cache")
         .send()
         .map_err(|e| format!("manifest fetch: {e}"))?
         .error_for_status()
@@ -207,8 +210,11 @@ fn download_verified(row: &ManifestRow, dest: &PathBuf, check_binary_sig: bool) 
         .timeout(std::time::Duration::from_secs(300))
         .build()
         .map_err(|e| format!("http client: {e}"))?;
+    // Cache-bust by the CONTENT HASH: the artefact lives at a FIXED url per platform, so after a new build is uploaded the CDN (Cloudflare) can keep serving the stale cached binary while the freshly-fetched manifest already carries the new hash — the "hash mismatch vs signed manifest" a Windows update hit (2026-07-17). `?v=<hash>` makes the URL change exactly when the content does: a new version misses the cache (fresh fetch), an unchanged one stays cacheable. The hash is the integrity anchor either way; this only defeats stale edges.
+    let url = format!("{}?v={}", row.url, hex::encode(row.hash));
     let bytes = client
-        .get(&row.url)
+        .get(&url)
+        .header(reqwest::header::CACHE_CONTROL, "no-cache")
         .send()
         .map_err(|e| format!("artefact fetch: {e}"))?
         .error_for_status()
@@ -218,7 +224,10 @@ fn download_verified(row: &ManifestRow, dest: &PathBuf, check_binary_sig: bool) 
         .to_vec();
     let got = blake3::hash(&bytes);
     if got.as_bytes() != &row.hash {
-        return Err("artefact hash mismatch vs signed manifest".to_string());
+        return Err(format!(
+            "downloaded {} bytes but the hash didn't match the signed manifest (stale CDN copy?) — nothing installed, running version untouched; retry shortly",
+            bytes.len()
+        ));
     }
     std::fs::write(dest, &bytes).map_err(|e| format!("artefact write: {e}"))?;
     if check_binary_sig {
