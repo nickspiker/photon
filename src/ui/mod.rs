@@ -32,6 +32,9 @@ pub mod settings_widgets;
 // Settings-panel layout calculator — nav-rail-vs-content split and stacked content rows via fluor's `Region`.
 pub mod settings_layout;
 
+// Photon-specific UI colour palette (the app's own colours, mirroring `fluor::theme`).
+pub mod theme;
+
 // The fluor-hosted `FluorApp` impl. Drives desktop via `host-winit` and Android via `host-android`.
 pub mod photon_app;
 pub use photon_app::PhotonApp;

@@ -6,6 +6,7 @@ use super::photon_logo::paint_photon_logo;
 use super::ready_layout::ReadyLayout;
 use super::settings_layout::SettingsLayout;
 use super::state::{AppState, LaunchState, SettingsPage};
+use super::theme;
 use super::PhotonEvent;
 #[cfg(not(target_os = "android"))]
 use crate::network::fgtw::get_machine_fingerprint;
@@ -36,66 +37,6 @@ use fluor::host::WakeSender;
 /// How long after a `[`/`]` release we still treat the bracket as "held" for chord purposes. X11 fires a synthetic Release for the held bracket the instant the action key is pressed; this grace absorbs that round-trip so chords fire reliably.
 const CHORD_RELEASE_GRACE: Duration = Duration::from_millis(40);
 
-/// Error-state message colour for the Launch screen's error slot — visible RGB (255, 80, 80), bright red, fully opaque. `fluor::theme::dark(fmt(visible_argb))` does the same compile-time pack as fluor's theme constants: `fmt` is identity on desktop and an R↔B swap on Android (RGBA_8888 byte order in the ANativeWindow buffer), `dark` flips RGB → darkness and sets α=0xFF.
-const ERROR_TEXT_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_FF_50_50));
-
-/// Colour for the dozenal version glyphs at the bottom of the screen: pure white (darkness 0 across all channels), α = 32 = 1/8 opacity. Stored directly in fluor's α+darkness format — `draw_text_center_u32` multiplies the glyph coverage into this α, so the version reads as a faint watermark over the background noise.
-const VERSION_COLOUR: u32 = 0x20_00_00_00;
-
-/// Colour for the zoom-percentage watermark at the top of the screen: pure white, α = 64 = 1/4 opacity (twice [`VERSION_COLOUR`]'s 1/8). Same α+darkness watermark scheme as the version — painted before the background noise so it reads as a faint top-centre indicator of the current `ru` zoom factor.
-const ZOOM_COLOUR: u32 = 0x40_00_00_00;
-
-/// Contact name text on the Ready list — near-white. α+darkness (the format fluor's text/shape rasterizers expect — visible-RGB is not interchangeable here).
-const CONTACT_NAME_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_F0_F0_F0));
-/// Hairline separating the user section from the contact list — pure white at 1/4 opacity (α=64), the same translucent treatment as the hints + zoom watermark. The 0-height `fill_rect` lays the whole 1px line at this α, so it reads as faint light over the dark background.
-const SEPARATOR_COLOUR: u32 = 0x40_00_00_00;
-/// Contact presence ring around a row avatar: green online, grey offline. α+darkness.
-const RING_ONLINE_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_00_C0_00));
-const RING_OFFLINE_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_28_28_28));
-/// Add-friend result text + the in-flight hourglass: green on success, red on not-found/error. α+darkness.
-const SEARCH_FOUND_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_40_E0_40));
-const SEARCH_FAIL_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_E0_40_40));
-/// Hourglass tint while the search is in flight (orange). α+darkness.
-const HOURGLASS_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_FF_A5_00));
-
-/// Security-page destructiveness ramp — pill fills `(idle, held)`, least to most destructive: green (Lock: reversible by re-typing the handle) → yellow (fleet self-removal) → orange (Shred: wipe this device) → red (Remove & shred: sign out of the fleet AND wipe). Same luminance discipline as BUTTON_FILL/HELD (dark idle, ~2× brighter held).
-const PILL_GREEN: (u32, u32) = (
-    fluor::theme::dark(fluor::theme::fmt(0x00_14_3C_1C)),
-    fluor::theme::dark(fluor::theme::fmt(0x00_2E_88_40)),
-);
-const PILL_YELLOW: (u32, u32) = (
-    fluor::theme::dark(fluor::theme::fmt(0x00_3E_38_10)),
-    fluor::theme::dark(fluor::theme::fmt(0x00_8C_7E_26)),
-);
-const PILL_ORANGE: (u32, u32) = (
-    fluor::theme::dark(fluor::theme::fmt(0x00_48_2A_0E)),
-    fluor::theme::dark(fluor::theme::fmt(0x00_A0_5E_22)),
-);
-const PILL_RED: (u32, u32) = (
-    fluor::theme::dark(fluor::theme::fmt(0x00_4E_14_14)),
-    fluor::theme::dark(fluor::theme::fmt(0x00_AC_2E_2E)),
-);
-/// Updates page: amber (latest dev — matches the dev build's amber theme) + inert dark grey ("already on this version" — present but not an action).
-const PILL_AMBER: (u32, u32) = (
-    fluor::theme::dark(fluor::theme::fmt(0x00_44_30_08)),
-    fluor::theme::dark(fluor::theme::fmt(0x00_C0_88_18)),
-);
-const PILL_GREY: (u32, u32) = (
-    fluor::theme::dark(fluor::theme::fmt(0x00_24_24_28)),
-    fluor::theme::dark(fluor::theme::fmt(0x00_24_24_28)),
-);
-/// Send-button arrowhead glyph — light grey, α+darkness format for under-blend (visible-RGB is not usable on this canvas).
-const SEND_ARROW_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_D0_D0_D0));
-/// Hover fill for the send / plus action buttons — a SUBTLE neutral brightening of BUTTON_FILL (0x1A224E), reproducing the pre-fluor QUERY_BUTTON_HOVER feel rather than the shared BUTTON_HOVER's saturated-blue shift. A small delta also keeps the overlay from cooking the near-white arrowhead.
-const SEND_BUTTON_HOVER: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_25_2D_59));
-/// Noise-background base tint when the dual-ring vault flagged this session degraded — warning orange.
-/// This is a NOISE-MATH colour (visible-RGB space, like fluor's `BG_BASE`), so `fmt` not `dark`; passed
-/// to `background_noise` in place of its default base.
-const BG_BASE_WARNING: u32 = fluor::theme::fmt(0x00_30_10_00);
-/// Thin white rule between conversation messages. α+darkness.
-const DIVIDER_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_FF_FF_FF));
-/// Dim grey for the compose-box placeholder text. α+darkness.
-const LABEL_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_80_80_80));
 
 /// Deploy version = the crate's MINOR number, baked in at compile time. The scheme (2026-07-16): `major.minor.patch` where `deploy.sh` bumps the MINOR and ships `X.Y.0` (patch 0 is RESERVED for releases), and every dev publish bumps the PATCH (≥1, reset to 1 after each release). The dozenal display cues off the minor; a dev build appends `.patch` (also dozenal).
 fn deploy_version() -> u32 {
@@ -137,18 +78,13 @@ fn version_dozenal_glyphs() -> String {
 /// Spell `n` in dozenal digit names, most-significant first (e.g. dozenal `21` → "Zilor Zila"). The written-out companion to [`dozenal_glyphs`].
 /// Number of pips in each posture meter (Security / Recovery on the Ready strip): low / medium / high.
 const POSTURE_PIPS: usize = 3;
-/// Filled-pip colours by level — warm orange (low) → amber (mid) → green (high); empty pips use [`POSTURE_OFF_COLOUR`]. α+darkness format (opaque), the space the shape rasterizers expect.
-const POSTURE_LOW_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_E0_70_30));
-const POSTURE_MID_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_E0_C0_30));
-const POSTURE_HIGH_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_40_E0_40));
-const POSTURE_OFF_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_40_40_40));
 
 /// Filled-pip colour for a meter showing `filled` of [`POSTURE_PIPS`].
 fn posture_colour(filled: usize) -> u32 {
     match filled {
-        0 | 1 => POSTURE_LOW_COLOUR,
-        2 => POSTURE_MID_COLOUR,
-        _ => POSTURE_HIGH_COLOUR,
+        0 | 1 => theme::POSTURE_LOW_COLOUR,
+        2 => theme::POSTURE_MID_COLOUR,
+        _ => theme::POSTURE_HIGH_COLOUR,
     }
 }
 
@@ -338,8 +274,6 @@ fn draw_up_arrowhead(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, colour: u
     }
 }
 
-/// Status-message colour for the "Attesting…" indicator that occupies the error slot while a handle query is in flight. Pure visible white, fully opaque — same slot as `ERROR_TEXT_COLOUR` but white instead of red so the user reads it as "neutral status" rather than "something went wrong".
-const STATUS_TEXT_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_FF_FF_FF));
 
 // Tiered presence-ping cadence — frequent while the user is engaged, sparse once they've walked away, so an idle/unfocused window isn't waking the radio every few seconds for rings nobody is watching. The tier is chosen by time-since-last-interaction; any interaction (input or focus gain) resets the clock AND fires an immediate sweep, so presence is always fresh the moment the user looks, regardless of how far the cadence had backed off.
 /// Active tier: sweep every 5s while interacting (idle < `PRESENCE_IDLE_NEAR`).
@@ -1555,10 +1489,10 @@ impl FluorApp for PhotonApp {
         self.message_send_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., ""));
         // Specific subtle hover for the two overlay-in-textbox action buttons (pre-fluor per-control hover colours), instead of the generic saturated BUTTON_HOVER.
         if let Some(b) = self.contacts_plus_btn.as_mut() {
-            b.set_hover_fill(Some(SEND_BUTTON_HOVER));
+            b.set_hover_fill(Some(theme::SEND_BUTTON_HOVER));
         }
         if let Some(b) = self.message_send_btn.as_mut() {
-            b.set_hover_fill(Some(SEND_BUTTON_HOVER));
+            b.set_hover_fill(Some(theme::SEND_BUTTON_HOVER));
         }
         // Reserve a hit-id for the Ready-screen avatar circle. Not a Widget — the avatar is just a paint primitive — so click dispatch is handled directly in `on_event`'s MouseInput::Pressed arm, not thru `widget::dispatch_click`. Incrementing the shared counter keeps the contiguous-id contract intact for the `[]h` debug overlay.
         self.hit_counter = self.hit_counter.wrapping_add(1);
@@ -3095,7 +3029,7 @@ impl FluorApp for PhotonApp {
         let period_scale = 1.;
         let spectrum_rect = layout.spectrum;
         let logo_rect = layout.photon_text;
-        // Faint dozenal version watermark, bottom-left on every screen it shows. Size = half the "handle" hint text (hint slot height × 0.7, halved); rendered at weight 400 so it resolves to the Oxanium `+glyphs` face carrying the dozenal control-block glyphs, in near-transparent white (VERSION_COLOUR) so it sits in the background like a watermark rather than competing with the foreground.
+        // Faint dozenal version watermark, bottom-left on every screen it shows. Size = half the "handle" hint text (hint slot height × 0.7, halved); rendered at weight 400 so it resolves to the Oxanium `+glyphs` face carrying the dozenal control-block glyphs, in near-transparent white (theme::VERSION_COLOUR) so it sits in the background like a watermark rather than competing with the foreground.
         let attest_for_version = AttestBlockLayout::compute(layout.attest_block);
         let version_size =
             (attest_for_version.hint.y1 - attest_for_version.hint.y0) as f32 * 0.7 * 0.5;
@@ -3116,9 +3050,9 @@ impl FluorApp for PhotonApp {
         let on_launch = matches!(self.state, AppState::Launch(_));
         // Faint dozenal version watermark shows on the ATTEST screen ONLY (Launch) — a quiet bottom-left mark while you sign in. Ready / Conversation stay clean; the About page carries the version in full (normal-white dozenal glyphs, tap to spell out). Never arabic anywhere.
         let show_version = on_launch;
-        // Swap the noise base colour to BG_BASE_WARNING when the dual-ring vault flagged degraded this session — the noise pass already runs every frame so this changes a colour, not the pass count. None on the happy path keeps fluor's default green-dark BG_BASE.
+        // Swap the noise base colour to theme::BG_BASE_WARNING when the dual-ring vault flagged degraded this session — the noise pass already runs every frame so this changes a colour, not the pass count. None on the happy path keeps fluor's default green-dark BG_BASE.
         let bg_base = if self.vault_degraded {
-            Some(BG_BASE_WARNING)
+            Some(theme::BG_BASE_WARNING)
         } else {
             None
         };
@@ -3140,7 +3074,7 @@ impl FluorApp for PhotonApp {
                     vy,
                     version_size,
                     400,
-                    VERSION_COLOUR,
+                    theme::VERSION_COLOUR,
                     "Oxanium",
                     None,
                     None,
@@ -3156,7 +3090,7 @@ impl FluorApp for PhotonApp {
                     zoom_cy,
                     zoom_size,
                     400,
-                    ZOOM_COLOUR,
+                    theme::ZOOM_COLOUR,
                     "Oxanium",
                     None,
                     None,
@@ -3202,12 +3136,12 @@ impl FluorApp for PhotonApp {
             // Status slot — `attest.error` rect above the textbox. Carries either the red error message (`LaunchState::Error`) or the white "Attesting…" indicator (`LaunchState::Attesting`); empty in Fresh. Same geometry for both so they swap in place; colour differentiates "something's wrong" from "we're working". Wave's 1-cycle/sec phase animation pairs with the "Attesting…" line as the secondary cue.
             let status: Option<(&str, u32)> =
                 if self.launch_add_mode && !self.add_join_status.is_empty() {
-                    Some((self.add_join_status.as_str(), STATUS_TEXT_COLOUR))
+                    Some((self.add_join_status.as_str(), theme::STATUS_TEXT_COLOUR))
                 } else {
                     match launch_state {
-                        LaunchState::Attesting => Some(("Attesting\u{2026}", STATUS_TEXT_COLOUR)),
+                        LaunchState::Attesting => Some(("Attesting\u{2026}", theme::STATUS_TEXT_COLOUR)),
                         LaunchState::Error(msg) if !msg.is_empty() => {
-                            Some((msg.as_str(), ERROR_TEXT_COLOUR))
+                            Some((msg.as_str(), theme::ERROR_TEXT_COLOUR))
                         }
                         _ => None,
                     }
@@ -3243,11 +3177,11 @@ impl FluorApp for PhotonApp {
                 let mut y = attest.attest.y1 as f32 + line_h * 1.6;
                 // What's permanent is the IDENTITY, not the handle: a handle is a mutable label, but attesting mints crypto roots with no password / reset / recovery. Ownership binds to the HUMAN, not the hardware — the first person to attest owns that identity, while devices stay replaceable thru the fleet chain (remove the first device whenever, as long as another is added first). The warning must not mis-teach "this phone owns it" NOR "this name is a life sentence" — it's the identity behind it that can't be undone.
                 let lines: [(&str, u32); 5] = [
-                    ("This mints a permanent identity.", ERROR_TEXT_COLOUR),
-                    ("No password. No reset. No recovery.", STATUS_TEXT_COLOUR),
-                    ("The first human to attest owns it.", STATUS_TEXT_COLOUR),
-                    ("Devices can be replaced. The identity can't.", STATUS_TEXT_COLOUR),
-                    ("Press again if you mean it.", STATUS_TEXT_COLOUR),
+                    ("This mints a permanent identity.", theme::ERROR_TEXT_COLOUR),
+                    ("No password. No reset. No recovery.", theme::STATUS_TEXT_COLOUR),
+                    ("The first human to attest owns it.", theme::STATUS_TEXT_COLOUR),
+                    ("Devices can be replaced. The identity can't.", theme::STATUS_TEXT_COLOUR),
+                    ("Press again if you mean it.", theme::STATUS_TEXT_COLOUR),
                 ];
                 for (line, colour) in lines {
                     ctx.text.draw_text_center_u32(
@@ -3276,7 +3210,7 @@ impl FluorApp for PhotonApp {
                         v
                     };
                     // No intermediate ready-flip: red-until-green — the words stay neutral until membership folds, at which point this screen is LEFT (that departure is the green the far side confirms).
-                    let colour = STATUS_TEXT_COLOUR;
+                    let colour = theme::STATUS_TEXT_COLOUR;
                     let cx = buf_w as f32 * 0.5;
                     // Size + anchor from the attest-block layout so the words scale with ru/zoom like every other widget and sit BELOW the status slot instead of floating into the wordmark. Width-capped so 4-word lines fit a narrow window.
                     let tb_h = (attest.textbox.y1 - attest.textbox.y0) as f32;
@@ -3342,7 +3276,7 @@ impl FluorApp for PhotonApp {
                             "Wrong device? Start fresh (wipe this device)"
                         };
                         let sf_size = line_h * 0.7;
-                        let sf_colour = if self.join_startfresh_armed { ERROR_TEXT_COLOUR } else { fluor::theme::HINT_COLOUR };
+                        let sf_colour = if self.join_startfresh_armed { theme::ERROR_TEXT_COLOUR } else { fluor::theme::HINT_COLOUR };
                         ctx.text.draw_text_center_u32(
                             &mut canvas, sf_label, cx, y, sf_size, 500, sf_colour, "Oxanium", None, None, None,
                         );
@@ -3565,7 +3499,7 @@ impl FluorApp for PhotonApp {
                         btn.center_y,
                         sz,
                         self.hourglass_angle,
-                        HOURGLASS_COLOUR,
+                        theme::HOURGLASS_COLOUR,
                     );
                 }
             } else if plus_visible {
@@ -3668,7 +3602,7 @@ impl FluorApp for PhotonApp {
                         tcy,
                         region_h * 0.6,
                         600,
-                        SEARCH_FOUND_COLOUR,
+                        theme::SEARCH_FOUND_COLOUR,
                         "Oxanium",
                         None,
                         None,
@@ -3685,7 +3619,7 @@ impl FluorApp for PhotonApp {
                 ((sep.y0 + sep.y1) / 2) as isize - self.contacts_scroll,
                 (sep.x1 - sep.x0) as isize,
                 0,
-                SEPARATOR_COLOUR,
+                theme::SEPARATOR_COLOUR,
                 None,
                 None,
             );
@@ -3800,9 +3734,9 @@ impl FluorApp for PhotonApp {
                     );
                 }
                 let ring = if online {
-                    RING_ONLINE_COLOUR
+                    theme::RING_ONLINE_COLOUR
                 } else {
-                    RING_OFFLINE_COLOUR
+                    theme::RING_OFFLINE_COLOUR
                 };
                 paint::draw_circle(
                     &mut canvas,
@@ -3852,7 +3786,7 @@ impl FluorApp for PhotonApp {
                 }
             }
 
-            // Persistent degraded-vault indicator: amber text at the bottom. The matching warm background tint already lives in the noise pass above (we swap BG_BASE → BG_BASE_WARNING) so we add no extra render pass here, just the text glyph. Full details live in the README.
+            // Persistent degraded-vault indicator: amber text at the bottom. The matching warm background tint already lives in the noise pass above (we swap BG_BASE → theme::BG_BASE_WARNING) so we add no extra render pass here, just the text glyph. Full details live in the README.
             if self.vault_degraded {
                 // Visible RGB(255, 140, 0) amber. Packed: α=0xFF | darkness = (0x00, 0x73, 0xFF).
                 const DEGRADED_TEXT: u32 = 0xFF_00_73_FF;
@@ -3949,7 +3883,7 @@ impl FluorApp for PhotonApp {
                     let on = posture_colour(filled);
                     for i in 0..POSTURE_PIPS {
                         let pcx = x + pip_r + i as f32 * pip_pitch;
-                        let colour = if i < filled { on } else { POSTURE_OFF_COLOUR };
+                        let colour = if i < filled { on } else { theme::POSTURE_OFF_COLOUR };
                         paint::draw_circle(&mut canvas, pcx, strip_cy, pip_r, colour, None);
                     }
                     x += pips_span + group_gap;
@@ -3998,7 +3932,7 @@ impl FluorApp for PhotonApp {
                         back_y,
                         back_size,
                         500,
-                        CONTACT_NAME_COLOUR,
+                        theme::CONTACT_NAME_COLOUR,
                         "Oxanium",
                         None,
                         None,
@@ -4049,9 +3983,9 @@ impl FluorApp for PhotonApp {
                         );
                     }
                     let ring = if contact.is_online {
-                        RING_ONLINE_COLOUR
+                        theme::RING_ONLINE_COLOUR
                     } else {
-                        RING_OFFLINE_COLOUR
+                        theme::RING_OFFLINE_COLOUR
                     };
                     let ring_thick = (avatar_r * 0.0375).max(1.0);
                     paint::draw_circle(
@@ -4104,9 +4038,9 @@ impl FluorApp for PhotonApp {
                     let clutch_colour = if is_self_contact
                         || contact.clutch_state == crate::types::ClutchState::Complete
                     {
-                        SEARCH_FOUND_COLOUR
+                        theme::SEARCH_FOUND_COLOUR
                     } else {
-                        HOURGLASS_COLOUR
+                        theme::HOURGLASS_COLOUR
                     };
                     ctx.text.draw_text_center_u32(
                         &mut canvas,
@@ -4163,7 +4097,7 @@ impl FluorApp for PhotonApp {
                                 (y + msg_size * 0.5) as isize,
                                 (buf_w as f32 - pad_x * 2.0) as isize,
                                 (ru.max(1.0)) as isize,
-                                DIVIDER_COLOUR,
+                                theme::DIVIDER_COLOUR,
                                 Some(list_clip),
                                 None,
                             );
@@ -4232,7 +4166,7 @@ impl FluorApp for PhotonApp {
                                     compose_cy,
                                     msg_size,
                                     400,
-                                    LABEL_COLOUR,
+                                    theme::LABEL_COLOUR,
                                     "Open Sans",
                                     None,
                                     None,
@@ -4256,7 +4190,7 @@ impl FluorApp for PhotonApp {
                                     btn.center_x,
                                     btn.center_y,
                                     btn.height * 0.5,
-                                    SEND_ARROW_COLOUR,
+                                    theme::SEND_ARROW_COLOUR,
                                 );
                             }
                             if let Some(tb) = self.message_textbox.as_mut() {
@@ -4295,7 +4229,7 @@ impl FluorApp for PhotonApp {
                 let back_text = "‹ Contacts";
                 ctx.text.draw_text_left_u32(
                     &mut canvas, back_text, unit, back_y, back_size, 500,
-                    CONTACT_NAME_COLOUR, "Oxanium", None, None, None,
+                    theme::CONTACT_NAME_COLOUR, "Oxanium", None, None, None,
                 );
                 let back_w = ctx.text.measure_text_width(back_text, back_size, 500, "Oxanium");
                 restamp_hit_rect(
@@ -4318,7 +4252,7 @@ impl FluorApp for PhotonApp {
             // Two header rows above the field.
             ctx.text.draw_text_center_u32(
                 &mut canvas, "Add a device", cx, tb_cy - u * 2.5,
-                u * 0.85, 600, STATUS_TEXT_COLOUR, "Oxanium", None, None, None,
+                u * 0.85, 600, theme::STATUS_TEXT_COLOUR, "Oxanium", None, None, None,
             );
             let subtitle = if self.add_device_bound.is_none() {
                 "Type the words shown on the new device"
@@ -4330,7 +4264,7 @@ impl FluorApp for PhotonApp {
             };
             ctx.text.draw_text_center_u32(
                 &mut canvas, subtitle, cx, tb_cy - u * 1.35,
-                u * 0.45, 400, STATUS_TEXT_COLOUR, "Oxanium", None, None, None,
+                u * 0.45, 400, theme::STATUS_TEXT_COLOUR, "Oxanium", None, None, None,
             );
             // Running cursor for everything BELOW the field slot (top edge of the next row).
             let mut y = tb_cy + u * 0.85;
@@ -4345,7 +4279,7 @@ impl FluorApp for PhotonApp {
                 let count = crate::network::fgtw::fleet::pair_word_tokens(&typed);
                 let full = count == crate::network::fgtw::fleet::PAIR_WORD_COUNT;
                 let counter = format!("{count} / {}", crate::network::fgtw::fleet::PAIR_WORD_COUNT);
-                let counter_colour = if full { SEARCH_FOUND_COLOUR } else { fluor::theme::HINT_COLOUR };
+                let counter_colour = if full { theme::SEARCH_FOUND_COLOUR } else { fluor::theme::HINT_COLOUR };
                 ctx.text.draw_text_center_u32(
                     &mut canvas, &counter, cx, y + u * 0.25,
                     u * 0.5, 500, counter_colour, "Oxanium", None, None, None,
@@ -4367,7 +4301,7 @@ impl FluorApp for PhotonApp {
                             && ctx.pressed_hit == self.add_candidate_hit_base.wrapping_add(i as HitId);
                         ctx.text.draw_text_center_u32(
                             &mut canvas, &label, cx, y + row_h * 0.5,
-                            u * 0.55, if held { 700 } else { 500 }, SEARCH_FOUND_COLOUR, "Oxanium", None, None, None,
+                            u * 0.55, if held { 700 } else { 500 }, theme::SEARCH_FOUND_COLOUR, "Oxanium", None, None, None,
                         );
                         let half_w = buf_w as f32 * 0.42;
                         restamp_hit_rect(
@@ -4384,7 +4318,7 @@ impl FluorApp for PhotonApp {
                 // Green-confirm affordance (two-phase) — sits IN the field slot (tb_cy), the same place the words field would be. On the WORDS path the Bound handler auto-fires the rotation, so this never renders; it's the tap/BLE gate. Hit-stamped so Android taps land.
                 ctx.text.draw_text_center_u32(
                     &mut canvas, "Yes, it's green \u{2014} finish", cx, tb_cy,
-                    u * 0.7, 600, SEARCH_FOUND_COLOUR, "Oxanium", None, None, None,
+                    u * 0.7, 600, theme::SEARCH_FOUND_COLOUR, "Oxanium", None, None, None,
                 );
                 let half_w = buf_w as f32 * 0.4;
                 restamp_hit_rect(
@@ -4397,11 +4331,11 @@ impl FluorApp for PhotonApp {
             // Status row.
             if !self.add_device_status.is_empty() {
                 let status_colour = if self.add_device_bound.is_some() {
-                    SEARCH_FOUND_COLOUR
+                    theme::SEARCH_FOUND_COLOUR
                 } else if self.add_device_typo.is_some() {
-                    ERROR_TEXT_COLOUR // live matcher hit: names the diverging word in red
+                    theme::ERROR_TEXT_COLOUR // live matcher hit: names the diverging word in red
                 } else {
-                    STATUS_TEXT_COLOUR
+                    theme::STATUS_TEXT_COLOUR
                 };
                 ctx.text.draw_text_center_u32(
                     &mut canvas, &self.add_device_status, cx, y + u * 0.28,
@@ -4412,7 +4346,7 @@ impl FluorApp for PhotonApp {
             // Cancel hint (the orb cancels; matching words bind automatically).
             ctx.text.draw_text_center_u32(
                 &mut canvas, "tap the orb to cancel", cx, y + u * 0.22,
-                u * 0.4, 400, STATUS_TEXT_COLOUR, "Oxanium", None, None, None,
+                u * 0.4, 400, theme::STATUS_TEXT_COLOUR, "Oxanium", None, None, None,
             );
         }
 
@@ -4442,7 +4376,7 @@ impl FluorApp for PhotonApp {
                     &mut canvas, msg,
                     layout.content.x + layout.content.w * 0.5,
                     layout.content.bottom() - ts,
-                    ts, 600, SEARCH_FOUND_COLOUR, "Oxanium",
+                    ts, 600, theme::SEARCH_FOUND_COLOUR, "Oxanium",
                     None, None, None,
                 );
             }
@@ -4451,7 +4385,7 @@ impl FluorApp for PhotonApp {
             let hspan = (layout.unit * 1.05).min(layout.header.h * 0.72);
             ctx.text.draw_text_center_u32(
                 &mut canvas, "Settings", layout.content.x,
-                layout.header.center_y(), hspan, 600, CONTACT_NAME_COLOUR, "Oxanium",
+                layout.header.center_y(), hspan, 600, theme::CONTACT_NAME_COLOUR, "Oxanium",
                 None, None, None,
             );
             // --- Nav rail: Back is PINNED at the top (never scrolls — you never have to scroll up to go back); the nine page labels scroll BELOW it. Natural row height, no clamp-to-fit. Fills are painted AFTER the label so, under the settings pane's topmost-first (under-blend) compositing, the text sits in FRONT of the fill. ---
@@ -4465,7 +4399,7 @@ impl FluorApp for PhotonApp {
                 // Text FIRST (topmost-first → in front), THEN the fill behind it. 50%-black (α = 0x80) in darkness space is 0x80_FF_FF_FF (visible black is 0xFFFFFF in the RGB bytes); brighter when held.
                 ctx.text.draw_text_left_u32(
                     &mut canvas, "‹ Back", r.x + rspan * 0.6, r.center_y(),
-                    rspan, 600, SEARCH_FOUND_COLOUR, "Oxanium", None, None, None,
+                    rspan, 600, theme::SEARCH_FOUND_COLOUR, "Oxanium", None, None, None,
                 );
                 let fill = if back_held { fluor::theme::BUTTON_HELD } else { 0x80_FF_FF_FF };
                 paint::fill_rect(&mut canvas, r.x as isize, r.y as isize, r.w as isize, r.h as isize, fill, None, None);
@@ -4497,7 +4431,7 @@ impl FluorApp for PhotonApp {
                 let active = *p == page;
                 let held = ctx.pressed_hit != HIT_NONE
                     && ctx.pressed_hit == self.settings_nav_base.wrapping_add(i as HitId);
-                let colour = if active { CONTACT_NAME_COLOUR } else { LABEL_COLOUR };
+                let colour = if active { theme::CONTACT_NAME_COLOUR } else { theme::LABEL_COLOUR };
                 // Label FIRST (in front), then the highlight fill behind it.
                 ctx.text.draw_text_left_u32(
                     &mut canvas, p.label(), r.x + rspan * 0.6, r.center_y(),
@@ -4509,7 +4443,7 @@ impl FluorApp for PhotonApp {
                     paint::fill_rect(&mut canvas, r.x as isize, r.y as isize, r.w as isize, r.h as isize, fluor::theme::BUTTON_HELD, Some(pages_clip), None);
                 } else if active {
                     // Active-row backing bar (faint) so the selected page reads at a glance.
-                    paint::fill_rect(&mut canvas, r.x as isize, r.y as isize, r.w as isize, r.h as isize, SEPARATOR_COLOUR, Some(pages_clip), None);
+                    paint::fill_rect(&mut canvas, r.x as isize, r.y as isize, r.w as isize, r.h as isize, theme::SEPARATOR_COLOUR, Some(pages_clip), None);
                 }
                 restamp_hit_rect(
                     &mut chrome.hit_test_map, buf_w, buf_h,
@@ -4522,7 +4456,7 @@ impl FluorApp for PhotonApp {
             // Hairline between rail and content.
             paint::fill_rect(
                 &mut canvas, layout.content.x as isize, layout.content.y as isize,
-                1, layout.content.h as isize, SEPARATOR_COLOUR, None, None,
+                1, layout.content.h as isize, theme::SEPARATOR_COLOUR, None, None,
             );
 
             // --- Selected page body ---
@@ -4579,12 +4513,12 @@ impl FluorApp for PhotonApp {
                         }
                         match row {
                             YouRow::Header(title) => {
-                                ctx.text.draw_text_left_u32(&mut canvas, title, r.x + tspan * 0.3, r.center_y(), tspan, 600, CONTACT_NAME_COLOUR, "Oxanium", Some(content_clip), None, None);
+                                ctx.text.draw_text_left_u32(&mut canvas, title, r.x + tspan * 0.3, r.center_y(), tspan, 600, theme::CONTACT_NAME_COLOUR, "Oxanium", Some(content_clip), None, None);
                             }
                             YouRow::Field(idx) => {
                                 let cols = r.split_h([0.4, 0.6]);
                                 let label = self.you_fields[*idx].label.clone();
-                                ctx.text.draw_text_left_u32(&mut canvas, &label, cols[0].x + hspan2 * 0.3, cols[0].center_y(), hspan2, 400, LABEL_COLOUR, "Oxanium", Some(content_clip), None, None);
+                                ctx.text.draw_text_left_u32(&mut canvas, &label, cols[0].x + hspan2 * 0.3, cols[0].center_y(), hspan2, 400, theme::LABEL_COLOUR, "Oxanium", Some(content_clip), None, None);
                                 let pf = &mut self.you_fields[*idx];
                                 let id = pf.tb.hit_id();
                                 pf.tb.render_content_into(&mut canvas, 0., 0., ctx.text, Some(glow_clip), None, Some(&mut chrome.hit_test_map), id);
@@ -4595,7 +4529,7 @@ impl FluorApp for PhotonApp {
                                 }
                             }
                             YouRow::AddHeader => {
-                                ctx.text.draw_text_left_u32(&mut canvas, "Add a custom field", r.x + tspan * 0.3, r.center_y(), tspan, 600, CONTACT_NAME_COLOUR, "Oxanium", Some(content_clip), None, None);
+                                ctx.text.draw_text_left_u32(&mut canvas, "Add a custom field", r.x + tspan * 0.3, r.center_y(), tspan, 600, theme::CONTACT_NAME_COLOUR, "Oxanium", Some(content_clip), None, None);
                             }
                             YouRow::AddInput => {
                                 let cols = r.split_h([0.62, 0.38]);
@@ -4606,10 +4540,10 @@ impl FluorApp for PhotonApp {
                                 draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, cols[1].center_h(0.72), "Add", btn_base.wrapping_add(2), ctx.pressed_hit);
                             }
                             YouRow::Note => {
-                                ctx.text.draw_text_left_u32(&mut canvas, "Your handle IS your identity — you don't have to set any of this.", r.x + hspan2 * 0.3, r.center_y(), hspan2, 400, LABEL_COLOUR, "Oxanium", Some(content_clip), None, None);
+                                ctx.text.draw_text_left_u32(&mut canvas, "Your handle IS your identity — you don't have to set any of this.", r.x + hspan2 * 0.3, r.center_y(), hspan2, 400, theme::LABEL_COLOUR, "Oxanium", Some(content_clip), None, None);
                             }
                             YouRow::IdentityHeader => {
-                                ctx.text.draw_text_left_u32(&mut canvas, "Identity", r.x + tspan * 0.3, r.center_y(), tspan, 600, CONTACT_NAME_COLOUR, "Oxanium", Some(content_clip), None, None);
+                                ctx.text.draw_text_left_u32(&mut canvas, "Identity", r.x + tspan * 0.3, r.center_y(), tspan, 600, theme::CONTACT_NAME_COLOUR, "Oxanium", Some(content_clip), None, None);
                             }
                             YouRow::IdentityFp => {
                                 let fp = self
@@ -4617,7 +4551,7 @@ impl FluorApp for PhotonApp {
                                     .as_ref()
                                     .map(|s| crate::fp(&crate::crypto::clutch::identity_party_id(&s.identity_seed)))
                                     .unwrap_or_else(|| "—".to_string());
-                                ctx.text.draw_text_left_u32(&mut canvas, &fp, r.x + hspan2 * 0.3, r.center_y(), hspan2, 400, LABEL_COLOUR, "Oxanium", Some(content_clip), None, None);
+                                ctx.text.draw_text_left_u32(&mut canvas, &fp, r.x + hspan2 * 0.3, r.center_y(), hspan2, 400, theme::LABEL_COLOUR, "Oxanium", Some(content_clip), None, None);
                             }
                             YouRow::SavePill => {
                                 draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, r.center_h(pillf(0.5)), "Update", btn_base.wrapping_add(0), ctx.pressed_hit);
@@ -4633,7 +4567,7 @@ impl FluorApp for PhotonApp {
                     // Live device inventory (gathered above the chrome borrow): this device + our siblings. Rows 1..=6 hold up to 6 devices (fleets are usually ≤5; a scroll follows if this grows past the row budget). Non-self rows are tap-selectable (hit-stamped btn_base+16+index); the Remove pill acts on the selection with a two-tap confirm.
                     let devices = &fleet_devices;
                     let rows = layout.content_scrolled(8, settings_content_scroll).split_v([1.0; 8]);
-                    settings_line(&mut canvas, ctx.text, rows[0], "Your devices", tspan, CONTACT_NAME_COLOUR, 600);
+                    settings_line(&mut canvas, ctx.text, rows[0], "Your devices", tspan, theme::CONTACT_NAME_COLOUR, 600);
                     // "click to copy" — lighter/smaller, right-aligned in the header, over the same (right) side the device NAMES sit on, so it labels the tap-to-copy target.
                     {
                         let cc = "click to copy";
@@ -4641,24 +4575,24 @@ impl FluorApp for PhotonApp {
                         let cc_w = ctx.text.measure_text_width(cc, cc_size, 400, "Oxanium");
                         ctx.text.draw_text_left_u32(
                             &mut canvas, cc, rows[0].right() - cc_w - hspan2 * 0.3, rows[0].center_y(),
-                            cc_size, 400, LABEL_COLOUR, "Oxanium", None, None, None,
+                            cc_size, 400, theme::LABEL_COLOUR, "Oxanium", None, None, None,
                         );
                     }
                     for (i, (_pk, is_self, online, name)) in devices.iter().take(6).enumerate() {
                         let row = rows[1 + i];
                         // Status on the LEFT (this device / online / offline), device NAME right-aligned so it lines up under "click to copy" — the name is what a tap copies.
                         let (status, status_colour) = if *is_self {
-                            ("(this device)", LABEL_COLOUR)
+                            ("(this device)", theme::LABEL_COLOUR)
                         } else if *online {
-                            ("online", SEARCH_FOUND_COLOUR)
+                            ("online", theme::SEARCH_FOUND_COLOUR)
                         } else {
-                            ("offline", LABEL_COLOUR)
+                            ("offline", theme::LABEL_COLOUR)
                         };
                         settings_line(&mut canvas, ctx.text, row, status, hspan2 * 0.85, status_colour, 400);
                         let name_w = ctx.text.measure_text_width(name, hspan2, 500, "Oxanium");
                         ctx.text.draw_text_left_u32(
                             &mut canvas, name, row.right() - name_w - hspan2 * 0.3, row.center_y(),
-                            hspan2, 500, CONTACT_NAME_COLOUR, "Oxanium", None, None, None,
+                            hspan2, 500, theme::CONTACT_NAME_COLOUR, "Oxanium", None, None, None,
                         );
                         // Every row (self included) is a tap-to-copy target for its name.
                         restamp_hit_rect(
@@ -4673,7 +4607,7 @@ impl FluorApp for PhotonApp {
                         );
                     }
                     // No Remove pill: expulsion is not a verb (sovereign records, 2026-07-13) — a device leaves by its own signed departure, and a LOST device is evicted by withholding (re-key) when the device-trust bundle lands.
-                    settings_line(&mut canvas, ctx.text, rows[6], "A device can only remove itself — a lost one gets keyed out, not erased.", hspan2, LABEL_COLOUR, 400);
+                    settings_line(&mut canvas, ctx.text, rows[6], "A device can only remove itself — a lost one gets keyed out, not erased.", hspan2, theme::LABEL_COLOUR, 400);
                     let pr = rows[7].split_h([1.0, 1.0]);
                     draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[0].center_h(0.85), "Add device", btn_base.wrapping_add(0), ctx.pressed_hit);
                     draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[1].center_h(0.85), "Rename", btn_base.wrapping_add(1), ctx.pressed_hit);
@@ -4681,53 +4615,53 @@ impl FluorApp for PhotonApp {
                 SettingsPage::Security => {
                     // Destructiveness ramp, least → most, one blank row between each pill so they breathe: Lock (green, reversible) · fleet self-removal (yellow) · Shred (orange, wipe this device) · Remove & shred (red, sign out of the fleet THEN wipe). The two wipers are two-tap confirmed, mutually exclusive.
                     let rows = layout.content_scrolled(11, settings_content_scroll).split_v([1.0; 11]);
-                    settings_line(&mut canvas, ctx.text, rows[0], "Security", tspan, CONTACT_NAME_COLOUR, 600);
-                    settings_line(&mut canvas, ctx.text, rows[1], "Named by destructiveness.", hspan2, LABEL_COLOUR, 400);
-                    draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[2].center_h(pillf(0.55)), "Lock (re-unlock with your handle)", btn_base.wrapping_add(0), ctx.pressed_hit, true, Some(PILL_GREEN), "Open Sans");
-                    draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[4].center_h(pillf(0.55)), "Remove this device from fleet", btn_base.wrapping_add(1), ctx.pressed_hit, true, Some(PILL_YELLOW), "Open Sans");
+                    settings_line(&mut canvas, ctx.text, rows[0], "Security", tspan, theme::CONTACT_NAME_COLOUR, 600);
+                    settings_line(&mut canvas, ctx.text, rows[1], "Named by destructiveness.", hspan2, theme::LABEL_COLOUR, 400);
+                    draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[2].center_h(pillf(0.55)), "Lock (re-unlock with your handle)", btn_base.wrapping_add(0), ctx.pressed_hit, true, Some(theme::PILL_GREEN), "Open Sans");
+                    draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[4].center_h(pillf(0.55)), "Remove this device from fleet", btn_base.wrapping_add(1), ctx.pressed_hit, true, Some(theme::PILL_YELLOW), "Open Sans");
                     let shred_label = if self.settings_shred_armed { "Shred — tap again to confirm" } else { "Shred (crypto-wipe)" };
-                    draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[6].center_h(pillf(0.55)), shred_label, btn_base.wrapping_add(2), ctx.pressed_hit, true, Some(PILL_ORANGE), "Open Sans");
+                    draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[6].center_h(pillf(0.55)), shred_label, btn_base.wrapping_add(2), ctx.pressed_hit, true, Some(theme::PILL_ORANGE), "Open Sans");
                     let rs_label = if self.settings_removeshred_armed { "Remove & shred — tap again to confirm" } else { "Remove & shred (sign out, then wipe)" };
-                    draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[8].center_h(pillf(0.55)), rs_label, btn_base.wrapping_add(3), ctx.pressed_hit, true, Some(PILL_RED), "Open Sans");
+                    draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[8].center_h(pillf(0.55)), rs_label, btn_base.wrapping_add(3), ctx.pressed_hit, true, Some(theme::PILL_RED), "Open Sans");
                     if self.settings_shred_armed {
-                        settings_line(&mut canvas, ctx.text, rows[9], "Wipes the vault AND identity on this device — irreversible.", hspan2, ERROR_TEXT_COLOUR, 500);
+                        settings_line(&mut canvas, ctx.text, rows[9], "Wipes the vault AND identity on this device — irreversible.", hspan2, theme::ERROR_TEXT_COLOUR, 500);
                     } else if self.settings_removeshred_armed {
-                        settings_line(&mut canvas, ctx.text, rows[9], "Signs this device out of your fleet, then wipes it — irreversible.", hspan2, ERROR_TEXT_COLOUR, 500);
+                        settings_line(&mut canvas, ctx.text, rows[9], "Signs this device out of your fleet, then wipes it — irreversible.", hspan2, theme::ERROR_TEXT_COLOUR, 500);
                     }
-                    settings_line(&mut canvas, ctx.text, rows[10], "Security: strong   ·   Recovery: not set up", hspan2, LABEL_COLOUR, 400);
+                    settings_line(&mut canvas, ctx.text, rows[10], "Security: strong   ·   Recovery: not set up", hspan2, theme::LABEL_COLOUR, 400);
                 }
                 SettingsPage::Recovery => {
                     let rows = layout.content_scrolled(8, settings_content_scroll).split_v([1.0; 8]);
-                    settings_line(&mut canvas, ctx.text, rows[0], "Recovery", tspan, CONTACT_NAME_COLOUR, 600);
-                    settings_line(&mut canvas, ctx.text, rows[1], &format!("Custodians (v{})", crate::dozenal_glyphs(1)), hspan2, CONTACT_NAME_COLOUR, 600);
+                    settings_line(&mut canvas, ctx.text, rows[0], "Recovery", tspan, theme::CONTACT_NAME_COLOUR, 600);
+                    settings_line(&mut canvas, ctx.text, rows[1], &format!("Custodians (v{})", crate::dozenal_glyphs(1)), hspan2, theme::CONTACT_NAME_COLOUR, 600);
                     if let Some(cb) = self.settings_custodian_check.as_mut() {
                         cb.render_content_into(&mut canvas, ctx.text, None, Some(&mut chrome.hit_test_map));
                     }
-                    settings_line(&mut canvas, ctx.text, rows[4], "Identity backup", hspan2, CONTACT_NAME_COLOUR, 600);
-                    settings_line(&mut canvas, ctx.text, rows[5], "Reinstalling won't ask for your handle.", hspan2, LABEL_COLOUR, 400);
+                    settings_line(&mut canvas, ctx.text, rows[4], "Identity backup", hspan2, theme::CONTACT_NAME_COLOUR, 600);
+                    settings_line(&mut canvas, ctx.text, rows[5], "Reinstalling won't ask for your handle.", hspan2, theme::LABEL_COLOUR, 400);
                     draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[6].center_h(pillf(0.5)), "Back up identity…", btn_base.wrapping_add(0), ctx.pressed_hit);
                 }
                 SettingsPage::Appearance => {
                     let rows = layout.content_scrolled(8, settings_content_scroll).split_v([1.0; 8]);
-                    settings_line(&mut canvas, ctx.text, rows[0], "Appearance", tspan, CONTACT_NAME_COLOUR, 600);
-                    settings_line(&mut canvas, ctx.text, rows[1], "Theme", hspan2, LABEL_COLOUR, 400);
+                    settings_line(&mut canvas, ctx.text, rows[0], "Appearance", tspan, theme::CONTACT_NAME_COLOUR, 600);
+                    settings_line(&mut canvas, ctx.text, rows[1], "Theme", hspan2, theme::LABEL_COLOUR, 400);
                     if let Some(dd) = self.settings_theme_dropdown.as_mut() {
                         dd.render_content_into(&mut canvas, 0., 0., ctx.text, None, Some(&mut chrome.hit_test_map));
                     }
-                    settings_line(&mut canvas, ctx.text, rows[3], "Party colours (placeholder → perceptual L≈50%)", hspan2, LABEL_COLOUR, 400);
-                    settings_line(&mut canvas, ctx.text, rows[4], "Zoom / text size", hspan2, LABEL_COLOUR, 400);
+                    settings_line(&mut canvas, ctx.text, rows[3], "Party colours (placeholder → perceptual L≈50%)", hspan2, theme::LABEL_COLOUR, 400);
+                    settings_line(&mut canvas, ctx.text, rows[4], "Zoom / text size", hspan2, theme::LABEL_COLOUR, 400);
                     if let Some(sl) = self.settings_zoom_slider.as_mut() {
                         sl.render_content_into(&mut canvas, Some(&mut chrome.hit_test_map), sl.hit_id());
                     }
-                    settings_line(&mut canvas, ctx.text, rows[6], "Colour calibration (Android panel)", hspan2, LABEL_COLOUR, 400);
+                    settings_line(&mut canvas, ctx.text, rows[6], "Colour calibration (Android panel)", hspan2, theme::LABEL_COLOUR, 400);
                 }
                 SettingsPage::Notifications => {
                     let rows = layout.content_scrolled(8, settings_content_scroll).split_v([1.0; 8]);
-                    settings_line(&mut canvas, ctx.text, rows[0], "Notifications", tspan, CONTACT_NAME_COLOUR, 600);
+                    settings_line(&mut canvas, ctx.text, rows[0], "Notifications", tspan, theme::CONTACT_NAME_COLOUR, 600);
                     if let Some(cb) = self.settings_chime_check.as_mut() {
                         cb.render_content_into(&mut canvas, ctx.text, None, Some(&mut chrome.hit_test_map));
                     }
-                    settings_line(&mut canvas, ctx.text, rows[2], "Per-contact override lives in each conversation.", hspan2, LABEL_COLOUR, 400);
+                    settings_line(&mut canvas, ctx.text, rows[2], "Per-contact override lives in each conversation.", hspan2, theme::LABEL_COLOUR, 400);
                     if let Some(cb) = self.settings_presence_check.as_mut() {
                         cb.render_content_into(&mut canvas, ctx.text, None, Some(&mut chrome.hit_test_map));
                     }
@@ -4735,8 +4669,8 @@ impl FluorApp for PhotonApp {
                 SettingsPage::Updates => {
                     // Rows (blanks between the pills for vertical breathing room): 0 title · 1 current version · 2 blank · 3 release pill · 4 blank · 5 dev pill · 6 blank · 7 status.
                     let rows = layout.content_scrolled(8, settings_content_scroll).split_v([1.0; 8]);
-                    settings_line(&mut canvas, ctx.text, rows[0], "Updates", tspan, CONTACT_NAME_COLOUR, 600);
-                    settings_line(&mut canvas, ctx.text, rows[1], &format!("Photon {}", version_dozenal_glyphs()), hspan2, CONTACT_NAME_COLOUR, 400);
+                    settings_line(&mut canvas, ctx.text, rows[0], "Updates", tspan, theme::CONTACT_NAME_COLOUR, 600);
+                    settings_line(&mut canvas, ctx.text, rows[1], &format!("Photon {}", version_dozenal_glyphs()), hspan2, theme::CONTACT_NAME_COLOUR, 400);
                     if let Some(cb) = self.settings_autoupdate_check.as_mut() {
                         cb.render_content_into(&mut canvas, ctx.text, None, Some(&mut chrome.hit_test_map));
                     }
@@ -4744,25 +4678,25 @@ impl FluorApp for PhotonApp {
                     let ours = crate::network::updates::our_version();
                     let button = |canvas: &mut Canvas, text: &mut fluor::text::TextRenderer, hit_map: &mut [HitId], rect: fluor::region::Region, slot: HitId, kind: &str, avail_fill: (u32, u32), state: &ChannelCheck, busy: bool| {
                         let (label, fill, enabled) = match state {
-                            ChannelCheck::Idle | ChannelCheck::Checking => (format!("Checking {kind}\u{2026}"), PILL_GREY, false),
-                            ChannelCheck::Failed => (format!("{kind} unavailable"), PILL_GREY, false),
-                            ChannelCheck::Ready(None) => (format!("No {kind} build for this device"), PILL_GREY, false),
-                            ChannelCheck::Ready(Some(row)) if row.version == ours => (format!("Already on {kind} {}", dozenal_version_tuple(row.version)), PILL_GREY, false),
+                            ChannelCheck::Idle | ChannelCheck::Checking => (format!("Checking {kind}\u{2026}"), theme::PILL_GREY, false),
+                            ChannelCheck::Failed => (format!("{kind} unavailable"), theme::PILL_GREY, false),
+                            ChannelCheck::Ready(None) => (format!("No {kind} build for this device"), theme::PILL_GREY, false),
+                            ChannelCheck::Ready(Some(row)) if row.version == ours => (format!("Already on {kind} {}", dozenal_version_tuple(row.version)), theme::PILL_GREY, false),
                             ChannelCheck::Ready(Some(row)) => (format!("Get {kind} {}", dozenal_version_tuple(row.version)), avail_fill, !busy),
                         };
                         draw_stub_pill_filled(canvas, text, hit_map, buf_w, buf_h, rect, &label, slot, ctx.pressed_hit, enabled, Some(fill), "Oxanium");
                     };
-                    button(&mut canvas, ctx.text, &mut chrome.hit_test_map, rows[3].center_h(pillf(0.7)), btn_base.wrapping_add(1), "release", PILL_GREEN, &self.update_release, self.update_busy);
-                    button(&mut canvas, ctx.text, &mut chrome.hit_test_map, rows[5].center_h(pillf(0.7)), btn_base.wrapping_add(2), "dev", PILL_AMBER, &self.update_dev, self.update_busy);
+                    button(&mut canvas, ctx.text, &mut chrome.hit_test_map, rows[3].center_h(pillf(0.7)), btn_base.wrapping_add(1), "release", theme::PILL_GREEN, &self.update_release, self.update_busy);
+                    button(&mut canvas, ctx.text, &mut chrome.hit_test_map, rows[5].center_h(pillf(0.7)), btn_base.wrapping_add(2), "dev", theme::PILL_AMBER, &self.update_dev, self.update_busy);
                     // Status line: last APPLY outcome (installing / failed / restarting).
                     if let Some(status) = &self.update_status {
-                        settings_line(&mut canvas, ctx.text, rows[7], status, hspan2, CONTACT_NAME_COLOUR, 500);
+                        settings_line(&mut canvas, ctx.text, rows[7], status, hspan2, theme::CONTACT_NAME_COLOUR, 500);
                     }
                 }
                 SettingsPage::Diagnostics => {
                     let rows = layout.content_scrolled(10, settings_content_scroll).split_v([1.0; 10]);
-                    settings_line(&mut canvas, ctx.text, rows[0], "Diagnostics", tspan, CONTACT_NAME_COLOUR, 600);
-                    settings_line(&mut canvas, ctx.text, rows[1], "On-device log · 16 MiB · self-expires 24–48h", hspan2, LABEL_COLOUR, 400);
+                    settings_line(&mut canvas, ctx.text, rows[0], "Diagnostics", tspan, theme::CONTACT_NAME_COLOUR, 600);
+                    settings_line(&mut canvas, ctx.text, rows[1], "On-device log · 16 MiB · self-expires 24–48h", hspan2, theme::LABEL_COLOUR, 400);
                     let pr = rows[3].split_h([1.0, 1.0, 1.0]);
                     draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[0].center_h(0.85), "Clear", btn_base.wrapping_add(0), ctx.pressed_hit);
                     draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[1].center_h(0.85), "Snapshot", btn_base.wrapping_add(1), ctx.pressed_hit);
@@ -4774,7 +4708,7 @@ impl FluorApp for PhotonApp {
                     } else {
                         draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[2].center_h(0.85), "Submit", btn_base.wrapping_add(2), ctx.pressed_hit);
                     }
-                    settings_line(&mut canvas, ctx.text, rows[6], "Optional note", hspan2, LABEL_COLOUR, 400);
+                    settings_line(&mut canvas, ctx.text, rows[6], "Optional note", hspan2, theme::LABEL_COLOUR, 400);
                     if let Some(tb) = self.settings_note_textbox.as_mut() {
                         let id = tb.hit_id();
                         tb.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, Some(&mut chrome.hit_test_map), id);
@@ -4782,25 +4716,25 @@ impl FluorApp for PhotonApp {
                 }
                 SettingsPage::About => {
                     let rows = layout.content_scrolled(8, settings_content_scroll).split_v([1.0; 8]);
-                    settings_line(&mut canvas, ctx.text, rows[0], "About Photon", tspan, CONTACT_NAME_COLOUR, 600);
-                    settings_line(&mut canvas, ctx.text, rows[1], "No password. Your device is your key.", hspan2, CONTACT_NAME_COLOUR, 400);
-                    settings_line(&mut canvas, ctx.text, rows[2], "Stay signed in until power-off; reboot → re-enter your handle.", hspan2, LABEL_COLOUR, 400);
-                    settings_line(&mut canvas, ctx.text, rows[3], "No servers. No tracking. Your data is yours.", hspan2, LABEL_COLOUR, 400);
+                    settings_line(&mut canvas, ctx.text, rows[0], "About Photon", tspan, theme::CONTACT_NAME_COLOUR, 600);
+                    settings_line(&mut canvas, ctx.text, rows[1], "No password. Your device is your key.", hspan2, theme::CONTACT_NAME_COLOUR, 400);
+                    settings_line(&mut canvas, ctx.text, rows[2], "Stay signed in until power-off; reboot → re-enter your handle.", hspan2, theme::LABEL_COLOUR, 400);
+                    settings_line(&mut canvas, ctx.text, rows[3], "No servers. No tracking. Your data is yours.", hspan2, theme::LABEL_COLOUR, 400);
                     // Version — dozenal, NEVER arabic. Default: normal-white dozenal glyphs (weight 400 → the Oxanium +glyphs face renders the reserved control-code bytes as dozenal digits). Tap → spell it out in voca words. Whole row is a tap target (btn_base + 3).
                     let ver = if self.about_version_spelled {
                         format!("Version {}{}", crate::dozenal_spell(deploy_version()), if dev_patch() > 0 { format!(" point {}", crate::dozenal_spell(dev_patch())) } else { String::new() })
                     } else {
                         format!("Version {}", version_dozenal_glyphs())
                     };
-                    settings_line(&mut canvas, ctx.text, rows[5], &ver, hspan2, CONTACT_NAME_COLOUR, 400);
+                    settings_line(&mut canvas, ctx.text, rows[5], &ver, hspan2, theme::CONTACT_NAME_COLOUR, 400);
                     restamp_hit_rect(
                         &mut chrome.hit_test_map, buf_w, buf_h,
                         rows[5].x as isize, rows[5].y as isize,
                         (rows[5].x + rows[5].w) as isize, (rows[5].y + rows[5].h) as isize,
                         btn_base.wrapping_add(3),
                     );
-                    settings_line(&mut canvas, ctx.text, rows[6], "Feedback: fractaldecoder@proton.me", hspan2, LABEL_COLOUR, 400);
-                    settings_line(&mut canvas, ctx.text, rows[7], "Built on the TOKEN stack · licences under the hood.", hspan2, LABEL_COLOUR, 400);
+                    settings_line(&mut canvas, ctx.text, rows[6], "Feedback: fractaldecoder@proton.me", hspan2, theme::LABEL_COLOUR, 400);
+                    settings_line(&mut canvas, ctx.text, rows[7], "Built on the TOKEN stack · licences under the hood.", hspan2, theme::LABEL_COLOUR, 400);
                 }
             }
         }
@@ -5527,7 +5461,7 @@ impl PhotonApp {
                         }
                     }
                 }
-                self.search_status = Some((format!("added {handle}"), SEARCH_FOUND_COLOUR));
+                self.search_status = Some((format!("added {handle}"), theme::SEARCH_FOUND_COLOUR));
                 if let Some(tb) = self.contacts_textbox.as_mut() {
                     tb.clear();
                 }
@@ -7578,7 +7512,7 @@ impl PhotonApp {
                 if already {
                     crate::logf!("search-result: '{}' already in contacts — skipping add", handle);
                     self.search_status =
-                        Some((format!("{handle} already added"), SEARCH_FOUND_COLOUR));
+                        Some((format!("{handle} already added"), theme::SEARCH_FOUND_COLOUR));
                     return;
                 }
                 let mut contact = crate::types::Contact::new(
@@ -7621,7 +7555,7 @@ impl PhotonApp {
                         }
                     }
                 }
-                self.search_status = Some((format!("added {handle}"), SEARCH_FOUND_COLOUR));
+                self.search_status = Some((format!("added {handle}"), theme::SEARCH_FOUND_COLOUR));
                 if let Some(tb) = self.contacts_textbox.as_mut() {
                     tb.clear();
                 }
@@ -7630,12 +7564,12 @@ impl PhotonApp {
             }
             SearchResult::NotFound => {
                 crate::log("search-result: handle not found on FGTW");
-                self.search_status = Some(("not found".to_string(), SEARCH_FAIL_COLOUR));
+                self.search_status = Some(("not found".to_string(), theme::SEARCH_FAIL_COLOUR));
                 self.refocus_contacts_select_all();
             }
             SearchResult::Error(e) => {
                 crate::logf!("search-result: error '{}'", e);
-                self.search_status = Some((format!("error: {e}"), SEARCH_FAIL_COLOUR));
+                self.search_status = Some((format!("error: {e}"), theme::SEARCH_FAIL_COLOUR));
                 self.refocus_contacts_select_all();
             }
         }
