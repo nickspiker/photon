@@ -5225,6 +5225,7 @@ impl PhotonApp {
                     continue;
                 }
                 let shrank = c.fleet_folded_once && c.fleet_members.iter().any(|m| !members.contains(m));
+                let grew = members.iter().any(|m| !c.fleet_members.contains(m));
                 let set_changed = c.fleet_members != members;
                 let arming = !c.fleet_folded_once;
                 if set_changed || arming || tip_ts != c.fleet_members_ts {
@@ -5235,6 +5236,11 @@ impl PhotonApp {
                     to_persist.push(idx);
                     if shrank {
                         crate::logf!("FLEET: device revoked from {}'s fleet — dropping it from the answerable set", crate::fp(&hp));
+                    }
+                    // Fold-race self-heal (2026-07-17): a peer's NEW device can drive the ceremony before we folded it — its CLUTCH SPEC was rejected as "not in contacts", and it gives up before our fold lands. Now that the fold makes that sibling answerable, re-arm our offer so the ceremony re-fires to it (prompting its KEM, which the PT gate now accepts). Only for an unfinished ceremony that grew a member — never disturb a Complete one.
+                    if grew && c.clutch_state != crate::types::ClutchState::Complete {
+                        c.clutch_offer_sent = false;
+                        crate::logf!("CLUTCH: {} fleet grew mid-ceremony — re-arming offer to reach the folded device", crate::fp(&hp));
                     }
                 }
             }

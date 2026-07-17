@@ -536,6 +536,13 @@ impl PTManager {
 
         // Check outbound transfers
         for transfer in &mut self.outbound {
+            // A transfer whose data already fully delivered (all packets ACK'd → AwaitingComplete/Complete) has done its job — don't let the stale sweep fire a spurious "timed out" on it 30 s later (2026-07-17: an offer that delivered fine still logged a timeout because the completed handle lingered in `outbound` past its last-activity window). Failed ones are already done too.
+            if matches!(
+                transfer.state,
+                TransferState::AwaitingComplete | TransferState::Complete | TransferState::Failed
+            ) {
+                continue;
+            }
             if transfer.is_stale(self.stale_timeout) {
                 crate::logf!("PT: Outbound transfer to {} timed out", transfer.peer_addr);
                 transfer.state = TransferState::Failed;
