@@ -61,6 +61,21 @@ struct IccColourConverter {
 /// # Returns
 /// Raw AV1 OBU bitstream encoded with VSF RGB colourspace (256x256)
 pub fn encode_avatar_from_image(image_data: &[u8]) -> Result<Vec<u8>, String> {
+    encode_avatar_rgb_f32(&image_to_avatar_rgb_f32(image_data)?)
+}
+
+/// The SLOW half of avatar-set: rav1e AV1 encode of the prepared 256×256 γ2 f32 pixels. Seconds on a dev build — never call on the UI thread (docs: the "considerable delay before the avatar shows" was this + the upload running synchronously before display).
+pub fn encode_avatar_rgb_f32(vsf_rgb_f32: &[f32]) -> Result<Vec<u8>, String> {
+    encode_av1(vsf_rgb_f32, AVATAR_SIZE)
+}
+
+/// Quantize the prepared f32 γ2 pixels to the u8 form the display path uses (identical to what the AV1 round-trip decodes to, 8-bit) — so the UI can show the avatar the same frame it was picked, before the encode even starts.
+pub fn avatar_rgb_f32_to_u8(vsf_rgb_f32: &[f32]) -> Vec<u8> {
+    vsf_rgb_f32.iter().map(|v| (v * 255.0 + 0.5) as u8).collect()
+}
+
+/// The FAST half of avatar-set: decode + EXIF/ICC handling + centre-crop + Lanczos resize + circular mask + γ2 — everything except the AV1 encode. Milliseconds; safe on the UI thread for the instant-display path.
+pub fn image_to_avatar_rgb_f32(image_data: &[u8]) -> Result<Vec<f32>, String> {
     use resize::Type::Lanczos3;
     use rgb::FromSlice;
     use vsf::colour::convert::delinearize_gamma2_f32 as delinearize_gamma2;
@@ -240,7 +255,7 @@ pub fn encode_avatar_from_image(image_data: &[u8]) -> Result<Vec<u8>, String> {
         }
     }
 
-    encode_av1(&vsf_rgb_f32, size)
+    Ok(vsf_rgb_f32)
 }
 
 /// Extract ICC profile from image data
