@@ -3933,30 +3933,11 @@ impl FluorApp for PhotonApp {
                 if row_top + row_h <= 0 || row_top >= buf_h as isize {
                     continue; // fully outside the visible content area (rows now scroll up to the top, not just `rows.y0`)
                 }
-                // Held (pointer DOWN on this row, release opens the conversation) or hovered — paint the tint FIRST so the avatar + name land on top of it. Held wins; hover uses the same subtle fill as the in-textbox action buttons, restoring the legacy row-hover cue. A drag-off clears `ctx.pressed_hit` and the tint vanishes next frame.
+                // Hover/press vocabulary (2026-07-17, block tints vetoed): hover = the NAME goes heavier + the presence ring strokes 1px wider; press = the logo's white-glow halo blooms behind the name. No fills, no deltas — weight, stroke, and light.
                 let row_hit_here = self.contact_hit_base.wrapping_add(ci as HitId);
-                let row_tint = if ci >= 256 {
-                    None
-                } else if ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == row_hit_here {
-                    Some(fluor::theme::BUTTON_HELD)
-                } else if ctx.pressed_hit == HIT_NONE && self.hover_hit == row_hit_here {
-                    Some(theme::SEND_BUTTON_HOVER)
-                } else {
-                    None
-                };
-                if let Some(tint) = row_tint {
-                    paint::fill_rect(
-                        &mut canvas,
-                        rows.x0 as isize,
-                        row_top.max(0),
-                        (rows.x1 - rows.x0) as isize,
-                        (row_top + row_h).min(buf_h as isize) - row_top.max(0),
-                        tint,
-                        Some(rows_clip),
-                        None,
-                    );
-                }
-                let cy = (row_top + row_h / 2) as f32;
+                let row_pressed = ci < 256 && ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == row_hit_here;
+                let row_hovered = row_pressed || (ci < 256 && ctx.pressed_hit == HIT_NONE && self.hover_hit == row_hit_here);
+                let cy = (row_top + row_h / 2) as f32;                let cy = (row_top + row_h / 2) as f32;
                 let online = self.contacts[ci].is_online;
 
                 // Build/refresh the contact's scaled-avatar cache at the row diameter.
@@ -4009,7 +3990,7 @@ impl FluorApp for PhotonApp {
                     &mut canvas,
                     avatar_cx,
                     cy,
-                    avatar_r + ring_thickness,
+                    avatar_r + ring_thickness + if row_hovered { 1.0 } else { 0.0 },
                     ring,
                     Some(rows_clip),
                 );
@@ -4023,13 +4004,39 @@ impl FluorApp for PhotonApp {
                         &our_handle_hash,
                     ))
                 };
-                // "Pending…" reads in SKEW (the honest oblique — tan 12°): a name-shaped placeholder must not look like a name. The first styled-text consumer (fluor TextStyle, 2026-07-17).
+                // "Pending…" reads in SHEAR (the honest oblique — tan 12°): a name-shaped placeholder must not look like a name. Hover reads as WEIGHT (500 → 700), not a fill.
+                let row_weight = if row_hovered { 700 } else { 500 };
                 let row_style = if self.contacts[ci].has_real_name() {
-                    TextStyle::new(text_size, row_colour).weight(500).font("Oxanium")
+                    TextStyle::new(text_size, row_colour).weight(row_weight).font("Oxanium")
                 } else {
-                    TextStyle::new(text_size, row_colour).weight(500).font("Oxanium").shear(0.2126)
+                    TextStyle::new(text_size, row_colour).weight(row_weight).font("Oxanium").shear(0.2126)
                 };
-                ctx.text.draw_text_left(&mut canvas, &self.contacts[ci].display_name_or_pending(), text_x, cy, &row_style, Some(rows_clip), None);
+                let row_name = self.contacts[ci].display_name_or_pending();
+                if row_pressed {
+                    // Press = the wordmark's halo, scoped to this row: rasterize the name into a full-width band scratch, soft-blur both axes, composite as white-under light (the logo's exact pipeline — crate::ui::photon_logo). Band clamped to the buffer; the row is full-width like the wordmark, so the shared blur math holds.
+                    let band_top = row_top.max(0) as usize;
+                    let band_h = ((row_top + row_h).min(buf_h as isize) as usize).saturating_sub(band_top);
+                    if band_h >= 2 {
+                        let mut scratch = vec![0u8; buf_w * band_h];
+                        ctx.text.draw_text_left_legacy(
+                            &mut scratch,
+                            buf_w as u32,
+                            band_h as u32,
+                            &row_name,
+                            text_x,
+                            cy - band_top as f32,
+                            text_size,
+                            row_weight,
+                            vec![0xB0],
+                            0,
+                            "Oxanium",
+                        );
+                        crate::ui::photon_logo::blur_horizontal_soft(&mut scratch);
+                        crate::ui::photon_logo::blur_vertical_soft(&mut scratch, buf_w, band_h);
+                        crate::ui::photon_logo::composite_glow_white(canvas.pixels, buf_w, band_top, &scratch);
+                    }
+                }
+                ctx.text.draw_text_left(&mut canvas, &row_name, text_x, cy, &row_style, Some(rows_clip), None);
 
                 // Stamp the row into the hit map so clicks dispatch to this contact.
                 if ci < 256 {
