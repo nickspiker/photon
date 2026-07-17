@@ -115,8 +115,9 @@ pub fn bindreq_put(
     device_key: &Keypair,
     identity_seed: &[u8; 32],
     handle_proof: &[u8; 32],
+    nfc_secret: &[u8; 32],
 ) -> Result<i64, String> {
-    fgtw::client::bindreq_put(&PhotonTransport, device_key, identity_seed, handle_proof)
+    fgtw::client::bindreq_put(&PhotonTransport, device_key, identity_seed, handle_proof, nfc_secret)
 }
 
 /// NEW device: withdraw its own request (on green, or on ceremony cancel). Best-effort — the stamp lapses anyway.
@@ -238,7 +239,7 @@ mod tests {
         let (_, k1) = rotate_fleet_key(&handle_proof, &member, &[member.public.to_bytes()]).expect("establish");
 
         // New device: post its binding request (device-signed + identity-co-signed) and display its masked words.
-        bindreq_put(&newdev, &identity_seed, &handle_proof).expect("post request");
+        bindreq_put(&newdev, &identity_seed, &handle_proof, &[0u8; 32]).expect("post request");
         let shown = masked_device_words(&newdev.public.to_bytes(), &identity_seed);
 
         // Existing device: pull the member-gated candidate set — the request is there, verified, and its expected words match what the new device is showing (the matcher's full-match condition).
@@ -293,7 +294,7 @@ mod tests {
         assert!(recover_fleet_key(&handle_proof, &b).unwrap().is_none());
 
         // A sponsors B (B's request carries its consent), then rotates to [A, B]: a fresh key both can open.
-        bindreq_put(&b, &identity_seed, &handle_proof).expect("B posts request");
+        bindreq_put(&b, &identity_seed, &handle_proof, &[0u8; 32]).expect("B posts request");
         let reqs = bindreq_list(&a, &handle_proof, &identity_seed).expect("list");
         let req_b = reqs.iter().find(|r| r.device_pubkey == pk(&b)).expect("B's request");
         bind_device(&a, &handle_proof, req_b).expect("bind B");

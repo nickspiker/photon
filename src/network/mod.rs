@@ -6,6 +6,7 @@ pub mod history_pages;
 pub mod http;
 pub mod inspect;
 pub mod pairing_beacon;
+pub mod pairing_nfc;
 #[cfg(not(target_os = "android"))]
 pub mod peer_updates;
 pub mod pt;

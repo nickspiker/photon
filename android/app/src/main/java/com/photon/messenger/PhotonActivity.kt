@@ -203,6 +203,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         // Pairing v2 beacon bridge: cache contexts + register the JNI upcall path before any
         // screen can ask the radio for anything (docs/pairing-v2.md).
         PhotonBeacon.init(this)
+        PhotonNfc.init(this)
 
         // Create custom SurfaceView with InputConnection for IME text input
         val container = FrameLayout(this)

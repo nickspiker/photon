@@ -3035,10 +3035,34 @@ impl FluorApp for PhotonApp {
         if want_scan != self.beacon_scan_active {
             if want_scan {
                 crate::network::pairing_beacon::start_scan();
+                crate::network::pairing_nfc::start_reader();
                 self.beacon_scan_active = true;
             } else {
                 crate::network::pairing_beacon::stop_scan();
+                crate::network::pairing_nfc::stop_reader();
                 self.beacon_scan_active = false;
+            }
+        }
+        // NFC instant add: a tapped secret matching a candidate's published commitment IS the proximity + intent proof — bind it now, no words typed. The green-confirm rotation gate still stands (two-phase), so "instant" = tap phones, press confirm.
+        if want_scan {
+            if let Some(s) = crate::network::pairing_nfc::take_secret() {
+                let matched = self
+                    .add_device_candidates
+                    .iter()
+                    .find(|c| {
+                        c.req.nfc_hash != [0u8; 32]
+                            && fgtw::pair::nfc_secret_hash(&s, &c.req.device_pubkey, c.req.t) == c.req.nfc_hash
+                    })
+                    .map(|c| c.req.clone());
+                match matched {
+                    Some(req) if !self.add_device_checking => {
+                        crate::logf!("NFC: tap matched candidate {} — binding", crate::fp(&req.device_pubkey));
+                        self.spawn_bind_device(req);
+                        needs_redraw = true;
+                    }
+                    Some(_) => {}
+                    None => crate::log("NFC: tapped secret matched no candidate (stale request or foreign tag)"),
+                }
             }
         }
 
@@ -5079,15 +5103,15 @@ impl FluorApp for PhotonApp {
                         let label = label.as_str();
                         let r = rows[7];
                         settings_line(&mut canvas, ctx.text, fluor::region::Region::new(r.x, r.y, r.w, r.h * 0.5), label, hspan2, theme::CONTACT_NAME_COLOUR, 500);
-                        // The bar: full-width track, proportional fill. Unknown length (total 0) fills nothing but the label still shows life via the byte count below.
+                        // The bar: proportional fill THEN full-width track. fluor is under-blend (FIRST paint wins), so the green fill MUST be painted before the grey track — draw the track first and it wins every pixel, burying the fill (the "permanent grey bar" bug). Fill goes down first over [0..fill_w], then the track over the whole width fills only the un-painted remainder.
                         let bar_y = (r.y + r.h * 0.55) as isize;
                         let bar_h = (r.h * 0.25).max(3.0) as isize;
                         let bar_w = r.w as isize;
-                        paint::fill_rect(&mut canvas, r.x as isize, bar_y, bar_w, bar_h, theme::PILL_GREY.0, None, None);
                         if total > 0 {
                             let fill_w = (r.w as f64 * (done as f64 / total as f64)) as isize;
-                            paint::fill_rect(&mut canvas, r.x as isize, bar_y, fill_w.min(bar_w), bar_h, theme::PILL_GREEN.1, None, None);
+                            paint::fill_rect(&mut canvas, r.x as isize, bar_y, fill_w.clamp(0, bar_w), bar_h, theme::PILL_GREEN.1, None, None);
                         }
+                        paint::fill_rect(&mut canvas, r.x as isize, bar_y, bar_w, bar_h, theme::PILL_GREY.0, None, None);
                     } else if let Some(status) = &self.update_status {
                         settings_line(&mut canvas, ctx.text, rows[7], status, hspan2, theme::CONTACT_NAME_COLOUR, 500);
                     }
@@ -7805,8 +7829,16 @@ impl PhotonApp {
                 handle_proof,
             };
             let hp = session.handle_proof;
+            // NFC instant-add secret: 32 random bytes for THIS join session, served as a dumb tag over HCE (Android) while the ceremony is up. The put publishes its keyed commitment; a sponsor's tap reads S and matches it — proximity IS the selection. One S per session (the commitment re-binds each repost's fresh stamp).
+            let nfc_secret: [u8; 32] = {
+                use rand::RngCore;
+                let mut s = [0u8; 32];
+                rand::thread_rng().fill_bytes(&mut s);
+                s
+            };
+            let _nfc_serve = crate::network::pairing_nfc::serve_guard(&nfc_secret);
             // The binding request: "I consent to join fleet hp", signed by the device key + co-signed by the identity key. THE registry entry the old device's matcher screens candidates from, and the consent egg the Add op will carry. Posted FIRST so its published eagle_time exists before we derive the proximity beacon from it.
-            let offer_et = match fleet::bindreq_put(&device_key, &identity_seed, &hp) {
+            let offer_et = match fleet::bindreq_put(&device_key, &identity_seed, &hp, &nfc_secret) {
                 Ok(et) => et,
                 Err(e) => {
                     let _ = tx.send(JoinUpdate::Failed(format!("request failed: {e}")));
@@ -7908,7 +7940,7 @@ impl PhotonApp {
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                         if last_repost.elapsed() >= REPOST_EVERY {
                             // Restamp the offer, then re-emit the beacon under the NEW eagle_time so the aired id keeps matching the list entry the sponsor now reads.
-                            if let Ok(et) = fleet::bindreq_put(&device_key, &identity_seed, &hp) {
+                            if let Ok(et) = fleet::bindreq_put(&device_key, &identity_seed, &hp, &nfc_secret) {
                                 crate::network::pairing_beacon::reannounce(&hp, &me, et);
                             }
                             last_repost = std::time::Instant::now();
@@ -7919,7 +7951,7 @@ impl PhotonApp {
                         std::thread::sleep(crate::jitter_dur(std::time::Duration::from_secs(8)));
                         if last_repost.elapsed() >= REPOST_EVERY {
                             // Restamp the offer, then re-emit the beacon under the NEW eagle_time so the aired id keeps matching the list entry the sponsor now reads.
-                            if let Ok(et) = fleet::bindreq_put(&device_key, &identity_seed, &hp) {
+                            if let Ok(et) = fleet::bindreq_put(&device_key, &identity_seed, &hp, &nfc_secret) {
                                 crate::network::pairing_beacon::reannounce(&hp, &me, et);
                             }
                             last_repost = std::time::Instant::now();
