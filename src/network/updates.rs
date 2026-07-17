@@ -128,6 +128,8 @@ pub struct ManifestRow {
     pub commit: Vec<u8>,
     pub url: String,
     pub hash: [u8; 32],
+    /// Artefact byte count from the signed manifest — the download-progress denominator when the CDN streams chunked (a cache-busted fresh artefact always does; Content-Length only exists on cache hits). 0 = old manifest without the field.
+    pub size: u64,
 }
 
 impl ManifestRow {
@@ -231,6 +233,7 @@ pub fn parse_manifest_stamped(bytes: &[u8], channel: Channel) -> Result<(i64, Ve
             commit,
             url,
             hash,
+            size: num("size") as u64,
         });
     }
     if rows.is_empty() {
@@ -266,7 +269,9 @@ fn download_verified(
         .map_err(|e| format!("artefact fetch: {e}"))?
         .error_for_status()
         .map_err(|e| format!("artefact fetch: {e}"))?;
-    let total = resp.content_length().unwrap_or(0);
+    // Denominator preference: the SIGNED manifest's size, then Content-Length. A cache-busted fresh binary is always a CDN cache MISS, and Cloudflare streams origin pulls chunked — no Content-Length at all — which is why the bar never filled before the manifest carried the size.
+    let total = if row.size > 0 { row.size } else { resp.content_length().unwrap_or(0) };
+    crate::logf!("UPDATE: downloading ({} bytes expected; manifest={}, content-length={})", total, row.size, resp.content_length().unwrap_or(0));
     let mut bytes: Vec<u8> = Vec::with_capacity(total as usize);
     let mut chunk = vec![0u8; 1 << 16];
     loop {
