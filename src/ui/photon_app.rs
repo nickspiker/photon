@@ -664,6 +664,8 @@ pub struct PhotonApp {
     focused: Option<HitId>,
     /// Blinkey timer for the focused textbox cursor. `tick()` polls it and writes `textbox.blinkey_visible` accordingly; resets on every keystroke so the cursor stays solid thru typing instead of strobing.
     blink_timer: BlinkTimer,
+    /// The screen `tick()` last saw — its per-tick diff against `self.state` is THE page-change hook: any screen swap drops textbox focus (and with it the blinkey + Android IME) no matter which of the many `self.state =` sites caused it. Screen granularity, not state granularity: Launch sub-states are one screen (Error→Fresh happens ON the recovery keystroke — defocusing would eat it), Ready↔Searching share the contacts screen (the search box owns the in-flight search), each Settings page counts as its own.
+    last_screen: AppState,
     /// Last time `tick()` ran the background presence ping sweep (`ping_contacts`). `None` until the first sweep. Paired with `last_interaction` to drive the tiered cadence (see `presence_ping_interval`): `tick()` re-pings when due and `wake_at()` schedules the next due sweep so presence refreshes even while idle. Without this, contacts only flipped online when you opened their conversation.
     last_presence_ping: Option<Instant>,
     /// Last time the user interacted with the app (any input event, or window focus-gain). `None` until the first interaction. The presence sweep tapers with idle time — frequent while you're actively using it, sparse when you've walked away — so an unfocused, untouched window isn't hitting the network every few seconds. Reset on interaction, which also triggers an immediate sweep so rings are fresh the instant you look. See `presence_ping_interval`.
@@ -992,6 +994,7 @@ impl PhotonApp {
             attest_btn: None,
             focused: None,
             blink_timer: BlinkTimer::new(),
+            last_screen: AppState::default(),
             last_presence_ping: None,
             last_interaction: None,
             last_fleet_refold: None,
@@ -3053,6 +3056,20 @@ impl FluorApp for PhotonApp {
     fn tick(&mut self, ctx: &mut Context) -> bool {
         let now = Instant::now();
         let mut needs_redraw = false;
+
+        // Page-change focus drop (see `last_screen`): a screen swap must never leave the previous screen's textbox focused — the orphaned box kept its blinkey firing and its focus glow lit after navigating away. `change_focus(None)` also lowers the Android IME via the pending-keyboard signal.
+        if self.state != self.last_screen {
+            let same_screen = match (&self.state, &self.last_screen) {
+                (AppState::Launch(_), AppState::Launch(_)) => true,
+                (AppState::Ready | AppState::Searching, AppState::Ready | AppState::Searching) => true,
+                (AppState::Settings(a), AppState::Settings(b)) => a == b,
+                _ => false,
+            };
+            if !same_screen && self.change_focus(None) {
+                needs_redraw = true;
+            }
+            self.last_screen = self.state.clone();
+        }
 
         // Freeze / unfreeze the busy widgets (attest field+button while attesting, search box+plus while adding) before anything else this frame — disabled widgets drop out of dispatch via their fluor accessors.
         self.sync_busy_freeze();
