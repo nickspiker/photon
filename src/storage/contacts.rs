@@ -174,6 +174,9 @@ fn contact_state_schema() -> SectionSchema {
         .field("fleet_folded_once", TypeConstraint::AnyUnsigned) // bool: chain folded ≥1 time (arms members-only trust). Absent = false (bootstrap).
         .field("fleet_members_ts", TypeConstraint::Any) // e6: chain-tip eagle time of last adopted fold (monotonic floor). Absent = 0.
         .field("roster_updated", TypeConstraint::Any) // e6: roster LWW clock — last change to the synced identity fields (petname/avatar_pin). Absent = `added` (pre-feature contacts).
+        .field("pin_genesis", TypeConstraint::AnyHash) // The generation pin: genesis op hash of the friendship's chain (docs/lifecycle.md). Absent = not yet pinned.
+        .field("identity_ended", TypeConstraint::AnyUnsigned) // bool: the chain vanished after a fold — owner ended the identity. Absent = false.
+        .field("identity_superseded", TypeConstraint::AnyUnsigned) // bool: a different-genesis chain claimed this name — a stranger. Absent = false.
 }
 
 /// Save contact state (mutable data) with schema validation
@@ -300,6 +303,21 @@ pub fn save_contact_state(contact: &Contact, storage: &FlatStorage) -> Result<()
                 "fleet_members_ts",
                 VsfType::e(vsf::types::EtType::e6(contact.fleet_members_ts)),
             )
+            .map_err(|e| StorageError::Parse(e.to_string()))?;
+    }
+    if contact.pinned_genesis != [0u8; 32] {
+        builder = builder
+            .set("pin_genesis", VsfType::hb(contact.pinned_genesis.to_vec()))
+            .map_err(|e| StorageError::Parse(e.to_string()))?;
+    }
+    if contact.identity_ended {
+        builder = builder
+            .set("identity_ended", true)
+            .map_err(|e| StorageError::Parse(e.to_string()))?;
+    }
+    if contact.identity_superseded {
+        builder = builder
+            .set("identity_superseded", true)
             .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
     if contact.roster_updated != contact.added {
@@ -472,6 +490,18 @@ fn apply_contact_state(contact: &mut Contact, vsf_bytes: &[u8]) -> Result<(), St
     // Roster LWW clock: absent = never bumped past creation, so `added` (set by the index-row load) stands.
     if let Some(v) = section.get_fields("roster_updated").first().and_then(|f| f.values.first()) {
         contact.roster_updated = vsf_to_oscillations(v);
+    }
+    // Generation pin + end-of-identity flags (docs/lifecycle.md).
+    if let Some(VsfType::hb(h)) = section.get_fields("pin_genesis").first().and_then(|f| f.values.first()) {
+        if h.len() == 32 {
+            contact.pinned_genesis.copy_from_slice(h);
+        }
+    }
+    if section.get_value::<bool>("identity_ended").unwrap_or(false) {
+        contact.identity_ended = true;
+    }
+    if section.get_value::<bool>("identity_superseded").unwrap_or(false) {
+        contact.identity_superseded = true;
     }
 
     Ok(())

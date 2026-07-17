@@ -755,9 +755,9 @@ pub struct PhotonApp {
     /// Stop flag for the fleet-event subscription task (dropped app / de-attest).
     fleet_evt_stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Off-thread contact-fleet refresh results: (contact handle_proof, current member pubkeys folded from their chain, chain-tip eagle time). Drained in tick into the matching contact's `fleet_members`, gated on the tip being fresher than the last adopted one, then `reseed_contact_pubkeys`. Lets a friend's NEW device be honoured — and a REMOVED device revoked — without waiting for our next launch.
-    contact_members_rx: Option<std::sync::mpsc::Receiver<([u8; 32], Vec<[u8; 32]>, i64)>>,
+    contact_members_rx: Option<std::sync::mpsc::Receiver<([u8; 32], Vec<[u8; 32]>, i64, [u8; 32], bool)>>,
     /// Sender half of the contact-fleet-refresh channel, kept alive so successive refreshes reuse one channel (the receiver is drained in tick).
-    contact_members_tx: Option<std::sync::mpsc::Sender<([u8; 32], Vec<[u8; 32]>, i64)>>,
+    contact_members_tx: Option<std::sync::mpsc::Sender<([u8; 32], Vec<[u8; 32]>, i64, [u8; 32], bool)>>,
     /// Launch add-mode (NEW device joining a fleet): orb on Launch toggles it, and a failed attest against an existing fleet auto-enters it. Enter the handle; this device then generates + displays its pairing words and waits for the other device to match and bind.
     launch_add_mode: bool,
     /// Join flow: the handle once entered; `None` while still awaiting it.
@@ -792,6 +792,14 @@ pub struct PhotonApp {
     device_avatar_scaled_diameter: usize,
     /// HitId reserved for the Ready-screen self-avatar circle. Allocated in `init` alongside the other widget IDs; stamped into `chrome.hit_test_map` during the Ready render so a tap on the circle dispatches to the avatar code path (open the image picker on Android).
     avatar_hit_id: HitId,
+    /// KnownHandle fork pills — pick-another-name / it's-mine (docs/lifecycle.md D1). Plain hit rects, Pressed-arm dispatch.
+    known_pick_hit: HitId,
+    known_mine_hit: HitId,
+    /// LAST RITES (docs/lifecycle.md D3): the red-flood final-exit interstitial is showing. Armed by Remove & shred when the fleet folds to just this device; the flood's one pill executes (sweep → depart → wipe → restart), any other press cancels.
+    lastrites_active: bool,
+    lastrites_hit: HitId,
+    /// JOINER SELECTED (docs/lifecycle.md): this just-bound device floods green with "Selected!" and HOLDS until the sponsor's confirm rotation releases the fleet key — the green the far-side human is asked to verify. Cleared when sign-in proceeds.
+    joiner_selected: bool,
     /// One-shot Android image-picker request. Set when the user taps the avatar; consumed by the JNI poll (`nativePollAvatarPicker`) which signals the Activity to launch `ACTION_GET_CONTENT`. Stays `None` on idle frames so the Activity doesn't churn.
     pending_picker_request: bool,
     /// One-shot signal for the Android sticky session broadcast: 1=send, -1=clear, 0=nothing. Set by attest success and []n nuke.
@@ -886,6 +894,8 @@ pub struct PhotonApp {
     update_busy: bool,
     /// Desktop: a verified binary swap completed — re-exec into it on the next tick (from the main thread, outside all borrows).
     update_reexec: Option<std::path::PathBuf>,
+    /// In-flight download progress (bytes done, total; total 0 = unknown length): the Updates page renders the bar from this. `None` = no download running.
+    update_progress: Option<(u64, u64)>,
     /// Next automatic release-channel check, eagle time. 0 = not yet scheduled (the driver arms a short post-launch delay, then ~6–8h jittered). The AUTOMATIC path (docs/updates.md): desktop release builds self-apply thru the stamp window; dev builds and Android only surface a toast — dev updates stay manual by mandate, Android package installs belong to the OS.
     next_update_check_osc: i64,
     /// Session dedup for the "update available" toast — the version already announced, so a 6-hourly re-check doesn't re-toast the same release.
@@ -1035,6 +1045,11 @@ impl PhotonApp {
             device_avatar_scaled: None,
             device_avatar_scaled_diameter: 0,
             avatar_hit_id: HIT_NONE,
+            known_pick_hit: HIT_NONE,
+            known_mine_hit: HIT_NONE,
+            lastrites_active: false,
+            lastrites_hit: HIT_NONE,
+            joiner_selected: false,
             active_contact: None,
             contact_hit_base: HIT_NONE,
             back_btn_hit_id: HIT_NONE,
@@ -1083,6 +1098,7 @@ impl PhotonApp {
             update_status: None,
             update_busy: false,
             update_reexec: None,
+            update_progress: None,
             next_update_check_osc: 0,
             update_toasted: None,
             #[cfg(target_os = "android")]
@@ -1542,6 +1558,14 @@ impl FluorApp for PhotonApp {
         // Reserve a hit-id for the Ready-screen avatar circle. Not a Widget — the avatar is just a paint primitive — so click dispatch is handled directly in `on_event`'s MouseInput::Pressed arm, not thru `widget::dispatch_click`. Incrementing the shared counter keeps the contiguous-id contract intact for the `[]h` debug overlay.
         self.hit_counter = self.hit_counter.wrapping_add(1);
         self.avatar_hit_id = self.hit_counter;
+        // KnownHandle fork pills (pick-another / it's-mine) — plain hit rects like the avatar circle, dispatched in the Pressed arm.
+        self.hit_counter = self.hit_counter.wrapping_add(1);
+        self.known_pick_hit = self.hit_counter;
+        self.hit_counter = self.hit_counter.wrapping_add(1);
+        self.known_mine_hit = self.hit_counter;
+        // LastRites "End it — forever" pill.
+        self.hit_counter = self.hit_counter.wrapping_add(1);
+        self.lastrites_hit = self.hit_counter;
         // Reserve a block of 256 hit IDs for contact rows. Row i stamps `contact_hit_base + i`.
         self.hit_counter = self.hit_counter.wrapping_add(1);
         self.contact_hit_base = self.hit_counter;
@@ -2023,6 +2047,23 @@ impl FluorApp for PhotonApp {
                         if self.settings_removeshred_armed {
                             self.settings_removeshred_armed = false;
                             let hp = self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof());
+                            // LAST-MEMBER GATE (docs/lifecycle.md D3): if this device is the fleet's final member, the second press does NOT depart — it raises LAST RITES (the red flood), and only ITS pill (press three) ends the identity. A fetch failure counts as last (fail toward the ceremony, never past it).
+                            if let Some(ref hp_v) = hp {
+                                let last = match crate::network::fgtw::fleet::current_members(hp_v) {
+                                    Ok(m) => m.len() <= 1,
+                                    Err(e) => {
+                                        crate::logf!("SECURITY: member count fetch failed ({}) — treating as last device", e);
+                                        true
+                                    }
+                                };
+                                if last {
+                                    crate::log("SECURITY: last member — raising LAST RITES");
+                                    self.lastrites_active = true;
+                                    self.scene_dirty = true;
+                                    ctx.window.request_redraw();
+                                    return EventResponse::Handled;
+                                }
+                            }
                             if let (Some(hp), Some(kp)) = (hp, self.device_keypair.clone()) {
                                 match crate::network::fgtw::fleet::depart_device(&kp, &hp) {
                                     Ok(()) => {
@@ -2391,6 +2432,19 @@ impl FluorApp for PhotonApp {
                     .map(|c| c.hit_at(ctx.cursor_x, ctx.cursor_y))
                     .unwrap_or(HIT_NONE);
 
+                // LAST RITES dispatch (docs/lifecycle.md D3): while the flood is up it owns EVERY press — the one pill executes, anything else cancels back to the Security page untouched.
+                if self.lastrites_active {
+                    if hit_id == self.lastrites_hit {
+                        self.lastrites_execute();
+                    } else {
+                        crate::log("LASTRITES: cancelled");
+                        self.lastrites_active = false;
+                    }
+                    self.scene_dirty = true;
+                    ctx.window.request_redraw();
+                    return EventResponse::Handled;
+                }
+
                 // Permanence interstitial ("Yes — forever"): a press ANYWHERE other than the attest button cancels back to the pre-proof Fresh state. Editing the handle already cancels; this makes a tap on empty space, the field, the orb — anything else — cancel too, so a stray tap can never corner the user into the forever-claim (on Android "click elsewhere" was otherwise swipe-up → home → long-press → switch away). The attest button press itself is the deliberate confirm, so it's excluded; we fall thru afterwards so the tap still does its normal thing (focus the field, start a drag, open settings, …).
                 if matches!(self.state, AppState::Launch(LaunchState::Confirm)) {
                     let attest_hit = self.attest_btn.as_ref().map(|b| b.hit_id()).unwrap_or(HIT_NONE);
@@ -2398,6 +2452,31 @@ impl FluorApp for PhotonApp {
                         self.clear_launch_error();
                         ctx.window.request_redraw();
                     }
+                }
+
+                // KnownHandle fork (docs/lifecycle.md D1): the two pills act; any OTHER press cancels back to Fresh (interstitial rules) and falls thru to its normal meaning. "It's mine" is the FIRST moment anything posts to the network — the bind request + beacon start in submit_join_step, never before.
+                if matches!(self.state, AppState::Launch(LaunchState::KnownHandle)) {
+                    if hit_id == self.known_mine_hit {
+                        if let Some(session) = self.probed_session.take() {
+                            crate::log("KnownHandle: it's-mine → pairing words (the ceremony posts NOW)");
+                            self.probed_handle = None;
+                            self.launch_add_mode = true;
+                            self.state = AppState::Launch(LaunchState::Fresh);
+                            self.add_join_handle = None;
+                            self.submit_join_step(Some(session.handle_proof));
+                        }
+                        ctx.window.request_redraw();
+                        return EventResponse::Handled;
+                    }
+                    if hit_id == self.known_pick_hit {
+                        crate::log("KnownHandle: pick-another — back to the field");
+                        self.clear_launch_error();
+                        self.refocus_handle_select_all();
+                        ctx.window.request_redraw();
+                        return EventResponse::Handled;
+                    }
+                    self.clear_launch_error();
+                    ctx.window.request_redraw();
                 }
 
                 if hit_id == HIT_NONE {
@@ -3273,6 +3352,33 @@ impl FluorApp for PhotonApp {
                 }
             }
 
+            // KnownHandle fork (docs/lifecycle.md D1) — the claimed-name screen, drawn in the same band as the permanence block. Both readings, taken-first (the more common visitor is the collider), then the two pills. Nothing has touched the network yet.
+            if matches!(launch_state, LaunchState::KnownHandle) && !self.launch_add_mode {
+                let tb_h = (attest.textbox.y1 - attest.textbox.y0) as f32;
+                let line_h = (tb_h * 0.45).min(buf_w as f32 / 22.0).max(10.0);
+                let cx = buf_w as f32 * 0.5;
+                let mut y = attest.attest.y1 as f32 + line_h * 1.6;
+                let lines: [(&str, u32); 3] = [
+                    ("This name is already claimed.", theme::ERROR_TEXT_COLOUR),
+                    ("New here? Someone else owns it \u{2014} pick another.", theme::STATUS_TEXT_COLOUR),
+                    ("Yours? Approve this device from one you're signed in on.", theme::STATUS_TEXT_COLOUR),
+                ];
+                for (line, colour) in lines {
+                    ctx.text.draw_text_center_u32(
+                        &mut canvas, line, cx, y, line_h, 600, colour, "Oxanium", None, None, None,
+                    );
+                    y += line_h * 1.35;
+                }
+                y += line_h * 0.5;
+                let px = attest.textbox.x0 as f32;
+                let pw = (attest.textbox.x1 - attest.textbox.x0) as f32;
+                let pick = fluor::region::Region::new(px, y, pw, tb_h);
+                y += tb_h * 1.3;
+                let mine = fluor::region::Region::new(px, y, pw, tb_h);
+                draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pick, "Pick another name", self.known_pick_hit, ctx.pressed_hit);
+                draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, mine, "It's mine \u{2014} show pairing words", self.known_mine_hit, ctx.pressed_hit);
+            }
+
             // Join words phase (new device): the screen becomes display-only — this device's pairing words, drawn in rows for reading onto the other device, flipping to the found-colour when a member matches them. No textbox, no attest button.
             let join_words_up = self.launch_add_mode && self.add_join_words.is_some();
             if join_words_up {
@@ -4120,17 +4226,22 @@ impl FluorApp for PhotonApp {
 
                     // CLUTCH state (compact, under the name). Show the base state PLUS a behind-the-scenes detail (slot fill, keygen / KEM / proof stage) so a stuck handshake reads as "what's it waiting on" instead of a flat "pending" — see Contact::clutch_status_detail. Self-contact (notes-to-self) has no peer + no ceremony: the weave probe is skipped, so chain_woven never seals and clutch_status_detail would read "testing · weaving the chain" forever — show a plain reachability line instead.
                     let clutch_y = name_y + unit * 1.5;
-                    let clutch_label = if is_self_contact {
-                        "notes to self".to_string()
+                    // End-of-identity states outrank the ceremony line (docs/lifecycle.md): a superseded name is a STRANGER wearing it — say so in red; an ended identity reads as the archive it is.
+                    let (clutch_label, clutch_colour) = if contact.identity_superseded {
+                        ("name re-claimed by someone new \u{2014} this is NOT them".to_string(), theme::ERROR_TEXT_COLOUR)
+                    } else if contact.identity_ended {
+                        ("identity ended \u{2014} conversation frozen".to_string(), theme::LABEL_COLOUR)
+                    } else if is_self_contact {
+                        ("notes to self".to_string(), theme::SEARCH_FOUND_COLOUR)
                     } else {
-                        format!("CLUTCH: {}", contact.clutch_status_detail())
-                    };
-                    let clutch_colour = if is_self_contact
-                        || contact.clutch_state == crate::types::ClutchState::Complete
-                    {
-                        theme::SEARCH_FOUND_COLOUR
-                    } else {
-                        theme::HOURGLASS_COLOUR
+                        (
+                            format!("CLUTCH: {}", contact.clutch_status_detail()),
+                            if contact.clutch_state == crate::types::ClutchState::Complete {
+                                theme::SEARCH_FOUND_COLOUR
+                            } else {
+                                theme::HOURGLASS_COLOUR
+                            },
+                        )
                     };
                     ctx.text.draw_text_center_u32(
                         &mut canvas,
@@ -4771,15 +4882,35 @@ impl FluorApp for PhotonApp {
                             ChannelCheck::Idle | ChannelCheck::Checking => (format!("Checking {kind}\u{2026}"), theme::PILL_GREY, false),
                             ChannelCheck::Failed => (format!("{kind} unavailable"), theme::PILL_GREY, false),
                             ChannelCheck::Ready(None) => (format!("No {kind} build for this device"), theme::PILL_GREY, false),
-                            ChannelCheck::Ready(Some(row)) if row.version == ours => (format!("Already on {kind} {}", dozenal_version_tuple(row.version)), theme::PILL_GREY, false),
+                            // "Already on" needs the version AND the build FLAVOUR to match: a local dev build compiles at the just-deployed release tuple (deploy zeroes the patch; local builds don't bump it), but a development-featured binary is NOT the release artefact — it must offer the hop, not claim currency. (Live report 2026-07-17: dev build at 0.37.0 read "already on latest release".)
+                            ChannelCheck::Ready(Some(row))
+                                if row.version == ours
+                                    && (kind == "dev") == cfg!(feature = "development") =>
+                            {
+                                (format!("Already on {kind} {}", dozenal_version_tuple(row.version)), theme::PILL_GREY, false)
+                            }
                             ChannelCheck::Ready(Some(row)) => (format!("Get {kind} {}", dozenal_version_tuple(row.version)), avail_fill, !busy),
                         };
                         draw_stub_pill_filled(canvas, text, hit_map, buf_w, buf_h, rect, &label, slot, ctx.pressed_hit, enabled, Some(fill), "Oxanium");
                     };
                     button(&mut canvas, ctx.text, &mut chrome.hit_test_map, rows[3].center_h(pillf(0.7)), btn_base.wrapping_add(1), "release", theme::PILL_GREEN, &self.update_release, self.update_busy);
                     button(&mut canvas, ctx.text, &mut chrome.hit_test_map, rows[5].center_h(pillf(0.7)), btn_base.wrapping_add(2), "dev", theme::PILL_AMBER, &self.update_dev, self.update_busy);
-                    // Status line: last APPLY outcome (installing / failed / restarting).
-                    if let Some(status) = &self.update_status {
+                    // Status line: the download bar while bytes stream (label flips "Downloading" → "Updating…" at the end), else the last APPLY outcome (installing / failed / restarting).
+                    if let Some((done, total)) = self.update_progress {
+                        let finishing = total > 0 && done >= total;
+                        let label = if finishing { "Updating\u{2026}" } else { "Downloading" };
+                        let r = rows[7];
+                        settings_line(&mut canvas, ctx.text, fluor::region::Region::new(r.x, r.y, r.w, r.h * 0.5), label, hspan2, theme::CONTACT_NAME_COLOUR, 500);
+                        // The bar: full-width track, proportional fill. Unknown length (total 0) fills nothing but the label still shows life via the byte count below.
+                        let bar_y = (r.y + r.h * 0.55) as isize;
+                        let bar_h = (r.h * 0.25).max(3.0) as isize;
+                        let bar_w = r.w as isize;
+                        paint::fill_rect(&mut canvas, r.x as isize, bar_y, bar_w, bar_h, theme::PILL_GREY.0, None, None);
+                        if total > 0 {
+                            let fill_w = (r.w as f64 * (done as f64 / total as f64)) as isize;
+                            paint::fill_rect(&mut canvas, r.x as isize, bar_y, fill_w.min(bar_w), bar_h, theme::PILL_GREEN.1, None, None);
+                        }
+                    } else if let Some(status) = &self.update_status {
                         settings_line(&mut canvas, ctx.text, rows[7], status, hspan2, theme::CONTACT_NAME_COLOUR, 500);
                     }
                 }
@@ -4900,6 +5031,99 @@ impl FluorApp for PhotonApp {
                     settings_line(&mut canvas, ctx.text, rows[7], "Built on the TOKEN stack · licences under the hood.", hspan2, theme::LABEL_COLOUR, 400);
                 }
             }
+        }
+
+        // JOINER SELECTED — the green flood (docs/lifecycle.md): this device is bound and waiting on the sponsor's human to confirm "yes, it's green and says Selected". A HOLD, not an interstitial — stray taps must not kill a ceremony mid-confirm, so presses are simply ignored while it's up (the poller or a relaunch are the exits).
+        if self.joiner_selected {
+            let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
+            paint::fill_rect(
+                &mut canvas,
+                0,
+                0,
+                buf_w as isize,
+                buf_h as isize,
+                theme::SELECTED_FLOOD,
+                None,
+                None,
+            );
+            let span = 2. * buf_w as f32 * buf_h as f32 / (buf_w + buf_h) as f32;
+            let cx = buf_w as f32 * 0.5;
+            ctx.text.draw_text_center_u32(
+                &mut canvas,
+                "Selected!",
+                cx,
+                buf_h as f32 * 0.4,
+                span / 8.,
+                800,
+                theme::CONTACT_NAME_COLOUR,
+                "Oxanium",
+                None,
+                None,
+                None,
+            );
+            ctx.text.draw_text_center_u32(
+                &mut canvas,
+                "Confirm on your other device to finish.",
+                cx,
+                buf_h as f32 * 0.58,
+                span / 24.,
+                500,
+                theme::CONTACT_NAME_COLOUR,
+                "Oxanium",
+                None,
+                None,
+                None,
+            );
+        }
+
+        // LAST RITES — the red flood (docs/lifecycle.md D3): the whole surface goes deep red with the truth in big letters and ONE pill; any press anywhere else cancels (interstitial rules, dispatched in the Pressed arm). Painted over every page layer; chrome composites above it, so the window stays operable (close = another cancel path). This is the THIRD press of the exit — Remove & shred pressed twice got the user here.
+        if self.lastrites_active {
+            let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
+            paint::fill_rect(
+                &mut canvas,
+                0,
+                0,
+                buf_w as isize,
+                buf_h as isize,
+                theme::LASTRITES_FLOOD,
+                None,
+                None,
+            );
+            let span = 2. * buf_w as f32 * buf_h as f32 / (buf_w + buf_h) as f32;
+            let line_h = span / 22.;
+            let cx = buf_w as f32 * 0.5;
+            let mut y = buf_h as f32 * 0.25;
+            let lines: [(&str, u32, u16); 6] = [
+                ("This is this identity's LAST device.", theme::ERROR_TEXT_COLOUR, 700),
+                ("Removing it ends the identity FOREVER.", theme::ERROR_TEXT_COLOUR, 700),
+                ("Every conversation. Every friendship. Everything. Gone.", theme::CONTACT_NAME_COLOUR, 500),
+                ("The name goes free for anyone to claim.", theme::CONTACT_NAME_COLOUR, 500),
+                ("There is no recovery. Not custodians. Not new hardware. Not you.", theme::CONTACT_NAME_COLOUR, 500),
+                ("Anywhere else cancels.", theme::LABEL_COLOUR, 400),
+            ];
+            for (line, colour, weight) in lines {
+                ctx.text.draw_text_center_u32(
+                    &mut canvas, line, cx, y, line_h, weight, colour, "Oxanium", None, None, None,
+                );
+                y += line_h * 1.6;
+            }
+            y += line_h;
+            let pw = (buf_w as f32 * 0.6).min(span * 0.7);
+            let pill = fluor::region::Region::new(cx - pw * 0.5, y, pw, line_h * 2.2);
+            draw_stub_pill_filled(
+                &mut canvas,
+                ctx.text,
+                &mut chrome.hit_test_map,
+                buf_w,
+                buf_h,
+                pill,
+                "End it \u{2014} forever",
+                self.lastrites_hit,
+                ctx.pressed_hit,
+                true,
+                Some(theme::PILL_RED),
+                "Oxanium",
+            );
         }
 
         chrome.flatten_into(target, buf_w, buf_h, None);
@@ -5221,7 +5445,39 @@ impl PhotonApp {
                     self.add_join_status = "Add this device from one that's already signed in:".to_string();
                 }
                 JoinUpdate::Joined(fleet_key, session) => {
-                    // We're in the fleet now — leaving this screen IS the green the far side confirms. Drop add-mode and run the normal attest (it now passes the fleet gate). Stash any received fleet key to persist once attest sets the vault up.
+                    if fleet_key.is_none() {
+                        // JOINER SELECTED (docs/lifecycle.md): bound into the chain but the sponsor's human hasn't confirmed — THIS screen going green IS what they're being asked to verify. Flood green, say "Selected!", and HOLD; sign-in fires when the confirm rotation releases the fleet key. The poller re-emits Joined(Some(key)) thru a fresh channel, so the Some-branch below is the single sign-in path.
+                        crate::log("JOIN: bound — GREEN (Selected!), holding for the sponsor's confirm");
+                        self.add_join_words = None;
+                        self.add_join_status.clear();
+                        self.joiner_selected = true;
+                        self.scene_dirty = true;
+                        let (tx, rx) = std::sync::mpsc::channel();
+                        self.add_join_rx = Some(rx);
+                        let hp = session.handle_proof;
+                        let kp = self.device_keypair.clone();
+                        let wake = self.event_proxy.clone();
+                        std::thread::spawn(move || {
+                            let Some(kp) = kp else { return };
+                            // ~15 min of 2s polls — the sponsor is a human mid-tap, not a batch job; past this the ceremony is abandoned and a relaunch re-joins cleanly.
+                            for _ in 0..(15 * 30) {
+                                std::thread::sleep(std::time::Duration::from_secs(2));
+                                if let Ok(Some(k)) = crate::network::fgtw::fleet::recover_fleet_key(&hp, &kp) {
+                                    if tx.send(JoinUpdate::Joined(Some(k), session)).is_err() {
+                                        return; // screen left — nobody waiting
+                                    }
+                                    if let Some(w) = wake.as_ref() {
+                                        let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+                                    }
+                                    return;
+                                }
+                            }
+                        });
+                        needs_redraw = true;
+                        continue;
+                    }
+                    // The confirm landed — leave the green hold and run the normal attest (it now passes the fleet gate). Stash the fleet key to persist once attest sets the vault up.
+                    self.joiner_selected = false;
                     self.add_join_rx = None;
                     self.launch_add_mode = false;
                     self.add_join_words = None;
@@ -5293,7 +5549,7 @@ impl PhotonApp {
         }
 
         // Contact-fleet refresh results: fold-and-honour a friend's current device set, and ARM the fold-respecting trust rule. OUR OWN hp routes to sibling reconcile FIRST and never into any contact's fleet_members — the self-contact and every sibling contact carry our hp, and folding our own fleet into one of them would make it swallow sibling pongs/paths via first-match `knows_device` routing.
-        let member_updates: Vec<([u8; 32], Vec<[u8; 32]>, i64)> = self
+        let member_updates: Vec<([u8; 32], Vec<[u8; 32]>, i64, [u8; 32], bool)> = self
             .contact_members_rx
             .as_ref()
             .map(|rx| rx.try_iter().collect())
@@ -5302,7 +5558,7 @@ impl PhotonApp {
             let our_hp = self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof());
             let mut changed = false;
             let mut to_persist: Vec<usize> = Vec::new();
-            for (hp, members, tip_ts) in member_updates {
+            for (hp, members, tip_ts, genesis, existed) in member_updates {
                 if Some(hp) == our_hp {
                     self.reconcile_fleet_siblings(&members);
                     needs_redraw = true;
@@ -5316,6 +5572,32 @@ impl PhotonApp {
                 else {
                     continue;
                 };
+                // IDENTITY ENDED (docs/lifecycle.md D3): the chain VANISHED for a contact we had folded — the owner's last departure purged it. Freeze everything (verify-or-withhold: never destroy local state on a not_found; a lying worker must not fake a death) and render the contact as ended. A reappearing chain routes thru the genesis-pin check below: same genesis clears the flag (worker blip), different genesis = a successor.
+                if !existed {
+                    if c.fleet_folded_once && !c.identity_ended {
+                        crate::logf!("FLEET: {}'s chain is GONE — identity ended by its owner; freezing the contact", crate::fp(&hp));
+                        c.identity_ended = true;
+                        changed = true;
+                        to_persist.push(idx);
+                    }
+                    continue;
+                }
+                // GENESIS PIN (docs/lifecycle.md — free must not mean inheritable): first adopted fold pins the generation id; any later fold whose genesis differs is a SUCCESSOR holding a re-claimed name — the same party id derives from the same handle string, so WITHOUT this pin the impostor would inherit the friendship. Refuse the fold, mark superseded, render a stranger. Never overwrite the pin.
+                if c.pinned_genesis != [0u8; 32] && c.pinned_genesis != genesis {
+                    if !c.identity_superseded {
+                        crate::logf!("FLEET: {}'s chain has a DIFFERENT genesis — the name was re-claimed by someone else; refusing the fold, rendering a stranger", crate::fp(&hp));
+                        c.identity_superseded = true;
+                        changed = true;
+                        to_persist.push(idx);
+                    }
+                    continue;
+                }
+                if c.identity_ended {
+                    // Same genesis came back — the not_found was a blip, not a death.
+                    crate::logf!("FLEET: {}'s chain is back (same genesis) — un-ending", crate::fp(&hp));
+                    c.identity_ended = false;
+                    changed = true;
+                }
                 // Monotonic freshness gate FIRST, before any mutation: never adopt a fold whose tip is older than the last one we adopted (an R2 eventual-consistency read serving a stale pre-removal set must not overwrite a fresh post-removal one). A first fold (fleet_members_ts == 0) always passes since real eagle times are positive.
                 if c.fleet_folded_once && tip_ts < c.fleet_members_ts {
                     crate::logf!("FLEET: ignoring stale fold for {} (tip {} < adopted {})", crate::fp(&hp), tip_ts, c.fleet_members_ts);
@@ -5329,6 +5611,9 @@ impl PhotonApp {
                     c.fleet_members = members;
                     c.fleet_members_ts = tip_ts;
                     c.fleet_folded_once = true; // armed ONLY here, on an adopted fold — never on Err/stale
+                    if c.pinned_genesis == [0u8; 32] {
+                        c.pinned_genesis = genesis; // first-met pin: the generation this friendship belongs to
+                    }
                     changed = changed || set_changed || arming;
                     to_persist.push(idx);
                     if shrank {
@@ -5751,7 +6036,9 @@ impl PhotonApp {
     fn clear_launch_error(&mut self) {
         if matches!(
             self.state,
-            AppState::Launch(LaunchState::Error(_)) | AppState::Launch(LaunchState::Confirm)
+            AppState::Launch(LaunchState::Error(_))
+                | AppState::Launch(LaunchState::Confirm)
+                | AppState::Launch(LaunchState::KnownHandle)
         ) {
             self.state = AppState::Launch(LaunchState::Fresh);
             self.probed_session = None;
@@ -6042,7 +6329,7 @@ impl PhotonApp {
             return;
         }
         if self.contact_members_tx.is_none() {
-            let (tx, rx) = std::sync::mpsc::channel::<([u8; 32], Vec<[u8; 32]>, i64)>();
+            let (tx, rx) = std::sync::mpsc::channel::<([u8; 32], Vec<[u8; 32]>, i64, [u8; 32], bool)>();
             self.contact_members_rx = Some(rx);
             self.contact_members_tx = Some(tx);
         }
@@ -6050,9 +6337,9 @@ impl PhotonApp {
         let wake = self.event_proxy.clone();
         std::thread::spawn(move || {
             for hp in handle_proofs {
-                match crate::network::fgtw::fleet::current_members_with_ts(&hp) {
-                    Ok((members, tip_ts)) => {
-                        if tx.send((hp, members, tip_ts)).is_err() {
+                match crate::network::fgtw::fleet::current_members_full(&hp) {
+                    Ok((members, tip_ts, genesis, existed)) => {
+                        if tx.send((hp, members, tip_ts, genesis, existed)).is_err() {
                             return; // app dropped the receiver
                         }
                     }
@@ -6475,8 +6762,8 @@ impl PhotonApp {
             }
             StampVerdict::Accept => {}
         }
-        // A dev build never hops channels on its own, and Android can't self-install — both announce instead.
-        let desktop_release = cfg!(not(target_os = "android")) && ours.2 == 0;
+        // A dev build never hops channels on its own, and Android can't self-install — both announce instead. The release-build predicate is the compile-time FLAVOUR, never patch==0 — a local dev build compiles at the release tuple right after a deploy.
+        let desktop_release = cfg!(not(target_os = "android")) && !cfg!(feature = "development");
         if desktop_release {
             crate::logf!("UPDATE: auto-applying release {} (stamp window clear)", row.version_string());
             self.update_release = ChannelCheck::Ready(Some(row));
@@ -6528,10 +6815,26 @@ impl PhotonApp {
         self.update_status = Some(format!("Installing {} {}\u{2026}", channel.label(), dozenal_version_tuple(row.version)));
         crate::logf!("UPDATE: applying {} {}", channel.label(), row.version_string());
         let tx = self.update_sender();
+        let wake = self.event_proxy.clone();
         std::thread::spawn(move || {
+            // Progress rides the same channel, throttled to whole-percent changes (~100 events for a 40 MiB binary) so the wake path isn't an event storm. The tick drain renders it as the download bar.
+            let last_pct = std::sync::atomic::AtomicU64::new(u64::MAX);
+            let txp = tx.clone();
+            let progress = move |done: u64, total: u64| {
+                let pct = if total > 0 { done * 100 / total } else { done >> 20 };
+                if last_pct.swap(pct, std::sync::atomic::Ordering::Relaxed) != pct {
+                    let _ = txp.send(UpdateEvent::Progress(done, total));
+                    #[cfg(not(target_os = "android"))]
+                    if let Some(w) = wake.as_ref() {
+                        let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+                    }
+                }
+            };
+            #[cfg(target_os = "android")]
+            let _ = &wake; // Android redraws via the Choreographer; the drain runs every tick regardless.
             #[cfg(not(target_os = "android"))]
             {
-                match crate::network::updates::apply_desktop_blocking(&row) {
+                match crate::network::updates::apply_desktop_blocking(&row, &progress) {
                     Ok(exe) => {
                         let _ = tx.send(UpdateEvent::Applied(exe));
                     }
@@ -6542,7 +6845,7 @@ impl PhotonApp {
             }
             #[cfg(target_os = "android")]
             {
-                match crate::network::updates::download_apk_blocking(&row) {
+                match crate::network::updates::download_apk_blocking(&row, &progress) {
                     Ok(path) => {
                         let _ = tx.send(UpdateEvent::ApkReady(path.to_string_lossy().into_owned()));
                     }
@@ -6584,19 +6887,27 @@ impl PhotonApp {
                 UpdateEvent::AutoChecked(stamp, row) => {
                     auto_checked = Some((stamp, row));
                 }
+                UpdateEvent::Progress(done, total) => {
+                    // done == total (or the stream just ended on an unknown length) flips the label to the verify/swap phase.
+                    self.update_progress = Some((done, total));
+                    self.update_status = None; // the bar IS the status while a download runs
+                }
                 UpdateEvent::Applied(exe) => {
                     self.update_busy = false;
+                    self.update_progress = None;
                     self.update_status = Some("Updated \u{221a} restarting\u{2026}".to_string());
                     self.update_reexec = Some(exe);
                 }
                 #[cfg(target_os = "android")]
                 UpdateEvent::ApkReady(path) => {
                     self.update_busy = false;
+                    self.update_progress = None;
                     self.update_status = Some("Downloaded \u{221a} confirm the install prompt".to_string());
                     self.pending_apk_install = Some(path);
                 }
                 UpdateEvent::ApplyFailed(e) => {
                     self.update_busy = false;
+                    self.update_progress = None;
                     self.update_status = Some(format!("Update failed (nothing changed): {e}"));
                     crate::logf!("UPDATE: apply failed: {}", e);
                 }
@@ -7656,6 +7967,22 @@ impl PhotonApp {
         if handle.is_empty() {
             return;
         }
+        // ONE IDENTITY PER DEVICE (docs/lifecycle.md D2): the binding marker names the identity this device carries; a different typed handle refuses HERE — before the ~1s memory-hard proof is spent. The check is cheap (the typed handle's party id derives without the proof). Typing the BOUND identity's own handle passes and resumes normally; unbinding is a wipe (Panel → Security). The worker's one-owner index backstops a scrubbed marker.
+        if let Some(kp) = self.device_keypair.as_ref() {
+            if let Some(bound) = crate::storage::device_binding::bound_party_id(kp.secret.as_bytes()) {
+                let typed_pid = crate::crypto::clutch::identity_party_id(
+                    &crate::types::Handle::to_identity_seed(&handle),
+                );
+                if typed_pid != bound {
+                    crate::log("attest: DEVICE BUSY — this device is bound to another identity; refusing before the proof");
+                    self.state = AppState::Launch(LaunchState::Error(
+                        "this device already carries an identity \u{2014} type its handle to resume, or wipe first (Settings \u{2192} Security)".to_string(),
+                    ));
+                    self.refocus_handle_select_all();
+                    return;
+                }
+            }
+        }
         // A press FROM the Confirm interstitial is the deliberate second act: claim the (probed-Fresh) handle with the roots the probe already derived — no second proof, no permanence warning re-shown. GUARD: fire the stashed roots ONLY if the box still holds the handle they were derived from. Every edit path tears Confirm down, but this is the invariant that survives a missed one — firing stale roots attests a DIFFERENT identity than the box shows (observed: probe handle A, retype to taken handle B, press → attested as A, user believes they claimed B). On mismatch the press falls thru to a fresh probe of the current text.
         if matches!(self.state, AppState::Launch(LaunchState::Confirm)) {
             if let Some(btn) = self.attest_btn.as_mut() {
@@ -7720,12 +8047,10 @@ impl PhotonApp {
                         self.fire_attest_query_with_roots(session);
                     }
                     ProbeOutcome::JoinOurs => {
-                        // Our identity, this device unenrolled — route straight to add-this-device (JOIN). The handle is still in the textbox; submit_join_step reads it and shows the pairing words.
-                        crate::log("attest: handle has our fleet, this device unenrolled → add-this-device");
-                        self.launch_add_mode = true;
-                        self.state = AppState::Launch(LaunchState::Fresh);
-                        self.add_join_handle = None;
-                        self.submit_join_step(Some(session.handle_proof));
+                        // A fleet exists whose genesis binds to this handle's identity — EITHER the user's own other device OR a collider who typed the same name; the derivation makes them indistinguishable (docs/lifecycle.md D1). KnownHandle presents both readings; NOTHING posts to the network (no bind request, no beacon) until "it's mine" is pressed — the old straight-to-join route made every collision read as device pairing and spammed the owner's registry with stranger requests.
+                        crate::log("attest: handle already has a fleet → KnownHandle fork");
+                        self.probed_session = Some(session);
+                        self.state = AppState::Launch(LaunchState::KnownHandle);
                     }
                     ProbeOutcome::Taken => {
                         self.state = AppState::Launch(LaunchState::Error(
@@ -7751,6 +8076,13 @@ impl PhotonApp {
                     vault_seed: data.identity_seed,
                     handle_proof: data.handle_proof,
                 }));
+                // Bind the device to this identity (docs/lifecycle.md D2): the marker refuses a second identity at the NEXT submit, before its proof is spent. Idempotent on resume; cleared only by a wipe.
+                if let Some(kp) = self.device_keypair.as_ref() {
+                    crate::storage::device_binding::bind(
+                        kp.secret.as_bytes(),
+                        &crate::crypto::clutch::identity_party_id(&data.identity_seed),
+                    );
+                }
                 self.pending_broadcast_signal = 1;
                 self.vault_degraded = data.vault_degraded;
                 // The worker already loaded this device's avatar (keyed on identity_seed) into `data.avatar_pixels`; colour-convert it to BT.2020 γ=2.0 for the Ready screen. `None` = storage-miss → grey placeholder.
@@ -13096,6 +13428,43 @@ impl PhotonApp {
     }
 
     /// Fully clean this device for a new owner / a fresh identity: nuke the on-disk vault (all `.vsf` — contacts, chains, keypairs, the cached fleet key) AND clear the tohu session (identity_seed + vault_seed + handle_proof), drop all in-memory state, and drop back to the attest screen. The device KEY is fingerprint-derived (not stored) so it survives — but with no identity bound and an empty vault the device is a blank slate: a new owner types their handle to attest fresh, or JOINs another fleet. This is `[]n` + `[]u` combined, exposed as a real (non-dev-chord) action for the Security page + the removed-device "start fresh" path; the `-1` broadcast signal tells the Android host to drop its sticky session too.
+    /// LAST RITES press three — end the identity (docs/lifecycle.md D3). Order matters: the client SWEEP first (submitted logs + the avatar blob — their keys are unlinkable to the hp, so the worker purge can't reach them), THEN the self-signed departure (whose zero-fold triggers the worker's total purge of every hp-keyed trace + frees the name), THEN the local wipe + process restart. The wipe stays GATED on the departure landing — a failed publish leaves everything intact and reports.
+    fn lastrites_execute(&mut self) {
+        self.lastrites_active = false;
+        let hp = self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof());
+        let (Some(hp), Some(kp)) = (hp, self.device_keypair.clone()) else {
+            self.ready_toast = Some("No signed-in identity to end.".to_string());
+            return;
+        };
+        // Sweep: best-effort, logged — an unreachable store must not block the exit (the departure is the load-bearing act).
+        let pin = self.ensure_avatar_pin();
+        if let Some(session) = self.session.as_ref() {
+            let seed = session.identity_seed;
+            let tag = crate::log_retrieval_tag(&seed);
+            match crate::network::fgtw::log_delete_blocking(&tag) {
+                Ok(()) => crate::log("LASTRITES: submitted logs swept"),
+                Err(e) => crate::logf!("LASTRITES: log sweep failed (continuing): {}", e),
+            }
+            if let Some(pin) = pin {
+                let sk = ed25519_dalek::SigningKey::from_bytes(kp.secret.as_bytes());
+                match crate::ui::avatar::delete_avatar_blocking(&sk, &seed, &pin) {
+                    Ok(()) => crate::log("LASTRITES: avatar swept off the wall"),
+                    Err(e) => crate::logf!("LASTRITES: avatar sweep failed (continuing): {}", e),
+                }
+            }
+        }
+        match crate::network::fgtw::fleet::depart_device(&kp, &hp) {
+            Ok(()) => {
+                crate::log("LASTRITES: final departure published — the worker purges every trace, the name is free. Wiping.");
+                self.clean_device_for_reuse();
+            }
+            Err(e) => {
+                crate::logf!("LASTRITES: departure failed ({}) — NOTHING wiped", e);
+                self.ready_toast = Some("Couldn't publish the departure — nothing changed. Check connection and retry.".to_string());
+            }
+        }
+    }
+
     fn clean_device_for_reuse(&mut self) {
         let count = Self::dev_wipe_vault_files("clean");
         tohu::clear_session();
@@ -13110,7 +13479,15 @@ impl PhotonApp {
         self.pending_broadcast_signal = -1; // Android: drop the sticky session broadcast
         self.state = AppState::Launch(LaunchState::Fresh);
         self.refocus_handle_select_all();
+        crate::storage::device_binding::clear();
         crate::logf!("CLEAN: wiped {} vault file(s) + cleared session — device is a blank slate, ready to attest fresh or join another fleet", count);
+        // Full process restart (desktop): the in-place reset leaves launch half-initialized (the wordmark went missing after a shred, 2026-07-17) and a wiped process still holds freed secrets in reachable memory anyway — exec into a pristine self via the same machinery a self-update uses. Android can't exec; its in-place reset stands.
+        #[cfg(not(target_os = "android"))]
+        {
+            if let Ok(exe) = std::env::current_exe() {
+                self.update_reexec = Some(exe);
+            }
+        }
     }
 
     /// Dispatch a chord action character (`a`, `h`, `p`, etc.) that was pressed while both brackets are held. Returns true if anything happened (caller should request a redraw); false for unknown letters (no-op fallthrough — no whitelist so new bindings only add to dispatch, not gating).
@@ -13343,6 +13720,8 @@ enum UpdateEvent {
     Checked(crate::network::updates::Channel, Result<Option<crate::network::updates::ManifestRow>, String>),
     /// The AUTOMATIC release-channel check finished: the signed manifest's creation stamp (the window's `t`) + our platform's row. Errors land as a log line in the worker, not here — the cadence just retries later.
     AutoChecked(i64, Option<crate::network::updates::ManifestRow>),
+    /// Download progress for the in-flight apply: (bytes done, total bytes; total 0 = length unknown). Throttled to whole-percent changes by the sender.
+    Progress(u64, u64),
     /// Desktop: the binary swap completed and verified — re-exec into this path.
     Applied(std::path::PathBuf),
     /// Android: the APK downloaded + hash-verified — hand to the system installer.
